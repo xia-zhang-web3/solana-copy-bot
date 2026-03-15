@@ -22,9 +22,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-#[cfg(test)]
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant as StdInstant;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration, MissedTickBehavior};
@@ -52,7 +50,8 @@ use crate::execution_runtime_helpers::log_execution_batch_report;
 use crate::history_retention::HistoryRetentionRunner;
 use crate::observed_swap_writer::{
     run_observed_swap_retention_maintenance_once, ObservedSwapRetentionConfig,
-    ObservedSwapRetentionMaintenanceSummary, ObservedSwapWriter, ObservedSwapWriterSnapshot,
+    ObservedSwapRetentionMaintenanceSummary, ObservedSwapRetentionRuntimeHealthHandle,
+    ObservedSwapWriter, ObservedSwapWriterSnapshot, OBSERVED_SWAP_RETENTION_PARTIAL_RETRY_INTERVAL,
     OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL, OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL,
     OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT, OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT,
     OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT,
@@ -85,6 +84,7 @@ const APP_CONSUMER_LOOP_LATENCY_SAMPLE_CAPACITY: usize = 512;
 const STALE_LOT_CLEANUP_BATCH_LIMIT: u32 = 300;
 const HARD_STOP_CLEAR_HEALTHY_REFRESHES: u64 = 6;
 const SQLITE_MAINTENANCE_MAX_YELLOWSTONE_OUTPUT_QUEUE_FILL_RATIO: f64 = 0.25;
+const SQLITE_MAINTENANCE_PARTIAL_RETRY_INTERVAL: Duration = Duration::from_secs(60);
 const DEFAULT_INGESTION_OVERRIDE_PATH: &str = "state/ingestion_source_override.env";
 const DEFAULT_OPERATOR_EMERGENCY_STOP_PATH: &str = "state/operator_emergency_stop.flag";
 const DEFAULT_OPERATOR_EMERGENCY_STOP_POLL_MS: u64 = 500;
@@ -2766,6 +2766,11 @@ async fn run_app_loop(
         discovery_aggregate_write_config,
     )
     .context("failed to start observed swap writer")?;
+    let latest_ingestion_runtime_snapshot = Arc::new(Mutex::new(ingestion.runtime_snapshot()));
+    let observed_swap_retention_runtime_health = ObservedSwapRetentionRuntimeHealthHandle::new(
+        observed_swap_writer.health_handle(),
+        Arc::clone(&latest_ingestion_runtime_snapshot),
+    );
     let observed_swap_retention_config = ObservedSwapRetentionConfig::production(
         observed_swaps_retention_days,
         discovery_scoring_retention_days,
@@ -3008,6 +3013,9 @@ async fn run_app_loop(
                 let maintenance_gate_started_at = StdInstant::now();
                 let maintenance_gate_sqlite_contention = sqlite_contention_snapshot();
                 let maintenance_gate_ingestion_snapshot = ingestion.runtime_snapshot();
+                if let Ok(mut snapshot) = latest_ingestion_runtime_snapshot.lock() {
+                    *snapshot = maintenance_gate_ingestion_snapshot;
+                }
                 let maintenance_gate_writer_snapshot = observed_swap_writer.snapshot();
                 if history_retention.enabled()
                     && last_history_retention_sweep.elapsed() >= history_retention_sweep_interval
@@ -3052,22 +3060,31 @@ async fn run_app_loop(
                                 maintenance_gate_sqlite_contention.busy_error_total,
                             "starting sqlite maintenance task"
                         );
-                        match history_retention.apply(&store, Utc::now(), alert_dispatcher.is_some()) {
-                            Ok(summary) if !summary.is_empty() => {
-                                info!(
-                                    risk_events_deleted = summary.risk_events_deleted,
-                                    risk_events_batches = summary.risk_events_batches,
-                                    copy_signals_deleted = summary.copy_signals_deleted,
-                                    copy_signals_batches = summary.copy_signals_batches,
-                                    orders_deleted = summary.orders_deleted,
-                                    execution_order_batches = summary.execution_order_batches,
-                                    fills_deleted = summary.fills_deleted,
-                                    shadow_closed_trades_deleted = summary.shadow_closed_trades_deleted,
-                                    shadow_closed_trades_batches = summary.shadow_closed_trades_batches,
-                                    "history retention sweep applied"
-                                );
+                        let history_now = Utc::now();
+                        let mut history_completed_full_sweep = true;
+                        match history_retention.apply(
+                            &store,
+                            history_now,
+                            alert_dispatcher.is_some(),
+                        ) {
+                            Ok(summary) => {
+                                history_completed_full_sweep = summary.completed_full_sweep;
+                                if !summary.is_empty() {
+                                    info!(
+                                        risk_events_deleted = summary.risk_events_deleted,
+                                        risk_events_batches = summary.risk_events_batches,
+                                        copy_signals_deleted = summary.copy_signals_deleted,
+                                        copy_signals_batches = summary.copy_signals_batches,
+                                        orders_deleted = summary.orders_deleted,
+                                        execution_order_batches = summary.execution_order_batches,
+                                        fills_deleted = summary.fills_deleted,
+                                        shadow_closed_trades_deleted = summary.shadow_closed_trades_deleted,
+                                        shadow_closed_trades_batches = summary.shadow_closed_trades_batches,
+                                        completed_full_sweep = summary.completed_full_sweep,
+                                        "history retention sweep applied"
+                                    );
+                                }
                             }
-                            Ok(_) => {}
                             Err(error) => {
                                 if history_retention_error_requires_restart(&error) {
                                     return Err(error)
@@ -3077,7 +3094,15 @@ async fn run_app_loop(
                             }
                         }
                         last_history_retention_skip_reason_key = None;
-                        last_history_retention_sweep = StdInstant::now();
+                        last_history_retention_sweep = if history_completed_full_sweep {
+                            StdInstant::now()
+                        } else {
+                            StdInstant::now().checked_sub(
+                                history_retention_sweep_interval
+                                    .saturating_sub(SQLITE_MAINTENANCE_PARTIAL_RETRY_INTERVAL),
+                            )
+                            .unwrap_or_else(StdInstant::now)
+                        };
                     }
                 }
                 if observed_swap_retention_handle.is_none()
@@ -3104,6 +3129,8 @@ async fn run_app_loop(
                         }
                     } else {
                         let sqlite_path = sqlite_path.clone();
+                        let observed_swap_retention_runtime_health =
+                            observed_swap_retention_runtime_health.clone();
                         info!(
                             maintenance = SqliteMaintenanceTask::ObservedSwapRetention.as_str(),
                             observed_swap_writer_pending_requests =
@@ -3130,6 +3157,7 @@ async fn run_app_loop(
                                 run_observed_swap_retention_maintenance_once(
                                     &sqlite_path,
                                     observed_swap_retention_config,
+                                    Some(observed_swap_retention_runtime_health),
                                 )
                             }));
                         last_observed_swap_retention_sweep = StdInstant::now();
@@ -3240,6 +3268,8 @@ async fn run_app_loop(
                             observed_swap_delete_batches = summary.raw_delete_batches,
                             deleted_scoring_rows = summary.scoring_deleted_rows,
                             discovery_scoring_delete_batches = summary.scoring_delete_batches,
+                            completed_full_sweep = summary.completed_full_sweep,
+                            stop_reason = ?summary.stop_reason,
                             wal_checkpoint_mode = summary.checkpoint.mode,
                             wal_checkpoint_busy = summary.checkpoint.busy,
                             wal_log_frames = summary.checkpoint.log_frames,
@@ -3247,6 +3277,15 @@ async fn run_app_loop(
                             duration_ms = summary.duration_ms,
                             "sqlite maintenance task completed"
                         );
+                        if !summary.completed_full_sweep {
+                            last_observed_swap_retention_sweep = StdInstant::now()
+                                .checked_sub(
+                                    observed_swap_retention_sweep_interval.saturating_sub(
+                                        OBSERVED_SWAP_RETENTION_PARTIAL_RETRY_INTERVAL,
+                                    ),
+                                )
+                                .unwrap_or_else(StdInstant::now);
+                        }
                     }
                     Some(Ok(Err(error))) => {
                         if observed_swap_retention_error_requires_restart(&error) {

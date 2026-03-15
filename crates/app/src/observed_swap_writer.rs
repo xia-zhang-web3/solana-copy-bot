@@ -1,9 +1,10 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use copybot_core_types::SwapEvent;
+use copybot_ingestion::IngestionRuntimeSnapshot;
 use copybot_storage::{
-    is_fatal_sqlite_anyhow_error, DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor,
-    SqliteBatchedDeleteSummary, SqliteStore,
+    is_fatal_sqlite_anyhow_error, sqlite_contention_snapshot, DiscoveryAggregateWriteConfig,
+    DiscoveryRuntimeCursor, SqliteBatchedDeleteSummary, SqliteContentionSnapshot, SqliteStore,
 };
 use std::collections::VecDeque;
 use std::path::Path;
@@ -23,6 +24,13 @@ pub(crate) const OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL: StdDuration =
 const OBSERVED_SWAP_WRITER_LATENCY_SAMPLE_CAPACITY: usize = 512;
 const OBSERVED_SWAP_RETENTION_DELETE_BATCH_SIZE: usize = 500;
 const DISCOVERY_SCORING_RETENTION_DELETE_BATCH_SIZE: usize = 250;
+const OBSERVED_SWAP_RETENTION_MAX_RAW_DELETE_BATCHES_PER_RUN: usize = 8;
+const OBSERVED_SWAP_RETENTION_MAX_SCORING_DELETE_BATCHES_PER_RUN: usize = 4;
+const OBSERVED_SWAP_RETENTION_MAX_DURATION_PER_RUN: StdDuration = StdDuration::from_secs(2);
+const OBSERVED_SWAP_RETENTION_INTER_BATCH_PAUSE: StdDuration = StdDuration::from_millis(50);
+pub(crate) const OBSERVED_SWAP_RETENTION_PARTIAL_RETRY_INTERVAL: StdDuration =
+    StdDuration::from_secs(60);
+const SQLITE_MAINTENANCE_MAX_YELLOWSTONE_OUTPUT_QUEUE_FILL_RATIO: f64 = 0.25;
 pub(crate) const OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT: &str =
     "observed swap writer channel closed";
 pub(crate) const OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT: &str =
@@ -90,8 +98,50 @@ pub(crate) struct ObservedSwapRetentionMaintenanceSummary {
     pub raw_delete_batches: usize,
     pub scoring_deleted_rows: usize,
     pub scoring_delete_batches: usize,
+    pub completed_full_sweep: bool,
+    pub stop_reason: Option<&'static str>,
     pub checkpoint: ObservedSwapRetentionCheckpointSummary,
     pub duration_ms: u64,
+}
+
+#[derive(Clone)]
+pub(crate) struct ObservedSwapWriterHealthHandle {
+    telemetry: Arc<ObservedSwapWriterTelemetry>,
+}
+
+impl ObservedSwapWriterHealthHandle {
+    pub(crate) fn snapshot(&self) -> ObservedSwapWriterSnapshot {
+        self.telemetry.snapshot()
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ObservedSwapRetentionRuntimeHealthHandle {
+    writer: ObservedSwapWriterHealthHandle,
+    ingestion_runtime_snapshot: Arc<Mutex<Option<IngestionRuntimeSnapshot>>>,
+}
+
+impl ObservedSwapRetentionRuntimeHealthHandle {
+    pub(crate) fn new(
+        writer: ObservedSwapWriterHealthHandle,
+        ingestion_runtime_snapshot: Arc<Mutex<Option<IngestionRuntimeSnapshot>>>,
+    ) -> Self {
+        Self {
+            writer,
+            ingestion_runtime_snapshot,
+        }
+    }
+
+    fn writer_snapshot(&self) -> ObservedSwapWriterSnapshot {
+        self.writer.snapshot()
+    }
+
+    fn ingestion_snapshot(&self) -> Option<IngestionRuntimeSnapshot> {
+        self.ingestion_runtime_snapshot
+            .lock()
+            .ok()
+            .and_then(|snapshot| *snapshot)
+    }
 }
 
 struct ObservedSwapWriteRequest {
@@ -481,6 +531,12 @@ impl ObservedSwapWriter {
         self.telemetry.snapshot()
     }
 
+    pub(crate) fn health_handle(&self) -> ObservedSwapWriterHealthHandle {
+        ObservedSwapWriterHealthHandle {
+            telemetry: Arc::clone(&self.telemetry),
+        }
+    }
+
     pub(crate) fn shutdown(mut self) -> Result<()> {
         drop(self.sender);
         let raw_result = if let Some(raw_worker) = self.raw_worker.take() {
@@ -789,16 +845,18 @@ fn load_terminal_failure_message(
 pub(crate) fn run_observed_swap_retention_maintenance_once(
     sqlite_path: &str,
     config: ObservedSwapRetentionConfig,
+    runtime_health: Option<ObservedSwapRetentionRuntimeHealthHandle>,
 ) -> Result<ObservedSwapRetentionMaintenanceSummary> {
     let store = SqliteStore::open(Path::new(sqlite_path)).with_context(|| {
         format!("failed to open sqlite db for observed swap retention maintenance: {sqlite_path}")
     })?;
-    run_observed_swap_retention_maintenance(&store, config)
+    run_observed_swap_retention_maintenance(&store, config, runtime_health.as_ref())
 }
 
 fn run_observed_swap_retention_maintenance(
     store: &SqliteStore,
     config: ObservedSwapRetentionConfig,
+    runtime_health: Option<&ObservedSwapRetentionRuntimeHealthHandle>,
 ) -> Result<ObservedSwapRetentionMaintenanceSummary> {
     let maintenance_started = Instant::now();
     let now = Utc::now();
@@ -806,45 +864,124 @@ fn run_observed_swap_retention_maintenance(
     let effective_cutoff = resolve_observed_swap_retention_effective_cutoff(config, now, |now| {
         store.load_discovery_scoring_backfill_protected_since(now)
     })?;
-    let raw_delete_summary = store
-        .delete_observed_swaps_before_batched(
-            effective_cutoff,
-            OBSERVED_SWAP_RETENTION_DELETE_BATCH_SIZE,
-        )
-        .with_context(|| {
-        format!(
-            "observed swap retention sweep failed retention_days={} nominal_cutoff={} effective_cutoff={}",
-            config.retention_days, nominal_cutoff, effective_cutoff
-        )
-    })?;
     let aggregate_cutoff = if config.aggregate_writes_enabled {
         Some(now - ChronoDuration::days(config.aggregate_retention_days.max(1) as i64))
     } else {
         None
     };
-    let scoring_delete_summary = if let Some(aggregate_cutoff) = aggregate_cutoff {
-        store
-            .prune_discovery_scoring_before_batched(
-                aggregate_cutoff,
-                DISCOVERY_SCORING_RETENTION_DELETE_BATCH_SIZE,
+    let mut last_sqlite_contention = sqlite_contention_snapshot();
+    let mut raw_delete_summary = SqliteBatchedDeleteSummary::default();
+    let mut scoring_delete_summary = SqliteBatchedDeleteSummary::default();
+    let mut completed_full_sweep = true;
+    let mut stop_reason = None;
+
+    loop {
+        if let Some(reason) = observed_swap_retention_should_stop(
+            runtime_health,
+            &mut last_sqlite_contention,
+            maintenance_started,
+        ) {
+            completed_full_sweep = false;
+            stop_reason = Some(reason);
+            break;
+        }
+        if raw_delete_summary.batches >= OBSERVED_SWAP_RETENTION_MAX_RAW_DELETE_BATCHES_PER_RUN {
+            completed_full_sweep = false;
+            stop_reason = Some("raw_batch_budget");
+            break;
+        }
+        let deleted = store
+            .delete_observed_swaps_before_batch(
+                effective_cutoff,
+                OBSERVED_SWAP_RETENTION_DELETE_BATCH_SIZE,
             )
             .with_context(|| {
                 format!(
-                    "discovery scoring retention sweep failed aggregate_retention_days={} aggregate_cutoff={}",
-                    config.aggregate_retention_days, aggregate_cutoff
+                    "observed swap retention sweep failed retention_days={} nominal_cutoff={} effective_cutoff={}",
+                    config.retention_days, nominal_cutoff, effective_cutoff
                 )
-            })?
+            })?;
+        if deleted == 0 {
+            break;
+        }
+        raw_delete_summary.deleted_rows += deleted;
+        raw_delete_summary.batches += 1;
+        thread::sleep(OBSERVED_SWAP_RETENTION_INTER_BATCH_PAUSE);
+    }
+
+    if completed_full_sweep {
+        if let Some(aggregate_cutoff) = aggregate_cutoff {
+            loop {
+                if let Some(reason) = observed_swap_retention_should_stop(
+                    runtime_health,
+                    &mut last_sqlite_contention,
+                    maintenance_started,
+                ) {
+                    completed_full_sweep = false;
+                    stop_reason = Some(reason);
+                    break;
+                }
+                if scoring_delete_summary.batches
+                    >= OBSERVED_SWAP_RETENTION_MAX_SCORING_DELETE_BATCHES_PER_RUN
+                {
+                    completed_full_sweep = false;
+                    stop_reason = Some("scoring_batch_budget");
+                    break;
+                }
+                let deleted = store
+                    .prune_discovery_scoring_before_batch(
+                        aggregate_cutoff,
+                        DISCOVERY_SCORING_RETENTION_DELETE_BATCH_SIZE,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "discovery scoring retention sweep failed aggregate_retention_days={} aggregate_cutoff={}",
+                            config.aggregate_retention_days, aggregate_cutoff
+                        )
+                    })?;
+                if deleted == 0 {
+                    break;
+                }
+                scoring_delete_summary.deleted_rows += deleted;
+                scoring_delete_summary.batches += 1;
+                thread::sleep(OBSERVED_SWAP_RETENTION_INTER_BATCH_PAUSE);
+            }
+        }
+    }
+
+    if let Some(reason) = stop_reason {
+        warn!(
+            stop_reason = reason,
+            retention_days = config.retention_days,
+            aggregate_retention_days = config.aggregate_retention_days,
+            nominal_observed_swap_cutoff = %nominal_cutoff,
+            effective_observed_swap_cutoff = %effective_cutoff,
+            aggregate_scoring_cutoff = ?aggregate_cutoff,
+            deleted_observed_swap_rows = raw_delete_summary.deleted_rows,
+            observed_swap_delete_batches = raw_delete_summary.batches,
+            deleted_scoring_rows = scoring_delete_summary.deleted_rows,
+            discovery_scoring_delete_batches = scoring_delete_summary.batches,
+            "observed swap retention paused before exhausting the backlog"
+        );
+    }
+
+    let checkpoint = if completed_full_sweep {
+        run_retention_wal_checkpoint(
+            store,
+            config,
+            nominal_cutoff,
+            effective_cutoff,
+            raw_delete_summary,
+            scoring_delete_summary,
+        )?
     } else {
-        SqliteBatchedDeleteSummary::default()
+        ObservedSwapRetentionCheckpointSummary {
+            mode: "skipped_bounded_run",
+            busy: 0,
+            log_frames: 0,
+            checkpointed_frames: 0,
+        }
     };
-    let checkpoint = run_retention_wal_checkpoint(
-        store,
-        config,
-        nominal_cutoff,
-        effective_cutoff,
-        raw_delete_summary,
-        scoring_delete_summary,
-    )?;
     Ok(ObservedSwapRetentionMaintenanceSummary {
         nominal_cutoff,
         effective_cutoff,
@@ -853,9 +990,51 @@ fn run_observed_swap_retention_maintenance(
         raw_delete_batches: raw_delete_summary.batches,
         scoring_deleted_rows: scoring_delete_summary.deleted_rows,
         scoring_delete_batches: scoring_delete_summary.batches,
+        completed_full_sweep,
+        stop_reason,
         checkpoint,
         duration_ms: elapsed_ms_ceil(maintenance_started.elapsed()),
     })
+}
+
+fn observed_swap_retention_should_stop(
+    runtime_health: Option<&ObservedSwapRetentionRuntimeHealthHandle>,
+    last_sqlite_contention: &mut SqliteContentionSnapshot,
+    maintenance_started: Instant,
+) -> Option<&'static str> {
+    if maintenance_started.elapsed() >= OBSERVED_SWAP_RETENTION_MAX_DURATION_PER_RUN {
+        return Some("duration_budget");
+    }
+    let Some(runtime_health) = runtime_health else {
+        *last_sqlite_contention = sqlite_contention_snapshot();
+        return None;
+    };
+    let writer_snapshot = runtime_health.writer_snapshot();
+    if writer_snapshot.pending_requests > 0 {
+        return Some("runtime_pressure");
+    }
+    if writer_snapshot.aggregate_queue_depth_batches > 0 {
+        return Some("runtime_pressure");
+    }
+    let sqlite_contention_current = sqlite_contention_snapshot();
+    let sqlite_write_retry_delta = sqlite_contention_current
+        .write_retry_total
+        .saturating_sub(last_sqlite_contention.write_retry_total);
+    let sqlite_busy_error_delta = sqlite_contention_current
+        .busy_error_total
+        .saturating_sub(last_sqlite_contention.busy_error_total);
+    *last_sqlite_contention = sqlite_contention_current;
+    if sqlite_write_retry_delta > 0 || sqlite_busy_error_delta > 0 {
+        return Some("runtime_pressure");
+    }
+    if runtime_health.ingestion_snapshot().is_some_and(|snapshot| {
+        snapshot.yellowstone_output_queue_capacity > 0
+            && snapshot.yellowstone_output_queue_fill_ratio
+                >= SQLITE_MAINTENANCE_MAX_YELLOWSTONE_OUTPUT_QUEUE_FILL_RATIO
+    }) {
+        return Some("runtime_pressure");
+    }
+    None
 }
 
 fn observed_swap_retention_nominal_cutoff(
@@ -1133,15 +1312,20 @@ fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ObservedSwapWriter, ObservedSwapWriterConfig};
+    use super::{ObservedSwapWriter, ObservedSwapWriterConfig, ObservedSwapWriterTelemetry};
     use anyhow::{anyhow, Context, Result};
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use copybot_core_types::SwapEvent;
-    use copybot_storage::{DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, SqliteStore};
+    use copybot_storage::{
+        DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, SqliteContentionSnapshot,
+        SqliteStore,
+    };
     use rusqlite::Connection;
     use std::path::Path;
+    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, Mutex};
     use std::thread;
-    use std::time::Duration as StdDuration;
+    use std::time::{Duration as StdDuration, Instant};
     use tokio::runtime::Builder;
     use tokio::time::{sleep, timeout, Duration};
 
@@ -2267,6 +2451,7 @@ mod tests {
                 .to_str()
                 .context("sqlite path must be valid utf-8")?,
             super::ObservedSwapRetentionConfig::production(1, 7, true),
+            None,
         )?;
         assert_eq!(summary.raw_deleted_rows, 1);
         assert_eq!(summary.raw_delete_batches, 1);
@@ -2323,6 +2508,7 @@ mod tests {
                 .to_str()
                 .context("sqlite path must be valid utf-8")?,
             super::ObservedSwapRetentionConfig::production(1, 7, false),
+            None,
         )?;
         assert_eq!(summary.raw_deleted_rows, 0);
         assert_eq!(summary.raw_delete_batches, 0);
@@ -2341,6 +2527,90 @@ mod tests {
         let _ = std::fs::remove_file(db_path);
 
         Ok(())
+    }
+
+    #[test]
+    fn observed_swap_retention_maintenance_stops_after_raw_batch_budget_and_skips_checkpoint(
+    ) -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-retention-bounded-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+
+        let stale_ts = Utc::now() - ChronoDuration::days(3);
+        let stale_rows = super::OBSERVED_SWAP_RETENTION_DELETE_BATCH_SIZE
+            * super::OBSERVED_SWAP_RETENTION_MAX_RAW_DELETE_BATCHES_PER_RUN
+            + 1;
+        for idx in 0..stale_rows {
+            seed_store.insert_observed_swap(&SwapEvent {
+                wallet: "wallet-bounded-retention".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: format!("token-bounded-{idx}"),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                signature: format!("sig-bounded-retention-{idx}"),
+                slot: idx as u64 + 1,
+                ts_utc: stale_ts + ChronoDuration::seconds(idx as i64),
+                exact_amounts: None,
+            })?;
+        }
+
+        let summary = super::run_observed_swap_retention_maintenance_once(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?,
+            super::ObservedSwapRetentionConfig::production(1, 7, false),
+            None,
+        )?;
+        assert_eq!(
+            summary.raw_deleted_rows,
+            super::OBSERVED_SWAP_RETENTION_DELETE_BATCH_SIZE
+                * super::OBSERVED_SWAP_RETENTION_MAX_RAW_DELETE_BATCHES_PER_RUN
+        );
+        assert_eq!(
+            summary.raw_delete_batches,
+            super::OBSERVED_SWAP_RETENTION_MAX_RAW_DELETE_BATCHES_PER_RUN
+        );
+        assert_eq!(summary.scoring_deleted_rows, 0);
+        assert!(!summary.completed_full_sweep);
+        assert_eq!(summary.stop_reason, Some("raw_batch_budget"));
+        assert_eq!(summary.checkpoint.mode, "skipped_bounded_run");
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let remaining = verify_store
+            .load_observed_swaps_since(Utc::now() - ChronoDuration::days(7))?
+            .len();
+        assert_eq!(remaining, 1);
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_retention_should_stop_on_runtime_pressure() {
+        let telemetry = Arc::new(ObservedSwapWriterTelemetry::default());
+        telemetry.pending_requests.store(1, Ordering::Relaxed);
+        let runtime_health = super::ObservedSwapRetentionRuntimeHealthHandle::new(
+            super::ObservedSwapWriterHealthHandle { telemetry },
+            Arc::new(Mutex::new(None)),
+        );
+        let mut last_sqlite_contention = SqliteContentionSnapshot::default();
+
+        let stop_reason = super::observed_swap_retention_should_stop(
+            Some(&runtime_health),
+            &mut last_sqlite_contention,
+            Instant::now(),
+        );
+        assert_eq!(stop_reason, Some("runtime_pressure"));
     }
 
     #[test]
@@ -2483,6 +2753,7 @@ mod tests {
                 .to_str()
                 .context("sqlite path must be valid utf-8")?,
             super::ObservedSwapRetentionConfig::production(1, 7, false),
+            None,
         )
         .expect_err("fatal raw delete failure must propagate out of retention maintenance");
         let error_text = format!("{error:#}");

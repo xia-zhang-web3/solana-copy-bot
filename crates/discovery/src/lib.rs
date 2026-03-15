@@ -75,21 +75,27 @@ fn maybe_arm_cap_truncation_deactivation_guard(
     );
 }
 
-fn maybe_warn_on_cap_truncation_deactivation_guard_expiry(state: &DiscoveryWindowState) {
+fn maybe_warn_on_cap_truncation_deactivation_guard_expiry(
+    state: &DiscoveryWindowState,
+    followlist_deactivations_suppressed: bool,
+) {
     let Some(floor) = state.cap_truncation_floor.as_ref() else {
         return;
     };
-    warn!(
-        followlist_deactivation_suppression_reason = state
-            .cap_truncation_deactivation_guard_reason
-            .map(CapTruncationDeactivationGuardReason::as_str)
-            .unwrap_or("cap_truncation"),
-        followlist_deactivation_suppression_started_at = ?state
-            .cap_truncation_deactivation_guard_started_at,
-        cap_truncation_floor_ts = %floor.ts_utc,
-        cap_truncation_floor_signature = floor.signature.as_str(),
-        "discovery cap-truncation deactivation guard expired; raw-window followlist deactivations will resume while history remains incomplete"
-    );
+    let reason = state
+        .cap_truncation_deactivation_guard_reason
+        .map(CapTruncationDeactivationGuardReason::as_str)
+        .unwrap_or("cap_truncation");
+    if followlist_deactivations_suppressed {
+        warn!(
+            followlist_deactivation_suppression_reason = reason,
+            followlist_deactivation_suppression_started_at = ?state
+                .cap_truncation_deactivation_guard_started_at,
+            cap_truncation_floor_ts = %floor.ts_utc,
+            cap_truncation_floor_signature = floor.signature.as_str(),
+            "discovery cap-truncation guard countdown expired, but raw-window followlist mutations remain suppressed until truncation state clears"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -104,10 +110,11 @@ struct CapTruncationTelemetrySnapshot {
 
 fn snapshot_cap_truncation_telemetry(
     state: &DiscoveryWindowState,
+    followlist_deactivations_suppressed: bool,
 ) -> CapTruncationTelemetrySnapshot {
     CapTruncationTelemetrySnapshot {
         raw_window_cap_truncated: state.cap_truncation_floor.is_some(),
-        cap_truncation_deactivation_guard_active: state.cap_truncation_deactivations_suppressed(),
+        cap_truncation_deactivation_guard_active: followlist_deactivations_suppressed,
         cap_truncation_deactivation_guard_reason: state
             .cap_truncation_deactivation_guard_reason
             .map(CapTruncationDeactivationGuardReason::as_str),
@@ -122,6 +129,10 @@ fn snapshot_cap_truncation_telemetry(
             .as_ref()
             .map(|floor| floor.signature.clone()),
     }
+}
+
+fn raw_window_history_incomplete_for_followlist_or_metrics(state: &DiscoveryWindowState) -> bool {
+    state.cap_truncation_floor.is_some()
 }
 
 #[derive(Debug, Clone)]
@@ -248,7 +259,9 @@ enum PreparedCycleState {
     },
     Recompute {
         publish_due: bool,
+        followlist_activations_suppressed: bool,
         followlist_deactivations_suppressed: bool,
+        metrics_persistence_suppressed: bool,
         swaps: VecDeque<SwapEvent>,
     },
     PersistedBootstrap {
@@ -542,9 +555,12 @@ impl DiscoveryService {
                 sorted.sort_by(cmp_swap_order);
                 state.swaps = sorted.into();
             }
-            let cap_truncation_telemetry = snapshot_cap_truncation_telemetry(&state);
+            let raw_window_history_incomplete =
+                raw_window_history_incomplete_for_followlist_or_metrics(&state);
             let followlist_deactivations_suppressed =
-                cap_truncation_telemetry.cap_truncation_deactivation_guard_active;
+                state.cap_truncation_deactivations_suppressed(raw_window_history_incomplete);
+            let cap_truncation_telemetry =
+                snapshot_cap_truncation_telemetry(&state, followlist_deactivations_suppressed);
             let bootstrap_from_persisted_metrics =
                 state.bootstrap_from_persisted_metrics && state.swaps.is_empty();
             let truncated_warm_restore_bootstrap =
@@ -552,8 +568,11 @@ impl DiscoveryService {
             let publish_due = state.last_publish_at.map_or(true, |last_publish_at| {
                 now.signed_duration_since(last_publish_at).num_seconds() >= publish_interval_seconds
             });
-            if !aggregate_scoring_ready && state.consume_cap_truncation_deactivation_guard() {
-                maybe_warn_on_cap_truncation_deactivation_guard_expiry(&state);
+            if !aggregate_scoring_ready && state.consume_cap_truncation_deactivation_guard_cycle() {
+                maybe_warn_on_cap_truncation_deactivation_guard_expiry(
+                    &state,
+                    followlist_deactivations_suppressed,
+                );
             }
 
             let swaps_window = state.swaps.len();
@@ -644,7 +663,10 @@ impl DiscoveryService {
                     cap_truncation_telemetry,
                     PreparedCycleState::Recompute {
                         publish_due,
+                        followlist_activations_suppressed: raw_window_history_incomplete
+                            || short_retention_window,
                         followlist_deactivations_suppressed,
+                        metrics_persistence_suppressed: raw_window_history_incomplete,
                         swaps: state.swaps.clone(),
                     },
                 )
@@ -655,6 +677,7 @@ impl DiscoveryService {
             publish_due,
             followlist_activations_suppressed,
             followlist_deactivations_suppressed,
+            metrics_persistence_suppressed,
             snapshots,
             scoring_source,
         ) = match prepared_cycle {
@@ -668,6 +691,7 @@ impl DiscoveryService {
                     publish_due,
                     followlist_activations_suppressed,
                     followlist_deactivations_suppressed,
+                    false,
                     self.build_wallet_snapshots_from_aggregates(store, now)?,
                     "aggregates",
                 )
@@ -1056,12 +1080,15 @@ impl DiscoveryService {
             }
             PreparedCycleState::Recompute {
                 publish_due,
+                followlist_activations_suppressed,
                 followlist_deactivations_suppressed,
+                metrics_persistence_suppressed,
                 swaps,
             } => (
                 publish_due,
-                short_retention_window,
+                followlist_activations_suppressed,
                 followlist_deactivations_suppressed,
+                metrics_persistence_suppressed,
                 self.build_wallet_snapshots_from_cached(store, &swaps, now)?,
                 "raw_window",
             ),
@@ -1096,7 +1123,7 @@ impl DiscoveryService {
         }
 
         let should_persist_metrics = !store.wallet_metrics_window_exists(metrics_window_start)?;
-        let metrics_to_persist = if should_persist_metrics {
+        let metrics_to_persist = if should_persist_metrics && !metrics_persistence_suppressed {
             metric_rows.as_slice()
         } else {
             &[]
@@ -3336,7 +3363,7 @@ mod tests {
     }
 
     #[test]
-    fn cap_truncation_releases_followlist_demotions_after_bounded_guard_even_if_floor_persists(
+    fn cap_truncation_keeps_followlist_demotions_suppressed_while_raw_window_remains_incomplete(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp
@@ -3428,13 +3455,13 @@ mod tests {
 
         let fourth_summary = discovery.run_cycle(&store, first_now + Duration::minutes(3))?;
         assert_eq!(
-            fourth_summary.follow_demoted, 1,
-            "once the bounded cap-truncation guard expires, stale followlist members must be demoted even if the truncation floor still persists"
+            fourth_summary.follow_demoted, 0,
+            "cap-truncated raw discovery must not demote followlist entries while the retained raw window still covers only a tiny fraction of the intended scoring horizon"
         );
         let active_after = store.list_active_follow_wallets()?;
         assert!(
-            !active_after.contains("wallet_leader"),
-            "bounded guard expiry must let the sticky historical followlist shrink back down"
+            active_after.contains("wallet_leader"),
+            "leader must stay active while cap-truncated raw discovery still represents incomplete history"
         );
         let state = discovery
             .window_state
@@ -3446,13 +3473,142 @@ mod tests {
         );
         assert_eq!(
             state.cap_truncation_deactivation_guard_cycles_remaining, 0,
-            "cap-truncation deactivation suppression must be bounded rather than tied forever to the truncation floor"
+            "bounded countdown should still reach zero even when safety suppression remains active for an incomplete raw window"
+        );
+        assert!(
+            fourth_summary.cap_truncation_deactivation_guard_active,
+            "summary must continue advertising deactivation suppression while the raw window remains incomplete after the bounded countdown expires"
         );
         Ok(())
     }
 
     #[test]
-    fn warm_restore_marks_truncated_capped_tail_then_releases_followlist_demotions_after_bounded_guard(
+    fn cap_truncated_partial_raw_window_suppresses_followlist_promotions_and_metrics_even_after_most_of_horizon_is_retained(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("test-cap-truncation-activation-boundary.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-14T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let window_start = now - Duration::days(1);
+
+        store.activate_follow_wallet("wallet_leader", now - Duration::minutes(5), "seed-follow")?;
+
+        for (idx, offset_minutes) in [5, 45].into_iter().enumerate() {
+            let buy_ts = window_start + Duration::minutes(offset_minutes);
+            let sell_ts = buy_ts + Duration::minutes(10);
+            let token = format!("TokenLeaderBoundary{idx:02}111111111111111111111");
+            store.insert_observed_swap(&swap(
+                "wallet_leader",
+                &format!("leader-boundary-buy-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                token.as_str(),
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_leader",
+                &format!("leader-boundary-sell-{idx}"),
+                sell_ts,
+                token.as_str(),
+                SOL_MINT,
+                100.0,
+                1.3,
+            ))?;
+        }
+
+        for (idx, offset_minutes) in [125, 485, 845, 1380].into_iter().enumerate() {
+            let buy_ts = window_start + Duration::minutes(offset_minutes);
+            let sell_ts = buy_ts + Duration::minutes(10);
+            let token = format!("TokenCandidateBoundary{idx:02}11111111111111111");
+            store.insert_observed_swap(&swap(
+                "wallet_candidate",
+                &format!("candidate-boundary-buy-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                token.as_str(),
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_candidate",
+                &format!("candidate-boundary-sell-{idx}"),
+                sell_ts,
+                token.as_str(),
+                SOL_MINT,
+                100.0,
+                1.35,
+            ))?;
+        }
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 1;
+        config.decay_window_days = 1;
+        config.follow_top_n = 1;
+        config.min_leader_notional_sol = 0.5;
+        config.min_trades = 4;
+        config.min_active_days = 1;
+        config.min_score = 0.1;
+        config.min_buy_count = 1;
+        config.min_tradable_ratio = 0.0;
+        config.metric_snapshot_interval_seconds = 60;
+        config.max_window_swaps_in_memory = 8;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.thin_market_min_unique_traders = 1;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let summary = discovery.run_cycle(&store, now)?;
+        assert!(
+            summary.raw_window_cap_truncated,
+            "the retained raw window must still advertise cap truncation while the earliest leader slice is missing"
+        );
+        assert_eq!(
+            summary.follow_promoted, 0,
+            "cap-truncated raw recompute must not promote from a partial tail even when the retained tail spans most of the scoring horizon"
+        );
+        assert_eq!(
+            summary.follow_demoted, 0,
+            "cap-truncated raw recompute must not demote the pre-existing active leader while the truncation floor still marks missing history"
+        );
+        assert_eq!(
+            summary.metrics_written, 0,
+            "cap-truncated raw recompute must not persist wallet_metrics from a partial tail even when the retained span exceeds the old coverage heuristic"
+        );
+
+        let active_follow_wallets = store.list_active_follow_wallets()?;
+        assert!(
+            active_follow_wallets.contains("wallet_leader"),
+            "existing followed leader must remain active while cap truncation still marks missing early history"
+        );
+        assert!(
+            !active_follow_wallets.contains("wallet_candidate"),
+            "partial-tail candidate must not activate while raw discovery is still source-invalid"
+        );
+        assert_eq!(
+            store.latest_wallet_metrics_window_start()?,
+            None,
+            "partial raw discovery should not publish a fresh wallet_metrics bucket while cap truncation remains active"
+        );
+        let state = discovery
+            .window_state
+            .lock()
+            .expect("window_state lock should succeed");
+        assert!(
+            state.cap_truncation_floor.is_some(),
+            "activation suppression should remain tied to the actual truncation marker rather than a coverage heuristic"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn warm_restore_keeps_followlist_demotions_suppressed_while_raw_window_remains_truncated_after_guard_countdown(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp
@@ -3634,19 +3790,17 @@ mod tests {
         let summary_guard_expired =
             discovery_after_restart.run_cycle(&store, now + Duration::minutes(2))?;
         assert_eq!(
-            summary_guard_expired.follow_demoted, 1,
-            "after the bounded guard expires, warm-restored truncated raw discovery must stop freezing the historical followlist"
+            summary_guard_expired.follow_demoted, 0,
+            "warm-restored truncated raw discovery must keep deactivations suppressed while the retained raw window is still incomplete"
         );
         let active_after_guard_expiry = store.list_active_follow_wallets()?;
         assert!(
-            !active_after_guard_expiry.contains("wallet_leader"),
-            "bounded warm-restore truncation guard expiry must allow stale followlist entries to demote"
+            active_after_guard_expiry.contains("wallet_leader"),
+            "warm-restored followlist entries must not collapse while the raw window still represents only the capped tail"
         );
         assert!(
-            store
-                .latest_wallet_metrics_window_start()?
-                .is_some_and(|window_start| window_start > metrics_window_start),
-            "after the one-shot bridge, discovery should resume raw recompute instead of freezing on persisted bootstrap"
+            store.latest_wallet_metrics_window_start()? == Some(metrics_window_start),
+            "while raw history remains incomplete after warm restore, discovery must not persist a newer wallet_metrics snapshot from the capped tail"
         );
         let state_after_guard_expiry = discovery_after_restart
             .window_state
@@ -3655,7 +3809,11 @@ mod tests {
         assert_eq!(
             state_after_guard_expiry.cap_truncation_deactivation_guard_cycles_remaining,
             0,
-            "warm-restore cap truncation deactivation suppression must be bounded rather than sticky"
+            "warm-restore countdown should still reach zero even when incomplete raw history keeps deactivations suppressed"
+        );
+        assert!(
+            summary_guard_expired.cap_truncation_deactivation_guard_active,
+            "summary must continue exposing active deactivation suppression while the warm-restored raw window remains truncated"
         );
         Ok(())
     }

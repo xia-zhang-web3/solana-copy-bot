@@ -3,6 +3,11 @@ use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use copybot_config::HistoryRetentionConfig;
 use copybot_storage::{HistoryRetentionCutoffs, HistoryRetentionSummary, SqliteStore};
 
+const HISTORY_RETENTION_MAX_RISK_EVENT_BATCHES_PER_RUN: usize = 4;
+const HISTORY_RETENTION_MAX_EXECUTION_ORDER_BATCHES_PER_RUN: usize = 4;
+const HISTORY_RETENTION_MAX_COPY_SIGNAL_BATCHES_PER_RUN: usize = 4;
+const HISTORY_RETENTION_MAX_SHADOW_CLOSED_TRADE_BATCHES_PER_RUN: usize = 4;
+
 #[derive(Debug, Clone)]
 pub(crate) struct HistoryRetentionRunner {
     config: HistoryRetentionConfig,
@@ -46,6 +51,13 @@ impl HistoryRetentionRunner {
                         .max(protected_history_days) as i64,
                 ),
         };
-        store.apply_history_retention(cutoffs, protect_undelivered_alerts)
+        store.apply_history_retention_bounded(
+            cutoffs,
+            protect_undelivered_alerts,
+            HISTORY_RETENTION_MAX_RISK_EVENT_BATCHES_PER_RUN,
+            HISTORY_RETENTION_MAX_EXECUTION_ORDER_BATCHES_PER_RUN,
+            HISTORY_RETENTION_MAX_COPY_SIGNAL_BATCHES_PER_RUN,
+            HISTORY_RETENTION_MAX_SHADOW_CLOSED_TRADE_BATCHES_PER_RUN,
+        )
     }
 }

@@ -141,13 +141,19 @@ impl DiscoveryWindowState {
         evicted
     }
 
-    pub(super) fn cap_truncation_deactivations_suppressed(&self) -> bool {
+    pub(super) fn cap_truncation_deactivations_suppressed(
+        &self,
+        raw_window_history_incomplete: bool,
+    ) -> bool {
         self.cap_truncation_floor.is_some()
-            && self.cap_truncation_deactivation_guard_cycles_remaining > 0
+            && (self.cap_truncation_deactivation_guard_cycles_remaining > 0
+                || raw_window_history_incomplete)
     }
 
-    pub(super) fn consume_cap_truncation_deactivation_guard(&mut self) -> bool {
-        if !self.cap_truncation_deactivations_suppressed() {
+    pub(super) fn consume_cap_truncation_deactivation_guard_cycle(&mut self) -> bool {
+        if self.cap_truncation_floor.is_none()
+            || self.cap_truncation_deactivation_guard_cycles_remaining == 0
+        {
             return false;
         }
         self.cap_truncation_deactivation_guard_cycles_remaining = self

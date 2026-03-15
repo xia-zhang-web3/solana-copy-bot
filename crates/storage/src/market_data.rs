@@ -272,25 +272,9 @@ impl SqliteStore {
         cutoff: DateTime<Utc>,
         batch_size: usize,
     ) -> Result<SqliteBatchedDeleteSummary> {
-        let cutoff_ts = cutoff.to_rfc3339();
-        let batch_limit = batch_size.max(1).min(i64::MAX as usize) as i64;
         let mut summary = SqliteBatchedDeleteSummary::default();
         loop {
-            let deleted = self
-                .execute_with_retry(|conn| {
-                    conn.execute(
-                        "DELETE FROM observed_swaps
-                         WHERE rowid IN (
-                             SELECT rowid
-                             FROM observed_swaps
-                             WHERE ts < ?1
-                             ORDER BY ts ASC, slot ASC, signature ASC
-                             LIMIT ?2
-                         )",
-                        params![&cutoff_ts, batch_limit],
-                    )
-                })
-                .context("failed to delete observed swap retention slice")?;
+            let deleted = self.delete_observed_swaps_before_batch(cutoff, batch_size)?;
             if deleted == 0 {
                 break;
             }
@@ -298,6 +282,29 @@ impl SqliteStore {
             summary.batches += 1;
         }
         Ok(summary)
+    }
+
+    pub fn delete_observed_swaps_before_batch(
+        &self,
+        cutoff: DateTime<Utc>,
+        batch_size: usize,
+    ) -> Result<usize> {
+        let cutoff_ts = cutoff.to_rfc3339();
+        let batch_limit = batch_size.max(1).min(i64::MAX as usize) as i64;
+        self.execute_with_retry(|conn| {
+            conn.execute(
+                "DELETE FROM observed_swaps
+                 WHERE rowid IN (
+                     SELECT rowid
+                     FROM observed_swaps
+                     WHERE ts < ?1
+                     ORDER BY ts ASC, slot ASC, signature ASC
+                     LIMIT ?2
+                 )",
+                params![&cutoff_ts, batch_limit],
+            )
+        })
+        .context("failed to delete observed swap retention slice")
     }
 
     pub fn checkpoint_wal_truncate(&self) -> Result<(i64, i64, i64)> {

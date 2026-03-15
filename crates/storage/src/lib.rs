@@ -72,6 +72,13 @@ pub struct SqliteBatchedDeleteSummary {
     pub batches: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SqliteBatchedDeleteSummaryWithCompletion {
+    pub deleted_rows: usize,
+    pub batches: usize,
+    pub completed_full_sweep: bool,
+}
+
 pub fn sqlite_contention_snapshot() -> SqliteContentionSnapshot {
     SqliteContentionSnapshot {
         write_retry_total: SQLITE_WRITE_RETRY_TOTAL.load(Ordering::Relaxed),
@@ -7459,6 +7466,62 @@ mod tests {
         assert_eq!(remaining_orders, 0);
         assert_eq!(remaining_fills, 0);
         assert_eq!(remaining_signals, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn apply_history_retention_bounded_stops_after_batch_budget() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("history-retention-bounded.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let stale_ts = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let fresh_ts = DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        for idx in 0..(history_retention::HISTORY_RETENTION_RISK_EVENTS_BATCH_SIZE + 1) {
+            store.conn.execute(
+                "INSERT INTO risk_events(event_id, type, severity, ts, details_json)
+                 VALUES (?1, 'risk_event', 'info', ?2, NULL)",
+                params![format!("bounded-info-{idx}"), stale_ts.to_rfc3339()],
+            )?;
+        }
+        store.conn.execute(
+            "INSERT INTO risk_events(event_id, type, severity, ts, details_json)
+             VALUES ('bounded-info-fresh', 'risk_event', 'info', ?1, NULL)",
+            params![fresh_ts.to_rfc3339()],
+        )?;
+
+        let summary = store.apply_history_retention_bounded(
+            HistoryRetentionCutoffs {
+                risk_events_before: fresh_ts - Duration::days(1),
+                copy_signals_before: fresh_ts - Duration::days(1),
+                orders_before: fresh_ts - Duration::days(1),
+                shadow_closed_trades_before: fresh_ts - Duration::days(1),
+            },
+            false,
+            1,
+            1,
+            1,
+            1,
+        )?;
+
+        assert_eq!(
+            summary.risk_events_deleted,
+            history_retention::HISTORY_RETENTION_RISK_EVENTS_BATCH_SIZE as u64
+        );
+        assert_eq!(summary.risk_events_batches, 1);
+        assert!(!summary.completed_full_sweep);
+        let remaining: i64 =
+            store
+                .conn
+                .query_row("SELECT COUNT(*) FROM risk_events", [], |row| row.get(0))?;
+        assert_eq!(remaining, 2);
         Ok(())
     }
 

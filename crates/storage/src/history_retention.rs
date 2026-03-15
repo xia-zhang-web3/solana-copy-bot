@@ -32,6 +32,7 @@ pub struct HistoryRetentionSummary {
     pub execution_order_batches: usize,
     pub copy_signals_batches: usize,
     pub shadow_closed_trades_batches: usize,
+    pub completed_full_sweep: bool,
 }
 
 impl HistoryRetentionSummary {
@@ -51,6 +52,8 @@ struct ExecutionHistoryRetentionSummary {
     copy_signals_deleted: u64,
     order_batches: usize,
     copy_signal_batches: usize,
+    orders_completed_full_sweep: bool,
+    copy_signals_completed_full_sweep: bool,
 }
 
 impl SqliteStore {
@@ -59,11 +62,31 @@ impl SqliteStore {
         cutoffs: HistoryRetentionCutoffs,
         protect_undelivered_alerts: bool,
     ) -> Result<HistoryRetentionSummary> {
+        self.apply_history_retention_bounded(
+            cutoffs,
+            protect_undelivered_alerts,
+            usize::MAX,
+            usize::MAX,
+            usize::MAX,
+            usize::MAX,
+        )
+    }
+
+    pub fn apply_history_retention_bounded(
+        &self,
+        cutoffs: HistoryRetentionCutoffs,
+        protect_undelivered_alerts: bool,
+        max_risk_event_batches: usize,
+        max_execution_order_batches: usize,
+        max_copy_signal_batches: usize,
+        max_shadow_closed_trade_batches: usize,
+    ) -> Result<HistoryRetentionSummary> {
         let risk_events = self
             .delete_risk_events_before_batched(
                 cutoffs.risk_events_before,
                 protect_undelivered_alerts,
                 HISTORY_RETENTION_RISK_EVENTS_BATCH_SIZE,
+                max_risk_event_batches,
             )
             .context("failed to apply risk_events retention")?;
         let execution_history = self
@@ -72,12 +95,15 @@ impl SqliteStore {
                 cutoffs.copy_signals_before,
                 HISTORY_RETENTION_EXECUTION_ORDER_BATCH_SIZE,
                 HISTORY_RETENTION_COPY_SIGNALS_BATCH_SIZE,
+                max_execution_order_batches,
+                max_copy_signal_batches,
             )
             .context("failed to apply execution history retention")?;
         let shadow_closed_trades = self
             .delete_shadow_closed_trades_before_batched(
                 cutoffs.shadow_closed_trades_before,
                 HISTORY_RETENTION_SHADOW_CLOSED_TRADES_BATCH_SIZE,
+                max_shadow_closed_trade_batches,
             )
             .context("failed to apply shadow closed trade retention")?;
 
@@ -91,6 +117,10 @@ impl SqliteStore {
             execution_order_batches: execution_history.order_batches,
             copy_signals_batches: execution_history.copy_signal_batches,
             shadow_closed_trades_batches: shadow_closed_trades.batches,
+            completed_full_sweep: risk_events.completed_full_sweep
+                && execution_history.orders_completed_full_sweep
+                && execution_history.copy_signals_completed_full_sweep
+                && shadow_closed_trades.completed_full_sweep,
         })
     }
 
@@ -99,11 +129,16 @@ impl SqliteStore {
         cutoff: DateTime<Utc>,
         protect_undelivered_alerts: bool,
         batch_size: usize,
-    ) -> Result<super::SqliteBatchedDeleteSummary> {
+        max_batches: usize,
+    ) -> Result<super::SqliteBatchedDeleteSummaryWithCompletion> {
         let cutoff = cutoff.to_rfc3339();
         let batch_limit = batch_size.max(1).min(i64::MAX as usize) as i64;
-        let mut summary = super::SqliteBatchedDeleteSummary::default();
+        let max_batches = max_batches.max(1);
+        let mut summary = super::SqliteBatchedDeleteSummaryWithCompletion::default();
         loop {
+            if summary.batches >= max_batches {
+                break;
+            }
             let deleted = self
                 .execute_with_retry_result(|conn| -> rusqlite::Result<usize> {
                     let delivered_cursor: Option<i64> = conn.query_row(
@@ -157,6 +192,7 @@ impl SqliteStore {
                 })
                 .context("failed deleting retained risk events")?;
             if deleted == 0 {
+                summary.completed_full_sweep = true;
                 break;
             }
             summary.deleted_rows += deleted;
@@ -171,14 +207,21 @@ impl SqliteStore {
         copy_signals_cutoff: DateTime<Utc>,
         order_batch_size: usize,
         copy_signal_batch_size: usize,
+        max_order_batches: usize,
+        max_copy_signal_batches: usize,
     ) -> Result<ExecutionHistoryRetentionSummary> {
         let orders_cutoff = orders_cutoff.to_rfc3339();
         let copy_signals_cutoff = copy_signals_cutoff.to_rfc3339();
         let order_batch_limit = order_batch_size.max(1).min(i64::MAX as usize) as i64;
         let copy_signal_batch_limit = copy_signal_batch_size.max(1).min(i64::MAX as usize) as i64;
+        let max_order_batches = max_order_batches.max(1);
+        let max_copy_signal_batches = max_copy_signal_batches.max(1);
         let mut summary = ExecutionHistoryRetentionSummary::default();
 
         loop {
+            if summary.order_batches >= max_order_batches {
+                break;
+            }
             let (fills_deleted, orders_deleted) = self
                 .with_immediate_transaction_retry(
                     "execution history retention order batch",
@@ -226,6 +269,7 @@ impl SqliteStore {
                 )
                 .context("failed deleting retained execution history order batch")?;
             if fills_deleted == 0 && orders_deleted == 0 {
+                summary.orders_completed_full_sweep = true;
                 break;
             }
             summary.fills_deleted += fills_deleted;
@@ -234,6 +278,9 @@ impl SqliteStore {
         }
 
         loop {
+            if summary.copy_signal_batches >= max_copy_signal_batches {
+                break;
+            }
             let deleted = self
                 .execute_with_retry(|conn| {
                     conn.execute(
@@ -262,6 +309,7 @@ impl SqliteStore {
                 })
                 .context("failed deleting retained copy_signals history slice")?;
             if deleted == 0 {
+                summary.copy_signals_completed_full_sweep = true;
                 break;
             }
             summary.copy_signals_deleted += deleted as u64;
@@ -275,11 +323,16 @@ impl SqliteStore {
         &self,
         cutoff: DateTime<Utc>,
         batch_size: usize,
-    ) -> Result<super::SqliteBatchedDeleteSummary> {
+        max_batches: usize,
+    ) -> Result<super::SqliteBatchedDeleteSummaryWithCompletion> {
         let cutoff = cutoff.to_rfc3339();
         let batch_limit = batch_size.max(1).min(i64::MAX as usize) as i64;
-        let mut summary = super::SqliteBatchedDeleteSummary::default();
+        let max_batches = max_batches.max(1);
+        let mut summary = super::SqliteBatchedDeleteSummaryWithCompletion::default();
         loop {
+            if summary.batches >= max_batches {
+                break;
+            }
             let deleted = self
                 .execute_with_retry_result(|conn| {
                     conn.execute(
@@ -296,6 +349,7 @@ impl SqliteStore {
                 })
                 .context("failed deleting retained shadow closed trades")?;
             if deleted == 0 {
+                summary.completed_full_sweep = true;
                 break;
             }
             summary.deleted_rows += deleted;
