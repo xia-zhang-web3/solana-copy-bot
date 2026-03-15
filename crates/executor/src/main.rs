@@ -1652,11 +1652,11 @@ mod tests {
             .await
             .expect_err("non-string upstream detail must reject");
         assert!(!reject.retryable);
-        assert_eq!(reject.code, "simulation_invalid_response");
+        assert_eq!(reject.code, "upstream_invalid_response");
         assert!(
             reject
                 .detail
-                .contains("detail must be non-empty string when present"),
+                .contains("upstream detail must be non-empty string when present"),
             "unexpected detail: {}",
             reject.detail
         );
@@ -1694,7 +1694,7 @@ mod tests {
         assert!(
             reject
                 .detail
-                .contains("upstream reject code must be non-empty string when present"),
+                .contains("upstream code must be non-empty string when present"),
             "unexpected detail: {}",
             reject.detail
         );
@@ -1732,7 +1732,7 @@ mod tests {
         assert!(
             reject
                 .detail
-                .contains("upstream reject retryable must be boolean when present"),
+                .contains("upstream retryable must be boolean when present"),
             "unexpected detail: {}",
             reject.detail
         );
@@ -1770,7 +1770,7 @@ mod tests {
         assert!(
             reject
                 .detail
-                .contains("upstream reject retryable must be boolean when present"),
+                .contains("upstream retryable must be boolean when present"),
             "unexpected detail: {}",
             reject.detail
         );
@@ -10553,8 +10553,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_submit_keeps_claim_in_flight_when_invalid_upstream_status_includes_tx_signature()
-    {
+    async fn handle_submit_keeps_claim_in_flight_when_invalid_upstream_status_includes_tx_signature(
+    ) {
         let tx_signature = bs58::encode([24u8; 64]).into_string();
         let upstream_body = format!(
             r#"{{"status":"pending","ok":true,"accepted":true,"tx_signature":"{}"}}"#,
@@ -11393,8 +11393,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_submit_keeps_claim_in_flight_when_upstream_signature_response_fails_late_validation()
-    {
+    async fn handle_submit_keeps_claim_in_flight_when_upstream_signature_response_fails_late_validation(
+    ) {
         let signature = bs58::encode([81u8; 64]).into_string();
         let upstream_body = format!(
             r#"{{"status":"ok","ok":true,"accepted":true,"tx_signature":"{}","submitted_at":"not-rfc3339"}}"#,
@@ -11570,8 +11570,12 @@ mod tests {
 
         let mut state =
             test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
-        state.config.route_backends.get_mut("rpc").expect("rpc backend").send_rpc_url =
-            Some("http://127.0.0.1:1/send-rpc".to_string());
+        state
+            .config
+            .route_backends
+            .get_mut("rpc")
+            .expect("rpc backend")
+            .send_rpc_url = Some("http://127.0.0.1:1/send-rpc".to_string());
         let raw_body = json!({
             "contract_version": "v1",
             "signal_id": "signal-slippage-mismatch-before-send-rpc-1",
@@ -11624,8 +11628,12 @@ mod tests {
 
         let mut state =
             test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
-        state.config.route_backends.get_mut("rpc").expect("rpc backend").send_rpc_url =
-            Some("http://127.0.0.1:1/send-rpc".to_string());
+        state
+            .config
+            .route_backends
+            .get_mut("rpc")
+            .expect("rpc backend")
+            .send_rpc_url = Some("http://127.0.0.1:1/send-rpc".to_string());
         let raw_body = json!({
             "contract_version": "v1",
             "signal_id": "signal-compute-budget-mismatch-before-send-rpc-1",
@@ -11678,8 +11686,12 @@ mod tests {
 
         let mut state =
             test_state_with_backends(upstream_url.as_str(), None, upstream_url.as_str(), None);
-        state.config.route_backends.get_mut("rpc").expect("rpc backend").send_rpc_url =
-            Some("http://127.0.0.1:1/send-rpc".to_string());
+        state
+            .config
+            .route_backends
+            .get_mut("rpc")
+            .expect("rpc backend")
+            .send_rpc_url = Some("http://127.0.0.1:1/send-rpc".to_string());
         let raw_body = json!({
             "contract_version": "v1",
             "signal_id": "signal-tip-policy-mismatch-before-send-rpc-1",
@@ -12528,8 +12540,7 @@ mod tests {
         else {
             return;
         };
-        let fallback_body =
-            r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
+        let fallback_body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
         let Some((fallback_url, fallback_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", fallback_body)
         else {
@@ -12568,7 +12579,8 @@ mod tests {
     #[tokio::test]
     async fn verify_submit_signature_rejects_invalid_confirmation_status_type_when_strict() {
         let signature = bs58::encode([74u8; 64]).into_string();
-        let body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":123}]}}"#;
+        let body =
+            r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":123}]}}"#;
         let Some((verify_url, handle)) = spawn_one_shot_upstream_raw(200, "application/json", body)
         else {
             return;

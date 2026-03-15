@@ -2969,11 +2969,16 @@ Working conclusion:
    is too slow for the observed edge.
 3. The dominant loss source is stale inventory surviving until `~12h` and then zero-closing.
 
-Recommended next policy step:
+Historical recommended next policy step:
 
 1. change `max_hold_hours` from `6` to `2`
 2. change `shadow_stale_close_terminal_zero_price_hours` from `12` to `4`
 3. keep `shadow_stale_close_recovery_zero_price_enabled = false` on the first rollout for clean attribution
+4. `DONE 2026-03-15` current config baseline has since tightened further to:
+   1. `max_hold_hours = 1`
+   2. `shadow_stale_close_terminal_zero_price_hours = 2`
+   across `configs/prod.toml`, `configs/live.toml`, and `ops/server_templates/live.server.toml.example`.
+5. Server audit / rollout acceptance should use the current `1h/2h` config surface, not the earlier `2h/4h` recommendation above.
 
 Monitoring after such rollout should focus on:
 
@@ -3057,6 +3062,11 @@ Ordered coder follow-up queue:
       1. `DONE 2026-03-14` `1e04fcc Fix Yellowstone stage depth telemetry` stopped hardcoding `fetch_to_output_queue_depth = 0` for Yellowstone and now routes output backlog to the honest generic stage-depth mapping (`ws_to_fetch_queue_depth = 0`, `fetch_to_output_queue_depth = output backlog`),
       2. `DONE 2026-03-15` `cb05a92 Use Yellowstone queue context in infra reasons` made the app-side infra gate surface Yellowstone queue backlog context in runtime `infra_block_reason` strings without changing thresholds or adding new gates,
       3. `DONE 2026-03-15` persisted `shadow_risk_infra_stop` events now carry structured Yellowstone queue fields (`depth`, `capacity`, `fill_ratio`, `oldest_age_ms`) in `details_json`, so downstream consumers no longer need to parse logs or free-form reason strings to recover backlog context.
+   6. `DONE 2026-03-15` writer telemetry now decomposes the remaining Yellowstone-linked hot path enough to distinguish queue wait, raw SQLite work, aggregate work, and bounded aggregate backlog.
+      1. `6d79b3f Add writer phase breakdown telemetry` separated raw batch latency from discovery-scoring latency,
+      2. `dcdf64e Split writer raw batch subphase telemetry` separated `observed_swaps` insert from `wallet_activity_days` upsert inside the raw batch,
+      3. `16c7614 Add writer busy occupancy telemetry` added a full batch-occupancy signal on top of queue wait and raw-batch timing,
+      4. `29bf276 Bound aggregate writer queue telemetry` made the raw-to-aggregate handoff bounded and exposed aggregate queue depth/capacity in heartbeat telemetry.
 3. `DONE 2026-03-14` remove retention/WAL maintenance from the observed-swap writer hot path.
    1. Closed by `4f5f343 Move observed swap retention out of writer loop`.
    2. The writer now owns:
@@ -3069,12 +3079,13 @@ Ordered coder follow-up queue:
       2. discovery backfill source protection still defers raw retention pruning.
 4. `DONE 2026-03-14` reconsider ordering between relevance gate and raw persistence.
    1. Closed by `53d3ea7 Centralize observed swap relevance gating`.
-   2. App loop now makes one explicit relevance decision before any raw-persistence path instead of relying on scattered inline `if/continue` ordering.
+   2. App loop now makes one explicit relevance decision before choosing the raw-persistence transport instead of relying on scattered inline `if/continue` ordering.
    3. Current explicit policy:
-      1. unclassified swaps drop before raw persistence,
-      2. unfollowed buys drop before raw persistence,
-      3. cold unfollowed sells without recent follow history / pending-inflight work / open lots drop before raw persistence,
-      4. relevant swaps still immediate-persist before risk / scheduler path.
+      1. unclassified swaps are classified irrelevant before the shadow/risk path,
+      2. unfollowed buys are classified irrelevant before the shadow/risk path,
+      3. cold unfollowed sells without recent follow history / pending-inflight work / open lots are classified irrelevant before the shadow/risk path,
+      4. irrelevant swaps still persist through `try_enqueue()` fast path with immediate awaited fallback when the writer queue is full,
+      5. relevant swaps still immediate-persist before risk / scheduler path.
 5. `DONE 2026-03-15` investigate SQLite/WAL reliability as a separate track.
    1. filesystem / WAL / checkpoint / runtime environment,
    2. repeated `xShmMap` / disk-I/O failures stay on this track,
@@ -3113,10 +3124,18 @@ Ordered coder follow-up queue:
          1. bubble through an existing task/app fatal classifier,
          2. or intentionally stay on a busy/locked warn-only path with preserved runtime state.
       2. Filesystem / environment diagnosis remains a separate operational track and is not conflated here with app-level fail-closed policy.
-   34. This track was not closed by either `e24eca2` or `8caa9b7` alone; it is now closed by the accumulated follow-up slices through `9ed2b8b`.
+   34. `DONE 2026-03-15` `4df18eb Harden startup sqlite maintenance` closed the restart-contention branch that showed up after the later live retry:
+      1. startup backdating of history/observed-swap maintenance sweeps is removed,
+      2. a 30-minute startup grace now blocks both maintenance tasks immediately after restart,
+      3. both maintenance tasks share the same runtime-health gate keyed off writer backlog, aggregate backlog, SQLite contention deltas, and Yellowstone output-queue pressure,
+      4. runtime observed-swap retention no longer does `wal_checkpoint(TRUNCATE)` and now uses PASSIVE-only checkpointing,
+      5. raw observed-swap retention delete and discovery-scoring prune are now batched instead of running as unbounded bulk write bursts,
+      6. maintenance completion telemetry now reports delete counts, batch counts, duration, and distinguishes warn-only passive checkpoint failure via `passive_runtime_failed`.
+   35. This track was not closed by either `e24eca2` or `8caa9b7` alone; it is now closed by the accumulated follow-up slices through `4df18eb`.
 6. `DONE 2026-03-15` after instrumentation, decide whether runtime tuning is needed.
    1. do not start with simply raising queue capacity,
    2. do not start with simply raising Yellowstone thresholds,
    3. verdict: do not change runtime knobs in code yet,
-   4. first use the new telemetry / runtime reasons / persisted infra-stop payloads to observe whether sustained post-decoupling pressure still exists outside transient startup or replay windows,
-   5. only revisit queue-capacity or Yellowstone-threshold tuning if production evidence shows a persistent bottleneck after the decoupling + telemetry + SQLite/WAL hardening slices above.
+   4. first use the new telemetry / runtime reasons / persisted infra-stop payloads to observe whether sustained post-decoupling pressure still exists outside transient startup, replay, or maintenance windows,
+   5. the post-followlist retry evidence pointed first to startup/runtime SQLite maintenance contention, not to a missing queue-capacity or Yellowstone-threshold increase, and `4df18eb` hardened that path without changing runtime knobs,
+   6. only revisit queue-capacity or Yellowstone-threshold tuning if production evidence still shows a persistent steady-state bottleneck after the decoupling + telemetry + SQLite/WAL hardening slices above.
