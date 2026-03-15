@@ -730,13 +730,24 @@ fn run_aggregate_startup_replay(
                     .then_with(|| a.slot.cmp(&b.slot))
                     .then_with(|| a.signature.cmp(&b.signature))
             }) {
-                let _ = store.set_discovery_scoring_materialization_gap_cursor(
+                if let Err(gap_error) = store.set_discovery_scoring_materialization_gap_cursor(
                     &DiscoveryRuntimeCursor {
                         ts_utc: first_gap_swap.ts_utc,
                         slot: first_gap_swap.slot,
                         signature: first_gap_swap.signature.clone(),
                     },
-                );
+                ) {
+                    if observed_swap_writer_discovery_scoring_error_requires_abort(&gap_error) {
+                        return Err(gap_error).context(
+                            "observed swap writer startup replay stopping after fatal discovery scoring gap cursor failure",
+                        );
+                    }
+                    warn!(
+                        error = %gap_error,
+                        gap_since = %first_gap_swap.ts_utc,
+                        "failed to latch discovery scoring materialization gap during aggregate-writer startup replay",
+                    );
+                }
             }
             return Err(error).context(
                 "failed replaying discovery scoring rows during aggregate-writer startup catch-up",
@@ -2020,6 +2031,130 @@ mod tests {
         );
         let _ = std::fs::remove_file(db_path);
 
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_reports_terminal_failure_after_fatal_startup_replay_gap_cursor_failure(
+    ) -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-startup-gap-fatal-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+
+        let covered_swap = SwapEvent {
+            wallet: "wallet-startup-gap-fatal".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-startup-gap-fatal".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-startup-gap-covered".to_string(),
+            slot: 100,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-15T10:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+        let tail_swap = SwapEvent {
+            wallet: "wallet-startup-gap-fatal".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-startup-gap-fatal".to_string(),
+            amount_in: 2.0,
+            amount_out: 20.0,
+            signature: "sig-startup-gap-tail".to_string(),
+            slot: 101,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-15T10:05:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+        seed_store.insert_observed_swaps_batch(&[covered_swap.clone(), tail_swap.clone()])?;
+        seed_store
+            .apply_discovery_scoring_batch(&[covered_swap.clone()], &aggregate_write_config())?;
+        seed_store.set_discovery_scoring_covered_through_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: covered_swap.ts_utc,
+            slot: covered_swap.slot,
+            signature: covered_swap.signature.clone(),
+        })?;
+
+        let trigger_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open sqlite db for startup gap fatal trigger")?;
+        trigger_conn.execute_batch(
+            "CREATE TRIGGER fail_wallet_scoring_days_insert
+             BEFORE INSERT ON wallet_scoring_days
+             BEGIN
+                 SELECT RAISE(FAIL, 'forced discovery scoring failure');
+             END;
+             CREATE TRIGGER fail_discovery_scoring_state_insert
+             BEFORE INSERT ON discovery_scoring_state
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let writer = ObservedSwapWriter::start_with_config(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            ObservedSwapWriterConfig {
+                channel_capacity: 16,
+                batch_max_size: 8,
+                aggregate_writes_enabled: true,
+                aggregate_write_config: aggregate_write_config(),
+            },
+        )?;
+        std::thread::sleep(StdDuration::from_millis(50));
+
+        let error = writer.ensure_running().expect_err(
+            "fatal startup replay gap cursor failure must latch before writer accepts live work",
+        );
+        let error_chain = format!("{error:#}");
+        assert!(
+            error_chain.contains(super::OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT),
+            "unexpected terminal startup replay failure error: {error_chain}"
+        );
+        assert!(
+            error_chain.contains("fatal discovery scoring gap cursor failure"),
+            "missing startup replay gap-cursor fatal context: {error_chain}"
+        );
+        assert!(
+            error_chain.contains("xShmMap"),
+            "missing fatal sqlite marker: {error_chain}"
+        );
+        assert!(
+            !error_chain.contains("failed replaying discovery scoring rows during aggregate-writer startup catch-up"),
+            "fatal gap cursor failure should not be masked by aggregate replay context: {error_chain}"
+        );
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        assert_eq!(
+            verify_store.load_discovery_scoring_materialization_gap_cursor()?,
+            None,
+            "fatal startup replay gap cursor failure must leave the materialization gap cursor unset"
+        );
+
+        let shutdown_error = writer
+            .shutdown()
+            .expect_err("shutdown should surface fatal startup replay gap cursor failure");
+        let shutdown_chain = format!("{shutdown_error:#}");
+        assert!(
+            shutdown_chain.contains("fatal discovery scoring gap cursor failure"),
+            "unexpected shutdown error: {shutdown_chain}"
+        );
+
+        drop(trigger_conn);
+        let _ = std::fs::remove_file(db_path);
         Ok(())
     }
 
