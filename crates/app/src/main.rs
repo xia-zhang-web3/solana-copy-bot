@@ -672,12 +672,6 @@ fn forget_recent_swap_signature(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IrrelevantObservedSwapPersistence {
-    EnqueuedFastPath,
-    NeedsAwaitedFallback,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ObservedSwapShadowRelevance {
     Relevant(ShadowSwapSide),
     IrrelevantUnclassified,
@@ -719,53 +713,65 @@ fn classify_observed_swap_shadow_relevance(
 
     ObservedSwapShadowRelevance::Relevant(side)
 }
-
-fn try_persist_irrelevant_observed_swap<F>(
-    swap: &SwapEvent,
-    mut try_enqueue: F,
-) -> Result<IrrelevantObservedSwapPersistence>
-where
-    F: FnMut(&SwapEvent) -> Result<bool>,
-{
-    if try_enqueue(swap)? {
-        Ok(IrrelevantObservedSwapPersistence::EnqueuedFastPath)
-    } else {
-        Ok(IrrelevantObservedSwapPersistence::NeedsAwaitedFallback)
-    }
-}
-
 async fn enqueue_irrelevant_observed_swap(
     observed_swap_writer: &ObservedSwapWriter,
     recent_signatures: &mut HashSet<String>,
     recent_signature_order: &mut VecDeque<String>,
     swap: &SwapEvent,
 ) -> Result<()> {
-    match try_persist_irrelevant_observed_swap(swap, |swap| observed_swap_writer.try_enqueue(swap))?
-    {
-        IrrelevantObservedSwapPersistence::EnqueuedFastPath => Ok(()),
-        IrrelevantObservedSwapPersistence::NeedsAwaitedFallback => {
-            enqueue_observed_swap_immediately(
-                observed_swap_writer,
-                recent_signatures,
-                recent_signature_order,
-                swap,
-            )
-            .await
-        }
-    }
+    enqueue_irrelevant_observed_swap_immediately(
+        observed_swap_writer,
+        recent_signatures,
+        recent_signature_order,
+        swap,
+    )
+    .await
 }
 
-async fn enqueue_observed_swap_immediately(
+async fn enqueue_irrelevant_observed_swap_immediately(
     observed_swap_writer: &ObservedSwapWriter,
     recent_signatures: &mut HashSet<String>,
     recent_signature_order: &mut VecDeque<String>,
     swap: &SwapEvent,
 ) -> Result<()> {
-    if let Err(error) = observed_swap_writer.enqueue(swap).await {
+    if let Err(error) = observed_swap_writer.write(swap).await {
         forget_recent_swap_signature(recent_signatures, recent_signature_order, &swap.signature);
         return Err(error);
     }
     Ok(())
+}
+
+async fn persist_relevant_observed_swap(
+    observed_swap_writer: &ObservedSwapWriter,
+    recent_signatures: &mut HashSet<String>,
+    recent_signature_order: &mut VecDeque<String>,
+    swap: &SwapEvent,
+) -> Result<bool> {
+    match observed_swap_writer.write(swap).await {
+        Ok(inserted) => Ok(inserted),
+        Err(error) => {
+            forget_recent_swap_signature(
+                recent_signatures,
+                recent_signature_order,
+                &swap.signature,
+            );
+            Err(error)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelevantObservedSwapPersistence {
+    Inserted,
+    Duplicate,
+}
+
+fn relevant_observed_swap_persistence(inserted: bool) -> RelevantObservedSwapPersistence {
+    if inserted {
+        RelevantObservedSwapPersistence::Inserted
+    } else {
+        RelevantObservedSwapPersistence::Duplicate
+    }
 }
 
 #[derive(Debug, Default)]
@@ -3512,7 +3518,7 @@ async fn run_app_loop(
                     ObservedSwapShadowRelevance::Relevant(side) => side,
                 };
 
-                if let Err(error) = enqueue_observed_swap_immediately(
+                let relevant_persistence = match persist_relevant_observed_swap(
                     &observed_swap_writer,
                     &mut recent_swap_signatures,
                     &mut recent_swap_signature_order,
@@ -3520,19 +3526,34 @@ async fn run_app_loop(
                 )
                 .await
                 {
+                    Ok(inserted) => relevant_observed_swap_persistence(inserted),
+                    Err(error) => {
+                        app_consumer_loop_telemetry
+                            .note_processing_started_at(swap_processing_started_at);
+                        let error_chain = format_error_chain(&error);
+                        if observed_swap_writer_error_requires_restart(&error) {
+                            return Err(error).context(
+                                "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
+                            );
+                        }
+                        warn!(
+                            error = %error,
+                            error_chain = %error_chain,
+                            signature = %swap.signature,
+                            "failed persisting relevant observed swap"
+                        );
+                        continue;
+                    }
+                };
+                if matches!(
+                    relevant_persistence,
+                    RelevantObservedSwapPersistence::Duplicate
+                ) {
                     app_consumer_loop_telemetry
                         .note_processing_started_at(swap_processing_started_at);
-                    let error_chain = format_error_chain(&error);
-                    if observed_swap_writer_error_requires_restart(&error) {
-                        return Err(error).context(
-                            "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
-                        );
-                    }
-                    warn!(
-                        error = %error,
-                        error_chain = %error_chain,
+                    debug!(
                         signature = %swap.signature,
-                        "failed enqueueing observed swap"
+                        "duplicate swap ignored by observed swap store"
                     );
                     continue;
                 }
@@ -9475,6 +9496,164 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     }
 
     #[test]
+    fn persist_relevant_observed_swap_rolls_back_recent_signature_on_write_error() -> Result<()> {
+        let (_store, db_path) = make_test_store("relevant-observed-swap-write-failure")?;
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_relevant_observed_swap_insert
+             BEFORE INSERT ON observed_swaps
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            let writer = ObservedSwapWriter::start(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                false,
+                DiscoveryAggregateWriteConfig::default(),
+            )?;
+            let swap = test_swap("sig-relevant-write-failure");
+            let mut recent_signatures = HashSet::new();
+            let mut recent_signature_order = VecDeque::new();
+
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            assert!(
+                !note_recent_swap_signature(
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap.signature,
+                ),
+                "signature should stay deduped until the failed relevant write forgets it"
+            );
+
+            let error = persist_relevant_observed_swap(
+                &writer,
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap,
+            )
+            .await
+            .expect_err("fatal relevant observed-swap write must bubble");
+            let error_text = format!("{error:#}");
+            assert!(
+                error_text.contains("failed to insert observed swap batch with activity days"),
+                "expected fatal writer batch error to survive relevant-path helper, got: {error_text}"
+            );
+            assert!(
+                error_text.contains("xShmMap"),
+                "expected fatal sqlite I/O marker to survive relevant-path helper, got: {error_text}"
+            );
+
+            assert!(
+                note_recent_swap_signature(
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap.signature,
+                ),
+                "failed relevant write must forget the signature so the swap can be retried"
+            );
+
+            let shutdown_error = writer
+                .shutdown()
+                .expect_err("fatal writer failure should surface again on shutdown");
+            assert!(
+                error_chain_contains(&shutdown_error, "failed to insert observed swap batch"),
+                "expected shutdown to surface the writer failure, got: {shutdown_error:#}"
+            );
+
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn persist_relevant_observed_swap_reports_db_duplicate_without_forgetting_signature(
+    ) -> Result<()> {
+        let (_store, db_path) = make_test_store("relevant-observed-swap-duplicate")?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            let writer = ObservedSwapWriter::start(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                false,
+                DiscoveryAggregateWriteConfig::default(),
+            )?;
+            let swap = test_swap("sig-relevant-duplicate");
+            let mut recent_signatures = HashSet::new();
+            let mut recent_signature_order = VecDeque::new();
+
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            assert!(
+                persist_relevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                )
+                .await?,
+                "first relevant write should insert the swap"
+            );
+
+            forget_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            );
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+
+            assert!(
+                !persist_relevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                )
+                .await?,
+                "db duplicate should be surfaced as Ok(false)"
+            );
+            assert!(
+                !note_recent_swap_signature(
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap.signature,
+                ),
+                "db duplicate should keep the signature inside recent dedupe state"
+            );
+
+            writer.shutdown()?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn observed_swap_shadow_relevance_marks_unclassified_swaps_irrelevant() {
         let mut swap = test_swap("sig-unclassified");
         swap.token_in = "token-a".to_string();
@@ -9582,23 +9761,86 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     }
 
     #[test]
-    fn irrelevant_observed_swap_persistence_uses_fast_path_when_writer_try_enqueue_accepts(
-    ) -> Result<()> {
-        let swap = test_swap("sig-deferred");
-        let outcome = try_persist_irrelevant_observed_swap(&swap, |_swap| Ok(true))?;
-        assert_eq!(outcome, IrrelevantObservedSwapPersistence::EnqueuedFastPath);
-        Ok(())
-    }
+    fn enqueue_irrelevant_observed_swap_rolls_back_recent_signature_on_write_error() -> Result<()> {
+        let (_store, db_path) = make_test_store("irrelevant-observed-swap-write-failure")?;
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_irrelevant_observed_swap_insert
+             BEFORE INSERT ON observed_swaps
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
 
-    #[test]
-    fn irrelevant_observed_swap_persistence_requires_awaited_fallback_when_writer_try_enqueue_is_full(
-    ) -> Result<()> {
-        let swap = test_swap("sig-fallback");
-        let outcome = try_persist_irrelevant_observed_swap(&swap, |_swap| Ok(false))?;
-        assert_eq!(
-            outcome,
-            IrrelevantObservedSwapPersistence::NeedsAwaitedFallback
-        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            let writer = ObservedSwapWriter::start(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                false,
+                DiscoveryAggregateWriteConfig::default(),
+            )?;
+            let swap = test_swap("sig-irrelevant-write-failure");
+            let mut recent_signatures = HashSet::new();
+            let mut recent_signature_order = VecDeque::new();
+
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            assert!(
+                !note_recent_swap_signature(
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap.signature,
+                ),
+                "signature should stay deduped until the failed irrelevant write forgets it"
+            );
+
+            let error = enqueue_irrelevant_observed_swap(
+                &writer,
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap,
+            )
+            .await
+            .expect_err("fatal irrelevant observed-swap write must bubble");
+            let error_text = format!("{error:#}");
+            assert!(
+                error_text.contains("failed to insert observed swap batch with activity days"),
+                "expected fatal writer batch error to survive irrelevant-path helper, got: {error_text}"
+            );
+            assert!(
+                error_text.contains("xShmMap"),
+                "expected fatal sqlite I/O marker to survive irrelevant-path helper, got: {error_text}"
+            );
+
+            assert!(
+                note_recent_swap_signature(
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap.signature,
+                ),
+                "failed irrelevant write must forget the signature so the swap can be retried"
+            );
+
+            let shutdown_error = writer
+                .shutdown()
+                .expect_err("fatal writer failure should surface again on shutdown");
+            assert!(
+                error_chain_contains(&shutdown_error, "failed to insert observed swap batch"),
+                "expected shutdown to surface the writer failure, got: {shutdown_error:#}"
+            );
+
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        let _ = std::fs::remove_file(db_path);
         Ok(())
     }
 

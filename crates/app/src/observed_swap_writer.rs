@@ -485,6 +485,7 @@ impl ObservedSwapWriter {
         })
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn enqueue(&self, swap: &SwapEvent) -> Result<()> {
         self.send_request(ObservedSwapWriteRequest {
             swap: swap.clone(),
@@ -494,6 +495,7 @@ impl ObservedSwapWriter {
         .await
     }
 
+    #[allow(dead_code)]
     pub(crate) fn try_enqueue(&self, swap: &SwapEvent) -> Result<bool> {
         self.ensure_running()?;
         match self.sender.try_reserve() {
