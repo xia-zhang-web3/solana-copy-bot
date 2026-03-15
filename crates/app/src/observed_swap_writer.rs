@@ -8,7 +8,7 @@ use copybot_storage::{
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 use tokio::sync::{mpsc, oneshot};
@@ -75,6 +75,11 @@ struct ObservedSwapWriteRequest {
     enqueued_at: Instant,
 }
 
+struct DiscoveryAggregateWriteRequest {
+    inserted_swaps: Vec<SwapEvent>,
+    batch_started: Instant,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ObservedSwapWriterSnapshot {
     pub pending_requests: usize,
@@ -84,6 +89,8 @@ pub(crate) struct ObservedSwapWriterSnapshot {
     pub wallet_activity_days_ms_p95: u64,
     pub discovery_scoring_ms_p95: u64,
     pub worker_busy_ms_p95: u64,
+    pub aggregate_queue_depth_batches: usize,
+    pub aggregate_queue_capacity_batches: usize,
 }
 
 #[derive(Debug, Default)]
@@ -95,6 +102,8 @@ struct ObservedSwapWriterTelemetry {
     last_wallet_activity_days_ms_p95: AtomicU64,
     last_discovery_scoring_ms_p95: AtomicU64,
     last_worker_busy_ms_p95: AtomicU64,
+    aggregate_queue_depth_batches: AtomicUsize,
+    aggregate_queue_capacity_batches: AtomicUsize,
     write_latency_ms_samples: Mutex<VecDeque<u64>>,
     raw_batch_write_ms_samples: Mutex<VecDeque<u64>>,
     observed_swaps_insert_ms_samples: Mutex<VecDeque<u64>>,
@@ -174,6 +183,19 @@ impl ObservedSwapWriterTelemetry {
         );
     }
 
+    fn note_aggregate_queue_enqueued(&self) {
+        self.aggregate_queue_depth_batches
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn note_aggregate_queue_dequeued(&self) {
+        let _ = self.aggregate_queue_depth_batches.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_sub(1)),
+        );
+    }
+
     fn note_phase_sample(
         &self,
         samples_lock: &Mutex<VecDeque<u64>>,
@@ -240,13 +262,20 @@ impl ObservedSwapWriterTelemetry {
             wallet_activity_days_ms_p95,
             discovery_scoring_ms_p95,
             worker_busy_ms_p95,
+            aggregate_queue_depth_batches: self
+                .aggregate_queue_depth_batches
+                .load(Ordering::Relaxed),
+            aggregate_queue_capacity_batches: self
+                .aggregate_queue_capacity_batches
+                .load(Ordering::Relaxed),
         }
     }
 }
 
 pub(crate) struct ObservedSwapWriter {
     sender: mpsc::Sender<ObservedSwapWriteRequest>,
-    worker: Option<thread::JoinHandle<Result<()>>>,
+    raw_worker: Option<thread::JoinHandle<Result<()>>>,
+    aggregate_worker: Option<thread::JoinHandle<Result<()>>>,
     telemetry: Arc<ObservedSwapWriterTelemetry>,
     terminal_failure_message: Arc<Mutex<Option<String>>>,
 }
@@ -294,24 +323,88 @@ impl ObservedSwapWriter {
         let (sender, receiver) = mpsc::channel(config.channel_capacity);
         let telemetry = Arc::new(ObservedSwapWriterTelemetry::default());
         let terminal_failure_message = Arc::new(Mutex::new(None));
-        let worker_telemetry = Arc::clone(&telemetry);
-        let worker_terminal_failure_message = Arc::clone(&terminal_failure_message);
-        let worker = thread::Builder::new()
+        let aggregate_queue_capacity_batches =
+            observed_swap_writer_aggregate_queue_capacity(&config);
+        telemetry
+            .aggregate_queue_capacity_batches
+            .store(aggregate_queue_capacity_batches, Ordering::Relaxed);
+        let aggregate_channel = config.aggregate_writes_enabled.then(|| {
+            std_mpsc::sync_channel::<DiscoveryAggregateWriteRequest>(
+                aggregate_queue_capacity_batches,
+            )
+        });
+        let aggregate_sender = aggregate_channel.as_ref().map(|(sender, _)| sender.clone());
+        let aggregate_receiver = aggregate_channel.map(|(_, receiver)| receiver);
+        let aggregate_startup_channel = config
+            .aggregate_writes_enabled
+            .then(std_mpsc::channel::<std::result::Result<(), String>>);
+        let aggregate_startup_sender = aggregate_startup_channel
+            .as_ref()
+            .map(|(sender, _)| sender.clone());
+        let aggregate_startup_receiver = aggregate_startup_channel.map(|(_, receiver)| receiver);
+        let raw_worker_config = config.clone();
+        let raw_worker_sqlite_path = sqlite_path.clone();
+
+        let raw_worker_telemetry = Arc::clone(&telemetry);
+        let raw_worker_terminal_failure_message = Arc::clone(&terminal_failure_message);
+        let raw_worker = thread::Builder::new()
             .name("copybot-observed-swap-writer".to_string())
             .spawn(move || {
-                let result =
-                    observed_swap_writer_loop(sqlite_path, receiver, config, worker_telemetry);
+                let result = observed_swap_writer_loop(
+                    raw_worker_sqlite_path,
+                    receiver,
+                    aggregate_sender,
+                    aggregate_startup_receiver,
+                    raw_worker_config,
+                    raw_worker_telemetry,
+                    Arc::clone(&raw_worker_terminal_failure_message),
+                );
                 if let Err(error) = &result {
-                    if let Ok(mut message) = worker_terminal_failure_message.lock() {
-                        *message = Some(format!("{error:#}"));
-                    }
+                    set_terminal_failure_message(
+                        &raw_worker_terminal_failure_message,
+                        format!("{error:#}"),
+                    );
                 }
                 result
             })
             .context("failed to spawn observed swap writer thread")?;
+
+        let aggregate_worker = if let Some(receiver) = aggregate_receiver {
+            let aggregate_worker_telemetry = Arc::clone(&telemetry);
+            let aggregate_worker_terminal_failure_message = Arc::clone(&terminal_failure_message);
+            let aggregate_sqlite_path = sqlite_path.clone();
+            let aggregate_worker_config = config;
+            let startup_sender = aggregate_startup_sender
+                .ok_or_else(|| anyhow!("missing discovery aggregate startup sender"))?;
+            Some(
+                thread::Builder::new()
+                    .name("copybot-discovery-aggregate-writer".to_string())
+                    .spawn(move || {
+                        let result = discovery_aggregate_writer_loop(
+                            aggregate_sqlite_path,
+                            receiver,
+                            startup_sender,
+                            aggregate_worker_config,
+                            aggregate_worker_telemetry,
+                        );
+                        if let Err(error) = &result {
+                            set_terminal_failure_message(
+                                &aggregate_worker_terminal_failure_message,
+                                format!("{error:#}"),
+                            );
+                        }
+                        result
+                    })
+                    .context("failed to spawn discovery aggregate writer thread")?,
+            )
+        } else {
+            None
+        };
+
         Ok(Self {
             sender,
-            worker: Some(worker),
+            raw_worker: Some(raw_worker),
+            aggregate_worker,
             telemetry,
             terminal_failure_message,
         })
@@ -365,27 +458,67 @@ impl ObservedSwapWriter {
 
     pub(crate) fn shutdown(mut self) -> Result<()> {
         drop(self.sender);
-        let Some(worker) = self.worker.take() else {
-            return Ok(());
+        let raw_result = if let Some(raw_worker) = self.raw_worker.take() {
+            Some(
+                raw_worker
+                    .join()
+                    .map_err(|payload| anyhow!(panic_payload_to_string(payload.as_ref())))
+                    .context("observed swap writer thread panicked")?,
+            )
+        } else {
+            None
         };
-        worker
-            .join()
-            .map_err(|payload| anyhow!(panic_payload_to_string(payload.as_ref())))
-            .context("observed swap writer thread panicked")?
-            .context("observed swap writer thread failed")
+        let aggregate_result = if let Some(aggregate_worker) = self.aggregate_worker.take() {
+            Some(
+                aggregate_worker
+                    .join()
+                    .map_err(|payload| anyhow!(panic_payload_to_string(payload.as_ref())))
+                    .context("discovery aggregate writer thread panicked")?,
+            )
+        } else {
+            None
+        };
+        if let Some(result) = raw_result {
+            result.context("observed swap writer thread failed")?;
+        }
+        if let Some(result) = aggregate_result {
+            result.context("discovery aggregate writer thread failed")?;
+        }
+        Ok(())
     }
 }
 
 fn observed_swap_writer_loop(
     sqlite_path: String,
     mut receiver: mpsc::Receiver<ObservedSwapWriteRequest>,
+    aggregate_sender: Option<std_mpsc::SyncSender<DiscoveryAggregateWriteRequest>>,
+    aggregate_startup_receiver: Option<std_mpsc::Receiver<std::result::Result<(), String>>>,
     config: ObservedSwapWriterConfig,
     telemetry: Arc<ObservedSwapWriterTelemetry>,
+    terminal_failure_message: Arc<Mutex<Option<String>>>,
 ) -> Result<()> {
     let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
         format!("failed to open sqlite db for observed swap writer: {sqlite_path}")
     })?;
-    run_aggregate_startup_replay(&store, &config)?;
+
+    if let Some(aggregate_startup_receiver) = aggregate_startup_receiver {
+        match aggregate_startup_receiver.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => {
+                return Err(anyhow!(message)).context(
+                    "observed swap writer stopping after aggregate startup replay failure",
+                );
+            }
+            Err(error) => {
+                return Err(anyhow!(
+                    "discovery aggregate writer startup channel closed: {error}"
+                ))
+                .context(
+                    "observed swap writer stopping after aggregate startup replay channel closed",
+                );
+            }
+        }
+    }
 
     while let Some(first_request) = receiver.blocking_recv() {
         let mut batch = vec![first_request];
@@ -406,6 +539,17 @@ fn observed_swap_writer_loop(
             queued_at.push(request.enqueued_at);
         }
 
+        if let Some(message) = load_terminal_failure_message(&terminal_failure_message) {
+            for reply_tx in replies {
+                if let Some(reply_tx) = reply_tx {
+                    let _ = reply_tx.send(Err(anyhow!(message.clone())));
+                }
+            }
+            telemetry.note_batch_completed(&queued_at);
+            return Err(anyhow!(message))
+                .context("observed swap writer stopping after aggregate worker terminal failure");
+        }
+
         let batch_started = Instant::now();
         let raw_batch_started = Instant::now();
         match store.insert_observed_swaps_batch_with_activity_days_measured(&swaps) {
@@ -423,100 +567,36 @@ fn observed_swap_writer_loop(
                     }
                 }
                 telemetry.note_batch_completed(&queued_at);
-                if config.aggregate_writes_enabled {
+                if let Some(aggregate_sender) = aggregate_sender.as_ref() {
                     let inserted_swaps: Vec<SwapEvent> = swaps
                         .iter()
                         .zip(results.iter())
                         .filter_map(|(swap, inserted)| inserted.then_some(swap.clone()))
                         .collect();
                     if !inserted_swaps.is_empty() {
-                        let aggregate_started = Instant::now();
-                        let aggregate_result = store.apply_discovery_scoring_batch(
-                            &inserted_swaps,
-                            &config.aggregate_write_config,
-                        );
-                        telemetry.note_discovery_scoring_completed(elapsed_ms_ceil(
-                            aggregate_started.elapsed(),
-                        ));
-                        if let Err(error) = aggregate_result {
-                            if let Some(first_gap_swap) = inserted_swaps.iter().min_by(|a, b| {
-                                a.ts_utc
-                                    .cmp(&b.ts_utc)
-                                    .then_with(|| a.slot.cmp(&b.slot))
-                                    .then_with(|| a.signature.cmp(&b.signature))
-                            }) {
-                                if let Err(gap_error) = store
-                                    .set_discovery_scoring_materialization_gap_cursor(
-                                        &DiscoveryRuntimeCursor {
-                                            ts_utc: first_gap_swap.ts_utc,
-                                            slot: first_gap_swap.slot,
-                                            signature: first_gap_swap.signature.clone(),
-                                        },
-                                    )
-                                {
-                                    if observed_swap_writer_discovery_scoring_error_requires_abort(
-                                        &gap_error,
-                                    ) {
-                                        telemetry.note_worker_busy_completed(elapsed_ms_ceil(
-                                            batch_started.elapsed(),
-                                        ));
-                                        return Err(gap_error).context(
-                                            "observed swap writer stopping after fatal discovery scoring gap cursor failure",
-                                        );
-                                    }
-                                    warn!(
-                                        error = %gap_error,
-                                        gap_since = %first_gap_swap.ts_utc,
-                                        "failed to latch discovery scoring materialization gap after aggregate batch failure"
-                                    );
-                                }
-                            }
-                            if observed_swap_writer_discovery_scoring_error_requires_abort(&error) {
-                                telemetry.note_worker_busy_completed(elapsed_ms_ceil(
-                                    batch_started.elapsed(),
-                                ));
-                                return Err(error).context(
-                                    "observed swap writer stopping after fatal discovery scoring materialization failure",
-                                );
-                            }
-                            warn!(
-                                error = %error,
-                                inserted_swaps = inserted_swaps.len(),
-                                "observed swap batch inserted raw rows but discovery scoring materialization failed"
-                            );
-                        } else if let Some(max_swap) = inserted_swaps.iter().max_by(|a, b| {
-                            a.ts_utc
-                                .cmp(&b.ts_utc)
-                                .then_with(|| a.slot.cmp(&b.slot))
-                                .then_with(|| a.signature.cmp(&b.signature))
+                        if let Err(error) = aggregate_sender.send(DiscoveryAggregateWriteRequest {
+                            inserted_swaps,
+                            batch_started,
                         }) {
-                            if let Err(error) = store.set_discovery_scoring_covered_through_cursor(
-                                &DiscoveryRuntimeCursor {
-                                    ts_utc: max_swap.ts_utc,
-                                    slot: max_swap.slot,
-                                    signature: max_swap.signature.clone(),
-                                },
-                            ) {
-                                if observed_swap_writer_discovery_scoring_error_requires_abort(
-                                    &error,
-                                ) {
-                                    telemetry.note_worker_busy_completed(elapsed_ms_ceil(
-                                        batch_started.elapsed(),
-                                    ));
-                                    return Err(error).context(
-                                        "observed swap writer stopping after fatal discovery scoring coverage watermark failure",
-                                    );
-                                }
-                                warn!(
-                                    error = %error,
-                                    covered_through = %max_swap.ts_utc,
-                                    "observed swap batch materialized discovery scoring aggregates but failed to advance coverage watermark"
-                                );
-                            }
+                            telemetry.note_worker_busy_completed(elapsed_ms_ceil(
+                                batch_started.elapsed(),
+                            ));
+                            return Err(anyhow!(
+                                "discovery aggregate writer channel closed: {}",
+                                error
+                            ))
+                            .context(
+                                "observed swap writer stopping after aggregate writer channel closed",
+                            );
                         }
+                        telemetry.note_aggregate_queue_enqueued();
+                    } else {
+                        telemetry
+                            .note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
                     }
+                } else {
+                    telemetry.note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
                 }
-                telemetry.note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
             }
             Err(error) => {
                 telemetry.note_raw_batch_completed(elapsed_ms_ceil(raw_batch_started.elapsed()));
@@ -540,6 +620,145 @@ fn observed_swap_writer_loop(
     }
 
     Ok(())
+}
+
+fn discovery_aggregate_writer_loop(
+    sqlite_path: String,
+    receiver: std_mpsc::Receiver<DiscoveryAggregateWriteRequest>,
+    startup_sender: std_mpsc::Sender<std::result::Result<(), String>>,
+    config: ObservedSwapWriterConfig,
+    telemetry: Arc<ObservedSwapWriterTelemetry>,
+) -> Result<()> {
+    let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
+        format!("failed to open sqlite db for discovery aggregate writer: {sqlite_path}")
+    })?;
+    match run_aggregate_startup_replay(&store, &config) {
+        Ok(()) => {
+            let _ = startup_sender.send(Ok(()));
+        }
+        Err(error) => {
+            let _ = startup_sender.send(Err(format!("{error:#}")));
+            return Err(error);
+        }
+    }
+
+    while let Ok(request) = receiver.recv() {
+        telemetry.note_aggregate_queue_dequeued();
+        process_discovery_aggregate_write_request(
+            &store,
+            &request.inserted_swaps,
+            request.batch_started,
+            &config.aggregate_write_config,
+            &telemetry,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn process_discovery_aggregate_write_request(
+    store: &SqliteStore,
+    inserted_swaps: &[SwapEvent],
+    batch_started: Instant,
+    aggregate_write_config: &DiscoveryAggregateWriteConfig,
+    telemetry: &ObservedSwapWriterTelemetry,
+) -> Result<()> {
+    if inserted_swaps.is_empty() {
+        telemetry.note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
+        return Ok(());
+    }
+
+    let aggregate_started = Instant::now();
+    let aggregate_result =
+        store.apply_discovery_scoring_batch(inserted_swaps, aggregate_write_config);
+    telemetry.note_discovery_scoring_completed(elapsed_ms_ceil(aggregate_started.elapsed()));
+    if let Err(error) = aggregate_result {
+        if let Some(first_gap_swap) = inserted_swaps.iter().min_by(|a, b| {
+            a.ts_utc
+                .cmp(&b.ts_utc)
+                .then_with(|| a.slot.cmp(&b.slot))
+                .then_with(|| a.signature.cmp(&b.signature))
+        }) {
+            if let Err(gap_error) =
+                store.set_discovery_scoring_materialization_gap_cursor(&DiscoveryRuntimeCursor {
+                    ts_utc: first_gap_swap.ts_utc,
+                    slot: first_gap_swap.slot,
+                    signature: first_gap_swap.signature.clone(),
+                })
+            {
+                if observed_swap_writer_discovery_scoring_error_requires_abort(&gap_error) {
+                    telemetry.note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
+                    return Err(gap_error).context(
+                        "observed swap writer stopping after fatal discovery scoring gap cursor failure",
+                    );
+                }
+                warn!(
+                    error = %gap_error,
+                    gap_since = %first_gap_swap.ts_utc,
+                    "failed to latch discovery scoring materialization gap after aggregate batch failure"
+                );
+            }
+        }
+        if observed_swap_writer_discovery_scoring_error_requires_abort(&error) {
+            telemetry.note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
+            return Err(error).context(
+                "observed swap writer stopping after fatal discovery scoring materialization failure",
+            );
+        }
+        warn!(
+            error = %error,
+            inserted_swaps = inserted_swaps.len(),
+            "observed swap batch inserted raw rows but discovery scoring materialization failed"
+        );
+    } else if let Some(max_swap) = inserted_swaps.iter().max_by(|a, b| {
+        a.ts_utc
+            .cmp(&b.ts_utc)
+            .then_with(|| a.slot.cmp(&b.slot))
+            .then_with(|| a.signature.cmp(&b.signature))
+    }) {
+        if let Err(error) =
+            store.set_discovery_scoring_covered_through_cursor(&DiscoveryRuntimeCursor {
+                ts_utc: max_swap.ts_utc,
+                slot: max_swap.slot,
+                signature: max_swap.signature.clone(),
+            })
+        {
+            if observed_swap_writer_discovery_scoring_error_requires_abort(&error) {
+                telemetry.note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
+                return Err(error).context(
+                    "observed swap writer stopping after fatal discovery scoring coverage watermark failure",
+                );
+            }
+            warn!(
+                error = %error,
+                covered_through = %max_swap.ts_utc,
+                "observed swap batch materialized discovery scoring aggregates but failed to advance coverage watermark"
+            );
+        }
+    }
+
+    telemetry.note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
+    Ok(())
+}
+
+fn set_terminal_failure_message(
+    terminal_failure_message: &Arc<Mutex<Option<String>>>,
+    message: String,
+) {
+    if let Ok(mut guard) = terminal_failure_message.lock() {
+        if guard.is_none() {
+            *guard = Some(message);
+        }
+    }
+}
+
+fn load_terminal_failure_message(
+    terminal_failure_message: &Arc<Mutex<Option<String>>>,
+) -> Option<String> {
+    terminal_failure_message
+        .lock()
+        .ok()
+        .and_then(|message| message.clone())
 }
 
 pub(crate) fn run_observed_swap_retention_maintenance_once(
@@ -815,6 +1034,16 @@ fn observed_swap_retention_checkpoint_error_requires_abort(
 
 fn observed_swap_writer_discovery_scoring_error_requires_abort(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
+}
+
+fn observed_swap_writer_aggregate_queue_capacity(config: &ObservedSwapWriterConfig) -> usize {
+    if !config.aggregate_writes_enabled {
+        return 0;
+    }
+    config
+        .channel_capacity
+        .max(1)
+        .div_ceil(config.batch_max_size.max(1))
 }
 
 fn observed_swap_retention_protection_load_error_requires_abort(error: &anyhow::Error) -> bool {
@@ -1291,6 +1520,14 @@ mod tests {
             snapshot.worker_busy_ms_p95 >= snapshot.discovery_scoring_ms_p95,
             "full writer occupancy should also cover the discovery scoring phase when aggregates are enabled"
         );
+        assert_eq!(
+            snapshot.aggregate_queue_depth_batches, 0,
+            "fast successful aggregate batches should not leave aggregate queue backlog behind"
+        );
+        assert_eq!(
+            snapshot.aggregate_queue_capacity_batches, 32,
+            "production aggregate queue capacity should be bounded to the raw queue expressed in batches"
+        );
 
         writer.shutdown()?;
 
@@ -1376,6 +1613,14 @@ mod tests {
         assert!(
             snapshot.worker_busy_ms_p95 >= snapshot.raw_batch_write_ms_p95,
             "aggregate-disabled full writer occupancy should still cover the raw batch phase"
+        );
+        assert_eq!(
+            snapshot.aggregate_queue_depth_batches, 0,
+            "aggregate-disabled writer must report no aggregate queue backlog"
+        );
+        assert_eq!(
+            snapshot.aggregate_queue_capacity_batches, 0,
+            "aggregate-disabled writer must report zero aggregate queue capacity"
         );
 
         writer.shutdown()?;
@@ -1566,6 +1811,119 @@ mod tests {
         );
         drop(trigger_conn);
 
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_keeps_raw_path_live_when_discovery_scoring_failure_is_nonfatal(
+    ) -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-aggregate-nonfatal-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+        let trigger_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open sqlite db for aggregate nonfatal trigger")?;
+        trigger_conn.execute_batch(
+            "CREATE TRIGGER fail_wallet_scoring_days_insert
+             BEFORE INSERT ON wallet_scoring_days
+             BEGIN
+                 SELECT RAISE(FAIL, 'database is locked');
+             END;",
+        )?;
+
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        runtime.block_on(async {
+            let writer = ObservedSwapWriter::start_with_config(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                ObservedSwapWriterConfig {
+                    channel_capacity: 16,
+                    batch_max_size: 8,
+                    aggregate_writes_enabled: true,
+                    aggregate_write_config: aggregate_write_config(),
+                },
+            )?;
+
+            let first_swap = SwapEvent {
+                wallet: "wallet-aggregate-nonfatal".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-aggregate-nonfatal-a".to_string(),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                signature: "sig-observed-swap-aggregate-nonfatal-a".to_string(),
+                slot: 223,
+                ts_utc: DateTime::parse_from_rfc3339("2026-03-14T13:23:00Z")
+                    .expect("timestamp")
+                    .with_timezone(&Utc),
+                exact_amounts: None,
+            };
+            let second_swap = SwapEvent {
+                wallet: "wallet-aggregate-nonfatal".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-aggregate-nonfatal-b".to_string(),
+                amount_in: 2.0,
+                amount_out: 20.0,
+                signature: "sig-observed-swap-aggregate-nonfatal-b".to_string(),
+                slot: 224,
+                ts_utc: DateTime::parse_from_rfc3339("2026-03-14T13:24:00Z")
+                    .expect("timestamp")
+                    .with_timezone(&Utc),
+                exact_amounts: None,
+            };
+
+            assert!(
+                writer.write(&first_swap).await?,
+                "first raw insert should succeed despite non-fatal aggregate failure"
+            );
+            sleep(Duration::from_millis(50)).await;
+            writer
+                .ensure_running()
+                .context("non-fatal aggregate failure must not latch terminal writer failure")?;
+
+            assert!(
+                writer.write(&second_swap).await?,
+                "second raw insert should still succeed after non-fatal aggregate failure"
+            );
+            sleep(Duration::from_millis(50)).await;
+            writer.ensure_running().context(
+                "subsequent non-fatal aggregate failures must leave the raw writer healthy",
+            )?;
+
+            writer.shutdown()?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let rows = verify_store.load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-14T00:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )?;
+        assert_eq!(
+            rows.iter()
+                .filter(|swap| {
+                    swap.signature == "sig-observed-swap-aggregate-nonfatal-a"
+                        || swap.signature == "sig-observed-swap-aggregate-nonfatal-b"
+                })
+                .count(),
+            2,
+            "non-fatal aggregate failures must not block raw observed-swap persistence"
+        );
+
+        drop(trigger_conn);
         let _ = std::fs::remove_file(db_path);
         Ok(())
     }
@@ -2039,6 +2397,28 @@ mod tests {
     fn observed_swap_writer_discovery_scoring_error_does_not_require_abort_on_busy_lock() {
         let error = anyhow!("database is locked");
         assert!(!super::observed_swap_writer_discovery_scoring_error_requires_abort(&error));
+    }
+
+    #[test]
+    fn observed_swap_writer_aggregate_queue_capacity_tracks_raw_queue_in_batches() {
+        assert_eq!(
+            super::observed_swap_writer_aggregate_queue_capacity(&ObservedSwapWriterConfig {
+                channel_capacity: 16,
+                batch_max_size: 8,
+                aggregate_writes_enabled: true,
+                aggregate_write_config: aggregate_write_config(),
+            }),
+            2
+        );
+        assert_eq!(
+            super::observed_swap_writer_aggregate_queue_capacity(&ObservedSwapWriterConfig {
+                channel_capacity: 16,
+                batch_max_size: 8,
+                aggregate_writes_enabled: false,
+                aggregate_write_config: aggregate_write_config(),
+            }),
+            0
+        );
     }
 
     #[test]

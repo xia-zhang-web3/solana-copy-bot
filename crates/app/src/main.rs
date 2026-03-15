@@ -2958,6 +2958,10 @@ async fn run_app_loop(
                         observed_swap_writer_snapshot.discovery_scoring_ms_p95,
                     observed_swap_writer_worker_busy_ms_p95 =
                         observed_swap_writer_snapshot.worker_busy_ms_p95,
+                    observed_swap_writer_aggregate_queue_depth_batches =
+                        observed_swap_writer_snapshot.aggregate_queue_depth_batches,
+                    observed_swap_writer_aggregate_queue_capacity_batches =
+                        observed_swap_writer_snapshot.aggregate_queue_capacity_batches,
                     "observed swap writer telemetry"
                 );
                 info!(
