@@ -80,6 +80,8 @@ pub(crate) struct ObservedSwapWriterSnapshot {
     pub pending_requests: usize,
     pub write_latency_ms_p95: u64,
     pub raw_batch_write_ms_p95: u64,
+    pub observed_swaps_insert_ms_p95: u64,
+    pub wallet_activity_days_ms_p95: u64,
     pub discovery_scoring_ms_p95: u64,
 }
 
@@ -88,9 +90,13 @@ struct ObservedSwapWriterTelemetry {
     pending_requests: AtomicUsize,
     last_write_latency_ms_p95: AtomicU64,
     last_raw_batch_write_ms_p95: AtomicU64,
+    last_observed_swaps_insert_ms_p95: AtomicU64,
+    last_wallet_activity_days_ms_p95: AtomicU64,
     last_discovery_scoring_ms_p95: AtomicU64,
     write_latency_ms_samples: Mutex<VecDeque<u64>>,
     raw_batch_write_ms_samples: Mutex<VecDeque<u64>>,
+    observed_swaps_insert_ms_samples: Mutex<VecDeque<u64>>,
+    wallet_activity_days_ms_samples: Mutex<VecDeque<u64>>,
     discovery_scoring_ms_samples: Mutex<VecDeque<u64>>,
 }
 
@@ -141,6 +147,22 @@ impl ObservedSwapWriterTelemetry {
         );
     }
 
+    fn note_observed_swaps_insert_completed(&self, duration_ms: u64) {
+        self.note_phase_sample(
+            &self.observed_swaps_insert_ms_samples,
+            &self.last_observed_swaps_insert_ms_p95,
+            duration_ms,
+        );
+    }
+
+    fn note_wallet_activity_days_completed(&self, duration_ms: u64) {
+        self.note_phase_sample(
+            &self.wallet_activity_days_ms_samples,
+            &self.last_wallet_activity_days_ms_p95,
+            duration_ms,
+        );
+    }
+
     fn note_phase_sample(
         &self,
         samples_lock: &Mutex<VecDeque<u64>>,
@@ -169,6 +191,24 @@ impl ObservedSwapWriterTelemetry {
             .ok()
             .map(|samples| percentile_from_deque(&samples, 0.95))
             .unwrap_or_else(|| self.last_raw_batch_write_ms_p95.load(Ordering::Relaxed));
+        let observed_swaps_insert_ms_p95 = self
+            .observed_swaps_insert_ms_samples
+            .lock()
+            .ok()
+            .map(|samples| percentile_from_deque(&samples, 0.95))
+            .unwrap_or_else(|| {
+                self.last_observed_swaps_insert_ms_p95
+                    .load(Ordering::Relaxed)
+            });
+        let wallet_activity_days_ms_p95 = self
+            .wallet_activity_days_ms_samples
+            .lock()
+            .ok()
+            .map(|samples| percentile_from_deque(&samples, 0.95))
+            .unwrap_or_else(|| {
+                self.last_wallet_activity_days_ms_p95
+                    .load(Ordering::Relaxed)
+            });
         let discovery_scoring_ms_p95 = self
             .discovery_scoring_ms_samples
             .lock()
@@ -179,6 +219,8 @@ impl ObservedSwapWriterTelemetry {
             pending_requests: self.pending_requests.load(Ordering::Relaxed),
             write_latency_ms_p95,
             raw_batch_write_ms_p95,
+            observed_swaps_insert_ms_p95,
+            wallet_activity_days_ms_p95,
             discovery_scoring_ms_p95,
         }
     }
@@ -347,9 +389,15 @@ fn observed_swap_writer_loop(
         }
 
         let raw_batch_started = Instant::now();
-        match store.insert_observed_swaps_batch_with_activity_days(&swaps) {
-            Ok(results) => {
+        match store.insert_observed_swaps_batch_with_activity_days_measured(&swaps) {
+            Ok(batch_metrics) => {
                 telemetry.note_raw_batch_completed(elapsed_ms_ceil(raw_batch_started.elapsed()));
+                telemetry
+                    .note_observed_swaps_insert_completed(batch_metrics.observed_swaps_insert_ms);
+                telemetry.note_wallet_activity_days_completed(
+                    batch_metrics.wallet_activity_days_upsert_ms,
+                );
+                let results = batch_metrics.inserted;
                 for (reply_tx, inserted) in replies.into_iter().zip(results.iter().copied()) {
                     if let Some(reply_tx) = reply_tx {
                         let _ = reply_tx.send(Ok(inserted));
@@ -1194,6 +1242,14 @@ mod tests {
             "fast successful batches should still report a non-zero raw batch phase latency sample"
         );
         assert!(
+            snapshot.observed_swaps_insert_ms_p95 >= 1,
+            "fast successful batches should separately report the observed_swaps insert phase"
+        );
+        assert!(
+            snapshot.wallet_activity_days_ms_p95 >= 1,
+            "fast successful batches should separately report the wallet_activity_days upsert phase"
+        );
+        assert!(
             snapshot.discovery_scoring_ms_p95 >= 1,
             "aggregate-enabled writer batches should report aggregate phase latency separately"
         );
@@ -1266,6 +1322,14 @@ mod tests {
         assert!(
             snapshot.raw_batch_write_ms_p95 >= 1,
             "aggregate-disabled writer batches should still report raw batch phase latency"
+        );
+        assert!(
+            snapshot.observed_swaps_insert_ms_p95 >= 1,
+            "aggregate-disabled writer batches should still report the observed_swaps insert phase"
+        );
+        assert!(
+            snapshot.wallet_activity_days_ms_p95 >= 1,
+            "aggregate-disabled writer batches should still report the wallet_activity_days upsert phase"
         );
         assert_eq!(
             snapshot.discovery_scoring_ms_p95, 0,

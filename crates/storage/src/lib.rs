@@ -95,6 +95,13 @@ pub struct WalletActivityDayRow {
 }
 
 #[derive(Debug, Clone)]
+pub struct ObservedSwapBatchWriteMetrics {
+    pub inserted: Vec<bool>,
+    pub observed_swaps_insert_ms: u64,
+    pub wallet_activity_days_upsert_ms: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct PersistedWalletMetricSnapshotRow {
     pub wallet_id: String,
     pub window_start: DateTime<Utc>,

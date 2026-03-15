@@ -2950,6 +2950,10 @@ async fn run_app_loop(
                         observed_swap_writer_snapshot.write_latency_ms_p95,
                     observed_swap_writer_raw_batch_ms_p95 =
                         observed_swap_writer_snapshot.raw_batch_write_ms_p95,
+                    observed_swap_writer_observed_swaps_insert_ms_p95 =
+                        observed_swap_writer_snapshot.observed_swaps_insert_ms_p95,
+                    observed_swap_writer_wallet_activity_days_ms_p95 =
+                        observed_swap_writer_snapshot.wallet_activity_days_ms_p95,
                     observed_swap_writer_discovery_scoring_ms_p95 =
                         observed_swap_writer_snapshot.discovery_scoring_ms_p95,
                     "observed swap writer telemetry"

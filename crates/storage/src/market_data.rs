@@ -1,6 +1,7 @@
 use crate::{
-    discovery::upsert_wallet_activity_days_on_conn, DiscoveryRuntimeCursor, SqliteStore,
-    TokenMarketStats, TokenQualityCacheRow, TokenQualityRpcRow, WalletActivityDayRow,
+    discovery::upsert_wallet_activity_days_on_conn, DiscoveryRuntimeCursor,
+    ObservedSwapBatchWriteMetrics, SqliteStore, TokenMarketStats, TokenQualityCacheRow,
+    TokenQualityRpcRow, WalletActivityDayRow,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -153,11 +154,25 @@ impl SqliteStore {
         &self,
         swaps: &[SwapEvent],
     ) -> Result<Vec<bool>> {
+        Ok(self
+            .insert_observed_swaps_batch_with_activity_days_measured(swaps)?
+            .inserted)
+    }
+
+    pub fn insert_observed_swaps_batch_with_activity_days_measured(
+        &self,
+        swaps: &[SwapEvent],
+    ) -> Result<ObservedSwapBatchWriteMetrics> {
         if swaps.is_empty() {
-            return Ok(Vec::new());
+            return Ok(ObservedSwapBatchWriteMetrics {
+                inserted: Vec::new(),
+                observed_swaps_insert_ms: 0,
+                wallet_activity_days_upsert_ms: 0,
+            });
         }
 
         self.with_immediate_transaction_retry("observed swap batch write", |conn| {
+            let observed_swaps_insert_started = Instant::now();
             let mut stmt = conn
                 .prepare_cached(
                     "INSERT OR IGNORE INTO observed_swaps(
@@ -224,6 +239,8 @@ impl SqliteStore {
                         .or_insert(swap.ts_utc);
                 }
             }
+            let observed_swaps_insert_ms =
+                duration_ms_ceil(observed_swaps_insert_started.elapsed());
 
             activity_rows.extend(activity_dedup.into_iter().map(
                 |((wallet_id, activity_day), last_seen)| WalletActivityDayRow {
@@ -232,8 +249,15 @@ impl SqliteStore {
                     last_seen,
                 },
             ));
+            let wallet_activity_days_started = Instant::now();
             upsert_wallet_activity_days_on_conn(conn, &activity_rows)?;
-            Ok(inserted)
+            let wallet_activity_days_upsert_ms =
+                duration_ms_ceil(wallet_activity_days_started.elapsed());
+            Ok(ObservedSwapBatchWriteMetrics {
+                inserted,
+                observed_swaps_insert_ms,
+                wallet_activity_days_upsert_ms,
+            })
         })
         .context("failed to insert observed swap batch with activity days")
     }
@@ -609,9 +633,12 @@ impl SqliteStore {
                 Some(amount_out_raw),
                 Some(amount_out_decimals_raw),
             ) => {
-                let amount_in_decimals = u8::try_from(amount_in_decimals_raw).with_context(|| {
-                    format!("invalid observed_swaps.qty_in_decimals value: {amount_in_decimals_raw}")
-                })?;
+                let amount_in_decimals =
+                    u8::try_from(amount_in_decimals_raw).with_context(|| {
+                        format!(
+                            "invalid observed_swaps.qty_in_decimals value: {amount_in_decimals_raw}"
+                        )
+                    })?;
                 let amount_out_decimals =
                     u8::try_from(amount_out_decimals_raw).with_context(|| {
                         format!(
@@ -742,20 +769,24 @@ impl SqliteStore {
             .optional()
             .context("failed querying token_quality_cache row")?;
 
-        row.map(|(mint, holders, liquidity_sol, token_age_seconds, fetched_at_raw)| {
-            let fetched_at = DateTime::parse_from_rfc3339(&fetched_at_raw)
-                .map(|dt| dt.with_timezone(&Utc))
-                .with_context(|| {
-                    format!("invalid token_quality_cache.fetched_at rfc3339 value: {fetched_at_raw}")
-                })?;
-            Ok(TokenQualityCacheRow {
-                mint,
-                holders: holders.map(|value| value.max(0) as u64),
-                liquidity_sol,
-                token_age_seconds: token_age_seconds.map(|value| value.max(0) as u64),
-                fetched_at,
-            })
-        })
+        row.map(
+            |(mint, holders, liquidity_sol, token_age_seconds, fetched_at_raw)| {
+                let fetched_at = DateTime::parse_from_rfc3339(&fetched_at_raw)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .with_context(|| {
+                        format!(
+                            "invalid token_quality_cache.fetched_at rfc3339 value: {fetched_at_raw}"
+                        )
+                    })?;
+                Ok(TokenQualityCacheRow {
+                    mint,
+                    holders: holders.map(|value| value.max(0) as u64),
+                    liquidity_sol,
+                    token_age_seconds: token_age_seconds.map(|value| value.max(0) as u64),
+                    fetched_at,
+                })
+            },
+        )
         .transpose()
     }
 
@@ -827,6 +858,15 @@ impl SqliteStore {
             liquidity_sol: None,
             token_age_seconds,
         })
+    }
+}
+
+fn duration_ms_ceil(duration: StdDuration) -> u64 {
+    let micros = duration.as_micros();
+    if micros == 0 {
+        0
+    } else {
+        micros.div_ceil(1000).min(u128::from(u64::MAX)) as u64
     }
 }
 
