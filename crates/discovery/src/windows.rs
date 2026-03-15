@@ -55,6 +55,7 @@ pub(super) struct DiscoveryWindowState {
     pub(super) cap_truncation_deactivation_guard_reason:
         Option<CapTruncationDeactivationGuardReason>,
     pub(super) cap_truncation_deactivation_guard_expired_logged: bool,
+    pub(super) trusted_selection_bootstrap_pending: bool,
     pub(super) bootstrap_from_persisted_metrics: bool,
     pub(super) truncated_warm_restore_bootstrap: bool,
     pub(super) aggregate_transition_cycles_remaining: u32,
