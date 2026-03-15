@@ -19,7 +19,9 @@ mod scoring;
 mod windows;
 use self::followlist::{desired_wallets, rank_follow_candidates, top_wallet_labels};
 use self::scoring::{hold_time_quality_score, median_i64, tanh01};
-use self::windows::{cmp_swap_order, DiscoveryCursor, DiscoveryWindowState};
+use self::windows::{
+    cmp_swap_order, CapTruncationDeactivationGuardReason, DiscoveryCursor, DiscoveryWindowState,
+};
 use quality_cache::BuyTradability;
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -29,6 +31,7 @@ const QUALITY_MAX_SIGNATURE_PAGES: u32 = 1;
 const QUALITY_MAX_FETCH_PER_CYCLE: usize = 20;
 const QUALITY_RPC_BUDGET_MS: u64 = 1_500;
 const AGGREGATE_FOLLOWLIST_TRANSITION_GUARD_CYCLES: u32 = 3;
+const CAP_TRUNCATION_FOLLOWLIST_DEACTIVATION_GUARD_CYCLES: u32 = 2;
 
 fn discovery_runtime_cursor_error_requires_abort(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
@@ -44,6 +47,49 @@ fn discovery_recent_window_load_error_requires_abort(error: &anyhow::Error) -> b
 
 fn discovery_wallet_activity_day_count_error_requires_abort(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
+}
+
+fn maybe_arm_cap_truncation_deactivation_guard(
+    state: &mut DiscoveryWindowState,
+    now: DateTime<Utc>,
+    reason: CapTruncationDeactivationGuardReason,
+) {
+    if !state.arm_cap_truncation_deactivation_guard(
+        now,
+        reason,
+        CAP_TRUNCATION_FOLLOWLIST_DEACTIVATION_GUARD_CYCLES,
+    ) {
+        return;
+    }
+    let Some(floor) = state.cap_truncation_floor.as_ref() else {
+        return;
+    };
+    warn!(
+        followlist_deactivation_suppression_reason = reason.as_str(),
+        followlist_deactivation_suppression_started_at = %now,
+        cap_truncation_floor_ts = %floor.ts_utc,
+        cap_truncation_floor_signature = floor.signature.as_str(),
+        cap_truncation_deactivation_guard_cycles =
+            state.cap_truncation_deactivation_guard_cycles_remaining,
+        "discovery followlist deactivations temporarily suppressed while raw window is cap-truncated"
+    );
+}
+
+fn maybe_warn_on_cap_truncation_deactivation_guard_expiry(state: &DiscoveryWindowState) {
+    let Some(floor) = state.cap_truncation_floor.as_ref() else {
+        return;
+    };
+    warn!(
+        followlist_deactivation_suppression_reason = state
+            .cap_truncation_deactivation_guard_reason
+            .map(CapTruncationDeactivationGuardReason::as_str)
+            .unwrap_or("cap_truncation"),
+        followlist_deactivation_suppression_started_at = ?state
+            .cap_truncation_deactivation_guard_started_at,
+        cap_truncation_floor_ts = %floor.ts_utc,
+        cap_truncation_floor_signature = floor.signature.as_str(),
+        "discovery cap-truncation deactivation guard expired; raw-window followlist deactivations will resume while history remains incomplete"
+    );
 }
 
 #[derive(Debug, Clone)]
@@ -322,6 +368,13 @@ impl DiscoveryService {
                         }
                         if truncated_by_limit {
                             state.mark_warm_load_truncated();
+                            if !aggregate_scoring_ready {
+                                maybe_arm_cap_truncation_deactivation_guard(
+                                    &mut state,
+                                    now,
+                                    CapTruncationDeactivationGuardReason::WarmLoadTruncated,
+                                );
+                            }
                         }
                     }
                     Err(error) => {
@@ -375,9 +428,15 @@ impl DiscoveryService {
                             }
                         }
                         state.signatures.insert(swap.signature.clone());
-                        swaps_evicted_due_cap = swaps_evicted_due_cap.saturating_add(
-                            state.push_swap_capped(swap, max_window_swaps_in_memory),
-                        );
+                        let evicted = state.push_swap_capped(swap, max_window_swaps_in_memory);
+                        if evicted > 0 && !aggregate_scoring_ready {
+                            maybe_arm_cap_truncation_deactivation_guard(
+                                &mut state,
+                                now,
+                                CapTruncationDeactivationGuardReason::LiveCapEviction,
+                            );
+                        }
+                        swaps_evicted_due_cap = swaps_evicted_due_cap.saturating_add(evicted);
                         delta_fetched = delta_fetched.saturating_add(1);
                         Ok(())
                     },
@@ -424,7 +483,8 @@ impl DiscoveryService {
                 sorted.sort_by(cmp_swap_order);
                 state.swaps = sorted.into();
             }
-            let followlist_deactivations_suppressed = state.cap_truncation_floor.is_some();
+            let followlist_deactivations_suppressed =
+                state.cap_truncation_deactivations_suppressed();
             let bootstrap_from_persisted_metrics =
                 state.bootstrap_from_persisted_metrics && state.swaps.is_empty();
             let truncated_warm_restore_bootstrap =
@@ -432,6 +492,9 @@ impl DiscoveryService {
             let publish_due = state.last_publish_at.map_or(true, |last_publish_at| {
                 now.signed_duration_since(last_publish_at).num_seconds() >= publish_interval_seconds
             });
+            if !aggregate_scoring_ready && state.consume_cap_truncation_deactivation_guard() {
+                maybe_warn_on_cap_truncation_deactivation_guard_expiry(&state);
+            }
 
             let swaps_window = state.swaps.len();
             if aggregate_scoring_ready {
@@ -468,7 +531,7 @@ impl DiscoveryService {
                     },
                 )
             } else if swaps_window == 0 {
-                state.cap_truncation_floor = None;
+                state.clear_cap_truncation();
                 state.last_snapshot_bucket = None;
                 state.last_summary = None;
                 state.note_scoring_source(false);
@@ -3069,8 +3132,8 @@ mod tests {
     }
 
     #[test]
-    fn cap_truncation_suppresses_false_followlist_demotions_until_window_catches_up() -> Result<()>
-    {
+    fn cap_truncation_temporarily_suppresses_false_followlist_demotions_before_guard_expires(
+    ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp
             .path()
@@ -3150,7 +3213,7 @@ mod tests {
         let second_summary = discovery.run_cycle(&store, second_now)?;
         assert_eq!(
             second_summary.follow_demoted, 0,
-            "cap-truncated recompute must suppress followlist demotions"
+            "first cap-truncated recompute must still suppress followlist demotions while the bounded guard is active"
         );
         let active_after = store.list_active_follow_wallets()?;
         assert!(
@@ -3163,13 +3226,129 @@ mod tests {
             .expect("window_state lock should succeed");
         assert!(
             state.cap_truncation_floor.is_some(),
-            "cap eviction should leave a truncation marker until the time window catches up"
+            "cap eviction should leave a truncation marker while raw history remains incomplete"
         );
         Ok(())
     }
 
     #[test]
-    fn warm_restore_marks_truncated_capped_tail_and_suppresses_false_followlist_demotions(
+    fn cap_truncation_releases_followlist_demotions_after_bounded_guard_even_if_floor_persists(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("test-cap-truncation-followlist-guard-expiry.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let base_ts = DateTime::parse_from_rfc3339("2026-03-04T10:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        for idx in 0..4 {
+            let buy_ts = base_ts + Duration::minutes((idx * 20) as i64);
+            let sell_ts = buy_ts + Duration::minutes(6);
+            store.insert_observed_swap(&swap(
+                "wallet_leader",
+                &format!("leader-guard-buy-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                "TokenLeaderGuard1111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_leader",
+                &format!("leader-guard-sell-{idx}"),
+                sell_ts,
+                "TokenLeaderGuard1111111111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.3,
+            ))?;
+        }
+
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.decay_window_days = 7;
+        config.follow_top_n = 1;
+        config.min_leader_notional_sol = 0.5;
+        config.min_trades = 4;
+        config.min_active_days = 1;
+        config.min_score = 0.1;
+        config.min_buy_count = 1;
+        config.min_tradable_ratio = 0.0;
+        config.metric_snapshot_interval_seconds = 60;
+        config.max_window_swaps_in_memory = 8;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.thin_market_min_unique_traders = 1;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let first_now = DateTime::parse_from_rfc3339("2026-03-04T15:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+
+        let first_summary = discovery.run_cycle(&store, first_now)?;
+        assert!(
+            first_summary.follow_promoted >= 1,
+            "seed cycle should promote the profitable leader"
+        );
+        assert!(store
+            .list_active_follow_wallets()?
+            .contains("wallet_leader"));
+
+        for idx in 0..8 {
+            let ts = first_now + Duration::seconds((idx + 1) as i64);
+            store.insert_observed_swap(&swap(
+                "wallet_noise",
+                &format!("noise-guard-buy-{idx}"),
+                ts,
+                SOL_MINT,
+                "TokenNoiseGuard11111111111111111111111111",
+                0.2,
+                20.0,
+            ))?;
+        }
+
+        let second_summary = discovery.run_cycle(&store, first_now + Duration::minutes(1))?;
+        assert_eq!(
+            second_summary.follow_demoted, 0,
+            "first cap-truncated cycle should still honor the temporary deactivation guard"
+        );
+
+        let third_summary = discovery.run_cycle(&store, first_now + Duration::minutes(2))?;
+        assert_eq!(
+            third_summary.follow_demoted, 0,
+            "second cap-truncated cycle should consume the remaining temporary deactivation guard"
+        );
+
+        let fourth_summary = discovery.run_cycle(&store, first_now + Duration::minutes(3))?;
+        assert_eq!(
+            fourth_summary.follow_demoted, 1,
+            "once the bounded cap-truncation guard expires, stale followlist members must be demoted even if the truncation floor still persists"
+        );
+        let active_after = store.list_active_follow_wallets()?;
+        assert!(
+            !active_after.contains("wallet_leader"),
+            "bounded guard expiry must let the sticky historical followlist shrink back down"
+        );
+        let state = discovery
+            .window_state
+            .lock()
+            .expect("window_state lock should succeed");
+        assert!(
+            state.cap_truncation_floor.is_some(),
+            "raw-window truncation floor should still describe the incomplete history gap after the guard expires"
+        );
+        assert_eq!(
+            state.cap_truncation_deactivation_guard_cycles_remaining, 0,
+            "cap-truncation deactivation suppression must be bounded rather than tied forever to the truncation floor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn warm_restore_marks_truncated_capped_tail_then_releases_followlist_demotions_after_bounded_guard(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp
@@ -3328,13 +3507,33 @@ mod tests {
             discovery_after_restart.run_cycle(&store, now + Duration::minutes(1))?;
         assert_eq!(
             summary_follow_up.follow_demoted, 0,
-            "follow-up raw recompute should still honor cap-truncation deactivation suppression"
+            "immediate follow-up raw recompute should still honor the bounded cap-truncation deactivation guard"
+        );
+        let summary_guard_expired =
+            discovery_after_restart.run_cycle(&store, now + Duration::minutes(2))?;
+        assert_eq!(
+            summary_guard_expired.follow_demoted, 1,
+            "after the bounded guard expires, warm-restored truncated raw discovery must stop freezing the historical followlist"
+        );
+        let active_after_guard_expiry = store.list_active_follow_wallets()?;
+        assert!(
+            !active_after_guard_expiry.contains("wallet_leader"),
+            "bounded warm-restore truncation guard expiry must allow stale followlist entries to demote"
         );
         assert!(
             store
                 .latest_wallet_metrics_window_start()?
                 .is_some_and(|window_start| window_start > metrics_window_start),
             "after the one-shot bridge, discovery should resume raw recompute instead of freezing on persisted bootstrap"
+        );
+        let state_after_guard_expiry = discovery_after_restart
+            .window_state
+            .lock()
+            .expect("window_state lock should succeed");
+        assert_eq!(
+            state_after_guard_expiry.cap_truncation_deactivation_guard_cycles_remaining,
+            0,
+            "warm-restore cap truncation deactivation suppression must be bounded rather than sticky"
         );
         Ok(())
     }

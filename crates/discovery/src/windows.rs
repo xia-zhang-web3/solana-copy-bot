@@ -29,12 +29,32 @@ impl DiscoveryCursor {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CapTruncationDeactivationGuardReason {
+    WarmLoadTruncated,
+    LiveCapEviction,
+}
+
+impl CapTruncationDeactivationGuardReason {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::WarmLoadTruncated => "warm_load_truncated",
+            Self::LiveCapEviction => "live_cap_eviction",
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct DiscoveryWindowState {
     pub(super) swaps: VecDeque<SwapEvent>,
     pub(super) signatures: HashSet<String>,
     pub(super) cursor: Option<DiscoveryCursor>,
     pub(super) cap_truncation_floor: Option<DiscoveryCursor>,
+    pub(super) cap_truncation_deactivation_guard_cycles_remaining: u32,
+    pub(super) cap_truncation_deactivation_guard_started_at: Option<DateTime<Utc>>,
+    pub(super) cap_truncation_deactivation_guard_reason:
+        Option<CapTruncationDeactivationGuardReason>,
+    pub(super) cap_truncation_deactivation_guard_expired_logged: bool,
     pub(super) bootstrap_from_persisted_metrics: bool,
     pub(super) truncated_warm_restore_bootstrap: bool,
     pub(super) aggregate_transition_cycles_remaining: u32,
@@ -45,6 +65,15 @@ pub(super) struct DiscoveryWindowState {
 }
 
 impl DiscoveryWindowState {
+    fn clear_cap_truncation_state(&mut self) {
+        self.cap_truncation_floor = None;
+        self.cap_truncation_deactivation_guard_cycles_remaining = 0;
+        self.cap_truncation_deactivation_guard_started_at = None;
+        self.cap_truncation_deactivation_guard_reason = None;
+        self.cap_truncation_deactivation_guard_expired_logged = false;
+        self.truncated_warm_restore_bootstrap = false;
+    }
+
     pub(super) fn evict_before(&mut self, window_start: DateTime<Utc>) {
         while let Some(front) = self.swaps.front() {
             if front.ts_utc >= window_start {
@@ -60,9 +89,12 @@ impl DiscoveryWindowState {
             return;
         };
         if DiscoveryCursor::bootstrap(window_start) > floor.clone() {
-            self.cap_truncation_floor = None;
-            self.truncated_warm_restore_bootstrap = false;
+            self.clear_cap_truncation_state();
         }
+    }
+
+    pub(super) fn clear_cap_truncation(&mut self) {
+        self.clear_cap_truncation_state();
     }
 
     pub(super) fn push_swap_capped(&mut self, swap: SwapEvent, max_swaps: usize) -> usize {
@@ -73,6 +105,24 @@ impl DiscoveryWindowState {
     pub(super) fn mark_warm_load_truncated(&mut self) {
         self.cap_truncation_floor = self.swaps.front().map(DiscoveryCursor::from_swap);
         self.truncated_warm_restore_bootstrap = self.cap_truncation_floor.is_some();
+    }
+
+    pub(super) fn arm_cap_truncation_deactivation_guard(
+        &mut self,
+        now: DateTime<Utc>,
+        reason: CapTruncationDeactivationGuardReason,
+        guard_cycles: u32,
+    ) -> bool {
+        if self.cap_truncation_floor.is_none()
+            || self.cap_truncation_deactivation_guard_started_at.is_some()
+        {
+            return false;
+        }
+        self.cap_truncation_deactivation_guard_cycles_remaining = guard_cycles.max(1);
+        self.cap_truncation_deactivation_guard_started_at = Some(now);
+        self.cap_truncation_deactivation_guard_reason = Some(reason);
+        self.cap_truncation_deactivation_guard_expired_logged = false;
+        true
     }
 
     pub(super) fn enforce_max_swaps(&mut self, max_swaps: usize) -> usize {
@@ -89,6 +139,28 @@ impl DiscoveryWindowState {
             self.cap_truncation_floor = self.swaps.front().map(DiscoveryCursor::from_swap);
         }
         evicted
+    }
+
+    pub(super) fn cap_truncation_deactivations_suppressed(&self) -> bool {
+        self.cap_truncation_floor.is_some()
+            && self.cap_truncation_deactivation_guard_cycles_remaining > 0
+    }
+
+    pub(super) fn consume_cap_truncation_deactivation_guard(&mut self) -> bool {
+        if !self.cap_truncation_deactivations_suppressed() {
+            return false;
+        }
+        self.cap_truncation_deactivation_guard_cycles_remaining = self
+            .cap_truncation_deactivation_guard_cycles_remaining
+            .saturating_sub(1);
+        if self.cap_truncation_floor.is_some()
+            && self.cap_truncation_deactivation_guard_cycles_remaining == 0
+            && !self.cap_truncation_deactivation_guard_expired_logged
+        {
+            self.cap_truncation_deactivation_guard_expired_logged = true;
+            return true;
+        }
+        false
     }
 
     pub(super) fn arm_aggregate_transition_guard(&mut self, cycles: u32) {
