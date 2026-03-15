@@ -3056,10 +3056,14 @@ async fn run_app_loop(
                             Ok(summary) if !summary.is_empty() => {
                                 info!(
                                     risk_events_deleted = summary.risk_events_deleted,
+                                    risk_events_batches = summary.risk_events_batches,
                                     copy_signals_deleted = summary.copy_signals_deleted,
+                                    copy_signals_batches = summary.copy_signals_batches,
                                     orders_deleted = summary.orders_deleted,
+                                    execution_order_batches = summary.execution_order_batches,
                                     fills_deleted = summary.fills_deleted,
                                     shadow_closed_trades_deleted = summary.shadow_closed_trades_deleted,
+                                    shadow_closed_trades_batches = summary.shadow_closed_trades_batches,
                                     "history retention sweep applied"
                                 );
                             }
