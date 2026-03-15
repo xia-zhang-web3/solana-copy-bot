@@ -3075,7 +3075,7 @@ Ordered coder follow-up queue:
       2. unfollowed buys drop before raw persistence,
       3. cold unfollowed sells without recent follow history / pending-inflight work / open lots drop before raw persistence,
       4. relevant swaps still immediate-persist before risk / scheduler path.
-5. `P1` investigate SQLite/WAL reliability as a separate track.
+5. `DONE 2026-03-15` investigate SQLite/WAL reliability as a separate track.
    1. filesystem / WAL / checkpoint / runtime environment,
    2. repeated `xShmMap` / disk-I/O failures stay on this track,
    3. not a `replaced_ratio` tuning exercise,
@@ -3108,11 +3108,15 @@ Ordered coder follow-up queue:
    30. `DONE 2026-03-14` hard-stop clear and exposure-hard-cap clear writes now preserve active runtime block state on fatal SQLite I/O instead of half-applying the clear before persistence succeeds,
    31. `DONE 2026-03-14` operator emergency-stop clear writes now preserve active runtime fail-closed state on fatal SQLite I/O instead of half-applying the clear before `operator_emergency_stop_cleared` persistence succeeds,
    32. `DONE 2026-03-15` observed-swap writer startup replay now fails closed on fatal SQLite I/O during materialization-gap cursor latch instead of silently swallowing fatal gap-cursor writes behind the generic aggregate replay error path,
-   33. remaining work is still broader than startup / heartbeat / history retention / observed-swap retention / stale-close cleanup / alert delivery / discovery cursor persistence / writer-owned discovery scoring materialization / observed-swap writer startup replay gap-cursor latch / discovery token-quality cache / discovery activity-day counts / discovery cursor-load restore / discovery warm-load / direct `main.rs` risk-event writes / startup durable pause restore / periodic shadow-risk background refresh / shadow open-lot refresh / `ShadowRiskGuard` state-event writes / drawdown timed-pause activation writes / expired timed-pause clear writes / discovery-cycle universe event writes / ingestion-snapshot infra event writes / `shadow_risk_fail_closed` event writes / shadow worker task outcomes / shadow snapshot task outcomes / execution batch task outcomes / soft-exposure pause clear writes / hard-stop clear and exposure-hard-cap clear writes / operator emergency-stop clear writes:
-      1. verify other non-startup write paths have the right fatal vs retryable semantics,
-      2. keep filesystem / environment diagnosis separate from app-level fail-closed policy,
-   34. not closed by either `e24eca2` or `8caa9b7`.
-6. `P2` only after instrumentation decide whether runtime tuning is needed.
+   33. `DONE 2026-03-15` exhaustive follow-up scan across the remaining non-startup runtime write / update / delete / cursor / checkpoint paths did not find another masked fatal-vs-retryable SQLite branch after the slices above.
+      1. Any remaining runtime SQLite failures in this section now either:
+         1. bubble through an existing task/app fatal classifier,
+         2. or intentionally stay on a busy/locked warn-only path with preserved runtime state.
+      2. Filesystem / environment diagnosis remains a separate operational track and is not conflated here with app-level fail-closed policy.
+   34. This track was not closed by either `e24eca2` or `8caa9b7` alone; it is now closed by the accumulated follow-up slices through `9ed2b8b`.
+6. `DONE 2026-03-15` after instrumentation, decide whether runtime tuning is needed.
    1. do not start with simply raising queue capacity,
    2. do not start with simply raising Yellowstone thresholds,
-   3. first prove where burst pressure really sits after the decoupling slice.
+   3. verdict: do not change runtime knobs in code yet,
+   4. first use the new telemetry / runtime reasons / persisted infra-stop payloads to observe whether sustained post-decoupling pressure still exists outside transient startup or replay windows,
+   5. only revisit queue-capacity or Yellowstone-threshold tuning if production evidence shows a persistent bottleneck after the decoupling + telemetry + SQLite/WAL hardening slices above.
