@@ -1643,7 +1643,7 @@ impl ShadowRiskGuard {
                 if self.infra_candidate_streak >= RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES {
                     let reason = signal.reason;
                     warn!(reason = %reason, "shadow risk infra stop activated");
-                    let details_json = format!("{{\"reason\":\"{}\"}}", reason);
+                    let details_json = self.build_infra_stop_details_json(&reason);
                     if self.should_emit_infra_event(now) {
                         record_shadow_risk_state_event_or_warn(
                             store,
@@ -2070,6 +2070,37 @@ impl ShadowRiskGuard {
             Some(context) => format!("{reason} {context}"),
             None => reason,
         }
+    }
+
+    fn build_infra_stop_details_json(&self, reason: &str) -> String {
+        let mut details = serde_json::Map::new();
+        details.insert(
+            "reason".to_string(),
+            serde_json::Value::String(reason.to_string()),
+        );
+        if self.uses_yellowstone_ingestion() {
+            if let Some(snapshot) = self.infra_samples.back() {
+                if snapshot.yellowstone_output_queue_capacity > 0 {
+                    details.insert(
+                        "yellowstone_output_queue_depth".to_string(),
+                        serde_json::Value::from(snapshot.yellowstone_output_queue_depth),
+                    );
+                    details.insert(
+                        "yellowstone_output_queue_capacity".to_string(),
+                        serde_json::Value::from(snapshot.yellowstone_output_queue_capacity),
+                    );
+                    details.insert(
+                        "yellowstone_output_queue_fill_ratio".to_string(),
+                        serde_json::Value::from(snapshot.yellowstone_output_queue_fill_ratio),
+                    );
+                    details.insert(
+                        "yellowstone_output_oldest_age_ms".to_string(),
+                        serde_json::Value::from(snapshot.yellowstone_output_oldest_age_ms),
+                    );
+                }
+            }
+        }
+        serde_json::Value::Object(details).to_string()
     }
 
     fn compute_infra_block_signal(&self, now: DateTime<Utc>) -> Option<InfraBlockSignal> {
@@ -4902,6 +4933,172 @@ mod app_tests {
             "non-yellowstone source must not append yellowstone queue context: {}",
             reason
         );
+    }
+
+    #[test]
+    fn risk_guard_observe_ingestion_snapshot_persists_yellowstone_queue_context_in_infra_stop_details()
+    -> Result<()> {
+        let (store, db_path) = make_test_store("infra-stop-yellowstone-details")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new_with_ingestion_source(cfg, "yellowstone_grpc");
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            infra_snapshot_with_yellowstone_queue(
+                now - chrono::Duration::minutes(21),
+                10_000,
+                0,
+                7,
+                10,
+                120,
+            ),
+            infra_snapshot_with_yellowstone_queue(
+                now - chrono::Duration::minutes(10),
+                10_000,
+                0,
+                8,
+                10,
+                240,
+            ),
+            infra_snapshot_with_yellowstone_queue(now, 10_000, 0, 9, 10, 360),
+        ]);
+
+        for offset in 1..=RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES {
+            guard.observe_ingestion_snapshot(
+                &store,
+                now + chrono::Duration::seconds(20 * offset as i64),
+                Some(infra_snapshot_with_yellowstone_queue(
+                    now + chrono::Duration::seconds(20 * offset as i64),
+                    10_000,
+                    0,
+                    9,
+                    10,
+                    360,
+                )),
+            )?;
+        }
+
+        let infra_stops = store.list_risk_events_by_type_desc("shadow_risk_infra_stop")?;
+        assert_eq!(infra_stops.len(), 1, "expected one infra stop event");
+        let details_json = infra_stops[0]
+            .details_json
+            .as_deref()
+            .expect("infra stop event must include details_json");
+        let details: serde_json::Value = serde_json::from_str(details_json)
+            .context("failed to parse infra stop details_json")?;
+        let reason = details
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .expect("infra stop details must include reason");
+        assert!(
+            reason.contains("no_ingestion_progress_for=20m"),
+            "unexpected reason: {reason}"
+        );
+        assert_eq!(
+            details
+                .get("yellowstone_output_queue_depth")
+                .and_then(serde_json::Value::as_u64),
+            Some(9)
+        );
+        assert_eq!(
+            details
+                .get("yellowstone_output_queue_capacity")
+                .and_then(serde_json::Value::as_u64),
+            Some(10)
+        );
+        assert_eq!(
+            details
+                .get("yellowstone_output_oldest_age_ms")
+                .and_then(serde_json::Value::as_u64),
+            Some(360)
+        );
+        let fill_ratio = details
+            .get("yellowstone_output_queue_fill_ratio")
+            .and_then(serde_json::Value::as_f64)
+            .expect("yellowstone details must include fill ratio");
+        assert!(
+            (fill_ratio - 0.9).abs() < f64::EPSILON,
+            "unexpected fill ratio: {fill_ratio}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_observe_ingestion_snapshot_omits_yellowstone_queue_context_in_infra_stop_details_for_non_yellowstone()
+    -> Result<()> {
+        let (store, db_path) = make_test_store("infra-stop-non-yellowstone-details")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            infra_snapshot_with_yellowstone_queue(
+                now - chrono::Duration::minutes(21),
+                10_000,
+                0,
+                7,
+                10,
+                120,
+            ),
+            infra_snapshot_with_yellowstone_queue(
+                now - chrono::Duration::minutes(10),
+                10_000,
+                0,
+                8,
+                10,
+                240,
+            ),
+            infra_snapshot_with_yellowstone_queue(now, 10_000, 0, 9, 10, 360),
+        ]);
+
+        for offset in 1..=RISK_INFRA_ACTIVATE_CONSECUTIVE_SAMPLES {
+            guard.observe_ingestion_snapshot(
+                &store,
+                now + chrono::Duration::seconds(20 * offset as i64),
+                Some(infra_snapshot_with_yellowstone_queue(
+                    now + chrono::Duration::seconds(20 * offset as i64),
+                    10_000,
+                    0,
+                    9,
+                    10,
+                    360,
+                )),
+            )?;
+        }
+
+        let infra_stops = store.list_risk_events_by_type_desc("shadow_risk_infra_stop")?;
+        assert_eq!(infra_stops.len(), 1, "expected one infra stop event");
+        let details_json = infra_stops[0]
+            .details_json
+            .as_deref()
+            .expect("infra stop event must include details_json");
+        let details: serde_json::Value = serde_json::from_str(details_json)
+            .context("failed to parse infra stop details_json")?;
+        assert!(
+            details.get("reason").is_some(),
+            "infra stop details must still include reason"
+        );
+        assert!(
+            details.get("yellowstone_output_queue_depth").is_none(),
+            "non-yellowstone infra stop details must omit yellowstone queue fields: {details_json}"
+        );
+        assert!(
+            details.get("yellowstone_output_queue_capacity").is_none(),
+            "non-yellowstone infra stop details must omit yellowstone queue fields: {details_json}"
+        );
+        assert!(
+            details.get("yellowstone_output_queue_fill_ratio").is_none(),
+            "non-yellowstone infra stop details must omit yellowstone queue fields: {details_json}"
+        );
+        assert!(
+            details.get("yellowstone_output_oldest_age_ms").is_none(),
+            "non-yellowstone infra stop details must omit yellowstone queue fields: {details_json}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
     }
 
     #[test]

@@ -3053,9 +3053,10 @@ Ordered coder follow-up queue:
       3. `app_follow_rejected_ratio`,
       4. `app_consumer_loop_time_ms_p95`.
    4. `4522eef Expose Yellowstone queue metrics in runtime snapshots` carried the Yellowstone output-queue fields through `IngestionRuntimeSnapshot`, so app/runtime consumers can read them without parsing logs.
-   5. Remaining telemetry gap:
+   5. `DONE 2026-03-15` downstream consumers now act on the new Yellowstone queue fields.
       1. `DONE 2026-03-14` `1e04fcc Fix Yellowstone stage depth telemetry` stopped hardcoding `fetch_to_output_queue_depth = 0` for Yellowstone and now routes output backlog to the honest generic stage-depth mapping (`ws_to_fetch_queue_depth = 0`, `fetch_to_output_queue_depth = output backlog`),
-      2. downstream consumers are not yet acting on the new Yellowstone queue fields.
+      2. `DONE 2026-03-15` `cb05a92 Use Yellowstone queue context in infra reasons` made the app-side infra gate surface Yellowstone queue backlog context in runtime `infra_block_reason` strings without changing thresholds or adding new gates,
+      3. `DONE 2026-03-15` persisted `shadow_risk_infra_stop` events now carry structured Yellowstone queue fields (`depth`, `capacity`, `fill_ratio`, `oldest_age_ms`) in `details_json`, so downstream consumers no longer need to parse logs or free-form reason strings to recover backlog context.
 3. `DONE 2026-03-14` remove retention/WAL maintenance from the observed-swap writer hot path.
    1. Closed by `4f5f343 Move observed swap retention out of writer loop`.
    2. The writer now owns:
