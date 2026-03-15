@@ -155,6 +155,7 @@ pub struct DiscoverySummary {
     pub top_wallets: Vec<String>,
     pub published: bool,
     pub scoring_source: &'static str,
+    pub trusted_selection_fail_closed: bool,
     pub raw_window_cap_truncated: bool,
     pub cap_truncation_deactivation_guard_active: bool,
     pub cap_truncation_deactivation_guard_reason: Option<&'static str>,
@@ -369,7 +370,17 @@ impl DiscoveryService {
                 now,
                 Duration::seconds(self.config.refresh_seconds.max(1) as i64),
             )?;
-        let (swaps_window, fetch_progress, cap_truncation_telemetry, prepared_cycle) = {
+        let recovered_active_follow_wallets = !store.list_active_follow_wallets()?.is_empty();
+        let trusted_selection_bootstrap_required = store
+            .discovery_trusted_selection_bootstrap_required()
+            .context("failed to load discovery trusted bootstrap requirement")?;
+        let (
+            swaps_window,
+            fetch_progress,
+            cap_truncation_telemetry,
+            trusted_selection_bootstrap_pending,
+            prepared_cycle,
+        ) = {
             let mut state = match self.window_state.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => {
@@ -408,6 +419,19 @@ impl DiscoveryService {
                 });
                 state.cursor =
                     Some(restored.unwrap_or_else(|| DiscoveryCursor::bootstrap(window_start)));
+                if (recovered_active_follow_wallets || trusted_selection_bootstrap_required)
+                    && !aggregate_scoring_ready
+                {
+                    state.trusted_selection_bootstrap_pending = true;
+                    if let Err(error) = store.set_discovery_trusted_selection_bootstrap_required(
+                        true,
+                        "startup_selection_bootstrap_required",
+                    ) {
+                        return Err(error).context(
+                            "failed persisting discovery trusted bootstrap requirement",
+                        );
+                    }
+                }
             }
 
             let mut cursor = state
@@ -561,6 +585,8 @@ impl DiscoveryService {
                 state.cap_truncation_deactivations_suppressed(raw_window_history_incomplete);
             let cap_truncation_telemetry =
                 snapshot_cap_truncation_telemetry(&state, followlist_deactivations_suppressed);
+            let trusted_selection_bootstrap_pending =
+                state.trusted_selection_bootstrap_pending && !aggregate_scoring_ready;
             let bootstrap_from_persisted_metrics =
                 state.bootstrap_from_persisted_metrics && state.swaps.is_empty();
             let truncated_warm_restore_bootstrap =
@@ -579,6 +605,7 @@ impl DiscoveryService {
             if aggregate_scoring_ready {
                 state.bootstrap_from_persisted_metrics = false;
                 state.truncated_warm_restore_bootstrap = false;
+                state.trusted_selection_bootstrap_pending = false;
                 if !state.last_summary_from_aggregates {
                     state.arm_aggregate_transition_guard(
                         AGGREGATE_FOLLOWLIST_TRANSITION_GUARD_CYCLES,
@@ -589,6 +616,7 @@ impl DiscoveryService {
                     swaps_window,
                     fetch_progress,
                     cap_truncation_telemetry,
+                    trusted_selection_bootstrap_pending,
                     if state.last_snapshot_bucket == Some(metrics_window_start)
                         && state.last_summary_from_aggregates
                         && state.last_summary.is_some()
@@ -619,6 +647,7 @@ impl DiscoveryService {
                     swaps_window,
                     fetch_progress,
                     cap_truncation_telemetry,
+                    trusted_selection_bootstrap_pending,
                     PreparedCycleState::Empty {
                         publish_due,
                         followlist_deactivations_suppressed: false,
@@ -631,6 +660,7 @@ impl DiscoveryService {
                     swaps_window,
                     fetch_progress,
                     cap_truncation_telemetry,
+                    trusted_selection_bootstrap_pending,
                     PreparedCycleState::PersistedBootstrap {
                         publish_due,
                         followlist_activations_suppressed: true,
@@ -646,6 +676,7 @@ impl DiscoveryService {
                     swaps_window,
                     fetch_progress,
                     cap_truncation_telemetry,
+                    trusted_selection_bootstrap_pending,
                     PreparedCycleState::Cached {
                         publish_due,
                         followlist_activations_suppressed: false,
@@ -661,6 +692,7 @@ impl DiscoveryService {
                     swaps_window,
                     fetch_progress,
                     cap_truncation_telemetry,
+                    trusted_selection_bootstrap_pending,
                     PreparedCycleState::Recompute {
                         publish_due,
                         followlist_activations_suppressed: raw_window_history_incomplete
@@ -672,6 +704,116 @@ impl DiscoveryService {
                 )
             }
         };
+
+        if trusted_selection_bootstrap_pending {
+            let (publish_due, bootstrap_scoring_source, invalid_scoring_source) =
+                match &prepared_cycle {
+                    PreparedCycleState::PersistedBootstrap {
+                        publish_due,
+                        scoring_source,
+                        ..
+                    } => (
+                        *publish_due,
+                        *scoring_source,
+                        "persisted_wallet_metrics_truncated_warm_restore_empty",
+                    ),
+                    PreparedCycleState::AggregateRecompute { publish_due, .. }
+                    | PreparedCycleState::Empty { publish_due, .. }
+                    | PreparedCycleState::Cached { publish_due, .. }
+                    | PreparedCycleState::Recompute { publish_due, .. } => (
+                        *publish_due,
+                        "trusted_persisted_wallet_metrics_bootstrap",
+                        "trusted_persisted_wallet_metrics_bootstrap_unavailable",
+                    ),
+                };
+            if let Some(snapshots) =
+                self.build_wallet_snapshots_from_latest_metrics(store, now, metrics_window_start)?
+            {
+                let summary = self.persist_trusted_selection_from_snapshots(
+                    store,
+                    window_start,
+                    &snapshots,
+                    publish_due,
+                    &cap_truncation_telemetry,
+                    bootstrap_scoring_source,
+                    now,
+                    "discovery_trusted_persisted_metrics_bootstrap",
+                )?;
+                if summary.published {
+                    self.record_live_publish(now);
+                }
+                {
+                    let mut state = match self.window_state.lock() {
+                        Ok(guard) => guard,
+                        Err(poisoned) => {
+                            warn!("discovery window mutex poisoned while clearing trusted bootstrap pending state; continuing");
+                            poisoned.into_inner()
+                        }
+                    };
+                    state.trusted_selection_bootstrap_pending = false;
+                    state.bootstrap_from_persisted_metrics = false;
+                    state.truncated_warm_restore_bootstrap = false;
+                    state.last_snapshot_bucket = Some(metrics_window_start);
+                    state.last_summary = Some(summary.clone());
+                    state.note_scoring_source(false);
+                }
+                store
+                    .set_discovery_trusted_selection_bootstrap_required(
+                        false,
+                        "trusted_selection_bootstrap_satisfied",
+                    )
+                    .context("failed clearing discovery trusted bootstrap requirement")?;
+                warn!(
+                    metrics_window_start = %metrics_window_start,
+                    follow_top_n = self.config.follow_top_n,
+                    trusted_wallets_seen = summary.wallets_seen,
+                    trusted_eligible_wallets = summary.eligible_wallets,
+                    active_follow_wallets = summary.active_follow_wallets,
+                    "discovery restored trusted top-N selection from persisted wallet_metrics bootstrap"
+                );
+                return Ok(summary);
+            }
+
+            let follow_delta = store.persist_discovery_cycle(
+                &[],
+                &[],
+                &[],
+                false,
+                true,
+                now,
+                "discovery_invalid_selection_fail_closed",
+            )?;
+            store
+                .set_discovery_trusted_selection_bootstrap_required(
+                    true,
+                    "trusted_selection_bootstrap_unavailable",
+                )
+                .context("failed persisting discovery invalid selection fail-close state")?;
+            let active_follow_wallets = store.list_active_follow_wallets()?.len();
+            if publish_due {
+                self.record_live_publish(now);
+            }
+            warn!(
+                metrics_window_start = %metrics_window_start,
+                recovered_follow_wallets_cleared = follow_delta.deactivated,
+                "discovery trusted bootstrap unavailable; fail-closing recovered followlist until a trusted persisted selection source exists"
+            );
+            return Ok(DiscoverySummary {
+                window_start,
+                wallets_seen: 0,
+                eligible_wallets: 0,
+                metrics_written: 0,
+                follow_promoted: 0,
+                follow_demoted: follow_delta.deactivated,
+                active_follow_wallets,
+                top_wallets: Vec::new(),
+                published: publish_due,
+                trusted_selection_fail_closed: true,
+                ..DiscoverySummary::default()
+            }
+            .with_scoring_source(invalid_scoring_source)
+            .with_cap_truncation_telemetry(&cap_truncation_telemetry));
+        }
 
         let (
             publish_due,
@@ -1347,6 +1489,69 @@ impl DiscoveryService {
                 .map(|row| self.snapshot_from_persisted_metrics(row, decay_cutoff))
                 .collect(),
         ))
+    }
+
+    fn wallet_rows_from_snapshots(&self, snapshots: &[WalletSnapshot]) -> Vec<WalletUpsertRow> {
+        snapshots
+            .iter()
+            .map(|snapshot| WalletUpsertRow {
+                wallet_id: snapshot.wallet_id.clone(),
+                first_seen: snapshot.first_seen,
+                last_seen: snapshot.last_seen,
+                status: if snapshot.eligible {
+                    "candidate".to_string()
+                } else {
+                    "observed".to_string()
+                },
+            })
+            .collect()
+    }
+
+    fn persist_trusted_selection_from_snapshots(
+        &self,
+        store: &SqliteStore,
+        window_start: DateTime<Utc>,
+        snapshots: &[WalletSnapshot],
+        publish_due: bool,
+        cap_truncation_telemetry: &CapTruncationTelemetrySnapshot,
+        scoring_source: &'static str,
+        now: DateTime<Utc>,
+        reason: &str,
+    ) -> Result<DiscoverySummary> {
+        let wallet_rows = self.wallet_rows_from_snapshots(snapshots);
+        let ranked = rank_follow_candidates(snapshots, self.config.min_score);
+        let desired_wallets = desired_wallets(&ranked, self.config.follow_top_n);
+        let follow_delta = store.persist_discovery_cycle(
+            &wallet_rows,
+            &[],
+            &desired_wallets,
+            true,
+            true,
+            now,
+            reason,
+        )?;
+        let active_follow_wallets = store.list_active_follow_wallets()?.len();
+        store
+            .set_discovery_trusted_selection_bootstrap_required(
+                false,
+                "trusted_selection_bootstrap_satisfied",
+            )
+            .context("failed clearing discovery trusted bootstrap requirement")?;
+
+        Ok(DiscoverySummary {
+            window_start,
+            wallets_seen: snapshots.len(),
+            eligible_wallets: ranked.len(),
+            metrics_written: 0,
+            follow_promoted: follow_delta.activated,
+            follow_demoted: follow_delta.deactivated,
+            active_follow_wallets,
+            top_wallets: top_wallet_labels(&ranked, 5),
+            published: publish_due,
+            ..DiscoverySummary::default()
+        }
+        .with_scoring_source(scoring_source)
+        .with_cap_truncation_telemetry(cap_truncation_telemetry))
     }
 
     fn build_wallet_snapshots_from_aggregates(
@@ -2474,6 +2679,254 @@ mod tests {
     }
 
     #[test]
+    fn restart_with_recovered_historical_followlist_uses_trusted_persisted_top_n_selection(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("test-trusted-persisted-bootstrap-top-n.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-15T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 5;
+        config.decay_window_days = 5;
+        config.observed_swaps_retention_days = 7;
+        config.follow_top_n = 1;
+        config.min_score = 0.1;
+        let metrics_window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+
+        for wallet in ["wallet_top", "wallet_legacy"] {
+            store.upsert_wallet(
+                wallet,
+                now - Duration::days(4),
+                now - Duration::minutes(5),
+                "candidate",
+            )?;
+            store.activate_follow_wallet(wallet, now - Duration::minutes(5), "seed-follow")?;
+        }
+        store.insert_wallet_metric(&WalletMetricRow {
+            wallet_id: "wallet_top".to_string(),
+            window_start: metrics_window_start,
+            pnl: 3.1,
+            win_rate: 0.91,
+            trades: 20,
+            closed_trades: 10,
+            hold_median_seconds: 420,
+            score: 0.95,
+            buy_total: 12,
+            tradable_ratio: 1.0,
+            rug_ratio: 0.0,
+        })?;
+        store.insert_wallet_metric(&WalletMetricRow {
+            wallet_id: "wallet_legacy".to_string(),
+            window_start: metrics_window_start,
+            pnl: 0.5,
+            win_rate: 0.51,
+            trades: 8,
+            closed_trades: 4,
+            hold_median_seconds: 900,
+            score: -0.2,
+            buy_total: 4,
+            tradable_ratio: 1.0,
+            rug_ratio: 0.0,
+        })?;
+        store.upsert_discovery_runtime_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::days(1),
+            slot: 7,
+            signature: "cursor-trusted-bootstrap".to_string(),
+        })?;
+
+        let discovery_after_restart = DiscoveryService::new(config, permissive_shadow_quality());
+        let summary = discovery_after_restart.run_cycle(&store, now)?;
+        assert_eq!(
+            summary.scoring_source,
+            "trusted_persisted_wallet_metrics_bootstrap"
+        );
+        assert_eq!(summary.eligible_wallets, 1);
+        assert_eq!(summary.active_follow_wallets, 1);
+        assert_eq!(summary.follow_promoted, 0);
+        assert_eq!(
+            summary.follow_demoted, 1,
+            "trusted bootstrap must deactivate recovered historical wallets outside desired top-N"
+        );
+        let active_after = store.list_active_follow_wallets()?;
+        assert_eq!(active_after.len(), 1);
+        assert!(active_after.contains("wallet_top"));
+        assert!(!active_after.contains("wallet_legacy"));
+        assert!(
+            !store.discovery_trusted_selection_bootstrap_required()?,
+            "trusted persisted bootstrap should clear the durable bootstrap-required flag"
+        );
+        let state = discovery_after_restart
+            .window_state
+            .lock()
+            .expect("window_state lock should succeed");
+        assert!(
+            !state.trusted_selection_bootstrap_pending,
+            "trusted persisted bootstrap should clear bootstrap-pending mode"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn restart_with_recovered_historical_followlist_fail_closes_without_trusted_persisted_selection(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-trusted-bootstrap-fail-closed.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-15T12:05:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 5;
+        config.decay_window_days = 5;
+        config.observed_swaps_retention_days = 7;
+        config.follow_top_n = 15;
+
+        for wallet in ["wallet_hist_a", "wallet_hist_b", "wallet_hist_c"] {
+            store.upsert_wallet(
+                wallet,
+                now - Duration::days(4),
+                now - Duration::minutes(5),
+                "candidate",
+            )?;
+            store.activate_follow_wallet(wallet, now - Duration::minutes(5), "seed-follow")?;
+        }
+        store.upsert_discovery_runtime_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::days(1),
+            slot: 8,
+            signature: "cursor-invalid-bootstrap".to_string(),
+        })?;
+
+        let discovery_after_restart = DiscoveryService::new(config, permissive_shadow_quality());
+        let summary = discovery_after_restart.run_cycle(&store, now)?;
+        assert_eq!(
+            summary.scoring_source,
+            "trusted_persisted_wallet_metrics_bootstrap_unavailable"
+        );
+        assert_eq!(summary.eligible_wallets, 0);
+        assert!(summary.top_wallets.is_empty());
+        assert_eq!(summary.follow_promoted, 0);
+        assert_eq!(summary.active_follow_wallets, 0);
+        assert_eq!(
+            summary.follow_demoted, 3,
+            "invalid bootstrap state must fail-close the recovered historical followlist"
+        );
+        assert!(
+            store.list_active_follow_wallets()?.is_empty(),
+            "invalid bootstrap state must not keep running on the recovered historical active set"
+        );
+        assert!(
+            store.discovery_trusted_selection_bootstrap_required()?,
+            "invalid bootstrap state must persist its bootstrap-required fail-close marker across process restarts"
+        );
+        let state = discovery_after_restart
+            .window_state
+            .lock()
+            .expect("window_state lock should succeed");
+        assert!(
+            state.trusted_selection_bootstrap_pending,
+            "fail-closed bootstrap should keep retrying trusted persisted selection instead of falling back to raw-window trust"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn second_restart_after_fail_close_keeps_trusted_selection_bootstrap_pending_without_falling_back_to_raw_window(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("test-trusted-bootstrap-fail-close-second-restart.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-15T12:10:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let restart_now = now + Duration::minutes(1);
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 5;
+        config.decay_window_days = 5;
+        config.observed_swaps_retention_days = 7;
+        config.follow_top_n = 15;
+
+        for wallet in ["wallet_hist_a", "wallet_hist_b"] {
+            store.upsert_wallet(
+                wallet,
+                now - Duration::days(4),
+                now - Duration::minutes(5),
+                "candidate",
+            )?;
+            store.activate_follow_wallet(wallet, now - Duration::minutes(5), "seed-follow")?;
+        }
+        store.upsert_wallet(
+            "wallet_raw_only",
+            now - Duration::hours(2),
+            restart_now - Duration::seconds(5),
+            "candidate",
+        )?;
+        store.insert_observed_swap(&SwapEvent {
+            signature: "sig-raw-only-bootstrap".to_string(),
+            wallet: "wallet_raw_only".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-raw-only".to_string(),
+            amount_in: 1.0,
+            amount_out: 1000.0,
+            slot: 44,
+            ts_utc: restart_now - Duration::minutes(1),
+            exact_amounts: None,
+        })?;
+        store.upsert_discovery_runtime_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::days(1),
+            slot: 9,
+            signature: "cursor-invalid-bootstrap-second-restart".to_string(),
+        })?;
+
+        let first_restart = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let first_summary = first_restart.run_cycle(&store, now)?;
+        assert_eq!(
+            first_summary.scoring_source,
+            "trusted_persisted_wallet_metrics_bootstrap_unavailable"
+        );
+        assert!(store.list_active_follow_wallets()?.is_empty());
+        assert!(store.discovery_trusted_selection_bootstrap_required()?);
+
+        let second_restart = DiscoveryService::new(config, permissive_shadow_quality());
+        let second_summary = second_restart.run_cycle(&store, restart_now)?;
+        assert_eq!(
+            second_summary.scoring_source,
+            "trusted_persisted_wallet_metrics_bootstrap_unavailable",
+            "durable invalid-selection state must survive a second restart instead of falling back to raw-window selection"
+        );
+        assert_eq!(second_summary.follow_promoted, 0);
+        assert_eq!(second_summary.follow_demoted, 0);
+        assert_eq!(second_summary.active_follow_wallets, 0);
+        assert!(second_summary.top_wallets.is_empty());
+        assert!(
+            store.list_active_follow_wallets()?.is_empty(),
+            "raw-window-only candidates must not become the new active followlist while trusted bootstrap remains unavailable"
+        );
+        assert!(store.discovery_trusted_selection_bootstrap_required()?);
+        let state = second_restart
+            .window_state
+            .lock()
+            .expect("window_state lock should succeed");
+        assert!(state.trusted_selection_bootstrap_pending);
+        Ok(())
+    }
+
+    #[test]
     fn short_retention_bootstrap_does_not_republish_every_tick_or_repersist_metrics() -> Result<()>
     {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -2547,7 +3000,8 @@ mod tests {
     }
 
     #[test]
-    fn short_retention_raw_recompute_suppresses_false_promotions_but_allows_demotions() -> Result<()>
+    fn short_retention_restart_prefers_trusted_persisted_selection_over_truncated_raw_window(
+    ) -> Result<()>
     {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("test-short-retention-no-false-demote.db");
@@ -2604,16 +3058,16 @@ mod tests {
         let summary = discovery.run_cycle(&store, now + Duration::minutes(1))?;
         assert_eq!(
             summary.follow_promoted, 0,
-            "short-retention recompute must not promote new leaders from a truncated raw window"
+            "trusted bootstrap must not promote new leaders from a truncated raw window"
         );
         assert_eq!(
-            summary.follow_demoted, 1,
-            "short-retention recompute should no longer keep deactivation globally disabled"
+            summary.follow_demoted, 0,
+            "trusted persisted bootstrap should keep the trusted top-N wallet active instead of demoting from truncated raw data"
         );
         let active_after = store.list_active_follow_wallets()?;
         assert!(
-            !active_after.contains("wallet_a"),
-            "previously followed wallet_a should be removable again once short-retention raw recompute runs"
+            active_after.contains("wallet_a"),
+            "trusted persisted bootstrap should keep wallet_a as the active top-N selection"
         );
         assert!(
             !active_after.contains("wallet_noise"),
@@ -3498,8 +3952,6 @@ mod tests {
             .with_timezone(&Utc);
         let window_start = now - Duration::days(1);
 
-        store.activate_follow_wallet("wallet_leader", now - Duration::minutes(5), "seed-follow")?;
-
         for (idx, offset_minutes) in [5, 45].into_iter().enumerate() {
             let buy_ts = window_start + Duration::minutes(offset_minutes);
             let sell_ts = buy_ts + Duration::minutes(10);
@@ -3574,22 +4026,18 @@ mod tests {
             "cap-truncated raw recompute must not promote from a partial tail even when the retained tail spans most of the scoring horizon"
         );
         assert_eq!(
-            summary.follow_demoted, 0,
-            "cap-truncated raw recompute must not demote the pre-existing active leader while the truncation floor still marks missing history"
-        );
-        assert_eq!(
             summary.metrics_written, 0,
             "cap-truncated raw recompute must not persist wallet_metrics from a partial tail even when the retained span exceeds the old coverage heuristic"
         );
 
         let active_follow_wallets = store.list_active_follow_wallets()?;
         assert!(
-            active_follow_wallets.contains("wallet_leader"),
-            "existing followed leader must remain active while cap truncation still marks missing early history"
-        );
-        assert!(
             !active_follow_wallets.contains("wallet_candidate"),
             "partial-tail candidate must not activate while raw discovery is still source-invalid"
+        );
+        assert!(
+            active_follow_wallets.is_empty(),
+            "cap-truncated raw recompute must not publish a new active follow universe from an incomplete tail"
         );
         assert_eq!(
             store.latest_wallet_metrics_window_start()?,

@@ -39,6 +39,49 @@ pub(crate) fn upsert_wallet_activity_days_on_conn(
 }
 
 impl SqliteStore {
+    pub fn discovery_trusted_selection_bootstrap_required(&self) -> Result<bool> {
+        self.ensure_discovery_strategy_state_table()?;
+        let required = self
+            .conn
+            .query_row(
+                "SELECT trusted_selection_bootstrap_required
+                 FROM discovery_strategy_state
+                 WHERE id = 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .context("failed reading discovery trusted selection bootstrap requirement")?
+            .unwrap_or(0);
+        Ok(required != 0)
+    }
+
+    pub fn set_discovery_trusted_selection_bootstrap_required(
+        &self,
+        required: bool,
+        reason: &str,
+    ) -> Result<()> {
+        self.ensure_discovery_strategy_state_table()?;
+        self.execute_with_retry(|conn| {
+            conn.execute(
+                "INSERT INTO discovery_strategy_state(
+                    id,
+                    trusted_selection_bootstrap_required,
+                    trusted_selection_reason,
+                    updated_at
+                 ) VALUES (1, ?1, ?2, datetime('now'))
+                 ON CONFLICT(id) DO UPDATE SET
+                    trusted_selection_bootstrap_required =
+                        excluded.trusted_selection_bootstrap_required,
+                    trusted_selection_reason = excluded.trusted_selection_reason,
+                    updated_at = excluded.updated_at",
+                params![if required { 1 } else { 0 }, reason],
+            )
+        })
+        .context("failed updating discovery trusted selection bootstrap requirement")?;
+        Ok(())
+    }
+
     pub fn upsert_wallet_activity_days(&self, rows: &[WalletActivityDayRow]) -> Result<()> {
         if rows.is_empty() {
             return Ok(());
@@ -536,5 +579,19 @@ impl SqliteStore {
             })
             .context("failed to activate follow wallet")?;
         Ok(changed > 0)
+    }
+
+    fn ensure_discovery_strategy_state_table(&self) -> Result<()> {
+        self.conn
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS discovery_strategy_state (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    trusted_selection_bootstrap_required INTEGER NOT NULL DEFAULT 0,
+                    trusted_selection_reason TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                )",
+            )
+            .context("failed to ensure discovery_strategy_state table exists")?;
+        Ok(())
     }
 }

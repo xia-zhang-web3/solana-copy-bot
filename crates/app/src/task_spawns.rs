@@ -25,6 +25,7 @@ pub(crate) fn spawn_discovery_task(
             active_follow_wallets: summary.active_follow_wallets,
             published: summary.published,
             scoring_source: summary.scoring_source,
+            trusted_selection_fail_closed: summary.trusted_selection_fail_closed,
             raw_window_cap_truncated: summary.raw_window_cap_truncated,
             cap_truncation_deactivation_guard_active: summary
                 .cap_truncation_deactivation_guard_active,
