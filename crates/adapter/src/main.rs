@@ -2202,9 +2202,11 @@ fn validate_submit_response_policy_echoes(
 
     if let Some(compute_budget) = backend_response.get("compute_budget") {
         let Some(compute_budget) = compute_budget.as_object() else {
-            return Err(SubmitResponseValidationError::FieldMustBeObjectWhenPresent {
-                field_name: "compute_budget".to_string(),
-            });
+            return Err(
+                SubmitResponseValidationError::FieldMustBeObjectWhenPresent {
+                    field_name: "compute_budget".to_string(),
+                },
+            );
         };
         let response_cu_limit = parse_required_non_negative_submit_response_u64_field(
             compute_budget.get("cu_limit"),
@@ -2212,10 +2214,12 @@ fn validate_submit_response_policy_echoes(
         )?;
         let expected_cu_limit = u64::from(expected_cu_limit);
         if response_cu_limit != expected_cu_limit {
-            return Err(SubmitResponseValidationError::ComputeBudgetCuLimitMismatch {
-                response_cu_limit,
-                expected_cu_limit,
-            });
+            return Err(
+                SubmitResponseValidationError::ComputeBudgetCuLimitMismatch {
+                    response_cu_limit,
+                    expected_cu_limit,
+                },
+            );
         }
 
         let response_cu_price_micro_lamports =
@@ -2842,7 +2846,9 @@ mod tests {
             UpstreamOutcome::Reject(reject) => {
                 assert!(!reject.retryable);
                 assert_eq!(reject.code, "upstream_invalid_response");
-                assert!(reject.detail.contains("upstream ok must be boolean when present"));
+                assert!(reject
+                    .detail
+                    .contains("upstream ok must be boolean when present"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
@@ -2858,7 +2864,9 @@ mod tests {
             UpstreamOutcome::Reject(reject) => {
                 assert!(!reject.retryable);
                 assert_eq!(reject.code, "upstream_invalid_response");
-                assert!(reject.detail.contains("status=ok conflicts with reject flags"));
+                assert!(reject
+                    .detail
+                    .contains("status=ok conflicts with reject flags"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
@@ -2876,7 +2884,9 @@ mod tests {
             UpstreamOutcome::Reject(reject) => {
                 assert!(!reject.retryable);
                 assert_eq!(reject.code, "upstream_invalid_response");
-                assert!(reject.detail.contains("upstream code must be non-empty string when present"));
+                assert!(reject
+                    .detail
+                    .contains("upstream code must be non-empty string when present"));
             }
             UpstreamOutcome::Success => panic!("expected reject"),
         }
@@ -4937,8 +4947,7 @@ mod tests {
         else {
             return;
         };
-        let fallback_body =
-            r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
+        let fallback_body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
         let Some((fallback_url, fallback_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", fallback_body)
         else {
@@ -4968,7 +4977,8 @@ mod tests {
     #[tokio::test]
     async fn verify_submit_signature_rejects_invalid_confirmation_status_type_when_strict() {
         let signature = bs58::encode([74u8; 64]).into_string();
-        let body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":123}]}}"#;
+        let body =
+            r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":123}]}}"#;
         let Some((verify_url, handle)) = spawn_one_shot_upstream_raw(200, "application/json", body)
         else {
             return;
@@ -5155,8 +5165,7 @@ mod tests {
         ) else {
             return;
         };
-        let fallback_body =
-            r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
+        let fallback_body = r#"{"jsonrpc":"2.0","result":{"value":[{"err":null,"confirmationStatus":"confirmed"}]}}"#;
         let Some((fallback_url, fallback_handle)) =
             spawn_one_shot_upstream_raw(200, "application/json", fallback_body)
         else {
@@ -5240,11 +5249,7 @@ mod tests {
             .expect_err("non-success verify response should keep body detail");
         assert!(reject.retryable);
         assert_eq!(reject.code, "upstream_submit_signature_unseen");
-        assert!(
-            reject.detail.contains(body),
-            "detail={}",
-            reject.detail
-        );
+        assert!(reject.detail.contains(body), "detail={}", reject.detail);
         let _ = handle.join();
     }
 

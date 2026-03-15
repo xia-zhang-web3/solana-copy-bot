@@ -461,7 +461,10 @@ mod tests {
             "expected fatal sqlite marker to survive error chain, got: {error_text}"
         );
         assert_eq!(captured.lock().await.len(), 1);
-        assert_eq!(store.load_alert_delivery_cursor(ALERT_DELIVERY_CHANNEL)?, None);
+        assert_eq!(
+            store.load_alert_delivery_cursor(ALERT_DELIVERY_CHANNEL)?,
+            None
+        );
 
         handle.abort();
         let _ = std::fs::remove_file(db_path);

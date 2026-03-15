@@ -224,8 +224,7 @@ fn record_stale_close_risk_event_or_warn(
 ) -> Result<()> {
     if let Err(error) = store.insert_risk_event(event_type, "warn", now, Some(details_json)) {
         if stale_close_risk_event_error_requires_abort(&error) {
-            return Err(error)
-                .with_context(|| format!("{warn_message} with fatal sqlite I/O"));
+            return Err(error).with_context(|| format!("{warn_message} with fatal sqlite I/O"));
         }
         warn!(
             error = %error,

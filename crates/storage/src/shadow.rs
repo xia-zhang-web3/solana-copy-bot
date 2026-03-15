@@ -1,18 +1,18 @@
 use crate::sqlite_retry::is_retryable_sqlite_error;
 use crate::{
-    POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER, POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER,
-    SHADOW_CLOSE_CONTEXT_MARKET, SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
-    SHADOW_RISK_CONTEXT_MARKET, SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY, SQLITE_WRITE_MAX_RETRIES,
-    SQLITE_WRITE_RETRY_BACKOFF_MS, ShadowCloseOutcome, ShadowLotRow, SqliteStore,
     merge_position_qty_exact_on_sell, note_sqlite_busy_error, note_sqlite_write_retry,
     shadow_lot_cost_lamports, signed_lamports_to_sol, signed_lamports_to_sql_i64,
     sol_to_lamports_ceil_storage, sol_to_lamports_floor_storage, split_token_quantity_pro_rata,
-    token_quantity_from_sql, u64_to_sql_i64,
+    token_quantity_from_sql, u64_to_sql_i64, ShadowCloseOutcome, ShadowLotRow, SqliteStore,
+    POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER, POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER,
+    SHADOW_CLOSE_CONTEXT_MARKET, SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
+    SHADOW_RISK_CONTEXT_MARKET, SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY, SQLITE_WRITE_MAX_RETRIES,
+    SQLITE_WRITE_RETRY_BACKOFF_MS,
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_core_types::TokenQuantity;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
 use std::io;
 use std::time::Duration as StdDuration;
@@ -631,14 +631,13 @@ impl SqliteStore {
                     "shadow closed trade exit_value_sol",
                 )
                 .map_err(to_sql_conversion_error)?;
-                let effective_close_context =
-                    if close_context == SHADOW_CLOSE_CONTEXT_MARKET
-                        && lot_risk_context == SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY
-                    {
-                        SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY
-                    } else {
-                        close_context
-                    };
+                let effective_close_context = if close_context == SHADOW_CLOSE_CONTEXT_MARKET
+                    && lot_risk_context == SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY
+                {
+                    SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY
+                } else {
+                    close_context
+                };
                 let pnl_lamports = crate::SignedLamports::new(
                     i128::from(exit_value_lamports.as_u64())
                         - i128::from(entry_cost_lamports.as_u64()),

@@ -2783,14 +2783,8 @@ async fn run_app_loop(
     let trusted_selection_bootstrap_required = store
         .discovery_trusted_selection_bootstrap_required()
         .context("failed to load discovery trusted bootstrap requirement")?;
-    let (
-        initial_follow_snapshot,
-        recovered_active_wallets,
-        mut shadow_strategy_fail_closed,
-    ) = bootstrap_follow_snapshot(
-        initial_active_wallets,
-        trusted_selection_bootstrap_required,
-    );
+    let (initial_follow_snapshot, recovered_active_wallets, mut shadow_strategy_fail_closed) =
+        bootstrap_follow_snapshot(initial_active_wallets, trusted_selection_bootstrap_required);
     let mut follow_snapshot = Arc::new(initial_follow_snapshot);
     let follow_event_retention =
         follow_event_retention_duration(shadow_max_signal_lag_seconds, discovery_refresh_seconds);
@@ -3838,11 +3832,7 @@ fn bootstrap_follow_snapshot(
             false,
         )
     } else {
-        (
-            FollowSnapshot::default(),
-            recovered_active_wallets,
-            true,
-        )
+        (FollowSnapshot::default(), recovered_active_wallets, true)
     }
 }
 
@@ -9014,19 +9004,13 @@ mod app_tests {
         let (store, db_path) = make_test_store("trusted-selection-startup-shadow-fail-close")?;
         let now = Utc::now();
         store.insert_shadow_lot("wallet-sell", "token-a", 5.0, 1.2, now)?;
-        store.set_discovery_trusted_selection_bootstrap_required(
-            true,
-            "test_invalid_selection",
-        )?;
+        store.set_discovery_trusted_selection_bootstrap_required(true, "test_invalid_selection")?;
 
         let initial_active_wallets = store.list_active_follow_wallets()?;
         let trusted_selection_bootstrap_required =
             store.discovery_trusted_selection_bootstrap_required()?;
         let (follow_snapshot, _recovered_active_wallets, shadow_strategy_fail_closed) =
-            bootstrap_follow_snapshot(
-                initial_active_wallets,
-                trusted_selection_bootstrap_required,
-            );
+            bootstrap_follow_snapshot(initial_active_wallets, trusted_selection_bootstrap_required);
         let open_shadow_lots = if shadow_strategy_fail_closed {
             HashSet::new()
         } else {

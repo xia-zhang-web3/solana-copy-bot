@@ -231,9 +231,11 @@ pub(crate) fn validate_submit_response_policy_echoes(
 
     if let Some(compute_budget) = backend_response.get("compute_budget") {
         let Some(compute_budget) = compute_budget.as_object() else {
-            return Err(SubmitResponseValidationError::FieldMustBeObjectWhenPresent {
-                field_name: "compute_budget".to_string(),
-            });
+            return Err(
+                SubmitResponseValidationError::FieldMustBeObjectWhenPresent {
+                    field_name: "compute_budget".to_string(),
+                },
+            );
         };
         let response_cu_limit = parse_required_non_negative_u64_field(
             compute_budget.get("cu_limit"),
@@ -241,10 +243,12 @@ pub(crate) fn validate_submit_response_policy_echoes(
         )?;
         let expected_cu_limit = u64::from(inputs.expected_cu_limit);
         if response_cu_limit != expected_cu_limit {
-            return Err(SubmitResponseValidationError::ComputeBudgetCuLimitMismatch {
-                response_cu_limit,
-                expected_cu_limit,
-            });
+            return Err(
+                SubmitResponseValidationError::ComputeBudgetCuLimitMismatch {
+                    response_cu_limit,
+                    expected_cu_limit,
+                },
+            );
         }
 
         let response_cu_price_micro_lamports = parse_required_non_negative_u64_field(
@@ -263,12 +267,16 @@ pub(crate) fn validate_submit_response_policy_echoes(
 
     if let Some(tip_policy) = backend_response.get("tip_policy") {
         let Some(tip_policy) = tip_policy.as_object() else {
-            return Err(SubmitResponseValidationError::FieldMustBeObjectWhenPresent {
-                field_name: "tip_policy".to_string(),
-            });
+            return Err(
+                SubmitResponseValidationError::FieldMustBeObjectWhenPresent {
+                    field_name: "tip_policy".to_string(),
+                },
+            );
         };
-        let response_policy_code =
-            parse_required_non_empty_string_field(tip_policy.get("policy_code"), "tip_policy.policy_code")?;
+        let response_policy_code = parse_required_non_empty_string_field(
+            tip_policy.get("policy_code"),
+            "tip_policy.policy_code",
+        )?;
         let Some(expected_policy_code) = inputs.expected_tip_policy_code else {
             return Err(SubmitResponseValidationError::TipPolicyUnexpected {
                 response_policy_code,
@@ -285,20 +293,24 @@ pub(crate) fn validate_submit_response_policy_echoes(
             "tip_policy.requested_tip_lamports",
         )?;
         if response_requested_tip_lamports != inputs.expected_requested_tip_lamports {
-            return Err(SubmitResponseValidationError::TipPolicyRequestedTipMismatch {
-                response_requested_tip_lamports,
-                expected_requested_tip_lamports: inputs.expected_requested_tip_lamports,
-            });
+            return Err(
+                SubmitResponseValidationError::TipPolicyRequestedTipMismatch {
+                    response_requested_tip_lamports,
+                    expected_requested_tip_lamports: inputs.expected_requested_tip_lamports,
+                },
+            );
         }
         let response_effective_tip_lamports = parse_required_non_negative_u64_field(
             tip_policy.get("effective_tip_lamports"),
             "tip_policy.effective_tip_lamports",
         )?;
         if response_effective_tip_lamports != inputs.expected_effective_tip_lamports {
-            return Err(SubmitResponseValidationError::TipPolicyEffectiveTipMismatch {
-                response_effective_tip_lamports,
-                expected_effective_tip_lamports: inputs.expected_effective_tip_lamports,
-            });
+            return Err(
+                SubmitResponseValidationError::TipPolicyEffectiveTipMismatch {
+                    response_effective_tip_lamports,
+                    expected_effective_tip_lamports: inputs.expected_effective_tip_lamports,
+                },
+            );
         }
     }
 
@@ -335,20 +347,26 @@ fn parse_required_non_empty_string_field(
     field_name: &str,
 ) -> Result<String, SubmitResponseValidationError> {
     let Some(field_value) = field_value else {
-        return Err(SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
-            field_name: field_name.to_string(),
-        });
+        return Err(
+            SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
     };
     let Some(raw_value) = field_value.as_str() else {
-        return Err(SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
-            field_name: field_name.to_string(),
-        });
+        return Err(
+            SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
     };
     let normalized = raw_value.trim();
     if normalized.is_empty() {
-        return Err(SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
-            field_name: field_name.to_string(),
-        });
+        return Err(
+            SubmitResponseValidationError::FieldMustBeNonEmptyStringWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
     }
     Ok(normalized.to_string())
 }
@@ -361,14 +379,18 @@ fn parse_optional_finite_f64_field(
         return Ok(None);
     };
     let Some(value) = field_value.as_f64() else {
-        return Err(SubmitResponseValidationError::FieldMustBeFiniteNumberWhenPresent {
-            field_name: field_name.to_string(),
-        });
+        return Err(
+            SubmitResponseValidationError::FieldMustBeFiniteNumberWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
     };
     if !value.is_finite() {
-        return Err(SubmitResponseValidationError::FieldMustBeFiniteNumberWhenPresent {
-            field_name: field_name.to_string(),
-        });
+        return Err(
+            SubmitResponseValidationError::FieldMustBeFiniteNumberWhenPresent {
+                field_name: field_name.to_string(),
+            },
+        );
     }
     Ok(Some(value))
 }

@@ -2998,6 +2998,15 @@ Status:
    1. `replaced_ratio` is a valid overflow metric,
    2. the immediate false gate was the wrong policy on top of it,
    3. the remaining work is consumer-path decoupling + Yellowstone-specific telemetry + separate SQLite/WAL reliability investigation.
+3. `DONE / PRESERVE` the midday Yellowstone ingestion follow-up track itself is complete enough to preserve in this roadmap.
+   1. Keep this section as the canonical record of the completed hotfix/follow-up line.
+   2. Do not treat it as the current primary blocker while the separate critical discovery/followlist bug is under audit.
+   3. `DONE 2026-03-15` server rollout of the preserved ingestion line was revalidated in live on `a2db7ee Restore observed swap writer backpressure`, with the accumulated hardening stack already on `main`.
+   4. Live verification covered both:
+      1. pre-grace ingestion stability, where the old observed-swap writer backlog / Yellowstone saturation failure shape did not recur,
+      2. first post-grace bounded `observed_swap_retention` runs, which stopped on `runtime_pressure` without growing SQLite contention or saturating Yellowstone.
+   5. Canonical server evidence for this revalidation is recorded in:
+      - `ops/server_reports/2026-03-15_afternoon_a2db7ee_backpressure_rollout_report.md`
 
 Server-auditor findings to preserve:
 
@@ -3139,3 +3148,34 @@ Ordered coder follow-up queue:
    4. first use the new telemetry / runtime reasons / persisted infra-stop payloads to observe whether sustained post-decoupling pressure still exists outside transient startup, replay, or maintenance windows,
    5. the post-followlist retry evidence pointed first to startup/runtime SQLite maintenance contention, not to a missing queue-capacity or Yellowstone-threshold increase, and `4df18eb` hardened that path without changing runtime knobs,
    6. only revisit queue-capacity or Yellowstone-threshold tuning if production evidence still shows a persistent steady-state bottleneck after the decoupling + telemetry + SQLite/WAL hardening slices above.
+
+### 2026-03-15 evening — invalid-selection bootstrap fail-close rollout accepted
+
+Artifacts:
+1. `ops/server_reports/2026-03-15_evening_invalid_selection_fail_close_rollout_report.md`
+
+Summary:
+1. `9f85f0c Fail close invalid selection bootstrap` was the intended rollout target, but it was incomplete as pushed: server build failed before restart because `crates/discovery/src/windows.rs` was not included even though `crates/discovery/src/lib.rs` referenced the new `trusted_selection_bootstrap_pending` field.
+2. Narrow follow-up `ea57e44 Add trusted bootstrap pending window state` added the missing field, `main` was fast-forwarded, release binaries rebuilt, and the three live services restarted cleanly at `2026-03-15 16:19:46 UTC`.
+3. Runtime/data-plane remained healthy after rollout:
+   1. `solana-copy-bot.service`, `copybot-adapter.service`, `copybot-executor.service` all `active`,
+   2. `solana-copy-bot.service NRestarts = 0`,
+   3. `observed_swap_writer_pending_requests = 0`,
+   4. `sqlite_busy_error_total = 0`,
+   5. `sqlite_write_retry_total = 0`,
+   6. `yellowstone_output_queue_fill_ratio` stayed at `0.0` in steady-state snapshots,
+   7. `observed_swaps` continued advancing after restart.
+4. The new strategy contract is now enforced in live for invalid-selection state:
+   1. startup held the recovered historical `976`-wallet active set out of the runtime snapshot,
+   2. discovery did not fall back to raw-window bootstrap,
+   3. because no acceptable trusted persisted `wallet_metrics` bootstrap source was available, discovery fail-closed the recovered active set,
+   4. `followlist.active = 0`,
+   5. durable DB flag `discovery_strategy_state.trusted_selection_bootstrap_required = 1` remained set with reason `trusted_selection_bootstrap_unavailable`.
+5. Shadow/copy progression is now truly fail-closed under invalid selection:
+   1. `app_follow_rejected_ratio = 1.0`,
+   2. `copy_signals` written since the new runtime start were `0`,
+   3. the bot no longer continues a strategy-invalid run on the recovered historical `976`-wallet set.
+6. This rollout should be read as a **safety-contract restoration**, not as a return to normal top-`N` operation:
+   1. runtime is healthy,
+   2. invalid historical followlist selection is no longer used,
+   3. strategy is intentionally paused/fail-closed until a trusted persisted selection source is available again.

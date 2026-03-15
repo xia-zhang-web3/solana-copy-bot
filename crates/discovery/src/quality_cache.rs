@@ -63,8 +63,9 @@ impl DiscoveryService {
                 }
                 Err(error) => {
                     if discovery_quality_cache_error_requires_abort(&error) {
-                        return Err(error)
-                            .context("discovery token quality cache lookup failed with fatal sqlite I/O");
+                        return Err(error).context(
+                            "discovery token quality cache lookup failed with fatal sqlite I/O",
+                        );
                     }
                     warn!(error = %error, mint = %mint, "failed reading token quality cache");
                 }
@@ -481,9 +482,11 @@ mod tests {
     }
 
     fn spawn_fake_helius_server() -> Result<(String, thread::JoinHandle<Result<()>>)> {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .context("failed to bind fake helius test server")?;
-        let addr = listener.local_addr().context("failed to read fake helius addr")?;
+        let listener =
+            TcpListener::bind("127.0.0.1:0").context("failed to bind fake helius test server")?;
+        let addr = listener
+            .local_addr()
+            .context("failed to read fake helius addr")?;
         let handle = thread::spawn(move || -> Result<()> {
             for _ in 0..2 {
                 let (mut stream, _) = listener.accept().context("failed accepting test request")?;
@@ -495,7 +498,8 @@ mod tests {
                         .context("failed reading test request headers")?;
                     headers.push(byte[0]);
                 }
-                let headers_raw = String::from_utf8(headers).context("request headers must be utf-8")?;
+                let headers_raw =
+                    String::from_utf8(headers).context("request headers must be utf-8")?;
                 let content_length = headers_raw
                     .lines()
                     .find_map(|line| {
@@ -530,7 +534,9 @@ mod tests {
                 stream
                     .write_all(response.as_bytes())
                     .context("failed writing fake helius response")?;
-                stream.flush().context("failed flushing fake helius response")?;
+                stream
+                    .flush()
+                    .context("failed flushing fake helius response")?;
             }
             Ok(())
         });
@@ -728,9 +734,7 @@ mod tests {
 
     #[test]
     fn discovery_quality_cache_error_requires_abort_on_xshmmap_io_failure() {
-        let error = anyhow!(
-            "disk I/O error: Error code 4874: I/O error within the xShmMap method"
-        );
+        let error = anyhow!("disk I/O error: Error code 4874: I/O error within the xShmMap method");
         assert!(discovery_quality_cache_error_requires_abort(&error));
     }
 
@@ -770,7 +774,9 @@ mod tests {
             .expect_err("fatal token quality cache write must propagate");
         let error_text = format!("{error:#}");
         assert!(
-            error_text.contains("discovery token quality cache refresh write failed with fatal sqlite I/O"),
+            error_text.contains(
+                "discovery token quality cache refresh write failed with fatal sqlite I/O"
+            ),
             "expected fatal token quality cache write context, got: {error_text}"
         );
         assert!(

@@ -61,12 +61,11 @@ pub(crate) async fn verify_submitted_signature_visibility(
             };
             if !response.status().is_success() {
                 let status = response.status();
-                let body = read_response_body_limited(response, MAX_HTTP_ERROR_BODY_READ_BYTES).await;
+                let body =
+                    read_response_body_limited(response, MAX_HTTP_ERROR_BODY_READ_BYTES).await;
                 last_reason = format!(
                     "rpc status={} endpoint={} body={}",
-                    status,
-                    endpoint_label,
-                    body.text
+                    status, endpoint_label, body.text
                 );
                 continue;
             }

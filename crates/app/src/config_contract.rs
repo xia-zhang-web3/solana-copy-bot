@@ -68,7 +68,11 @@ fn validate_execution_mode_contract(config: &ExecutionConfig) -> Result<String> 
     ) {
         return Err(anyhow!(
             "execution.enabled=true but execution.mode={} is unsupported in current runtime; supported modes: paper, paper_rpc_confirm, paper_rpc_pretrade_confirm, adapter_submit_confirm",
-            if mode.is_empty() { "<empty>" } else { mode.as_str() }
+            if mode.is_empty() {
+                "<empty>"
+            } else {
+                mode.as_str()
+            }
         ));
     }
     if matches!(
