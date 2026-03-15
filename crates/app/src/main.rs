@@ -14,7 +14,7 @@ use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
 use copybot_shadow::{FollowSnapshot, ShadowService};
 use copybot_storage::{
     is_fatal_sqlite_anyhow_error, sqlite_contention_snapshot, DiscoveryAggregateWriteConfig,
-    Lamports, SignedLamports, SqliteStore,
+    Lamports, SignedLamports, SqliteContentionSnapshot, SqliteStore,
 };
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::env;
@@ -51,9 +51,11 @@ use crate::execution_pause_helpers::resolve_buy_submit_pause_reason;
 use crate::execution_runtime_helpers::log_execution_batch_report;
 use crate::history_retention::HistoryRetentionRunner;
 use crate::observed_swap_writer::{
-    run_observed_swap_retention_maintenance_once, ObservedSwapRetentionConfig, ObservedSwapWriter,
-    OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL, OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT,
-    OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT, OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT,
+    run_observed_swap_retention_maintenance_once, ObservedSwapRetentionConfig,
+    ObservedSwapRetentionMaintenanceSummary, ObservedSwapWriter, ObservedSwapWriterSnapshot,
+    OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL, OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL,
+    OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT, OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT,
+    OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT,
 };
 use crate::secrets::resolve_execution_adapter_secrets;
 use crate::shadow_runtime_helpers::{
@@ -82,6 +84,7 @@ const RECENT_SWAP_SIGNATURE_DEDUPE_CAPACITY: usize = 32_768;
 const APP_CONSUMER_LOOP_LATENCY_SAMPLE_CAPACITY: usize = 512;
 const STALE_LOT_CLEANUP_BATCH_LIMIT: u32 = 300;
 const HARD_STOP_CLEAR_HEALTHY_REFRESHES: u64 = 6;
+const SQLITE_MAINTENANCE_MAX_YELLOWSTONE_OUTPUT_QUEUE_FILL_RATIO: f64 = 0.25;
 const DEFAULT_INGESTION_OVERRIDE_PATH: &str = "state/ingestion_source_override.env";
 const DEFAULT_OPERATOR_EMERGENCY_STOP_PATH: &str = "state/operator_emergency_stop.flag";
 const DEFAULT_OPERATOR_EMERGENCY_STOP_POLL_MS: u64 = 500;
@@ -412,6 +415,107 @@ fn history_retention_error_requires_restart(error: &anyhow::Error) -> bool {
 
 fn observed_swap_retention_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SqliteMaintenanceTask {
+    HistoryRetention,
+    ObservedSwapRetention,
+}
+
+impl SqliteMaintenanceTask {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::HistoryRetention => "history_retention",
+            Self::ObservedSwapRetention => "observed_swap_retention",
+        }
+    }
+}
+
+fn sqlite_maintenance_block_reason(
+    _task: SqliteMaintenanceTask,
+    app_started_at: StdInstant,
+    now: StdInstant,
+    observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
+    sqlite_contention_previous: SqliteContentionSnapshot,
+    sqlite_contention_current: SqliteContentionSnapshot,
+    ingestion_runtime_snapshot: Option<IngestionRuntimeSnapshot>,
+) -> Option<String> {
+    let startup_grace = Duration::from_secs(
+        OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL
+            .as_secs()
+            .max(1),
+    );
+    let elapsed_since_start = now.saturating_duration_since(app_started_at);
+    if elapsed_since_start < startup_grace {
+        return Some(format!(
+            "startup_grace_remaining_ms={}",
+            startup_grace
+                .saturating_sub(elapsed_since_start)
+                .as_millis()
+                .min(u128::from(u64::MAX))
+        ));
+    }
+
+    if observed_swap_writer_snapshot.pending_requests > 0 {
+        return Some(format!(
+            "writer_pending_requests={}",
+            observed_swap_writer_snapshot.pending_requests
+        ));
+    }
+
+    if observed_swap_writer_snapshot.aggregate_queue_depth_batches > 0 {
+        return Some(format!(
+            "aggregate_queue_depth_batches={}",
+            observed_swap_writer_snapshot.aggregate_queue_depth_batches
+        ));
+    }
+
+    let sqlite_write_retry_delta = sqlite_contention_current
+        .write_retry_total
+        .saturating_sub(sqlite_contention_previous.write_retry_total);
+    let sqlite_busy_error_delta = sqlite_contention_current
+        .busy_error_total
+        .saturating_sub(sqlite_contention_previous.busy_error_total);
+    if sqlite_write_retry_delta > 0 || sqlite_busy_error_delta > 0 {
+        return Some(format!(
+            "sqlite_contention_delta write_retry_delta={} busy_error_delta={}",
+            sqlite_write_retry_delta, sqlite_busy_error_delta
+        ));
+    }
+
+    if let Some(snapshot) = ingestion_runtime_snapshot {
+        if snapshot.yellowstone_output_queue_capacity > 0
+            && snapshot.yellowstone_output_queue_fill_ratio
+                >= SQLITE_MAINTENANCE_MAX_YELLOWSTONE_OUTPUT_QUEUE_FILL_RATIO
+        {
+            return Some(format!(
+                "yellowstone_output_queue_fill_ratio={:.4} depth={} capacity={} oldest_age_ms={}",
+                snapshot.yellowstone_output_queue_fill_ratio,
+                snapshot.yellowstone_output_queue_depth,
+                snapshot.yellowstone_output_queue_capacity,
+                snapshot.yellowstone_output_oldest_age_ms
+            ));
+        }
+    }
+
+    None
+}
+
+fn sqlite_maintenance_block_reason_key(reason: &str) -> &'static str {
+    if reason.starts_with("startup_grace_remaining_ms=") {
+        "startup_grace_remaining_ms"
+    } else if reason.starts_with("writer_pending_requests=") {
+        "writer_pending_requests"
+    } else if reason.starts_with("aggregate_queue_depth_batches=") {
+        "aggregate_queue_depth_batches"
+    } else if reason.starts_with("sqlite_contention_delta ") {
+        "sqlite_contention_delta"
+    } else if reason.starts_with("yellowstone_output_queue_fill_ratio=") {
+        "yellowstone_output_queue_fill_ratio"
+    } else {
+        "other"
+    }
 }
 
 fn stale_lot_cleanup_error_requires_restart(error: &anyhow::Error) -> bool {
@@ -2669,20 +2773,22 @@ async fn run_app_loop(
     );
     let observed_swap_retention_sweep_interval =
         Duration::from_secs(OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL.as_secs().max(1));
-    let mut last_observed_swap_retention_sweep = StdInstant::now()
-        .checked_sub(observed_swap_retention_sweep_interval)
-        .unwrap_or_else(StdInstant::now);
+    let app_started_at = StdInstant::now();
+    let mut last_observed_swap_retention_sweep = app_started_at;
     let history_retention = HistoryRetentionRunner::new(history_retention_config);
     let history_retention_sweep_interval = Duration::from_secs(history_retention.sweep_seconds());
-    let mut last_history_retention_sweep = StdInstant::now()
-        .checked_sub(history_retention_sweep_interval)
-        .unwrap_or_else(StdInstant::now);
+    let mut last_history_retention_sweep = app_started_at;
+    let mut last_sqlite_contention_snapshot = sqlite_contention_snapshot();
+    let mut last_history_retention_skip_reason_key: Option<&'static str> = None;
+    let mut last_observed_swap_retention_skip_reason_key: Option<&'static str> = None;
     let mut operator_emergency_stop = OperatorEmergencyStop::from_env();
     let mut execution_emergency_stop_active_logged = false;
     let mut execution_hard_stop_pause_logged = false;
     let mut execution_shadow_risk_pause_logged_reason: Option<String> = None;
     let mut execution_outage_pause_logged = false;
-    let mut observed_swap_retention_handle: Option<JoinHandle<Result<()>>> = None;
+    let mut observed_swap_retention_handle: Option<
+        JoinHandle<Result<ObservedSwapRetentionMaintenanceSummary>>,
+    > = None;
     let mut ingestion_error_streak: u32 = 0;
     let mut ingestion_backoff_until: Option<time::Instant> = None;
     operator_emergency_stop.refresh(&store, Utc::now())?;
@@ -2899,43 +3005,132 @@ async fn run_app_loop(
                         }
                     }
                 }
+                let maintenance_gate_started_at = StdInstant::now();
+                let maintenance_gate_sqlite_contention = sqlite_contention_snapshot();
+                let maintenance_gate_ingestion_snapshot = ingestion.runtime_snapshot();
+                let maintenance_gate_writer_snapshot = observed_swap_writer.snapshot();
                 if history_retention.enabled()
                     && last_history_retention_sweep.elapsed() >= history_retention_sweep_interval
                 {
-                    match history_retention.apply(&store, Utc::now(), alert_dispatcher.is_some()) {
-                        Ok(summary) if !summary.is_empty() => {
-                            info!(
-                                risk_events_deleted = summary.risk_events_deleted,
-                                copy_signals_deleted = summary.copy_signals_deleted,
-                                orders_deleted = summary.orders_deleted,
-                                fills_deleted = summary.fills_deleted,
-                                shadow_closed_trades_deleted = summary.shadow_closed_trades_deleted,
-                                "history retention sweep applied"
+                    if let Some(reason) = sqlite_maintenance_block_reason(
+                        SqliteMaintenanceTask::HistoryRetention,
+                        app_started_at,
+                        maintenance_gate_started_at,
+                        &maintenance_gate_writer_snapshot,
+                        last_sqlite_contention_snapshot,
+                        maintenance_gate_sqlite_contention,
+                        maintenance_gate_ingestion_snapshot,
+                    ) {
+                        let reason_key = sqlite_maintenance_block_reason_key(&reason);
+                        if last_history_retention_skip_reason_key != Some(reason_key) {
+                            warn!(
+                                maintenance = SqliteMaintenanceTask::HistoryRetention.as_str(),
+                                reason = %reason,
+                                "sqlite maintenance blocked by runtime health gate"
                             );
+                            last_history_retention_skip_reason_key = Some(reason_key);
                         }
-                        Ok(_) => {}
-                        Err(error) => {
-                            if history_retention_error_requires_restart(&error) {
-                                return Err(error)
-                                    .context("history retention sweep failed with fatal sqlite I/O");
+                    } else {
+                        info!(
+                            maintenance = SqliteMaintenanceTask::HistoryRetention.as_str(),
+                            observed_swap_writer_pending_requests =
+                                maintenance_gate_writer_snapshot.pending_requests,
+                            observed_swap_writer_aggregate_queue_depth_batches =
+                                maintenance_gate_writer_snapshot.aggregate_queue_depth_batches,
+                            yellowstone_output_queue_depth = maintenance_gate_ingestion_snapshot
+                                .map(|snapshot| snapshot.yellowstone_output_queue_depth)
+                                .unwrap_or(0),
+                            yellowstone_output_queue_capacity = maintenance_gate_ingestion_snapshot
+                                .map(|snapshot| snapshot.yellowstone_output_queue_capacity)
+                                .unwrap_or(0),
+                            yellowstone_output_queue_fill_ratio = maintenance_gate_ingestion_snapshot
+                                .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio)
+                                .unwrap_or(0.0),
+                            sqlite_write_retry_total =
+                                maintenance_gate_sqlite_contention.write_retry_total,
+                            sqlite_busy_error_total =
+                                maintenance_gate_sqlite_contention.busy_error_total,
+                            "starting sqlite maintenance task"
+                        );
+                        match history_retention.apply(&store, Utc::now(), alert_dispatcher.is_some()) {
+                            Ok(summary) if !summary.is_empty() => {
+                                info!(
+                                    risk_events_deleted = summary.risk_events_deleted,
+                                    copy_signals_deleted = summary.copy_signals_deleted,
+                                    orders_deleted = summary.orders_deleted,
+                                    fills_deleted = summary.fills_deleted,
+                                    shadow_closed_trades_deleted = summary.shadow_closed_trades_deleted,
+                                    "history retention sweep applied"
+                                );
                             }
-                            warn!(error = %error, "history retention sweep failed");
+                            Ok(_) => {}
+                            Err(error) => {
+                                if history_retention_error_requires_restart(&error) {
+                                    return Err(error)
+                                        .context("history retention sweep failed with fatal sqlite I/O");
+                                }
+                                warn!(error = %error, "history retention sweep failed");
+                            }
                         }
+                        last_history_retention_skip_reason_key = None;
+                        last_history_retention_sweep = StdInstant::now();
                     }
-                    last_history_retention_sweep = StdInstant::now();
                 }
                 if observed_swap_retention_handle.is_none()
                     && last_observed_swap_retention_sweep.elapsed()
                         >= observed_swap_retention_sweep_interval
                 {
-                    let sqlite_path = sqlite_path.clone();
-                    observed_swap_retention_handle = Some(tokio::task::spawn_blocking(move || {
-                        run_observed_swap_retention_maintenance_once(
-                            &sqlite_path,
-                            observed_swap_retention_config,
-                        )
-                    }));
-                    last_observed_swap_retention_sweep = StdInstant::now();
+                    if let Some(reason) = sqlite_maintenance_block_reason(
+                        SqliteMaintenanceTask::ObservedSwapRetention,
+                        app_started_at,
+                        maintenance_gate_started_at,
+                        &maintenance_gate_writer_snapshot,
+                        last_sqlite_contention_snapshot,
+                        maintenance_gate_sqlite_contention,
+                        maintenance_gate_ingestion_snapshot,
+                    ) {
+                        let reason_key = sqlite_maintenance_block_reason_key(&reason);
+                        if last_observed_swap_retention_skip_reason_key != Some(reason_key) {
+                            warn!(
+                                maintenance = SqliteMaintenanceTask::ObservedSwapRetention.as_str(),
+                                reason = %reason,
+                                "sqlite maintenance blocked by runtime health gate"
+                            );
+                            last_observed_swap_retention_skip_reason_key = Some(reason_key);
+                        }
+                    } else {
+                        let sqlite_path = sqlite_path.clone();
+                        info!(
+                            maintenance = SqliteMaintenanceTask::ObservedSwapRetention.as_str(),
+                            observed_swap_writer_pending_requests =
+                                maintenance_gate_writer_snapshot.pending_requests,
+                            observed_swap_writer_aggregate_queue_depth_batches =
+                                maintenance_gate_writer_snapshot.aggregate_queue_depth_batches,
+                            yellowstone_output_queue_depth = maintenance_gate_ingestion_snapshot
+                                .map(|snapshot| snapshot.yellowstone_output_queue_depth)
+                                .unwrap_or(0),
+                            yellowstone_output_queue_capacity = maintenance_gate_ingestion_snapshot
+                                .map(|snapshot| snapshot.yellowstone_output_queue_capacity)
+                                .unwrap_or(0),
+                            yellowstone_output_queue_fill_ratio = maintenance_gate_ingestion_snapshot
+                                .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio)
+                                .unwrap_or(0.0),
+                            sqlite_write_retry_total =
+                                maintenance_gate_sqlite_contention.write_retry_total,
+                            sqlite_busy_error_total =
+                                maintenance_gate_sqlite_contention.busy_error_total,
+                            "starting sqlite maintenance task"
+                        );
+                        observed_swap_retention_handle =
+                            Some(tokio::task::spawn_blocking(move || {
+                                run_observed_swap_retention_maintenance_once(
+                                    &sqlite_path,
+                                    observed_swap_retention_config,
+                                )
+                            }));
+                        last_observed_swap_retention_sweep = StdInstant::now();
+                        last_observed_swap_retention_skip_reason_key = None;
+                    }
                 }
                 let sqlite_contention = sqlite_contention_snapshot();
                 let wal_size_bytes = std::fs::metadata(format!("{sqlite_path}-wal"))
@@ -2977,6 +3172,7 @@ async fn run_app_loop(
                     sqlite_wal_size_bytes = wal_size_bytes,
                     "sqlite contention counters"
                 );
+                last_sqlite_contention_snapshot = sqlite_contention;
             }
             _ = risk_refresh_interval.tick() => {
                 let now = Utc::now();
@@ -3030,7 +3226,24 @@ async fn run_app_loop(
             }, if observed_swap_retention_handle.is_some() => {
                 observed_swap_retention_handle = None;
                 match observed_swap_retention_join {
-                    Some(Ok(Ok(()))) => {}
+                    Some(Ok(Ok(summary))) => {
+                        info!(
+                            maintenance = SqliteMaintenanceTask::ObservedSwapRetention.as_str(),
+                            nominal_observed_swap_cutoff = %summary.nominal_cutoff,
+                            effective_observed_swap_cutoff = %summary.effective_cutoff,
+                            aggregate_scoring_cutoff = ?summary.aggregate_cutoff,
+                            deleted_observed_swap_rows = summary.raw_deleted_rows,
+                            observed_swap_delete_batches = summary.raw_delete_batches,
+                            deleted_scoring_rows = summary.scoring_deleted_rows,
+                            discovery_scoring_delete_batches = summary.scoring_delete_batches,
+                            wal_checkpoint_mode = summary.checkpoint.mode,
+                            wal_checkpoint_busy = summary.checkpoint.busy,
+                            wal_log_frames = summary.checkpoint.log_frames,
+                            wal_checkpointed_frames = summary.checkpoint.checkpointed_frames,
+                            duration_ms = summary.duration_ms,
+                            "sqlite maintenance task completed"
+                        );
+                    }
                     Some(Ok(Err(error))) => {
                         if observed_swap_retention_error_requires_restart(&error) {
                             return Err(error).context(
@@ -3531,6 +3744,39 @@ mod app_tests {
         error
             .chain()
             .any(|cause| cause.to_string().contains(needle))
+    }
+
+    fn maintenance_test_writer_snapshot() -> ObservedSwapWriterSnapshot {
+        ObservedSwapWriterSnapshot {
+            pending_requests: 0,
+            write_latency_ms_p95: 0,
+            raw_batch_write_ms_p95: 0,
+            observed_swaps_insert_ms_p95: 0,
+            wallet_activity_days_ms_p95: 0,
+            discovery_scoring_ms_p95: 0,
+            worker_busy_ms_p95: 0,
+            aggregate_queue_depth_batches: 0,
+            aggregate_queue_capacity_batches: 32,
+        }
+    }
+
+    fn maintenance_test_ingestion_snapshot(fill_ratio: f64) -> IngestionRuntimeSnapshot {
+        IngestionRuntimeSnapshot {
+            ts_utc: Utc::now(),
+            ws_notifications_enqueued: 0,
+            ws_notifications_replaced_oldest: 0,
+            grpc_message_total: 0,
+            grpc_transaction_updates_total: 0,
+            parse_rejected_total: 0,
+            grpc_decode_errors: 0,
+            rpc_429: 0,
+            rpc_5xx: 0,
+            ingestion_lag_ms_p95: 0,
+            yellowstone_output_queue_depth: 25,
+            yellowstone_output_queue_capacity: 100,
+            yellowstone_output_queue_fill_ratio: fill_ratio,
+            yellowstone_output_oldest_age_ms: 500,
+        }
     }
 
     fn test_swap(signature: &str) -> SwapEvent {
@@ -8720,6 +8966,143 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     fn observed_swap_retention_error_does_not_require_restart_on_busy_lock() {
         let error = anyhow!("database is locked");
         assert!(!observed_swap_retention_error_requires_restart(&error));
+    }
+
+    #[test]
+    fn sqlite_maintenance_block_reason_blocks_during_startup_grace() {
+        let now = StdInstant::now();
+        let reason = sqlite_maintenance_block_reason(
+            SqliteMaintenanceTask::ObservedSwapRetention,
+            now,
+            now,
+            &maintenance_test_writer_snapshot(),
+            SqliteContentionSnapshot::default(),
+            SqliteContentionSnapshot::default(),
+            None,
+        )
+        .expect("startup grace should block sqlite maintenance");
+        assert!(reason.contains("startup_grace_remaining_ms="));
+    }
+
+    #[test]
+    fn sqlite_maintenance_block_reason_blocks_on_writer_pending_requests() {
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.pending_requests = 3;
+        let reason = sqlite_maintenance_block_reason(
+            SqliteMaintenanceTask::ObservedSwapRetention,
+            StdInstant::now()
+                - OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL
+                - std::time::Duration::from_secs(1),
+            StdInstant::now(),
+            &writer_snapshot,
+            SqliteContentionSnapshot::default(),
+            SqliteContentionSnapshot::default(),
+            None,
+        )
+        .expect("writer backlog should block sqlite maintenance");
+        assert_eq!(reason, "writer_pending_requests=3");
+    }
+
+    #[test]
+    fn sqlite_maintenance_block_reason_blocks_on_aggregate_backlog() {
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.aggregate_queue_depth_batches = 2;
+        let reason = sqlite_maintenance_block_reason(
+            SqliteMaintenanceTask::ObservedSwapRetention,
+            StdInstant::now()
+                - OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL
+                - std::time::Duration::from_secs(1),
+            StdInstant::now(),
+            &writer_snapshot,
+            SqliteContentionSnapshot::default(),
+            SqliteContentionSnapshot::default(),
+            None,
+        )
+        .expect("aggregate backlog should block sqlite maintenance");
+        assert_eq!(reason, "aggregate_queue_depth_batches=2");
+    }
+
+    #[test]
+    fn sqlite_maintenance_block_reason_blocks_on_sqlite_contention_delta() {
+        let reason = sqlite_maintenance_block_reason(
+            SqliteMaintenanceTask::ObservedSwapRetention,
+            StdInstant::now()
+                - OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL
+                - std::time::Duration::from_secs(1),
+            StdInstant::now(),
+            &maintenance_test_writer_snapshot(),
+            SqliteContentionSnapshot {
+                write_retry_total: 10,
+                busy_error_total: 20,
+            },
+            SqliteContentionSnapshot {
+                write_retry_total: 12,
+                busy_error_total: 21,
+            },
+            None,
+        )
+        .expect("sqlite contention delta should block sqlite maintenance");
+        assert_eq!(
+            reason,
+            "sqlite_contention_delta write_retry_delta=2 busy_error_delta=1"
+        );
+    }
+
+    #[test]
+    fn sqlite_maintenance_block_reason_blocks_on_yellowstone_queue_pressure() {
+        let reason = sqlite_maintenance_block_reason(
+            SqliteMaintenanceTask::ObservedSwapRetention,
+            StdInstant::now()
+                - OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL
+                - std::time::Duration::from_secs(1),
+            StdInstant::now(),
+            &maintenance_test_writer_snapshot(),
+            SqliteContentionSnapshot::default(),
+            SqliteContentionSnapshot::default(),
+            Some(maintenance_test_ingestion_snapshot(
+                SQLITE_MAINTENANCE_MAX_YELLOWSTONE_OUTPUT_QUEUE_FILL_RATIO,
+            )),
+        )
+        .expect("yellowstone queue pressure should block sqlite maintenance");
+        assert!(reason.contains("yellowstone_output_queue_fill_ratio="));
+        assert!(reason.contains("depth=25"));
+        assert!(reason.contains("capacity=100"));
+    }
+
+    #[test]
+    fn sqlite_maintenance_block_reason_allows_healthy_runtime() {
+        let reason = sqlite_maintenance_block_reason(
+            SqliteMaintenanceTask::ObservedSwapRetention,
+            StdInstant::now()
+                - OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL
+                - std::time::Duration::from_secs(1),
+            StdInstant::now(),
+            &maintenance_test_writer_snapshot(),
+            SqliteContentionSnapshot::default(),
+            SqliteContentionSnapshot::default(),
+            Some(maintenance_test_ingestion_snapshot(0.10)),
+        );
+        assert!(reason.is_none());
+    }
+
+    #[test]
+    fn sqlite_maintenance_block_reason_key_dedupes_dynamic_startup_grace_reason() {
+        let key_a = sqlite_maintenance_block_reason_key("startup_grace_remaining_ms=1799000");
+        let key_b = sqlite_maintenance_block_reason_key("startup_grace_remaining_ms=1200000");
+        assert_eq!(key_a, "startup_grace_remaining_ms");
+        assert_eq!(key_a, key_b);
+    }
+
+    #[test]
+    fn sqlite_maintenance_block_reason_key_dedupes_dynamic_yellowstone_pressure_reason() {
+        let key_a = sqlite_maintenance_block_reason_key(
+            "yellowstone_output_queue_fill_ratio=0.2500 depth=25 capacity=100 oldest_age_ms=500",
+        );
+        let key_b = sqlite_maintenance_block_reason_key(
+            "yellowstone_output_queue_fill_ratio=0.7400 depth=74 capacity=100 oldest_age_ms=2500",
+        );
+        assert_eq!(key_a, "yellowstone_output_queue_fill_ratio");
+        assert_eq!(key_a, key_b);
     }
 
     #[test]

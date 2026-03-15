@@ -66,6 +66,12 @@ pub struct SqliteContentionSnapshot {
     pub busy_error_total: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SqliteBatchedDeleteSummary {
+    pub deleted_rows: usize,
+    pub batches: usize,
+}
+
 pub fn sqlite_contention_snapshot() -> SqliteContentionSnapshot {
     SqliteContentionSnapshot {
         write_retry_total: SQLITE_WRITE_RETRY_TOTAL.load(Ordering::Relaxed),
@@ -5306,6 +5312,72 @@ mod tests {
     }
 
     #[test]
+    fn prune_discovery_scoring_before_batched_chunks_retention_work() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("discovery-scoring-retention-batched.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let buy_one = SwapEvent {
+            signature: "scoring-retention-buy-1".to_string(),
+            wallet: "wallet-scoring-retention".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenRetention111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 100.0,
+            exact_amounts: None,
+            slot: 1,
+            ts_utc: DateTime::parse_from_rfc3339("2026-02-01T00:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        };
+        let buy_two = SwapEvent {
+            signature: "scoring-retention-buy-2".to_string(),
+            wallet: "wallet-scoring-retention".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenRetention111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 50.0,
+            exact_amounts: None,
+            slot: 2,
+            ts_utc: DateTime::parse_from_rfc3339("2026-02-02T00:01:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        };
+        let swaps = vec![buy_one, buy_two];
+        store.insert_observed_swaps_batch(&swaps)?;
+        store.apply_discovery_scoring_batch(&swaps, &DiscoveryAggregateWriteConfig::default())?;
+
+        let cutoff = DateTime::parse_from_rfc3339("2026-02-10T00:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let summary = store.prune_discovery_scoring_before_batched(cutoff, 3)?;
+        assert_eq!(summary.batches, 2);
+        assert_eq!(summary.deleted_rows, 6);
+
+        for table in [
+            "wallet_scoring_buy_facts",
+            "wallet_scoring_tx_minutes",
+            "wallet_scoring_days",
+        ] {
+            let count: i64 =
+                store
+                    .conn
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })?;
+            assert_eq!(
+                count, 0,
+                "expected {table} to be pruned by batched retention"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn observed_swap_batch_with_activity_days_is_atomic_on_activity_upsert_failure() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("observed-swap-activity-atomic.db");
@@ -6831,6 +6903,53 @@ mod tests {
         assert_eq!(deleted, 1);
 
         let swaps = store.load_observed_swaps_since(stale_ts - Duration::seconds(1))?;
+        assert_eq!(swaps.len(), 1);
+        assert_eq!(swaps[0].signature, "sig-observed-swap-recent");
+        Ok(())
+    }
+
+    #[test]
+    fn delete_observed_swaps_before_batched_chunks_retention_work() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("observed-swap-retention-batched.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let stale_one = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let stale_two = stale_one + Duration::minutes(1);
+        let stale_three = stale_one + Duration::minutes(2);
+        let recent_ts = DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        for (signature, ts, slot) in [
+            ("sig-observed-swap-stale-a", stale_one, 1),
+            ("sig-observed-swap-stale-b", stale_two, 2),
+            ("sig-observed-swap-stale-c", stale_three, 3),
+            ("sig-observed-swap-recent", recent_ts, 4),
+        ] {
+            store.insert_observed_swap(&SwapEvent {
+                wallet: "wallet-retention".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: format!("token-{signature}"),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                signature: signature.to_string(),
+                slot,
+                ts_utc: ts,
+                exact_amounts: None,
+            })?;
+        }
+
+        let summary =
+            store.delete_observed_swaps_before_batched(recent_ts - Duration::days(1), 1)?;
+        assert_eq!(summary.deleted_rows, 3);
+        assert_eq!(summary.batches, 3);
+
+        let swaps = store.load_observed_swaps_since(stale_one - Duration::seconds(1))?;
         assert_eq!(swaps.len(), 1);
         assert_eq!(swaps[0].signature, "sig-observed-swap-recent");
         Ok(())

@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Context, Result};
-use chrono::{Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use copybot_core_types::SwapEvent;
 use copybot_storage::{
     is_fatal_sqlite_anyhow_error, DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor,
-    SqliteStore,
+    SqliteBatchedDeleteSummary, SqliteStore,
 };
 use std::collections::VecDeque;
 use std::path::Path;
@@ -18,7 +18,11 @@ const OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY: usize = 4096;
 const OBSERVED_SWAP_BATCH_MAX_SIZE: usize = 128;
 pub(crate) const OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL: StdDuration =
     StdDuration::from_secs(15 * 60);
+pub(crate) const OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL: StdDuration =
+    StdDuration::from_secs(30 * 60);
 const OBSERVED_SWAP_WRITER_LATENCY_SAMPLE_CAPACITY: usize = 512;
+const OBSERVED_SWAP_RETENTION_DELETE_BATCH_SIZE: usize = 500;
+const DISCOVERY_SCORING_RETENTION_DELETE_BATCH_SIZE: usize = 250;
 pub(crate) const OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT: &str =
     "observed swap writer channel closed";
 pub(crate) const OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT: &str =
@@ -67,6 +71,27 @@ impl ObservedSwapRetentionConfig {
             aggregate_writes_enabled,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ObservedSwapRetentionCheckpointSummary {
+    pub mode: &'static str,
+    pub busy: i64,
+    pub log_frames: i64,
+    pub checkpointed_frames: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ObservedSwapRetentionMaintenanceSummary {
+    pub nominal_cutoff: DateTime<Utc>,
+    pub effective_cutoff: DateTime<Utc>,
+    pub aggregate_cutoff: Option<DateTime<Utc>>,
+    pub raw_deleted_rows: usize,
+    pub raw_delete_batches: usize,
+    pub scoring_deleted_rows: usize,
+    pub scoring_delete_batches: usize,
+    pub checkpoint: ObservedSwapRetentionCheckpointSummary,
+    pub duration_ms: u64,
 }
 
 struct ObservedSwapWriteRequest {
@@ -764,7 +789,7 @@ fn load_terminal_failure_message(
 pub(crate) fn run_observed_swap_retention_maintenance_once(
     sqlite_path: &str,
     config: ObservedSwapRetentionConfig,
-) -> Result<()> {
+) -> Result<ObservedSwapRetentionMaintenanceSummary> {
     let store = SqliteStore::open(Path::new(sqlite_path)).with_context(|| {
         format!("failed to open sqlite db for observed swap retention maintenance: {sqlite_path}")
     })?;
@@ -774,23 +799,35 @@ pub(crate) fn run_observed_swap_retention_maintenance_once(
 fn run_observed_swap_retention_maintenance(
     store: &SqliteStore,
     config: ObservedSwapRetentionConfig,
-) -> Result<()> {
+) -> Result<ObservedSwapRetentionMaintenanceSummary> {
+    let maintenance_started = Instant::now();
     let now = Utc::now();
     let nominal_cutoff = observed_swap_retention_nominal_cutoff(now, config);
     let effective_cutoff = resolve_observed_swap_retention_effective_cutoff(config, now, |now| {
         store.load_discovery_scoring_backfill_protected_since(now)
     })?;
-    let deleted_raw = store.delete_observed_swaps_before(effective_cutoff).with_context(|| {
+    let raw_delete_summary = store
+        .delete_observed_swaps_before_batched(
+            effective_cutoff,
+            OBSERVED_SWAP_RETENTION_DELETE_BATCH_SIZE,
+        )
+        .with_context(|| {
         format!(
             "observed swap retention sweep failed retention_days={} nominal_cutoff={} effective_cutoff={}",
             config.retention_days, nominal_cutoff, effective_cutoff
         )
     })?;
-    let deleted_scoring = if config.aggregate_writes_enabled {
-        let aggregate_cutoff =
-            now - ChronoDuration::days(config.aggregate_retention_days.max(1) as i64);
+    let aggregate_cutoff = if config.aggregate_writes_enabled {
+        Some(now - ChronoDuration::days(config.aggregate_retention_days.max(1) as i64))
+    } else {
+        None
+    };
+    let scoring_delete_summary = if let Some(aggregate_cutoff) = aggregate_cutoff {
         store
-            .prune_discovery_scoring_before(aggregate_cutoff)
+            .prune_discovery_scoring_before_batched(
+                aggregate_cutoff,
+                DISCOVERY_SCORING_RETENTION_DELETE_BATCH_SIZE,
+            )
             .with_context(|| {
                 format!(
                     "discovery scoring retention sweep failed aggregate_retention_days={} aggregate_cutoff={}",
@@ -798,16 +835,27 @@ fn run_observed_swap_retention_maintenance(
                 )
             })?
     } else {
-        0
+        SqliteBatchedDeleteSummary::default()
     };
-    run_retention_wal_checkpoint(
+    let checkpoint = run_retention_wal_checkpoint(
         store,
         config,
         nominal_cutoff,
         effective_cutoff,
-        deleted_raw,
-        deleted_scoring,
-    )
+        raw_delete_summary,
+        scoring_delete_summary,
+    )?;
+    Ok(ObservedSwapRetentionMaintenanceSummary {
+        nominal_cutoff,
+        effective_cutoff,
+        aggregate_cutoff,
+        raw_deleted_rows: raw_delete_summary.deleted_rows,
+        raw_delete_batches: raw_delete_summary.batches,
+        scoring_deleted_rows: scoring_delete_summary.deleted_rows,
+        scoring_delete_batches: scoring_delete_summary.batches,
+        checkpoint,
+        duration_ms: elapsed_ms_ceil(maintenance_started.elapsed()),
+    })
 }
 
 fn observed_swap_retention_nominal_cutoff(
@@ -869,138 +917,49 @@ fn run_retention_wal_checkpoint(
     config: ObservedSwapRetentionConfig,
     nominal_cutoff: chrono::DateTime<Utc>,
     effective_cutoff: chrono::DateTime<Utc>,
-    deleted_raw: usize,
-    deleted_scoring: usize,
-) -> Result<()> {
-    if deleted_raw > 0 || deleted_scoring > 0 {
-        match store.checkpoint_wal_truncate() {
-            Ok((busy, log_frames, checkpointed_frames)) if busy == 0 => {
+    raw_delete_summary: SqliteBatchedDeleteSummary,
+    scoring_delete_summary: SqliteBatchedDeleteSummary,
+) -> Result<ObservedSwapRetentionCheckpointSummary> {
+    match store.checkpoint_wal_passive() {
+        Ok((busy, log_frames, checkpointed_frames)) => {
+            let checkpoint_summary = ObservedSwapRetentionCheckpointSummary {
+                mode: "passive_runtime",
+                busy,
+                log_frames,
+                checkpointed_frames,
+            };
+            if raw_delete_summary.deleted_rows > 0 || scoring_delete_summary.deleted_rows > 0 {
                 info!(
                     retention_days = config.retention_days,
                     aggregate_retention_days = config.aggregate_retention_days,
                     nominal_observed_swap_cutoff = %nominal_cutoff,
                     effective_observed_swap_cutoff = %effective_cutoff,
-                    deleted_observed_swap_rows = deleted_raw,
-                    deleted_scoring_rows = deleted_scoring,
-                    wal_checkpoint_mode = "truncate",
+                    deleted_observed_swap_rows = raw_delete_summary.deleted_rows,
+                    observed_swap_delete_batches = raw_delete_summary.batches,
+                    deleted_scoring_rows = scoring_delete_summary.deleted_rows,
+                    discovery_scoring_delete_batches = scoring_delete_summary.batches,
+                    wal_checkpoint_mode = checkpoint_summary.mode,
                     wal_checkpoint_busy = busy,
                     wal_log_frames = log_frames,
                     wal_checkpointed_frames = checkpointed_frames,
-                    "observed swap retention sweep reclaimed sqlite wal"
+                    "observed swap retention sweep attempted runtime passive wal checkpoint"
                 );
-                return Ok(());
+            } else {
+                info!(
+                    retention_days = config.retention_days,
+                    aggregate_retention_days = config.aggregate_retention_days,
+                    nominal_observed_swap_cutoff = %nominal_cutoff,
+                    effective_observed_swap_cutoff = %effective_cutoff,
+                    deleted_observed_swap_rows = 0,
+                    deleted_scoring_rows = 0,
+                    wal_checkpoint_mode = checkpoint_summary.mode,
+                    wal_checkpoint_busy = busy,
+                    wal_log_frames = log_frames,
+                    wal_checkpointed_frames = checkpointed_frames,
+                    "observed swap retention sweep attempted periodic passive wal checkpoint"
+                );
             }
-            Ok((busy, log_frames, checkpointed_frames)) => match store.checkpoint_wal_passive() {
-                Ok((passive_busy, passive_log_frames, passive_checkpointed_frames)) => {
-                    warn!(
-                        retention_days = config.retention_days,
-                        aggregate_retention_days = config.aggregate_retention_days,
-                        nominal_observed_swap_cutoff = %nominal_cutoff,
-                        effective_observed_swap_cutoff = %effective_cutoff,
-                        deleted_observed_swap_rows = deleted_raw,
-                        deleted_scoring_rows = deleted_scoring,
-                        wal_checkpoint_mode = "truncate_then_passive",
-                        wal_checkpoint_busy = busy,
-                        wal_log_frames = log_frames,
-                        wal_checkpointed_frames = checkpointed_frames,
-                        wal_passive_checkpoint_busy = passive_busy,
-                        wal_passive_log_frames = passive_log_frames,
-                        wal_passive_checkpointed_frames = passive_checkpointed_frames,
-                        "observed swap retention sweep truncate checkpoint was blocked by readers; passive checkpoint attempted"
-                    );
-                    return Ok(());
-                }
-                Err(passive_error) => {
-                    if observed_swap_retention_checkpoint_error_requires_abort(
-                        None,
-                        Some(&passive_error),
-                    ) {
-                        return Err(passive_error).context(
-                            "observed swap retention wal checkpoint failed with fatal sqlite I/O",
-                        );
-                    }
-                    warn!(
-                        error = %passive_error,
-                        retention_days = config.retention_days,
-                        aggregate_retention_days = config.aggregate_retention_days,
-                        nominal_observed_swap_cutoff = %nominal_cutoff,
-                        effective_observed_swap_cutoff = %effective_cutoff,
-                        deleted_observed_swap_rows = deleted_raw,
-                        deleted_scoring_rows = deleted_scoring,
-                        wal_checkpoint_mode = "truncate_then_passive",
-                        wal_checkpoint_busy = busy,
-                        wal_log_frames = log_frames,
-                        wal_checkpointed_frames = checkpointed_frames,
-                        "observed swap retention sweep truncate checkpoint was blocked by readers and passive checkpoint failed"
-                    );
-                    return Ok(());
-                }
-            },
-            Err(error) => match store.checkpoint_wal_passive() {
-                Ok((passive_busy, passive_log_frames, passive_checkpointed_frames)) => {
-                    warn!(
-                        error = %error,
-                        retention_days = config.retention_days,
-                        aggregate_retention_days = config.aggregate_retention_days,
-                        nominal_observed_swap_cutoff = %nominal_cutoff,
-                        effective_observed_swap_cutoff = %effective_cutoff,
-                        deleted_observed_swap_rows = deleted_raw,
-                        deleted_scoring_rows = deleted_scoring,
-                        wal_checkpoint_mode = "passive_fallback",
-                        wal_passive_checkpoint_busy = passive_busy,
-                        wal_passive_log_frames = passive_log_frames,
-                        wal_passive_checkpointed_frames = passive_checkpointed_frames,
-                        "observed swap retention sweep truncate checkpoint failed; passive checkpoint attempted"
-                    );
-                    return Ok(());
-                }
-                Err(passive_error) => {
-                    if observed_swap_retention_checkpoint_error_requires_abort(
-                        Some(&error),
-                        Some(&passive_error),
-                    ) {
-                        let fatal_error = if is_fatal_sqlite_anyhow_error(&error) {
-                            error
-                        } else {
-                            passive_error
-                        };
-                        return Err(fatal_error).context(
-                            "observed swap retention wal checkpoints failed with fatal sqlite I/O",
-                        );
-                    }
-                    warn!(
-                        error = %error,
-                        fallback_error = %passive_error,
-                        retention_days = config.retention_days,
-                        aggregate_retention_days = config.aggregate_retention_days,
-                        nominal_observed_swap_cutoff = %nominal_cutoff,
-                        effective_observed_swap_cutoff = %effective_cutoff,
-                        deleted_observed_swap_rows = deleted_raw,
-                        deleted_scoring_rows = deleted_scoring,
-                        "observed swap retention sweep deleted rows but wal checkpoints failed"
-                    );
-                    return Ok(());
-                }
-            },
-        }
-    }
-
-    match store.checkpoint_wal_passive() {
-        Ok((passive_busy, passive_log_frames, passive_checkpointed_frames)) => {
-            info!(
-                retention_days = config.retention_days,
-                aggregate_retention_days = config.aggregate_retention_days,
-                nominal_observed_swap_cutoff = %nominal_cutoff,
-                effective_observed_swap_cutoff = %effective_cutoff,
-                deleted_observed_swap_rows = deleted_raw,
-                deleted_scoring_rows = deleted_scoring,
-                wal_checkpoint_mode = "passive_periodic",
-                wal_passive_checkpoint_busy = passive_busy,
-                wal_passive_log_frames = passive_log_frames,
-                wal_passive_checkpointed_frames = passive_checkpointed_frames,
-                "observed swap retention sweep attempted periodic passive wal checkpoint"
-            );
-            Ok(())
+            Ok(checkpoint_summary)
         }
         Err(error) => {
             if observed_swap_retention_checkpoint_error_requires_abort(None, Some(&error)) {
@@ -1014,12 +973,19 @@ fn run_retention_wal_checkpoint(
                 aggregate_retention_days = config.aggregate_retention_days,
                 nominal_observed_swap_cutoff = %nominal_cutoff,
                 effective_observed_swap_cutoff = %effective_cutoff,
-                deleted_observed_swap_rows = deleted_raw,
-                deleted_scoring_rows = deleted_scoring,
-                wal_checkpoint_mode = "passive_periodic",
-                "observed swap retention sweep periodic passive wal checkpoint failed"
+                deleted_observed_swap_rows = raw_delete_summary.deleted_rows,
+                observed_swap_delete_batches = raw_delete_summary.batches,
+                deleted_scoring_rows = scoring_delete_summary.deleted_rows,
+                discovery_scoring_delete_batches = scoring_delete_summary.batches,
+                wal_checkpoint_mode = "passive_runtime_failed",
+                "observed swap retention sweep passive wal checkpoint failed"
             );
-            Ok(())
+            Ok(ObservedSwapRetentionCheckpointSummary {
+                mode: "passive_runtime_failed",
+                busy: 0,
+                log_frames: 0,
+                checkpointed_frames: 0,
+            })
         }
     }
 }
@@ -2296,12 +2262,15 @@ mod tests {
             "writer should no longer prune stale rows inline while inserting fresh observed swaps"
         );
 
-        super::run_observed_swap_retention_maintenance_once(
+        let summary = super::run_observed_swap_retention_maintenance_once(
             db_path
                 .to_str()
                 .context("sqlite path must be valid utf-8")?,
             super::ObservedSwapRetentionConfig::production(1, 7, true),
         )?;
+        assert_eq!(summary.raw_deleted_rows, 1);
+        assert_eq!(summary.raw_delete_batches, 1);
+        assert_eq!(summary.checkpoint.mode, "passive_runtime");
 
         let verify_store = SqliteStore::open(Path::new(&db_path))?;
         let swaps_after_maintenance =
@@ -2349,12 +2318,15 @@ mod tests {
             Utc::now() + ChronoDuration::hours(1),
         )?;
 
-        super::run_observed_swap_retention_maintenance_once(
+        let summary = super::run_observed_swap_retention_maintenance_once(
             db_path
                 .to_str()
                 .context("sqlite path must be valid utf-8")?,
             super::ObservedSwapRetentionConfig::production(1, 7, false),
         )?;
+        assert_eq!(summary.raw_deleted_rows, 0);
+        assert_eq!(summary.raw_delete_batches, 0);
+        assert_eq!(summary.checkpoint.mode, "passive_runtime");
 
         let verify_store = SqliteStore::open(Path::new(&db_path))?;
         let stale_rows = verify_store
@@ -2385,6 +2357,17 @@ mod tests {
                 Some(&fallback)
             )
         );
+    }
+
+    #[test]
+    fn observed_swap_retention_checkpoint_warn_failure_mode_is_distinct() {
+        let summary = super::ObservedSwapRetentionCheckpointSummary {
+            mode: "passive_runtime_failed",
+            busy: 0,
+            log_frames: 0,
+            checkpointed_frames: 0,
+        };
+        assert_eq!(summary.mode, "passive_runtime_failed");
     }
 
     #[test]
