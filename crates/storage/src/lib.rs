@@ -250,13 +250,39 @@ pub struct StartupTrustedSelectionGateStatus {
 }
 
 impl StartupTrustedSelectionGateStatus {
+    fn expected_metrics_window_start(
+        now: DateTime<Utc>,
+        scoring_window_days: i64,
+        metric_snapshot_interval_seconds: u64,
+    ) -> DateTime<Utc> {
+        let interval_seconds = metric_snapshot_interval_seconds.max(1) as i64;
+        let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
+        let bucketed_now = DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(now);
+        bucketed_now - Duration::days(scoring_window_days.max(1))
+    }
+
     pub fn effective_selection_state(
         &self,
         now: DateTime<Utc>,
         scoring_window_days: i64,
+        metric_snapshot_interval_seconds: u64,
         max_bootstrap_snapshot_age_seconds: u64,
     ) -> Option<TrustedSelectionState> {
         let selection_state = self.selection_state?;
+        let expected_metrics_window_start = Self::expected_metrics_window_start(
+            now,
+            scoring_window_days,
+            metric_snapshot_interval_seconds,
+        );
+        if selection_state == TrustedSelectionState::TrustedCurrent {
+            let Some(active_snapshot_window_start) = self.active_snapshot_window_start else {
+                return Some(TrustedSelectionState::Invalid);
+            };
+            let max_lag = Duration::seconds(metric_snapshot_interval_seconds.max(1) as i64);
+            if active_snapshot_window_start + max_lag < expected_metrics_window_start {
+                return Some(TrustedSelectionState::Invalid);
+            }
+        }
         if selection_state == TrustedSelectionState::TrustedBridged
             && self.last_bootstrap_source_kind == Some(TrustedSnapshotSourceKind::CloneLatestBridge)
         {
@@ -280,6 +306,7 @@ impl StartupTrustedSelectionGateStatus {
         &self,
         now: DateTime<Utc>,
         scoring_window_days: i64,
+        metric_snapshot_interval_seconds: u64,
         max_bootstrap_snapshot_age_seconds: u64,
     ) -> bool {
         self.bootstrap_required
@@ -287,6 +314,7 @@ impl StartupTrustedSelectionGateStatus {
                 self.effective_selection_state(
                     now,
                     scoring_window_days,
+                    metric_snapshot_interval_seconds,
                     max_bootstrap_snapshot_age_seconds
                 ),
                 Some(TrustedSelectionState::Invalid | TrustedSelectionState::TrustedBridgedStale)
@@ -5333,6 +5361,179 @@ mod tests {
     }
 
     #[test]
+    fn startup_trusted_selection_gate_status_uses_latest_snapshot_metadata_when_row_missing(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("startup-trusted-selection-gate-status-metadata-only.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let effective_window_start = DateTime::parse_from_rfc3339("2026-03-16T12:00:00+00:00")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let source_window_start = effective_window_start - Duration::minutes(30);
+        let now = effective_window_start + Duration::minutes(1);
+        let snapshot_write = TrustedWalletMetricsSnapshotWrite {
+            snapshot_id: "wallet_metrics:clone_latest_bridge:2026-03-16T12:00:00+00:00".to_string(),
+            source_snapshot_id: Some(
+                "wallet_metrics:clone_latest_bridge:2026-03-16T11:30:00+00:00".to_string(),
+            ),
+            source_window_start: Some(source_window_start),
+            effective_window_start,
+            created_at: now,
+            source_kind: TrustedSnapshotSourceKind::CloneLatestBridge,
+            row_count: 1,
+            trust_state: TrustedSelectionState::TrustedBridged,
+        };
+        store.persist_discovery_cycle_with_snapshot_metadata(
+            &[WalletUpsertRow {
+                wallet_id: "wallet-metadata-only".to_string(),
+                first_seen: effective_window_start - Duration::days(1),
+                last_seen: effective_window_start,
+                status: "candidate".to_string(),
+            }],
+            &[WalletMetricRow {
+                wallet_id: "wallet-metadata-only".to_string(),
+                window_start: effective_window_start,
+                pnl: 1.0,
+                win_rate: 0.8,
+                trades: 4,
+                closed_trades: 4,
+                hold_median_seconds: 90,
+                score: 0.8,
+                buy_total: 4,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            }],
+            &[],
+            false,
+            false,
+            now,
+            "metadata-only-test",
+            Some(&snapshot_write),
+        )?;
+
+        let status = store.startup_trusted_selection_gate_status()?;
+        assert!(!status.bootstrap_required);
+        assert_eq!(
+            status.selection_state,
+            Some(TrustedSelectionState::TrustedBridged)
+        );
+        assert!(!status.startup_fail_closed);
+        assert_eq!(status.reason, None);
+        assert_eq!(
+            status.active_snapshot_id,
+            Some(snapshot_write.snapshot_id.clone())
+        );
+        assert_eq!(
+            status.active_snapshot_window_start,
+            Some(effective_window_start)
+        );
+        assert_eq!(
+            status.last_bootstrap_source_kind,
+            Some(TrustedSnapshotSourceKind::CloneLatestBridge)
+        );
+        assert_eq!(
+            status.source_snapshot_window_start,
+            Some(source_window_start)
+        );
+        assert!(!status.legacy_bool_fallback_used);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_trusted_selection_gate_status_prefers_latest_snapshot_metadata_over_legacy_bool_row(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("startup-trusted-selection-gate-status-legacy-bool-with-metadata.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        store.set_discovery_trusted_selection_bootstrap_required(false, "legacy_bool_false")?;
+
+        let effective_window_start = DateTime::parse_from_rfc3339("2026-03-16T12:00:00+00:00")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let source_window_start = effective_window_start - Duration::minutes(30);
+        let now = effective_window_start + Duration::minutes(1);
+        let snapshot_write = TrustedWalletMetricsSnapshotWrite {
+            snapshot_id: "wallet_metrics:clone_latest_bridge:2026-03-16T12:00:00+00:00".to_string(),
+            source_snapshot_id: Some(
+                "wallet_metrics:clone_latest_bridge:2026-03-16T11:30:00+00:00".to_string(),
+            ),
+            source_window_start: Some(source_window_start),
+            effective_window_start,
+            created_at: now,
+            source_kind: TrustedSnapshotSourceKind::CloneLatestBridge,
+            row_count: 1,
+            trust_state: TrustedSelectionState::TrustedBridged,
+        };
+        store.persist_discovery_cycle_with_snapshot_metadata(
+            &[WalletUpsertRow {
+                wallet_id: "wallet-metadata-overrides-legacy".to_string(),
+                first_seen: effective_window_start - Duration::days(1),
+                last_seen: effective_window_start,
+                status: "candidate".to_string(),
+            }],
+            &[WalletMetricRow {
+                wallet_id: "wallet-metadata-overrides-legacy".to_string(),
+                window_start: effective_window_start,
+                pnl: 1.0,
+                win_rate: 0.8,
+                trades: 4,
+                closed_trades: 4,
+                hold_median_seconds: 90,
+                score: 0.8,
+                buy_total: 4,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            }],
+            &[],
+            false,
+            false,
+            now,
+            "metadata-overrides-legacy",
+            Some(&snapshot_write),
+        )?;
+
+        let status = store.startup_trusted_selection_gate_status()?;
+        assert!(!status.bootstrap_required);
+        assert_eq!(
+            status.selection_state,
+            Some(TrustedSelectionState::TrustedBridged)
+        );
+        assert!(!status.startup_fail_closed);
+        assert_eq!(status.reason.as_deref(), Some("legacy_bool_false"));
+        assert_eq!(
+            status.active_snapshot_id,
+            Some(snapshot_write.snapshot_id.clone())
+        );
+        assert_eq!(
+            status.active_snapshot_window_start,
+            Some(effective_window_start)
+        );
+        assert_eq!(
+            status.last_bootstrap_source_kind,
+            Some(TrustedSnapshotSourceKind::CloneLatestBridge)
+        );
+        assert_eq!(
+            status.source_snapshot_window_start,
+            Some(source_window_start)
+        );
+        assert!(
+            !status.legacy_bool_fallback_used,
+            "snapshot metadata should keep startup on the typed path even when the row was first created by the old bool setter"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn startup_trusted_selection_gate_status_prefers_typed_invalid_state() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp
@@ -5437,10 +5638,79 @@ mod tests {
             Some(source_window_start)
         );
         assert_eq!(
-            status.effective_selection_state(now, 5, 60 * 60),
+            status.effective_selection_state(now, 5, 30 * 60, 60 * 60),
             Some(TrustedSelectionState::TrustedBridgedStale)
         );
-        assert!(status.effective_startup_fail_closed(now, 5, 60 * 60));
+        assert!(status.effective_startup_fail_closed(now, 5, 30 * 60, 60 * 60));
+        Ok(())
+    }
+
+    #[test]
+    fn startup_trusted_selection_gate_status_degrades_stale_trusted_current_snapshot_from_metadata(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("startup-trusted-selection-gate-status-stale-current-metadata.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let effective_window_start = DateTime::parse_from_rfc3339("2026-03-10T21:00:00+00:00")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let now = DateTime::parse_from_rfc3339("2026-03-15T22:05:00+00:00")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let snapshot_write = TrustedWalletMetricsSnapshotWrite {
+            snapshot_id: "wallet_metrics:discovery_refresh:2026-03-10T21:00:00+00:00".to_string(),
+            source_snapshot_id: None,
+            source_window_start: Some(effective_window_start),
+            effective_window_start,
+            created_at: effective_window_start + Duration::minutes(1),
+            source_kind: TrustedSnapshotSourceKind::DiscoveryRefresh,
+            row_count: 1,
+            trust_state: TrustedSelectionState::TrustedCurrent,
+        };
+        store.persist_discovery_cycle_with_snapshot_metadata(
+            &[WalletUpsertRow {
+                wallet_id: "wallet-stale-current".to_string(),
+                first_seen: effective_window_start - Duration::days(1),
+                last_seen: effective_window_start,
+                status: "candidate".to_string(),
+            }],
+            &[WalletMetricRow {
+                wallet_id: "wallet-stale-current".to_string(),
+                window_start: effective_window_start,
+                pnl: 1.0,
+                win_rate: 0.8,
+                trades: 4,
+                closed_trades: 4,
+                hold_median_seconds: 90,
+                score: 0.8,
+                buy_total: 4,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            }],
+            &[],
+            false,
+            false,
+            effective_window_start + Duration::minutes(1),
+            "stale-current-metadata-test",
+            Some(&snapshot_write),
+        )?;
+
+        let status = store.startup_trusted_selection_gate_status()?;
+        assert_eq!(
+            status.selection_state,
+            Some(TrustedSelectionState::TrustedCurrent)
+        );
+        assert!(!status.legacy_bool_fallback_used);
+        assert_eq!(
+            status.effective_selection_state(now, 5, 30 * 60, 60 * 60),
+            Some(TrustedSelectionState::Invalid)
+        );
+        assert!(status.effective_startup_fail_closed(now, 5, 30 * 60, 60 * 60));
         Ok(())
     }
 

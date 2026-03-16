@@ -105,6 +105,31 @@ pub(crate) fn upsert_wallet_activity_days_on_conn(
 }
 
 impl SqliteStore {
+    fn startup_trusted_selection_gate_status_from_metadata(
+        &self,
+        bootstrap_required: bool,
+        reason: Option<String>,
+    ) -> Result<Option<StartupTrustedSelectionGateStatus>> {
+        let Some(metadata) = self.latest_trusted_wallet_metrics_snapshot_metadata()? else {
+            return Ok(None);
+        };
+        Ok(Some(StartupTrustedSelectionGateStatus {
+            bootstrap_required,
+            selection_state: Some(metadata.trust_state),
+            startup_fail_closed: bootstrap_required
+                || matches!(
+                    metadata.trust_state,
+                    TrustedSelectionState::Invalid | TrustedSelectionState::TrustedBridgedStale
+                ),
+            reason,
+            active_snapshot_id: Some(metadata.snapshot_id),
+            active_snapshot_window_start: Some(metadata.effective_window_start),
+            last_bootstrap_source_kind: Some(metadata.source_kind),
+            source_snapshot_window_start: metadata.source_window_start,
+            legacy_bool_fallback_used: false,
+        }))
+    }
+
     pub fn discovery_trusted_selection_bootstrap_required(&self) -> Result<bool> {
         self.ensure_discovery_strategy_state_table()?;
         let required = self
@@ -236,6 +261,12 @@ impl SqliteStore {
                 && typed_state.last_bootstrap_source_kind.is_none()
                 && typed_state.last_bootstrap_at.is_none();
             if legacy_bool_only_row {
+                if let Some(status) = self.startup_trusted_selection_gate_status_from_metadata(
+                    typed_state.bootstrap_required,
+                    Some(typed_state.reason.clone()),
+                )? {
+                    return Ok(status);
+                }
                 return Ok(StartupTrustedSelectionGateStatus {
                     bootstrap_required: typed_state.bootstrap_required,
                     selection_state: None,
@@ -274,6 +305,11 @@ impl SqliteStore {
         }
 
         let bootstrap_required = self.discovery_trusted_selection_bootstrap_required()?;
+        if let Some(status) =
+            self.startup_trusted_selection_gate_status_from_metadata(bootstrap_required, None)?
+        {
+            return Ok(status);
+        }
         Ok(StartupTrustedSelectionGateStatus {
             bootstrap_required,
             selection_state: None,
