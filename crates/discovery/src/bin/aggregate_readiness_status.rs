@@ -62,6 +62,9 @@ struct JsonAggregateReadinessStatus {
     materialization_gap_cursor: Option<JsonCursor>,
     backfill_progress: Option<JsonBackfillProgress>,
     backfill_protected_since: Option<DateTime<Utc>>,
+    backfill_active: bool,
+    backfill_resume_required: bool,
+    coverage_markers_pending_backfill_completion: bool,
     scoring_horizon_covered: bool,
     covered_through_within_runtime_lag: bool,
     covered_through_within_audit_lag: bool,
@@ -219,6 +222,15 @@ fn render_human(
             "backfill_protected_since={}",
             format_optional_ts(status.backfill_protected_since.as_ref())
         ),
+        format!("backfill_active={}", status.backfill_active),
+        format!(
+            "backfill_resume_required={}",
+            status.backfill_resume_required
+        ),
+        format!(
+            "coverage_markers_pending_backfill_completion={}",
+            status.coverage_markers_pending_backfill_completion
+        ),
         format!("scoring_horizon_covered={}", status.scoring_horizon_covered),
         format!(
             "covered_through_within_runtime_lag={}",
@@ -269,6 +281,10 @@ fn render_json(
             .as_ref()
             .map(backfill_progress_to_json),
         backfill_protected_since: status.backfill_protected_since,
+        backfill_active: status.backfill_active,
+        backfill_resume_required: status.backfill_resume_required,
+        coverage_markers_pending_backfill_completion: status
+            .coverage_markers_pending_backfill_completion,
         scoring_horizon_covered: status.scoring_horizon_covered,
         covered_through_within_runtime_lag: status.covered_through_within_runtime_lag,
         covered_through_within_audit_lag: status.covered_through_within_audit_lag,
@@ -531,6 +547,9 @@ mod tests {
             materialization_gap_cursor: None,
             backfill_progress: None,
             backfill_protected_since: None,
+            backfill_active: false,
+            backfill_resume_required: false,
+            coverage_markers_pending_backfill_completion: false,
             scoring_horizon_covered: false,
             covered_through_within_runtime_lag: false,
             covered_through_within_audit_lag: false,

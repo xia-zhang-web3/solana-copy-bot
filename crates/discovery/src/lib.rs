@@ -200,11 +200,14 @@ pub enum AggregateReadinessBlocker {
     ReadsDisabledByConfig,
     MissingCoveredSince,
     MissingCoveredThroughCursor,
+    CoveredSincePendingBackfillCompletion,
+    CoveredThroughCursorPendingBackfillCompletion,
     MaterializationGapLatched,
     CoveredSinceAfterWindowStart,
     CoveredThroughTooStaleForRuntimeGate,
     CoveredThroughTooStaleForAuditLag,
     BackfillInProgress,
+    BackfillResumeRequired,
     BackfillProtectionActive,
 }
 
@@ -215,6 +218,12 @@ impl AggregateReadinessBlocker {
             Self::ReadsDisabledByConfig => "reads_disabled_by_config",
             Self::MissingCoveredSince => "missing_covered_since",
             Self::MissingCoveredThroughCursor => "missing_covered_through_cursor",
+            Self::CoveredSincePendingBackfillCompletion => {
+                "covered_since_pending_backfill_completion"
+            }
+            Self::CoveredThroughCursorPendingBackfillCompletion => {
+                "covered_through_cursor_pending_backfill_completion"
+            }
             Self::MaterializationGapLatched => "materialization_gap_latched",
             Self::CoveredSinceAfterWindowStart => "covered_since_after_window_start",
             Self::CoveredThroughTooStaleForRuntimeGate => {
@@ -222,6 +231,7 @@ impl AggregateReadinessBlocker {
             }
             Self::CoveredThroughTooStaleForAuditLag => "covered_through_too_stale_for_audit_lag",
             Self::BackfillInProgress => "backfill_in_progress",
+            Self::BackfillResumeRequired => "backfill_resume_required",
             Self::BackfillProtectionActive => "backfill_protection_active",
         }
     }
@@ -248,6 +258,9 @@ pub struct AggregateReadinessStatus {
     pub materialization_gap_cursor: Option<DiscoveryRuntimeCursor>,
     pub backfill_progress: Option<AggregateBackfillProgressStatus>,
     pub backfill_protected_since: Option<DateTime<Utc>>,
+    pub backfill_active: bool,
+    pub backfill_resume_required: bool,
+    pub coverage_markers_pending_backfill_completion: bool,
     pub scoring_horizon_covered: bool,
     pub covered_through_within_runtime_lag: bool,
     pub covered_through_within_audit_lag: bool,
@@ -588,6 +601,8 @@ impl DiscoveryService {
             .map(|(start_ts, cursor)| AggregateBackfillProgressStatus { start_ts, cursor });
         let backfill_protected_since =
             store.load_discovery_scoring_backfill_protected_since(now)?;
+        let backfill_active = backfill_protected_since.is_some();
+        let backfill_resume_required = backfill_progress.is_some() && !backfill_active;
 
         let scoring_horizon_covered =
             covered_since.is_some_and(|covered_since| covered_since <= window_start);
@@ -611,22 +626,28 @@ impl DiscoveryService {
         let storage_ready_for_runtime_gate = scoring_horizon_covered
             && materialization_gap_cursor.is_none()
             && covered_through_within_runtime_lag;
+        let coverage_markers_pending_backfill_completion = backfill_progress.is_some()
+            && (covered_since.is_none() || covered_through_cursor.is_none());
 
         let mut write_blockers = Vec::new();
         if !self.config.scoring_aggregates_write_enabled {
             write_blockers.push(AggregateReadinessBlocker::WritesDisabledByConfig);
         }
         if covered_through_cursor.is_none() {
-            write_blockers.push(AggregateReadinessBlocker::MissingCoveredThroughCursor);
+            write_blockers.push(if backfill_progress.is_some() {
+                AggregateReadinessBlocker::CoveredThroughCursorPendingBackfillCompletion
+            } else {
+                AggregateReadinessBlocker::MissingCoveredThroughCursor
+            });
         }
         if materialization_gap_cursor.is_some() {
             write_blockers.push(AggregateReadinessBlocker::MaterializationGapLatched);
         }
-        if backfill_progress.is_some() {
+        if backfill_active {
             write_blockers.push(AggregateReadinessBlocker::BackfillInProgress);
         }
-        if backfill_protected_since.is_some() {
-            write_blockers.push(AggregateReadinessBlocker::BackfillProtectionActive);
+        if backfill_resume_required {
+            write_blockers.push(AggregateReadinessBlocker::BackfillResumeRequired);
         }
 
         let mut read_blockers = Vec::new();
@@ -634,14 +655,22 @@ impl DiscoveryService {
             read_blockers.push(AggregateReadinessBlocker::ReadsDisabledByConfig);
         }
         match covered_since {
-            None => read_blockers.push(AggregateReadinessBlocker::MissingCoveredSince),
+            None => read_blockers.push(if backfill_progress.is_some() {
+                AggregateReadinessBlocker::CoveredSincePendingBackfillCompletion
+            } else {
+                AggregateReadinessBlocker::MissingCoveredSince
+            }),
             Some(covered_since) if covered_since > window_start => {
                 read_blockers.push(AggregateReadinessBlocker::CoveredSinceAfterWindowStart);
             }
             Some(_) => {}
         }
         if covered_through_cursor.is_none() {
-            read_blockers.push(AggregateReadinessBlocker::MissingCoveredThroughCursor);
+            read_blockers.push(if backfill_progress.is_some() {
+                AggregateReadinessBlocker::CoveredThroughCursorPendingBackfillCompletion
+            } else {
+                AggregateReadinessBlocker::MissingCoveredThroughCursor
+            });
         } else if !covered_through_within_runtime_lag {
             read_blockers.push(AggregateReadinessBlocker::CoveredThroughTooStaleForRuntimeGate);
         }
@@ -651,11 +680,11 @@ impl DiscoveryService {
         if covered_through_ts.is_some() && !covered_through_within_audit_lag {
             read_blockers.push(AggregateReadinessBlocker::CoveredThroughTooStaleForAuditLag);
         }
-        if backfill_progress.is_some() {
+        if backfill_active {
             read_blockers.push(AggregateReadinessBlocker::BackfillInProgress);
         }
-        if backfill_protected_since.is_some() {
-            read_blockers.push(AggregateReadinessBlocker::BackfillProtectionActive);
+        if backfill_resume_required {
+            read_blockers.push(AggregateReadinessBlocker::BackfillResumeRequired);
         }
 
         Ok(AggregateReadinessStatus {
@@ -672,6 +701,9 @@ impl DiscoveryService {
             materialization_gap_cursor,
             backfill_progress,
             backfill_protected_since,
+            backfill_active,
+            backfill_resume_required,
+            coverage_markers_pending_backfill_completion,
             scoring_horizon_covered,
             covered_through_within_runtime_lag,
             covered_through_within_audit_lag,
@@ -7405,7 +7437,6 @@ mod tests {
             vec![
                 AggregateReadinessBlocker::MaterializationGapLatched,
                 AggregateReadinessBlocker::BackfillInProgress,
-                AggregateReadinessBlocker::BackfillProtectionActive,
             ]
         );
         assert_eq!(
@@ -7416,14 +7447,67 @@ mod tests {
                 AggregateReadinessBlocker::MaterializationGapLatched,
                 AggregateReadinessBlocker::CoveredThroughTooStaleForAuditLag,
                 AggregateReadinessBlocker::BackfillInProgress,
-                AggregateReadinessBlocker::BackfillProtectionActive,
             ]
         );
         assert_eq!(status.covered_through_lag_seconds, Some(7_200));
+        assert!(status.backfill_active);
+        assert!(!status.backfill_resume_required);
+        assert!(!status.coverage_markers_pending_backfill_completion);
         assert!(!status.scoring_horizon_covered);
         assert!(!status.covered_through_within_runtime_lag);
         assert!(!status.covered_through_within_audit_lag);
         assert!(!status.storage_ready_for_runtime_gate);
+        assert!(!status.effective_writes_ready);
+        assert!(!status.effective_reads_ready);
+        Ok(())
+    }
+
+    #[test]
+    fn aggregate_readiness_status_reports_resumable_partial_backfill_without_coverage_markers(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("aggregate-readiness-backfill-resume.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-16T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = aggregate_readiness_config();
+        let window_start = now - Duration::days(config.scoring_window_days as i64);
+        store.set_discovery_scoring_backfill_progress(
+            window_start,
+            &DiscoveryRuntimeCursor {
+                ts_utc: now - Duration::hours(2),
+                slot: 404,
+                signature: "aggregate-backfill-resume".to_string(),
+            },
+        )?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let status = discovery.aggregate_readiness_status(&store, now)?;
+        assert!(!status.backfill_active);
+        assert!(status.backfill_resume_required);
+        assert!(status.coverage_markers_pending_backfill_completion);
+        assert_eq!(
+            status.write_blockers,
+            vec![
+                AggregateReadinessBlocker::CoveredThroughCursorPendingBackfillCompletion,
+                AggregateReadinessBlocker::BackfillResumeRequired,
+            ]
+        );
+        assert_eq!(
+            status.read_blockers,
+            vec![
+                AggregateReadinessBlocker::CoveredSincePendingBackfillCompletion,
+                AggregateReadinessBlocker::CoveredThroughCursorPendingBackfillCompletion,
+                AggregateReadinessBlocker::BackfillResumeRequired,
+            ]
+        );
+        assert_eq!(status.covered_since, None);
+        assert_eq!(status.covered_through_ts, None);
+        assert_eq!(status.covered_through_cursor, None);
         assert!(!status.effective_writes_ready);
         assert!(!status.effective_reads_ready);
         Ok(())

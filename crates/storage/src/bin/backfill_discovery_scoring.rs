@@ -580,4 +580,168 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn partial_backfill_persists_exact_resume_progress_without_coverage_markers() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-partial-progress.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let start_ts = DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let first_swap = SwapEvent {
+            signature: "sig-partial-1".to_string(),
+            wallet: "wallet-partial".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenPartial111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 401,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let second_swap = SwapEvent {
+            signature: "sig-partial-2".to_string(),
+            wallet: "wallet-partial".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenPartial111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 11.0,
+            exact_amounts: None,
+            slot: 402,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:10:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[first_swap.clone(), second_swap])?;
+
+        run_with_store(
+            &mut store,
+            &Config {
+                db_path: db_path.clone(),
+                start_ts,
+                end_ts: Some(first_swap.ts_utc),
+                batch_size: 1,
+                sleep_ms: 0,
+                reset: false,
+                mark_covered: false,
+                resume_after: None,
+                aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+            },
+        )?;
+
+        assert_eq!(
+            store.load_discovery_scoring_backfill_progress()?,
+            Some((
+                start_ts,
+                DiscoveryRuntimeCursor {
+                    ts_utc: first_swap.ts_utc,
+                    slot: first_swap.slot,
+                    signature: first_swap.signature.clone(),
+                },
+            ))
+        );
+        assert_eq!(store.load_discovery_scoring_covered_since()?, None);
+        assert_eq!(store.load_discovery_scoring_covered_through_cursor()?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn resumed_backfill_from_partial_state_marks_coverage_and_clears_progress() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-resume-success.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let start_ts = DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let first_swap = SwapEvent {
+            signature: "sig-resume-1".to_string(),
+            wallet: "wallet-resume".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenResume111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 501,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let second_swap = SwapEvent {
+            signature: "sig-resume-2".to_string(),
+            wallet: "wallet-resume".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenResume111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 11.0,
+            exact_amounts: None,
+            slot: 502,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:10:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[first_swap.clone(), second_swap.clone()])?;
+
+        run_with_store(
+            &mut store,
+            &Config {
+                db_path: db_path.clone(),
+                start_ts,
+                end_ts: Some(first_swap.ts_utc),
+                batch_size: 1,
+                sleep_ms: 0,
+                reset: false,
+                mark_covered: false,
+                resume_after: None,
+                aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+            },
+        )?;
+        store.clear_discovery_scoring_backfill_source_protection()?;
+
+        run_with_store(
+            &mut store,
+            &Config {
+                db_path: db_path.clone(),
+                start_ts,
+                end_ts: None,
+                batch_size: 1,
+                sleep_ms: 0,
+                reset: false,
+                mark_covered: true,
+                resume_after: Some(Cursor {
+                    ts: first_swap.ts_utc,
+                    slot: first_swap.slot,
+                    signature: first_swap.signature.clone(),
+                }),
+                aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+            },
+        )?;
+
+        assert_eq!(store.load_discovery_scoring_backfill_progress()?, None);
+        assert_eq!(
+            store.load_discovery_scoring_covered_since()?,
+            Some(start_ts)
+        );
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(DiscoveryRuntimeCursor {
+                ts_utc: second_swap.ts_utc,
+                slot: second_swap.slot,
+                signature: second_swap.signature.clone(),
+            })
+        );
+        Ok(())
+    }
 }
