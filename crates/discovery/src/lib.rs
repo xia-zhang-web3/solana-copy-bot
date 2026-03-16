@@ -4,9 +4,10 @@ use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
 use copybot_storage::{
     is_fatal_sqlite_anyhow_error, DiscoveryRuntimeCursor, DiscoveryTrustedSelectionStateUpdate,
-    PersistedWalletMetricSnapshotRow, SqliteStore, TrustedSelectionState,
-    TrustedSnapshotSourceKind, TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite,
-    WalletMetricRow, WalletScoringBuyFactRow, WalletScoringQualitySource, WalletUpsertRow,
+    PersistedWalletMetricSnapshotRow, SqliteStore, StartupTrustedSelectionGateStatus,
+    TrustedSelectionState, TrustedSnapshotSourceKind, TrustedWalletMetricsSnapshotRow,
+    TrustedWalletMetricsSnapshotWrite, WalletMetricRow, WalletScoringBuyFactRow,
+    WalletScoringQualitySource, WalletUpsertRow,
 };
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -461,9 +462,16 @@ impl DiscoveryService {
                 Duration::seconds(self.config.refresh_seconds.max(1) as i64),
             )?;
         let recovered_active_follow_wallets = !store.list_active_follow_wallets()?.is_empty();
-        let trusted_selection_bootstrap_required = store
-            .discovery_trusted_selection_bootstrap_required()
-            .context("failed to load discovery trusted bootstrap requirement")?;
+        let startup_trusted_selection_gate_status =
+            store
+                .startup_trusted_selection_gate_status()
+                .context("failed to load discovery startup trusted selection gate status")?;
+        let startup_trusted_selection_fail_closed = startup_trusted_selection_gate_status
+            .effective_startup_fail_closed(
+                now,
+                self.config.scoring_window_days as i64,
+                self.config.max_bootstrap_snapshot_age_seconds,
+            );
         let (
             swaps_window,
             fetch_progress,
@@ -509,7 +517,7 @@ impl DiscoveryService {
                 });
                 state.cursor =
                     Some(restored.unwrap_or_else(|| DiscoveryCursor::bootstrap(window_start)));
-                if (recovered_active_follow_wallets || trusted_selection_bootstrap_required)
+                if (recovered_active_follow_wallets || startup_trusted_selection_fail_closed)
                     && !aggregate_scoring_ready
                 {
                     state.trusted_selection_bootstrap_pending = true;
@@ -1547,6 +1555,30 @@ impl DiscoveryService {
             }
             _ => metadata.trust_state,
         }
+    }
+
+    pub fn effective_startup_trusted_selection_state(
+        &self,
+        status: &StartupTrustedSelectionGateStatus,
+        now: DateTime<Utc>,
+    ) -> Option<TrustedSelectionState> {
+        status.effective_selection_state(
+            now,
+            self.config.scoring_window_days as i64,
+            self.config.max_bootstrap_snapshot_age_seconds,
+        )
+    }
+
+    pub fn effective_startup_trusted_selection_fail_closed(
+        &self,
+        status: &StartupTrustedSelectionGateStatus,
+        now: DateTime<Utc>,
+    ) -> bool {
+        status.effective_startup_fail_closed(
+            now,
+            self.config.scoring_window_days as i64,
+            self.config.max_bootstrap_snapshot_age_seconds,
+        )
     }
 
     fn wallet_snapshots_from_persisted_metric_rows(
@@ -4295,6 +4327,102 @@ mod tests {
             state.last_bootstrap_source_kind,
             Some(TrustedSnapshotSourceKind::CloneLatestBridge)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn run_cycle_startup_gate_uses_typed_aged_bridged_state_even_when_legacy_bool_is_false(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("test-startup-gate-aged-bridged-typed-state.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-15T12:14:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 5;
+        config.decay_window_days = 5;
+        config.follow_top_n = 1;
+        config.min_score = 0.0;
+        config.metric_snapshot_interval_seconds = 30 * 60;
+        config.max_bootstrap_snapshot_age_seconds = 60 * 60;
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let effective_window_start = discovery.metrics_window_start(now);
+        let source_window_start = effective_window_start - Duration::hours(2);
+        let snapshot_write = trusted_snapshot_write(
+            TrustedSnapshotSourceKind::CloneLatestBridge,
+            TrustedSelectionState::TrustedBridged,
+            effective_window_start,
+            now - Duration::minutes(1),
+            1,
+            Some("snapshot-source-002".to_string()),
+            Some(source_window_start),
+        );
+
+        store.persist_discovery_cycle_with_snapshot_metadata(
+            &[WalletUpsertRow {
+                wallet_id: "wallet_startup_bridge".to_string(),
+                first_seen: now - Duration::days(4),
+                last_seen: now - Duration::minutes(1),
+                status: "candidate".to_string(),
+            }],
+            &[WalletMetricRow {
+                wallet_id: "wallet_startup_bridge".to_string(),
+                window_start: effective_window_start,
+                pnl: 1.5,
+                win_rate: 0.7,
+                trades: 6,
+                closed_trades: 3,
+                hold_median_seconds: 300,
+                score: 0.6,
+                buy_total: 3,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            }],
+            &[],
+            false,
+            false,
+            now,
+            "seed-startup-aged-bridge",
+            Some(&snapshot_write),
+        )?;
+        store.set_discovery_trusted_selection_state(&DiscoveryTrustedSelectionStateUpdate {
+            bootstrap_required: false,
+            reason: "typed_bridged".to_string(),
+            selection_state: TrustedSelectionState::TrustedBridged,
+            active_snapshot_id: Some(snapshot_write.snapshot_id.clone()),
+            active_snapshot_window_start: Some(effective_window_start),
+            last_bootstrap_source_kind: Some(TrustedSnapshotSourceKind::CloneLatestBridge),
+            last_bootstrap_at: Some(now - Duration::minutes(1)),
+        })?;
+
+        let summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(
+            summary.scoring_source,
+            "trusted_persisted_wallet_metrics_bootstrap_unavailable"
+        );
+        assert!(summary.trusted_selection_fail_closed);
+        assert!(
+            store.discovery_trusted_selection_bootstrap_required()?,
+            "startup gate should mirror typed fail-close into the legacy bool latch for compatibility"
+        );
+        let persisted_state = store
+            .discovery_trusted_selection_state()?
+            .expect("typed state should persist across startup fail-close");
+        assert_eq!(
+            persisted_state.selection_state,
+            TrustedSelectionState::TrustedBridgedStale
+        );
+        let state = discovery
+            .window_state
+            .lock()
+            .expect("window_state lock should succeed");
+        assert!(state.trusted_selection_bootstrap_pending);
         Ok(())
     }
 

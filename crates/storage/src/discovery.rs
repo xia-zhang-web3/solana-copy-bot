@@ -1,9 +1,9 @@
 use super::{
     DiscoveryTrustedSelectionStateRow, DiscoveryTrustedSelectionStateUpdate,
-    FollowlistUpdateResult, PersistedWalletMetricSnapshotRow, SqliteStore, TrustedSelectionState,
-    TrustedSnapshotSourceKind, TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite,
-    WalletActivityDayRow, WalletMetricRow, WalletUpsertRow,
-    DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS,
+    FollowlistUpdateResult, PersistedWalletMetricSnapshotRow, SqliteStore,
+    StartupTrustedSelectionGateStatus, TrustedSelectionState, TrustedSnapshotSourceKind,
+    TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite, WalletActivityDayRow,
+    WalletMetricRow, WalletUpsertRow, DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -222,6 +222,69 @@ impl SqliteStore {
             },
         )
         .transpose()
+    }
+
+    pub fn startup_trusted_selection_gate_status(
+        &self,
+    ) -> Result<StartupTrustedSelectionGateStatus> {
+        let typed_state = self.discovery_trusted_selection_state()?;
+        if let Some(typed_state) = typed_state {
+            let legacy_bool_only_row = typed_state.selection_state
+                == TrustedSelectionState::Invalid
+                && typed_state.active_snapshot_id.is_none()
+                && typed_state.active_snapshot_window_start.is_none()
+                && typed_state.last_bootstrap_source_kind.is_none()
+                && typed_state.last_bootstrap_at.is_none();
+            if legacy_bool_only_row {
+                return Ok(StartupTrustedSelectionGateStatus {
+                    bootstrap_required: typed_state.bootstrap_required,
+                    selection_state: None,
+                    startup_fail_closed: typed_state.bootstrap_required,
+                    reason: Some(typed_state.reason),
+                    active_snapshot_id: None,
+                    active_snapshot_window_start: None,
+                    last_bootstrap_source_kind: None,
+                    source_snapshot_window_start: None,
+                    legacy_bool_fallback_used: true,
+                });
+            }
+            let source_snapshot_window_start = typed_state
+                .active_snapshot_window_start
+                .map(|window_start| {
+                    self.trusted_wallet_metrics_snapshot_metadata_for_window(window_start)
+                })
+                .transpose()?
+                .flatten()
+                .and_then(|metadata| metadata.source_window_start);
+            return Ok(StartupTrustedSelectionGateStatus {
+                bootstrap_required: typed_state.bootstrap_required,
+                selection_state: Some(typed_state.selection_state),
+                startup_fail_closed: typed_state.bootstrap_required
+                    || matches!(
+                        typed_state.selection_state,
+                        TrustedSelectionState::Invalid | TrustedSelectionState::TrustedBridgedStale
+                    ),
+                reason: Some(typed_state.reason),
+                active_snapshot_id: typed_state.active_snapshot_id,
+                active_snapshot_window_start: typed_state.active_snapshot_window_start,
+                last_bootstrap_source_kind: typed_state.last_bootstrap_source_kind,
+                source_snapshot_window_start,
+                legacy_bool_fallback_used: false,
+            });
+        }
+
+        let bootstrap_required = self.discovery_trusted_selection_bootstrap_required()?;
+        Ok(StartupTrustedSelectionGateStatus {
+            bootstrap_required,
+            selection_state: None,
+            startup_fail_closed: bootstrap_required,
+            reason: None,
+            active_snapshot_id: None,
+            active_snapshot_window_start: None,
+            last_bootstrap_source_kind: None,
+            source_snapshot_window_start: None,
+            legacy_bool_fallback_used: true,
+        })
     }
 
     pub fn set_discovery_trusted_selection_state(

@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
 use std::path::Path;
@@ -234,6 +234,65 @@ pub struct DiscoveryTrustedSelectionStateRow {
     pub last_bootstrap_source_kind: Option<TrustedSnapshotSourceKind>,
     pub last_bootstrap_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StartupTrustedSelectionGateStatus {
+    pub bootstrap_required: bool,
+    pub selection_state: Option<TrustedSelectionState>,
+    pub startup_fail_closed: bool,
+    pub reason: Option<String>,
+    pub active_snapshot_id: Option<String>,
+    pub active_snapshot_window_start: Option<DateTime<Utc>>,
+    pub last_bootstrap_source_kind: Option<TrustedSnapshotSourceKind>,
+    pub source_snapshot_window_start: Option<DateTime<Utc>>,
+    pub legacy_bool_fallback_used: bool,
+}
+
+impl StartupTrustedSelectionGateStatus {
+    pub fn effective_selection_state(
+        &self,
+        now: DateTime<Utc>,
+        scoring_window_days: i64,
+        max_bootstrap_snapshot_age_seconds: u64,
+    ) -> Option<TrustedSelectionState> {
+        let selection_state = self.selection_state?;
+        if selection_state == TrustedSelectionState::TrustedBridged
+            && self.last_bootstrap_source_kind == Some(TrustedSnapshotSourceKind::CloneLatestBridge)
+        {
+            let Some(source_window_start) = self.source_snapshot_window_start else {
+                return Some(selection_state);
+            };
+            let source_snapshot_publish_time =
+                source_window_start + Duration::days(scoring_window_days.max(1));
+            let source_snapshot_age_seconds = now
+                .signed_duration_since(source_snapshot_publish_time)
+                .num_seconds()
+                .max(0) as u64;
+            if source_snapshot_age_seconds > max_bootstrap_snapshot_age_seconds {
+                return Some(TrustedSelectionState::TrustedBridgedStale);
+            }
+        }
+        Some(selection_state)
+    }
+
+    pub fn effective_startup_fail_closed(
+        &self,
+        now: DateTime<Utc>,
+        scoring_window_days: i64,
+        max_bootstrap_snapshot_age_seconds: u64,
+    ) -> bool {
+        self.bootstrap_required
+            || matches!(
+                self.effective_selection_state(
+                    now,
+                    scoring_window_days,
+                    max_bootstrap_snapshot_age_seconds
+                ),
+                Some(TrustedSelectionState::Invalid | TrustedSelectionState::TrustedBridgedStale)
+            )
+            || (self.selection_state.is_none() && self.startup_fail_closed)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -5222,6 +5281,166 @@ mod tests {
         assert_eq!(state.reason, "bool_setter_pending");
         assert_eq!(state.selection_state, TrustedSelectionState::Invalid);
         assert_eq!(state.active_snapshot_id, None);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_trusted_selection_gate_status_falls_back_to_legacy_bool_when_row_missing(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("startup-trusted-selection-gate-status-missing-row.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let status = store.startup_trusted_selection_gate_status()?;
+        assert!(!status.bootstrap_required);
+        assert_eq!(status.selection_state, None);
+        assert!(!status.startup_fail_closed);
+        assert!(status.legacy_bool_fallback_used);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_trusted_selection_gate_status_treats_legacy_bool_only_row_as_fallback() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("startup-trusted-selection-gate-status-legacy-bool-row.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        store.set_discovery_trusted_selection_bootstrap_required(false, "legacy_bool_false")?;
+        let status = store.startup_trusted_selection_gate_status()?;
+        assert!(!status.bootstrap_required);
+        assert_eq!(status.selection_state, None);
+        assert!(!status.startup_fail_closed);
+        assert_eq!(status.reason.as_deref(), Some("legacy_bool_false"));
+        assert!(status.legacy_bool_fallback_used);
+
+        store.set_discovery_trusted_selection_bootstrap_required(true, "legacy_bool_true")?;
+        let status = store.startup_trusted_selection_gate_status()?;
+        assert!(status.bootstrap_required);
+        assert_eq!(status.selection_state, None);
+        assert!(status.startup_fail_closed);
+        assert_eq!(status.reason.as_deref(), Some("legacy_bool_true"));
+        assert!(status.legacy_bool_fallback_used);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_trusted_selection_gate_status_prefers_typed_invalid_state() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("startup-trusted-selection-gate-status-typed-invalid.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-16T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        store.set_discovery_trusted_selection_state(&DiscoveryTrustedSelectionStateUpdate {
+            bootstrap_required: false,
+            reason: "typed_invalid".to_string(),
+            selection_state: TrustedSelectionState::Invalid,
+            active_snapshot_id: None,
+            active_snapshot_window_start: None,
+            last_bootstrap_source_kind: None,
+            last_bootstrap_at: Some(now),
+        })?;
+
+        let status = store.startup_trusted_selection_gate_status()?;
+        assert!(!status.bootstrap_required);
+        assert_eq!(status.selection_state, Some(TrustedSelectionState::Invalid));
+        assert!(status.startup_fail_closed);
+        assert!(!status.legacy_bool_fallback_used);
+        assert_eq!(status.reason.as_deref(), Some("typed_invalid"));
+        Ok(())
+    }
+
+    #[test]
+    fn startup_trusted_selection_gate_status_degrades_aged_bridged_snapshot() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("startup-trusted-selection-gate-status-aged-bridge.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let effective_window_start = DateTime::parse_from_rfc3339("2026-03-10T21:00:00+00:00")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let source_window_start = effective_window_start - Duration::hours(2);
+        let now = source_window_start + Duration::days(5) + Duration::hours(2);
+        let snapshot_write = TrustedWalletMetricsSnapshotWrite {
+            snapshot_id: "wallet_metrics:clone_latest_bridge:2026-03-10T21:00:00+00:00".to_string(),
+            source_snapshot_id: Some("wallet_metrics:source:2026-03-10T19:00:00+00:00".to_string()),
+            source_window_start: Some(source_window_start),
+            effective_window_start,
+            created_at: now - Duration::minutes(1),
+            source_kind: TrustedSnapshotSourceKind::CloneLatestBridge,
+            row_count: 1,
+            trust_state: TrustedSelectionState::TrustedBridged,
+        };
+        store.persist_discovery_cycle_with_snapshot_metadata(
+            &[WalletUpsertRow {
+                wallet_id: "wallet-aged-bridge".to_string(),
+                first_seen: effective_window_start - Duration::days(1),
+                last_seen: effective_window_start,
+                status: "candidate".to_string(),
+            }],
+            &[WalletMetricRow {
+                wallet_id: "wallet-aged-bridge".to_string(),
+                window_start: effective_window_start,
+                pnl: 1.0,
+                win_rate: 0.8,
+                trades: 4,
+                closed_trades: 4,
+                hold_median_seconds: 90,
+                score: 0.8,
+                buy_total: 4,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            }],
+            &[],
+            false,
+            false,
+            now,
+            "aged-bridge-test",
+            Some(&snapshot_write),
+        )?;
+        store.set_discovery_trusted_selection_state(&DiscoveryTrustedSelectionStateUpdate {
+            bootstrap_required: false,
+            reason: "typed_bridged".to_string(),
+            selection_state: TrustedSelectionState::TrustedBridged,
+            active_snapshot_id: Some(snapshot_write.snapshot_id.clone()),
+            active_snapshot_window_start: Some(effective_window_start),
+            last_bootstrap_source_kind: Some(TrustedSnapshotSourceKind::CloneLatestBridge),
+            last_bootstrap_at: Some(now - Duration::minutes(1)),
+        })?;
+
+        let status = store.startup_trusted_selection_gate_status()?;
+        assert!(!status.startup_fail_closed);
+        assert_eq!(
+            status.selection_state,
+            Some(TrustedSelectionState::TrustedBridged)
+        );
+        assert_eq!(
+            status.source_snapshot_window_start,
+            Some(source_window_start)
+        );
+        assert_eq!(
+            status.effective_selection_state(now, 5, 60 * 60),
+            Some(TrustedSelectionState::TrustedBridgedStale)
+        );
+        assert!(status.effective_startup_fail_closed(now, 5, 60 * 60));
         Ok(())
     }
 
