@@ -9,6 +9,8 @@ chrono.workspace = true
 copybot-config = { path = "../config" }
 copybot-core-types = { path = "../core-types" }
 copybot-storage = { path = "../storage" }
+serde.workspace = true
+serde_json = "1.0"
 tracing.workspace = true
 
 [dev-dependencies]

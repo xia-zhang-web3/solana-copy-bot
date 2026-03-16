@@ -350,6 +350,8 @@ dependencies = [
  "copybot-core-types",
  "copybot-storage",
  "rusqlite",
+ "serde",
+ "serde_json",
  "tempfile",
  "tracing",
 ]

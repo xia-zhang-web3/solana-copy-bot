@@ -33,6 +33,7 @@ const QUALITY_MAX_SIGNATURE_PAGES: u32 = 1;
 const QUALITY_MAX_FETCH_PER_CYCLE: usize = 20;
 const QUALITY_RPC_BUDGET_MS: u64 = 1_500;
 const AGGREGATE_FOLLOWLIST_TRANSITION_GUARD_CYCLES: u32 = 3;
+const AGGREGATE_READINESS_MAX_LAG_BUCKETS: u64 = 2;
 const CAP_TRUNCATION_FOLLOWLIST_DEACTIVATION_GUARD_CYCLES: u32 = 2;
 const STREAMING_RUG_TRADE_SWEEP_INTERVAL_SWAPS: usize = 2_048;
 const POST_BOOTSTRAP_ROTATION_BLOCKED_REASON: &str =
@@ -191,6 +192,70 @@ pub struct CloneLatestTrustedBootstrapSummary {
     pub forced_stale: bool,
     pub dry_run: bool,
     pub top_wallets: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateReadinessBlocker {
+    WritesDisabledByConfig,
+    ReadsDisabledByConfig,
+    MissingCoveredSince,
+    MissingCoveredThroughCursor,
+    MaterializationGapLatched,
+    CoveredSinceAfterWindowStart,
+    CoveredThroughTooStaleForRuntimeGate,
+    CoveredThroughTooStaleForAuditLag,
+    BackfillInProgress,
+    BackfillProtectionActive,
+}
+
+impl AggregateReadinessBlocker {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WritesDisabledByConfig => "writes_disabled_by_config",
+            Self::ReadsDisabledByConfig => "reads_disabled_by_config",
+            Self::MissingCoveredSince => "missing_covered_since",
+            Self::MissingCoveredThroughCursor => "missing_covered_through_cursor",
+            Self::MaterializationGapLatched => "materialization_gap_latched",
+            Self::CoveredSinceAfterWindowStart => "covered_since_after_window_start",
+            Self::CoveredThroughTooStaleForRuntimeGate => {
+                "covered_through_too_stale_for_runtime_gate"
+            }
+            Self::CoveredThroughTooStaleForAuditLag => "covered_through_too_stale_for_audit_lag",
+            Self::BackfillInProgress => "backfill_in_progress",
+            Self::BackfillProtectionActive => "backfill_protection_active",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AggregateBackfillProgressStatus {
+    pub start_ts: DateTime<Utc>,
+    pub cursor: DiscoveryRuntimeCursor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AggregateReadinessStatus {
+    pub window_start: DateTime<Utc>,
+    pub writes_enabled: bool,
+    pub reads_enabled: bool,
+    pub runtime_gate_max_lag_seconds: u64,
+    pub audit_max_lag_buckets: u64,
+    pub audit_max_lag_seconds: u64,
+    pub covered_since: Option<DateTime<Utc>>,
+    pub covered_through_ts: Option<DateTime<Utc>>,
+    pub covered_through_cursor: Option<DiscoveryRuntimeCursor>,
+    pub covered_through_lag_seconds: Option<u64>,
+    pub materialization_gap_cursor: Option<DiscoveryRuntimeCursor>,
+    pub backfill_progress: Option<AggregateBackfillProgressStatus>,
+    pub backfill_protected_since: Option<DateTime<Utc>>,
+    pub scoring_horizon_covered: bool,
+    pub covered_through_within_runtime_lag: bool,
+    pub covered_through_within_audit_lag: bool,
+    pub storage_ready_for_runtime_gate: bool,
+    pub effective_writes_ready: bool,
+    pub effective_reads_ready: bool,
+    pub write_blockers: Vec<AggregateReadinessBlocker>,
+    pub read_blockers: Vec<AggregateReadinessBlocker>,
 }
 
 fn trusted_snapshot_id(
@@ -499,6 +564,125 @@ impl DiscoveryService {
             helius_http_url,
             window_state: Arc::new(Mutex::new(DiscoveryWindowState::default())),
         }
+    }
+
+    pub fn aggregate_readiness_status(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+    ) -> Result<AggregateReadinessStatus> {
+        let window_start = now - Duration::days(self.config.scoring_window_days.max(1) as i64);
+        let runtime_gate_max_lag_seconds = self.config.refresh_seconds.max(1);
+        let audit_max_lag_seconds = self
+            .config
+            .metric_snapshot_interval_seconds
+            .max(1)
+            .saturating_mul(AGGREGATE_READINESS_MAX_LAG_BUCKETS);
+        let covered_since = store.load_discovery_scoring_covered_since()?;
+        let covered_through_ts = store.load_discovery_scoring_covered_through()?;
+        let covered_through_cursor = store.load_discovery_scoring_covered_through_cursor()?;
+        let materialization_gap_cursor =
+            store.load_discovery_scoring_materialization_gap_cursor()?;
+        let backfill_progress = store
+            .load_discovery_scoring_backfill_progress()?
+            .map(|(start_ts, cursor)| AggregateBackfillProgressStatus { start_ts, cursor });
+        let backfill_protected_since =
+            store.load_discovery_scoring_backfill_protected_since(now)?;
+
+        let scoring_horizon_covered =
+            covered_since.is_some_and(|covered_since| covered_since <= window_start);
+        let covered_through_lag_seconds = covered_through_ts.map(|covered_through_ts| {
+            now.signed_duration_since(covered_through_ts)
+                .num_seconds()
+                .max(0) as u64
+        });
+        let covered_through_within_runtime_lag =
+            covered_through_cursor
+                .as_ref()
+                .is_some_and(|covered_through_cursor| {
+                    covered_through_cursor.ts_utc
+                        + Duration::seconds(runtime_gate_max_lag_seconds as i64)
+                        >= now
+                });
+        let covered_through_within_audit_lag =
+            covered_through_lag_seconds.is_some_and(|covered_through_lag_seconds| {
+                covered_through_lag_seconds <= audit_max_lag_seconds
+            });
+        let storage_ready_for_runtime_gate = scoring_horizon_covered
+            && materialization_gap_cursor.is_none()
+            && covered_through_within_runtime_lag;
+
+        let mut write_blockers = Vec::new();
+        if !self.config.scoring_aggregates_write_enabled {
+            write_blockers.push(AggregateReadinessBlocker::WritesDisabledByConfig);
+        }
+        if covered_through_cursor.is_none() {
+            write_blockers.push(AggregateReadinessBlocker::MissingCoveredThroughCursor);
+        }
+        if materialization_gap_cursor.is_some() {
+            write_blockers.push(AggregateReadinessBlocker::MaterializationGapLatched);
+        }
+        if backfill_progress.is_some() {
+            write_blockers.push(AggregateReadinessBlocker::BackfillInProgress);
+        }
+        if backfill_protected_since.is_some() {
+            write_blockers.push(AggregateReadinessBlocker::BackfillProtectionActive);
+        }
+
+        let mut read_blockers = Vec::new();
+        if !self.config.scoring_aggregates_enabled {
+            read_blockers.push(AggregateReadinessBlocker::ReadsDisabledByConfig);
+        }
+        match covered_since {
+            None => read_blockers.push(AggregateReadinessBlocker::MissingCoveredSince),
+            Some(covered_since) if covered_since > window_start => {
+                read_blockers.push(AggregateReadinessBlocker::CoveredSinceAfterWindowStart);
+            }
+            Some(_) => {}
+        }
+        if covered_through_cursor.is_none() {
+            read_blockers.push(AggregateReadinessBlocker::MissingCoveredThroughCursor);
+        } else if !covered_through_within_runtime_lag {
+            read_blockers.push(AggregateReadinessBlocker::CoveredThroughTooStaleForRuntimeGate);
+        }
+        if materialization_gap_cursor.is_some() {
+            read_blockers.push(AggregateReadinessBlocker::MaterializationGapLatched);
+        }
+        if covered_through_ts.is_some() && !covered_through_within_audit_lag {
+            read_blockers.push(AggregateReadinessBlocker::CoveredThroughTooStaleForAuditLag);
+        }
+        if backfill_progress.is_some() {
+            read_blockers.push(AggregateReadinessBlocker::BackfillInProgress);
+        }
+        if backfill_protected_since.is_some() {
+            read_blockers.push(AggregateReadinessBlocker::BackfillProtectionActive);
+        }
+
+        Ok(AggregateReadinessStatus {
+            window_start,
+            writes_enabled: self.config.scoring_aggregates_write_enabled,
+            reads_enabled: self.config.scoring_aggregates_enabled,
+            runtime_gate_max_lag_seconds,
+            audit_max_lag_buckets: AGGREGATE_READINESS_MAX_LAG_BUCKETS,
+            audit_max_lag_seconds,
+            covered_since,
+            covered_through_ts,
+            covered_through_cursor,
+            covered_through_lag_seconds,
+            materialization_gap_cursor,
+            backfill_progress,
+            backfill_protected_since,
+            scoring_horizon_covered,
+            covered_through_within_runtime_lag,
+            covered_through_within_audit_lag,
+            storage_ready_for_runtime_gate,
+            effective_writes_ready: write_blockers.is_empty(),
+            effective_reads_ready: self.config.scoring_aggregates_enabled
+                && storage_ready_for_runtime_gate
+                && read_blockers.is_empty(),
+            write_blockers,
+            read_blockers,
+        })
     }
 
     pub fn run_cycle(&self, store: &SqliteStore, now: DateTime<Utc>) -> Result<DiscoverySummary> {
@@ -3283,6 +3467,17 @@ mod tests {
         config.max_fetch_pages_per_cycle = 10;
         config.fetch_time_budget_ms = 1_000;
         config.thin_market_min_unique_traders = 1;
+        config
+    }
+
+    fn aggregate_readiness_config() -> DiscoveryConfig {
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.decay_window_days = 7;
+        config.refresh_seconds = 600;
+        config.metric_snapshot_interval_seconds = 1_800;
+        config.scoring_aggregates_write_enabled = true;
+        config.scoring_aggregates_enabled = true;
         config
     }
 
@@ -7082,6 +7277,188 @@ mod tests {
                 .any(|label| label.starts_with("wallet_aggregate_live:")),
             "aggregate scoring should produce the profitable wallet even with an empty raw window"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn aggregate_readiness_status_reports_default_disabled_blockers() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("aggregate-readiness-default.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-16T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let discovery =
+            DiscoveryService::new(DiscoveryConfig::default(), permissive_shadow_quality());
+
+        let status = discovery.aggregate_readiness_status(&store, now)?;
+        assert_eq!(
+            status.write_blockers,
+            vec![
+                AggregateReadinessBlocker::WritesDisabledByConfig,
+                AggregateReadinessBlocker::MissingCoveredThroughCursor,
+            ]
+        );
+        assert_eq!(
+            status.read_blockers,
+            vec![
+                AggregateReadinessBlocker::ReadsDisabledByConfig,
+                AggregateReadinessBlocker::MissingCoveredSince,
+                AggregateReadinessBlocker::MissingCoveredThroughCursor,
+            ]
+        );
+        assert!(!status.storage_ready_for_runtime_gate);
+        assert!(!status.effective_writes_ready);
+        assert!(!status.effective_reads_ready);
+        Ok(())
+    }
+
+    #[test]
+    fn aggregate_readiness_status_requires_exact_covered_through_cursor() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("aggregate-readiness-covered-through-cursor.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-16T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = aggregate_readiness_config();
+        let window_start = now - Duration::days(config.scoring_window_days as i64);
+        store.set_discovery_scoring_covered_since(window_start - Duration::hours(1))?;
+        let conn = Connection::open(&db_path)?;
+        conn.execute(
+            "INSERT INTO discovery_scoring_state(state_key, state_value, updated_at)
+             VALUES ('covered_through_ts', ?1, ?2)
+             ON CONFLICT(state_key) DO UPDATE SET
+                state_value = excluded.state_value,
+                updated_at = excluded.updated_at",
+            rusqlite::params![
+                (now - Duration::minutes(5)).to_rfc3339(),
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let status = discovery.aggregate_readiness_status(&store, now)?;
+        assert_eq!(status.covered_through_ts, Some(now - Duration::minutes(5)));
+        assert_eq!(status.covered_through_cursor, None);
+        assert_eq!(
+            status.write_blockers,
+            vec![AggregateReadinessBlocker::MissingCoveredThroughCursor]
+        );
+        assert_eq!(
+            status.read_blockers,
+            vec![AggregateReadinessBlocker::MissingCoveredThroughCursor]
+        );
+        assert!(!status.storage_ready_for_runtime_gate);
+        Ok(())
+    }
+
+    #[test]
+    fn aggregate_readiness_status_reports_gap_staleness_and_backfill_blockers() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("aggregate-readiness-blockers.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-16T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = aggregate_readiness_config();
+        let window_start = now - Duration::days(config.scoring_window_days as i64);
+        store.set_discovery_scoring_covered_since(window_start + Duration::hours(1))?;
+        store.set_discovery_scoring_covered_through_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::hours(2),
+            slot: 77,
+            signature: "aggregate-covered-through-stale".to_string(),
+        })?;
+        store.set_discovery_scoring_materialization_gap_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::minutes(30),
+            slot: 88,
+            signature: "aggregate-gap".to_string(),
+        })?;
+        store.set_discovery_scoring_backfill_progress(
+            window_start - Duration::days(10),
+            &DiscoveryRuntimeCursor {
+                ts_utc: now - Duration::days(1),
+                slot: 91,
+                signature: "aggregate-backfill-progress".to_string(),
+            },
+        )?;
+        store.set_discovery_scoring_backfill_source_protection(
+            now - Duration::hours(4),
+            now + Duration::hours(2),
+        )?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let status = discovery.aggregate_readiness_status(&store, now)?;
+        assert_eq!(
+            status.write_blockers,
+            vec![
+                AggregateReadinessBlocker::MaterializationGapLatched,
+                AggregateReadinessBlocker::BackfillInProgress,
+                AggregateReadinessBlocker::BackfillProtectionActive,
+            ]
+        );
+        assert_eq!(
+            status.read_blockers,
+            vec![
+                AggregateReadinessBlocker::CoveredSinceAfterWindowStart,
+                AggregateReadinessBlocker::CoveredThroughTooStaleForRuntimeGate,
+                AggregateReadinessBlocker::MaterializationGapLatched,
+                AggregateReadinessBlocker::CoveredThroughTooStaleForAuditLag,
+                AggregateReadinessBlocker::BackfillInProgress,
+                AggregateReadinessBlocker::BackfillProtectionActive,
+            ]
+        );
+        assert_eq!(status.covered_through_lag_seconds, Some(7_200));
+        assert!(!status.scoring_horizon_covered);
+        assert!(!status.covered_through_within_runtime_lag);
+        assert!(!status.covered_through_within_audit_lag);
+        assert!(!status.storage_ready_for_runtime_gate);
+        assert!(!status.effective_writes_ready);
+        assert!(!status.effective_reads_ready);
+        Ok(())
+    }
+
+    #[test]
+    fn aggregate_readiness_status_reports_ready_when_markers_are_current() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("aggregate-readiness-ready.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-16T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = aggregate_readiness_config();
+        let window_start = now - Duration::days(config.scoring_window_days as i64);
+        store.set_discovery_scoring_covered_since(window_start - Duration::hours(1))?;
+        store.set_discovery_scoring_covered_through_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::minutes(5),
+            slot: 101,
+            signature: "aggregate-covered-through-ready".to_string(),
+        })?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let status = discovery.aggregate_readiness_status(&store, now)?;
+        assert!(status.scoring_horizon_covered);
+        assert!(status.covered_through_within_runtime_lag);
+        assert!(status.covered_through_within_audit_lag);
+        assert!(status.storage_ready_for_runtime_gate);
+        assert!(status.effective_writes_ready);
+        assert!(status.effective_reads_ready);
+        assert!(status.write_blockers.is_empty());
+        assert!(status.read_blockers.is_empty());
         Ok(())
     }
 

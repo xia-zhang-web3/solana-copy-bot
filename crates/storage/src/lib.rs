@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -684,6 +684,16 @@ impl SqliteStore {
         )
         .context("failed to create schema_migrations table")?;
 
+        Ok(Self { conn })
+    }
+
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("failed to open sqlite db read-only: {}", path.display()))?;
+        conn.busy_timeout(StdDuration::from_secs(5))
+            .context("failed to set sqlite busy_timeout")?;
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .context("failed to enable sqlite foreign keys")?;
         Ok(Self { conn })
     }
 
