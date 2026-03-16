@@ -41,6 +41,7 @@ static SQLITE_BUSY_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 mod discovery;
 mod discovery_scoring;
+mod discovery_scoring_builder;
 mod execution_orders;
 mod history_retention;
 mod market_data;
@@ -51,6 +52,7 @@ mod shadow;
 mod sqlite_retry;
 mod system_events;
 
+pub use discovery_scoring_builder::DiscoveryScoringReplayBuilder;
 pub use execution_orders::{MarkOrderDroppedOutcome, ScheduleOrderRetryOutcome};
 pub use history_retention::{HistoryRetentionCutoffs, HistoryRetentionSummary};
 pub use sqlite_retry::{is_fatal_sqlite_anyhow_error, is_retryable_sqlite_anyhow_error};
@@ -77,6 +79,30 @@ pub struct SqliteBatchedDeleteSummaryWithCompletion {
     pub deleted_rows: usize,
     pub batches: usize,
     pub completed_full_sweep: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiscoveryScoringBoundarySeedLot {
+    pub buy_signature: String,
+    pub wallet_id: String,
+    pub token: String,
+    pub qty: f64,
+    pub cost_sol: f64,
+    pub opened_ts: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiscoveryScoringBoundarySeedSnapshot {
+    pub boundary_start_ts: DateTime<Utc>,
+    pub boundary_cursor: DiscoveryRuntimeCursor,
+    pub open_lots: Vec<DiscoveryScoringBoundarySeedLot>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DiscoveryScoringBatchStageTimings {
+    pub prepare_ms: u64,
+    pub apply_ms: u64,
+    pub rug_finalize_ms: u64,
 }
 
 pub fn sqlite_contention_snapshot() -> SqliteContentionSnapshot {
@@ -1544,6 +1570,170 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    fn fmt_f64(value: f64) -> String {
+        format!("{value:.12}")
+    }
+
+    fn make_swap(
+        signature: impl Into<String>,
+        wallet: impl Into<String>,
+        token_in: impl Into<String>,
+        token_out: impl Into<String>,
+        amount_in: f64,
+        amount_out: f64,
+        slot: u64,
+        ts_utc: DateTime<Utc>,
+    ) -> SwapEvent {
+        SwapEvent {
+            signature: signature.into(),
+            wallet: wallet.into(),
+            dex: "raydium".to_string(),
+            token_in: token_in.into(),
+            token_out: token_out.into(),
+            amount_in,
+            amount_out,
+            exact_amounts: None,
+            slot,
+            ts_utc,
+        }
+    }
+
+    fn comparable_wallet_scoring_days(
+        store: &SqliteStore,
+    ) -> Result<Vec<(String, String, String, String, u32, String, String)>> {
+        let mut stmt = store.conn.prepare(
+            "SELECT wallet_id, activity_day, first_seen, last_seen, trades, spent_sol, max_buy_notional_sol
+             FROM wallet_scoring_days
+             ORDER BY wallet_id ASC, activity_day ASC",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?.max(0) as u32,
+                fmt_f64(row.get::<_, f64>(5)?),
+                fmt_f64(row.get::<_, f64>(6)?),
+            ));
+        }
+        Ok(out)
+    }
+
+    fn comparable_wallet_scoring_tx_minutes(
+        store: &SqliteStore,
+    ) -> Result<Vec<(String, i64, i64)>> {
+        let mut stmt = store.conn.prepare(
+            "SELECT wallet_id, minute_bucket, tx_count
+             FROM wallet_scoring_tx_minutes
+             ORDER BY wallet_id ASC, minute_bucket ASC",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ));
+        }
+        Ok(out)
+    }
+
+    fn comparable_wallet_scoring_buy_facts(store: &SqliteStore) -> Result<Vec<String>> {
+        let mut stmt = store.conn.prepare(
+            "SELECT buy_signature, wallet_id, token, ts, notional_sol, market_volume_5m_sol,
+                    market_unique_traders_5m, market_liquidity_proxy_sol, quality_source,
+                    quality_token_age_seconds, quality_holders, quality_liquidity_sol,
+                     rug_check_after_ts, rug_volume_lookahead_sol, rug_unique_traders_lookahead
+             FROM wallet_scoring_buy_facts
+             ORDER BY buy_signature ASC",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(format!(
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                fmt_f64(row.get::<_, f64>(4)?),
+                fmt_f64(row.get::<_, f64>(5)?),
+                row.get::<_, i64>(6)?,
+                fmt_f64(row.get::<_, f64>(7)?),
+                row.get::<_, String>(8)?,
+                row.get::<_, Option<i64>>(9)?
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
+                row.get::<_, Option<i64>>(10)?
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
+                row.get::<_, Option<f64>>(11)?
+                    .map(fmt_f64)
+                    .unwrap_or_else(|| "null".to_string()),
+                row.get::<_, String>(12)?,
+                row.get::<_, Option<f64>>(13)?
+                    .map(fmt_f64)
+                    .unwrap_or_else(|| "null".to_string()),
+                row.get::<_, Option<i64>>(14)?
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
+            ));
+        }
+        Ok(out)
+    }
+
+    fn comparable_wallet_scoring_close_facts(
+        store: &SqliteStore,
+    ) -> Result<Vec<(String, i64, String, String, String, String, i64, i64)>> {
+        let mut stmt = store.conn.prepare(
+            "SELECT sell_signature, segment_index, wallet_id, token, closed_ts, pnl_sol, hold_seconds, win
+             FROM wallet_scoring_close_facts
+             ORDER BY sell_signature ASC, segment_index ASC",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                fmt_f64(row.get::<_, f64>(5)?),
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+            ));
+        }
+        Ok(out)
+    }
+
+    fn comparable_wallet_scoring_open_lots(
+        store: &SqliteStore,
+    ) -> Result<Vec<(String, String, String, String, String, String)>> {
+        let mut stmt = store.conn.prepare(
+            "SELECT buy_signature, wallet_id, token, qty, cost_sol, opened_ts
+             FROM wallet_scoring_open_lots
+             ORDER BY wallet_id ASC, token ASC, opened_ts ASC, buy_signature ASC",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                fmt_f64(row.get::<_, f64>(3)?),
+                fmt_f64(row.get::<_, f64>(4)?),
+                row.get::<_, String>(5)?,
+            ));
+        }
+        Ok(out)
     }
 
     #[test]
@@ -6296,6 +6486,228 @@ mod tests {
         )?;
         assert!((remaining_qty - 30.0).abs() < 1e-9);
         assert!((remaining_cost - 0.6).abs() < 1e-9);
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_scoring_builder_replay_matches_sql_replay_on_representative_fixture() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let sql_db_path = temp.path().join("discovery-scoring-builder-sql.db");
+        let builder_db_path = temp.path().join("discovery-scoring-builder-builder.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut sql_store = SqliteStore::open(Path::new(&sql_db_path))?;
+        let mut builder_store = SqliteStore::open(Path::new(&builder_db_path))?;
+        sql_store.run_migrations(&migration_dir)?;
+        builder_store.run_migrations(&migration_dir)?;
+
+        let sol_mint = "So11111111111111111111111111111111111111112";
+        let token_a = "TokenBuilderA111111111111111111111111111";
+        let token_b = "TokenBuilderB111111111111111111111111111";
+        let start_cursor_ts = DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let day_start = DateTime::parse_from_rfc3339("2026-03-06T00:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+
+        let mut observed_swaps = vec![
+            make_swap(
+                "builder-lookback-a",
+                "wallet-lookback-a",
+                sol_mint,
+                token_a,
+                0.7,
+                70.0,
+                1,
+                start_cursor_ts - Duration::minutes(2),
+            ),
+            make_swap(
+                "builder-lookback-b",
+                "wallet-lookback-b",
+                token_b,
+                sol_mint,
+                25.0,
+                0.4,
+                2,
+                start_cursor_ts - Duration::minutes(1),
+            ),
+        ];
+        let mut batch_swaps = Vec::new();
+        let base_ts = start_cursor_ts + Duration::minutes(1);
+        let mut next_slot = 10u64;
+        for idx in 0..150usize {
+            let token = if idx % 2 == 0 { token_a } else { token_b };
+            let ts = base_ts + Duration::seconds((idx as i64) * 45);
+            let wallet_main = format!("wallet-main-{}", idx % 5);
+            let wallet_peer = format!("wallet-peer-{}", idx % 3);
+            let main_buy_notional = 1.0 + ((idx % 3) as f64 * 0.1);
+            let peer_buy_notional = 0.4 + ((idx % 2) as f64 * 0.1);
+            let later_buy_notional = 0.6 + ((idx % 4) as f64 * 0.05);
+            batch_swaps.push(make_swap(
+                format!("builder-main-buy-{idx}"),
+                wallet_main.clone(),
+                sol_mint,
+                token,
+                main_buy_notional,
+                100.0,
+                next_slot,
+                ts,
+            ));
+            next_slot += 1;
+            batch_swaps.push(make_swap(
+                format!("builder-peer-buy-{idx}"),
+                wallet_peer,
+                sol_mint,
+                token,
+                peer_buy_notional,
+                40.0,
+                next_slot,
+                ts,
+            ));
+            next_slot += 1;
+            batch_swaps.push(make_swap(
+                format!("builder-main-later-buy-{idx}"),
+                wallet_main.clone(),
+                sol_mint,
+                token,
+                later_buy_notional,
+                30.0,
+                next_slot,
+                ts + Duration::seconds(15),
+            ));
+            next_slot += 1;
+            batch_swaps.push(make_swap(
+                format!("builder-main-sell-{idx}"),
+                wallet_main,
+                token,
+                sol_mint,
+                80.0,
+                1.8 + ((idx % 5) as f64 * 0.05),
+                next_slot,
+                ts + Duration::seconds(30),
+            ));
+            next_slot += 1;
+        }
+        observed_swaps.extend(batch_swaps.iter().cloned());
+        sql_store.insert_observed_swaps_batch(&observed_swaps)?;
+        builder_store.insert_observed_swaps_batch(&observed_swaps)?;
+        sql_store.upsert_token_quality_cache(
+            token_a,
+            Some(111),
+            Some(12.3),
+            Some(3_600),
+            start_cursor_ts,
+        )?;
+        builder_store.upsert_token_quality_cache(
+            token_a,
+            Some(111),
+            Some(12.3),
+            Some(3_600),
+            start_cursor_ts,
+        )?;
+        sql_store.upsert_token_quality_cache(
+            token_b,
+            Some(222),
+            Some(24.6),
+            Some(7_200),
+            start_cursor_ts - Duration::minutes(20),
+        )?;
+        builder_store.upsert_token_quality_cache(
+            token_b,
+            Some(222),
+            Some(24.6),
+            Some(7_200),
+            start_cursor_ts - Duration::minutes(20),
+        )?;
+
+        let config = DiscoveryAggregateWriteConfig {
+            max_tx_per_minute: 50,
+            rug_lookahead_seconds: 300,
+            helius_http_url: None,
+            min_token_age_hint_seconds: None,
+        };
+        let sql_timings =
+            sql_store.apply_discovery_scoring_batch_with_timings(&batch_swaps, &config)?;
+        let sql_rug_finalize_ms = sql_store.finalize_discovery_scoring_rug_facts_with_timing(
+            batch_swaps.last().expect("fixture must have swaps").ts_utc,
+        )?;
+
+        let mut builder =
+            builder_store.begin_discovery_scoring_replay_builder(start_cursor_ts, 0, "")?;
+        let builder_timings = builder_store.apply_discovery_scoring_builder_batch_with_timings(
+            &mut builder,
+            &batch_swaps,
+            &config,
+        )?;
+        let builder_rug_finalize_ms = builder_store
+            .finalize_discovery_scoring_rug_facts_with_timing(
+                batch_swaps.last().expect("fixture must have swaps").ts_utc,
+            )?;
+
+        println!(
+            "builder_vs_sql_fixture rows={} sql_prepare_ms={} sql_apply_ms={} sql_rug_finalize_ms={} builder_prepare_ms={} builder_apply_ms={} builder_rug_finalize_ms={}",
+            batch_swaps.len(),
+            sql_timings.prepare_ms,
+            sql_timings.apply_ms,
+            sql_rug_finalize_ms,
+            builder_timings.prepare_ms,
+            builder_timings.apply_ms,
+            builder_rug_finalize_ms,
+        );
+
+        assert_eq!(
+            comparable_wallet_scoring_days(&sql_store)?,
+            comparable_wallet_scoring_days(&builder_store)?,
+            "wallet_scoring_days diverged between sql and builder replay",
+        );
+        assert_eq!(
+            comparable_wallet_scoring_tx_minutes(&sql_store)?,
+            comparable_wallet_scoring_tx_minutes(&builder_store)?,
+            "wallet_scoring_tx_minutes diverged between sql and builder replay",
+        );
+        assert_eq!(
+            comparable_wallet_scoring_buy_facts(&sql_store)?,
+            comparable_wallet_scoring_buy_facts(&builder_store)?,
+            "wallet_scoring_buy_facts diverged between sql and builder replay",
+        );
+        assert_eq!(
+            comparable_wallet_scoring_close_facts(&sql_store)?,
+            comparable_wallet_scoring_close_facts(&builder_store)?,
+            "wallet_scoring_close_facts diverged between sql and builder replay",
+        );
+        assert_eq!(
+            comparable_wallet_scoring_open_lots(&sql_store)?,
+            comparable_wallet_scoring_open_lots(&builder_store)?,
+            "wallet_scoring_open_lots diverged between sql and builder replay",
+        );
+
+        let sql_snapshot = sql_store.load_wallet_scoring_snapshot_since(day_start)?;
+        let builder_snapshot = builder_store.load_wallet_scoring_snapshot_since(day_start)?;
+        assert_eq!(
+            sql_snapshot.max_tx_counts, builder_snapshot.max_tx_counts,
+            "loaded wallet scoring snapshot max_tx_counts diverged between sql and builder replay",
+        );
+
+        let boundary_cursor = DiscoveryRuntimeCursor {
+            ts_utc: batch_swaps.last().expect("fixture must have swaps").ts_utc,
+            slot: batch_swaps.last().expect("fixture must have swaps").slot,
+            signature: batch_swaps
+                .last()
+                .expect("fixture must have swaps")
+                .signature
+                .clone(),
+        };
+        assert_eq!(
+            sql_store
+                .export_discovery_scoring_boundary_seed_snapshot(day_start, &boundary_cursor)?
+                .open_lots,
+            builder_store
+                .export_discovery_scoring_boundary_seed_snapshot(day_start, &boundary_cursor)?
+                .open_lots,
+            "boundary seed open-lot export diverged between sql and builder replay",
+        );
+
         Ok(())
     }
 

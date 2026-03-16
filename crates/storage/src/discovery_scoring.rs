@@ -1,7 +1,9 @@
 use super::{
-    DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, SqliteBatchedDeleteSummary, SqliteStore,
-    TokenMarketStats, WalletScoringBuyFactRow, WalletScoringCloseFactRow, WalletScoringDayRow,
-    WalletScoringQualitySource, WalletScoringSnapshot,
+    DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, DiscoveryScoringBatchStageTimings,
+    DiscoveryScoringBoundarySeedLot, DiscoveryScoringBoundarySeedSnapshot,
+    SqliteBatchedDeleteSummary, SqliteStore, TokenMarketStats, WalletScoringBuyFactRow,
+    WalletScoringCloseFactRow, WalletScoringDayRow, WalletScoringQualitySource,
+    WalletScoringSnapshot,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
@@ -98,6 +100,146 @@ fn cmp_cursor_order(a: &DiscoveryRuntimeCursor, b: &DiscoveryRuntimeCursor) -> O
         .cmp(&b.ts_utc)
         .then_with(|| a.slot.cmp(&b.slot))
         .then_with(|| a.signature.cmp(&b.signature))
+}
+
+fn upsert_discovery_scoring_state_value_on_conn(
+    conn: &Connection,
+    state_key: &str,
+    state_value: &str,
+    updated_at: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO discovery_scoring_state(state_key, state_value, updated_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(state_key) DO UPDATE SET
+            state_value = excluded.state_value,
+            updated_at = excluded.updated_at",
+        params![state_key, state_value, updated_at],
+    )
+    .with_context(|| format!("failed upserting discovery_scoring_state.{state_key}"))?;
+    Ok(())
+}
+
+fn upsert_discovery_scoring_cursor_state_on_conn(
+    conn: &Connection,
+    ts_key: &str,
+    slot_key: &str,
+    signature_key: &str,
+    cursor: &DiscoveryRuntimeCursor,
+    updated_at: &str,
+) -> Result<()> {
+    upsert_discovery_scoring_state_value_on_conn(
+        conn,
+        ts_key,
+        &cursor.ts_utc.to_rfc3339(),
+        updated_at,
+    )?;
+    upsert_discovery_scoring_state_value_on_conn(
+        conn,
+        slot_key,
+        &cursor.slot.to_string(),
+        updated_at,
+    )?;
+    upsert_discovery_scoring_state_value_on_conn(
+        conn,
+        signature_key,
+        &cursor.signature,
+        updated_at,
+    )?;
+    Ok(())
+}
+
+fn upsert_discovery_scoring_backfill_progress_on_conn(
+    conn: &Connection,
+    start_ts: DateTime<Utc>,
+    cursor: &DiscoveryRuntimeCursor,
+    updated_at: &str,
+) -> Result<()> {
+    upsert_discovery_scoring_state_value_on_conn(
+        conn,
+        "backfill_progress_start_ts",
+        &start_ts.to_rfc3339(),
+        updated_at,
+    )?;
+    upsert_discovery_scoring_cursor_state_on_conn(
+        conn,
+        "backfill_progress_cursor_ts",
+        "backfill_progress_cursor_slot",
+        "backfill_progress_cursor_signature",
+        cursor,
+        updated_at,
+    )?;
+    Ok(())
+}
+
+fn upsert_discovery_scoring_materialization_gap_cursor_on_conn(
+    conn: &Connection,
+    cursor: &DiscoveryRuntimeCursor,
+    updated_at: &str,
+) -> Result<()> {
+    upsert_discovery_scoring_cursor_state_on_conn(
+        conn,
+        "materialization_gap_since_ts",
+        "materialization_gap_since_slot",
+        "materialization_gap_since_signature",
+        cursor,
+        updated_at,
+    )?;
+    Ok(())
+}
+
+fn wallet_scoring_carryover_lot_count_on_conn(conn: &Connection) -> Result<usize> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM wallet_scoring_carryover_lots",
+            [],
+            |row| row.get(0),
+        )
+        .context("failed counting wallet_scoring_carryover_lots")?;
+    Ok(count.max(0) as usize)
+}
+
+fn load_wallet_scoring_boundary_seed_lots_on_conn(
+    conn: &Connection,
+) -> Result<Vec<DiscoveryScoringBoundarySeedLot>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT buy_signature, wallet_id, token, qty, cost_sol, opened_ts
+             FROM wallet_scoring_open_lots
+             ORDER BY wallet_id ASC, token ASC, opened_ts ASC, buy_signature ASC",
+        )
+        .context("failed preparing wallet_scoring boundary seed lot query")?;
+    let mut rows = stmt
+        .query([])
+        .context("failed querying wallet_scoring boundary seed lots")?;
+    let mut out = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .context("failed iterating wallet_scoring boundary seed lots")?
+    {
+        let opened_ts_raw: String = row
+            .get(5)
+            .context("failed reading wallet_scoring boundary seed lot opened_ts")?;
+        out.push(DiscoveryScoringBoundarySeedLot {
+            buy_signature: row
+                .get(0)
+                .context("failed reading wallet_scoring boundary seed lot buy_signature")?,
+            wallet_id: row
+                .get(1)
+                .context("failed reading wallet_scoring boundary seed lot wallet_id")?,
+            token: row
+                .get(2)
+                .context("failed reading wallet_scoring boundary seed lot token")?,
+            qty: row
+                .get(3)
+                .context("failed reading wallet_scoring boundary seed lot qty")?,
+            cost_sol: row
+                .get(4)
+                .context("failed reading wallet_scoring boundary seed lot cost_sol")?,
+            opened_ts: parse_ts(&opened_ts_raw, "wallet_scoring boundary seed lot opened_ts")?,
+        });
+    }
+    Ok(out)
 }
 
 fn parse_day(raw: &str, field: &str) -> Result<NaiveDate> {
@@ -979,10 +1121,128 @@ impl SqliteStore {
         })
     }
 
+    pub fn apply_discovery_scoring_batch_with_timings(
+        &self,
+        swaps: &[SwapEvent],
+        config: &DiscoveryAggregateWriteConfig,
+    ) -> Result<DiscoveryScoringBatchStageTimings> {
+        let prepare_started_at = Instant::now();
+        let prepared = prepare_discovery_scoring_swaps(&self.conn, swaps, config)?;
+        let prepare_ms = prepare_started_at.elapsed().as_millis() as u64;
+
+        let apply_started_at = Instant::now();
+        self.with_immediate_transaction_retry("discovery scoring batch", |conn| {
+            apply_discovery_scoring_swaps_on_conn(conn, &prepared)
+        })?;
+        let apply_ms = apply_started_at.elapsed().as_millis() as u64;
+
+        Ok(DiscoveryScoringBatchStageTimings {
+            prepare_ms,
+            apply_ms,
+            rug_finalize_ms: 0,
+        })
+    }
+
     pub fn finalize_discovery_scoring_rug_facts(&self, watermark_ts: DateTime<Utc>) -> Result<()> {
         self.with_immediate_transaction_retry("discovery scoring rug finalize", |conn| {
             finalize_mature_rug_facts_on_conn(conn, watermark_ts)?;
             Ok(0usize)
+        })?;
+        Ok(())
+    }
+
+    pub fn finalize_discovery_scoring_rug_facts_with_timing(
+        &self,
+        watermark_ts: DateTime<Utc>,
+    ) -> Result<u64> {
+        let started_at = Instant::now();
+        self.finalize_discovery_scoring_rug_facts(watermark_ts)?;
+        Ok(started_at.elapsed().as_millis() as u64)
+    }
+
+    pub fn export_discovery_scoring_boundary_seed_snapshot(
+        &self,
+        boundary_start_ts: DateTime<Utc>,
+        boundary_cursor: &DiscoveryRuntimeCursor,
+    ) -> Result<DiscoveryScoringBoundarySeedSnapshot> {
+        let carryover_lot_count = wallet_scoring_carryover_lot_count_on_conn(&self.conn)?;
+        if carryover_lot_count != 0 {
+            anyhow::bail!(
+                "exact seeded boundary export does not support wallet_scoring_carryover_lots; carryover_lot_count={carryover_lot_count}"
+            );
+        }
+        Ok(DiscoveryScoringBoundarySeedSnapshot {
+            boundary_start_ts,
+            boundary_cursor: boundary_cursor.clone(),
+            open_lots: load_wallet_scoring_boundary_seed_lots_on_conn(&self.conn)?,
+        })
+    }
+
+    pub fn reset_discovery_scoring_tables_and_install_boundary_seed_snapshot(
+        &self,
+        snapshot: &DiscoveryScoringBoundarySeedSnapshot,
+        preserved_gap_cursor: Option<&DiscoveryRuntimeCursor>,
+    ) -> Result<()> {
+        self.with_immediate_transaction_retry("discovery scoring seeded reset install", |conn| {
+            let carryover_lot_count = wallet_scoring_carryover_lot_count_on_conn(conn)?;
+            if carryover_lot_count != 0 {
+                anyhow::bail!(
+                    "exact seeded boundary install does not support wallet_scoring_carryover_lots; carryover_lot_count={carryover_lot_count}"
+                );
+            }
+
+            conn.execute("DELETE FROM wallet_scoring_buy_facts", [])
+                .context("failed clearing wallet_scoring_buy_facts")?;
+            conn.execute("DELETE FROM wallet_scoring_close_facts", [])
+                .context("failed clearing wallet_scoring_close_facts")?;
+            conn.execute("DELETE FROM wallet_scoring_open_lots", [])
+                .context("failed clearing wallet_scoring_open_lots")?;
+            conn.execute("DELETE FROM wallet_scoring_carryover_lots", [])
+                .context("failed clearing wallet_scoring_carryover_lots")?;
+            conn.execute("DELETE FROM wallet_scoring_tx_minutes", [])
+                .context("failed clearing wallet_scoring_tx_minutes")?;
+            conn.execute("DELETE FROM wallet_scoring_days", [])
+                .context("failed clearing wallet_scoring_days")?;
+            conn.execute("DELETE FROM discovery_scoring_state", [])
+                .context("failed clearing discovery_scoring_state")?;
+
+            for lot in &snapshot.open_lots {
+                conn.execute(
+                    "INSERT OR IGNORE INTO wallet_scoring_open_lots(
+                        buy_signature,
+                        wallet_id,
+                        token,
+                        qty,
+                        cost_sol,
+                        opened_ts
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        &lot.buy_signature,
+                        &lot.wallet_id,
+                        &lot.token,
+                        lot.qty,
+                        lot.cost_sol,
+                        lot.opened_ts.to_rfc3339(),
+                    ],
+                )
+                .context("failed inserting discovery scoring boundary seed open_lot")?;
+            }
+
+            let updated_at = Utc::now().to_rfc3339();
+            upsert_discovery_scoring_backfill_progress_on_conn(
+                conn,
+                snapshot.boundary_start_ts,
+                &snapshot.boundary_cursor,
+                &updated_at,
+            )?;
+            if let Some(gap_cursor) = preserved_gap_cursor {
+                upsert_discovery_scoring_materialization_gap_cursor_on_conn(
+                    conn,
+                    gap_cursor,
+                    &updated_at,
+                )?;
+            }
+            Ok(snapshot.open_lots.len())
         })?;
         Ok(())
     }
@@ -1021,46 +1281,7 @@ impl SqliteStore {
             "discovery scoring backfill progress update",
             |conn| {
                 let now = Utc::now().to_rfc3339();
-                conn.execute(
-                    "INSERT INTO discovery_scoring_state(state_key, state_value, updated_at)
-                 VALUES ('backfill_progress_start_ts', ?1, ?2)
-                 ON CONFLICT(state_key) DO UPDATE SET
-                    state_value = excluded.state_value,
-                    updated_at = excluded.updated_at",
-                    params![start_ts.to_rfc3339(), &now],
-                )
-                .context("failed upserting discovery_scoring_state.backfill_progress_start_ts")?;
-                conn.execute(
-                    "INSERT INTO discovery_scoring_state(state_key, state_value, updated_at)
-                 VALUES ('backfill_progress_cursor_ts', ?1, ?2)
-                 ON CONFLICT(state_key) DO UPDATE SET
-                    state_value = excluded.state_value,
-                    updated_at = excluded.updated_at",
-                    params![cursor.ts_utc.to_rfc3339(), &now],
-                )
-                .context("failed upserting discovery_scoring_state.backfill_progress_cursor_ts")?;
-                conn.execute(
-                    "INSERT INTO discovery_scoring_state(state_key, state_value, updated_at)
-                 VALUES ('backfill_progress_cursor_slot', ?1, ?2)
-                 ON CONFLICT(state_key) DO UPDATE SET
-                    state_value = excluded.state_value,
-                    updated_at = excluded.updated_at",
-                    params![cursor.slot.to_string(), &now],
-                )
-                .context(
-                    "failed upserting discovery_scoring_state.backfill_progress_cursor_slot",
-                )?;
-                conn.execute(
-                    "INSERT INTO discovery_scoring_state(state_key, state_value, updated_at)
-                 VALUES ('backfill_progress_cursor_signature', ?1, ?2)
-                 ON CONFLICT(state_key) DO UPDATE SET
-                    state_value = excluded.state_value,
-                    updated_at = excluded.updated_at",
-                    params![&cursor.signature, &now],
-                )
-                .context(
-                    "failed upserting discovery_scoring_state.backfill_progress_cursor_signature",
-                )?;
+                upsert_discovery_scoring_backfill_progress_on_conn(conn, start_ts, cursor, &now)?;
                 Ok(0usize)
             },
         )?;
@@ -1082,37 +1303,7 @@ impl SqliteStore {
             "discovery scoring materialization gap update",
             |conn| {
                 let now = Utc::now().to_rfc3339();
-                conn.execute(
-                    "INSERT INTO discovery_scoring_state(state_key, state_value, updated_at)
-                 VALUES ('materialization_gap_since_ts', ?1, ?2)
-                 ON CONFLICT(state_key) DO UPDATE SET
-                    state_value = excluded.state_value,
-                    updated_at = excluded.updated_at",
-                    params![cursor.ts_utc.to_rfc3339(), &now],
-                )
-                .context("failed upserting discovery_scoring_state.materialization_gap_since_ts")?;
-                conn.execute(
-                    "INSERT INTO discovery_scoring_state(state_key, state_value, updated_at)
-                 VALUES ('materialization_gap_since_slot', ?1, ?2)
-                 ON CONFLICT(state_key) DO UPDATE SET
-                    state_value = excluded.state_value,
-                    updated_at = excluded.updated_at",
-                    params![cursor.slot.to_string(), &now],
-                )
-                .context(
-                    "failed upserting discovery_scoring_state.materialization_gap_since_slot",
-                )?;
-                conn.execute(
-                    "INSERT INTO discovery_scoring_state(state_key, state_value, updated_at)
-                 VALUES ('materialization_gap_since_signature', ?1, ?2)
-                 ON CONFLICT(state_key) DO UPDATE SET
-                    state_value = excluded.state_value,
-                    updated_at = excluded.updated_at",
-                    params![&cursor.signature, &now],
-                )
-                .context(
-                    "failed upserting discovery_scoring_state.materialization_gap_since_signature",
-                )?;
+                upsert_discovery_scoring_materialization_gap_cursor_on_conn(conn, cursor, &now)?;
                 Ok(0usize)
             },
         )?;

@@ -3,7 +3,8 @@ use chrono::{DateTime, Duration, Utc};
 use copybot_config::load_from_path;
 use copybot_core_types::SwapEvent;
 use copybot_storage::{
-    DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, RiskEventRow, SqliteStore,
+    DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, DiscoveryScoringBoundarySeedSnapshot,
+    RiskEventRow, SqliteStore,
 };
 use serde::Deserialize;
 use signal_hook::consts::signal::SIGINT;
@@ -17,7 +18,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 
 const DEFAULT_BATCH_SIZE: usize = 5_000;
 const BACKFILL_SOURCE_PROTECTION_TTL_MINUTES: i64 = 240;
@@ -41,12 +42,14 @@ struct Cursor {
 struct Config {
     db_path: PathBuf,
     start_ts: DateTime<Utc>,
+    seeded_reset_max_start_ts: Option<DateTime<Utc>>,
     end_ts: Option<DateTime<Utc>>,
     batch_size: usize,
     sleep_ms: u64,
     max_batches_per_run: Option<usize>,
     max_runtime_seconds: Option<u64>,
     reset: bool,
+    seeded_reset: bool,
     mark_covered: bool,
     resume_after: Option<Cursor>,
     abort_on_runtime_pressure: bool,
@@ -115,6 +118,25 @@ struct RuntimePressureSample {
 struct RuntimePressureMonitor {
     refreshed_at: Option<DateTime<Utc>>,
     cached_sample: Option<RuntimePressureSample>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct BatchStageTimings {
+    scan_ms: u64,
+    prepare_ms: u64,
+    apply_ms: u64,
+    rug_finalize_ms: u64,
+    progress_update_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ReplayLoopOutcome {
+    stop_reason: RunStopReason,
+    cursor: Cursor,
+    total_rows: usize,
+    batches: usize,
+    gap_cursor_observed: bool,
+    stage_totals: BatchStageTimings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -391,9 +413,10 @@ fn log_run_summary(
     total_rows: usize,
     batches: usize,
     cursor: &Cursor,
+    stage_totals: &BatchStageTimings,
 ) {
     println!(
-        "summary outcome={} stop_reason={} coverage_marked={} total_rows={} batches={} final_cursor_ts={} final_cursor_slot={} final_cursor_signature={}",
+        "summary outcome={} stop_reason={} coverage_marked={} total_rows={} batches={} final_cursor_ts={} final_cursor_slot={} final_cursor_signature={} scan_ms={} prepare_ms={} apply_ms={} rug_finalize_ms={} progress_update_ms={}",
         run_outcome(stop_reason, coverage_marked),
         stop_reason.as_str(),
         coverage_marked,
@@ -402,6 +425,11 @@ fn log_run_summary(
         cursor.ts.to_rfc3339(),
         cursor.slot,
         cursor.signature,
+        stage_totals.scan_ms,
+        stage_totals.prepare_ms,
+        stage_totals.apply_ms,
+        stage_totals.rug_finalize_ms,
+        stage_totals.progress_update_ms,
     );
 }
 
@@ -441,6 +469,16 @@ fn cursor_matches_runtime(left: &Cursor, right: &DiscoveryRuntimeCursor) -> bool
     left.ts == right.ts_utc && left.slot == right.slot && left.signature == right.signature
 }
 
+fn cmp_runtime_cursor(
+    left: &DiscoveryRuntimeCursor,
+    right: &DiscoveryRuntimeCursor,
+) -> std::cmp::Ordering {
+    left.ts_utc
+        .cmp(&right.ts_utc)
+        .then_with(|| left.slot.cmp(&right.slot))
+        .then_with(|| left.signature.cmp(&right.signature))
+}
+
 fn main() -> Result<()> {
     let config = parse_args()?;
     run(config)
@@ -450,7 +488,7 @@ fn parse_args() -> Result<Config> {
     let mut args = env::args().skip(1);
     let Some(db_path_raw) = args.next() else {
         bail!(
-            "usage: backfill_discovery_scoring <db_path> --config <path> --start-ts <rfc3339> [--end-ts <rfc3339>] [--batch-size N] [--sleep-ms N] [--max-batches-per-run N] [--max-runtime-seconds N] (--reset | --resume-ts <ts> --resume-slot <slot> --resume-signature <sig>) [--mark-covered] [--abort-on-runtime-pressure] [--max-yellowstone-fill-ratio N] [--max-ingestion-lag-ms-p95 N] [--max-runtime-pressure-sample-age-seconds N] [--runtime-pressure-service NAME] [--runtime-pressure-log-path PATH] [--abort-on-runtime-infra-stop] [--helius-http-url URL] [--min-token-age-hint-seconds N]"
+            "usage: backfill_discovery_scoring <db_path> --config <path> --start-ts <rfc3339> [--end-ts <rfc3339>] [--batch-size N] [--sleep-ms N] [--max-batches-per-run N] [--max-runtime-seconds N] (--reset | --seeded-reset --resume-ts <ts> --resume-slot <slot> --resume-signature <sig> | --resume-ts <ts> --resume-slot <slot> --resume-signature <sig>) [--mark-covered] [--abort-on-runtime-pressure] [--max-yellowstone-fill-ratio N] [--max-ingestion-lag-ms-p95 N] [--max-runtime-pressure-sample-age-seconds N] [--runtime-pressure-service NAME] [--runtime-pressure-log-path PATH] [--abort-on-runtime-infra-stop] [--helius-http-url URL] [--min-token-age-hint-seconds N]"
         );
     };
 
@@ -462,6 +500,7 @@ fn parse_args() -> Result<Config> {
     let mut max_batches_per_run: Option<usize> = None;
     let mut max_runtime_seconds: Option<u64> = None;
     let mut reset = false;
+    let mut seeded_reset = false;
     let mut mark_covered = false;
     let mut abort_on_runtime_pressure = false;
     let mut runtime_pressure_service = env::var("SERVICE")
@@ -495,6 +534,7 @@ fn parse_args() -> Result<Config> {
                 max_runtime_seconds = Some(parse_u64_arg("--max-runtime-seconds", args.next())?)
             }
             "--reset" => reset = true,
+            "--seeded-reset" => seeded_reset = true,
             "--mark-covered" => mark_covered = true,
             "--abort-on-runtime-pressure" => abort_on_runtime_pressure = true,
             "--max-yellowstone-fill-ratio" => {
@@ -561,11 +601,20 @@ fn parse_args() -> Result<Config> {
         }
     };
 
+    if reset && seeded_reset {
+        bail!("--reset cannot be combined with --seeded-reset");
+    }
     if reset && resume_after.is_some() {
         bail!("--reset cannot be combined with --resume-*");
     }
-    if !reset && resume_after.is_none() {
-        bail!("refusing non-idempotent replay without either --reset or exact --resume-* cursor");
+    if seeded_reset && resume_after.is_none() {
+        bail!("--seeded-reset requires exact --resume-* cursor");
+    }
+    if !reset && !seeded_reset && resume_after.is_none() {
+        bail!("refusing non-idempotent replay without either --reset, --seeded-reset with exact --resume-*, or exact --resume-* cursor");
+    }
+    if seeded_reset && end_ts.is_some() {
+        bail!("--seeded-reset does not accept --end-ts; boundary start is defined by exact seeded boundary cursor");
     }
     if max_batches_per_run.is_some_and(|value| value == 0) {
         bail!("--max-batches-per-run must be >= 1");
@@ -593,6 +642,12 @@ fn parse_args() -> Result<Config> {
         min_token_age_hint_seconds: min_token_age_hint_seconds_override
             .or(Some(loaded_config.shadow.min_token_age_seconds)),
     };
+    let seeded_reset_max_start_ts = Some(
+        Utc::now()
+            - Duration::days(i64::from(
+                loaded_config.discovery.scoring_window_days.max(1),
+            )),
+    );
     let max_yellowstone_fill_ratio = max_yellowstone_fill_ratio_override
         .unwrap_or(DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO);
     if !max_yellowstone_fill_ratio.is_finite()
@@ -624,12 +679,14 @@ fn parse_args() -> Result<Config> {
     Ok(Config {
         db_path: PathBuf::from(db_path_raw),
         start_ts,
+        seeded_reset_max_start_ts,
         end_ts,
         batch_size,
         sleep_ms,
         max_batches_per_run,
         max_runtime_seconds,
         reset,
+        seeded_reset,
         mark_covered,
         resume_after,
         abort_on_runtime_pressure,
@@ -677,6 +734,18 @@ fn parse_f64_arg(flag: &str, value: Option<String>) -> Result<f64> {
         .with_context(|| format!("invalid float for {flag}"))
 }
 
+fn sanitize_log_value(raw: &str) -> String {
+    raw.chars()
+        .map(|ch| {
+            if ch.is_ascii_whitespace() || ch.is_control() {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+
 fn run(config: Config) -> Result<()> {
     let termination_requested = install_termination_signal_handlers()?;
     let mut store = SqliteStore::open(Path::new(&config.db_path))
@@ -718,63 +787,104 @@ fn run_with_cleanup(
     }
 }
 
-fn run_with_store_inner(
+fn validate_resume_contract(
+    store: &SqliteStore,
+    config: &Config,
+) -> Result<Option<(DateTime<Utc>, DiscoveryRuntimeCursor)>> {
+    let Some(resume_after) = config.resume_after.as_ref() else {
+        return Ok(None);
+    };
+    let Some((progress_start_ts, progress_cursor)) =
+        store.load_discovery_scoring_backfill_progress()?
+    else {
+        if config.seeded_reset {
+            bail!(
+                "seeded reset requires persisted backfill progress proving exact lower-bound lineage from the current partial materialized state"
+            );
+        }
+        bail!(
+            "resumed backfill requires persisted backfill progress proving continuous lineage from start_ts; use --reset for a new rebuild"
+        );
+    };
+    if config.seeded_reset {
+        if !cursor_matches_runtime(resume_after, &progress_cursor) {
+            bail!(
+                "seeded reset resume cursor does not match persisted backfill progress for the current partial lineage"
+            );
+        }
+        return Ok(Some((progress_start_ts, progress_cursor)));
+    }
+    if progress_start_ts != config.start_ts
+        || !cursor_matches_runtime(resume_after, &progress_cursor)
+    {
+        if config.mark_covered {
+            bail!(
+                "--mark-covered resume cursor does not match persisted backfill progress for the requested start_ts"
+            );
+        }
+        bail!(
+            "resumed backfill cursor does not match persisted backfill progress for the requested start_ts"
+        );
+    }
+    Ok(Some((progress_start_ts, progress_cursor)))
+}
+
+fn validate_seeded_reset_boundary_contract(config: &Config) -> Result<()> {
+    if !config.seeded_reset {
+        return Ok(());
+    }
+    let Some(max_start_ts) = config.seeded_reset_max_start_ts else {
+        bail!(
+            "seeded reset requires an effective scoring horizon boundary derived from discovery.scoring_window_days"
+        );
+    };
+    if config.start_ts > max_start_ts {
+        bail!(
+            "seeded reset start_ts {} exceeds the effective scoring horizon start at launch {}; exact seeded narrowing only allows the effective scoring horizon start or earlier",
+            config.start_ts.to_rfc3339(),
+            max_start_ts.to_rfc3339(),
+        );
+    }
+    Ok(())
+}
+
+fn run_replay_phase(
     store: &mut SqliteStore,
     config: &Config,
     termination_requested: &AtomicBool,
-) -> Result<RunStopReason> {
-    let run_started_at = Utc::now();
-    let mut runtime_pressure_monitor = RuntimePressureMonitor::default();
-    abort_if_control_requested(
-        store,
-        config,
-        termination_requested,
-        0,
-        0,
-        &Cursor {
-            ts: config.start_ts,
-            slot: 0,
-            signature: String::new(),
-        },
-        &mut runtime_pressure_monitor,
-    )?;
-    if config.reset {
-        store.reset_discovery_scoring_tables()?;
-        println!("event=reset_discovery_scoring_tables");
-    }
-    refresh_backfill_source_protection(store, config.start_ts)?;
-
-    if let Some(resume_after) = config.resume_after.as_ref() {
-        let Some((progress_start_ts, progress_cursor)) =
-            store.load_discovery_scoring_backfill_progress()?
-        else {
-            bail!(
-                "resumed backfill requires persisted backfill progress proving continuous lineage from start_ts; use --reset for a new rebuild"
-            );
-        };
-        if progress_start_ts != config.start_ts
-            || !cursor_matches_runtime(resume_after, &progress_cursor)
-        {
-            if config.mark_covered {
-                bail!(
-                    "--mark-covered resume cursor does not match persisted backfill progress for the requested start_ts"
-                );
-            }
-            bail!(
-                "resumed backfill cursor does not match persisted backfill progress for the requested start_ts"
-            );
-        }
-    }
-
-    let mut cursor = config.resume_after.clone().unwrap_or_else(|| Cursor {
-        ts: config.start_ts,
-        slot: 0,
-        signature: String::new(),
-    });
+    runtime_pressure_monitor: &mut RuntimePressureMonitor,
+    phase_label: &str,
+    progress_start_ts: DateTime<Utc>,
+    starting_cursor: Cursor,
+    phase_end_ts: Option<DateTime<Utc>>,
+    end_ts_inclusive: bool,
+    run_started_at: DateTime<Utc>,
+    starting_total_rows: usize,
+    starting_batches: usize,
+) -> Result<ReplayLoopOutcome> {
     let gap_cursor = store.load_discovery_scoring_materialization_gap_cursor()?;
     let mut gap_cursor_observed = false;
-    let mut total_rows = 0usize;
-    let mut batches = 0usize;
+    let mut cursor = starting_cursor;
+    let mut total_rows = starting_total_rows;
+    let mut batches = starting_batches;
+    let mut stage_totals = BatchStageTimings::default();
+    let mut builder = match store.begin_discovery_scoring_replay_builder(
+        cursor.ts,
+        cursor.slot,
+        cursor.signature.as_str(),
+    ) {
+        Ok(builder) => Some(builder),
+        Err(error) if config.seeded_reset => return Err(error),
+        Err(error) => {
+            println!(
+                "event=builder_replay_unavailable phase={} reason={}",
+                phase_label,
+                sanitize_log_value(&format!("{error:#}"))
+            );
+            None
+        }
+    };
+
     let stop_reason = loop {
         abort_if_control_requested(
             store,
@@ -783,11 +893,13 @@ fn run_with_store_inner(
             total_rows,
             batches,
             &cursor,
-            &mut runtime_pressure_monitor,
+            runtime_pressure_monitor,
         )?;
         if let Some(reason) = bounded_run_stop_reason(config, run_started_at, batches, Utc::now()) {
             break reason;
         }
+
+        let scan_started_at = Instant::now();
         let mut page = Vec::<SwapEvent>::with_capacity(config.batch_size);
         let mut reached_end_ts = false;
         let rows_seen = store.for_each_observed_swap_after_cursor(
@@ -796,10 +908,13 @@ fn run_with_store_inner(
             cursor.signature.as_str(),
             config.batch_size,
             |swap| {
-                if swap.ts_utc < config.start_ts {
-                    return Ok(());
-                }
-                if config.end_ts.is_some_and(|end_ts| swap.ts_utc > end_ts) {
+                if phase_end_ts.is_some_and(|end_ts| {
+                    if end_ts_inclusive {
+                        swap.ts_utc > end_ts
+                    } else {
+                        swap.ts_utc >= end_ts
+                    }
+                }) {
                     reached_end_ts = true;
                     return Ok(());
                 }
@@ -814,6 +929,7 @@ fn run_with_store_inner(
                 Ok(())
             },
         )?;
+        let scan_ms = scan_started_at.elapsed().as_millis() as u64;
 
         if page.is_empty() {
             break if reached_end_ts {
@@ -834,34 +950,85 @@ fn run_with_store_inner(
             total_rows,
             batches,
             &cursor,
-            &mut runtime_pressure_monitor,
+            runtime_pressure_monitor,
         )?;
-        refresh_backfill_source_protection(store, config.start_ts)?;
-        store.apply_discovery_scoring_batch(&page, &config.aggregate_write_config)?;
-        store.finalize_discovery_scoring_rug_facts(last_swap.ts_utc)?;
+        refresh_backfill_source_protection(store, progress_start_ts)?;
+
+        let (storage_timings, replay_engine): (_, &str) = if let Some(builder) = builder.as_mut() {
+            (
+                store.apply_discovery_scoring_builder_batch_with_timings(
+                    builder,
+                    &page,
+                    &config.aggregate_write_config,
+                )?,
+                "builder",
+            )
+        } else {
+            (
+                store.apply_discovery_scoring_batch_with_timings(
+                    &page,
+                    &config.aggregate_write_config,
+                )?,
+                "sql",
+            )
+        };
+        let rug_finalize_ms = if builder.is_some() {
+            0
+        } else {
+            store.finalize_discovery_scoring_rug_facts_with_timing(last_swap.ts_utc)?
+        };
+
         cursor = Cursor {
             ts: last_swap.ts_utc,
             slot: last_swap.slot,
             signature: last_swap.signature.clone(),
         };
+
+        let progress_update_started_at = Instant::now();
         store.set_discovery_scoring_backfill_progress(
-            config.start_ts,
+            progress_start_ts,
             &DiscoveryRuntimeCursor {
                 ts_utc: cursor.ts,
                 slot: cursor.slot,
                 signature: cursor.signature.clone(),
             },
         )?;
-        total_rows = total_rows.saturating_add(page.len());
+        let progress_update_ms = progress_update_started_at.elapsed().as_millis() as u64;
+
+        let batch_rows = page.len();
+        total_rows = total_rows.saturating_add(batch_rows);
         batches = batches.saturating_add(1);
+        let timings = BatchStageTimings {
+            scan_ms,
+            prepare_ms: storage_timings.prepare_ms,
+            apply_ms: storage_timings.apply_ms,
+            rug_finalize_ms,
+            progress_update_ms,
+        };
+        stage_totals.scan_ms = stage_totals.scan_ms.saturating_add(timings.scan_ms);
+        stage_totals.prepare_ms = stage_totals.prepare_ms.saturating_add(timings.prepare_ms);
+        stage_totals.apply_ms = stage_totals.apply_ms.saturating_add(timings.apply_ms);
+        stage_totals.rug_finalize_ms = stage_totals
+            .rug_finalize_ms
+            .saturating_add(timings.rug_finalize_ms);
+        stage_totals.progress_update_ms = stage_totals
+            .progress_update_ms
+            .saturating_add(timings.progress_update_ms);
         println!(
-            "event=batch_committed rows={} total_rows={} batches={} cursor_ts={} cursor_slot={} cursor_signature={}",
-            page.len(),
+            "event=batch_committed phase={} replay_engine={} rows={} total_rows={} batches={} cursor_ts={} cursor_slot={} cursor_signature={} scan_ms={} prepare_ms={} apply_ms={} rug_finalize_ms={} progress_update_ms={}",
+            phase_label,
+            replay_engine,
+            batch_rows,
             total_rows,
             batches,
             cursor.ts.to_rfc3339(),
             cursor.slot,
-            cursor.signature
+            cursor.signature,
+            timings.scan_ms,
+            timings.prepare_ms,
+            timings.apply_ms,
+            timings.rug_finalize_ms,
+            timings.progress_update_ms,
         );
 
         abort_if_control_requested(
@@ -871,7 +1038,7 @@ fn run_with_store_inner(
             total_rows,
             batches,
             &cursor,
-            &mut runtime_pressure_monitor,
+            runtime_pressure_monitor,
         )?;
         if let Some(reason) = bounded_run_stop_reason(config, run_started_at, batches, Utc::now()) {
             break reason;
@@ -893,25 +1060,221 @@ fn run_with_store_inner(
                 batches,
                 &cursor,
                 run_started_at,
-                &mut runtime_pressure_monitor,
+                runtime_pressure_monitor,
             )? {
                 break reason;
             }
         }
     };
 
-    let full_forward_completion =
-        matches!(stop_reason, RunStopReason::CompletedSourceExhausted) && config.end_ts.is_none();
-    let finalize_rug_facts_until = if matches!(stop_reason, RunStopReason::CompletedRequestedEndTs)
-    {
-        config.end_ts.unwrap_or(cursor.ts)
+    Ok(ReplayLoopOutcome {
+        stop_reason,
+        cursor,
+        total_rows,
+        batches,
+        gap_cursor_observed,
+        stage_totals,
+    })
+}
+
+fn run_with_store_inner(
+    store: &mut SqliteStore,
+    config: &Config,
+    termination_requested: &AtomicBool,
+) -> Result<RunStopReason> {
+    let run_started_at = Utc::now();
+    let mut runtime_pressure_monitor = RuntimePressureMonitor::default();
+    let initial_cursor = config.resume_after.clone().unwrap_or_else(|| Cursor {
+        ts: config.start_ts,
+        slot: 0,
+        signature: String::new(),
+    });
+    abort_if_control_requested(
+        store,
+        config,
+        termination_requested,
+        0,
+        0,
+        &initial_cursor,
+        &mut runtime_pressure_monitor,
+    )?;
+    if config.reset {
+        store.reset_discovery_scoring_tables()?;
+        println!("event=reset_discovery_scoring_tables");
+    }
+    validate_seeded_reset_boundary_contract(config)?;
+    refresh_backfill_source_protection(store, config.start_ts)?;
+    let validated_resume = validate_resume_contract(store, config)?;
+    let final_outcome;
+
+    if config.seeded_reset {
+        let (current_progress_start_ts, current_progress_cursor) = validated_resume
+            .ok_or_else(|| anyhow!("seeded reset requires persisted backfill progress"))?;
+        let resume_after = config
+            .resume_after
+            .as_ref()
+            .ok_or_else(|| anyhow!("seeded reset requires exact --resume-* cursor"))?;
+        if resume_after.ts >= config.start_ts {
+            bail!(
+                "seeded reset requires the current partial replay cursor to stay strictly before the requested boundary start_ts"
+            );
+        }
+        if let Some(gap_cursor) = store.load_discovery_scoring_materialization_gap_cursor()? {
+            if cmp_runtime_cursor(&gap_cursor, &current_progress_cursor)
+                != std::cmp::Ordering::Greater
+            {
+                bail!(
+                    "latched discovery scoring continuity gap at {} / {} / {} is at or before the current partial replay cursor; exact seeded lower-bound state is unsupported until the gap is repaired",
+                    gap_cursor.ts_utc.to_rfc3339(),
+                    gap_cursor.slot,
+                    gap_cursor.signature
+                );
+            }
+        }
+
+        let boundary_build = run_replay_phase(
+            store,
+            config,
+            termination_requested,
+            &mut runtime_pressure_monitor,
+            "boundary_build",
+            current_progress_start_ts,
+            resume_after.clone(),
+            Some(config.start_ts),
+            false,
+            run_started_at,
+            0,
+            0,
+        )?;
+
+        if !matches!(
+            boundary_build.stop_reason,
+            RunStopReason::CompletedRequestedEndTs | RunStopReason::CompletedSourceExhausted
+        ) {
+            log_run_summary(
+                boundary_build.stop_reason,
+                false,
+                boundary_build.total_rows,
+                boundary_build.batches,
+                &boundary_build.cursor,
+                &boundary_build.stage_totals,
+            );
+            return Ok(boundary_build.stop_reason);
+        }
+
+        let preserved_gap_cursor = match store
+            .load_discovery_scoring_materialization_gap_cursor()?
+        {
+            Some(gap_cursor)
+                if cmp_runtime_cursor(
+                    &gap_cursor,
+                    &DiscoveryRuntimeCursor {
+                        ts_utc: boundary_build.cursor.ts,
+                        slot: boundary_build.cursor.slot,
+                        signature: boundary_build.cursor.signature.clone(),
+                    },
+                ) != std::cmp::Ordering::Greater =>
+            {
+                if !boundary_build.gap_cursor_observed {
+                    bail!(
+                        "latched discovery scoring continuity gap at {} / {} / {} is at or before the exact seeded boundary cursor but was not observed during boundary construction",
+                        gap_cursor.ts_utc.to_rfc3339(),
+                        gap_cursor.slot,
+                        gap_cursor.signature
+                    );
+                }
+                None
+            }
+            other => other,
+        };
+
+        let boundary_cursor = DiscoveryRuntimeCursor {
+            ts_utc: boundary_build.cursor.ts,
+            slot: boundary_build.cursor.slot,
+            signature: boundary_build.cursor.signature.clone(),
+        };
+        let seed_snapshot: DiscoveryScoringBoundarySeedSnapshot = store
+            .export_discovery_scoring_boundary_seed_snapshot(config.start_ts, &boundary_cursor)?;
+        println!(
+            "event=seed_boundary_exported boundary_start_ts={} boundary_cursor_ts={} boundary_cursor_slot={} boundary_cursor_signature={} seed_lot_count={}",
+            seed_snapshot.boundary_start_ts.to_rfc3339(),
+            seed_snapshot.boundary_cursor.ts_utc.to_rfc3339(),
+            seed_snapshot.boundary_cursor.slot,
+            seed_snapshot.boundary_cursor.signature,
+            seed_snapshot.open_lots.len(),
+        );
+        store.reset_discovery_scoring_tables_and_install_boundary_seed_snapshot(
+            &seed_snapshot,
+            preserved_gap_cursor.as_ref(),
+        )?;
+        refresh_backfill_source_protection(store, config.start_ts)?;
+        println!(
+            "event=seed_boundary_installed boundary_start_ts={} boundary_cursor_ts={} boundary_cursor_slot={} boundary_cursor_signature={} seed_lot_count={} replay_resume_semantics=strictly_after_boundary_cursor",
+            seed_snapshot.boundary_start_ts.to_rfc3339(),
+            seed_snapshot.boundary_cursor.ts_utc.to_rfc3339(),
+            seed_snapshot.boundary_cursor.slot,
+            seed_snapshot.boundary_cursor.signature,
+            seed_snapshot.open_lots.len(),
+        );
+
+        final_outcome = run_replay_phase(
+            store,
+            config,
+            termination_requested,
+            &mut runtime_pressure_monitor,
+            "replay_after_seed",
+            config.start_ts,
+            Cursor {
+                ts: seed_snapshot.boundary_cursor.ts_utc,
+                slot: seed_snapshot.boundary_cursor.slot,
+                signature: seed_snapshot.boundary_cursor.signature.clone(),
+            },
+            None,
+            true,
+            run_started_at,
+            boundary_build.total_rows,
+            boundary_build.batches,
+        )?;
     } else {
-        cursor.ts
+        final_outcome = run_replay_phase(
+            store,
+            config,
+            termination_requested,
+            &mut runtime_pressure_monitor,
+            "direct_replay",
+            config.start_ts,
+            initial_cursor,
+            config.end_ts,
+            true,
+            run_started_at,
+            0,
+            0,
+        )?;
+    }
+
+    let full_forward_completion = matches!(
+        final_outcome.stop_reason,
+        RunStopReason::CompletedSourceExhausted
+    ) && config.end_ts.is_none();
+    let finalize_rug_facts_until = if matches!(
+        final_outcome.stop_reason,
+        RunStopReason::CompletedRequestedEndTs
+    ) {
+        config.end_ts.unwrap_or(final_outcome.cursor.ts)
+    } else {
+        final_outcome.cursor.ts
     };
-    store.finalize_discovery_scoring_rug_facts(finalize_rug_facts_until)?;
+    let final_finalize_ms =
+        store.finalize_discovery_scoring_rug_facts_with_timing(finalize_rug_facts_until)?;
+    println!(
+        "event=final_rug_finalize phase=run_complete watermark_ts={} rug_finalize_ms={}",
+        finalize_rug_facts_until.to_rfc3339(),
+        final_finalize_ms,
+    );
+
     if full_forward_completion {
-        if let Some(gap_cursor) = gap_cursor.as_ref() {
-            if !gap_cursor_observed {
+        if let Some(gap_cursor) = store.load_discovery_scoring_materialization_gap_cursor()? {
+            if !final_outcome.gap_cursor_observed {
                 bail!(
                     "latched discovery scoring continuity gap at {} / {} / {} was not observed during full forward replay; source rows may be missing or replay started too late",
                     gap_cursor.ts_utc.to_rfc3339(),
@@ -919,7 +1282,7 @@ fn run_with_store_inner(
                     gap_cursor.signature
                 );
             }
-            store.clear_discovery_scoring_materialization_gap_if_cursor_observed(gap_cursor)?;
+            store.clear_discovery_scoring_materialization_gap_if_cursor_observed(&gap_cursor)?;
         }
     }
 
@@ -927,17 +1290,17 @@ fn run_with_store_inner(
     if coverage_marked {
         store.set_discovery_scoring_covered_since(config.start_ts)?;
         store.set_discovery_scoring_covered_through_cursor(&DiscoveryRuntimeCursor {
-            ts_utc: cursor.ts,
-            slot: cursor.slot,
-            signature: cursor.signature.clone(),
+            ts_utc: final_outcome.cursor.ts,
+            slot: final_outcome.cursor.slot,
+            signature: final_outcome.cursor.signature.clone(),
         })?;
         store.clear_discovery_scoring_backfill_progress()?;
         println!(
             "event=coverage_marked covered_since_ts={} covered_through_ts={} covered_through_slot={} covered_through_signature={}",
             config.start_ts.to_rfc3339(),
-            cursor.ts.to_rfc3339(),
-            cursor.slot,
-            cursor.signature
+            final_outcome.cursor.ts.to_rfc3339(),
+            final_outcome.cursor.slot,
+            final_outcome.cursor.signature
         );
     } else {
         println!(
@@ -957,9 +1320,23 @@ fn run_with_store_inner(
         );
     }
 
-    log_run_summary(stop_reason, coverage_marked, total_rows, batches, &cursor);
+    let summary_stage_totals = BatchStageTimings {
+        rug_finalize_ms: final_outcome
+            .stage_totals
+            .rug_finalize_ms
+            .saturating_add(final_finalize_ms),
+        ..final_outcome.stage_totals
+    };
+    log_run_summary(
+        final_outcome.stop_reason,
+        coverage_marked,
+        final_outcome.total_rows,
+        final_outcome.batches,
+        &final_outcome.cursor,
+        &summary_stage_totals,
+    );
 
-    Ok(stop_reason)
+    Ok(final_outcome.stop_reason)
 }
 
 fn install_termination_signal_handlers() -> Result<Arc<AtomicBool>> {
@@ -1011,6 +1388,7 @@ fn abort_if_control_requested_at(
             total_rows,
             batches,
             cursor,
+            &BatchStageTimings::default(),
         );
         bail!("termination signal received; aborting backfill after durable checkpoint");
     }
@@ -1033,6 +1411,7 @@ fn abort_if_control_requested_at(
                 total_rows,
                 batches,
                 cursor,
+                &BatchStageTimings::default(),
             );
             bail!("runtime pressure fast guard aborted backfill: {}", reason);
         }
@@ -1044,6 +1423,7 @@ fn abort_if_control_requested_at(
                 total_rows,
                 batches,
                 cursor,
+                &BatchStageTimings::default(),
             );
             bail!("runtime pressure fast guard aborted backfill: {}", reason);
         }
@@ -1057,6 +1437,7 @@ fn abort_if_control_requested_at(
                 total_rows,
                 batches,
                 cursor,
+                &BatchStageTimings::default(),
             );
             bail!(infra_stop.abort_message());
         }
@@ -1131,8 +1512,10 @@ mod tests {
     use chrono::{DateTime, Utc};
     use copybot_core_types::SwapEvent;
     use copybot_storage::{DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, SqliteStore};
+    use rusqlite::Connection;
     use std::fs;
     use std::path::Path;
+    use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
     use tempfile::tempdir;
 
@@ -1148,6 +1531,614 @@ mod tests {
             "{} INFO {{\"message\":\"ingestion pipeline metrics\",\"yellowstone_output_queue_depth\":{depth},\"yellowstone_output_queue_capacity\":{capacity},\"yellowstone_output_queue_fill_ratio\":{fill_ratio},\"yellowstone_output_oldest_age_ms\":{oldest_age_ms},\"ingestion_lag_ms_p95\":{ingestion_lag_ms_p95}}}",
             sample_ts.to_rfc3339(),
         )
+    }
+
+    fn seeded_reset_config(
+        db_path: &Path,
+        start_ts: DateTime<Utc>,
+        resume_after: Cursor,
+    ) -> Config {
+        Config {
+            db_path: PathBuf::from(db_path),
+            start_ts,
+            seeded_reset_max_start_ts: Some(start_ts),
+            end_ts: None,
+            batch_size: 128,
+            sleep_ms: 0,
+            max_batches_per_run: None,
+            max_runtime_seconds: None,
+            reset: false,
+            seeded_reset: true,
+            mark_covered: false,
+            resume_after: Some(resume_after),
+            abort_on_runtime_pressure: false,
+            runtime_pressure_service: DEFAULT_RUNTIME_PRESSURE_SERVICE.to_string(),
+            runtime_pressure_log_path: None,
+            max_yellowstone_fill_ratio: DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO,
+            max_ingestion_lag_ms_p95: 10_000,
+            max_runtime_pressure_sample_age_seconds: 35,
+            abort_on_runtime_infra_stop: false,
+            aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+        }
+    }
+
+    #[test]
+    fn exact_seeded_boundary_cursor_replays_same_timestamp_rows_without_skip() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("seeded-boundary-same-ts-no-skip.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let partial_start_ts = DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let boundary_start_ts = DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let pre_boundary = SwapEvent {
+            signature: "sig-seeded-pre".to_string(),
+            wallet: "wallet-seeded".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeeded111111111111111111111111111".to_string(),
+            amount_in: 0.5,
+            amount_out: 5.0,
+            exact_amounts: None,
+            slot: 700,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T09:59:59Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let boundary_a = SwapEvent {
+            signature: "sig-seeded-boundary-a".to_string(),
+            wallet: "wallet-seeded".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeeded111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 701,
+            ts_utc: boundary_start_ts,
+        };
+        let boundary_b = SwapEvent {
+            signature: "sig-seeded-boundary-b".to_string(),
+            wallet: "wallet-seeded".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeeded111111111111111111111111111".to_string(),
+            amount_in: 1.2,
+            amount_out: 12.0,
+            exact_amounts: None,
+            slot: 702,
+            ts_utc: boundary_start_ts,
+        };
+        store.insert_observed_swaps_batch(&[
+            pre_boundary.clone(),
+            boundary_a.clone(),
+            boundary_b.clone(),
+        ])?;
+        store.apply_discovery_scoring_batch(
+            std::slice::from_ref(&pre_boundary),
+            &DiscoveryAggregateWriteConfig::default(),
+        )?;
+        store.set_discovery_scoring_backfill_progress(
+            partial_start_ts,
+            &DiscoveryRuntimeCursor {
+                ts_utc: pre_boundary.ts_utc,
+                slot: pre_boundary.slot,
+                signature: pre_boundary.signature.clone(),
+            },
+        )?;
+
+        run_with_store(
+            &mut store,
+            &seeded_reset_config(
+                &db_path,
+                boundary_start_ts,
+                Cursor {
+                    ts: pre_boundary.ts_utc,
+                    slot: pre_boundary.slot,
+                    signature: pre_boundary.signature.clone(),
+                },
+            ),
+        )?;
+
+        assert_eq!(
+            store.load_discovery_scoring_backfill_progress()?,
+            Some((
+                boundary_start_ts,
+                DiscoveryRuntimeCursor {
+                    ts_utc: boundary_b.ts_utc,
+                    slot: boundary_b.slot,
+                    signature: boundary_b.signature.clone(),
+                },
+            ))
+        );
+        drop(store);
+        let conn = Connection::open(&db_path)?;
+        let buy_fact_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM wallet_scoring_buy_facts", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(
+            buy_fact_count, 2,
+            "both boundary-ts rows must replay after seed install"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exact_seeded_boundary_cursor_prevents_double_apply_on_boundary_timestamp_rows() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("seeded-boundary-same-ts-no-double.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let partial_start_ts = DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let boundary_start_ts = DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let pre_boundary = SwapEvent {
+            signature: "sig-seeded-pre-dup".to_string(),
+            wallet: "wallet-seeded-dup".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeededDup111111111111111111111111".to_string(),
+            amount_in: 0.5,
+            amount_out: 5.0,
+            exact_amounts: None,
+            slot: 710,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T09:59:59Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let boundary_a = SwapEvent {
+            signature: "sig-seeded-dup-a".to_string(),
+            wallet: "wallet-seeded-dup".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeededDup111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 711,
+            ts_utc: boundary_start_ts,
+        };
+        let boundary_b = SwapEvent {
+            signature: "sig-seeded-dup-b".to_string(),
+            wallet: "wallet-seeded-dup".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeededDup111111111111111111111111".to_string(),
+            amount_in: 1.2,
+            amount_out: 12.0,
+            exact_amounts: None,
+            slot: 712,
+            ts_utc: boundary_start_ts,
+        };
+        let later_buy = SwapEvent {
+            signature: "sig-seeded-dup-later".to_string(),
+            wallet: "wallet-seeded-dup".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeededDup111111111111111111111111".to_string(),
+            amount_in: 1.4,
+            amount_out: 14.0,
+            exact_amounts: None,
+            slot: 713,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:05:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[
+            pre_boundary.clone(),
+            boundary_a.clone(),
+            boundary_b.clone(),
+            later_buy.clone(),
+        ])?;
+        store.apply_discovery_scoring_batch(
+            std::slice::from_ref(&pre_boundary),
+            &DiscoveryAggregateWriteConfig::default(),
+        )?;
+        store.set_discovery_scoring_backfill_progress(
+            partial_start_ts,
+            &DiscoveryRuntimeCursor {
+                ts_utc: pre_boundary.ts_utc,
+                slot: pre_boundary.slot,
+                signature: pre_boundary.signature.clone(),
+            },
+        )?;
+
+        run_with_store(
+            &mut store,
+            &seeded_reset_config(
+                &db_path,
+                boundary_start_ts,
+                Cursor {
+                    ts: pre_boundary.ts_utc,
+                    slot: pre_boundary.slot,
+                    signature: pre_boundary.signature.clone(),
+                },
+            ),
+        )?;
+
+        drop(store);
+        let conn = Connection::open(&db_path)?;
+        let buy_fact_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM wallet_scoring_buy_facts
+             WHERE buy_signature IN (
+                'sig-seeded-dup-a',
+                'sig-seeded-dup-b',
+                'sig-seeded-dup-later'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            buy_fact_count, 3,
+            "boundary rows must exist exactly once after seeded replay"
+        );
+        let open_lot_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM wallet_scoring_open_lots", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(open_lot_count, 4);
+        Ok(())
+    }
+
+    #[test]
+    fn seeded_reset_preserves_late_sell_fifo_accounting_across_boundary() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("seeded-boundary-fifo.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let partial_start_ts = DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let boundary_start_ts = DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let pre_boundary = SwapEvent {
+            signature: "sig-seeded-fifo-pre".to_string(),
+            wallet: "wallet-seeded-fifo".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeededFifo11111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 100.0,
+            exact_amounts: None,
+            slot: 720,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T09:50:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let boundary_buy = SwapEvent {
+            signature: "sig-seeded-fifo-boundary".to_string(),
+            wallet: "wallet-seeded-fifo".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeededFifo11111111111111111111111".to_string(),
+            amount_in: 2.0,
+            amount_out: 100.0,
+            exact_amounts: None,
+            slot: 721,
+            ts_utc: boundary_start_ts,
+        };
+        let sell = SwapEvent {
+            signature: "sig-seeded-fifo-sell".to_string(),
+            wallet: "wallet-seeded-fifo".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "TokenSeededFifo11111111111111111111111".to_string(),
+            token_out: "So11111111111111111111111111111111111111112".to_string(),
+            amount_in: 150.0,
+            amount_out: 3.0,
+            exact_amounts: None,
+            slot: 722,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:10:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[
+            pre_boundary.clone(),
+            boundary_buy.clone(),
+            sell.clone(),
+        ])?;
+        store.apply_discovery_scoring_batch(
+            std::slice::from_ref(&pre_boundary),
+            &DiscoveryAggregateWriteConfig::default(),
+        )?;
+        store.set_discovery_scoring_backfill_progress(
+            partial_start_ts,
+            &DiscoveryRuntimeCursor {
+                ts_utc: pre_boundary.ts_utc,
+                slot: pre_boundary.slot,
+                signature: pre_boundary.signature.clone(),
+            },
+        )?;
+
+        run_with_store(
+            &mut store,
+            &seeded_reset_config(
+                &db_path,
+                boundary_start_ts,
+                Cursor {
+                    ts: pre_boundary.ts_utc,
+                    slot: pre_boundary.slot,
+                    signature: pre_boundary.signature.clone(),
+                },
+            ),
+        )?;
+
+        let conn = Connection::open(&db_path)?;
+        let first_segment: (f64, i64) = conn.query_row(
+            "SELECT pnl_sol, hold_seconds
+             FROM wallet_scoring_close_facts
+             WHERE sell_signature = 'sig-seeded-fifo-sell'
+               AND segment_index = 0",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let second_segment: (f64, i64) = conn.query_row(
+            "SELECT pnl_sol, hold_seconds
+             FROM wallet_scoring_close_facts
+             WHERE sell_signature = 'sig-seeded-fifo-sell'
+               AND segment_index = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert!((first_segment.0 - 1.0).abs() < 1e-9);
+        assert!((second_segment.0 - 0.0).abs() < 1e-9);
+        assert!(first_segment.1 > second_segment.1);
+        Ok(())
+    }
+
+    #[test]
+    fn seeded_reset_aborts_when_carryover_lots_are_present_at_boundary() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("seeded-boundary-carryover-abort.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let partial_start_ts = DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let boundary_start_ts = DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let pre_boundary = SwapEvent {
+            signature: "sig-seeded-carryover-pre".to_string(),
+            wallet: "wallet-seeded-carryover".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeededCarryover11111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 100.0,
+            exact_amounts: None,
+            slot: 730,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T09:50:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(std::slice::from_ref(&pre_boundary))?;
+        store.apply_discovery_scoring_batch(
+            std::slice::from_ref(&pre_boundary),
+            &DiscoveryAggregateWriteConfig::default(),
+        )?;
+        store.set_discovery_scoring_backfill_progress(
+            partial_start_ts,
+            &DiscoveryRuntimeCursor {
+                ts_utc: pre_boundary.ts_utc,
+                slot: pre_boundary.slot,
+                signature: pre_boundary.signature.clone(),
+            },
+        )?;
+        let conn = Connection::open(&db_path)?;
+        conn.execute(
+            "INSERT INTO wallet_scoring_carryover_lots(wallet_id, token, qty, cost_sol, oldest_opened_ts)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                "wallet-seeded-carryover",
+                "TokenSeededCarryover11111111111111111",
+                10.0,
+                0.5,
+                pre_boundary.ts_utc.to_rfc3339(),
+            ),
+        )?;
+
+        let error = run_with_store(
+            &mut store,
+            &seeded_reset_config(
+                &db_path,
+                boundary_start_ts,
+                Cursor {
+                    ts: pre_boundary.ts_utc,
+                    slot: pre_boundary.slot,
+                    signature: pre_boundary.signature.clone(),
+                },
+            ),
+        )
+        .expect_err("carryover boundary state must fail exact seeded reset");
+        assert!(
+            format!("{error:#}").contains("wallet_scoring_carryover_lots"),
+            "unexpected error: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn seeded_reset_keeps_coverage_markers_unset_until_full_completion() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("seeded-boundary-no-coverage-before-complete.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let partial_start_ts = DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let boundary_start_ts = DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let pre_boundary = SwapEvent {
+            signature: "sig-seeded-coverage-pre".to_string(),
+            wallet: "wallet-seeded-coverage".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeededCoverage1111111111111111".to_string(),
+            amount_in: 0.5,
+            amount_out: 5.0,
+            exact_amounts: None,
+            slot: 740,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T09:59:59Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let boundary_buy = SwapEvent {
+            signature: "sig-seeded-coverage-boundary".to_string(),
+            wallet: "wallet-seeded-coverage".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeededCoverage1111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 741,
+            ts_utc: boundary_start_ts,
+        };
+        let later_buy = SwapEvent {
+            signature: "sig-seeded-coverage-later".to_string(),
+            wallet: "wallet-seeded-coverage".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeededCoverage1111111111111111".to_string(),
+            amount_in: 1.1,
+            amount_out: 11.0,
+            exact_amounts: None,
+            slot: 742,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:10:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[
+            pre_boundary.clone(),
+            boundary_buy.clone(),
+            later_buy.clone(),
+        ])?;
+        store.apply_discovery_scoring_batch(
+            std::slice::from_ref(&pre_boundary),
+            &DiscoveryAggregateWriteConfig::default(),
+        )?;
+        store.set_discovery_scoring_backfill_progress(
+            partial_start_ts,
+            &DiscoveryRuntimeCursor {
+                ts_utc: pre_boundary.ts_utc,
+                slot: pre_boundary.slot,
+                signature: pre_boundary.signature.clone(),
+            },
+        )?;
+
+        let mut config = seeded_reset_config(
+            &db_path,
+            boundary_start_ts,
+            Cursor {
+                ts: pre_boundary.ts_utc,
+                slot: pre_boundary.slot,
+                signature: pre_boundary.signature.clone(),
+            },
+        );
+        config.batch_size = 1;
+        config.max_batches_per_run = Some(1);
+        config.mark_covered = true;
+
+        let stop_reason = run_with_store_stop_reason(&mut store, &config)?;
+        assert_eq!(stop_reason, RunStopReason::StoppedDueToBatchBudget);
+        assert_eq!(store.load_discovery_scoring_covered_since()?, None);
+        assert_eq!(store.load_discovery_scoring_covered_through_cursor()?, None);
+        assert_eq!(
+            store.load_discovery_scoring_backfill_progress()?,
+            Some((
+                boundary_start_ts,
+                DiscoveryRuntimeCursor {
+                    ts_utc: boundary_buy.ts_utc,
+                    slot: boundary_buy.slot,
+                    signature: boundary_buy.signature.clone(),
+                },
+            ))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn seeded_reset_aborts_when_start_ts_exceeds_effective_horizon_start() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("seeded-boundary-horizon-validation.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let partial_start_ts = DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let boundary_start_ts = DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let pre_boundary = SwapEvent {
+            signature: "sig-seeded-horizon-pre".to_string(),
+            wallet: "wallet-seeded-horizon".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeededHorizon11111111111111111".to_string(),
+            amount_in: 0.5,
+            amount_out: 5.0,
+            exact_amounts: None,
+            slot: 750,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T09:59:59Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(std::slice::from_ref(&pre_boundary))?;
+        store.apply_discovery_scoring_batch(
+            std::slice::from_ref(&pre_boundary),
+            &DiscoveryAggregateWriteConfig::default(),
+        )?;
+        store.set_discovery_scoring_backfill_progress(
+            partial_start_ts,
+            &DiscoveryRuntimeCursor {
+                ts_utc: pre_boundary.ts_utc,
+                slot: pre_boundary.slot,
+                signature: pre_boundary.signature.clone(),
+            },
+        )?;
+
+        let mut config = seeded_reset_config(
+            &db_path,
+            boundary_start_ts,
+            Cursor {
+                ts: pre_boundary.ts_utc,
+                slot: pre_boundary.slot,
+                signature: pre_boundary.signature.clone(),
+            },
+        );
+        config.seeded_reset_max_start_ts = Some(boundary_start_ts - chrono::Duration::seconds(1));
+
+        let error = run_with_store(&mut store, &config)
+            .expect_err("seeded reset must reject start_ts after the effective scoring horizon");
+        assert!(
+            format!("{error:#}").contains("effective scoring horizon start"),
+            "unexpected error: {error:#}"
+        );
+        Ok(())
     }
 
     #[test]
@@ -1198,12 +2189,14 @@ mod tests {
             start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:55:00Z")
                 .expect("ts")
                 .with_timezone(&Utc),
+            seeded_reset_max_start_ts: None,
             end_ts: None,
             batch_size: 128,
             sleep_ms: 0,
             max_batches_per_run: None,
             max_runtime_seconds: None,
             reset: false,
+            seeded_reset: false,
             mark_covered: false,
             resume_after: Some(Cursor {
                 ts: DateTime::parse_from_rfc3339("2026-03-06T09:55:00Z")
@@ -1273,12 +2266,14 @@ mod tests {
             start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
                 .expect("ts")
                 .with_timezone(&Utc),
+            seeded_reset_max_start_ts: None,
             end_ts: None,
             batch_size: 128,
             sleep_ms: 0,
             max_batches_per_run: None,
             max_runtime_seconds: None,
             reset: false,
+            seeded_reset: false,
             mark_covered: true,
             resume_after: Some(Cursor {
                 ts: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
@@ -1335,12 +2330,14 @@ mod tests {
             start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
                 .expect("ts")
                 .with_timezone(&Utc),
+            seeded_reset_max_start_ts: None,
             end_ts: None,
             batch_size: 128,
             sleep_ms: 0,
             max_batches_per_run: None,
             max_runtime_seconds: None,
             reset: false,
+            seeded_reset: false,
             mark_covered: false,
             resume_after: Some(Cursor {
                 ts: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
@@ -1420,12 +2417,14 @@ mod tests {
             &Config {
                 db_path: db_path.clone(),
                 start_ts,
+                seeded_reset_max_start_ts: None,
                 end_ts: Some(first_swap.ts_utc),
                 batch_size: 1,
                 sleep_ms: 0,
                 max_batches_per_run: None,
                 max_runtime_seconds: None,
                 reset: false,
+                seeded_reset: false,
                 mark_covered: false,
                 resume_after: None,
                 abort_on_runtime_pressure: false,
@@ -1501,6 +2500,7 @@ mod tests {
             &Config {
                 db_path: db_path.clone(),
                 start_ts,
+                seeded_reset_max_start_ts: None,
                 end_ts: Some(
                     DateTime::parse_from_rfc3339("2026-03-06T10:10:00Z")
                         .expect("ts")
@@ -1511,6 +2511,7 @@ mod tests {
                 max_batches_per_run: None,
                 max_runtime_seconds: None,
                 reset: false,
+                seeded_reset: false,
                 mark_covered: false,
                 resume_after: None,
                 abort_on_runtime_pressure: false,
@@ -1585,12 +2586,14 @@ mod tests {
             &Config {
                 db_path: db_path.clone(),
                 start_ts,
+                seeded_reset_max_start_ts: None,
                 end_ts: Some(first_swap.ts_utc),
                 batch_size: 1,
                 sleep_ms: 0,
                 max_batches_per_run: None,
                 max_runtime_seconds: None,
                 reset: false,
+                seeded_reset: false,
                 mark_covered: false,
                 resume_after: None,
                 abort_on_runtime_pressure: false,
@@ -1610,12 +2613,14 @@ mod tests {
             &Config {
                 db_path: db_path.clone(),
                 start_ts,
+                seeded_reset_max_start_ts: None,
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
                 max_batches_per_run: None,
                 max_runtime_seconds: None,
                 reset: false,
+                seeded_reset: false,
                 mark_covered: true,
                 resume_after: Some(Cursor {
                     ts: first_swap.ts_utc,
@@ -1695,12 +2700,14 @@ mod tests {
             &Config {
                 db_path: db_path.clone(),
                 start_ts,
+                seeded_reset_max_start_ts: None,
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
                 max_batches_per_run: Some(1),
                 max_runtime_seconds: None,
                 reset: true,
+                seeded_reset: false,
                 mark_covered: false,
                 resume_after: None,
                 abort_on_runtime_pressure: false,
@@ -1776,12 +2783,14 @@ mod tests {
             &Config {
                 db_path: db_path.clone(),
                 start_ts,
+                seeded_reset_max_start_ts: None,
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 1_100,
                 max_batches_per_run: None,
                 max_runtime_seconds: Some(1),
                 reset: true,
+                seeded_reset: false,
                 mark_covered: false,
                 resume_after: None,
                 abort_on_runtime_pressure: false,
@@ -1857,12 +2866,14 @@ mod tests {
                 start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
                     .expect("ts")
                     .with_timezone(&Utc),
+                seeded_reset_max_start_ts: None,
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
                 max_batches_per_run: Some(1),
                 max_runtime_seconds: None,
                 reset: true,
+                seeded_reset: false,
                 mark_covered: false,
                 resume_after: None,
                 abort_on_runtime_pressure: false,
@@ -1925,12 +2936,14 @@ mod tests {
                 start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
                     .expect("ts")
                     .with_timezone(&Utc),
+                seeded_reset_max_start_ts: None,
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
                 max_batches_per_run: None,
                 max_runtime_seconds: None,
                 reset: true,
+                seeded_reset: false,
                 mark_covered: false,
                 resume_after: None,
                 abort_on_runtime_pressure: false,
@@ -2001,12 +3014,14 @@ mod tests {
                 start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
                     .expect("ts")
                     .with_timezone(&Utc),
+                seeded_reset_max_start_ts: None,
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
                 max_batches_per_run: None,
                 max_runtime_seconds: None,
                 reset: true,
+                seeded_reset: false,
                 mark_covered: false,
                 resume_after: None,
                 abort_on_runtime_pressure: false,
@@ -2067,12 +3082,14 @@ mod tests {
                 start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
                     .expect("ts")
                     .with_timezone(&Utc),
+                seeded_reset_max_start_ts: None,
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
                 max_batches_per_run: None,
                 max_runtime_seconds: None,
                 reset: true,
+                seeded_reset: false,
                 mark_covered: false,
                 resume_after: None,
                 abort_on_runtime_pressure: false,
@@ -2135,12 +3152,14 @@ mod tests {
                 start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
                     .expect("ts")
                     .with_timezone(&Utc),
+                seeded_reset_max_start_ts: None,
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
                 max_batches_per_run: None,
                 max_runtime_seconds: None,
                 reset: true,
+                seeded_reset: false,
                 mark_covered: false,
                 resume_after: None,
                 abort_on_runtime_pressure: true,
@@ -2200,12 +3219,14 @@ mod tests {
                 start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
                     .expect("ts")
                     .with_timezone(&Utc),
+                seeded_reset_max_start_ts: None,
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
                 max_batches_per_run: None,
                 max_runtime_seconds: None,
                 reset: true,
+                seeded_reset: false,
                 mark_covered: false,
                 resume_after: None,
                 abort_on_runtime_pressure: true,
@@ -2270,12 +3291,14 @@ mod tests {
                 start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
                     .expect("ts")
                     .with_timezone(&Utc),
+                seeded_reset_max_start_ts: None,
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
                 max_batches_per_run: None,
                 max_runtime_seconds: None,
                 reset: true,
+                seeded_reset: false,
                 mark_covered: false,
                 resume_after: None,
                 abort_on_runtime_pressure: true,
@@ -2338,12 +3361,14 @@ mod tests {
                 start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
                     .expect("ts")
                     .with_timezone(&Utc),
+                seeded_reset_max_start_ts: None,
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
                 max_batches_per_run: None,
                 max_runtime_seconds: None,
                 reset: true,
+                seeded_reset: false,
                 mark_covered: false,
                 resume_after: None,
                 abort_on_runtime_pressure: true,
@@ -2385,12 +3410,14 @@ mod tests {
             start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
                 .expect("ts")
                 .with_timezone(&Utc),
+            seeded_reset_max_start_ts: None,
             end_ts: None,
             batch_size: 1,
             sleep_ms: 0,
             max_batches_per_run: None,
             max_runtime_seconds: None,
             reset: false,
+            seeded_reset: false,
             mark_covered: false,
             resume_after: None,
             abort_on_runtime_pressure: true,
