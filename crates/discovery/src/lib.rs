@@ -35,6 +35,8 @@ const QUALITY_RPC_BUDGET_MS: u64 = 1_500;
 const AGGREGATE_FOLLOWLIST_TRANSITION_GUARD_CYCLES: u32 = 3;
 const CAP_TRUNCATION_FOLLOWLIST_DEACTIVATION_GUARD_CYCLES: u32 = 2;
 const STREAMING_RUG_TRADE_SWEEP_INTERVAL_SWAPS: usize = 2_048;
+const POST_BOOTSTRAP_ROTATION_BLOCKED_REASON: &str =
+    "post_bootstrap_rotation_blocked_cap_truncated";
 
 fn discovery_runtime_cursor_error_requires_abort(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
@@ -358,6 +360,65 @@ enum PreparedCycleState {
         followlist_deactivations_suppressed: bool,
         scoring_source: &'static str,
     },
+}
+
+impl PreparedCycleState {
+    fn publish_due(&self) -> bool {
+        match self {
+            Self::AggregateRecompute { publish_due, .. }
+            | Self::Empty { publish_due, .. }
+            | Self::Cached { publish_due, .. }
+            | Self::Recompute { publish_due, .. }
+            | Self::PersistedBootstrap { publish_due, .. } => *publish_due,
+        }
+    }
+
+    fn followlist_activations_suppressed(&self) -> bool {
+        match self {
+            Self::AggregateRecompute {
+                followlist_activations_suppressed,
+                ..
+            }
+            | Self::Cached {
+                followlist_activations_suppressed,
+                ..
+            }
+            | Self::Recompute {
+                followlist_activations_suppressed,
+                ..
+            }
+            | Self::PersistedBootstrap {
+                followlist_activations_suppressed,
+                ..
+            } => *followlist_activations_suppressed,
+            Self::Empty { .. } => false,
+        }
+    }
+
+    fn followlist_deactivations_suppressed(&self) -> bool {
+        match self {
+            Self::AggregateRecompute {
+                followlist_deactivations_suppressed,
+                ..
+            }
+            | Self::Empty {
+                followlist_deactivations_suppressed,
+                ..
+            }
+            | Self::Cached {
+                followlist_deactivations_suppressed,
+                ..
+            }
+            | Self::Recompute {
+                followlist_deactivations_suppressed,
+                ..
+            }
+            | Self::PersistedBootstrap {
+                followlist_deactivations_suppressed,
+                ..
+            } => *followlist_deactivations_suppressed,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -801,6 +862,19 @@ impl DiscoveryService {
                 )
             }
         };
+
+        if let Some(summary) = self.maybe_fail_close_post_bootstrap_rotation_blocked(
+            store,
+            &startup_trusted_selection_gate_status,
+            now,
+            window_start,
+            metrics_window_start,
+            aggregate_scoring_ready,
+            &cap_truncation_telemetry,
+            &prepared_cycle,
+        )? {
+            return Ok(summary);
+        }
 
         if trusted_selection_bootstrap_pending {
             let (publish_due, bootstrap_scoring_source, invalid_scoring_source) =
@@ -1612,6 +1686,148 @@ impl DiscoveryService {
             last_bootstrap_source_kind: source_kind,
             last_bootstrap_at: Some(now),
         })
+    }
+
+    fn trusted_snapshot_ready_for_window(
+        &self,
+        store: &SqliteStore,
+        effective_window_start: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let Some(metadata) =
+            store.trusted_wallet_metrics_snapshot_metadata_for_window(effective_window_start)?
+        else {
+            return Ok(false);
+        };
+        Ok(!matches!(
+            self.effective_trusted_snapshot_state(&metadata, now),
+            TrustedSelectionState::TrustedBridgedStale | TrustedSelectionState::Invalid
+        ))
+    }
+
+    fn desired_wallets_for_persisted_metrics_window(
+        &self,
+        store: &SqliteStore,
+        window_start: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<Option<HashSet<String>>> {
+        let rows = store.load_wallet_metric_snapshots_for_window(window_start)?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let snapshots = self.wallet_snapshots_from_persisted_metric_rows(now, rows);
+        let ranked = rank_follow_candidates(&snapshots, self.config.min_score);
+        Ok(Some(
+            desired_wallets(&ranked, self.config.follow_top_n)
+                .into_iter()
+                .collect(),
+        ))
+    }
+
+    fn maybe_fail_close_post_bootstrap_rotation_blocked(
+        &self,
+        store: &SqliteStore,
+        gate_status: &StartupTrustedSelectionGateStatus,
+        now: DateTime<Utc>,
+        window_start: DateTime<Utc>,
+        metrics_window_start: DateTime<Utc>,
+        aggregate_scoring_ready: bool,
+        cap_truncation_telemetry: &CapTruncationTelemetrySnapshot,
+        prepared_cycle: &PreparedCycleState,
+    ) -> Result<Option<DiscoverySummary>> {
+        if gate_status.bootstrap_required
+            || self.effective_startup_trusted_selection_state(gate_status, now)
+                != Some(TrustedSelectionState::TrustedBridged)
+            || gate_status.last_bootstrap_source_kind
+                != Some(TrustedSnapshotSourceKind::CloneLatestBridge)
+        {
+            return Ok(None);
+        }
+
+        let Some(active_snapshot_window_start) = gate_status.active_snapshot_window_start else {
+            return Ok(None);
+        };
+        if metrics_window_start <= active_snapshot_window_start
+            || !cap_truncation_telemetry.raw_window_cap_truncated
+            || aggregate_scoring_ready
+            || self.trusted_snapshot_ready_for_window(store, metrics_window_start, now)?
+        {
+            return Ok(None);
+        }
+
+        let Some(bootstrap_wallets) = self.desired_wallets_for_persisted_metrics_window(
+            store,
+            active_snapshot_window_start,
+            now,
+        )?
+        else {
+            return Ok(None);
+        };
+        let active_follow_wallets = store.list_active_follow_wallets()?;
+        if active_follow_wallets.is_empty() || active_follow_wallets != bootstrap_wallets {
+            return Ok(None);
+        }
+
+        let follow_delta = store.persist_discovery_cycle(
+            &[],
+            &[],
+            &[],
+            false,
+            true,
+            now,
+            POST_BOOTSTRAP_ROTATION_BLOCKED_REASON,
+        )?;
+        store
+            .set_discovery_trusted_selection_bootstrap_required(
+                true,
+                POST_BOOTSTRAP_ROTATION_BLOCKED_REASON,
+            )
+            .context("failed raising trusted bootstrap-required latch after rotation watchdog")?;
+        self.persist_trusted_selection_state(
+            store,
+            TrustedSelectionState::Invalid,
+            gate_status.active_snapshot_id.clone(),
+            Some(active_snapshot_window_start),
+            gate_status.last_bootstrap_source_kind,
+            true,
+            POST_BOOTSTRAP_ROTATION_BLOCKED_REASON,
+            now,
+        )?;
+        let active_follow_wallets = store.list_active_follow_wallets()?.len();
+        if prepared_cycle.publish_due() {
+            self.record_live_publish(now);
+        }
+        warn!(
+            reason = POST_BOOTSTRAP_ROTATION_BLOCKED_REASON,
+            active_snapshot_id = gate_status.active_snapshot_id.as_deref(),
+            active_snapshot_window_start = %active_snapshot_window_start,
+            current_metrics_window_start = %metrics_window_start,
+            raw_window_cap_truncated = cap_truncation_telemetry.raw_window_cap_truncated,
+            followlist_activations_suppressed =
+                prepared_cycle.followlist_activations_suppressed(),
+            followlist_deactivations_suppressed =
+                prepared_cycle.followlist_deactivations_suppressed(),
+            bootstrap_active_wallets = bootstrap_wallets.len(),
+            cleared_follow_wallets = follow_delta.deactivated,
+            "discovery degraded bridged bootstrap selection back to invalid because steady-state trusted rotation did not resume on the first next effective bucket"
+        );
+        Ok(Some(
+            DiscoverySummary {
+                window_start,
+                wallets_seen: 0,
+                eligible_wallets: 0,
+                metrics_written: 0,
+                follow_promoted: 0,
+                follow_demoted: follow_delta.deactivated,
+                active_follow_wallets,
+                top_wallets: Vec::new(),
+                published: prepared_cycle.publish_due(),
+                trusted_selection_fail_closed: true,
+                ..DiscoverySummary::default()
+            }
+            .with_scoring_source(POST_BOOTSTRAP_ROTATION_BLOCKED_REASON)
+            .with_cap_truncation_telemetry(cap_truncation_telemetry),
+        ))
     }
 
     fn persist_trusted_selection_state_from_snapshot(
@@ -3052,6 +3268,153 @@ mod tests {
         config
     }
 
+    fn post_bootstrap_watchdog_config() -> DiscoveryConfig {
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 1;
+        config.decay_window_days = 1;
+        config.follow_top_n = 1;
+        config.min_score = 0.0;
+        config.metric_snapshot_interval_seconds = 60;
+        config.max_window_swaps_in_memory = 8;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.max_fetch_pages_per_cycle = 10;
+        config.fetch_time_budget_ms = 1_000;
+        config.thin_market_min_unique_traders = 1;
+        config
+    }
+
+    fn seed_bridged_bootstrap_followlist(
+        store: &SqliteStore,
+        discovery: &DiscoveryService,
+        bootstrap_now: DateTime<Utc>,
+        wallet_id: &str,
+    ) -> Result<TrustedWalletMetricsSnapshotWrite> {
+        let bootstrap_metrics_window_start = discovery.metrics_window_start(bootstrap_now);
+        let snapshot_write = trusted_snapshot_write(
+            TrustedSnapshotSourceKind::CloneLatestBridge,
+            TrustedSelectionState::TrustedBridged,
+            bootstrap_metrics_window_start,
+            bootstrap_now,
+            1,
+            Some("seed-bridged-source".to_string()),
+            Some(bootstrap_metrics_window_start - Duration::minutes(1)),
+        );
+        store.persist_discovery_cycle_with_snapshot_metadata(
+            &[WalletUpsertRow {
+                wallet_id: wallet_id.to_string(),
+                first_seen: bootstrap_now - Duration::hours(12),
+                last_seen: bootstrap_now - Duration::minutes(1),
+                status: "candidate".to_string(),
+            }],
+            &[WalletMetricRow {
+                wallet_id: wallet_id.to_string(),
+                window_start: bootstrap_metrics_window_start,
+                pnl: 2.0,
+                win_rate: 0.8,
+                trades: 6,
+                closed_trades: 3,
+                hold_median_seconds: 300,
+                score: 0.7,
+                buy_total: 3,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            }],
+            &[wallet_id.to_string()],
+            true,
+            true,
+            bootstrap_now,
+            "seed-bridged-bootstrap-followlist",
+            Some(&snapshot_write),
+        )?;
+        store.set_discovery_trusted_selection_state(&DiscoveryTrustedSelectionStateUpdate {
+            bootstrap_required: false,
+            reason: "trusted_selection_bootstrap_satisfied".to_string(),
+            selection_state: TrustedSelectionState::TrustedBridged,
+            active_snapshot_id: Some(snapshot_write.snapshot_id.clone()),
+            active_snapshot_window_start: Some(bootstrap_metrics_window_start),
+            last_bootstrap_source_kind: Some(TrustedSnapshotSourceKind::CloneLatestBridge),
+            last_bootstrap_at: Some(bootstrap_now),
+        })?;
+        Ok(snapshot_write)
+    }
+
+    fn seed_cap_truncated_raw_tail(
+        store: &SqliteStore,
+        window_start: DateTime<Utc>,
+        count: usize,
+    ) -> Result<()> {
+        for idx in 0..count {
+            let ts = window_start + Duration::seconds((idx + 1) as i64);
+            store.insert_observed_swap(&swap(
+                "wallet_noise",
+                &format!("watchdog-noise-buy-{idx}"),
+                ts,
+                SOL_MINT,
+                "TokenWatchdogNoise111111111111111111111111",
+                0.2,
+                20.0,
+            ))?;
+        }
+        Ok(())
+    }
+
+    fn prime_running_discovery_cursor(
+        discovery: &DiscoveryService,
+        cursor_window_start: DateTime<Utc>,
+    ) {
+        let mut state = discovery
+            .window_state
+            .lock()
+            .expect("window_state lock should succeed");
+        state.cursor = Some(DiscoveryCursor::bootstrap(cursor_window_start));
+    }
+
+    fn seed_current_trusted_source_snapshot(
+        store: &SqliteStore,
+        metrics_window_start: DateTime<Utc>,
+        now: DateTime<Utc>,
+        source_kind: TrustedSnapshotSourceKind,
+        wallet_id: &str,
+    ) -> Result<TrustedWalletMetricsSnapshotWrite> {
+        let snapshot_write = trusted_snapshot_write(
+            source_kind,
+            TrustedSelectionState::TrustedCurrent,
+            metrics_window_start,
+            now,
+            1,
+            None,
+            Some(metrics_window_start),
+        );
+        store.persist_discovery_cycle_with_snapshot_metadata(
+            &[WalletUpsertRow {
+                wallet_id: wallet_id.to_string(),
+                first_seen: now - Duration::hours(6),
+                last_seen: now - Duration::minutes(1),
+                status: "candidate".to_string(),
+            }],
+            &[WalletMetricRow {
+                wallet_id: wallet_id.to_string(),
+                window_start: metrics_window_start,
+                pnl: 3.0,
+                win_rate: 0.9,
+                trades: 7,
+                closed_trades: 4,
+                hold_median_seconds: 120,
+                score: 0.9,
+                buy_total: 4,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            }],
+            &[],
+            false,
+            false,
+            now,
+            "seed-current-trusted-source",
+            Some(&snapshot_write),
+        )?;
+        Ok(snapshot_write)
+    }
+
     #[test]
     fn promotes_profitable_wallets_to_followlist() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -4423,6 +4786,203 @@ mod tests {
             .lock()
             .expect("window_state lock should succeed");
         assert!(state.trusted_selection_bootstrap_pending);
+        Ok(())
+    }
+
+    #[test]
+    fn post_bootstrap_rotation_watchdog_triggers_on_first_next_bucket_and_fail_closes() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("test-post-bootstrap-rotation-watchdog-trigger.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let config = post_bootstrap_watchdog_config();
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let bootstrap_now = DateTime::parse_from_rfc3339("2026-03-16T12:00:20Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let same_bucket_now = DateTime::parse_from_rfc3339("2026-03-16T12:00:50Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let next_bucket_now = DateTime::parse_from_rfc3339("2026-03-16T12:01:10Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let snapshot_write =
+            seed_bridged_bootstrap_followlist(&store, &discovery, bootstrap_now, "wallet_bridge")?;
+        let same_bucket_window_start = same_bucket_now - Duration::days(1);
+        prime_running_discovery_cursor(&discovery, same_bucket_window_start);
+        seed_cap_truncated_raw_tail(&store, same_bucket_window_start + Duration::minutes(10), 9)?;
+
+        let first_summary = discovery.run_cycle(&store, same_bucket_now)?;
+        assert_eq!(
+            first_summary.scoring_source, "raw_window",
+            "same-bucket cap-truncated raw discovery should remain suppressed but must not trigger the watchdog early"
+        );
+        assert!(!first_summary.trusted_selection_fail_closed);
+        assert!(
+            !store.discovery_trusted_selection_bootstrap_required()?,
+            "watchdog must not raise bootstrap-required until the first next effective bucket arrives"
+        );
+        assert!(store
+            .list_active_follow_wallets()?
+            .contains("wallet_bridge"));
+
+        let second_summary = discovery.run_cycle(&store, next_bucket_now)?;
+        assert_eq!(
+            second_summary.scoring_source,
+            POST_BOOTSTRAP_ROTATION_BLOCKED_REASON
+        );
+        assert!(
+            second_summary.trusted_selection_fail_closed,
+            "watchdog must degrade a frozen bridged bootstrap set back to invalid/fail-close on the first next bucket"
+        );
+        assert_eq!(second_summary.follow_demoted, 1);
+        assert!(second_summary.raw_window_cap_truncated);
+        assert!(
+            store.discovery_trusted_selection_bootstrap_required()?,
+            "watchdog must raise the durable bootstrap-required latch again"
+        );
+        assert!(
+            store.list_active_follow_wallets()?.is_empty(),
+            "watchdog must fail-close the previously active bridged bootstrap followlist"
+        );
+
+        let persisted_state = store
+            .discovery_trusted_selection_state()?
+            .expect("watchdog must persist invalid typed state");
+        assert!(persisted_state.bootstrap_required);
+        assert_eq!(
+            persisted_state.reason,
+            POST_BOOTSTRAP_ROTATION_BLOCKED_REASON
+        );
+        assert_eq!(
+            persisted_state.selection_state,
+            TrustedSelectionState::Invalid
+        );
+        assert_eq!(
+            persisted_state.active_snapshot_id,
+            Some(snapshot_write.snapshot_id)
+        );
+        assert_eq!(
+            persisted_state.active_snapshot_window_start,
+            Some(discovery.metrics_window_start(bootstrap_now))
+        );
+        assert_eq!(
+            persisted_state.last_bootstrap_source_kind,
+            Some(TrustedSnapshotSourceKind::CloneLatestBridge)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn post_bootstrap_rotation_watchdog_does_not_fire_when_fresh_trusted_current_snapshot_exists(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("test-post-bootstrap-rotation-watchdog-fresh-current.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let config = post_bootstrap_watchdog_config();
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let bootstrap_now = DateTime::parse_from_rfc3339("2026-03-16T12:00:20Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let next_bucket_now = DateTime::parse_from_rfc3339("2026-03-16T12:01:10Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        seed_bridged_bootstrap_followlist(&store, &discovery, bootstrap_now, "wallet_bridge")?;
+        seed_current_trusted_source_snapshot(
+            &store,
+            discovery.metrics_window_start(next_bucket_now),
+            next_bucket_now - Duration::seconds(1),
+            TrustedSnapshotSourceKind::DiscoveryRefresh,
+            "wallet_fresh_current",
+        )?;
+        let next_bucket_window_start = next_bucket_now - Duration::days(1);
+        prime_running_discovery_cursor(&discovery, next_bucket_window_start);
+        seed_cap_truncated_raw_tail(&store, next_bucket_window_start + Duration::minutes(10), 9)?;
+
+        let summary = discovery.run_cycle(&store, next_bucket_now)?;
+        assert_ne!(
+            summary.scoring_source,
+            POST_BOOTSTRAP_ROTATION_BLOCKED_REASON
+        );
+        assert!(!summary.trusted_selection_fail_closed);
+        assert!(
+            !store.discovery_trusted_selection_bootstrap_required()?,
+            "a fresh trusted current snapshot should prevent the watchdog from raising bootstrap-required"
+        );
+        let persisted_state = store
+            .discovery_trusted_selection_state()?
+            .expect("typed bridged state should remain intact");
+        assert_eq!(
+            persisted_state.selection_state,
+            TrustedSelectionState::TrustedBridged
+        );
+        assert!(store
+            .list_active_follow_wallets()?
+            .contains("wallet_bridge"));
+        Ok(())
+    }
+
+    #[test]
+    fn post_bootstrap_rotation_watchdog_does_not_fire_when_alternate_trusted_source_is_ready(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("test-post-bootstrap-rotation-watchdog-alternate-source.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let config = post_bootstrap_watchdog_config();
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let bootstrap_now = DateTime::parse_from_rfc3339("2026-03-16T12:00:20Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let next_bucket_now = DateTime::parse_from_rfc3339("2026-03-16T12:01:10Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        seed_bridged_bootstrap_followlist(&store, &discovery, bootstrap_now, "wallet_bridge")?;
+        seed_current_trusted_source_snapshot(
+            &store,
+            discovery.metrics_window_start(next_bucket_now),
+            next_bucket_now - Duration::seconds(1),
+            TrustedSnapshotSourceKind::AdminMaterialization,
+            "wallet_admin_source",
+        )?;
+        let next_bucket_window_start = next_bucket_now - Duration::days(1);
+        prime_running_discovery_cursor(&discovery, next_bucket_window_start);
+        seed_cap_truncated_raw_tail(&store, next_bucket_window_start + Duration::minutes(10), 9)?;
+
+        let summary = discovery.run_cycle(&store, next_bucket_now)?;
+        assert_ne!(
+            summary.scoring_source,
+            POST_BOOTSTRAP_ROTATION_BLOCKED_REASON
+        );
+        assert!(!summary.trusted_selection_fail_closed);
+        assert!(
+            !store.discovery_trusted_selection_bootstrap_required()?,
+            "an alternate trusted source should suppress the watchdog degradation"
+        );
+        let persisted_state = store
+            .discovery_trusted_selection_state()?
+            .expect("typed bridged state should remain intact");
+        assert_eq!(
+            persisted_state.selection_state,
+            TrustedSelectionState::TrustedBridged
+        );
+        assert!(store
+            .list_active_follow_wallets()?
+            .contains("wallet_bridge"));
         Ok(())
     }
 
