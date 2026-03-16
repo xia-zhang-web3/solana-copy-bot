@@ -2,14 +2,26 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::load_from_path;
 use copybot_core_types::SwapEvent;
-use copybot_storage::{DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, SqliteStore};
+use copybot_storage::{
+    DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, RiskEventRow, SqliteStore,
+};
+use serde::Deserialize;
+use signal_hook::consts::signal::SIGINT;
+#[cfg(unix)]
+use signal_hook::consts::signal::SIGTERM;
+use signal_hook::flag;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration as StdDuration;
 
 const DEFAULT_BATCH_SIZE: usize = 5_000;
 const BACKFILL_SOURCE_PROTECTION_TTL_MINUTES: i64 = 240;
+const RUNTIME_INFRA_STOP_EVENT_TYPE: &str = "shadow_risk_infra_stop";
+const RUNTIME_INFRA_CLEARED_EVENT_TYPE: &str = "shadow_risk_infra_cleared";
+const SLEEP_INTERRUPT_POLL_MS: u64 = 100;
 
 #[derive(Debug, Clone)]
 struct Cursor {
@@ -28,7 +40,88 @@ struct Config {
     reset: bool,
     mark_covered: bool,
     resume_after: Option<Cursor>,
+    abort_on_runtime_infra_stop: bool,
     aggregate_write_config: DiscoveryAggregateWriteConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct RuntimeInfraStopDetails {
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    yellowstone_output_queue_depth: Option<u64>,
+    #[serde(default)]
+    yellowstone_output_queue_capacity: Option<u64>,
+    #[serde(default)]
+    yellowstone_output_queue_fill_ratio: Option<f64>,
+    #[serde(default)]
+    yellowstone_output_oldest_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveRuntimeInfraStop {
+    rowid: i64,
+    event_ts: String,
+    reason: String,
+    yellowstone_output_queue_depth: Option<u64>,
+    yellowstone_output_queue_capacity: Option<u64>,
+    yellowstone_output_queue_fill_ratio: Option<f64>,
+    yellowstone_output_oldest_age_ms: Option<u64>,
+}
+
+impl ActiveRuntimeInfraStop {
+    fn from_risk_event(row: RiskEventRow) -> Self {
+        let details = row
+            .details_json
+            .as_deref()
+            .and_then(|details_json| {
+                serde_json::from_str::<RuntimeInfraStopDetails>(details_json).ok()
+            })
+            .unwrap_or_default();
+        let reason = if details.reason.trim().is_empty() {
+            row.details_json.unwrap_or_default()
+        } else {
+            details.reason
+        };
+        Self {
+            rowid: row.rowid,
+            event_ts: row.ts,
+            reason,
+            yellowstone_output_queue_depth: details.yellowstone_output_queue_depth,
+            yellowstone_output_queue_capacity: details.yellowstone_output_queue_capacity,
+            yellowstone_output_queue_fill_ratio: details.yellowstone_output_queue_fill_ratio,
+            yellowstone_output_oldest_age_ms: details.yellowstone_output_oldest_age_ms,
+        }
+    }
+
+    fn abort_message(&self) -> String {
+        format!(
+            "runtime health guard aborted backfill due to active {RUNTIME_INFRA_STOP_EVENT_TYPE} rowid={} event_ts={} reason={}",
+            self.rowid, self.event_ts, self.reason
+        )
+    }
+
+    fn log_event(&self) {
+        println!(
+            "event=runtime_pressure_abort source={} rowid={} event_ts={} reason={} yellowstone_output_queue_depth={} yellowstone_output_queue_capacity={} yellowstone_output_queue_fill_ratio={} yellowstone_output_oldest_age_ms={}",
+            RUNTIME_INFRA_STOP_EVENT_TYPE,
+            self.rowid,
+            self.event_ts,
+            self.reason,
+            self.yellowstone_output_queue_depth
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            self.yellowstone_output_queue_capacity
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            self.yellowstone_output_queue_fill_ratio
+                .map(|value| format!("{value:.4}"))
+                .unwrap_or_else(|| "null".to_string()),
+            self.yellowstone_output_oldest_age_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+        );
+    }
 }
 
 fn cursor_matches_runtime(left: &Cursor, right: &DiscoveryRuntimeCursor) -> bool {
@@ -44,7 +137,7 @@ fn parse_args() -> Result<Config> {
     let mut args = env::args().skip(1);
     let Some(db_path_raw) = args.next() else {
         bail!(
-            "usage: backfill_discovery_scoring <db_path> --config <path> --start-ts <rfc3339> [--end-ts <rfc3339>] [--batch-size N] [--sleep-ms N] (--reset | --resume-ts <ts> --resume-slot <slot> --resume-signature <sig>) [--mark-covered] [--helius-http-url URL] [--min-token-age-hint-seconds N]"
+            "usage: backfill_discovery_scoring <db_path> --config <path> --start-ts <rfc3339> [--end-ts <rfc3339>] [--batch-size N] [--sleep-ms N] (--reset | --resume-ts <ts> --resume-slot <slot> --resume-signature <sig>) [--mark-covered] [--abort-on-runtime-infra-stop] [--helius-http-url URL] [--min-token-age-hint-seconds N]"
         );
     };
 
@@ -55,6 +148,7 @@ fn parse_args() -> Result<Config> {
     let mut sleep_ms = 0u64;
     let mut reset = false;
     let mut mark_covered = false;
+    let mut abort_on_runtime_infra_stop = false;
     let mut resume_ts: Option<DateTime<Utc>> = None;
     let mut resume_slot: Option<u64> = None;
     let mut resume_signature: Option<String> = None;
@@ -72,6 +166,7 @@ fn parse_args() -> Result<Config> {
             "--sleep-ms" => sleep_ms = parse_u64_arg("--sleep-ms", args.next())?,
             "--reset" => reset = true,
             "--mark-covered" => mark_covered = true,
+            "--abort-on-runtime-infra-stop" => abort_on_runtime_infra_stop = true,
             "--resume-ts" => resume_ts = Some(parse_ts_arg("--resume-ts", args.next())?),
             "--resume-slot" => resume_slot = Some(parse_u64_arg("--resume-slot", args.next())?),
             "--resume-signature" => {
@@ -147,6 +242,7 @@ fn parse_args() -> Result<Config> {
         reset,
         mark_covered,
         resume_after,
+        abort_on_runtime_infra_stop,
         aggregate_write_config,
     })
 }
@@ -180,6 +276,7 @@ fn parse_usize_arg(flag: &str, value: Option<String>) -> Result<usize> {
 }
 
 fn run(config: Config) -> Result<()> {
+    let termination_requested = install_termination_signal_handlers()?;
     let mut store = SqliteStore::open(Path::new(&config.db_path))
         .with_context(|| format!("failed opening sqlite db {}", config.db_path.display()))?;
     let migrations_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
@@ -190,7 +287,20 @@ fn run(config: Config) -> Result<()> {
         )
     })?;
 
-    let run_result = run_with_store(&mut store, &config);
+    run_with_cleanup(&mut store, &config, termination_requested.as_ref())
+}
+
+fn run_with_store(store: &mut SqliteStore, config: &Config) -> Result<()> {
+    let termination_requested = AtomicBool::new(false);
+    run_with_cleanup(store, config, &termination_requested)
+}
+
+fn run_with_cleanup(
+    store: &mut SqliteStore,
+    config: &Config,
+    termination_requested: &AtomicBool,
+) -> Result<()> {
+    let run_result = run_with_store_inner(store, config, termination_requested);
     let clear_result = store.clear_discovery_scoring_backfill_source_protection();
     match (run_result, clear_result) {
         (Ok(()), Ok(())) => Ok(()),
@@ -202,7 +312,12 @@ fn run(config: Config) -> Result<()> {
     }
 }
 
-fn run_with_store(store: &mut SqliteStore, config: &Config) -> Result<()> {
+fn run_with_store_inner(
+    store: &mut SqliteStore,
+    config: &Config,
+    termination_requested: &AtomicBool,
+) -> Result<()> {
+    abort_if_control_requested(store, config, termination_requested)?;
     if config.reset {
         store.reset_discovery_scoring_tables()?;
         println!("event=reset_discovery_scoring_tables");
@@ -242,6 +357,7 @@ fn run_with_store(store: &mut SqliteStore, config: &Config) -> Result<()> {
     let mut batches = 0usize;
 
     loop {
+        abort_if_control_requested(store, config, termination_requested)?;
         let mut page = Vec::<SwapEvent>::with_capacity(config.batch_size);
         let mut reached_end_ts = false;
         let rows_seen = store.for_each_observed_swap_after_cursor(
@@ -277,6 +393,7 @@ fn run_with_store(store: &mut SqliteStore, config: &Config) -> Result<()> {
             .last()
             .cloned()
             .ok_or_else(|| anyhow!("backfill page unexpectedly empty"))?;
+        abort_if_control_requested(store, config, termination_requested)?;
         refresh_backfill_source_protection(store, config.start_ts)?;
         store.apply_discovery_scoring_batch(&page, &config.aggregate_write_config)?;
         store.finalize_discovery_scoring_rug_facts(last_swap.ts_utc)?;
@@ -305,11 +422,12 @@ fn run_with_store(store: &mut SqliteStore, config: &Config) -> Result<()> {
             cursor.signature
         );
 
+        abort_if_control_requested(store, config, termination_requested)?;
         if reached_end_ts || rows_seen < config.batch_size {
             break;
         }
         if config.sleep_ms > 0 {
-            thread::sleep(StdDuration::from_millis(config.sleep_ms));
+            sleep_with_interrupt(store, config, config.sleep_ms, termination_requested)?;
         }
     }
 
@@ -366,6 +484,64 @@ fn run_with_store(store: &mut SqliteStore, config: &Config) -> Result<()> {
     Ok(())
 }
 
+fn install_termination_signal_handlers() -> Result<Arc<AtomicBool>> {
+    let termination_requested = Arc::new(AtomicBool::new(false));
+    flag::register(SIGINT, Arc::clone(&termination_requested))
+        .context("failed to install SIGINT handler")?;
+    #[cfg(unix)]
+    flag::register(SIGTERM, Arc::clone(&termination_requested))
+        .context("failed to install SIGTERM handler")?;
+    Ok(termination_requested)
+}
+
+fn abort_if_control_requested(
+    store: &SqliteStore,
+    config: &Config,
+    termination_requested: &AtomicBool,
+) -> Result<()> {
+    if termination_requested.load(Ordering::Relaxed) {
+        println!("event=controlled_abort source=termination_signal");
+        bail!("termination signal received; aborting backfill after durable checkpoint");
+    }
+    if config.abort_on_runtime_infra_stop {
+        if let Some(infra_stop) = active_runtime_infra_stop(store)? {
+            infra_stop.log_event();
+            bail!(infra_stop.abort_message());
+        }
+    }
+    Ok(())
+}
+
+fn active_runtime_infra_stop(store: &SqliteStore) -> Result<Option<ActiveRuntimeInfraStop>> {
+    let Some(latest_stop) = store.latest_risk_event_by_type(RUNTIME_INFRA_STOP_EVENT_TYPE)? else {
+        return Ok(None);
+    };
+    let latest_clear = store.latest_risk_event_by_type(RUNTIME_INFRA_CLEARED_EVENT_TYPE)?;
+    if latest_clear
+        .as_ref()
+        .is_some_and(|latest_clear| latest_clear.rowid > latest_stop.rowid)
+    {
+        return Ok(None);
+    }
+    Ok(Some(ActiveRuntimeInfraStop::from_risk_event(latest_stop)))
+}
+
+fn sleep_with_interrupt(
+    store: &SqliteStore,
+    config: &Config,
+    sleep_ms: u64,
+    termination_requested: &AtomicBool,
+) -> Result<()> {
+    let mut remaining_ms = sleep_ms;
+    while remaining_ms > 0 {
+        abort_if_control_requested(store, config, termination_requested)?;
+        let chunk_ms = remaining_ms.min(SLEEP_INTERRUPT_POLL_MS);
+        thread::sleep(StdDuration::from_millis(chunk_ms));
+        remaining_ms = remaining_ms.saturating_sub(chunk_ms);
+    }
+    Ok(())
+}
+
 fn refresh_backfill_source_protection(
     store: &SqliteStore,
     protect_since: DateTime<Utc>,
@@ -376,12 +552,16 @@ fn refresh_backfill_source_protection(
 
 #[cfg(test)]
 mod tests {
-    use super::{run_with_store, Config, Cursor};
+    use super::{
+        run_with_cleanup, run_with_store, Config, Cursor, RUNTIME_INFRA_CLEARED_EVENT_TYPE,
+        RUNTIME_INFRA_STOP_EVENT_TYPE,
+    };
     use anyhow::{Context, Result};
     use chrono::{DateTime, Utc};
     use copybot_core_types::SwapEvent;
     use copybot_storage::{DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, SqliteStore};
     use std::path::Path;
+    use std::sync::atomic::AtomicBool;
     use tempfile::tempdir;
 
     #[test]
@@ -444,6 +624,7 @@ mod tests {
                 slot: 0,
                 signature: String::new(),
             }),
+            abort_on_runtime_infra_stop: false,
             aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
         };
 
@@ -510,6 +691,7 @@ mod tests {
                 slot: 199,
                 signature: "sig-resume".to_string(),
             }),
+            abort_on_runtime_infra_stop: false,
             aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
         };
 
@@ -563,6 +745,7 @@ mod tests {
                 slot: 320,
                 signature: "sig-midpoint".to_string(),
             }),
+            abort_on_runtime_infra_stop: false,
             aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
         };
 
@@ -633,6 +816,7 @@ mod tests {
                 reset: false,
                 mark_covered: false,
                 resume_after: None,
+                abort_on_runtime_infra_stop: false,
                 aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
             },
         )?;
@@ -705,6 +889,7 @@ mod tests {
                 reset: false,
                 mark_covered: false,
                 resume_after: None,
+                abort_on_runtime_infra_stop: false,
                 aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
             },
         )?;
@@ -725,6 +910,7 @@ mod tests {
                     slot: first_swap.slot,
                     signature: first_swap.signature.clone(),
                 }),
+                abort_on_runtime_infra_stop: false,
                 aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
             },
         )?;
@@ -741,6 +927,197 @@ mod tests {
                 slot: second_swap.slot,
                 signature: second_swap.signature.clone(),
             })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_infra_stop_abort_blocks_backfill_before_next_batch() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-runtime-guard-active.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        store.insert_observed_swaps_batch(&[SwapEvent {
+            signature: "sig-runtime-stop".to_string(),
+            wallet: "wallet-runtime-stop".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenRuntimeStop1111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 601,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        }])?;
+        store.insert_risk_event(
+            RUNTIME_INFRA_STOP_EVENT_TYPE,
+            "warn",
+            DateTime::parse_from_rfc3339("2026-03-06T10:01:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+            Some(
+                "{\"reason\":\"lag_p95_over_threshold_for=5m threshold_ms=2000\",\"yellowstone_output_queue_depth\":100,\"yellowstone_output_queue_capacity\":100,\"yellowstone_output_queue_fill_ratio\":1.0}",
+            ),
+        )?;
+
+        let error = run_with_store(
+            &mut store,
+            &Config {
+                db_path: db_path.clone(),
+                start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+                end_ts: None,
+                batch_size: 1,
+                sleep_ms: 0,
+                reset: true,
+                mark_covered: false,
+                resume_after: None,
+                abort_on_runtime_infra_stop: true,
+                aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+            },
+        )
+        .expect_err("active runtime infra stop must abort guarded backfill");
+
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains("runtime health guard aborted backfill"),
+            "unexpected error: {error_text}"
+        );
+        assert_eq!(store.load_discovery_scoring_backfill_progress()?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_infra_stop_guard_ignores_cleared_stop() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-runtime-guard-cleared.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let swap = SwapEvent {
+            signature: "sig-runtime-cleared".to_string(),
+            wallet: "wallet-runtime-cleared".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenRuntimeCleared1111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 602,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[swap.clone()])?;
+        store.insert_risk_event(
+            RUNTIME_INFRA_STOP_EVENT_TYPE,
+            "warn",
+            DateTime::parse_from_rfc3339("2026-03-06T10:01:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+            Some("{\"reason\":\"no_ingestion_progress_for=20m\"}"),
+        )?;
+        store.insert_risk_event(
+            RUNTIME_INFRA_CLEARED_EVENT_TYPE,
+            "info",
+            DateTime::parse_from_rfc3339("2026-03-06T10:02:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+            Some("{\"state\":\"cleared\"}"),
+        )?;
+
+        run_with_store(
+            &mut store,
+            &Config {
+                db_path: db_path.clone(),
+                start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+                end_ts: None,
+                batch_size: 1,
+                sleep_ms: 0,
+                reset: true,
+                mark_covered: false,
+                resume_after: None,
+                abort_on_runtime_infra_stop: true,
+                aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+            },
+        )?;
+
+        assert_eq!(
+            store.load_discovery_scoring_backfill_progress()?,
+            Some((
+                DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+                DiscoveryRuntimeCursor {
+                    ts_utc: swap.ts_utc,
+                    slot: swap.slot,
+                    signature: swap.signature.clone(),
+                },
+            ))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn controlled_abort_clears_backfill_source_protection() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-runtime-guard-cleanup.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        store.insert_observed_swaps_batch(&[SwapEvent {
+            signature: "sig-runtime-cleanup".to_string(),
+            wallet: "wallet-runtime-cleanup".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenRuntimeCleanup1111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 603,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        }])?;
+
+        let termination_requested = AtomicBool::new(true);
+        let error = run_with_cleanup(
+            &mut store,
+            &Config {
+                db_path: db_path.clone(),
+                start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+                end_ts: None,
+                batch_size: 1,
+                sleep_ms: 0,
+                reset: true,
+                mark_covered: false,
+                resume_after: None,
+                abort_on_runtime_infra_stop: false,
+                aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+            },
+            &termination_requested,
+        )
+        .expect_err("termination-requested abort must fail closed");
+
+        assert!(
+            format!("{error:#}").contains("termination signal received"),
+            "unexpected error: {error:#}"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_backfill_protected_since(Utc::now())?,
+            None,
+            "controlled abort cleanup must clear source protection latch"
         );
         Ok(())
     }
