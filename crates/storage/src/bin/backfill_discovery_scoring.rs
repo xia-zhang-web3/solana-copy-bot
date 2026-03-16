@@ -44,6 +44,8 @@ struct Config {
     end_ts: Option<DateTime<Utc>>,
     batch_size: usize,
     sleep_ms: u64,
+    max_batches_per_run: Option<usize>,
+    max_runtime_seconds: Option<u64>,
     reset: bool,
     mark_covered: bool,
     resume_after: Option<Cursor>,
@@ -113,6 +115,31 @@ struct RuntimePressureSample {
 struct RuntimePressureMonitor {
     refreshed_at: Option<DateTime<Utc>>,
     cached_sample: Option<RuntimePressureSample>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunStopReason {
+    CompletedSourceExhausted,
+    CompletedRequestedEndTs,
+    StoppedDueToBatchBudget,
+    StoppedDueToRuntimeBudget,
+    StoppedDueToFastGuard,
+    StoppedDueToInfraGuard,
+    StoppedDueToTerminationSignal,
+}
+
+impl RunStopReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::CompletedSourceExhausted => "completed_source_exhausted",
+            Self::CompletedRequestedEndTs => "completed_requested_end_ts",
+            Self::StoppedDueToBatchBudget => "stopped_due_to_batch_budget",
+            Self::StoppedDueToRuntimeBudget => "stopped_due_to_runtime_budget",
+            Self::StoppedDueToFastGuard => "stopped_due_to_fast_guard",
+            Self::StoppedDueToInfraGuard => "stopped_due_to_infra_guard",
+            Self::StoppedDueToTerminationSignal => "stopped_due_to_termination_signal",
+        }
+    }
 }
 
 impl ActiveRuntimeInfraStop {
@@ -324,6 +351,60 @@ fn runtime_pressure_sample_stale_reason(
     ))
 }
 
+fn bounded_run_stop_reason(
+    config: &Config,
+    run_started_at: DateTime<Utc>,
+    batches: usize,
+    now: DateTime<Utc>,
+) -> Option<RunStopReason> {
+    if config
+        .max_batches_per_run
+        .is_some_and(|max_batches| batches >= max_batches)
+    {
+        return Some(RunStopReason::StoppedDueToBatchBudget);
+    }
+    if config
+        .max_runtime_seconds
+        .is_some_and(|max_runtime_seconds| {
+            now.signed_duration_since(run_started_at)
+                .num_seconds()
+                .max(0) as u64
+                >= max_runtime_seconds
+        })
+    {
+        return Some(RunStopReason::StoppedDueToRuntimeBudget);
+    }
+    None
+}
+
+fn run_outcome(stop_reason: RunStopReason, coverage_marked: bool) -> &'static str {
+    if coverage_marked {
+        "completed_and_marked_covered"
+    } else {
+        stop_reason.as_str()
+    }
+}
+
+fn log_run_summary(
+    stop_reason: RunStopReason,
+    coverage_marked: bool,
+    total_rows: usize,
+    batches: usize,
+    cursor: &Cursor,
+) {
+    println!(
+        "summary outcome={} stop_reason={} coverage_marked={} total_rows={} batches={} final_cursor_ts={} final_cursor_slot={} final_cursor_signature={}",
+        run_outcome(stop_reason, coverage_marked),
+        stop_reason.as_str(),
+        coverage_marked,
+        total_rows,
+        batches,
+        cursor.ts.to_rfc3339(),
+        cursor.slot,
+        cursor.signature,
+    );
+}
+
 fn log_runtime_pressure_abort_event(config: &Config, sample: &RuntimePressureSample, reason: &str) {
     println!(
         "event=runtime_pressure_fast_abort source={} sample_ts={} reason={} yellowstone_output_queue_depth={} yellowstone_output_queue_capacity={} yellowstone_output_queue_fill_ratio={} yellowstone_output_oldest_age_ms={} ingestion_lag_ms_p95={} max_yellowstone_fill_ratio={:.4} max_ingestion_lag_ms_p95={} max_runtime_pressure_sample_age_seconds={}",
@@ -369,7 +450,7 @@ fn parse_args() -> Result<Config> {
     let mut args = env::args().skip(1);
     let Some(db_path_raw) = args.next() else {
         bail!(
-            "usage: backfill_discovery_scoring <db_path> --config <path> --start-ts <rfc3339> [--end-ts <rfc3339>] [--batch-size N] [--sleep-ms N] (--reset | --resume-ts <ts> --resume-slot <slot> --resume-signature <sig>) [--mark-covered] [--abort-on-runtime-pressure] [--max-yellowstone-fill-ratio N] [--max-ingestion-lag-ms-p95 N] [--max-runtime-pressure-sample-age-seconds N] [--runtime-pressure-service NAME] [--runtime-pressure-log-path PATH] [--abort-on-runtime-infra-stop] [--helius-http-url URL] [--min-token-age-hint-seconds N]"
+            "usage: backfill_discovery_scoring <db_path> --config <path> --start-ts <rfc3339> [--end-ts <rfc3339>] [--batch-size N] [--sleep-ms N] [--max-batches-per-run N] [--max-runtime-seconds N] (--reset | --resume-ts <ts> --resume-slot <slot> --resume-signature <sig>) [--mark-covered] [--abort-on-runtime-pressure] [--max-yellowstone-fill-ratio N] [--max-ingestion-lag-ms-p95 N] [--max-runtime-pressure-sample-age-seconds N] [--runtime-pressure-service NAME] [--runtime-pressure-log-path PATH] [--abort-on-runtime-infra-stop] [--helius-http-url URL] [--min-token-age-hint-seconds N]"
         );
     };
 
@@ -378,6 +459,8 @@ fn parse_args() -> Result<Config> {
     let mut end_ts: Option<DateTime<Utc>> = None;
     let mut batch_size = DEFAULT_BATCH_SIZE;
     let mut sleep_ms = 0u64;
+    let mut max_batches_per_run: Option<usize> = None;
+    let mut max_runtime_seconds: Option<u64> = None;
     let mut reset = false;
     let mut mark_covered = false;
     let mut abort_on_runtime_pressure = false;
@@ -405,6 +488,12 @@ fn parse_args() -> Result<Config> {
             "--end-ts" => end_ts = Some(parse_ts_arg("--end-ts", args.next())?),
             "--batch-size" => batch_size = parse_usize_arg("--batch-size", args.next())?.max(1),
             "--sleep-ms" => sleep_ms = parse_u64_arg("--sleep-ms", args.next())?,
+            "--max-batches-per-run" => {
+                max_batches_per_run = Some(parse_usize_arg("--max-batches-per-run", args.next())?)
+            }
+            "--max-runtime-seconds" => {
+                max_runtime_seconds = Some(parse_u64_arg("--max-runtime-seconds", args.next())?)
+            }
             "--reset" => reset = true,
             "--mark-covered" => mark_covered = true,
             "--abort-on-runtime-pressure" => abort_on_runtime_pressure = true,
@@ -478,6 +567,12 @@ fn parse_args() -> Result<Config> {
     if !reset && resume_after.is_none() {
         bail!("refusing non-idempotent replay without either --reset or exact --resume-* cursor");
     }
+    if max_batches_per_run.is_some_and(|value| value == 0) {
+        bail!("--max-batches-per-run must be >= 1");
+    }
+    if max_runtime_seconds.is_some_and(|value| value == 0) {
+        bail!("--max-runtime-seconds must be >= 1");
+    }
 
     let loaded_config = load_from_path(&config_path)
         .with_context(|| format!("failed loading config {}", config_path.display()))?;
@@ -532,6 +627,8 @@ fn parse_args() -> Result<Config> {
         end_ts,
         batch_size,
         sleep_ms,
+        max_batches_per_run,
+        max_runtime_seconds,
         reset,
         mark_covered,
         resume_after,
@@ -596,8 +693,12 @@ fn run(config: Config) -> Result<()> {
 }
 
 fn run_with_store(store: &mut SqliteStore, config: &Config) -> Result<()> {
+    run_with_store_stop_reason(store, config).map(|_| ())
+}
+
+fn run_with_store_stop_reason(store: &mut SqliteStore, config: &Config) -> Result<RunStopReason> {
     let termination_requested = AtomicBool::new(false);
-    run_with_cleanup(store, config, &termination_requested)
+    run_with_store_inner(store, config, &termination_requested)
 }
 
 fn run_with_cleanup(
@@ -608,9 +709,9 @@ fn run_with_cleanup(
     let run_result = run_with_store_inner(store, config, termination_requested);
     let clear_result = store.clear_discovery_scoring_backfill_source_protection();
     match (run_result, clear_result) {
-        (Ok(()), Ok(())) => Ok(()),
+        (Ok(_), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(error)) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
         (Err(run_error), Err(clear_error)) => Err(run_error).context(format!(
             "backfill failed and cleanup of source protection also failed: {clear_error:#}"
         )),
@@ -621,12 +722,20 @@ fn run_with_store_inner(
     store: &mut SqliteStore,
     config: &Config,
     termination_requested: &AtomicBool,
-) -> Result<()> {
+) -> Result<RunStopReason> {
+    let run_started_at = Utc::now();
     let mut runtime_pressure_monitor = RuntimePressureMonitor::default();
     abort_if_control_requested(
         store,
         config,
         termination_requested,
+        0,
+        0,
+        &Cursor {
+            ts: config.start_ts,
+            slot: 0,
+            signature: String::new(),
+        },
         &mut runtime_pressure_monitor,
     )?;
     if config.reset {
@@ -666,14 +775,19 @@ fn run_with_store_inner(
     let mut gap_cursor_observed = false;
     let mut total_rows = 0usize;
     let mut batches = 0usize;
-
-    loop {
+    let stop_reason = loop {
         abort_if_control_requested(
             store,
             config,
             termination_requested,
+            total_rows,
+            batches,
+            &cursor,
             &mut runtime_pressure_monitor,
         )?;
+        if let Some(reason) = bounded_run_stop_reason(config, run_started_at, batches, Utc::now()) {
+            break reason;
+        }
         let mut page = Vec::<SwapEvent>::with_capacity(config.batch_size);
         let mut reached_end_ts = false;
         let rows_seen = store.for_each_observed_swap_after_cursor(
@@ -702,7 +816,11 @@ fn run_with_store_inner(
         )?;
 
         if page.is_empty() {
-            break;
+            break if reached_end_ts {
+                RunStopReason::CompletedRequestedEndTs
+            } else {
+                RunStopReason::CompletedSourceExhausted
+            };
         }
 
         let last_swap = page
@@ -713,6 +831,9 @@ fn run_with_store_inner(
             store,
             config,
             termination_requested,
+            total_rows,
+            batches,
+            &cursor,
             &mut runtime_pressure_monitor,
         )?;
         refresh_backfill_source_protection(store, config.start_ts)?;
@@ -747,24 +868,48 @@ fn run_with_store_inner(
             store,
             config,
             termination_requested,
+            total_rows,
+            batches,
+            &cursor,
             &mut runtime_pressure_monitor,
         )?;
+        if let Some(reason) = bounded_run_stop_reason(config, run_started_at, batches, Utc::now()) {
+            break reason;
+        }
         if reached_end_ts || rows_seen < config.batch_size {
-            break;
+            break if reached_end_ts {
+                RunStopReason::CompletedRequestedEndTs
+            } else {
+                RunStopReason::CompletedSourceExhausted
+            };
         }
         if config.sleep_ms > 0 {
-            sleep_with_interrupt(
+            if let Some(reason) = sleep_with_interrupt(
                 store,
                 config,
                 config.sleep_ms,
                 termination_requested,
+                total_rows,
+                batches,
+                &cursor,
+                run_started_at,
                 &mut runtime_pressure_monitor,
-            )?;
+            )? {
+                break reason;
+            }
         }
-    }
+    };
 
-    store.finalize_discovery_scoring_rug_facts(config.end_ts.unwrap_or(cursor.ts))?;
-    if config.end_ts.is_none() {
+    let full_forward_completion =
+        matches!(stop_reason, RunStopReason::CompletedSourceExhausted) && config.end_ts.is_none();
+    let finalize_rug_facts_until = if matches!(stop_reason, RunStopReason::CompletedRequestedEndTs)
+    {
+        config.end_ts.unwrap_or(cursor.ts)
+    } else {
+        cursor.ts
+    };
+    store.finalize_discovery_scoring_rug_facts(finalize_rug_facts_until)?;
+    if full_forward_completion {
         if let Some(gap_cursor) = gap_cursor.as_ref() {
             if !gap_cursor_observed {
                 bail!(
@@ -778,7 +923,8 @@ fn run_with_store_inner(
         }
     }
 
-    if config.mark_covered {
+    let coverage_marked = config.mark_covered && full_forward_completion;
+    if coverage_marked {
         store.set_discovery_scoring_covered_since(config.start_ts)?;
         store.set_discovery_scoring_covered_through_cursor(&DiscoveryRuntimeCursor {
             ts_utc: cursor.ts,
@@ -794,7 +940,14 @@ fn run_with_store_inner(
             cursor.signature
         );
     } else {
-        println!("event=coverage_not_marked");
+        println!(
+            "event=coverage_not_marked reason={}",
+            if config.mark_covered && !full_forward_completion {
+                "completion_required"
+            } else {
+                "not_requested"
+            }
+        );
     }
 
     if let Ok((busy, log_frames, checkpointed_frames)) = store.checkpoint_wal_truncate() {
@@ -804,16 +957,9 @@ fn run_with_store_inner(
         );
     }
 
-    println!(
-        "summary total_rows={} batches={} final_cursor_ts={} final_cursor_slot={} final_cursor_signature={}",
-        total_rows,
-        batches,
-        cursor.ts.to_rfc3339(),
-        cursor.slot,
-        cursor.signature
-    );
+    log_run_summary(stop_reason, coverage_marked, total_rows, batches, &cursor);
 
-    Ok(())
+    Ok(stop_reason)
 }
 
 fn install_termination_signal_handlers() -> Result<Arc<AtomicBool>> {
@@ -830,12 +976,18 @@ fn abort_if_control_requested(
     store: &SqliteStore,
     config: &Config,
     termination_requested: &AtomicBool,
+    total_rows: usize,
+    batches: usize,
+    cursor: &Cursor,
     runtime_pressure_monitor: &mut RuntimePressureMonitor,
 ) -> Result<()> {
     abort_if_control_requested_at(
         store,
         config,
         termination_requested,
+        total_rows,
+        batches,
+        cursor,
         runtime_pressure_monitor,
         Utc::now(),
     )
@@ -845,11 +997,21 @@ fn abort_if_control_requested_at(
     store: &SqliteStore,
     config: &Config,
     termination_requested: &AtomicBool,
+    total_rows: usize,
+    batches: usize,
+    cursor: &Cursor,
     runtime_pressure_monitor: &mut RuntimePressureMonitor,
     now: DateTime<Utc>,
 ) -> Result<()> {
     if termination_requested.load(Ordering::Relaxed) {
         println!("event=controlled_abort source=termination_signal");
+        log_run_summary(
+            RunStopReason::StoppedDueToTerminationSignal,
+            false,
+            total_rows,
+            batches,
+            cursor,
+        );
         bail!("termination signal received; aborting backfill after durable checkpoint");
     }
     if config.abort_on_runtime_pressure {
@@ -865,16 +1027,37 @@ fn abort_if_control_requested_at(
         })?;
         if let Some(reason) = runtime_pressure_sample_stale_reason(config, runtime_sample, now) {
             log_runtime_pressure_abort_event(config, runtime_sample, &reason);
+            log_run_summary(
+                RunStopReason::StoppedDueToFastGuard,
+                false,
+                total_rows,
+                batches,
+                cursor,
+            );
             bail!("runtime pressure fast guard aborted backfill: {}", reason);
         }
         if let Some(reason) = runtime_pressure_breach_reason(config, &runtime_sample) {
             log_runtime_pressure_abort_event(config, &runtime_sample, &reason);
+            log_run_summary(
+                RunStopReason::StoppedDueToFastGuard,
+                false,
+                total_rows,
+                batches,
+                cursor,
+            );
             bail!("runtime pressure fast guard aborted backfill: {}", reason);
         }
     }
     if config.abort_on_runtime_infra_stop {
         if let Some(infra_stop) = active_runtime_infra_stop(store)? {
             infra_stop.log_event();
+            log_run_summary(
+                RunStopReason::StoppedDueToInfraGuard,
+                false,
+                total_rows,
+                batches,
+                cursor,
+            );
             bail!(infra_stop.abort_message());
         }
     }
@@ -900,21 +1083,31 @@ fn sleep_with_interrupt(
     config: &Config,
     sleep_ms: u64,
     termination_requested: &AtomicBool,
+    total_rows: usize,
+    batches: usize,
+    cursor: &Cursor,
+    run_started_at: DateTime<Utc>,
     runtime_pressure_monitor: &mut RuntimePressureMonitor,
-) -> Result<()> {
+) -> Result<Option<RunStopReason>> {
     let mut remaining_ms = sleep_ms;
     while remaining_ms > 0 {
         abort_if_control_requested(
             store,
             config,
             termination_requested,
+            total_rows,
+            batches,
+            cursor,
             runtime_pressure_monitor,
         )?;
+        if let Some(reason) = bounded_run_stop_reason(config, run_started_at, batches, Utc::now()) {
+            return Ok(Some(reason));
+        }
         let chunk_ms = remaining_ms.min(SLEEP_INTERRUPT_POLL_MS);
         thread::sleep(StdDuration::from_millis(chunk_ms));
         remaining_ms = remaining_ms.saturating_sub(chunk_ms);
     }
-    Ok(())
+    Ok(None)
 }
 
 fn refresh_backfill_source_protection(
@@ -928,8 +1121,9 @@ fn refresh_backfill_source_protection(
 #[cfg(test)]
 mod tests {
     use super::{
-        abort_if_control_requested_at, run_with_cleanup, run_with_store, Config, Cursor,
-        RuntimePressureMonitor, DEFAULT_RUNTIME_PRESSURE_FETCH_INTERVAL_MS,
+        abort_if_control_requested_at, run_with_cleanup, run_with_store,
+        run_with_store_stop_reason, Config, Cursor, RunStopReason, RuntimePressureMonitor,
+        DEFAULT_RUNTIME_PRESSURE_FETCH_INTERVAL_MS,
         DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO, DEFAULT_RUNTIME_PRESSURE_SERVICE,
         RUNTIME_INFRA_CLEARED_EVENT_TYPE, RUNTIME_INFRA_STOP_EVENT_TYPE,
     };
@@ -1007,6 +1201,8 @@ mod tests {
             end_ts: None,
             batch_size: 128,
             sleep_ms: 0,
+            max_batches_per_run: None,
+            max_runtime_seconds: None,
             reset: false,
             mark_covered: false,
             resume_after: Some(Cursor {
@@ -1080,6 +1276,8 @@ mod tests {
             end_ts: None,
             batch_size: 128,
             sleep_ms: 0,
+            max_batches_per_run: None,
+            max_runtime_seconds: None,
             reset: false,
             mark_covered: true,
             resume_after: Some(Cursor {
@@ -1140,6 +1338,8 @@ mod tests {
             end_ts: None,
             batch_size: 128,
             sleep_ms: 0,
+            max_batches_per_run: None,
+            max_runtime_seconds: None,
             reset: false,
             mark_covered: false,
             resume_after: Some(Cursor {
@@ -1223,6 +1423,8 @@ mod tests {
                 end_ts: Some(first_swap.ts_utc),
                 batch_size: 1,
                 sleep_ms: 0,
+                max_batches_per_run: None,
+                max_runtime_seconds: None,
                 reset: false,
                 mark_covered: false,
                 resume_after: None,
@@ -1250,6 +1452,90 @@ mod tests {
         );
         assert_eq!(store.load_discovery_scoring_covered_since()?, None);
         assert_eq!(store.load_discovery_scoring_covered_through_cursor()?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn end_ts_boundary_empty_page_reports_requested_end_ts_completion() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-end-ts-boundary.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let start_ts = DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let first_swap = SwapEvent {
+            signature: "sig-end-boundary-1".to_string(),
+            wallet: "wallet-end-boundary".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenEndBoundary1111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 451,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let second_swap = SwapEvent {
+            signature: "sig-end-boundary-2".to_string(),
+            wallet: "wallet-end-boundary".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenEndBoundary1111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 11.0,
+            exact_amounts: None,
+            slot: 452,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:20:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[first_swap.clone(), second_swap])?;
+
+        let stop_reason = run_with_store_stop_reason(
+            &mut store,
+            &Config {
+                db_path: db_path.clone(),
+                start_ts,
+                end_ts: Some(
+                    DateTime::parse_from_rfc3339("2026-03-06T10:10:00Z")
+                        .expect("ts")
+                        .with_timezone(&Utc),
+                ),
+                batch_size: 1,
+                sleep_ms: 0,
+                max_batches_per_run: None,
+                max_runtime_seconds: None,
+                reset: false,
+                mark_covered: false,
+                resume_after: None,
+                abort_on_runtime_pressure: false,
+                runtime_pressure_service: DEFAULT_RUNTIME_PRESSURE_SERVICE.to_string(),
+                runtime_pressure_log_path: None,
+                max_yellowstone_fill_ratio: DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO,
+                max_ingestion_lag_ms_p95: 10_000,
+                max_runtime_pressure_sample_age_seconds: 35,
+                abort_on_runtime_infra_stop: false,
+                aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+            },
+        )?;
+
+        assert_eq!(stop_reason, RunStopReason::CompletedRequestedEndTs);
+        assert_eq!(
+            store.load_discovery_scoring_backfill_progress()?,
+            Some((
+                start_ts,
+                DiscoveryRuntimeCursor {
+                    ts_utc: first_swap.ts_utc,
+                    slot: first_swap.slot,
+                    signature: first_swap.signature.clone(),
+                },
+            ))
+        );
         Ok(())
     }
 
@@ -1302,6 +1588,8 @@ mod tests {
                 end_ts: Some(first_swap.ts_utc),
                 batch_size: 1,
                 sleep_ms: 0,
+                max_batches_per_run: None,
+                max_runtime_seconds: None,
                 reset: false,
                 mark_covered: false,
                 resume_after: None,
@@ -1325,6 +1613,8 @@ mod tests {
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
+                max_batches_per_run: None,
+                max_runtime_seconds: None,
                 reset: false,
                 mark_covered: true,
                 resume_after: Some(Cursor {
@@ -1355,6 +1645,242 @@ mod tests {
                 slot: second_swap.slot,
                 signature: second_swap.signature.clone(),
             })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn max_batches_per_run_stops_after_exact_batch_budget_and_persists_progress() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-batch-budget.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let start_ts = DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let first_swap = SwapEvent {
+            signature: "sig-budget-1".to_string(),
+            wallet: "wallet-budget".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenBudget111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 701,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let second_swap = SwapEvent {
+            signature: "sig-budget-2".to_string(),
+            wallet: "wallet-budget".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenBudget111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 11.0,
+            exact_amounts: None,
+            slot: 702,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:10:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[first_swap.clone(), second_swap])?;
+
+        run_with_store(
+            &mut store,
+            &Config {
+                db_path: db_path.clone(),
+                start_ts,
+                end_ts: None,
+                batch_size: 1,
+                sleep_ms: 0,
+                max_batches_per_run: Some(1),
+                max_runtime_seconds: None,
+                reset: true,
+                mark_covered: false,
+                resume_after: None,
+                abort_on_runtime_pressure: false,
+                runtime_pressure_service: DEFAULT_RUNTIME_PRESSURE_SERVICE.to_string(),
+                runtime_pressure_log_path: None,
+                max_yellowstone_fill_ratio: DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO,
+                max_ingestion_lag_ms_p95: 10_000,
+                max_runtime_pressure_sample_age_seconds: 35,
+                abort_on_runtime_infra_stop: false,
+                aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+            },
+        )?;
+
+        assert_eq!(
+            store.load_discovery_scoring_backfill_progress()?,
+            Some((
+                start_ts,
+                DiscoveryRuntimeCursor {
+                    ts_utc: first_swap.ts_utc,
+                    slot: first_swap.slot,
+                    signature: first_swap.signature.clone(),
+                },
+            ))
+        );
+        assert_eq!(store.load_discovery_scoring_covered_since()?, None);
+        assert_eq!(store.load_discovery_scoring_covered_through_cursor()?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn max_runtime_seconds_stops_cleanly_and_persists_progress() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-runtime-budget.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let start_ts = DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let first_swap = SwapEvent {
+            signature: "sig-runtime-budget-1".to_string(),
+            wallet: "wallet-runtime-budget".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenRuntimeBudget111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 703,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let second_swap = SwapEvent {
+            signature: "sig-runtime-budget-2".to_string(),
+            wallet: "wallet-runtime-budget".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenRuntimeBudget111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 11.0,
+            exact_amounts: None,
+            slot: 704,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:10:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[first_swap.clone(), second_swap])?;
+
+        run_with_store(
+            &mut store,
+            &Config {
+                db_path: db_path.clone(),
+                start_ts,
+                end_ts: None,
+                batch_size: 1,
+                sleep_ms: 1_100,
+                max_batches_per_run: None,
+                max_runtime_seconds: Some(1),
+                reset: true,
+                mark_covered: false,
+                resume_after: None,
+                abort_on_runtime_pressure: false,
+                runtime_pressure_service: DEFAULT_RUNTIME_PRESSURE_SERVICE.to_string(),
+                runtime_pressure_log_path: None,
+                max_yellowstone_fill_ratio: DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO,
+                max_ingestion_lag_ms_p95: 10_000,
+                max_runtime_pressure_sample_age_seconds: 35,
+                abort_on_runtime_infra_stop: false,
+                aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+            },
+        )?;
+
+        assert_eq!(
+            store.load_discovery_scoring_backfill_progress()?,
+            Some((
+                start_ts,
+                DiscoveryRuntimeCursor {
+                    ts_utc: first_swap.ts_utc,
+                    slot: first_swap.slot,
+                    signature: first_swap.signature.clone(),
+                },
+            ))
+        );
+        assert_eq!(store.load_discovery_scoring_covered_since()?, None);
+        assert_eq!(store.load_discovery_scoring_covered_through_cursor()?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_stop_clears_backfill_source_protection() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-bounded-stop-cleanup.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        store.insert_observed_swaps_batch(&[
+            SwapEvent {
+                signature: "sig-bounded-cleanup-1".to_string(),
+                wallet: "wallet-bounded-cleanup".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "TokenBoundedCleanup111111111111111".to_string(),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                exact_amounts: None,
+                slot: 705,
+                ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+            },
+            SwapEvent {
+                signature: "sig-bounded-cleanup-2".to_string(),
+                wallet: "wallet-bounded-cleanup".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "TokenBoundedCleanup111111111111111".to_string(),
+                amount_in: 1.0,
+                amount_out: 11.0,
+                exact_amounts: None,
+                slot: 706,
+                ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:10:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+            },
+        ])?;
+
+        run_with_cleanup(
+            &mut store,
+            &Config {
+                db_path: db_path.clone(),
+                start_ts: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+                end_ts: None,
+                batch_size: 1,
+                sleep_ms: 0,
+                max_batches_per_run: Some(1),
+                max_runtime_seconds: None,
+                reset: true,
+                mark_covered: false,
+                resume_after: None,
+                abort_on_runtime_pressure: false,
+                runtime_pressure_service: DEFAULT_RUNTIME_PRESSURE_SERVICE.to_string(),
+                runtime_pressure_log_path: None,
+                max_yellowstone_fill_ratio: DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO,
+                max_ingestion_lag_ms_p95: 10_000,
+                max_runtime_pressure_sample_age_seconds: 35,
+                abort_on_runtime_infra_stop: false,
+                aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+            },
+            &AtomicBool::new(false),
+        )?;
+
+        assert_eq!(
+            store.load_discovery_scoring_backfill_protected_since(Utc::now())?,
+            None,
+            "bounded clean exit must clear source protection latch"
         );
         Ok(())
     }
@@ -1402,6 +1928,8 @@ mod tests {
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
+                max_batches_per_run: None,
+                max_runtime_seconds: None,
                 reset: true,
                 mark_covered: false,
                 resume_after: None,
@@ -1476,6 +2004,8 @@ mod tests {
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
+                max_batches_per_run: None,
+                max_runtime_seconds: None,
                 reset: true,
                 mark_covered: false,
                 resume_after: None,
@@ -1540,6 +2070,8 @@ mod tests {
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
+                max_batches_per_run: None,
+                max_runtime_seconds: None,
                 reset: true,
                 mark_covered: false,
                 resume_after: None,
@@ -1606,6 +2138,8 @@ mod tests {
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
+                max_batches_per_run: None,
+                max_runtime_seconds: None,
                 reset: true,
                 mark_covered: false,
                 resume_after: None,
@@ -1669,6 +2203,8 @@ mod tests {
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
+                max_batches_per_run: None,
+                max_runtime_seconds: None,
                 reset: true,
                 mark_covered: false,
                 resume_after: None,
@@ -1737,6 +2273,8 @@ mod tests {
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
+                max_batches_per_run: None,
+                max_runtime_seconds: None,
                 reset: true,
                 mark_covered: false,
                 resume_after: None,
@@ -1803,6 +2341,8 @@ mod tests {
                 end_ts: None,
                 batch_size: 1,
                 sleep_ms: 0,
+                max_batches_per_run: None,
+                max_runtime_seconds: None,
                 reset: true,
                 mark_covered: false,
                 resume_after: None,
@@ -1848,6 +2388,8 @@ mod tests {
             end_ts: None,
             batch_size: 1,
             sleep_ms: 0,
+            max_batches_per_run: None,
+            max_runtime_seconds: None,
             reset: false,
             mark_covered: false,
             resume_after: None,
@@ -1865,6 +2407,13 @@ mod tests {
             &store,
             &config,
             &termination_requested,
+            0,
+            0,
+            &Cursor {
+                ts: config.start_ts,
+                slot: 0,
+                signature: String::new(),
+            },
             &mut runtime_pressure_monitor,
             now,
         )?;
@@ -1879,6 +2428,13 @@ mod tests {
             &store,
             &config,
             &termination_requested,
+            0,
+            0,
+            &Cursor {
+                ts: config.start_ts,
+                slot: 0,
+                signature: String::new(),
+            },
             &mut runtime_pressure_monitor,
             cached_window_now,
         )?;
@@ -1889,6 +2445,13 @@ mod tests {
             &store,
             &config,
             &termination_requested,
+            0,
+            0,
+            &Cursor {
+                ts: config.start_ts,
+                slot: 0,
+                signature: String::new(),
+            },
             &mut runtime_pressure_monitor,
             refresh_due_now,
         )
