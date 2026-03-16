@@ -3,9 +3,10 @@ use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
 use copybot_storage::{
-    is_fatal_sqlite_anyhow_error, DiscoveryRuntimeCursor, PersistedWalletMetricSnapshotRow,
-    SqliteStore, WalletMetricRow, WalletScoringBuyFactRow, WalletScoringQualitySource,
-    WalletUpsertRow,
+    is_fatal_sqlite_anyhow_error, DiscoveryRuntimeCursor, DiscoveryTrustedSelectionStateUpdate,
+    PersistedWalletMetricSnapshotRow, SqliteStore, TrustedSelectionState,
+    TrustedSnapshotSourceKind, TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite,
+    WalletMetricRow, WalletScoringBuyFactRow, WalletScoringQualitySource, WalletUpsertRow,
 };
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -187,6 +188,58 @@ pub struct CloneLatestTrustedBootstrapSummary {
     pub forced_stale: bool,
     pub dry_run: bool,
     pub top_wallets: Vec<String>,
+}
+
+fn trusted_snapshot_id(
+    source_kind: TrustedSnapshotSourceKind,
+    effective_window_start: DateTime<Utc>,
+) -> String {
+    format!(
+        "wallet_metrics:{}:{}",
+        source_kind.as_str(),
+        effective_window_start.to_rfc3339()
+    )
+}
+
+fn trusted_snapshot_write(
+    source_kind: TrustedSnapshotSourceKind,
+    trust_state: TrustedSelectionState,
+    effective_window_start: DateTime<Utc>,
+    created_at: DateTime<Utc>,
+    row_count: usize,
+    source_snapshot_id: Option<String>,
+    source_window_start: Option<DateTime<Utc>>,
+) -> TrustedWalletMetricsSnapshotWrite {
+    TrustedWalletMetricsSnapshotWrite {
+        snapshot_id: trusted_snapshot_id(source_kind, effective_window_start),
+        source_snapshot_id,
+        source_window_start,
+        effective_window_start,
+        created_at,
+        source_kind,
+        row_count,
+        trust_state,
+    }
+}
+
+fn snapshot_publish_time(
+    source_window_start: DateTime<Utc>,
+    scoring_window_days: i64,
+) -> DateTime<Utc> {
+    source_window_start + Duration::days(scoring_window_days.max(1))
+}
+
+fn snapshot_age_seconds_since_publish(
+    now: DateTime<Utc>,
+    source_window_start: DateTime<Utc>,
+    scoring_window_days: i64,
+) -> u64 {
+    now.signed_duration_since(snapshot_publish_time(
+        source_window_start,
+        scoring_window_days,
+    ))
+    .num_seconds()
+    .max(0) as u64
 }
 
 impl DiscoverySummary {
@@ -825,6 +878,31 @@ impl DiscoveryService {
                     "trusted_selection_bootstrap_unavailable",
                 )
                 .context("failed persisting discovery invalid selection fail-close state")?;
+            if let Some(metadata) =
+                store.trusted_wallet_metrics_snapshot_metadata_for_window(metrics_window_start)?
+            {
+                self.persist_trusted_selection_state(
+                    store,
+                    self.effective_trusted_snapshot_state(&metadata, now),
+                    Some(metadata.snapshot_id),
+                    Some(metadata.effective_window_start),
+                    Some(metadata.source_kind),
+                    true,
+                    "trusted_selection_bootstrap_unavailable",
+                    now,
+                )?;
+            } else {
+                self.persist_trusted_selection_state(
+                    store,
+                    TrustedSelectionState::Invalid,
+                    None,
+                    None,
+                    None,
+                    true,
+                    "trusted_selection_bootstrap_unavailable",
+                    now,
+                )?;
+            }
             let active_follow_wallets = store.list_active_follow_wallets()?.len();
             if publish_due {
                 self.record_live_publish(now);
@@ -1306,10 +1384,21 @@ impl DiscoveryService {
         } else {
             &[]
         };
+        let snapshot_write = (!metrics_to_persist.is_empty()).then(|| {
+            trusted_snapshot_write(
+                TrustedSnapshotSourceKind::DiscoveryRefresh,
+                TrustedSelectionState::TrustedCurrent,
+                metrics_window_start,
+                now,
+                metrics_to_persist.len(),
+                None,
+                Some(metrics_window_start),
+            )
+        });
 
         let ranked = rank_follow_candidates(&snapshots, self.config.min_score);
         let desired_wallets = desired_wallets(&ranked, self.config.follow_top_n);
-        let follow_delta = store.persist_discovery_cycle(
+        let follow_delta = store.persist_discovery_cycle_with_snapshot_metadata(
             &wallet_rows,
             metrics_to_persist,
             &desired_wallets,
@@ -1317,6 +1406,7 @@ impl DiscoveryService {
             !followlist_deactivations_suppressed,
             now,
             "discovery_score_refresh",
+            snapshot_write.as_ref(),
         )?;
         let active_follow_wallets = store.list_active_follow_wallets()?.len();
         let top_wallets = top_wallet_labels(&ranked, 5);
@@ -1349,6 +1439,15 @@ impl DiscoveryService {
             state.last_snapshot_bucket = Some(metrics_window_start);
             state.last_summary = Some(summary.clone());
             state.note_scoring_source(scoring_source == "aggregates");
+        }
+        if let Some(snapshot_write) = snapshot_write.as_ref() {
+            self.persist_trusted_selection_state_from_snapshot(
+                store,
+                snapshot_write,
+                false,
+                "discovery_score_refresh",
+                now,
+            )?;
         }
         let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
 
@@ -1420,6 +1519,89 @@ impl DiscoveryService {
         state.last_publish_at = Some(now);
     }
 
+    fn effective_trusted_snapshot_state(
+        &self,
+        metadata: &TrustedWalletMetricsSnapshotRow,
+        now: DateTime<Utc>,
+    ) -> TrustedSelectionState {
+        match metadata.trust_state {
+            TrustedSelectionState::TrustedBridgedStale | TrustedSelectionState::Invalid => {
+                metadata.trust_state
+            }
+            TrustedSelectionState::TrustedBridged
+                if metadata.source_kind == TrustedSnapshotSourceKind::CloneLatestBridge =>
+            {
+                let Some(source_window_start) = metadata.source_window_start else {
+                    return metadata.trust_state;
+                };
+                let source_snapshot_age_seconds = snapshot_age_seconds_since_publish(
+                    now,
+                    source_window_start,
+                    self.config.scoring_window_days as i64,
+                );
+                if source_snapshot_age_seconds > self.config.max_bootstrap_snapshot_age_seconds {
+                    TrustedSelectionState::TrustedBridgedStale
+                } else {
+                    TrustedSelectionState::TrustedBridged
+                }
+            }
+            _ => metadata.trust_state,
+        }
+    }
+
+    fn wallet_snapshots_from_persisted_metric_rows(
+        &self,
+        now: DateTime<Utc>,
+        rows: Vec<PersistedWalletMetricSnapshotRow>,
+    ) -> Vec<WalletSnapshot> {
+        let decay_cutoff = now - Duration::days(self.config.decay_window_days.max(1) as i64);
+        rows.into_iter()
+            .map(|row| self.snapshot_from_persisted_metrics(row, decay_cutoff))
+            .collect()
+    }
+
+    fn persist_trusted_selection_state(
+        &self,
+        store: &SqliteStore,
+        selection_state: TrustedSelectionState,
+        active_snapshot_id: Option<String>,
+        active_snapshot_window_start: Option<DateTime<Utc>>,
+        source_kind: Option<TrustedSnapshotSourceKind>,
+        bootstrap_required: bool,
+        reason: &str,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        store.set_discovery_trusted_selection_state(&DiscoveryTrustedSelectionStateUpdate {
+            bootstrap_required,
+            reason: reason.to_string(),
+            selection_state,
+            active_snapshot_id,
+            active_snapshot_window_start,
+            last_bootstrap_source_kind: source_kind,
+            last_bootstrap_at: Some(now),
+        })
+    }
+
+    fn persist_trusted_selection_state_from_snapshot(
+        &self,
+        store: &SqliteStore,
+        snapshot_write: &TrustedWalletMetricsSnapshotWrite,
+        bootstrap_required: bool,
+        reason: &str,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.persist_trusted_selection_state(
+            store,
+            snapshot_write.trust_state,
+            Some(snapshot_write.snapshot_id.clone()),
+            Some(snapshot_write.effective_window_start),
+            Some(snapshot_write.source_kind),
+            bootstrap_required,
+            reason,
+            now,
+        )
+    }
+
     pub fn materialize_trusted_bootstrap_wallet_metrics(
         &self,
         store: &SqliteStore,
@@ -1471,7 +1653,18 @@ impl DiscoveryService {
         } else {
             metric_rows.as_slice()
         };
-        let follow_delta = store.persist_discovery_cycle(
+        let snapshot_write = (!metrics_to_persist.is_empty()).then(|| {
+            trusted_snapshot_write(
+                TrustedSnapshotSourceKind::AdminMaterialization,
+                TrustedSelectionState::TrustedCurrent,
+                metrics_window_start,
+                now,
+                metrics_to_persist.len(),
+                None,
+                Some(metrics_window_start),
+            )
+        });
+        let follow_delta = store.persist_discovery_cycle_with_snapshot_metadata(
             &wallet_rows,
             metrics_to_persist,
             &[],
@@ -1479,6 +1672,7 @@ impl DiscoveryService {
             false,
             now,
             "admin_trusted_wallet_metrics_bootstrap_materialize",
+            snapshot_write.as_ref(),
         )?;
         if follow_delta.activated > 0 || follow_delta.deactivated > 0 {
             return Err(anyhow!(
@@ -1486,6 +1680,15 @@ impl DiscoveryService {
                 follow_delta.activated,
                 follow_delta.deactivated
             ));
+        }
+        if let Some(snapshot_write) = snapshot_write.as_ref() {
+            self.persist_trusted_selection_state_from_snapshot(
+                store,
+                snapshot_write,
+                store.discovery_trusted_selection_bootstrap_required()?,
+                "admin_trusted_wallet_metrics_bootstrap_materialize",
+                now,
+            )?;
         }
 
         Ok(TrustedBootstrapWalletMetricsMaterializationSummary {
@@ -1510,6 +1713,8 @@ impl DiscoveryService {
         let source_metrics_window_start = store
             .latest_wallet_metrics_window_start()?
             .ok_or_else(|| anyhow!("no persisted wallet_metrics snapshot available to clone"))?;
+        let source_snapshot_metadata = store
+            .trusted_wallet_metrics_snapshot_metadata_for_window(source_metrics_window_start)?;
         let source_rows = store.wallet_metrics_row_count_for_window(source_metrics_window_start)?;
         if source_rows == 0 {
             return Err(anyhow!(
@@ -1524,12 +1729,11 @@ impl DiscoveryService {
             ));
         }
 
-        let source_snapshot_publish_time =
-            source_metrics_window_start + Duration::days(self.config.scoring_window_days.max(1) as i64);
-        let source_snapshot_age_seconds = now
-            .signed_duration_since(source_snapshot_publish_time)
-            .num_seconds()
-            .max(0) as u64;
+        let source_snapshot_age_seconds = snapshot_age_seconds_since_publish(
+            now,
+            source_metrics_window_start,
+            self.config.scoring_window_days as i64,
+        );
         let stale_source =
             source_snapshot_age_seconds > self.config.max_bootstrap_snapshot_age_seconds;
         if stale_source && !force_stale {
@@ -1540,11 +1744,44 @@ impl DiscoveryService {
                 self.config.max_bootstrap_snapshot_age_seconds
             ));
         }
+        if let Some(metadata) = source_snapshot_metadata.as_ref() {
+            match self.effective_trusted_snapshot_state(metadata, now) {
+                TrustedSelectionState::Invalid => {
+                    return Err(anyhow!(
+                        "latest persisted wallet_metrics snapshot is marked invalid and cannot be cloned: source_window_start={}",
+                        source_metrics_window_start.to_rfc3339()
+                    ));
+                }
+                TrustedSelectionState::TrustedBridgedStale if !force_stale => {
+                    return Err(anyhow!(
+                        "latest persisted wallet_metrics snapshot is already trusted_bridged_stale and requires force_stale=true to clone: source_window_start={}",
+                        source_metrics_window_start.to_rfc3339()
+                    ));
+                }
+                _ => {}
+            }
+        }
 
-        let source_snapshots = self
-            .build_wallet_snapshots_from_latest_metrics(store, now, source_metrics_window_start)?
-            .ok_or_else(|| anyhow!("latest persisted wallet_metrics snapshot is unreadable"))?;
+        let source_snapshots = self.wallet_snapshots_from_persisted_metric_rows(
+            now,
+            store.load_wallet_metric_snapshots_for_window(source_metrics_window_start)?,
+        );
         let ranked = rank_follow_candidates(&source_snapshots, self.config.min_score);
+        let snapshot_write = trusted_snapshot_write(
+            TrustedSnapshotSourceKind::CloneLatestBridge,
+            if stale_source {
+                TrustedSelectionState::TrustedBridgedStale
+            } else {
+                TrustedSelectionState::TrustedBridged
+            },
+            target_metrics_window_start,
+            now,
+            source_rows,
+            source_snapshot_metadata
+                .as_ref()
+                .map(|metadata| metadata.snapshot_id.clone()),
+            Some(source_metrics_window_start),
+        );
 
         if dry_run {
             return Ok(CloneLatestTrustedBootstrapSummary {
@@ -1561,10 +1798,11 @@ impl DiscoveryService {
         }
 
         let active_follow_wallets_before = store.list_active_follow_wallets()?.len();
-        let inserted_rows = store.clone_wallet_metrics_window(
+        let inserted_rows = store.clone_wallet_metrics_window_with_metadata(
             source_metrics_window_start,
             target_metrics_window_start,
             source_rows,
+            Some(&snapshot_write),
         )?;
         if inserted_rows != source_rows {
             return Err(anyhow!(
@@ -1581,6 +1819,13 @@ impl DiscoveryService {
                 active_follow_wallets_after
             ));
         }
+        self.persist_trusted_selection_state_from_snapshot(
+            store,
+            &snapshot_write,
+            store.discovery_trusted_selection_bootstrap_required()?,
+            "admin_clone_latest_wallet_metrics_bootstrap",
+            now,
+        )?;
 
         Ok(CloneLatestTrustedBootstrapSummary {
             source_metrics_window_start,
@@ -1656,8 +1901,7 @@ impl DiscoveryService {
         let mut token_states: HashMap<String, TokenRollingState> = HashMap::new();
         let mut token_recent_sol_trades: HashMap<String, VecDeque<SolLegTrade>> = HashMap::new();
         let mut pending_rug_checks = VecDeque::new();
-        let mut token_pending_buy_starts: HashMap<String, VecDeque<DateTime<Utc>>> =
-            HashMap::new();
+        let mut token_pending_buy_starts: HashMap<String, VecDeque<DateTime<Utc>>> = HashMap::new();
         let mut processed_swaps = 0usize;
         let observed_swaps_loaded =
             store.for_each_observed_swap_in_window(window_start, now, |swap| {
@@ -1713,8 +1957,12 @@ impl DiscoveryService {
             lookahead,
         );
         let empty_token_sol_history = HashMap::new();
-        let snapshots =
-            self.wallet_snapshots_from_accumulators(store, by_wallet, now, &empty_token_sol_history)?;
+        let snapshots = self.wallet_snapshots_from_accumulators(
+            store,
+            by_wallet,
+            now,
+            &empty_token_sol_history,
+        )?;
         Ok((snapshots, observed_swaps_loaded))
     }
 
@@ -1921,14 +2169,24 @@ impl DiscoveryService {
         if latest_window_start + max_lag < expected_window_start {
             return Ok(None);
         }
+        if let Some(metadata) =
+            store.trusted_wallet_metrics_snapshot_metadata_for_window(latest_window_start)?
+        {
+            if matches!(
+                self.effective_trusted_snapshot_state(&metadata, now),
+                TrustedSelectionState::TrustedBridgedStale | TrustedSelectionState::Invalid
+            ) {
+                return Ok(None);
+            }
+        }
+        // Missing metadata is an intentional legacy-grace path for pre-lineage snapshots.
+        // Until they are rewritten by a metadata-aware refresh or recovery tool, they still
+        // rely on the existing latest-window freshness guard above rather than fail-closing
+        // purely because trusted snapshot metadata does not exist yet.
 
-        let decay_cutoff = now - Duration::days(self.config.decay_window_days.max(1) as i64);
-        Ok(Some(
-            snapshots
-                .into_iter()
-                .map(|row| self.snapshot_from_persisted_metrics(row, decay_cutoff))
-                .collect(),
-        ))
+        Ok(Some(self.wallet_snapshots_from_persisted_metric_rows(
+            now, snapshots,
+        )))
     }
 
     fn wallet_rows_from_snapshots(&self, snapshots: &[WalletSnapshot]) -> Vec<WalletUpsertRow> {
@@ -1977,6 +2235,31 @@ impl DiscoveryService {
                 "trusted_selection_bootstrap_satisfied",
             )
             .context("failed clearing discovery trusted bootstrap requirement")?;
+        if let Some(metadata) =
+            store.trusted_wallet_metrics_snapshot_metadata_for_window(window_start)?
+        {
+            self.persist_trusted_selection_state(
+                store,
+                self.effective_trusted_snapshot_state(&metadata, now),
+                Some(metadata.snapshot_id),
+                Some(metadata.effective_window_start),
+                Some(metadata.source_kind),
+                false,
+                "trusted_selection_bootstrap_satisfied",
+                now,
+            )?;
+        } else {
+            self.persist_trusted_selection_state(
+                store,
+                TrustedSelectionState::TrustedCurrent,
+                None,
+                Some(window_start),
+                Some(TrustedSnapshotSourceKind::Legacy),
+                false,
+                "trusted_selection_bootstrap_satisfied_legacy",
+                now,
+            )?;
+        }
 
         Ok(DiscoverySummary {
             window_start,
@@ -2260,13 +2543,9 @@ impl DiscoveryService {
                     .iter()
                     .filter(|buy| buy.quality_resolved && buy.tradable)
                     .count() as u32;
-                let rug_metrics = self.compute_rug_metrics(&acc.buy_observations, token_sol_history, now);
-                (
-                    buy_total,
-                    quality_resolved_buys,
-                    tradable_buys,
-                    rug_metrics,
-                )
+                let rug_metrics =
+                    self.compute_rug_metrics(&acc.buy_observations, token_sol_history, now);
+                (buy_total, quality_resolved_buys, tradable_buys, rug_metrics)
             };
         self.snapshot_from_components(
             wallet_id,
@@ -3807,8 +4086,14 @@ mod tests {
 
         let cloned =
             discovery.clone_latest_trusted_bootstrap_wallet_metrics(&store, now, false, false)?;
-        assert_eq!(cloned.source_metrics_window_start, source_metrics_window_start);
-        assert_eq!(cloned.target_metrics_window_start, target_metrics_window_start);
+        assert_eq!(
+            cloned.source_metrics_window_start,
+            source_metrics_window_start
+        );
+        assert_eq!(
+            cloned.target_metrics_window_start,
+            target_metrics_window_start
+        );
         assert_eq!(cloned.source_snapshot_age_seconds, 2 * 60 * 60 + 14 * 60);
         assert_eq!(cloned.source_rows, 2);
         assert_eq!(cloned.inserted_rows, 2);
@@ -3887,7 +4172,9 @@ mod tests {
             .clone_latest_trusted_bootstrap_wallet_metrics(&store, now, false, false)
             .expect_err("stale source snapshot must reject without explicit override");
         assert!(
-            error.to_string().contains("stale for clone-latest bootstrap"),
+            error
+                .to_string()
+                .contains("stale for clone-latest bootstrap"),
             "unexpected error: {error:#}"
         );
         assert!(
@@ -3895,7 +4182,8 @@ mod tests {
             "rejecting stale source must not create the target bootstrap bucket"
         );
 
-        let dry_run = discovery.clone_latest_trusted_bootstrap_wallet_metrics(&store, now, true, true)?;
+        let dry_run =
+            discovery.clone_latest_trusted_bootstrap_wallet_metrics(&store, now, true, true)?;
         assert!(dry_run.stale_source);
         assert!(dry_run.forced_stale);
         assert!(dry_run.dry_run);
@@ -3916,6 +4204,196 @@ mod tests {
             store.wallet_metrics_window_exists(target_metrics_window_start)?,
             "force_stale write must create the target bootstrap bucket when explicitly requested"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn run_cycle_marks_aged_bridged_snapshot_as_stale_and_fail_closes() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("test-aged-bridged-snapshot-fail-close.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-15T12:14:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 5;
+        config.decay_window_days = 5;
+        config.follow_top_n = 1;
+        config.min_score = 0.0;
+        config.metric_snapshot_interval_seconds = 30 * 60;
+        config.max_bootstrap_snapshot_age_seconds = 60 * 60;
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let effective_window_start = discovery.metrics_window_start(now);
+        let source_window_start = effective_window_start - Duration::hours(2);
+        let wallet_id = "wallet_bridged".to_string();
+        let snapshot_write = trusted_snapshot_write(
+            TrustedSnapshotSourceKind::CloneLatestBridge,
+            TrustedSelectionState::TrustedBridged,
+            effective_window_start,
+            now - Duration::minutes(1),
+            1,
+            Some("snapshot-source-001".to_string()),
+            Some(source_window_start),
+        );
+
+        store.persist_discovery_cycle_with_snapshot_metadata(
+            &[WalletUpsertRow {
+                wallet_id: wallet_id.clone(),
+                first_seen: now - Duration::days(4),
+                last_seen: now - Duration::minutes(1),
+                status: "candidate".to_string(),
+            }],
+            &[WalletMetricRow {
+                wallet_id,
+                window_start: effective_window_start,
+                pnl: 2.0,
+                win_rate: 0.8,
+                trades: 8,
+                closed_trades: 4,
+                hold_median_seconds: 480,
+                score: 0.9,
+                buy_total: 4,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            }],
+            &[],
+            false,
+            false,
+            now,
+            "seed-aged-bridge",
+            Some(&snapshot_write),
+        )?;
+        store.set_discovery_trusted_selection_bootstrap_required(true, "seed-aged-bridge")?;
+
+        let summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(
+            summary.scoring_source,
+            "trusted_persisted_wallet_metrics_bootstrap_unavailable"
+        );
+        assert!(summary.trusted_selection_fail_closed);
+
+        let state = store
+            .discovery_trusted_selection_state()?
+            .expect("trusted selection state should be persisted on fail-close");
+        assert!(state.bootstrap_required);
+        assert_eq!(
+            state.selection_state,
+            TrustedSelectionState::TrustedBridgedStale
+        );
+        assert_eq!(
+            state.active_snapshot_id,
+            Some(snapshot_write.snapshot_id.clone())
+        );
+        assert_eq!(
+            state.active_snapshot_window_start,
+            Some(effective_window_start)
+        );
+        assert_eq!(
+            state.last_bootstrap_source_kind,
+            Some(TrustedSnapshotSourceKind::CloneLatestBridge)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn clone_latest_trusted_wallet_metrics_bootstrap_force_stale_allows_stale_bridged_source_metadata(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("test-clone-latest-stale-bridged-source-metadata.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-15T12:14:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 5;
+        config.decay_window_days = 5;
+        config.follow_top_n = 1;
+        config.min_score = 0.0;
+        config.metric_snapshot_interval_seconds = 30 * 60;
+        config.max_bootstrap_snapshot_age_seconds = 60 * 60;
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let target_metrics_window_start = discovery.metrics_window_start(now);
+        let source_metrics_window_start = target_metrics_window_start - Duration::hours(2);
+        let source_snapshot_write = trusted_snapshot_write(
+            TrustedSnapshotSourceKind::CloneLatestBridge,
+            TrustedSelectionState::TrustedBridgedStale,
+            source_metrics_window_start,
+            now - Duration::minutes(2),
+            1,
+            Some("snapshot-source-root".to_string()),
+            Some(source_metrics_window_start - Duration::hours(2)),
+        );
+
+        store.persist_discovery_cycle_with_snapshot_metadata(
+            &[WalletUpsertRow {
+                wallet_id: "wallet_stale_bridge".to_string(),
+                first_seen: now - Duration::days(4),
+                last_seen: now - Duration::minutes(1),
+                status: "candidate".to_string(),
+            }],
+            &[WalletMetricRow {
+                wallet_id: "wallet_stale_bridge".to_string(),
+                window_start: source_metrics_window_start,
+                pnl: 1.0,
+                win_rate: 0.7,
+                trades: 6,
+                closed_trades: 3,
+                hold_median_seconds: 300,
+                score: 0.6,
+                buy_total: 3,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            }],
+            &[],
+            false,
+            false,
+            now,
+            "seed-stale-bridge-source",
+            Some(&source_snapshot_write),
+        )?;
+        store
+            .set_discovery_trusted_selection_bootstrap_required(true, "seed-stale-bridge-source")?;
+
+        let cloned =
+            discovery.clone_latest_trusted_bootstrap_wallet_metrics(&store, now, false, true)?;
+        assert!(cloned.stale_source);
+        assert!(cloned.forced_stale);
+        assert_eq!(cloned.source_rows, 1);
+        assert_eq!(cloned.inserted_rows, 1);
+
+        let target_metadata = store
+            .trusted_wallet_metrics_snapshot_metadata_for_window(target_metrics_window_start)?
+            .expect("force_stale clone should write target snapshot metadata");
+        assert_eq!(
+            target_metadata.trust_state,
+            TrustedSelectionState::TrustedBridgedStale
+        );
+        assert_eq!(
+            target_metadata.source_snapshot_id,
+            Some(source_snapshot_write.snapshot_id.clone())
+        );
+        assert_eq!(
+            target_metadata.source_window_start,
+            Some(source_metrics_window_start)
+        );
+
+        let state = store
+            .discovery_trusted_selection_state()?
+            .expect("clone tool should persist trusted selection state");
+        assert!(state.bootstrap_required);
+        assert_eq!(
+            state.selection_state,
+            TrustedSelectionState::TrustedBridgedStale
+        );
+        assert_eq!(state.active_snapshot_id, Some(target_metadata.snapshot_id));
         Ok(())
     }
 

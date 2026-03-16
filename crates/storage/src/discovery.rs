@@ -1,9 +1,12 @@
 use super::{
-    FollowlistUpdateResult, PersistedWalletMetricSnapshotRow, SqliteStore, WalletActivityDayRow,
-    WalletMetricRow, WalletUpsertRow, DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS,
+    DiscoveryTrustedSelectionStateRow, DiscoveryTrustedSelectionStateUpdate,
+    FollowlistUpdateResult, PersistedWalletMetricSnapshotRow, SqliteStore, TrustedSelectionState,
+    TrustedSnapshotSourceKind, TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite,
+    WalletActivityDayRow, WalletMetricRow, WalletUpsertRow,
+    DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS,
 };
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 
@@ -18,6 +21,56 @@ fn wallet_metrics_window_start_query_variants(window_start: DateTime<Utc>) -> (S
         .map(|prefix| format!("{prefix}Z"))
         .unwrap_or_else(|| canonical.clone());
     (canonical, legacy_z)
+}
+
+fn parse_rfc3339_utc(raw: &str, field_name: &str) -> Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(raw)
+        .map(|dt| dt.with_timezone(&Utc))
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S")
+                .map(|naive| DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
+        })
+        .with_context(|| format!("invalid {field_name} timestamp value: {raw}"))
+}
+
+fn parse_optional_rfc3339_utc(
+    raw: Option<String>,
+    field_name: &str,
+) -> Result<Option<DateTime<Utc>>> {
+    raw.map(|raw| parse_rfc3339_utc(&raw, field_name))
+        .transpose()
+}
+
+fn insert_trusted_wallet_metrics_snapshot_on_conn(
+    conn: &Connection,
+    snapshot_write: &TrustedWalletMetricsSnapshotWrite,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO trusted_wallet_metrics_snapshots(
+            snapshot_id,
+            source_snapshot_id,
+            source_window_start,
+            effective_window_start,
+            created_at,
+            source_kind,
+            row_count,
+            trust_state
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            &snapshot_write.snapshot_id,
+            &snapshot_write.source_snapshot_id,
+            snapshot_write
+                .source_window_start
+                .map(canonical_wallet_metrics_window_start),
+            canonical_wallet_metrics_window_start(snapshot_write.effective_window_start),
+            snapshot_write.created_at.to_rfc3339(),
+            snapshot_write.source_kind.as_str(),
+            snapshot_write.row_count as i64,
+            snapshot_write.trust_state.as_str(),
+        ],
+    )
+    .context("failed inserting trusted wallet_metrics snapshot metadata")?;
+    Ok(())
 }
 
 pub(crate) fn upsert_wallet_activity_days_on_conn(
@@ -82,17 +135,285 @@ impl SqliteStore {
                     trusted_selection_bootstrap_required,
                     trusted_selection_reason,
                     updated_at
-                 ) VALUES (1, ?1, ?2, datetime('now'))
+                 ) VALUES (1, ?1, ?2, ?3)
                  ON CONFLICT(id) DO UPDATE SET
                     trusted_selection_bootstrap_required =
                         excluded.trusted_selection_bootstrap_required,
                     trusted_selection_reason = excluded.trusted_selection_reason,
                     updated_at = excluded.updated_at",
-                params![if required { 1 } else { 0 }, reason],
+                params![
+                    if required { 1 } else { 0 },
+                    reason,
+                    Utc::now().to_rfc3339()
+                ],
             )
         })
         .context("failed updating discovery trusted selection bootstrap requirement")?;
         Ok(())
+    }
+
+    pub fn discovery_trusted_selection_state(
+        &self,
+    ) -> Result<Option<DiscoveryTrustedSelectionStateRow>> {
+        self.ensure_discovery_strategy_state_table()?;
+        let raw = self
+            .conn
+            .query_row(
+                "SELECT
+                    trusted_selection_bootstrap_required,
+                    trusted_selection_reason,
+                    trusted_selection_state,
+                    active_trusted_snapshot_id,
+                    active_trusted_snapshot_window_start,
+                    last_trusted_bootstrap_source_kind,
+                    last_trusted_bootstrap_at,
+                    updated_at
+                 FROM discovery_strategy_state
+                 WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, String>(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("failed reading discovery trusted selection state")?;
+        raw.map(
+            |(
+                bootstrap_required,
+                reason,
+                selection_state_raw,
+                active_snapshot_id,
+                active_snapshot_window_start_raw,
+                last_bootstrap_source_kind_raw,
+                last_bootstrap_at_raw,
+                updated_at_raw,
+            )| {
+                Ok(DiscoveryTrustedSelectionStateRow {
+                    bootstrap_required: bootstrap_required != 0,
+                    reason,
+                    selection_state: TrustedSelectionState::parse(&selection_state_raw)?,
+                    active_snapshot_id,
+                    active_snapshot_window_start: parse_optional_rfc3339_utc(
+                        active_snapshot_window_start_raw,
+                        "discovery_strategy_state.active_trusted_snapshot_window_start",
+                    )?,
+                    last_bootstrap_source_kind: match last_bootstrap_source_kind_raw {
+                        Some(raw) => Some(TrustedSnapshotSourceKind::parse(&raw)?),
+                        None => None,
+                    },
+                    last_bootstrap_at: parse_optional_rfc3339_utc(
+                        last_bootstrap_at_raw,
+                        "discovery_strategy_state.last_trusted_bootstrap_at",
+                    )?,
+                    updated_at: parse_rfc3339_utc(
+                        &updated_at_raw,
+                        "discovery_strategy_state.updated_at",
+                    )?,
+                })
+            },
+        )
+        .transpose()
+    }
+
+    pub fn set_discovery_trusted_selection_state(
+        &self,
+        update: &DiscoveryTrustedSelectionStateUpdate,
+    ) -> Result<()> {
+        self.ensure_discovery_strategy_state_table()?;
+        self.execute_with_retry(|conn| {
+            conn.execute(
+                "INSERT INTO discovery_strategy_state(
+                    id,
+                    trusted_selection_bootstrap_required,
+                    trusted_selection_reason,
+                    trusted_selection_state,
+                    active_trusted_snapshot_id,
+                    active_trusted_snapshot_window_start,
+                    last_trusted_bootstrap_source_kind,
+                    last_trusted_bootstrap_at,
+                    updated_at
+                 ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(id) DO UPDATE SET
+                    trusted_selection_bootstrap_required =
+                        excluded.trusted_selection_bootstrap_required,
+                    trusted_selection_reason = excluded.trusted_selection_reason,
+                    trusted_selection_state = excluded.trusted_selection_state,
+                    active_trusted_snapshot_id = excluded.active_trusted_snapshot_id,
+                    active_trusted_snapshot_window_start =
+                        excluded.active_trusted_snapshot_window_start,
+                    last_trusted_bootstrap_source_kind =
+                        excluded.last_trusted_bootstrap_source_kind,
+                    last_trusted_bootstrap_at = excluded.last_trusted_bootstrap_at,
+                    updated_at = excluded.updated_at",
+                params![
+                    if update.bootstrap_required { 1 } else { 0 },
+                    &update.reason,
+                    update.selection_state.as_str(),
+                    &update.active_snapshot_id,
+                    update
+                        .active_snapshot_window_start
+                        .map(canonical_wallet_metrics_window_start),
+                    update
+                        .last_bootstrap_source_kind
+                        .map(TrustedSnapshotSourceKind::as_str),
+                    update.last_bootstrap_at.map(|ts| ts.to_rfc3339()),
+                    Utc::now().to_rfc3339(),
+                ],
+            )
+        })
+        .context("failed updating discovery trusted selection state")?;
+        Ok(())
+    }
+
+    pub fn latest_trusted_wallet_metrics_snapshot_metadata(
+        &self,
+    ) -> Result<Option<TrustedWalletMetricsSnapshotRow>> {
+        self.ensure_trusted_wallet_metrics_snapshots_table()?;
+        let raw = self
+            .conn
+            .query_row(
+                "SELECT
+                    snapshot_id,
+                    source_snapshot_id,
+                    source_window_start,
+                    effective_window_start,
+                    created_at,
+                    source_kind,
+                    row_count,
+                    trust_state
+                 FROM trusted_wallet_metrics_snapshots
+                 ORDER BY effective_window_start DESC, created_at DESC
+                 LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, String>(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("failed reading latest trusted wallet_metrics snapshot metadata")?;
+        raw.map(
+            |(
+                snapshot_id,
+                source_snapshot_id,
+                source_window_start_raw,
+                effective_window_start_raw,
+                created_at_raw,
+                source_kind_raw,
+                row_count,
+                trust_state_raw,
+            )| {
+                Ok(TrustedWalletMetricsSnapshotRow {
+                    snapshot_id,
+                    source_snapshot_id,
+                    source_window_start: parse_optional_rfc3339_utc(
+                        source_window_start_raw,
+                        "trusted_wallet_metrics_snapshots.source_window_start",
+                    )?,
+                    effective_window_start: parse_rfc3339_utc(
+                        &effective_window_start_raw,
+                        "trusted_wallet_metrics_snapshots.effective_window_start",
+                    )?,
+                    created_at: parse_rfc3339_utc(
+                        &created_at_raw,
+                        "trusted_wallet_metrics_snapshots.created_at",
+                    )?,
+                    source_kind: TrustedSnapshotSourceKind::parse(&source_kind_raw)?,
+                    row_count: row_count.max(0) as usize,
+                    trust_state: TrustedSelectionState::parse(&trust_state_raw)?,
+                })
+            },
+        )
+        .transpose()
+    }
+
+    pub fn trusted_wallet_metrics_snapshot_metadata_for_window(
+        &self,
+        effective_window_start: DateTime<Utc>,
+    ) -> Result<Option<TrustedWalletMetricsSnapshotRow>> {
+        self.ensure_trusted_wallet_metrics_snapshots_table()?;
+        let raw = self
+            .conn
+            .query_row(
+                "SELECT
+                    snapshot_id,
+                    source_snapshot_id,
+                    source_window_start,
+                    effective_window_start,
+                    created_at,
+                    source_kind,
+                    row_count,
+                    trust_state
+                 FROM trusted_wallet_metrics_snapshots
+                 WHERE effective_window_start = ?1",
+                params![canonical_wallet_metrics_window_start(
+                    effective_window_start
+                )],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, String>(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("failed reading trusted wallet_metrics snapshot metadata by window")?;
+        raw.map(
+            |(
+                snapshot_id,
+                source_snapshot_id,
+                source_window_start_raw,
+                effective_window_start_raw,
+                created_at_raw,
+                source_kind_raw,
+                row_count,
+                trust_state_raw,
+            )| {
+                Ok(TrustedWalletMetricsSnapshotRow {
+                    snapshot_id,
+                    source_snapshot_id,
+                    source_window_start: parse_optional_rfc3339_utc(
+                        source_window_start_raw,
+                        "trusted_wallet_metrics_snapshots.source_window_start",
+                    )?,
+                    effective_window_start: parse_rfc3339_utc(
+                        &effective_window_start_raw,
+                        "trusted_wallet_metrics_snapshots.effective_window_start",
+                    )?,
+                    created_at: parse_rfc3339_utc(
+                        &created_at_raw,
+                        "trusted_wallet_metrics_snapshots.created_at",
+                    )?,
+                    source_kind: TrustedSnapshotSourceKind::parse(&source_kind_raw)?,
+                    row_count: row_count.max(0) as usize,
+                    trust_state: TrustedSelectionState::parse(&trust_state_raw)?,
+                })
+            },
+        )
+        .transpose()
     }
 
     pub fn upsert_wallet_activity_days(&self, rows: &[WalletActivityDayRow]) -> Result<()> {
@@ -231,6 +552,13 @@ impl SqliteStore {
         let Some(window_start) = self.latest_wallet_metrics_window_start()? else {
             return Ok(Vec::new());
         };
+        self.load_wallet_metric_snapshots_for_window(window_start)
+    }
+
+    pub fn load_wallet_metric_snapshots_for_window(
+        &self,
+        window_start: DateTime<Utc>,
+    ) -> Result<Vec<PersistedWalletMetricSnapshotRow>> {
         let (canonical, legacy_z) = wallet_metrics_window_start_query_variants(window_start);
 
         let mut stmt = self
@@ -265,14 +593,14 @@ impl SqliteStore {
                  JOIN wallets ON wallets.wallet_id = wallet_metrics.wallet_id
                  ORDER BY wallet_metrics.score DESC, wallet_metrics.wallet_id ASC",
             )
-            .context("failed to prepare latest wallet_metrics snapshot query")?;
+            .context("failed to prepare wallet_metrics snapshot query for requested window")?;
         let mut rows = stmt
             .query(params![canonical, legacy_z])
-            .context("failed querying latest wallet_metrics snapshots")?;
+            .context("failed querying wallet_metrics snapshots for requested window")?;
         let mut snapshots = Vec::new();
         while let Some(row) = rows
             .next()
-            .context("failed iterating latest wallet_metrics snapshots")?
+            .context("failed iterating wallet_metrics snapshots for requested window")?
         {
             let first_seen_raw: String = row.get(1).context("failed reading wallets.first_seen")?;
             let last_seen_raw: String = row.get(2).context("failed reading wallets.last_seen")?;
@@ -295,7 +623,7 @@ impl SqliteStore {
                 .context("failed reading wallet_metrics.buy_total")?;
             if trades < 0 || closed_trades < 0 || buy_total < 0 {
                 return Err(anyhow::anyhow!(
-                    "invalid negative wallet_metrics counts in latest snapshot window"
+                    "invalid negative wallet_metrics counts in requested snapshot window"
                 ));
             }
             snapshots.push(PersistedWalletMetricSnapshotRow {
@@ -356,6 +684,24 @@ impl SqliteStore {
         target_window_start: DateTime<Utc>,
         expected_source_rows: usize,
     ) -> Result<usize> {
+        self.clone_wallet_metrics_window_with_metadata(
+            source_window_start,
+            target_window_start,
+            expected_source_rows,
+            None,
+        )
+    }
+
+    pub fn clone_wallet_metrics_window_with_metadata(
+        &self,
+        source_window_start: DateTime<Utc>,
+        target_window_start: DateTime<Utc>,
+        expected_source_rows: usize,
+        snapshot_write: Option<&TrustedWalletMetricsSnapshotWrite>,
+    ) -> Result<usize> {
+        if snapshot_write.is_some() {
+            self.ensure_trusted_wallet_metrics_snapshots_table()?;
+        }
         let (source_canonical, source_legacy_z) =
             wallet_metrics_window_start_query_variants(source_window_start);
         let (target_canonical, target_legacy_z) =
@@ -443,11 +789,16 @@ impl SqliteStore {
                     ON selected_wallet_metrics.selected_id = source.id",
                 params![
                     &source_canonical,
-                    &source_legacy_z,
-                    &target_canonical,
-                ],
-            )
-            .context("failed cloning wallet_metrics snapshot window")
+	                    &source_legacy_z,
+	                    &target_canonical,
+	                ],
+	            )
+	            .context("failed cloning wallet_metrics snapshot window")?;
+            let inserted_rows = conn.changes() as usize;
+            if let Some(snapshot_write) = snapshot_write {
+                insert_trusted_wallet_metrics_snapshot_on_conn(conn, snapshot_write)?;
+            }
+            Ok(inserted_rows)
         })
     }
 
@@ -523,6 +874,32 @@ impl SqliteStore {
         now: DateTime<Utc>,
         reason: &str,
     ) -> Result<FollowlistUpdateResult> {
+        self.persist_discovery_cycle_with_snapshot_metadata(
+            wallets,
+            metrics,
+            desired_wallets,
+            allow_followlist_activate,
+            allow_followlist_deactivate,
+            now,
+            reason,
+            None,
+        )
+    }
+
+    pub fn persist_discovery_cycle_with_snapshot_metadata(
+        &self,
+        wallets: &[WalletUpsertRow],
+        metrics: &[WalletMetricRow],
+        desired_wallets: &[String],
+        allow_followlist_activate: bool,
+        allow_followlist_deactivate: bool,
+        now: DateTime<Utc>,
+        reason: &str,
+        snapshot_write: Option<&TrustedWalletMetricsSnapshotWrite>,
+    ) -> Result<FollowlistUpdateResult> {
+        if snapshot_write.is_some() {
+            self.ensure_trusted_wallet_metrics_snapshots_table()?;
+        }
         self.with_immediate_transaction_retry("discovery write", |conn| {
             let retention_offset = DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS.saturating_sub(1);
             {
@@ -599,6 +976,9 @@ impl SqliteStore {
                     params![retention_offset],
                 )
                 .context("failed to apply wallet_metrics retention in discovery transaction")?;
+                if let Some(snapshot_write) = snapshot_write {
+                    insert_trusted_wallet_metrics_snapshot_on_conn(conn, snapshot_write)?;
+                }
             }
 
             let desired: HashSet<&str> = desired_wallets.iter().map(String::as_str).collect();
@@ -743,6 +1123,33 @@ impl SqliteStore {
         Ok(changed > 0)
     }
 
+    fn ensure_trusted_wallet_metrics_snapshots_table(&self) -> Result<()> {
+        self.conn
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS trusted_wallet_metrics_snapshots (
+                    snapshot_id TEXT PRIMARY KEY,
+                    source_snapshot_id TEXT,
+                    source_window_start TEXT,
+                    effective_window_start TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    row_count INTEGER NOT NULL,
+                    trust_state TEXT NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    idx_trusted_wallet_metrics_snapshots_effective_window_start
+                ON trusted_wallet_metrics_snapshots(effective_window_start);
+                CREATE INDEX IF NOT EXISTS
+                    idx_trusted_wallet_metrics_snapshots_trust_state_effective_window_start
+                ON trusted_wallet_metrics_snapshots(trust_state, effective_window_start DESC);
+                CREATE INDEX IF NOT EXISTS
+                    idx_trusted_wallet_metrics_snapshots_created_at
+                ON trusted_wallet_metrics_snapshots(created_at DESC);",
+            )
+            .context("failed to ensure trusted wallet_metrics snapshots table exists")?;
+        Ok(())
+    }
+
     fn ensure_discovery_strategy_state_table(&self) -> Result<()> {
         self.conn
             .execute_batch(
@@ -750,10 +1157,76 @@ impl SqliteStore {
                     id INTEGER PRIMARY KEY CHECK(id = 1),
                     trusted_selection_bootstrap_required INTEGER NOT NULL DEFAULT 0,
                     trusted_selection_reason TEXT NOT NULL DEFAULT '',
+                    trusted_selection_state TEXT NOT NULL DEFAULT 'invalid',
+                    active_trusted_snapshot_id TEXT,
+                    active_trusted_snapshot_window_start TEXT,
+                    last_trusted_bootstrap_source_kind TEXT,
+                    last_trusted_bootstrap_at TEXT,
                     updated_at TEXT NOT NULL
                 )",
             )
             .context("failed to ensure discovery_strategy_state table exists")?;
+        let columns: HashSet<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("PRAGMA table_info(discovery_strategy_state)")
+                .context("failed to prepare discovery_strategy_state column introspection")?;
+            let columns = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .context("failed querying discovery_strategy_state columns")?
+                .collect::<rusqlite::Result<HashSet<String>>>()
+                .context("failed collecting discovery_strategy_state columns")?;
+            columns
+        };
+        if !columns.contains("trusted_selection_state") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN trusted_selection_state TEXT NOT NULL DEFAULT 'invalid'",
+                    [],
+                )
+                .context("failed adding discovery_strategy_state.trusted_selection_state")?;
+        }
+        if !columns.contains("active_trusted_snapshot_id") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN active_trusted_snapshot_id TEXT",
+                    [],
+                )
+                .context("failed adding discovery_strategy_state.active_trusted_snapshot_id")?;
+        }
+        if !columns.contains("active_trusted_snapshot_window_start") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN active_trusted_snapshot_window_start TEXT",
+                    [],
+                )
+                .context(
+                    "failed adding discovery_strategy_state.active_trusted_snapshot_window_start",
+                )?;
+        }
+        if !columns.contains("last_trusted_bootstrap_source_kind") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN last_trusted_bootstrap_source_kind TEXT",
+                    [],
+                )
+                .context(
+                    "failed adding discovery_strategy_state.last_trusted_bootstrap_source_kind",
+                )?;
+        }
+        if !columns.contains("last_trusted_bootstrap_at") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN last_trusted_bootstrap_at TEXT",
+                    [],
+                )
+                .context("failed adding discovery_strategy_state.last_trusted_bootstrap_at")?;
+        }
         Ok(())
     }
 }

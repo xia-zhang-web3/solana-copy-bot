@@ -131,6 +131,111 @@ pub struct PersistedWalletMetricSnapshotRow {
     pub rug_ratio: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustedSelectionState {
+    TrustedCurrent,
+    TrustedBridged,
+    TrustedBridgedStale,
+    Invalid,
+}
+
+impl TrustedSelectionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TrustedCurrent => "trusted_current",
+            Self::TrustedBridged => "trusted_bridged",
+            Self::TrustedBridgedStale => "trusted_bridged_stale",
+            Self::Invalid => "invalid",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw {
+            "trusted_current" => Ok(Self::TrustedCurrent),
+            "trusted_bridged" => Ok(Self::TrustedBridged),
+            "trusted_bridged_stale" => Ok(Self::TrustedBridgedStale),
+            "invalid" => Ok(Self::Invalid),
+            _ => Err(anyhow!("invalid trusted selection state: {raw}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustedSnapshotSourceKind {
+    DiscoveryRefresh,
+    CloneLatestBridge,
+    AdminMaterialization,
+    Legacy,
+}
+
+impl TrustedSnapshotSourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DiscoveryRefresh => "discovery_refresh",
+            Self::CloneLatestBridge => "clone_latest_bridge",
+            Self::AdminMaterialization => "admin_materialization",
+            Self::Legacy => "legacy",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw {
+            "discovery_refresh" => Ok(Self::DiscoveryRefresh),
+            "clone_latest_bridge" => Ok(Self::CloneLatestBridge),
+            "admin_materialization" => Ok(Self::AdminMaterialization),
+            "legacy" => Ok(Self::Legacy),
+            _ => Err(anyhow!("invalid trusted snapshot source kind: {raw}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TrustedWalletMetricsSnapshotWrite {
+    pub snapshot_id: String,
+    pub source_snapshot_id: Option<String>,
+    pub source_window_start: Option<DateTime<Utc>>,
+    pub effective_window_start: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+    pub source_kind: TrustedSnapshotSourceKind,
+    pub row_count: usize,
+    pub trust_state: TrustedSelectionState,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrustedWalletMetricsSnapshotRow {
+    pub snapshot_id: String,
+    pub source_snapshot_id: Option<String>,
+    pub source_window_start: Option<DateTime<Utc>>,
+    pub effective_window_start: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+    pub source_kind: TrustedSnapshotSourceKind,
+    pub row_count: usize,
+    pub trust_state: TrustedSelectionState,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoveryTrustedSelectionStateUpdate {
+    pub bootstrap_required: bool,
+    pub reason: String,
+    pub selection_state: TrustedSelectionState,
+    pub active_snapshot_id: Option<String>,
+    pub active_snapshot_window_start: Option<DateTime<Utc>>,
+    pub last_bootstrap_source_kind: Option<TrustedSnapshotSourceKind>,
+    pub last_bootstrap_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoveryTrustedSelectionStateRow {
+    pub bootstrap_required: bool,
+    pub reason: String,
+    pub selection_state: TrustedSelectionState,
+    pub active_snapshot_id: Option<String>,
+    pub active_snapshot_window_start: Option<DateTime<Utc>>,
+    pub last_bootstrap_source_kind: Option<TrustedSnapshotSourceKind>,
+    pub last_bootstrap_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DiscoveryAggregateWriteConfig {
     pub max_tx_per_minute: u32,
@@ -4833,7 +4938,10 @@ mod tests {
             store.wallet_metrics_window_exists(window_start)?,
             "logical UTC equality should treat Z and +00:00 as the same wallet_metrics window"
         );
-        assert_eq!(store.latest_wallet_metrics_window_start()?, Some(window_start));
+        assert_eq!(
+            store.latest_wallet_metrics_window_start()?,
+            Some(window_start)
+        );
         assert_eq!(
             store.wallet_metrics_row_count_for_window(window_start)?,
             1,
@@ -4852,7 +4960,8 @@ mod tests {
     }
 
     #[test]
-    fn clone_wallet_metrics_window_dedupes_legacy_and_canonical_duplicate_wallet_rows() -> Result<()> {
+    fn clone_wallet_metrics_window_dedupes_legacy_and_canonical_duplicate_wallet_rows() -> Result<()>
+    {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("wallet-metrics-clone-dedupe.db");
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
@@ -4949,6 +5058,174 @@ mod tests {
     }
 
     #[test]
+    fn persist_discovery_cycle_with_snapshot_metadata_writes_trusted_snapshot_row() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("wallet-metrics-snapshot-metadata.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let window_start = DateTime::parse_from_rfc3339("2026-03-10T21:00:00+00:00")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let created_at = DateTime::parse_from_rfc3339("2026-03-15T12:00:00+00:00")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let snapshot_write = TrustedWalletMetricsSnapshotWrite {
+            snapshot_id: "wallet_metrics:clone_latest_bridge:2026-03-10T21:00:00+00:00".to_string(),
+            source_snapshot_id: Some("wallet_metrics:legacy:2026-03-10T20:30:00+00:00".to_string()),
+            source_window_start: Some(window_start - Duration::minutes(30)),
+            effective_window_start: window_start,
+            created_at,
+            source_kind: TrustedSnapshotSourceKind::CloneLatestBridge,
+            row_count: 1,
+            trust_state: TrustedSelectionState::TrustedBridged,
+        };
+
+        store.persist_discovery_cycle_with_snapshot_metadata(
+            &[WalletUpsertRow {
+                wallet_id: "wallet-meta".to_string(),
+                first_seen: window_start - Duration::days(1),
+                last_seen: window_start,
+                status: "candidate".to_string(),
+            }],
+            &[WalletMetricRow {
+                wallet_id: "wallet-meta".to_string(),
+                window_start,
+                pnl: 1.0,
+                win_rate: 0.6,
+                trades: 4,
+                closed_trades: 4,
+                hold_median_seconds: 90,
+                score: 0.8,
+                buy_total: 4,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            }],
+            &[],
+            false,
+            false,
+            created_at,
+            "snapshot-metadata-test",
+            Some(&snapshot_write),
+        )?;
+
+        let metadata = store
+            .trusted_wallet_metrics_snapshot_metadata_for_window(window_start)?
+            .expect("snapshot metadata should be written for persisted window");
+        assert_eq!(metadata.snapshot_id, snapshot_write.snapshot_id);
+        assert_eq!(
+            metadata.source_snapshot_id,
+            snapshot_write.source_snapshot_id
+        );
+        assert_eq!(
+            metadata.source_window_start,
+            snapshot_write.source_window_start
+        );
+        assert_eq!(
+            metadata.effective_window_start,
+            snapshot_write.effective_window_start
+        );
+        assert_eq!(metadata.created_at, snapshot_write.created_at);
+        assert_eq!(metadata.source_kind, snapshot_write.source_kind);
+        assert_eq!(metadata.row_count, snapshot_write.row_count);
+        assert_eq!(metadata.trust_state, snapshot_write.trust_state);
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_trusted_selection_state_upgrade_preserves_legacy_row() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("discovery-trusted-selection-state-upgrade.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        store.conn.execute_batch(
+            "DROP TABLE IF EXISTS discovery_strategy_state;
+             CREATE TABLE discovery_strategy_state (
+                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                 trusted_selection_bootstrap_required INTEGER NOT NULL DEFAULT 0,
+                 trusted_selection_reason TEXT NOT NULL DEFAULT '',
+                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO discovery_strategy_state(
+                 id,
+                 trusted_selection_bootstrap_required,
+                 trusted_selection_reason,
+                 updated_at
+             ) VALUES (1, 1, 'legacy_bootstrap_pending', '2026-03-15 12:00:00');",
+        )?;
+
+        let state = store
+            .discovery_trusted_selection_state()?
+            .expect("legacy discovery_strategy_state row should remain readable after upgrade");
+        assert!(state.bootstrap_required);
+        assert_eq!(state.reason, "legacy_bootstrap_pending");
+        assert_eq!(state.selection_state, TrustedSelectionState::Invalid);
+        assert_eq!(state.active_snapshot_id, None);
+        assert_eq!(state.active_snapshot_window_start, None);
+        assert_eq!(state.last_bootstrap_source_kind, None);
+        assert_eq!(state.last_bootstrap_at, None);
+
+        let mut stmt = store
+            .conn
+            .prepare("PRAGMA table_info(discovery_strategy_state)")?;
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        for required in [
+            "trusted_selection_state",
+            "active_trusted_snapshot_id",
+            "active_trusted_snapshot_window_start",
+            "last_trusted_bootstrap_source_kind",
+            "last_trusted_bootstrap_at",
+        ] {
+            assert!(
+                columns.iter().any(|column| column == required),
+                "expected upgraded discovery_strategy_state to contain column {required}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_trusted_selection_state_reader_accepts_bool_setter_rows() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("discovery-trusted-selection-state-bool-setter.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        store.set_discovery_trusted_selection_bootstrap_required(true, "bool_setter_pending")?;
+
+        let raw_updated_at: String = store.conn.query_row(
+            "SELECT updated_at
+             FROM discovery_strategy_state
+             WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(
+            raw_updated_at.contains('T') && raw_updated_at.contains("+00:00"),
+            "bool setter should now persist RFC3339 updated_at for typed reader compatibility"
+        );
+
+        let state = store
+            .discovery_trusted_selection_state()?
+            .expect("typed reader should load bool-setter row");
+        assert!(state.bootstrap_required);
+        assert_eq!(state.reason, "bool_setter_pending");
+        assert_eq!(state.selection_state, TrustedSelectionState::Invalid);
+        assert_eq!(state.active_snapshot_id, None);
+        Ok(())
+    }
+
+    #[test]
     fn persist_discovery_cycle_retention_keeps_latest_logical_windows_with_legacy_z_rows(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -5040,9 +5317,9 @@ mod tests {
             "legacy-z-retention-test",
         )?;
 
-        let mut raw_stmt = store
-            .conn
-            .prepare("SELECT DISTINCT window_start FROM wallet_metrics ORDER BY window_start ASC")?;
+        let mut raw_stmt = store.conn.prepare(
+            "SELECT DISTINCT window_start FROM wallet_metrics ORDER BY window_start ASC",
+        )?;
         let raw_windows: Vec<String> = raw_stmt
             .query_map([], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
