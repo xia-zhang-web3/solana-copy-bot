@@ -513,6 +513,7 @@ pub struct DiscoveryConfig {
     pub max_rug_ratio: f64,
     pub rug_lookahead_seconds: u64,
     pub metric_snapshot_interval_seconds: u64,
+    pub max_bootstrap_snapshot_age_seconds: u64,
     pub thin_market_min_volume_sol: f64,
     pub thin_market_min_unique_traders: u32,
     pub max_window_swaps_in_memory: usize,
@@ -543,6 +544,7 @@ impl Default for DiscoveryConfig {
             max_rug_ratio: 0.60,
             rug_lookahead_seconds: 30 * 60,
             metric_snapshot_interval_seconds: 30 * 60,
+            max_bootstrap_snapshot_age_seconds: 12 * 60 * 60,
             thin_market_min_volume_sol: 3.0,
             thin_market_min_unique_traders: 10,
             max_window_swaps_in_memory: 60_000,
@@ -580,6 +582,10 @@ impl fmt::Debug for DiscoveryConfig {
             .field(
                 "metric_snapshot_interval_seconds",
                 &self.metric_snapshot_interval_seconds,
+            )
+            .field(
+                "max_bootstrap_snapshot_age_seconds",
+                &self.max_bootstrap_snapshot_age_seconds,
             )
             .field(
                 "thin_market_min_volume_sol",

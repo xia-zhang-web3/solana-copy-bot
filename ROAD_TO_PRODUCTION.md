@@ -3301,3 +3301,57 @@ Summary:
    2. the live bot is no longer running on the invalid historical `976`-wallet set,
    3. trusted persisted bootstrap restored a real top-`15` active universe,
    4. if this bridge must ever be repeated, write the target `wallet_metrics.window_start` in canonical UTC RFC3339 with `+00:00`, not `Z`.
+
+### 2026-03-16 morning — top-15 shadow snapshot confirms post-bootstrap morning state
+
+Artifacts:
+1. `ops/server_reports/2026-03-16_morning_top15_shadow_snapshot_report.md`
+
+Summary:
+1. Morning server snapshot at `2026-03-16 05:39:13 UTC` confirmed the same recovered runtime baseline remained intact on live commit `f924312`:
+   1. `solana-copy-bot.service`, `copybot-adapter.service`, `copybot-executor.service` all `active`,
+   2. `solana-copy-bot.service MainPID = 304395`,
+   3. `NRestarts = 0`,
+   4. current runtime start still `2026-03-15 21:21:21 UTC`.
+2. Selection/bootstrap state remained healthy and unchanged from the successful bridge recovery:
+   1. `discovery_strategy_state.trusted_selection_bootstrap_required = 0`,
+   2. reason = `trusted_selection_bootstrap_satisfied`,
+   3. `followlist.active = 15`,
+   4. trusted bootstrap bucket remained `wallet_metrics.window_start = 2026-03-10T21:00:00+00:00`.
+3. Discovery morning samples showed stable post-bootstrap behavior rather than another transition event:
+   1. `active_follow_wallets = 15`,
+   2. `eligible_wallets = 59`,
+   3. `follow_promoted = 0`,
+   4. `follow_demoted = 0`,
+   5. steady-state cached cycles had `metrics_written = 0`, `metrics_persisted = false`,
+   6. `scoring_source = raw_window`,
+   7. `top_wallets` remained non-empty.
+4. Runtime health stayed operationally acceptable through the morning window:
+   1. `observed_swap_writer_pending_requests = 0`,
+   2. `yellowstone_output_queue_fill_ratio = 0.0`,
+   3. `sqlite_busy_error_total = 3`,
+   4. `sqlite_write_retry_total = 3`,
+   5. `sqlite_wal_size_bytes ~= 432.5 MiB`,
+   6. `ingestion_lag_ms_p95` mostly stayed around `1.7s-1.9s` with one short recompute spike near `5.8s` before returning to baseline.
+5. Shadow state confirmed active trading on the restored top-15 universe:
+   1. real execution positions remained `0`,
+   2. open `shadow_lots = 21`,
+   3. distinct open `(wallet, token)` positions = `7`,
+   4. open shadow notional = `3.86971005986303 SOL`,
+   5. all currently open shadow lots were opened after the trusted bootstrap window began.
+6. The report corrected an earlier invalid overnight PnL read:
+   1. the valid restored-top-15 boundary is `shadow_closed_trades.opened_ts >= 2026-03-15T21:21:22+00:00`,
+   2. an earlier quick read based on `closed_ts >= bootstrap` was wrong because it mixed in pre-bootstrap lots that merely closed later,
+   3. those contaminating pre-bootstrap-opened but closed-after-bootstrap trades were `55` lots with `-10.5072345787949 SOL` PnL.
+7. Corrected overnight shadow PnL for lots opened after trusted bootstrap was positive:
+   1. closed trades = `886`,
+   2. realized shadow PnL = `+2.08190646730867 SOL`,
+   3. entry notional = `95.330289940137 SOL`.
+8. Context on the corrected PnL slice:
+   1. close-context breakdown was `market = +14.7547406110473 SOL` and `stale_terminal_zero_price = -12.6728341437387 SOL`,
+   2. the corrected overnight number is valid net realized PnL for lots opened in the restored regime,
+   3. but it is not a pure discretionary market-exit PnL because some stale-lot cleanup exits can still be recorded with `close_context = 'market'`.
+9. Operational interpretation:
+   1. this morning snapshot strengthens the post-bootstrap evidence chain by showing the trusted top-15 regime remained active through the morning window,
+   2. the follow gate stayed open on the restored universe,
+   3. the previous negative overnight quick read should not be used in any top-15 assessment because it included pre-bootstrap tail risk.

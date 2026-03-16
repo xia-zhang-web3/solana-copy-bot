@@ -7,6 +7,19 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 
+pub(crate) fn canonical_wallet_metrics_window_start(window_start: DateTime<Utc>) -> String {
+    window_start.to_rfc3339()
+}
+
+fn wallet_metrics_window_start_query_variants(window_start: DateTime<Utc>) -> (String, String) {
+    let canonical = canonical_wallet_metrics_window_start(window_start);
+    let legacy_z = canonical
+        .strip_suffix("+00:00")
+        .map(|prefix| format!("{prefix}Z"))
+        .unwrap_or_else(|| canonical.clone());
+    (canonical, legacy_z)
+}
+
 pub(crate) fn upsert_wallet_activity_days_on_conn(
     conn: &Connection,
     rows: &[WalletActivityDayRow],
@@ -169,15 +182,16 @@ impl SqliteStore {
     }
 
     pub fn wallet_metrics_window_exists(&self, window_start: DateTime<Utc>) -> Result<bool> {
+        let (canonical, legacy_z) = wallet_metrics_window_start_query_variants(window_start);
         let exists = self
             .conn
             .query_row(
                 "SELECT EXISTS(
                     SELECT 1
                     FROM wallet_metrics
-                    WHERE window_start = ?1
+                    WHERE window_start IN (?1, ?2)
                 )",
-                params![window_start.to_rfc3339()],
+                params![canonical, legacy_z],
                 |row| row.get::<_, i64>(0),
             )
             .context("failed querying wallet_metrics window_start existence")?;
@@ -187,9 +201,17 @@ impl SqliteStore {
     pub fn latest_wallet_metrics_window_start(&self) -> Result<Option<DateTime<Utc>>> {
         let raw: Option<String> = self
             .conn
-            .query_row("SELECT MAX(window_start) FROM wallet_metrics", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                // Legacy `Z` and canonical `+00:00` differ only in the UTC suffix, so raw
+                // RFC3339 string order remains chronological and only affects ties for the
+                // same logical instant.
+                "SELECT window_start
+                 FROM wallet_metrics
+                 ORDER BY window_start DESC
+                 LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
             .optional()
             .context("failed querying latest wallet_metrics window_start")?
             .flatten();
@@ -209,6 +231,7 @@ impl SqliteStore {
         let Some(window_start) = self.latest_wallet_metrics_window_start()? else {
             return Ok(Vec::new());
         };
+        let (canonical, legacy_z) = wallet_metrics_window_start_query_variants(window_start);
 
         let mut stmt = self
             .conn
@@ -227,12 +250,24 @@ impl SqliteStore {
                     wallet_metrics.tradable_ratio,
                     wallet_metrics.rug_ratio
                  FROM wallet_metrics
+                 JOIN (
+                    SELECT
+                        wallet_id,
+                        COALESCE(
+                            MAX(CASE WHEN window_start = ?1 THEN id END),
+                            MAX(id)
+                        ) AS selected_id
+                    FROM wallet_metrics
+                    WHERE window_start IN (?1, ?2)
+                    GROUP BY wallet_id
+                 ) AS selected_wallet_metrics
+                    ON selected_wallet_metrics.selected_id = wallet_metrics.id
                  JOIN wallets ON wallets.wallet_id = wallet_metrics.wallet_id
-                 WHERE wallet_metrics.window_start = ?1",
+                 ORDER BY wallet_metrics.score DESC, wallet_metrics.wallet_id ASC",
             )
             .context("failed to prepare latest wallet_metrics snapshot query")?;
         let mut rows = stmt
-            .query(params![window_start.to_rfc3339()])
+            .query(params![canonical, legacy_z])
             .context("failed querying latest wallet_metrics snapshots")?;
         let mut snapshots = Vec::new();
         while let Some(row) = rows
@@ -293,6 +328,129 @@ impl SqliteStore {
         Ok(snapshots)
     }
 
+    pub fn wallet_metrics_row_count_for_window(
+        &self,
+        window_start: DateTime<Utc>,
+    ) -> Result<usize> {
+        let (canonical, legacy_z) = wallet_metrics_window_start_query_variants(window_start);
+        let count = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM (
+                    SELECT wallet_id
+                    FROM wallet_metrics
+                    WHERE window_start IN (?1, ?2)
+                    GROUP BY wallet_id
+                 )",
+                params![canonical, legacy_z],
+                |row| row.get::<_, i64>(0),
+            )
+            .context("failed counting wallet_metrics rows for window")?;
+        Ok(count.max(0) as usize)
+    }
+
+    pub fn clone_wallet_metrics_window(
+        &self,
+        source_window_start: DateTime<Utc>,
+        target_window_start: DateTime<Utc>,
+        expected_source_rows: usize,
+    ) -> Result<usize> {
+        let (source_canonical, source_legacy_z) =
+            wallet_metrics_window_start_query_variants(source_window_start);
+        let (target_canonical, target_legacy_z) =
+            wallet_metrics_window_start_query_variants(target_window_start);
+        self.with_immediate_transaction_retry("wallet_metrics clone-latest bridge", |conn| {
+            let source_rows: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*)
+                     FROM (
+                        SELECT wallet_id
+                        FROM wallet_metrics
+                        WHERE window_start IN (?1, ?2)
+                        GROUP BY wallet_id
+                     )",
+                    params![&source_canonical, &source_legacy_z],
+                    |row| row.get(0),
+                )
+                .context("failed counting source wallet_metrics rows for clone-latest bridge")?;
+            let source_rows = source_rows.max(0) as usize;
+            if source_rows != expected_source_rows {
+                return Err(anyhow::anyhow!(
+                    "wallet_metrics source window changed during clone-latest bootstrap: source_window_start={} expected_source_rows={} actual_source_rows={}",
+                    source_window_start.to_rfc3339(),
+                    expected_source_rows,
+                    source_rows,
+                ));
+            }
+
+            let target_exists = conn
+                .query_row(
+                    "SELECT EXISTS(
+                        SELECT 1
+                        FROM wallet_metrics
+                        WHERE window_start IN (?1, ?2)
+                    )",
+                    params![&target_canonical, &target_legacy_z],
+                    |row| row.get::<_, i64>(0),
+                )
+                .context("failed checking target wallet_metrics window for clone-latest bridge")?;
+            if target_exists != 0 {
+                return Err(anyhow::anyhow!(
+                    "target wallet_metrics bootstrap bucket already exists at {}",
+                    target_window_start.to_rfc3339(),
+                ));
+            }
+
+            conn.execute(
+                "INSERT INTO wallet_metrics(
+                    wallet_id,
+                    window_start,
+                    pnl,
+                    win_rate,
+                    trades,
+                    closed_trades,
+                    hold_median_seconds,
+                    score,
+                    buy_total,
+                    tradable_ratio,
+                    rug_ratio
+                 )
+                 SELECT
+                    source.wallet_id,
+                    ?3,
+                    source.pnl,
+                    source.win_rate,
+                    source.trades,
+                    source.closed_trades,
+                    source.hold_median_seconds,
+                    source.score,
+                    source.buy_total,
+                    source.tradable_ratio,
+                    source.rug_ratio
+                 FROM wallet_metrics AS source
+                 JOIN (
+                    SELECT
+                        wallet_id,
+                        COALESCE(
+                            MAX(CASE WHEN window_start = ?1 THEN id END),
+                            MAX(id)
+                        ) AS selected_id
+                    FROM wallet_metrics
+                    WHERE window_start IN (?1, ?2)
+                    GROUP BY wallet_id
+                 ) AS selected_wallet_metrics
+                    ON selected_wallet_metrics.selected_id = source.id",
+                params![
+                    &source_canonical,
+                    &source_legacy_z,
+                    &target_canonical,
+                ],
+            )
+            .context("failed cloning wallet_metrics snapshot window")
+        })
+    }
+
     pub fn upsert_wallet(
         &self,
         wallet_id: &str,
@@ -338,7 +496,7 @@ impl SqliteStore {
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     &metric.wallet_id,
-                    metric.window_start.to_rfc3339(),
+                    canonical_wallet_metrics_window_start(metric.window_start),
                     metric.pnl,
                     metric.win_rate,
                     metric.trades as i64,
@@ -411,7 +569,7 @@ impl SqliteStore {
                     for metric in metrics {
                         stmt.execute(params![
                             &metric.wallet_id,
-                            metric.window_start.to_rfc3339(),
+                            canonical_wallet_metrics_window_start(metric.window_start),
                             metric.pnl,
                             metric.win_rate,
                             metric.trades as i64,
@@ -428,11 +586,15 @@ impl SqliteStore {
 
                 conn.execute(
                     "DELETE FROM wallet_metrics
-                     WHERE window_start < (
-                        SELECT DISTINCT window_start
-                        FROM wallet_metrics
-                        ORDER BY window_start DESC
-                        LIMIT 1 OFFSET ?1
+                     WHERE unixepoch(window_start) < (
+                        SELECT cutoff_window_epoch
+                        FROM (
+                            SELECT unixepoch(window_start) AS cutoff_window_epoch
+                            FROM wallet_metrics
+                            GROUP BY unixepoch(window_start)
+                            ORDER BY cutoff_window_epoch DESC
+                            LIMIT 1 OFFSET ?1
+                        )
                      )",
                     params![retention_offset],
                 )

@@ -223,6 +223,12 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     )? {
         config.discovery.metric_snapshot_interval_seconds = metric_snapshot_interval_seconds;
     }
+    if let Some(max_bootstrap_snapshot_age_seconds) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_DISCOVERY_MAX_BOOTSTRAP_SNAPSHOT_AGE_SECONDS",
+        "u64",
+    )? {
+        config.discovery.max_bootstrap_snapshot_age_seconds = max_bootstrap_snapshot_age_seconds;
+    }
     if let Some(max_window_swaps_in_memory) = parse_env_number::<usize>(
         "SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY",
         "usize",

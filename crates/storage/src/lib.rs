@@ -4773,6 +4773,305 @@ mod tests {
     }
 
     #[test]
+    fn wallet_metrics_lookup_treats_z_and_plus00_as_same_window() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("wallet-metrics-z-plus00-lookup.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let first_seen = DateTime::parse_from_rfc3339("2026-03-01T00:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let window_start = DateTime::parse_from_rfc3339("2026-03-10T21:00:00+00:00")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        store.upsert_wallet("wallet-z", first_seen, window_start, "candidate")?;
+        store.conn.execute(
+            "INSERT INTO wallet_metrics(
+                wallet_id,
+                window_start,
+                pnl,
+                win_rate,
+                trades,
+                closed_trades,
+                hold_median_seconds,
+                score,
+                buy_total,
+                tradable_ratio,
+                rug_ratio
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                "wallet-z",
+                "2026-03-10T21:00:00Z",
+                1.0_f64,
+                0.8_f64,
+                4_i64,
+                4_i64,
+                60_i64,
+                0.9_f64,
+                4_i64,
+                1.0_f64,
+                0.0_f64,
+            ],
+        )?;
+        store.insert_wallet_metric(&WalletMetricRow {
+            wallet_id: "wallet-z".to_string(),
+            window_start,
+            pnl: 2.0,
+            win_rate: 0.9,
+            trades: 7,
+            closed_trades: 7,
+            hold_median_seconds: 120,
+            score: 1.3,
+            buy_total: 7,
+            tradable_ratio: 1.0,
+            rug_ratio: 0.0,
+        })?;
+
+        assert!(
+            store.wallet_metrics_window_exists(window_start)?,
+            "logical UTC equality should treat Z and +00:00 as the same wallet_metrics window"
+        );
+        assert_eq!(store.latest_wallet_metrics_window_start()?, Some(window_start));
+        assert_eq!(
+            store.wallet_metrics_row_count_for_window(window_start)?,
+            1,
+            "logical row count must dedupe mixed Z/+00:00 rows for the same wallet"
+        );
+        let snapshots = store.load_latest_wallet_metric_snapshots()?;
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].wallet_id, "wallet-z");
+        assert_eq!(snapshots[0].window_start, window_start);
+        assert_eq!(
+            snapshots[0].score, 1.3,
+            "loader must prefer the canonical row when both legacy Z and canonical +00:00 variants exist"
+        );
+        assert_eq!(snapshots[0].buy_total, 7);
+        Ok(())
+    }
+
+    #[test]
+    fn clone_wallet_metrics_window_dedupes_legacy_and_canonical_duplicate_wallet_rows() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("wallet-metrics-clone-dedupe.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let first_seen = DateTime::parse_from_rfc3339("2026-03-01T00:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let source_window = DateTime::parse_from_rfc3339("2026-03-10T21:00:00+00:00")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let target_window = source_window + Duration::minutes(30);
+        for wallet_id in ["wallet-dup", "wallet-single"] {
+            store.upsert_wallet(wallet_id, first_seen, target_window, "candidate")?;
+        }
+        store.conn.execute(
+            "INSERT INTO wallet_metrics(
+                wallet_id,
+                window_start,
+                pnl,
+                win_rate,
+                trades,
+                closed_trades,
+                hold_median_seconds,
+                score,
+                buy_total,
+                tradable_ratio,
+                rug_ratio
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                "wallet-dup",
+                "2026-03-10T21:00:00Z",
+                1.0_f64,
+                0.5_f64,
+                3_i64,
+                3_i64,
+                60_i64,
+                0.7_f64,
+                3_i64,
+                1.0_f64,
+                0.0_f64,
+            ],
+        )?;
+        store.insert_wallet_metric(&WalletMetricRow {
+            wallet_id: "wallet-dup".to_string(),
+            window_start: source_window,
+            pnl: 2.0,
+            win_rate: 0.8,
+            trades: 6,
+            closed_trades: 6,
+            hold_median_seconds: 90,
+            score: 1.2,
+            buy_total: 6,
+            tradable_ratio: 1.0,
+            rug_ratio: 0.0,
+        })?;
+        store.insert_wallet_metric(&WalletMetricRow {
+            wallet_id: "wallet-single".to_string(),
+            window_start: source_window,
+            pnl: 1.5,
+            win_rate: 0.7,
+            trades: 5,
+            closed_trades: 5,
+            hold_median_seconds: 80,
+            score: 0.8,
+            buy_total: 5,
+            tradable_ratio: 1.0,
+            rug_ratio: 0.0,
+        })?;
+
+        assert_eq!(store.wallet_metrics_row_count_for_window(source_window)?, 2);
+        let inserted_rows = store.clone_wallet_metrics_window(source_window, target_window, 2)?;
+        assert_eq!(inserted_rows, 2);
+        assert_eq!(store.wallet_metrics_row_count_for_window(target_window)?, 2);
+
+        let raw_target_rows: i64 = store.conn.query_row(
+            "SELECT COUNT(*)
+             FROM wallet_metrics
+             WHERE window_start = ?1",
+            params![target_window.to_rfc3339()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            raw_target_rows, 2,
+            "clone must write one canonical row per wallet_id even when the source logical window contains mixed-encoding duplicates"
+        );
+
+        let snapshots = store.load_latest_wallet_metric_snapshots()?;
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots[0].wallet_id, "wallet-dup");
+        assert_eq!(snapshots[0].score, 1.2);
+        Ok(())
+    }
+
+    #[test]
+    fn persist_discovery_cycle_retention_keeps_latest_logical_windows_with_legacy_z_rows(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("discovery-wallet-metrics-retention-legacy-z.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let base = DateTime::parse_from_rfc3339("2026-02-20T00:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let window0 = base;
+        let window1 = base + Duration::minutes(1);
+        let window2 = base + Duration::minutes(2);
+        let window3 = base + Duration::minutes(3);
+
+        for (wallet_id, last_seen) in [
+            ("wallet-old-z", window0),
+            ("wallet-mid-plus", window1),
+            ("wallet-dup-z", window2),
+            ("wallet-dup-plus", window2),
+            ("wallet-new", window3),
+        ] {
+            store.upsert_wallet(wallet_id, base, last_seen, "candidate")?;
+        }
+
+        for (wallet_id, raw_window_start) in [
+            ("wallet-old-z", "2026-02-20T00:00:00Z"),
+            ("wallet-mid-plus", "2026-02-20T00:01:00+00:00"),
+            ("wallet-dup-z", "2026-02-20T00:02:00Z"),
+            ("wallet-dup-plus", "2026-02-20T00:02:00+00:00"),
+        ] {
+            store.conn.execute(
+                "INSERT INTO wallet_metrics(
+                    wallet_id,
+                    window_start,
+                    pnl,
+                    win_rate,
+                    trades,
+                    closed_trades,
+                    hold_median_seconds,
+                    score,
+                    buy_total,
+                    tradable_ratio,
+                    rug_ratio
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    wallet_id,
+                    raw_window_start,
+                    1.0_f64,
+                    1.0_f64,
+                    1_i64,
+                    1_i64,
+                    60_i64,
+                    1.0_f64,
+                    1_i64,
+                    1.0_f64,
+                    0.0_f64,
+                ],
+            )?;
+        }
+
+        store.persist_discovery_cycle(
+            &[WalletUpsertRow {
+                wallet_id: "wallet-new".to_string(),
+                first_seen: base,
+                last_seen: window3,
+                status: "candidate".to_string(),
+            }],
+            &[WalletMetricRow {
+                wallet_id: "wallet-new".to_string(),
+                window_start: window3,
+                pnl: 1.0,
+                win_rate: 1.0,
+                trades: 1,
+                closed_trades: 1,
+                hold_median_seconds: 60,
+                score: 1.0,
+                buy_total: 1,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            }],
+            &["wallet-new".to_string()],
+            true,
+            true,
+            window3,
+            "legacy-z-retention-test",
+        )?;
+
+        let mut raw_stmt = store
+            .conn
+            .prepare("SELECT DISTINCT window_start FROM wallet_metrics ORDER BY window_start ASC")?;
+        let raw_windows: Vec<String> = raw_stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        assert!(
+            !raw_windows.contains(&"2026-02-20T00:00:00Z".to_string()),
+            "oldest logical window must be deleted even when newer windows have mixed Z/+00:00 encodings"
+        );
+        assert!(raw_windows.contains(&window1.to_rfc3339()));
+        assert!(raw_windows.contains(&"2026-02-20T00:02:00Z".to_string()));
+        assert!(raw_windows.contains(&window2.to_rfc3339()));
+        assert!(raw_windows.contains(&window3.to_rfc3339()));
+
+        let mut logical_stmt = store.conn.prepare(
+            "SELECT DISTINCT unixepoch(window_start)
+             FROM wallet_metrics
+             ORDER BY 1 ASC",
+        )?;
+        let logical_windows: Vec<i64> = logical_stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?;
+        assert_eq!(
+            logical_windows,
+            vec![window1.timestamp(), window2.timestamp(), window3.timestamp()],
+            "retention must keep the latest three logical wallet_metrics windows even with mixed UTC encodings"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn persist_discovery_cycle_can_suppress_followlist_deactivations() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp

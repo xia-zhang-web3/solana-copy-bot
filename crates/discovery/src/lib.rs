@@ -176,6 +176,19 @@ pub struct TrustedBootstrapWalletMetricsMaterializationSummary {
     pub top_wallets: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct CloneLatestTrustedBootstrapSummary {
+    pub source_metrics_window_start: DateTime<Utc>,
+    pub target_metrics_window_start: DateTime<Utc>,
+    pub source_snapshot_age_seconds: u64,
+    pub source_rows: usize,
+    pub inserted_rows: usize,
+    pub stale_source: bool,
+    pub forced_stale: bool,
+    pub dry_run: bool,
+    pub top_wallets: Vec<String>,
+}
+
 impl DiscoverySummary {
     fn with_scoring_source(mut self, scoring_source: &'static str) -> Self {
         self.scoring_source = scoring_source;
@@ -1482,6 +1495,102 @@ impl DiscoveryService {
             eligible_wallets: ranked.len(),
             metrics_written: metrics_to_persist.len(),
             bucket_already_exists,
+            top_wallets: top_wallet_labels(&ranked, 5),
+        })
+    }
+
+    pub fn clone_latest_trusted_bootstrap_wallet_metrics(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        dry_run: bool,
+        force_stale: bool,
+    ) -> Result<CloneLatestTrustedBootstrapSummary> {
+        let target_metrics_window_start = self.metrics_window_start(now);
+        let source_metrics_window_start = store
+            .latest_wallet_metrics_window_start()?
+            .ok_or_else(|| anyhow!("no persisted wallet_metrics snapshot available to clone"))?;
+        let source_rows = store.wallet_metrics_row_count_for_window(source_metrics_window_start)?;
+        if source_rows == 0 {
+            return Err(anyhow!(
+                "latest persisted wallet_metrics snapshot {} contains zero rows",
+                source_metrics_window_start.to_rfc3339()
+            ));
+        }
+        if store.wallet_metrics_window_exists(target_metrics_window_start)? {
+            return Err(anyhow!(
+                "target wallet_metrics bootstrap bucket already exists at {}",
+                target_metrics_window_start.to_rfc3339()
+            ));
+        }
+
+        let source_snapshot_publish_time =
+            source_metrics_window_start + Duration::days(self.config.scoring_window_days.max(1) as i64);
+        let source_snapshot_age_seconds = now
+            .signed_duration_since(source_snapshot_publish_time)
+            .num_seconds()
+            .max(0) as u64;
+        let stale_source =
+            source_snapshot_age_seconds > self.config.max_bootstrap_snapshot_age_seconds;
+        if stale_source && !force_stale {
+            return Err(anyhow!(
+                "latest persisted wallet_metrics snapshot is stale for clone-latest bootstrap: source_window_start={} source_snapshot_age_seconds={} max_bootstrap_snapshot_age_seconds={} (pass force_stale=true to override)",
+                source_metrics_window_start.to_rfc3339(),
+                source_snapshot_age_seconds,
+                self.config.max_bootstrap_snapshot_age_seconds
+            ));
+        }
+
+        let source_snapshots = self
+            .build_wallet_snapshots_from_latest_metrics(store, now, source_metrics_window_start)?
+            .ok_or_else(|| anyhow!("latest persisted wallet_metrics snapshot is unreadable"))?;
+        let ranked = rank_follow_candidates(&source_snapshots, self.config.min_score);
+
+        if dry_run {
+            return Ok(CloneLatestTrustedBootstrapSummary {
+                source_metrics_window_start,
+                target_metrics_window_start,
+                source_snapshot_age_seconds,
+                source_rows,
+                inserted_rows: 0,
+                stale_source,
+                forced_stale: force_stale,
+                dry_run: true,
+                top_wallets: top_wallet_labels(&ranked, 5),
+            });
+        }
+
+        let active_follow_wallets_before = store.list_active_follow_wallets()?.len();
+        let inserted_rows = store.clone_wallet_metrics_window(
+            source_metrics_window_start,
+            target_metrics_window_start,
+            source_rows,
+        )?;
+        if inserted_rows != source_rows {
+            return Err(anyhow!(
+                "clone-latest bootstrap wrote unexpected row count: source_rows={} inserted_rows={}",
+                source_rows,
+                inserted_rows
+            ));
+        }
+        let active_follow_wallets_after = store.list_active_follow_wallets()?.len();
+        if active_follow_wallets_before != active_follow_wallets_after {
+            return Err(anyhow!(
+                "clone-latest bootstrap unexpectedly mutated followlist (before={} after={})",
+                active_follow_wallets_before,
+                active_follow_wallets_after
+            ));
+        }
+
+        Ok(CloneLatestTrustedBootstrapSummary {
+            source_metrics_window_start,
+            target_metrics_window_start,
+            source_snapshot_age_seconds,
+            source_rows,
+            inserted_rows,
+            stale_source,
+            forced_stale: force_stale,
+            dry_run: false,
             top_wallets: top_wallet_labels(&ranked, 5),
         })
     }
@@ -3634,6 +3743,179 @@ mod tests {
             "tool must not write a fresh wallet_metrics bucket from incomplete persisted history"
         );
         assert!(store.list_active_follow_wallets()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn clone_latest_trusted_wallet_metrics_bootstrap_unblocks_fail_closed_restart_without_mutating_followlist_directly(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("test-clone-latest-trusted-wallet-metrics-bootstrap.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-15T12:14:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let next_cycle_now = now + Duration::minutes(1);
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 5;
+        config.decay_window_days = 5;
+        config.observed_swaps_retention_days = 7;
+        config.follow_top_n = 1;
+        config.min_score = 0.0;
+        config.metric_snapshot_interval_seconds = 30 * 60;
+        config.max_bootstrap_snapshot_age_seconds = 4 * 60 * 60;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let target_metrics_window_start = discovery.metrics_window_start(now);
+        let source_metrics_window_start = target_metrics_window_start - Duration::hours(2);
+
+        for (wallet, score) in [("wallet_top", 0.9_f64), ("wallet_runner_up", 0.7_f64)] {
+            store.upsert_wallet(
+                wallet,
+                now - Duration::days(4),
+                now - Duration::minutes(1),
+                "candidate",
+            )?;
+            store.insert_wallet_metric(&WalletMetricRow {
+                wallet_id: wallet.to_string(),
+                window_start: source_metrics_window_start,
+                pnl: 2.0,
+                win_rate: 0.8,
+                trades: 8,
+                closed_trades: 4,
+                hold_median_seconds: 480,
+                score,
+                buy_total: 4,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            })?;
+        }
+        store.set_discovery_trusted_selection_bootstrap_required(true, "test_clone_latest")?;
+
+        let fail_closed_summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(
+            fail_closed_summary.scoring_source,
+            "trusted_persisted_wallet_metrics_bootstrap_unavailable",
+            "stale persisted wallet_metrics must keep discovery fail-closed before clone-latest bridge"
+        );
+        assert!(store.list_active_follow_wallets()?.is_empty());
+        assert!(store.discovery_trusted_selection_bootstrap_required()?);
+
+        let cloned =
+            discovery.clone_latest_trusted_bootstrap_wallet_metrics(&store, now, false, false)?;
+        assert_eq!(cloned.source_metrics_window_start, source_metrics_window_start);
+        assert_eq!(cloned.target_metrics_window_start, target_metrics_window_start);
+        assert_eq!(cloned.source_snapshot_age_seconds, 2 * 60 * 60 + 14 * 60);
+        assert_eq!(cloned.source_rows, 2);
+        assert_eq!(cloned.inserted_rows, 2);
+        assert!(!cloned.stale_source);
+        assert!(!cloned.dry_run);
+        assert!(
+            store.list_active_follow_wallets()?.is_empty(),
+            "clone-latest tool must not directly mutate followlist"
+        );
+        assert_eq!(
+            store.latest_wallet_metrics_window_start()?,
+            Some(target_metrics_window_start),
+            "clone-latest tool must create the current bootstrap bucket"
+        );
+
+        let discovery_after_clone = DiscoveryService::new(config, permissive_shadow_quality());
+        let recovered_summary = discovery_after_clone.run_cycle(&store, next_cycle_now)?;
+        assert_eq!(
+            recovered_summary.scoring_source,
+            "trusted_persisted_wallet_metrics_bootstrap"
+        );
+        assert_eq!(recovered_summary.active_follow_wallets, 1);
+        assert!(store.list_active_follow_wallets()?.contains("wallet_top"));
+        assert!(
+            !store.discovery_trusted_selection_bootstrap_required()?,
+            "trusted bootstrap flag should clear after discovery consumes the cloned bucket"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn clone_latest_trusted_wallet_metrics_bootstrap_rejects_stale_source_without_force_stale(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("test-clone-latest-trusted-wallet-metrics-bootstrap-stale.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-15T12:14:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 5;
+        config.decay_window_days = 5;
+        config.max_bootstrap_snapshot_age_seconds = 60 * 60;
+        config.metric_snapshot_interval_seconds = 30 * 60;
+        config.min_score = 0.0;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let target_metrics_window_start = discovery.metrics_window_start(now);
+        let stale_source_window_start = target_metrics_window_start - Duration::hours(2);
+
+        store.upsert_wallet(
+            "wallet_stale",
+            now - Duration::days(4),
+            now - Duration::minutes(1),
+            "candidate",
+        )?;
+        store.insert_wallet_metric(&WalletMetricRow {
+            wallet_id: "wallet_stale".to_string(),
+            window_start: stale_source_window_start,
+            pnl: 1.0,
+            win_rate: 0.7,
+            trades: 6,
+            closed_trades: 3,
+            hold_median_seconds: 300,
+            score: 0.6,
+            buy_total: 3,
+            tradable_ratio: 1.0,
+            rug_ratio: 0.0,
+        })?;
+
+        let error = discovery
+            .clone_latest_trusted_bootstrap_wallet_metrics(&store, now, false, false)
+            .expect_err("stale source snapshot must reject without explicit override");
+        assert!(
+            error.to_string().contains("stale for clone-latest bootstrap"),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            !store.wallet_metrics_window_exists(target_metrics_window_start)?,
+            "rejecting stale source must not create the target bootstrap bucket"
+        );
+
+        let dry_run = discovery.clone_latest_trusted_bootstrap_wallet_metrics(&store, now, true, true)?;
+        assert!(dry_run.stale_source);
+        assert!(dry_run.forced_stale);
+        assert!(dry_run.dry_run);
+        assert_eq!(dry_run.inserted_rows, 0);
+        assert!(
+            !store.wallet_metrics_window_exists(target_metrics_window_start)?,
+            "dry-run must not create the target bootstrap bucket even with stale override"
+        );
+
+        let forced_write =
+            discovery.clone_latest_trusted_bootstrap_wallet_metrics(&store, now, false, true)?;
+        assert!(forced_write.stale_source);
+        assert!(forced_write.forced_stale);
+        assert!(!forced_write.dry_run);
+        assert_eq!(forced_write.source_rows, 1);
+        assert_eq!(forced_write.inserted_rows, 1);
+        assert!(
+            store.wallet_metrics_window_exists(target_metrics_window_start)?,
+            "force_stale write must create the target bootstrap bucket when explicitly requested"
+        );
         Ok(())
     }
 
