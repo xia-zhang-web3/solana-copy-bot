@@ -37,7 +37,7 @@ It replaces the old mixed roadmap and removes aggregate/backfill recovery from t
 
 ### 2.2 What is not working (updated 2026-03-17)
 
-1. Discovery wallet selection enters the correct runtime path but the first persisted-stream scoring cycle has not completed on live yet.
+1. Discovery wallet selection logic is fixed in code, but the latest live rollout did not reach discovery/runtime because startup stalled earlier in the SQLite path.
 2. Aggregate/backfill recovery is not a safe operational path and is removed from the critical path.
 3. Current live config still has:
    - `discovery.scoring_aggregates_write_enabled = false`
@@ -51,13 +51,22 @@ It replaces the old mixed roadmap and removes aggregate/backfill recovery from t
    - `healthy / degraded / fail_closed` modes are propagated through discovery and app
    - publication truth is persisted separately from bootstrap/aggregate recovery truth
    - persisted-stream fallback (`build_wallet_snapshots_from_persisted_stream`) is the active cold-start path when RAM cache is cap-truncated
-2. The persisted-stream path correctly engages on live (confirmed in logs: `recomputing discovery snapshots from persisted observed_swaps stream`).
-3. The first persisted-stream cycle did not complete in the observed window (6+ minutes).
-4. Current working diagnosis from the second rollout: the next blocker is latency / boundedness of the first persisted-stream rebuild on live-size state, not bootstrap, aggregate, or ingestion.
-5. Current working tree replaces the old one-shot persisted rebuild with a bounded/resumable design:
+2. The persisted-stream path correctly engaged on the earlier live rollout (`0c58abadd2f0d3e3807cc0013ac37e6047d9c71c`), which proved the old one-shot cold-start rebuild was the active fallback path.
+3. The later rollout on `96606b83880cb1b942de67f61c5ecdb459fe4139` did not reach discovery/runtime logs at all:
+   - after restart at `2026-03-17 18:44:55 UTC`, logs showed only `configuration loaded`
+   - there was no `sqlite migrations applied`
+   - there was no startup WAL checkpoint log
+   - there was no `recomputing discovery snapshots from persisted observed_swaps stream`
+4. Current working diagnosis from the latest rollout: the next blocker is startup SQLite path boundedness / observability on live-size DB+WAL, before discovery/runtime begins.
+   - current live evidence localizes the stall only to pre-migration SQLite bootstrap; the old rollout did not have enough stage logs to distinguish `Connection::open` vs PRAGMAs vs schema bootstrap
+5. Current working tree still keeps the bounded/resumable persisted rebuild fix intact:
    - frozen rebuild horizon (`window_start`, `horizon_end`, `metrics_window_start`) is captured once per rebuild
    - rebuild progress is persisted separately from `discovery_runtime_cursor`
    - cold-start rebuild advances in bounded chunks across cycles and restarts instead of monopolizing one long cycle
+6. Current working tree now also makes the startup SQLite path observable and bounded:
+   - startup SQLite bootstrap now emits per-stage `started / waiting / completed / timed_out` progress for connection open, PRAGMAs, and `schema_migrations` bootstrap via the explicit startup bootstrap path
+   - startup migrations, heartbeat, alert cursor, and app-loop handoff emit explicit startup progress logs
+   - startup WAL checkpoint is removed from the startup critical path and now emits an explicit deferred/skipped outcome instead of blocking startup
 
 ### 2.4 Current verdict (updated 2026-03-17)
 
@@ -65,36 +74,40 @@ The project is not blocked by bootstrap, aggregate, or backfill.
 
 The project is not blocked by ingestion.
 
-The first discovery cycle on live has not completed yet.
+The latest live rollout did not reach discovery/runtime yet.
 
-Stage 1 is `partial` again after live rollout `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c`.
+Stage 1 is still `partial` after live rollout `96606b83880cb1b942de67f61c5ecdb459fe4139`.
 
-Current working diagnosis: live is still running the old unbounded cold-start persisted-stream rebuild from `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c`, while the current working tree now contains the bounded/resumable replacement that needs rollout validation.
+Current working diagnosis: the bounded/resumable persisted rebuild fix is still pending live validation, because startup now stalls earlier on the SQLite open/migration path for live-size `live_copybot.db` / `live_copybot.db-wal`. The current working tree contains a startup observability + fail-explicit/deferred fix for that earlier blocker.
 
 Do not start Stage 2 yet.
 
 ### 2.5 Server state (updated 2026-03-17)
 
-- Deployed commit: `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c`
+- Deployed commit: `96606b83880cb1b942de67f61c5ecdb459fe4139`
 - Service: `solana-copy-bot.service active`, no crash loop
 - `execution.enabled = false`
-- Discovery enters persisted-stream path on startup but first cycle has not completed in observed window
-- `active_follow_wallets = 0` (pending first cycle completion)
+- Latest observed restart: `2026-03-17 18:44:55 UTC`
+- `active_follow_wallets` unknown from this rollout because runtime never reached discovery startup
 - Observed during validation window:
-  - `%CPU ≈ 17.5`, `RSS ≈ 121148 KiB`
-  - `sqlite_busy_error_total = 0`
-  - `yellowstone_output_queue_fill_ratio` mostly 0.0
-  - repeated `discovery cycle still running, skipping scheduled trigger` every 60s
-  - no `scoring_source = raw_window_persisted_stream` appeared (cycle did not finish)
-  - no `shadow_risk_universe_stop` after restart
+  - logs showed only `configuration loaded` for 6+ minutes after restart
+  - no `sqlite migrations applied`
+  - no `startup sqlite wal checkpoint completed`
+  - no `recomputing discovery snapshots from persisted observed_swaps stream`
+  - no completed discovery cycle
+  - process observed in `D` state with `pread64 / folio_wait_bit_common`
+  - SQLite remained locked even on read-only inspection
+  - open files included `live_copybot.db ≈ 117G`, `live_copybot.db-wal ≈ 71G`, `live_copybot.db-shm ≈ 101M`
 - Rollout reports:
   - [ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md](ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md) — first Stage 1 deploy (`2eb5c30`), confirmed bootstrap path removed but fail_closed due to cap-truncated warm load
   - [ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md](ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md) — persisted-stream follow-up (`0c58aba`), confirmed correct path engaged but first cycle did not complete in 6+ minutes
+  - latest rollout report for `96606b8` should record the earlier startup stall before discovery/runtime
 
 ### 2.6 Live data scale (observed)
 
-- `live_copybot.db`: 116 GB
-- `live_copybot.db-wal`: 4.4 GB
+- `live_copybot.db`: 117 GB
+- `live_copybot.db-wal`: 71 GB
+- `live_copybot.db-shm`: 101 MB
 - `observed_swaps_retention_days`: 7
 - `scoring_window_days`: 5
 - `max_window_swaps_in_memory`: 100,000
@@ -182,7 +195,7 @@ No new roadmap documents are needed before Stage 1 lands in code.
 
 ### Stage 1. Remove aggregate recovery from runtime discovery
 
-Status: **partial after live rollout `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c`; bounded/resumable rebuild fix is now in code and pending rollout validation**
+Status: **partial after live rollout `96606b83880cb1b942de67f61c5ecdb459fe4139`; startup SQLite boundedness/observability fix and bounded/resumable rebuild fix are now in code and pending rollout validation**
 
 Goal:
 
@@ -208,13 +221,22 @@ What is done in Stage 1 so far:
 10. Rebuild completion now forces the recovered publish instead of waiting for the next normal publish interval, so a successful bounded cold start can immediately promote the healthy `raw_window_persisted_stream` universe.
 11. Resume validates semantic checkpoint validity before reusing it: if the frozen metrics bucket moved or the stored horizon is invalid for the current wall clock, runtime discards the old rebuild state and starts a new frozen attempt. Longer restarts within the same metrics bucket keep the checkpoint and continue from it.
 12. Completion keeps semantic parity with the previous one-shot persisted rebuild by freezing the same horizon and replaying the same streaming scoring logic; parity is enforced by direct one-shot-vs-bounded regression coverage.
+13. Startup SQLite is now observable and bounded before discovery/runtime:
+   - the explicit startup SQLite bootstrap path reports exact startup stage progress for connection open, `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, and `schema_migrations` bootstrap
+   - startup migrations / heartbeat / alert cursor / app-loop handoff report explicit start/finish/waiting/failure outcomes
+   - required startup SQLite stages now treat timeout as a fatal startup outcome: SQLite startup syscalls are not cancellable in-process, so the process aborts explicitly on timeout instead of returning control beside a stuck worker
+14. Startup WAL checkpoint is no longer part of the startup critical path:
+   - startup explicitly reports the WAL checkpoint as skipped/deferred
+   - startup correctness no longer depends on waiting for a checkpoint attempt to finish
 
 Code hotspots touched:
 
 1. `crates/discovery/src/lib.rs` — runtime branching, bounded persisted-stream path, publication cadence handling, tests
 2. `crates/storage/src/market_data.rs` — bounded window scan with cursor/budget plus durable rebuild-state persistence
-3. `crates/storage/src/lib.rs` — persisted rebuild progress types
-4. `crates/core-types/src/lib.rs` — serde support for persisted rebuild payload types
+3. `crates/storage/src/lib.rs` — persisted rebuild progress types plus startup SQLite open telemetry/watchdog
+4. `crates/storage/src/migrations.rs` — startup open+migration bootstrap path
+5. `crates/app/src/main.rs` — startup stage orchestration, deferred WAL checkpoint, app-loop handoff telemetry
+6. `crates/core-types/src/lib.rs` — serde support for persisted rebuild payload types
 
 Exit criteria (all closed in code and tests):
 
@@ -236,23 +258,26 @@ Mandatory Stage 1 tests (all green):
 9. bounded rebuild resumes after process restart from persisted rebuild state
 10. bounded rebuild completes to `healthy` with `scoring_source = raw_window_persisted_stream`
 11. bounded rebuild matches one-shot persisted-stream scoring semantics across chunk boundaries
+12. startup SQLite bootstrap emits explicit stage progress for open / PRAGMA / schema bootstrap / migrations
+13. a blocked startup step emits `waiting` progress and then an explicit timeout instead of hanging silently
+14. deferred startup WAL checkpoint leaves the store usable and does not block startup
 
 Remaining operational blocker:
 
-Live rollout validation is still pending for the new bounded/resumable rebuild.
+Live rollout validation is still pending for the new startup SQLite fix; only after startup reaches discovery/runtime again can the bounded/resumable rebuild be revalidated on live.
 
 Current working diagnosis:
 
-the old deploy `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c` proved that a one-shot first-cycle persisted rebuild is too slow / insufficiently bounded for live-size state; the new code changes that path to a checkpointed chunked rebuild that must now be validated on live.
+the old deploy `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c` proved that a one-shot first-cycle persisted rebuild is too slow / insufficiently bounded for live-size state; the later deploy `96606b83880cb1b942de67f61c5ecdb459fe4139` showed an earlier blocker on startup SQLite open/migration boundedness for live-size DB+WAL. The current code fixes both layers in order: startup first, then persisted rebuild validation.
 
 Immediate next operational step before Stage 2:
 
-roll out the bounded/resumable persisted-stream rebuild and confirm:
+roll out the startup SQLite observability/boundedness follow-up and confirm:
 
-1. completed discovery cycles resume instead of hanging behind `discovery cycle still running, skipping scheduled trigger`
-2. rebuild progress logs show processed rows/pages, chunk count, elapsed time, checkpoint cursor, frozen horizon, and partial/completed outcome
-3. live eventually emits a completed cycle with `scoring_source = raw_window_persisted_stream`
-4. `active_follow_wallets > 0`
+1. after `configuration loaded`, startup emits exact progress logs for sqlite open/pragmas/schema bootstrap/migrations/heartbeat/cursor/app-loop handoff
+2. startup either reaches discovery/runtime logs or fails fast with an explicit `startup stage ... timed out` / `startup stage ... failed` reason
+3. startup no longer sits silently for minutes on live-size DB+WAL
+4. once startup reaches discovery/runtime again, separately validate the bounded persisted rebuild with `scoring_source = raw_window_persisted_stream` and `active_follow_wallets > 0`
 5. there is no false `healthy` and no empty published universe
 
 See section 2.5 for observed server state and section 2.6 for live data scale.
@@ -415,6 +440,51 @@ Their useful conclusions are already absorbed here:
   - on rollout, verify rebuild progress logs advance chunk-by-chunk, a completed cycle appears, `scoring_source = raw_window_persisted_stream` appears, `active_follow_wallets > 0`, and no hanging cycle remains
 
 - Date: 2026-03-17
+- Commit SHA: `self-referential; exact final SHA is reported from git after commit`
+- Stage / substep: `Stage 1 / startup SQLite boundedness + observability before discovery runtime`
+- Status: `done in code; pending server rollout validation`
+- Code changed:
+  - `crates/app/src/main.rs`
+  - `crates/storage/src/lib.rs`
+  - `crates/storage/src/migrations.rs`
+  - `ROAD_TO_PRODUCTION_v2.md`
+- Tests run:
+  - `cargo fmt --all`
+  - `cargo test -p copybot-storage --lib`
+  - `cargo test -p copybot-app --bin copybot-app app_tests::startup_ -- --nocapture`
+  - `cargo test -p copybot-app --bin copybot-app app_tests::inline_startup -- --nocapture`
+  - `cargo test -p copybot-app --bin copybot-app app_tests::skipped_inline_startup_step_reports_started_and_skipped -- --nocapture`
+  - `cargo test -p copybot-app --bin copybot-app`
+  - `cargo test -p copybot-discovery --lib persisted_stream_rebuild -- --nocapture`
+  - `cargo test -p copybot-discovery --lib cold_start_ -- --nocapture`
+  - `cargo test -p copybot-discovery --lib`
+- Done:
+  - recorded the latest live fact for deploy `96606b83880cb1b942de67f61c5ecdb459fe4139`: service stayed `active/running` but emitted only `configuration loaded` and never reached discovery/runtime logs
+  - localized the current blocker to startup SQLite bootstrap on live-size `live_copybot.db` / `live_copybot.db-wal`, earlier than persisted-stream rebuild validation
+  - added explicit startup progress telemetry for config validation, sqlite open, sqlite PRAGMAs, `schema_migrations` bootstrap, migrations scan/apply, startup heartbeat, alert cursor, and app-loop handoff
+  - required startup SQLite stages now emit `started / waiting / completed / failed / timed_out`; timeout is enforced as a fatal startup abort because the underlying SQLite startup syscalls are not cancellable in-process
+  - removed startup WAL checkpoint from the critical startup path and replaced it with an explicit deferred/skipped startup outcome
+  - preserved the bounded/resumable persisted-stream rebuild fix and revalidated its regression suite after the startup work
+- In progress:
+  - server rollout validation on live-size DB+WAL
+- Blocked:
+  - none in code; operational validation still required on the server
+- Acceptance criteria closed:
+  - startup no longer relies on silent sqlite bootstrap calls with no stage visibility
+  - a heavy required startup step now produces an explicit progress trail and timeout/failure outcome
+  - startup WAL checkpoint no longer blocks the path to discovery/runtime startup
+  - bounded/resumable persisted-stream rebuild coverage remains green
+- Acceptance criteria remaining:
+  - next live rollout must confirm startup reaches discovery/runtime logs or exits with an explicit startup-stage failure on live-size DB+WAL
+  - once startup reaches discovery/runtime again, live must separately validate `raw_window_persisted_stream` completion and `active_follow_wallets > 0`
+- Remaining risks:
+  - the latest server state may still need offline DB/WAL maintenance if `Connection::open` itself exceeds the new startup budget on the 117G/71G live database pair
+  - startup WAL checkpoint is now explicitly out of the critical path, so WAL growth still needs separate operational attention after runtime startup is restored
+- Next action:
+  - deploy this startup SQLite follow-up before any further persisted-stream rebuild validation
+  - on rollout, verify exact startup stage logs appear after `configuration loaded`, then verify discovery/runtime logs appear; only after that re-check `scoring_source = raw_window_persisted_stream`
+
+- Date: 2026-03-17
 - Commit SHA: `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c`
 - Stage / substep: `Stage 1 / operational rollout validation of persisted-stream follow-up`
 - Status: `partial`
@@ -448,6 +518,9 @@ Their useful conclusions are already absorbed here:
   - do not start Stage 2
   - implement bounded/resumable persisted-stream rebuild with progress telemetry and cycle-level forward progress
 
+
+- Date: 2026-03-17
+- Commit SHA: `self-referential; exact final SHA is reported from git after commit`
 
 - Date: 2026-03-17
 - Commit SHA: `self-referential; exact final SHA is reported from git after commit`

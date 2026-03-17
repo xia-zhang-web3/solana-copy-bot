@@ -11,8 +11,11 @@ use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
 use copybot_shadow::{FollowSnapshot, ShadowService};
 use copybot_storage::{
-    is_fatal_sqlite_anyhow_error, sqlite_contention_snapshot, DiscoveryAggregateWriteConfig,
-    DiscoveryRuntimeMode, Lamports, SignedLamports, SqliteContentionSnapshot, SqliteStore,
+    is_fatal_sqlite_anyhow_error, report_startup_step_progress, run_observed_startup_step,
+    sqlite_contention_snapshot, DiscoveryAggregateWriteConfig, DiscoveryRuntimeMode, Lamports,
+    SignedLamports, SqliteContentionSnapshot, SqliteStartupPolicy, SqliteStore, StartupStepOutcome,
+    StartupStepProgress, StartupStepProgressReporter, StartupStepRuntimePolicy,
+    StartupStepTimeoutBehavior,
 };
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::env;
@@ -21,7 +24,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Instant as StdInstant;
+use std::time::{Duration as StdDuration, Instant as StdInstant};
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::{debug, info, warn};
@@ -89,6 +92,10 @@ const DEFAULT_OPERATOR_EMERGENCY_STOP_POLL_MS: u64 = 500;
 const APP_LOG_FILTER_ENV: &str = "COPYBOT_APP_LOG_FILTER";
 const LEGACY_RUST_LOG_ENV: &str = "RUST_LOG";
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
+const STARTUP_STEP_LOG_INTERVAL: StdDuration = StdDuration::from_secs(5);
+const STARTUP_REQUIRED_STEP_TIMEOUT: StdDuration = StdDuration::from_secs(120);
+const STARTUP_SQLITE_AUX_STEP_TIMEOUT: StdDuration = StdDuration::from_secs(30);
+const STARTUP_WAL_CHECKPOINT_DEFER_REASON: &str = "deferred_off_startup_critical_path";
 #[cfg(test)]
 static APP_ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -139,6 +146,152 @@ fn sol_to_signed_lamports_conservative(sol: f64, label: &str) -> Result<SignedLa
     Ok(SignedLamports::new(signed))
 }
 
+fn startup_step_policy(timeout: StdDuration) -> StartupStepRuntimePolicy {
+    StartupStepRuntimePolicy::new(STARTUP_STEP_LOG_INTERVAL, Some(timeout))
+        .with_timeout_behavior(StartupStepTimeoutBehavior::AbortProcess)
+}
+
+fn build_startup_progress_reporter() -> StartupStepProgressReporter {
+    Arc::new(|event| log_startup_progress_event(&event))
+}
+
+fn log_startup_progress_event(event: &StartupStepProgress) {
+    match event.outcome {
+        StartupStepOutcome::Started | StartupStepOutcome::Completed => {
+            info!(
+                startup_stage = event.stage,
+                startup_stage_outcome = event.outcome.as_str(),
+                startup_stage_elapsed_ms = event.elapsed_ms,
+                startup_stage_budget_ms = event.budget_ms,
+                detail = event.detail.as_deref(),
+                "startup progress"
+            );
+        }
+        StartupStepOutcome::Waiting | StartupStepOutcome::Skipped => {
+            warn!(
+                startup_stage = event.stage,
+                startup_stage_outcome = event.outcome.as_str(),
+                startup_stage_elapsed_ms = event.elapsed_ms,
+                startup_stage_budget_ms = event.budget_ms,
+                detail = event.detail.as_deref(),
+                "startup progress"
+            );
+        }
+        StartupStepOutcome::Failed | StartupStepOutcome::TimedOut => {
+            tracing::error!(
+                startup_stage = event.stage,
+                startup_stage_outcome = event.outcome.as_str(),
+                startup_stage_elapsed_ms = event.elapsed_ms,
+                startup_stage_budget_ms = event.budget_ms,
+                detail = event.detail.as_deref(),
+                "startup progress"
+            );
+        }
+    }
+}
+
+fn emit_inline_startup_progress(
+    reporter: &StartupStepProgressReporter,
+    stage: &'static str,
+    outcome: StartupStepOutcome,
+    started_at: StdInstant,
+    budget: Option<StdDuration>,
+    detail: Option<String>,
+) {
+    report_startup_step_progress(
+        Some(reporter),
+        stage,
+        outcome,
+        started_at.elapsed(),
+        budget,
+        detail,
+    );
+}
+
+fn run_inline_startup_step<T, F>(
+    reporter: &StartupStepProgressReporter,
+    stage: &'static str,
+    budget: Option<StdDuration>,
+    operation: F,
+) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
+    let started_at = StdInstant::now();
+    emit_inline_startup_progress(
+        reporter,
+        stage,
+        StartupStepOutcome::Started,
+        started_at,
+        budget,
+        None,
+    );
+    match operation() {
+        Ok(value) => {
+            emit_inline_startup_progress(
+                reporter,
+                stage,
+                StartupStepOutcome::Completed,
+                started_at,
+                budget,
+                None,
+            );
+            Ok(value)
+        }
+        Err(error) => {
+            emit_inline_startup_progress(
+                reporter,
+                stage,
+                StartupStepOutcome::Failed,
+                started_at,
+                budget,
+                Some(format!("{error:#}")),
+            );
+            Err(error).with_context(|| format!("startup step {stage} failed"))
+        }
+    }
+}
+
+fn skip_inline_startup_step(
+    reporter: &StartupStepProgressReporter,
+    stage: &'static str,
+    detail: impl Into<String>,
+) {
+    let started_at = StdInstant::now();
+    emit_inline_startup_progress(
+        reporter,
+        stage,
+        StartupStepOutcome::Started,
+        started_at,
+        None,
+        None,
+    );
+    emit_inline_startup_progress(
+        reporter,
+        stage,
+        StartupStepOutcome::Skipped,
+        started_at,
+        None,
+        Some(detail.into()),
+    );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupWalCheckpointOutcome {
+    Deferred,
+}
+
+fn perform_startup_wal_checkpoint(
+    reporter: &StartupStepProgressReporter,
+) -> StartupWalCheckpointOutcome {
+    skip_inline_startup_step(
+        reporter,
+        "startup_sqlite_wal_checkpoint",
+        STARTUP_WAL_CHECKPOINT_DEFER_REASON,
+    );
+    StartupWalCheckpointOutcome::Deferred
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli_config = parse_config_arg();
@@ -172,92 +325,80 @@ async fn main() -> Result<()> {
             "ignoring invalid ingestion source override file"
         );
     }
-    validate_execution_runtime_contract(&config.execution, &config.system.env)?;
-    validate_execution_risk_contract(&config.risk)?;
-    validate_live_execution_policy_contract(&config.execution, &config.risk, &config.system.env)?;
-
-    let mut store = SqliteStore::open(Path::new(&config.sqlite.path))
-        .context("failed to initialize sqlite store")?;
     let migrations_dir = resolve_migrations_dir(&loaded_config_path, &config.system.migrations_dir);
-    let applied = store
-        .run_migrations(&migrations_dir)
-        .with_context(|| format!("failed to apply migrations in {}", migrations_dir.display()))?;
+    let startup_reporter = build_startup_progress_reporter();
+    run_inline_startup_step(
+        &startup_reporter,
+        "startup_config_validation",
+        Some(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
+        || {
+            validate_execution_runtime_contract(&config.execution, &config.system.env)?;
+            validate_execution_risk_contract(&config.risk)?;
+            validate_live_execution_policy_contract(
+                &config.execution,
+                &config.risk,
+                &config.system.env,
+            )?;
+            Ok(())
+        },
+    )?;
+
+    let sqlite_startup_policy = SqliteStartupPolicy {
+        open_step: startup_step_policy(STARTUP_REQUIRED_STEP_TIMEOUT),
+        pragma_step: startup_step_policy(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
+        schema_bootstrap_step: startup_step_policy(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
+        migrations_scan_step: startup_step_policy(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
+        migrations_apply_step: startup_step_policy(STARTUP_REQUIRED_STEP_TIMEOUT),
+    };
+    let bootstrap = SqliteStore::open_and_migrate_for_startup(
+        Path::new(&config.sqlite.path),
+        &migrations_dir,
+        &sqlite_startup_policy,
+        Some(&startup_reporter),
+    )
+    .context("failed to initialize sqlite store")?;
+    let store = bootstrap.store;
+    let applied = bootstrap.applied_migrations;
     info!(applied, "sqlite migrations applied");
-    match store.checkpoint_wal_truncate() {
-        Ok((busy, log_frames, checkpointed_frames)) if busy == 0 => {
-            info!(
-                wal_checkpoint_mode = "truncate",
-                wal_checkpoint_busy = busy,
-                wal_log_frames = log_frames,
-                wal_checkpointed_frames = checkpointed_frames,
-                "startup sqlite wal checkpoint completed"
+    match perform_startup_wal_checkpoint(&startup_reporter) {
+        StartupWalCheckpointOutcome::Deferred => {
+            warn!(
+                reason = STARTUP_WAL_CHECKPOINT_DEFER_REASON,
+                "startup sqlite wal checkpoint deferred"
             );
         }
-        Ok((busy, log_frames, checkpointed_frames)) => match store.checkpoint_wal_passive() {
-            Ok((passive_busy, passive_log_frames, passive_checkpointed_frames)) => {
-                warn!(
-                    wal_checkpoint_mode = "truncate_then_passive",
-                    wal_checkpoint_busy = busy,
-                    wal_log_frames = log_frames,
-                    wal_checkpointed_frames = checkpointed_frames,
-                    wal_passive_checkpoint_busy = passive_busy,
-                    wal_passive_log_frames = passive_log_frames,
-                    wal_passive_checkpointed_frames = passive_checkpointed_frames,
-                    "startup sqlite wal truncate checkpoint was blocked; passive checkpoint attempted"
-                );
-            }
-            Err(error) => {
-                if startup_sqlite_wal_checkpoint_error_requires_abort(None, Some(&error)) {
-                    return Err(error)
-                        .context("startup sqlite wal checkpoint failed with fatal sqlite I/O");
-                }
-                warn!(
-                    error = %error,
-                    wal_checkpoint_mode = "truncate_then_passive",
-                    wal_checkpoint_busy = busy,
-                    wal_log_frames = log_frames,
-                    wal_checkpointed_frames = checkpointed_frames,
-                    "startup sqlite wal truncate checkpoint was blocked and passive fallback failed"
-                );
-            }
-        },
-        Err(error) => match store.checkpoint_wal_passive() {
-            Ok((passive_busy, passive_log_frames, passive_checkpointed_frames)) => {
-                warn!(
-                    error = %error,
-                    wal_checkpoint_mode = "passive_fallback",
-                    wal_passive_checkpoint_busy = passive_busy,
-                    wal_passive_log_frames = passive_log_frames,
-                    wal_passive_checkpointed_frames = passive_checkpointed_frames,
-                    "startup sqlite wal truncate checkpoint failed; passive checkpoint attempted"
-                );
-            }
-            Err(passive_error) => {
-                if startup_sqlite_wal_checkpoint_error_requires_abort(
-                    Some(&error),
-                    Some(&passive_error),
-                ) {
-                    return Err(passive_error)
-                        .context("startup sqlite wal checkpoints failed with fatal sqlite I/O");
-                }
-                warn!(
-                    error = %error,
-                    fallback_error = %passive_error,
-                    "startup sqlite wal checkpoints failed (non-fatal, continuing)"
-                );
-            }
-        },
     }
 
-    store
-        .record_heartbeat("copybot-app", "startup")
-        .context("failed to write startup heartbeat")?;
-    let alert_dispatcher =
-        AlertDispatcher::from_env().context("failed to initialize alert delivery")?;
+    let mut store = run_observed_startup_step(
+        "startup_sqlite_heartbeat",
+        startup_step_policy(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
+        Some(&startup_reporter),
+        move || {
+            store
+                .record_heartbeat("copybot-app", "startup")
+                .context("failed to write startup heartbeat")?;
+            Ok(store)
+        },
+    )?;
+    let alert_dispatcher = run_inline_startup_step(
+        &startup_reporter,
+        "startup_alert_dispatcher_init",
+        Some(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
+        AlertDispatcher::from_env,
+    )
+    .context("failed to initialize alert delivery")?;
     if let Some(dispatcher) = &alert_dispatcher {
-        store
-            .ensure_alert_delivery_cursor("webhook")
-            .context("failed to initialize alert delivery cursor")?;
+        store = run_observed_startup_step(
+            "startup_alert_delivery_cursor",
+            startup_step_policy(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
+            Some(&startup_reporter),
+            move || {
+                store
+                    .ensure_alert_delivery_cursor("webhook")
+                    .context("failed to initialize alert delivery cursor")?;
+                Ok(store)
+            },
+        )?;
         if dispatcher.test_on_startup() {
             dispatcher
                 .send_startup_test(&config.system.env)
@@ -265,39 +406,53 @@ async fn main() -> Result<()> {
                 .context("failed sending startup alert delivery test")?;
             info!("startup alert delivery test sent");
         }
+    } else {
+        skip_inline_startup_step(
+            &startup_reporter,
+            "startup_alert_delivery_cursor",
+            "alert_dispatcher_disabled",
+        );
     }
 
-    let ingestion = IngestionService::build(&config.ingestion)
-        .context("failed to initialize ingestion service")?;
-    let discovery_http_url = select_role_helius_http_url(
-        &config.discovery.helius_http_url,
-        &config.ingestion.helius_http_url,
-    );
-    let shadow_http_url = select_role_helius_http_url(
-        &config.shadow.helius_http_url,
-        &config.ingestion.helius_http_url,
-    );
-    let discovery_http_url = enforce_quality_gate_http_url(
-        "discovery",
-        &config.system.env,
-        config.shadow.quality_gates_enabled,
-        discovery_http_url,
+    let (ingestion, discovery, shadow, execution_runtime) = run_inline_startup_step(
+        &startup_reporter,
+        "startup_runtime_service_init",
+        Some(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
+        || {
+            let ingestion = IngestionService::build(&config.ingestion)
+                .context("failed to initialize ingestion service")?;
+            let discovery_http_url = select_role_helius_http_url(
+                &config.discovery.helius_http_url,
+                &config.ingestion.helius_http_url,
+            );
+            let shadow_http_url = select_role_helius_http_url(
+                &config.shadow.helius_http_url,
+                &config.ingestion.helius_http_url,
+            );
+            let discovery_http_url = enforce_quality_gate_http_url(
+                "discovery",
+                &config.system.env,
+                config.shadow.quality_gates_enabled,
+                discovery_http_url,
+            )?;
+            let shadow_http_url = enforce_quality_gate_http_url(
+                "shadow",
+                &config.system.env,
+                config.shadow.quality_gates_enabled,
+                shadow_http_url,
+            )?;
+            validate_shadow_quality_gate_contract(&config.shadow, &config.system.env)?;
+            let discovery = DiscoveryService::new_with_helius(
+                config.discovery.clone(),
+                config.shadow.clone(),
+                discovery_http_url.clone(),
+            );
+            let shadow = ShadowService::new_with_helius(config.shadow.clone(), shadow_http_url);
+            let execution_runtime =
+                ExecutionRuntime::from_config(config.execution.clone(), config.risk.clone());
+            Ok((ingestion, discovery, shadow, execution_runtime))
+        },
     )?;
-    let shadow_http_url = enforce_quality_gate_http_url(
-        "shadow",
-        &config.system.env,
-        config.shadow.quality_gates_enabled,
-        shadow_http_url,
-    )?;
-    validate_shadow_quality_gate_contract(&config.shadow, &config.system.env)?;
-    let discovery = DiscoveryService::new_with_helius(
-        config.discovery.clone(),
-        config.shadow.clone(),
-        discovery_http_url.clone(),
-    );
-    let shadow = ShadowService::new_with_helius(config.shadow.clone(), shadow_http_url);
-    let execution_runtime =
-        ExecutionRuntime::from_config(config.execution.clone(), config.risk.clone());
     let discovery_scoring_retention_days = config
         .discovery
         .scoring_window_days
@@ -310,6 +465,23 @@ async fn main() -> Result<()> {
         min_token_age_hint_seconds: Some(config.shadow.min_token_age_seconds),
     };
 
+    let app_loop_handoff_started = StdInstant::now();
+    emit_inline_startup_progress(
+        &startup_reporter,
+        "startup_app_loop_handoff",
+        StartupStepOutcome::Started,
+        app_loop_handoff_started,
+        None,
+        None,
+    );
+    emit_inline_startup_progress(
+        &startup_reporter,
+        "startup_app_loop_handoff",
+        StartupStepOutcome::Completed,
+        app_loop_handoff_started,
+        None,
+        None,
+    );
     run_app_loop(
         store,
         ingestion,
@@ -396,6 +568,7 @@ fn parse_ingestion_source_override(content: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
+#[cfg(test)]
 fn startup_sqlite_wal_checkpoint_error_requires_abort(
     primary_error: Option<&anyhow::Error>,
     fallback_error: Option<&anyhow::Error>,
@@ -2766,6 +2939,14 @@ async fn run_app_loop(
     pause_new_trades_on_outage: bool,
     alert_dispatcher: Option<AlertDispatcher>,
 ) -> Result<()> {
+    info!(
+        heartbeat_seconds,
+        discovery_fetch_refresh_seconds,
+        discovery_refresh_seconds,
+        shadow_refresh_seconds,
+        sqlite_path = %sqlite_path,
+        "app runtime loop started"
+    );
     let execution_runtime = Arc::new(execution_runtime);
     let mut interval = time::interval(Duration::from_secs(heartbeat_seconds.max(1)));
     let mut execution_interval = time::interval(Duration::from_millis(
@@ -9506,6 +9687,161 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
             Some(&primary),
             Some(&fallback)
         ));
+    }
+
+    #[test]
+    fn inline_startup_step_reports_started_and_completed() -> Result<()> {
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reporter_events = events.clone();
+        let reporter: StartupStepProgressReporter = std::sync::Arc::new(move |event| {
+            reporter_events
+                .lock()
+                .expect("startup reporter mutex poisoned")
+                .push(event);
+        });
+
+        let value = run_inline_startup_step(
+            &reporter,
+            "startup_inline_complete",
+            Some(StdDuration::from_millis(50)),
+            || Ok::<u64, anyhow::Error>(7),
+        )?;
+        assert_eq!(value, 7);
+
+        let recorded = events.lock().expect("startup reporter mutex poisoned");
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == "startup_inline_complete"
+                    && event.outcome == StartupStepOutcome::Started
+            }),
+            "inline startup step must emit a started outcome"
+        );
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == "startup_inline_complete"
+                    && event.outcome == StartupStepOutcome::Completed
+            }),
+            "inline startup step must emit a completed outcome"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn inline_startup_step_reports_failed_outcome() {
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reporter_events = events.clone();
+        let reporter: StartupStepProgressReporter = std::sync::Arc::new(move |event| {
+            reporter_events
+                .lock()
+                .expect("startup reporter mutex poisoned")
+                .push(event);
+        });
+
+        let error = run_inline_startup_step(
+            &reporter,
+            "startup_inline_failure",
+            Some(StdDuration::from_millis(50)),
+            || -> Result<()> { Err(anyhow!("inline startup failure")) },
+        )
+        .expect_err("failed inline startup step must surface an explicit error");
+        assert!(
+            error
+                .to_string()
+                .contains("startup step startup_inline_failure failed"),
+            "failed inline startup step must be wrapped with the stage name"
+        );
+
+        let recorded = events.lock().expect("startup reporter mutex poisoned");
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == "startup_inline_failure"
+                    && event.outcome == StartupStepOutcome::Failed
+                    && event
+                        .detail
+                        .as_deref()
+                        .is_some_and(|detail| detail.contains("inline startup failure"))
+            }),
+            "failed inline startup step must emit an explicit failed outcome with detail"
+        );
+    }
+
+    #[test]
+    fn skipped_inline_startup_step_reports_started_and_skipped() {
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reporter_events = events.clone();
+        let reporter: StartupStepProgressReporter = std::sync::Arc::new(move |event| {
+            reporter_events
+                .lock()
+                .expect("startup reporter mutex poisoned")
+                .push(event);
+        });
+
+        skip_inline_startup_step(&reporter, "startup_inline_skipped", "not_required_for_test");
+
+        let recorded = events.lock().expect("startup reporter mutex poisoned");
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == "startup_inline_skipped"
+                    && event.outcome == StartupStepOutcome::Started
+            }),
+            "skipped inline startup step must emit a started outcome"
+        );
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == "startup_inline_skipped"
+                    && event.outcome == StartupStepOutcome::Skipped
+                    && event.detail.as_deref() == Some("not_required_for_test")
+            }),
+            "skipped inline startup step must emit an explicit skipped outcome with detail"
+        );
+    }
+
+    #[test]
+    fn startup_step_policy_uses_fatal_timeout_behavior() {
+        let policy = startup_step_policy(StdDuration::from_secs(30));
+        assert_eq!(
+            policy.timeout_behavior,
+            StartupStepTimeoutBehavior::AbortProcess
+        );
+    }
+
+    #[test]
+    fn startup_wal_checkpoint_is_deferred_with_explicit_outcome() -> Result<()> {
+        let (store, db_path) = make_test_store("startup-wal-checkpoint-deferred")?;
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reporter_events = events.clone();
+        let reporter: StartupStepProgressReporter = std::sync::Arc::new(move |event| {
+            reporter_events
+                .lock()
+                .expect("startup reporter mutex poisoned")
+                .push(event);
+        });
+
+        let outcome = perform_startup_wal_checkpoint(&reporter);
+        assert_eq!(outcome, StartupWalCheckpointOutcome::Deferred);
+        store
+            .record_heartbeat("copybot-app", "startup-deferred-checkpoint")
+            .context("store should remain writable after deferred checkpoint")?;
+
+        let recorded = events.lock().expect("startup reporter mutex poisoned");
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == "startup_sqlite_wal_checkpoint"
+                    && event.outcome == StartupStepOutcome::Started
+            }),
+            "deferred checkpoint must emit a started outcome"
+        );
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == "startup_sqlite_wal_checkpoint"
+                    && event.outcome == StartupStepOutcome::Skipped
+                    && event.detail.as_deref() == Some(STARTUP_WAL_CHECKPOINT_DEFER_REASON)
+            }),
+            "deferred checkpoint must emit an explicit skipped outcome with reason"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
     }
 
     #[test]

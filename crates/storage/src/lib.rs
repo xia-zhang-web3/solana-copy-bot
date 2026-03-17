@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::Duration as StdDuration;
+use std::{fmt, thread};
 
 pub use copybot_core_types::{
     CopySignalRow, ExactSwapAmounts, ExecutionConfirmStateSnapshot, ExecutionOrderRow,
@@ -63,6 +65,101 @@ pub struct SqliteStore {
     conn: Connection,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartupStepOutcome {
+    Started,
+    Waiting,
+    Completed,
+    Failed,
+    TimedOut,
+    Skipped,
+}
+
+impl StartupStepOutcome {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Started => "started",
+            Self::Waiting => "waiting",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::TimedOut => "timed_out",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupStepProgress {
+    pub stage: &'static str,
+    pub outcome: StartupStepOutcome,
+    pub elapsed_ms: u64,
+    pub budget_ms: Option<u64>,
+    pub detail: Option<String>,
+}
+
+pub type StartupStepProgressReporter = Arc<dyn Fn(StartupStepProgress) + Send + Sync + 'static>;
+
+#[derive(Debug, Clone, Copy)]
+pub struct StartupStepRuntimePolicy {
+    pub wait_log_interval: StdDuration,
+    pub timeout: Option<StdDuration>,
+    pub timeout_behavior: StartupStepTimeoutBehavior,
+}
+
+impl StartupStepRuntimePolicy {
+    pub const fn new(wait_log_interval: StdDuration, timeout: Option<StdDuration>) -> Self {
+        Self {
+            wait_log_interval,
+            timeout,
+            timeout_behavior: StartupStepTimeoutBehavior::ReturnError,
+        }
+    }
+
+    pub const fn with_timeout_behavior(
+        mut self,
+        timeout_behavior: StartupStepTimeoutBehavior,
+    ) -> Self {
+        self.timeout_behavior = timeout_behavior;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupStepTimeoutBehavior {
+    ReturnError,
+    Panic,
+    AbortProcess,
+}
+
+impl StartupStepTimeoutBehavior {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReturnError => "return_error",
+            Self::Panic => "panic",
+            Self::AbortProcess => "abort_process",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupStepTimeout {
+    pub stage: &'static str,
+    pub elapsed_ms: u64,
+    pub budget_ms: u64,
+}
+
+impl fmt::Display for StartupStepTimeout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "startup step {} timed out after {}ms (budget={}ms)",
+            self.stage, self.elapsed_ms, self.budget_ms
+        )
+    }
+}
+
+impl std::error::Error for StartupStepTimeout {}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SqliteContentionSnapshot {
     pub write_retry_total: u64,
@@ -80,6 +177,47 @@ pub struct SqliteBatchedDeleteSummaryWithCompletion {
     pub deleted_rows: usize,
     pub batches: usize,
     pub completed_full_sweep: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SqliteStartupPolicy {
+    pub open_step: StartupStepRuntimePolicy,
+    pub pragma_step: StartupStepRuntimePolicy,
+    pub schema_bootstrap_step: StartupStepRuntimePolicy,
+    pub migrations_scan_step: StartupStepRuntimePolicy,
+    pub migrations_apply_step: StartupStepRuntimePolicy,
+}
+
+impl Default for SqliteStartupPolicy {
+    fn default() -> Self {
+        Self {
+            open_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_secs(5),
+                Some(StdDuration::from_secs(120)),
+            ),
+            pragma_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_secs(5),
+                Some(StdDuration::from_secs(30)),
+            ),
+            schema_bootstrap_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_secs(5),
+                Some(StdDuration::from_secs(30)),
+            ),
+            migrations_scan_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_secs(5),
+                Some(StdDuration::from_secs(30)),
+            ),
+            migrations_apply_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_secs(5),
+                Some(StdDuration::from_secs(120)),
+            ),
+        }
+    }
+}
+
+pub struct SqliteStartupBootstrapResult {
+    pub store: SqliteStore,
+    pub applied_migrations: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -123,6 +261,202 @@ pub fn sqlite_contention_snapshot() -> SqliteContentionSnapshot {
     SqliteContentionSnapshot {
         write_retry_total: SQLITE_WRITE_RETRY_TOTAL.load(Ordering::Relaxed),
         busy_error_total: SQLITE_BUSY_ERROR_TOTAL.load(Ordering::Relaxed),
+    }
+}
+
+fn startup_step_elapsed_ms(elapsed: StdDuration) -> u64 {
+    elapsed.as_millis().min(u64::MAX as u128) as u64
+}
+
+pub fn report_startup_step_progress(
+    reporter: Option<&StartupStepProgressReporter>,
+    stage: &'static str,
+    outcome: StartupStepOutcome,
+    elapsed: StdDuration,
+    budget: Option<StdDuration>,
+    detail: Option<String>,
+) {
+    if let Some(reporter) = reporter {
+        reporter(StartupStepProgress {
+            stage,
+            outcome,
+            elapsed_ms: startup_step_elapsed_ms(elapsed),
+            budget_ms: budget.map(startup_step_elapsed_ms),
+            detail,
+        });
+    }
+}
+
+pub fn log_startup_step_progress(progress: &StartupStepProgress) {
+    match progress.outcome {
+        StartupStepOutcome::Started | StartupStepOutcome::Completed => {
+            tracing::info!(
+                startup_stage = progress.stage,
+                startup_stage_outcome = progress.outcome.as_str(),
+                startup_stage_elapsed_ms = progress.elapsed_ms,
+                startup_stage_budget_ms = progress.budget_ms,
+                detail = progress.detail.as_deref(),
+                "startup stage progress"
+            );
+        }
+        StartupStepOutcome::Waiting | StartupStepOutcome::Skipped => {
+            tracing::warn!(
+                startup_stage = progress.stage,
+                startup_stage_outcome = progress.outcome.as_str(),
+                startup_stage_elapsed_ms = progress.elapsed_ms,
+                startup_stage_budget_ms = progress.budget_ms,
+                detail = progress.detail.as_deref(),
+                "startup stage progress"
+            );
+        }
+        StartupStepOutcome::Failed | StartupStepOutcome::TimedOut => {
+            tracing::error!(
+                startup_stage = progress.stage,
+                startup_stage_outcome = progress.outcome.as_str(),
+                startup_stage_elapsed_ms = progress.elapsed_ms,
+                startup_stage_budget_ms = progress.budget_ms,
+                detail = progress.detail.as_deref(),
+                "startup stage progress"
+            );
+        }
+    }
+}
+
+pub fn startup_step_progress_tracing_reporter() -> StartupStepProgressReporter {
+    Arc::new(|progress| log_startup_step_progress(&progress))
+}
+
+pub fn run_observed_startup_step<T, F>(
+    stage: &'static str,
+    policy: StartupStepRuntimePolicy,
+    reporter: Option<&StartupStepProgressReporter>,
+    operation: F,
+) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    report_startup_step_progress(
+        reporter,
+        stage,
+        StartupStepOutcome::Started,
+        StdDuration::ZERO,
+        policy.timeout,
+        None,
+    );
+
+    let started_at = std::time::Instant::now();
+    let (tx, rx) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _ = tx.send(operation());
+    });
+
+    let wait_slice = if policy.wait_log_interval.is_zero() {
+        StdDuration::from_millis(100)
+    } else {
+        policy.wait_log_interval
+    };
+
+    loop {
+        let elapsed = started_at.elapsed();
+        if let Some(timeout) = policy.timeout {
+            if elapsed >= timeout {
+                let timeout_error = StartupStepTimeout {
+                    stage,
+                    elapsed_ms: startup_step_elapsed_ms(elapsed),
+                    budget_ms: startup_step_elapsed_ms(timeout),
+                };
+                report_startup_step_progress(
+                    reporter,
+                    stage,
+                    StartupStepOutcome::TimedOut,
+                    elapsed,
+                    Some(timeout),
+                    Some(format!(
+                        "timeout_behavior={}",
+                        policy.timeout_behavior.as_str()
+                    )),
+                );
+                match policy.timeout_behavior {
+                    StartupStepTimeoutBehavior::ReturnError => {
+                        return Err(timeout_error.into());
+                    }
+                    StartupStepTimeoutBehavior::Panic => panic!("{timeout_error}"),
+                    StartupStepTimeoutBehavior::AbortProcess => {
+                        tracing::error!(
+                            startup_stage = stage,
+                            startup_stage_elapsed_ms = timeout_error.elapsed_ms,
+                            startup_stage_budget_ms = timeout_error.budget_ms,
+                            "startup timeout reached; aborting process because the blocked startup step is not cancellable in-process"
+                        );
+                        std::process::abort();
+                    }
+                }
+            }
+        }
+
+        let wait_for = match policy.timeout {
+            Some(timeout) => wait_slice.min(timeout.saturating_sub(elapsed)),
+            None => wait_slice,
+        };
+        let wait_for = if wait_for.is_zero() {
+            StdDuration::from_millis(1)
+        } else {
+            wait_for
+        };
+
+        match rx.recv_timeout(wait_for) {
+            Ok(result) => {
+                let elapsed = started_at.elapsed();
+                match result {
+                    Ok(value) => {
+                        report_startup_step_progress(
+                            reporter,
+                            stage,
+                            StartupStepOutcome::Completed,
+                            elapsed,
+                            policy.timeout,
+                            None,
+                        );
+                        return Ok(value);
+                    }
+                    Err(error) => {
+                        report_startup_step_progress(
+                            reporter,
+                            stage,
+                            StartupStepOutcome::Failed,
+                            elapsed,
+                            policy.timeout,
+                            Some(format!("{error:#}")),
+                        );
+                        return Err(error).with_context(|| format!("startup step {stage} failed"));
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                report_startup_step_progress(
+                    reporter,
+                    stage,
+                    StartupStepOutcome::Waiting,
+                    started_at.elapsed(),
+                    policy.timeout,
+                    None,
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let elapsed = started_at.elapsed();
+                report_startup_step_progress(
+                    reporter,
+                    stage,
+                    StartupStepOutcome::Failed,
+                    elapsed,
+                    policy.timeout,
+                    Some("startup worker thread disconnected".to_string()),
+                );
+                return Err(anyhow!("startup step worker thread disconnected"))
+                    .with_context(|| format!("startup step {stage} failed"));
+            }
+        }
     }
 }
 
@@ -846,6 +1180,86 @@ impl SqliteStore {
             );",
         )
         .context("failed to create schema_migrations table")?;
+
+        Ok(Self { conn })
+    }
+
+    pub fn open_for_startup(
+        path: &Path,
+        policy: &SqliteStartupPolicy,
+        reporter: Option<&StartupStepProgressReporter>,
+    ) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create sqlite parent dir: {}", parent.display())
+            })?;
+        }
+
+        let sqlite_path = path.to_path_buf();
+        let conn = run_observed_startup_step(
+            "sqlite_open_connection",
+            policy.open_step,
+            reporter,
+            move || {
+                Connection::open(&sqlite_path)
+                    .with_context(|| format!("failed to open sqlite db: {}", sqlite_path.display()))
+            },
+        )?;
+        let conn = run_observed_startup_step(
+            "sqlite_set_busy_timeout",
+            policy.pragma_step,
+            reporter,
+            move || {
+                conn.busy_timeout(StdDuration::from_secs(5))
+                    .context("failed to set sqlite busy_timeout")?;
+                Ok(conn)
+            },
+        )?;
+        let conn = run_observed_startup_step(
+            "sqlite_pragma_journal_mode_wal",
+            policy.pragma_step,
+            reporter,
+            move || {
+                conn.pragma_update(None, "journal_mode", "WAL")
+                    .context("failed to set sqlite journal mode WAL")?;
+                Ok(conn)
+            },
+        )?;
+        let conn = run_observed_startup_step(
+            "sqlite_pragma_synchronous_normal",
+            policy.pragma_step,
+            reporter,
+            move || {
+                conn.pragma_update(None, "synchronous", "NORMAL")
+                    .context("failed to set sqlite synchronous NORMAL")?;
+                Ok(conn)
+            },
+        )?;
+        let conn = run_observed_startup_step(
+            "sqlite_pragma_foreign_keys_on",
+            policy.pragma_step,
+            reporter,
+            move || {
+                conn.pragma_update(None, "foreign_keys", "ON")
+                    .context("failed to enable sqlite foreign keys")?;
+                Ok(conn)
+            },
+        )?;
+        let conn = run_observed_startup_step(
+            "sqlite_schema_migrations_bootstrap",
+            policy.schema_bootstrap_step,
+            reporter,
+            move || {
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS schema_migrations (
+                        version TEXT PRIMARY KEY,
+                        applied_at TEXT NOT NULL
+                    );",
+                )
+                .context("failed to create schema_migrations table")?;
+                Ok(conn)
+            },
+        )?;
 
         Ok(Self { conn })
     }
@@ -9420,6 +9834,196 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_startup_step_reports_started_and_completed() -> Result<()> {
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reporter_events = events.clone();
+        let reporter: StartupStepProgressReporter = std::sync::Arc::new(move |event| {
+            reporter_events
+                .lock()
+                .expect("startup reporter mutex poisoned")
+                .push(event);
+        });
+
+        let value = run_observed_startup_step(
+            "test_startup_step_complete",
+            StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_millis(250)),
+            ),
+            Some(&reporter),
+            || Ok::<usize, anyhow::Error>(7),
+        )?;
+        assert_eq!(value, 7);
+
+        let recorded = events.lock().expect("startup reporter mutex poisoned");
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == "test_startup_step_complete"
+                    && event.outcome == StartupStepOutcome::Started
+            }),
+            "startup step must emit a started event"
+        );
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == "test_startup_step_complete"
+                    && event.outcome == StartupStepOutcome::Completed
+            }),
+            "startup step must emit a completed event"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn observed_startup_step_times_out_with_explicit_progress() {
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reporter_events = events.clone();
+        let reporter: StartupStepProgressReporter = std::sync::Arc::new(move |event| {
+            reporter_events
+                .lock()
+                .expect("startup reporter mutex poisoned")
+                .push(event);
+        });
+
+        let error = run_observed_startup_step(
+            "test_startup_step_timeout",
+            StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_millis(30)),
+            ),
+            Some(&reporter),
+            || {
+                std::thread::sleep(StdDuration::from_millis(80));
+                Ok::<(), anyhow::Error>(())
+            },
+        )
+        .expect_err("slow startup step must fail explicitly on timeout");
+        assert!(
+            error.downcast_ref::<StartupStepTimeout>().is_some(),
+            "timeout must surface as StartupStepTimeout for explicit diagnosis"
+        );
+
+        let recorded = events.lock().expect("startup reporter mutex poisoned");
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == "test_startup_step_timeout"
+                    && event.outcome == StartupStepOutcome::Waiting
+            }),
+            "slow startup step must emit waiting progress before timeout"
+        );
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == "test_startup_step_timeout"
+                    && event.outcome == StartupStepOutcome::TimedOut
+            }),
+            "slow startup step must emit an explicit timed_out outcome"
+        );
+    }
+
+    #[test]
+    fn observed_startup_step_fatal_timeout_panics_instead_of_returning() {
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reporter_events = events.clone();
+        let reporter: StartupStepProgressReporter = std::sync::Arc::new(move |event| {
+            reporter_events
+                .lock()
+                .expect("startup reporter mutex poisoned")
+                .push(event);
+        });
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = run_observed_startup_step(
+                "test_startup_step_fatal_timeout",
+                StartupStepRuntimePolicy::new(
+                    StdDuration::from_millis(10),
+                    Some(StdDuration::from_millis(30)),
+                )
+                .with_timeout_behavior(StartupStepTimeoutBehavior::Panic),
+                Some(&reporter),
+                || {
+                    std::thread::sleep(StdDuration::from_millis(80));
+                    Ok::<(), anyhow::Error>(())
+                },
+            );
+        }));
+        assert!(
+            panic.is_err(),
+            "fatal timeout policy must not return normally"
+        );
+        std::thread::sleep(StdDuration::from_millis(100));
+
+        let recorded = events.lock().expect("startup reporter mutex poisoned");
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == "test_startup_step_fatal_timeout"
+                    && event.outcome == StartupStepOutcome::TimedOut
+            }),
+            "fatal timeout path must still emit a timed_out outcome"
+        );
+    }
+
+    #[test]
+    fn sqlite_startup_bootstrap_reports_stage_progress() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("sqlite-startup-bootstrap-progress.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reporter_events = events.clone();
+        let reporter: StartupStepProgressReporter = std::sync::Arc::new(move |event| {
+            reporter_events
+                .lock()
+                .expect("startup reporter mutex poisoned")
+                .push(event);
+        });
+        let policy = SqliteStartupPolicy {
+            open_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            pragma_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            schema_bootstrap_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            migrations_scan_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            migrations_apply_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+        };
+
+        let bootstrap = SqliteStore::open_and_migrate_for_startup(
+            Path::new(&db_path),
+            &migration_dir,
+            &policy,
+            Some(&reporter),
+        )?;
+        assert!(bootstrap.applied_migrations > 0);
+
+        let recorded = events.lock().expect("startup reporter mutex poisoned");
+        for stage in [
+            "sqlite_open_connection",
+            "sqlite_pragma_journal_mode_wal",
+            "sqlite_schema_migrations_bootstrap",
+            "sqlite_migrations_scan",
+            "sqlite_migrations_apply",
+        ] {
+            assert!(
+                recorded.iter().any(|event| {
+                    event.stage == stage && event.outcome == StartupStepOutcome::Completed
+                }),
+                "startup bootstrap must emit completed progress for stage {stage}"
+            );
+        }
         Ok(())
     }
 }
