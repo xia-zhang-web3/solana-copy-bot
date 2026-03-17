@@ -1,4 +1,5 @@
 use super::{
+    DiscoveryPublicationStateRow, DiscoveryPublicationStateUpdate, DiscoveryRuntimeMode,
     DiscoveryTrustedSelectionStateRow, DiscoveryTrustedSelectionStateUpdate,
     FollowlistUpdateResult, PersistedWalletMetricSnapshotRow, SqliteStore,
     StartupTrustedSelectionGateStatus, TrustedSelectionState, TrustedSnapshotSourceKind,
@@ -175,6 +176,143 @@ impl SqliteStore {
         })
         .context("failed updating discovery trusted selection bootstrap requirement")?;
         Ok(())
+    }
+
+    pub fn discovery_publication_state(&self) -> Result<Option<DiscoveryPublicationStateRow>> {
+        self.ensure_discovery_strategy_state_table()?;
+        let raw = self
+            .conn
+            .query_row(
+                "SELECT
+                    publication_runtime_mode,
+                    publication_reason,
+                    publication_last_published_at,
+                    publication_last_published_window_start,
+                    publication_scoring_source,
+                    updated_at
+                 FROM discovery_strategy_state
+                 WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("failed reading discovery publication state")?;
+        raw.map(
+            |(
+                runtime_mode_raw,
+                reason,
+                last_published_at_raw,
+                last_published_window_start_raw,
+                published_scoring_source,
+                updated_at_raw,
+            )| {
+                Ok(DiscoveryPublicationStateRow {
+                    runtime_mode: DiscoveryRuntimeMode::parse(&runtime_mode_raw)?,
+                    reason,
+                    last_published_at: parse_optional_rfc3339_utc(
+                        last_published_at_raw,
+                        "discovery_strategy_state.publication_last_published_at",
+                    )?,
+                    last_published_window_start: parse_optional_rfc3339_utc(
+                        last_published_window_start_raw,
+                        "discovery_strategy_state.publication_last_published_window_start",
+                    )?,
+                    published_scoring_source,
+                    updated_at: parse_rfc3339_utc(
+                        &updated_at_raw,
+                        "discovery_strategy_state.updated_at",
+                    )?,
+                })
+            },
+        )
+        .transpose()
+    }
+
+    pub fn set_discovery_publication_state(
+        &self,
+        update: &DiscoveryPublicationStateUpdate,
+    ) -> Result<()> {
+        self.ensure_discovery_strategy_state_table()?;
+        self.execute_with_retry(|conn| {
+            conn.execute(
+                "INSERT INTO discovery_strategy_state(
+                    id,
+                    publication_runtime_mode,
+                    publication_reason,
+                    publication_last_published_at,
+                    publication_last_published_window_start,
+                    publication_scoring_source,
+                    updated_at
+                 ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(id) DO UPDATE SET
+                    publication_runtime_mode = excluded.publication_runtime_mode,
+                    publication_reason = excluded.publication_reason,
+                    publication_last_published_at = COALESCE(
+                        excluded.publication_last_published_at,
+                        discovery_strategy_state.publication_last_published_at
+                    ),
+                    publication_last_published_window_start = COALESCE(
+                        excluded.publication_last_published_window_start,
+                        discovery_strategy_state.publication_last_published_window_start
+                    ),
+                    publication_scoring_source = excluded.publication_scoring_source,
+                    updated_at = excluded.updated_at",
+                params![
+                    update.runtime_mode.as_str(),
+                    &update.reason,
+                    update.last_published_at.map(|ts| ts.to_rfc3339()),
+                    update
+                        .last_published_window_start
+                        .map(canonical_wallet_metrics_window_start),
+                    update.published_scoring_source.as_deref(),
+                    Utc::now().to_rfc3339(),
+                ],
+            )
+        })
+        .context("failed updating discovery publication state")?;
+        Ok(())
+    }
+
+    pub fn recent_published_follow_wallets(
+        &self,
+        now: DateTime<Utc>,
+        max_age: chrono::Duration,
+        scoring_window_days: i64,
+        metric_snapshot_interval_seconds: u64,
+    ) -> Result<Option<HashSet<String>>> {
+        let Some(state) = self.discovery_publication_state()? else {
+            return Ok(None);
+        };
+        if state.runtime_mode == DiscoveryRuntimeMode::FailClosed {
+            return Ok(None);
+        }
+        let Some(last_published_at) = state.last_published_at else {
+            return Ok(None);
+        };
+        if now.signed_duration_since(last_published_at) > max_age {
+            return Ok(None);
+        }
+        if !state.has_valid_recent_published_universe(
+            now,
+            scoring_window_days,
+            metric_snapshot_interval_seconds,
+        ) {
+            return Ok(None);
+        }
+        let active_wallets = self.list_active_follow_wallets()?;
+        if active_wallets.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(active_wallets))
     }
 
     pub fn discovery_trusted_selection_state(
@@ -1261,6 +1399,11 @@ impl SqliteStore {
                     active_trusted_snapshot_window_start TEXT,
                     last_trusted_bootstrap_source_kind TEXT,
                     last_trusted_bootstrap_at TEXT,
+                    publication_runtime_mode TEXT NOT NULL DEFAULT 'fail_closed',
+                    publication_reason TEXT NOT NULL DEFAULT '',
+                    publication_last_published_at TEXT,
+                    publication_last_published_window_start TEXT,
+                    publication_scoring_source TEXT,
                     updated_at TEXT NOT NULL
                 )",
             )
@@ -1325,6 +1468,53 @@ impl SqliteStore {
                     [],
                 )
                 .context("failed adding discovery_strategy_state.last_trusted_bootstrap_at")?;
+        }
+        if !columns.contains("publication_runtime_mode") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN publication_runtime_mode TEXT NOT NULL DEFAULT 'fail_closed'",
+                    [],
+                )
+                .context("failed adding discovery_strategy_state.publication_runtime_mode")?;
+        }
+        if !columns.contains("publication_reason") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN publication_reason TEXT NOT NULL DEFAULT ''",
+                    [],
+                )
+                .context("failed adding discovery_strategy_state.publication_reason")?;
+        }
+        if !columns.contains("publication_last_published_at") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN publication_last_published_at TEXT",
+                    [],
+                )
+                .context("failed adding discovery_strategy_state.publication_last_published_at")?;
+        }
+        if !columns.contains("publication_last_published_window_start") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN publication_last_published_window_start TEXT",
+                    [],
+                )
+                .context(
+                    "failed adding discovery_strategy_state.publication_last_published_window_start",
+                )?;
+        }
+        if !columns.contains("publication_scoring_source") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN publication_scoring_source TEXT",
+                    [],
+                )
+                .context("failed adding discovery_strategy_state.publication_scoring_source")?;
         }
         Ok(())
     }

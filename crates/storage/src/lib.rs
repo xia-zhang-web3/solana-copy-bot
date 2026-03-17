@@ -139,6 +139,33 @@ pub struct FollowlistUpdateResult {
     pub deactivated: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DiscoveryRuntimeMode {
+    Healthy,
+    Degraded,
+    #[default]
+    FailClosed,
+}
+
+impl DiscoveryRuntimeMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::Degraded => "degraded",
+            Self::FailClosed => "fail_closed",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw {
+            "healthy" => Ok(Self::Healthy),
+            "degraded" => Ok(Self::Degraded),
+            "fail_closed" => Ok(Self::FailClosed),
+            _ => Err(anyhow!("invalid discovery runtime mode: {raw}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct WalletActivityDayRow {
     pub wallet_id: String,
@@ -264,6 +291,15 @@ pub struct DiscoveryTrustedSelectionStateUpdate {
 }
 
 #[derive(Debug, Clone)]
+pub struct DiscoveryPublicationStateUpdate {
+    pub runtime_mode: DiscoveryRuntimeMode,
+    pub reason: String,
+    pub last_published_at: Option<DateTime<Utc>>,
+    pub last_published_window_start: Option<DateTime<Utc>>,
+    pub published_scoring_source: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct DiscoveryTrustedSelectionStateRow {
     pub bootstrap_required: bool,
     pub reason: String,
@@ -273,6 +309,47 @@ pub struct DiscoveryTrustedSelectionStateRow {
     pub last_bootstrap_source_kind: Option<TrustedSnapshotSourceKind>,
     pub last_bootstrap_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoveryPublicationStateRow {
+    pub runtime_mode: DiscoveryRuntimeMode,
+    pub reason: String,
+    pub last_published_at: Option<DateTime<Utc>>,
+    pub last_published_window_start: Option<DateTime<Utc>>,
+    pub published_scoring_source: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl DiscoveryPublicationStateRow {
+    fn expected_metrics_window_start(
+        now: DateTime<Utc>,
+        scoring_window_days: i64,
+        metric_snapshot_interval_seconds: u64,
+    ) -> DateTime<Utc> {
+        let interval_seconds = metric_snapshot_interval_seconds.max(1) as i64;
+        let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
+        let bucketed_now = DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(now);
+        bucketed_now - Duration::days(scoring_window_days.max(1))
+    }
+
+    pub fn has_valid_recent_published_universe(
+        &self,
+        now: DateTime<Utc>,
+        scoring_window_days: i64,
+        metric_snapshot_interval_seconds: u64,
+    ) -> bool {
+        let Some(last_published_window_start) = self.last_published_window_start else {
+            return false;
+        };
+        let expected_metrics_window_start = Self::expected_metrics_window_start(
+            now,
+            scoring_window_days,
+            metric_snapshot_interval_seconds,
+        );
+        let max_lag = Duration::seconds(metric_snapshot_interval_seconds.max(1) as i64);
+        last_published_window_start + max_lag >= expected_metrics_window_start
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -5924,6 +6001,41 @@ mod tests {
             Some(TrustedSelectionState::Invalid)
         );
         assert!(status.effective_startup_fail_closed(now, 5, 30 * 60, 60 * 60));
+        Ok(())
+    }
+
+    #[test]
+    fn recent_published_follow_wallets_rejects_bucket_stale_published_universe() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("recent-published-follow-wallets-bucket-stale.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:00:00+00:00")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        store.activate_follow_wallet(
+            "wallet-published-stale",
+            now - Duration::minutes(50),
+            "seed-published-followlist",
+        )?;
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            reason: "bucket_stale_recent_publish".to_string(),
+            last_published_at: Some(now - Duration::minutes(45)),
+            last_published_window_start: Some(now - Duration::days(5) - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+        })?;
+
+        let recent_wallets =
+            store.recent_published_follow_wallets(now, Duration::hours(1), 5, 30 * 60)?;
+        assert!(
+            recent_wallets.is_none(),
+            "bucket-stale published universe must not be treated as runtime fallback even when last_published_at is still within max_age"
+        );
         Ok(())
     }
 

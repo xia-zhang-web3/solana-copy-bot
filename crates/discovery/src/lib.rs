@@ -3,11 +3,11 @@ use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
 use copybot_storage::{
-    is_fatal_sqlite_anyhow_error, DiscoveryRuntimeCursor, DiscoveryTrustedSelectionStateUpdate,
-    PersistedWalletMetricSnapshotRow, SqliteStore, StartupTrustedSelectionGateStatus,
-    TrustedSelectionState, TrustedSnapshotSourceKind, TrustedWalletMetricsSnapshotRow,
-    TrustedWalletMetricsSnapshotWrite, WalletMetricRow, WalletScoringBuyFactRow,
-    WalletScoringQualitySource, WalletUpsertRow,
+    is_fatal_sqlite_anyhow_error, DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor,
+    DiscoveryRuntimeMode, DiscoveryTrustedSelectionStateUpdate, PersistedWalletMetricSnapshotRow,
+    SqliteStore, StartupTrustedSelectionGateStatus, TrustedSelectionState,
+    TrustedSnapshotSourceKind, TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite,
+    WalletMetricRow, WalletScoringBuyFactRow, WalletScoringQualitySource, WalletUpsertRow,
 };
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -160,6 +160,7 @@ pub struct DiscoverySummary {
     pub active_follow_wallets: usize,
     pub top_wallets: Vec<String>,
     pub published: bool,
+    pub runtime_mode: DiscoveryRuntimeMode,
     pub scoring_source: &'static str,
     pub trusted_selection_fail_closed: bool,
     pub raw_window_cap_truncated: bool,
@@ -324,6 +325,12 @@ fn snapshot_age_seconds_since_publish(
 }
 
 impl DiscoverySummary {
+    fn with_runtime_mode(mut self, runtime_mode: DiscoveryRuntimeMode) -> Self {
+        self.runtime_mode = runtime_mode;
+        self.trusted_selection_fail_closed = runtime_mode == DiscoveryRuntimeMode::FailClosed;
+        self
+    }
+
     fn with_scoring_source(mut self, scoring_source: &'static str) -> Self {
         self.scoring_source = scoring_source;
         self
@@ -414,16 +421,20 @@ enum PreparedCycleState {
         followlist_activations_suppressed: bool,
         followlist_deactivations_suppressed: bool,
     },
-    Empty {
-        publish_due: bool,
-        followlist_deactivations_suppressed: bool,
-        bootstrap_from_persisted_metrics: bool,
-    },
     Cached {
         publish_due: bool,
         followlist_activations_suppressed: bool,
         followlist_deactivations_suppressed: bool,
         summary: DiscoverySummary,
+    },
+    Degraded {
+        publish_due: bool,
+        active_wallets: HashSet<String>,
+        scoring_source: &'static str,
+    },
+    Unusable {
+        publish_due: bool,
+        scoring_source: &'static str,
     },
     Recompute {
         publish_due: bool,
@@ -432,22 +443,16 @@ enum PreparedCycleState {
         metrics_persistence_suppressed: bool,
         swaps: VecDeque<SwapEvent>,
     },
-    PersistedBootstrap {
-        publish_due: bool,
-        followlist_activations_suppressed: bool,
-        followlist_deactivations_suppressed: bool,
-        scoring_source: &'static str,
-    },
 }
 
 impl PreparedCycleState {
     fn publish_due(&self) -> bool {
         match self {
             Self::AggregateRecompute { publish_due, .. }
-            | Self::Empty { publish_due, .. }
             | Self::Cached { publish_due, .. }
-            | Self::Recompute { publish_due, .. }
-            | Self::PersistedBootstrap { publish_due, .. } => *publish_due,
+            | Self::Degraded { publish_due, .. }
+            | Self::Unusable { publish_due, .. }
+            | Self::Recompute { publish_due, .. } => *publish_due,
         }
     }
 
@@ -464,22 +469,15 @@ impl PreparedCycleState {
             | Self::Recompute {
                 followlist_activations_suppressed,
                 ..
-            }
-            | Self::PersistedBootstrap {
-                followlist_activations_suppressed,
-                ..
             } => *followlist_activations_suppressed,
-            Self::Empty { .. } => false,
+            Self::Degraded { .. } => true,
+            Self::Unusable { .. } => true,
         }
     }
 
     fn followlist_deactivations_suppressed(&self) -> bool {
         match self {
             Self::AggregateRecompute {
-                followlist_deactivations_suppressed,
-                ..
-            }
-            | Self::Empty {
                 followlist_deactivations_suppressed,
                 ..
             }
@@ -490,11 +488,9 @@ impl PreparedCycleState {
             | Self::Recompute {
                 followlist_deactivations_suppressed,
                 ..
-            }
-            | Self::PersistedBootstrap {
-                followlist_deactivations_suppressed,
-                ..
             } => *followlist_deactivations_suppressed,
+            Self::Degraded { .. } => true,
+            Self::Unusable { .. } => true,
         }
     }
 }
@@ -717,6 +713,172 @@ impl DiscoveryService {
         })
     }
 
+    pub fn published_universe_max_age(&self) -> Duration {
+        Duration::seconds(
+            self.config
+                .metric_snapshot_interval_seconds
+                .max(self.config.refresh_seconds.max(1))
+                .saturating_mul(2) as i64,
+        )
+    }
+
+    pub fn runtime_published_universe_max_age(&self) -> Duration {
+        self.published_universe_max_age()
+    }
+
+    pub fn runtime_scoring_window_days(&self) -> i64 {
+        self.config.scoring_window_days as i64
+    }
+
+    pub fn runtime_metric_snapshot_interval_seconds(&self) -> u64 {
+        self.config.metric_snapshot_interval_seconds
+    }
+
+    fn persist_publication_state(
+        &self,
+        store: &SqliteStore,
+        runtime_mode: DiscoveryRuntimeMode,
+        publish_due: bool,
+        published_window_start: DateTime<Utc>,
+        scoring_source: &'static str,
+        reason: &str,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        if !publish_due {
+            return Ok(());
+        }
+        let published_universe = runtime_mode == DiscoveryRuntimeMode::Healthy;
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode,
+            reason: reason.to_string(),
+            last_published_at: published_universe.then_some(now),
+            last_published_window_start: published_universe.then_some(published_window_start),
+            published_scoring_source: Some(scoring_source.to_string()),
+        })
+    }
+
+    fn degraded_summary_from_published_universe(
+        &self,
+        store: &SqliteStore,
+        window_start: DateTime<Utc>,
+        metrics_window_start: DateTime<Utc>,
+        publish_due: bool,
+        active_wallets: HashSet<String>,
+        cap_truncation_telemetry: &CapTruncationTelemetrySnapshot,
+        scoring_source: &'static str,
+        reason: &str,
+        now: DateTime<Utc>,
+    ) -> Result<DiscoverySummary> {
+        let (wallets_seen, eligible_wallets) =
+            self.published_universe_telemetry(store, now, &active_wallets)?;
+        let mut top_wallets: Vec<String> = active_wallets.iter().cloned().collect();
+        top_wallets.sort();
+        top_wallets.truncate(5);
+        let summary = DiscoverySummary {
+            window_start,
+            wallets_seen,
+            eligible_wallets,
+            metrics_written: 0,
+            follow_promoted: 0,
+            follow_demoted: 0,
+            active_follow_wallets: active_wallets.len(),
+            top_wallets,
+            published: publish_due,
+            ..DiscoverySummary::default()
+        }
+        .with_runtime_mode(DiscoveryRuntimeMode::Degraded)
+        .with_scoring_source(scoring_source)
+        .with_cap_truncation_telemetry(cap_truncation_telemetry);
+        if publish_due {
+            self.record_live_publish(now);
+        }
+        self.persist_publication_state(
+            store,
+            DiscoveryRuntimeMode::Degraded,
+            publish_due,
+            metrics_window_start,
+            scoring_source,
+            reason,
+            now,
+        )?;
+        Ok(summary)
+    }
+
+    fn published_universe_telemetry(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        active_wallets: &HashSet<String>,
+    ) -> Result<(usize, usize)> {
+        let Some(publication_state) = store.discovery_publication_state()? else {
+            return Ok((active_wallets.len(), active_wallets.len()));
+        };
+        let Some(last_published_window_start) = publication_state.last_published_window_start else {
+            return Ok((active_wallets.len(), active_wallets.len()));
+        };
+        let persisted_rows =
+            store.load_wallet_metric_snapshots_for_window(last_published_window_start)?;
+        if persisted_rows.is_empty() {
+            return Ok((active_wallets.len(), active_wallets.len()));
+        }
+        let snapshots = self.wallet_snapshots_from_persisted_metric_rows(now, persisted_rows);
+        let eligible_wallets = rank_follow_candidates(&snapshots, self.config.min_score).len();
+        Ok((snapshots.len(), eligible_wallets))
+    }
+
+    fn fail_close_without_recent_universe(
+        &self,
+        store: &SqliteStore,
+        window_start: DateTime<Utc>,
+        metrics_window_start: DateTime<Utc>,
+        publish_due: bool,
+        cap_truncation_telemetry: &CapTruncationTelemetrySnapshot,
+        scoring_source: &'static str,
+        reason: &str,
+        now: DateTime<Utc>,
+    ) -> Result<DiscoverySummary> {
+        let follow_delta =
+            store.persist_discovery_cycle(&[], &[], &[], false, publish_due, now, reason)?;
+        self.persist_trusted_selection_state(
+            store,
+            TrustedSelectionState::Invalid,
+            None,
+            None,
+            None,
+            true,
+            reason,
+            now,
+        )?;
+        self.persist_publication_state(
+            store,
+            DiscoveryRuntimeMode::FailClosed,
+            publish_due,
+            metrics_window_start,
+            scoring_source,
+            reason,
+            now,
+        )?;
+        if publish_due {
+            self.record_live_publish(now);
+        }
+        let active_follow_wallets = store.list_active_follow_wallets()?.len();
+        Ok(DiscoverySummary {
+            window_start,
+            wallets_seen: 0,
+            eligible_wallets: 0,
+            metrics_written: 0,
+            follow_promoted: 0,
+            follow_demoted: follow_delta.deactivated,
+            active_follow_wallets,
+            top_wallets: Vec::new(),
+            published: publish_due,
+            ..DiscoverySummary::default()
+        }
+        .with_runtime_mode(DiscoveryRuntimeMode::FailClosed)
+        .with_scoring_source(scoring_source)
+        .with_cap_truncation_telemetry(cap_truncation_telemetry))
+    }
+
     pub fn run_cycle(&self, store: &SqliteStore, now: DateTime<Utc>) -> Result<DiscoverySummary> {
         let cycle_started = Instant::now();
         let publish_interval_seconds = self.config.refresh_seconds.max(1) as i64;
@@ -732,31 +894,13 @@ impl DiscoveryService {
         let fetch_time_budget = StdDuration::from_millis(self.config.fetch_time_budget_ms.max(1));
         let retention_days = self.config.observed_swaps_retention_days.max(1);
         let short_retention_window = retention_days < window_days;
-        let aggregate_scoring_ready = self.config.scoring_aggregates_enabled
-            && store.discovery_scoring_ready_for_window(
-                window_start,
-                now,
-                Duration::seconds(self.config.refresh_seconds.max(1) as i64),
-            )?;
-        let recovered_active_follow_wallets = !store.list_active_follow_wallets()?.is_empty();
-        let startup_trusted_selection_gate_status =
-            store
-                .startup_trusted_selection_gate_status()
-                .context("failed to load discovery startup trusted selection gate status")?;
-        let startup_trusted_selection_fail_closed = startup_trusted_selection_gate_status
-            .effective_startup_fail_closed(
-                now,
-                self.config.scoring_window_days as i64,
-                self.config.metric_snapshot_interval_seconds,
-                self.config.max_bootstrap_snapshot_age_seconds,
-            );
-        let (
-            swaps_window,
-            fetch_progress,
-            cap_truncation_telemetry,
-            trusted_selection_bootstrap_pending,
-            prepared_cycle,
-        ) = {
+        let recent_published_follow_wallets = store.recent_published_follow_wallets(
+            now,
+            self.published_universe_max_age(),
+            self.runtime_scoring_window_days(),
+            self.runtime_metric_snapshot_interval_seconds(),
+        )?;
+        let (swaps_window, fetch_progress, cap_truncation_telemetry, prepared_cycle) = {
             let mut state = match self.window_state.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => {
@@ -795,18 +939,6 @@ impl DiscoveryService {
                 });
                 state.cursor =
                     Some(restored.unwrap_or_else(|| DiscoveryCursor::bootstrap(window_start)));
-                if (recovered_active_follow_wallets || startup_trusted_selection_fail_closed)
-                    && !aggregate_scoring_ready
-                {
-                    state.trusted_selection_bootstrap_pending = true;
-                    if let Err(error) = store.set_discovery_trusted_selection_bootstrap_required(
-                        true,
-                        "startup_selection_bootstrap_required",
-                    ) {
-                        return Err(error)
-                            .context("failed persisting discovery trusted bootstrap requirement");
-                    }
-                }
             }
 
             let mut cursor = state
@@ -839,13 +971,11 @@ impl DiscoveryService {
                         }
                         if truncated_by_limit {
                             state.mark_warm_load_truncated();
-                            if !aggregate_scoring_ready {
-                                maybe_arm_cap_truncation_deactivation_guard(
-                                    &mut state,
-                                    now,
-                                    CapTruncationDeactivationGuardReason::WarmLoadTruncated,
-                                );
-                            }
+                            maybe_arm_cap_truncation_deactivation_guard(
+                                &mut state,
+                                now,
+                                CapTruncationDeactivationGuardReason::WarmLoadTruncated,
+                            );
                         }
                     }
                     Err(error) => {
@@ -900,7 +1030,7 @@ impl DiscoveryService {
                         }
                         state.signatures.insert(swap.signature.clone());
                         let evicted = state.push_swap_capped(swap, max_window_swaps_in_memory);
-                        if evicted > 0 && !aggregate_scoring_ready {
+                        if evicted > 0 {
                             maybe_arm_cap_truncation_deactivation_guard(
                                 &mut state,
                                 now,
@@ -960,89 +1090,46 @@ impl DiscoveryService {
                 state.cap_truncation_deactivations_suppressed(raw_window_history_incomplete);
             let cap_truncation_telemetry =
                 snapshot_cap_truncation_telemetry(&state, followlist_deactivations_suppressed);
-            let trusted_selection_bootstrap_pending =
-                state.trusted_selection_bootstrap_pending && !aggregate_scoring_ready;
-            let bootstrap_from_persisted_metrics =
-                state.bootstrap_from_persisted_metrics && state.swaps.is_empty();
-            let truncated_warm_restore_bootstrap =
-                state.truncated_warm_restore_bootstrap && state.cap_truncation_floor.is_some();
             let publish_due = state.last_publish_at.map_or(true, |last_publish_at| {
                 now.signed_duration_since(last_publish_at).num_seconds() >= publish_interval_seconds
             });
-            if !aggregate_scoring_ready && state.consume_cap_truncation_deactivation_guard_cycle() {
+            if state.consume_cap_truncation_deactivation_guard_cycle() {
                 maybe_warn_on_cap_truncation_deactivation_guard_expiry(
                     &state,
                     followlist_deactivations_suppressed,
                 );
             }
-
+            state.bootstrap_from_persisted_metrics = false;
+            state.truncated_warm_restore_bootstrap = false;
+            state.trusted_selection_bootstrap_pending = false;
             let swaps_window = state.swaps.len();
-            if aggregate_scoring_ready {
-                state.bootstrap_from_persisted_metrics = false;
-                state.truncated_warm_restore_bootstrap = false;
-                state.trusted_selection_bootstrap_pending = false;
-                if !state.last_summary_from_aggregates {
-                    state.arm_aggregate_transition_guard(
-                        AGGREGATE_FOLLOWLIST_TRANSITION_GUARD_CYCLES,
-                    );
-                }
-                let aggregate_transition_suppressed = state.aggregate_transition_suppressed();
-                (
-                    swaps_window,
-                    fetch_progress,
-                    cap_truncation_telemetry,
-                    trusted_selection_bootstrap_pending,
-                    if state.last_snapshot_bucket == Some(metrics_window_start)
-                        && state.last_summary_from_aggregates
-                        && state.last_summary.is_some()
-                    {
-                        PreparedCycleState::Cached {
-                            publish_due,
-                            followlist_activations_suppressed: aggregate_transition_suppressed,
-                            followlist_deactivations_suppressed: aggregate_transition_suppressed,
-                            summary: state
-                                .last_summary
-                                .clone()
-                                .expect("checked last_summary exists above"),
-                        }
-                    } else {
-                        PreparedCycleState::AggregateRecompute {
-                            publish_due,
-                            followlist_activations_suppressed: aggregate_transition_suppressed,
-                            followlist_deactivations_suppressed: aggregate_transition_suppressed,
-                        }
-                    },
-                )
-            } else if swaps_window == 0 {
+            if swaps_window == 0 {
                 state.clear_cap_truncation();
                 state.last_snapshot_bucket = None;
                 state.last_summary = None;
                 state.note_scoring_source(false);
-                (
-                    swaps_window,
-                    fetch_progress,
-                    cap_truncation_telemetry,
-                    trusted_selection_bootstrap_pending,
-                    PreparedCycleState::Empty {
-                        publish_due,
-                        followlist_deactivations_suppressed: false,
-                        bootstrap_from_persisted_metrics,
-                    },
-                )
-            } else if truncated_warm_restore_bootstrap {
-                state.truncated_warm_restore_bootstrap = false;
-                (
-                    swaps_window,
-                    fetch_progress,
-                    cap_truncation_telemetry,
-                    trusted_selection_bootstrap_pending,
-                    PreparedCycleState::PersistedBootstrap {
-                        publish_due,
-                        followlist_activations_suppressed: true,
-                        followlist_deactivations_suppressed: true,
-                        scoring_source: "persisted_wallet_metrics_truncated_warm_restore",
-                    },
-                )
+                if let Some(active_wallets) = recent_published_follow_wallets.clone() {
+                    (
+                        swaps_window,
+                        fetch_progress,
+                        cap_truncation_telemetry,
+                        PreparedCycleState::Degraded {
+                            publish_due,
+                            active_wallets,
+                            scoring_source: "published_universe_raw_window_unavailable",
+                        },
+                    )
+                } else {
+                    (
+                        swaps_window,
+                        fetch_progress,
+                        cap_truncation_telemetry,
+                        PreparedCycleState::Unusable {
+                            publish_due,
+                            scoring_source: "raw_window_unusable_no_recent_published_universe",
+                        },
+                    )
+                }
             } else if state.last_snapshot_bucket == Some(metrics_window_start)
                 && !state.last_summary_from_aggregates
                 && state.last_summary.is_some()
@@ -1051,7 +1138,6 @@ impl DiscoveryService {
                     swaps_window,
                     fetch_progress,
                     cap_truncation_telemetry,
-                    trusted_selection_bootstrap_pending,
                     PreparedCycleState::Cached {
                         publish_due,
                         followlist_activations_suppressed: false,
@@ -1062,171 +1148,54 @@ impl DiscoveryService {
                             .expect("checked last_summary exists above"),
                     },
                 )
+            } else if raw_window_history_incomplete || short_retention_window {
+                state.bootstrap_from_persisted_metrics = false;
+                state.truncated_warm_restore_bootstrap = false;
+                if let Some(active_wallets) = recent_published_follow_wallets.clone() {
+                    (
+                        swaps_window,
+                        fetch_progress,
+                        cap_truncation_telemetry,
+                        PreparedCycleState::Degraded {
+                            publish_due,
+                            active_wallets,
+                            scoring_source: if raw_window_history_incomplete {
+                                "published_universe_raw_window_degraded"
+                            } else {
+                                "published_universe_short_retention_degraded"
+                            },
+                        },
+                    )
+                } else {
+                    (
+                        swaps_window,
+                        fetch_progress,
+                        cap_truncation_telemetry,
+                        PreparedCycleState::Unusable {
+                            publish_due,
+                            scoring_source: if raw_window_history_incomplete {
+                                "raw_window_incomplete_no_recent_published_universe"
+                            } else {
+                                "raw_window_short_retention_no_recent_published_universe"
+                            },
+                        },
+                    )
+                }
             } else {
                 (
                     swaps_window,
                     fetch_progress,
                     cap_truncation_telemetry,
-                    trusted_selection_bootstrap_pending,
                     PreparedCycleState::Recompute {
                         publish_due,
-                        followlist_activations_suppressed: raw_window_history_incomplete
-                            || short_retention_window,
+                        followlist_activations_suppressed: false,
                         followlist_deactivations_suppressed,
-                        metrics_persistence_suppressed: raw_window_history_incomplete,
+                        metrics_persistence_suppressed: false,
                         swaps: state.swaps.clone(),
                     },
                 )
             }
         };
-
-        if let Some(summary) = self.maybe_fail_close_post_bootstrap_rotation_blocked(
-            store,
-            &startup_trusted_selection_gate_status,
-            now,
-            window_start,
-            metrics_window_start,
-            aggregate_scoring_ready,
-            &cap_truncation_telemetry,
-            &prepared_cycle,
-        )? {
-            return Ok(summary);
-        }
-
-        if trusted_selection_bootstrap_pending {
-            let (publish_due, bootstrap_scoring_source, invalid_scoring_source) =
-                match &prepared_cycle {
-                    PreparedCycleState::PersistedBootstrap {
-                        publish_due,
-                        scoring_source,
-                        ..
-                    } => (
-                        *publish_due,
-                        *scoring_source,
-                        "persisted_wallet_metrics_truncated_warm_restore_empty",
-                    ),
-                    PreparedCycleState::AggregateRecompute { publish_due, .. }
-                    | PreparedCycleState::Empty { publish_due, .. }
-                    | PreparedCycleState::Cached { publish_due, .. }
-                    | PreparedCycleState::Recompute { publish_due, .. } => (
-                        *publish_due,
-                        "trusted_persisted_wallet_metrics_bootstrap",
-                        "trusted_persisted_wallet_metrics_bootstrap_unavailable",
-                    ),
-                };
-            if let Some(snapshots) =
-                self.build_wallet_snapshots_from_latest_metrics(store, now, metrics_window_start)?
-            {
-                let summary = self.persist_trusted_selection_from_snapshots(
-                    store,
-                    window_start,
-                    &snapshots,
-                    publish_due,
-                    &cap_truncation_telemetry,
-                    bootstrap_scoring_source,
-                    now,
-                    "discovery_trusted_persisted_metrics_bootstrap",
-                )?;
-                if summary.published {
-                    self.record_live_publish(now);
-                }
-                {
-                    let mut state = match self.window_state.lock() {
-                        Ok(guard) => guard,
-                        Err(poisoned) => {
-                            warn!("discovery window mutex poisoned while clearing trusted bootstrap pending state; continuing");
-                            poisoned.into_inner()
-                        }
-                    };
-                    state.trusted_selection_bootstrap_pending = false;
-                    state.bootstrap_from_persisted_metrics = false;
-                    state.truncated_warm_restore_bootstrap = false;
-                    state.last_snapshot_bucket = Some(metrics_window_start);
-                    state.last_summary = Some(summary.clone());
-                    state.note_scoring_source(false);
-                }
-                store
-                    .set_discovery_trusted_selection_bootstrap_required(
-                        false,
-                        "trusted_selection_bootstrap_satisfied",
-                    )
-                    .context("failed clearing discovery trusted bootstrap requirement")?;
-                warn!(
-                    metrics_window_start = %metrics_window_start,
-                    follow_top_n = self.config.follow_top_n,
-                    trusted_wallets_seen = summary.wallets_seen,
-                    trusted_eligible_wallets = summary.eligible_wallets,
-                    active_follow_wallets = summary.active_follow_wallets,
-                    "discovery restored trusted top-N selection from persisted wallet_metrics bootstrap"
-                );
-                return Ok(summary);
-            }
-
-            let follow_delta = store.persist_discovery_cycle(
-                &[],
-                &[],
-                &[],
-                false,
-                true,
-                now,
-                "discovery_invalid_selection_fail_closed",
-            )?;
-            store
-                .set_discovery_trusted_selection_bootstrap_required(
-                    true,
-                    "trusted_selection_bootstrap_unavailable",
-                )
-                .context("failed persisting discovery invalid selection fail-close state")?;
-            if let Some(metadata) =
-                store.trusted_wallet_metrics_snapshot_metadata_for_window(metrics_window_start)?
-            {
-                self.persist_trusted_selection_state(
-                    store,
-                    self.effective_trusted_snapshot_state(&metadata, now),
-                    Some(metadata.snapshot_id),
-                    Some(metadata.effective_window_start),
-                    Some(metadata.source_kind),
-                    true,
-                    "trusted_selection_bootstrap_unavailable",
-                    now,
-                )?;
-            } else {
-                self.persist_trusted_selection_state(
-                    store,
-                    TrustedSelectionState::Invalid,
-                    None,
-                    None,
-                    None,
-                    true,
-                    "trusted_selection_bootstrap_unavailable",
-                    now,
-                )?;
-            }
-            let active_follow_wallets = store.list_active_follow_wallets()?.len();
-            if publish_due {
-                self.record_live_publish(now);
-            }
-            warn!(
-                metrics_window_start = %metrics_window_start,
-                recovered_follow_wallets_cleared = follow_delta.deactivated,
-                "discovery trusted bootstrap unavailable; fail-closing recovered followlist until a trusted persisted selection source exists"
-            );
-            return Ok(DiscoverySummary {
-                window_start,
-                wallets_seen: 0,
-                eligible_wallets: 0,
-                metrics_written: 0,
-                follow_promoted: 0,
-                follow_demoted: follow_delta.deactivated,
-                active_follow_wallets,
-                top_wallets: Vec::new(),
-                published: publish_due,
-                trusted_selection_fail_closed: true,
-                ..DiscoverySummary::default()
-            }
-            .with_scoring_source(invalid_scoring_source)
-            .with_cap_truncation_telemetry(&cap_truncation_telemetry));
-        }
 
         let (
             publish_due,
@@ -1251,277 +1220,31 @@ impl DiscoveryService {
                     "aggregates",
                 )
             }
-            PreparedCycleState::Empty {
+            PreparedCycleState::Degraded {
                 publish_due,
-                followlist_deactivations_suppressed,
-                bootstrap_from_persisted_metrics,
-            } => {
-                if bootstrap_from_persisted_metrics {
-                    if let Some(snapshots) = self.build_wallet_snapshots_from_latest_metrics(
-                        store,
-                        now,
-                        metrics_window_start,
-                    )? {
-                        let ranked = rank_follow_candidates(&snapshots, self.config.min_score);
-                        let summary = DiscoverySummary {
-                            window_start,
-                            wallets_seen: snapshots.len(),
-                            eligible_wallets: ranked.len(),
-                            metrics_written: 0,
-                            follow_promoted: 0,
-                            follow_demoted: 0,
-                            active_follow_wallets: store.list_active_follow_wallets()?.len(),
-                            top_wallets: top_wallet_labels(&ranked, 5),
-                            published: publish_due,
-                            ..DiscoverySummary::default()
-                        }
-                        .with_scoring_source("persisted_wallet_metrics_bootstrap")
-                        .with_cap_truncation_telemetry(&cap_truncation_telemetry);
-                        if publish_due {
-                            self.record_live_publish(now);
-                        }
-                        let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
-                        warn!(
-                            metrics_window_start = %metrics_window_start,
-                            scoring_window_days = window_days,
-                            observed_swaps_retention_days = retention_days,
-                            "discovery using persisted wallet_metrics bootstrap because raw observed_swaps window is empty after restart"
-                        );
-                        info!(
-                            window_start = %summary.window_start,
-                            wallets_seen = summary.wallets_seen,
-                            eligible_wallets = summary.eligible_wallets,
-                            metrics_written = summary.metrics_written,
-                            follow_promoted = summary.follow_promoted,
-                            follow_demoted = summary.follow_demoted,
-                            active_follow_wallets = summary.active_follow_wallets,
-                            swaps_window,
-                            swaps_query_rows = fetch_progress.query_rows,
-                            swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
-                            swaps_delta_fetched = delta_fetched,
-                            swaps_warm_loaded,
-                            swaps_evicted_due_cap,
-                            swaps_fetch_limit = fetch_limit,
-                            swaps_fetch_pages = fetch_progress.pages,
-                            swaps_fetch_page_limit = fetch_page_limit,
-                            swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
-                            swaps_fetch_limit_reached = fetch_progress.saturated,
-                            swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
-                            swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
-                            metrics_window_start = %metrics_window_start,
-                            scoring_source = "persisted_wallet_metrics_bootstrap",
-                            metrics_persisted = false,
-                            snapshot_recomputed = false,
-                            discovery_published = summary.published,
-                            followlist_deactivations_suppressed,
-                            discovery_cycle_duration_ms = elapsed_ms,
-                            top_wallets = ?summary.top_wallets,
-                            "discovery cycle completed"
-                        );
-                        if fetch_progress.saturated {
-                            warn!(
-                                swaps_query_rows = fetch_progress.query_rows,
-                                swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
-                                swaps_fetch_limit = fetch_limit,
-                                swaps_fetch_pages = fetch_progress.pages,
-                                swaps_fetch_page_limit = fetch_page_limit,
-                                swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
-                                swaps_fetch_page_budget_exhausted =
-                                    fetch_progress.page_budget_exhausted,
-                                swaps_fetch_time_budget_exhausted =
-                                    fetch_progress.time_budget_exhausted,
-                                "discovery swap fetch exhausted bounded per-cycle budget; backlog processing continues next cycle"
-                            );
-                        }
-                        return Ok(summary);
-                    } else {
-                        let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
-                        if publish_due {
-                            self.record_live_publish(now);
-                        }
-                        info!(
-                            window_start = %window_start,
-                            wallets_seen = 0usize,
-                            eligible_wallets = 0usize,
-                            metrics_written = 0usize,
-                            follow_promoted = 0usize,
-                            follow_demoted = 0usize,
-                            active_follow_wallets = 0usize,
-                            swaps_window = 0usize,
-                            swaps_query_rows = fetch_progress.query_rows,
-                            swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
-                            swaps_delta_fetched = delta_fetched,
-                            swaps_warm_loaded,
-                            swaps_evicted_due_cap,
-                            swaps_fetch_limit = fetch_limit,
-                            swaps_fetch_pages = fetch_progress.pages,
-                            swaps_fetch_page_limit = fetch_page_limit,
-                            swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
-                            swaps_fetch_limit_reached = fetch_progress.saturated,
-                            swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
-                            swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
-                            scoring_source = "persisted_wallet_metrics_bootstrap_empty",
-                            discovery_published = publish_due,
-                            discovery_cycle_duration_ms = elapsed_ms,
-                            followlist_deactivations_suppressed,
-                            "discovery cycle completed"
-                        );
-                        return Ok(DiscoverySummary {
-                            window_start,
-                            published: publish_due,
-                            ..DiscoverySummary::default()
-                        }
-                        .with_scoring_source("persisted_wallet_metrics_bootstrap_empty")
-                        .with_cap_truncation_telemetry(&cap_truncation_telemetry));
-                    }
-                } else {
-                    let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
-                    if publish_due {
-                        self.record_live_publish(now);
-                    }
-                    info!(
-                        window_start = %window_start,
-                        wallets_seen = 0usize,
-                        eligible_wallets = 0usize,
-                        metrics_written = 0usize,
-                        follow_promoted = 0usize,
-                        follow_demoted = 0usize,
-                        active_follow_wallets = 0usize,
-                        swaps_window = 0usize,
-                        swaps_query_rows = fetch_progress.query_rows,
-                        swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
-                        swaps_delta_fetched = delta_fetched,
-                        swaps_warm_loaded,
-                        swaps_evicted_due_cap,
-                        swaps_fetch_limit = fetch_limit,
-                        swaps_fetch_pages = fetch_progress.pages,
-                        swaps_fetch_page_limit = fetch_page_limit,
-                        swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
-                        swaps_fetch_limit_reached = fetch_progress.saturated,
-                        swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
-                        swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
-                        scoring_source = "raw_window_empty",
-                        discovery_published = publish_due,
-                        discovery_cycle_duration_ms = elapsed_ms,
-                        followlist_deactivations_suppressed,
-                        "discovery cycle completed"
-                    );
-                    return Ok(DiscoverySummary {
-                        window_start,
-                        published: publish_due,
-                        ..DiscoverySummary::default()
-                    }
-                    .with_scoring_source("raw_window_empty")
-                    .with_cap_truncation_telemetry(&cap_truncation_telemetry));
-                }
-            }
-            PreparedCycleState::PersistedBootstrap {
-                publish_due,
-                followlist_activations_suppressed,
-                followlist_deactivations_suppressed,
+                active_wallets,
                 scoring_source,
             } => {
-                if let Some(snapshots) = self.build_wallet_snapshots_from_latest_metrics(
+                let summary = self.degraded_summary_from_published_universe(
                     store,
-                    now,
+                    window_start,
                     metrics_window_start,
-                )? {
-                    let ranked = rank_follow_candidates(&snapshots, self.config.min_score);
-                    let summary = DiscoverySummary {
-                        window_start,
-                        wallets_seen: snapshots.len(),
-                        eligible_wallets: ranked.len(),
-                        metrics_written: 0,
-                        follow_promoted: 0,
-                        follow_demoted: 0,
-                        active_follow_wallets: store.list_active_follow_wallets()?.len(),
-                        top_wallets: top_wallet_labels(&ranked, 5),
-                        published: publish_due,
-                        ..DiscoverySummary::default()
-                    }
-                    .with_scoring_source(scoring_source)
-                    .with_cap_truncation_telemetry(&cap_truncation_telemetry);
-                    if publish_due {
-                        self.record_live_publish(now);
-                    }
-                    let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
-                    warn!(
-                        metrics_window_start = %metrics_window_start,
-                        scoring_window_days = window_days,
-                        observed_swaps_retention_days = retention_days,
-                        swaps_window,
-                        "discovery using persisted wallet_metrics bootstrap because warm-restored observed_swaps window is truncated by in-memory cap"
-                    );
-                    info!(
-                        window_start = %summary.window_start,
-                        wallets_seen = summary.wallets_seen,
-                        eligible_wallets = summary.eligible_wallets,
-                        metrics_written = summary.metrics_written,
-                        follow_promoted = summary.follow_promoted,
-                        follow_demoted = summary.follow_demoted,
-                        active_follow_wallets = summary.active_follow_wallets,
-                        swaps_window,
-                        swaps_query_rows = fetch_progress.query_rows,
-                        swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
-                        swaps_delta_fetched = delta_fetched,
-                        swaps_warm_loaded,
-                        swaps_evicted_due_cap,
-                        swaps_fetch_limit = fetch_limit,
-                        swaps_fetch_pages = fetch_progress.pages,
-                        swaps_fetch_page_limit = fetch_page_limit,
-                        swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
-                        swaps_fetch_limit_reached = fetch_progress.saturated,
-                        swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
-                        swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
-                        metrics_window_start = %metrics_window_start,
-                        scoring_source,
-                        metrics_persisted = false,
-                        snapshot_recomputed = false,
-                        discovery_published = summary.published,
-                        followlist_activations_suppressed,
-                        followlist_deactivations_suppressed,
-                        discovery_cycle_duration_ms = elapsed_ms,
-                        top_wallets = ?summary.top_wallets,
-                        "discovery cycle completed"
-                    );
-                    if fetch_progress.saturated {
-                        warn!(
-                            swaps_query_rows = fetch_progress.query_rows,
-                            swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
-                            swaps_fetch_limit = fetch_limit,
-                            swaps_fetch_pages = fetch_progress.pages,
-                            swaps_fetch_page_limit = fetch_page_limit,
-                            swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
-                            swaps_fetch_page_budget_exhausted =
-                                fetch_progress.page_budget_exhausted,
-                            swaps_fetch_time_budget_exhausted =
-                                fetch_progress.time_budget_exhausted,
-                            "discovery swap fetch exhausted bounded per-cycle budget; backlog processing continues next cycle"
-                        );
-                    }
-                    return Ok(summary);
-                }
-
-                let active_follow_wallets = store.list_active_follow_wallets()?.len();
+                    publish_due,
+                    active_wallets,
+                    &cap_truncation_telemetry,
+                    scoring_source,
+                    scoring_source,
+                    now,
+                )?;
                 let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
-                if publish_due {
-                    self.record_live_publish(now);
-                }
-                warn!(
-                    metrics_window_start = %metrics_window_start,
-                    scoring_window_days = window_days,
-                    observed_swaps_retention_days = retention_days,
-                    swaps_window,
-                    "discovery warm-restored observed_swaps window is truncated by in-memory cap and no persisted wallet_metrics snapshot is available"
-                );
                 info!(
-                    window_start = %window_start,
-                    wallets_seen = 0usize,
-                    eligible_wallets = 0usize,
-                    metrics_written = 0usize,
-                    follow_promoted = 0usize,
-                    follow_demoted = 0usize,
-                    active_follow_wallets,
+                    window_start = %summary.window_start,
+                    wallets_seen = summary.wallets_seen,
+                    eligible_wallets = summary.eligible_wallets,
+                    metrics_written = summary.metrics_written,
+                    follow_promoted = summary.follow_promoted,
+                    follow_demoted = summary.follow_demoted,
+                    active_follow_wallets = summary.active_follow_wallets,
                     swaps_window,
                     swaps_query_rows = fetch_progress.query_rows,
                     swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
@@ -1535,21 +1258,71 @@ impl DiscoveryService {
                     swaps_fetch_limit_reached = fetch_progress.saturated,
                     swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
                     swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
-                    scoring_source = "persisted_wallet_metrics_truncated_warm_restore_empty",
-                    discovery_published = publish_due,
+                    metrics_window_start = %metrics_window_start,
+                    scoring_source = summary.scoring_source,
+                    discovery_runtime_mode = summary.runtime_mode.as_str(),
+                    metrics_persisted = false,
+                    snapshot_recomputed = false,
+                    discovery_published = summary.published,
                     discovery_cycle_duration_ms = elapsed_ms,
-                    followlist_activations_suppressed,
-                    followlist_deactivations_suppressed,
+                    top_wallets = ?summary.top_wallets,
                     "discovery cycle completed"
                 );
-                return Ok(DiscoverySummary {
+                return Ok(summary);
+            }
+            PreparedCycleState::Unusable {
+                publish_due,
+                scoring_source,
+                ..
+            } => {
+                let summary = self.fail_close_without_recent_universe(
+                    store,
                     window_start,
-                    active_follow_wallets,
-                    published: publish_due,
-                    ..DiscoverySummary::default()
-                }
-                .with_scoring_source("persisted_wallet_metrics_truncated_warm_restore_empty")
-                .with_cap_truncation_telemetry(&cap_truncation_telemetry));
+                    metrics_window_start,
+                    publish_due,
+                    &cap_truncation_telemetry,
+                    scoring_source,
+                    scoring_source,
+                    now,
+                )?;
+                let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                warn!(
+                    metrics_window_start = %metrics_window_start,
+                    scoring_source = summary.scoring_source,
+                    cleared_follow_wallets = summary.follow_demoted,
+                    "discovery fail-closed because raw runtime truth is unavailable and no recent published universe exists"
+                );
+                info!(
+                    window_start = %summary.window_start,
+                    wallets_seen = summary.wallets_seen,
+                    eligible_wallets = summary.eligible_wallets,
+                    metrics_written = summary.metrics_written,
+                    follow_promoted = summary.follow_promoted,
+                    follow_demoted = summary.follow_demoted,
+                    active_follow_wallets = summary.active_follow_wallets,
+                    swaps_window,
+                    swaps_query_rows = fetch_progress.query_rows,
+                    swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
+                    swaps_delta_fetched = delta_fetched,
+                    swaps_warm_loaded,
+                    swaps_evicted_due_cap,
+                    swaps_fetch_limit = fetch_limit,
+                    swaps_fetch_pages = fetch_progress.pages,
+                    swaps_fetch_page_limit = fetch_page_limit,
+                    swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                    swaps_fetch_limit_reached = fetch_progress.saturated,
+                    swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                    swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
+                    metrics_window_start = %metrics_window_start,
+                    scoring_source = summary.scoring_source,
+                    discovery_runtime_mode = summary.runtime_mode.as_str(),
+                    metrics_persisted = false,
+                    snapshot_recomputed = false,
+                    discovery_published = summary.published,
+                    discovery_cycle_duration_ms = elapsed_ms,
+                    "discovery cycle completed"
+                );
+                return Ok(summary);
             }
             PreparedCycleState::Cached {
                 publish_due,
@@ -1567,25 +1340,25 @@ impl DiscoveryService {
                     follow_promoted: 0,
                     follow_demoted: 0,
                     active_follow_wallets,
-                    top_wallets: previous_summary.top_wallets,
+                    top_wallets: previous_summary.top_wallets.clone(),
                     published: publish_due,
                     ..DiscoverySummary::default()
                 }
+                .with_runtime_mode(previous_summary.runtime_mode)
                 .with_scoring_source(previous_summary.scoring_source)
                 .with_cap_truncation_telemetry(&cap_truncation_telemetry);
                 if publish_due {
                     self.record_live_publish(now);
                 }
-                if aggregate_scoring_ready {
-                    let mut state = match self.window_state.lock() {
-                        Ok(guard) => guard,
-                        Err(poisoned) => {
-                            warn!("discovery window mutex poisoned while advancing aggregate transition guard; continuing");
-                            poisoned.into_inner()
-                        }
-                    };
-                    state.note_scoring_source(true);
-                }
+                self.persist_publication_state(
+                    store,
+                    summary.runtime_mode,
+                    publish_due,
+                    metrics_window_start,
+                    summary.scoring_source,
+                    summary.scoring_source,
+                    now,
+                )?;
                 info!(
                     window_start = %summary.window_start,
                     wallets_seen = summary.wallets_seen,
@@ -1701,8 +1474,8 @@ impl DiscoveryService {
             &wallet_rows,
             metrics_to_persist,
             &desired_wallets,
-            !followlist_activations_suppressed,
-            !followlist_deactivations_suppressed,
+            publish_due && !followlist_activations_suppressed,
+            publish_due && !followlist_deactivations_suppressed,
             now,
             "discovery_score_refresh",
             snapshot_write.as_ref(),
@@ -1722,11 +1495,21 @@ impl DiscoveryService {
             published: publish_due,
             ..DiscoverySummary::default()
         }
+        .with_runtime_mode(DiscoveryRuntimeMode::Healthy)
         .with_scoring_source(scoring_source)
         .with_cap_truncation_telemetry(&cap_truncation_telemetry);
         if publish_due {
             self.record_live_publish(now);
         }
+        self.persist_publication_state(
+            store,
+            DiscoveryRuntimeMode::Healthy,
+            publish_due,
+            metrics_window_start,
+            scoring_source,
+            "discovery_score_refresh",
+            now,
+        )?;
         {
             let mut state = match self.window_state.lock() {
                 Ok(guard) => guard,
@@ -1745,6 +1528,30 @@ impl DiscoveryService {
                 snapshot_write,
                 false,
                 "discovery_score_refresh",
+                now,
+            )?;
+        } else if let Some(metadata) =
+            store.trusted_wallet_metrics_snapshot_metadata_for_window(metrics_window_start)?
+        {
+            self.persist_trusted_selection_state(
+                store,
+                self.effective_trusted_snapshot_state(&metadata, now),
+                Some(metadata.snapshot_id),
+                Some(metadata.effective_window_start),
+                Some(metadata.source_kind),
+                false,
+                "discovery_score_refresh",
+                now,
+            )?;
+        } else {
+            self.persist_trusted_selection_state(
+                store,
+                TrustedSelectionState::TrustedCurrent,
+                None,
+                Some(metrics_window_start),
+                Some(TrustedSnapshotSourceKind::Legacy),
+                false,
+                "discovery_score_refresh_legacy",
                 now,
             )?;
         }
@@ -3471,9 +3278,11 @@ mod tests {
     use anyhow::{anyhow, Context};
     use copybot_config::ShadowConfig;
     use copybot_storage::{
-        DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, SqliteStore, WalletActivityDayRow,
+        DiscoveryAggregateWriteConfig, DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor,
+        DiscoveryRuntimeMode, SqliteStore, WalletActivityDayRow,
     };
     use rusqlite::Connection;
+    use std::collections::HashSet;
     use std::path::Path;
     use tempfile::tempdir;
 
@@ -3485,6 +3294,61 @@ mod tests {
         config.min_volume_5m_sol = 0.0;
         config.min_unique_traders_5m = 0;
         config
+    }
+
+    fn seed_recent_published_universe(
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        metrics_window_start: DateTime<Utc>,
+        scoring_source: &str,
+    ) -> Result<()> {
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            reason: "test_recent_published_universe".to_string(),
+            last_published_at: Some(now),
+            last_published_window_start: Some(metrics_window_start),
+            published_scoring_source: Some(scoring_source.to_string()),
+        })
+    }
+
+    fn seed_published_wallet_metrics_snapshot(
+        store: &SqliteStore,
+        metrics_window_start: DateTime<Utc>,
+        eligible_wallets: usize,
+        active_wallets: usize,
+    ) -> Result<HashSet<String>> {
+        let mut published_active_wallets = HashSet::new();
+        for idx in 0..eligible_wallets {
+            let wallet_id = format!("wallet_published_{idx:03}");
+            store.upsert_wallet(
+                &wallet_id,
+                metrics_window_start - Duration::days(1),
+                metrics_window_start + Duration::minutes(idx as i64),
+                "candidate",
+            )?;
+            store.insert_wallet_metric(&WalletMetricRow {
+                wallet_id: wallet_id.clone(),
+                window_start: metrics_window_start,
+                pnl: 2.0 + idx as f64 * 0.001,
+                win_rate: 0.8,
+                trades: 6,
+                closed_trades: 6,
+                hold_median_seconds: 120,
+                score: 1.0 - idx as f64 * 0.001,
+                buy_total: 6,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            })?;
+            if idx < active_wallets {
+                store.activate_follow_wallet(
+                    &wallet_id,
+                    metrics_window_start + Duration::minutes(idx as i64),
+                    "seed-follow",
+                )?;
+                published_active_wallets.insert(wallet_id);
+            }
+        }
+        Ok(published_active_wallets)
     }
 
     fn post_bootstrap_watchdog_config() -> DiscoveryConfig {
@@ -3500,6 +3364,58 @@ mod tests {
         config.fetch_time_budget_ms = 1_000;
         config.thin_market_min_unique_traders = 1;
         config
+    }
+
+    fn stage1_runtime_config() -> DiscoveryConfig {
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.decay_window_days = 7;
+        config.observed_swaps_retention_days = 14;
+        config.follow_top_n = 1;
+        config.min_leader_notional_sol = 0.5;
+        config.min_trades = 4;
+        config.min_active_days = 1;
+        config.min_score = 0.1;
+        config.min_buy_count = 1;
+        config.min_tradable_ratio = 0.0;
+        config.metric_snapshot_interval_seconds = 60;
+        config.max_window_swaps_in_memory = 8;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.max_fetch_pages_per_cycle = 10;
+        config.fetch_time_budget_ms = 1_000;
+        config.thin_market_min_unique_traders = 1;
+        config
+    }
+
+    fn seed_profitable_wallet_window(
+        store: &SqliteStore,
+        wallet_id: &str,
+        token: &str,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        for idx in 0..4 {
+            let buy_ts = now - Duration::hours(20) + Duration::hours((idx * 2) as i64);
+            let sell_ts = buy_ts + Duration::minutes(15);
+            store.insert_observed_swap(&swap(
+                wallet_id,
+                &format!("{wallet_id}-buy-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                token,
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                wallet_id,
+                &format!("{wallet_id}-sell-{idx}"),
+                sell_ts,
+                token,
+                SOL_MINT,
+                100.0,
+                1.35,
+            ))?;
+        }
+        Ok(())
     }
 
     fn aggregate_readiness_config() -> DiscoveryConfig {
@@ -4089,6 +4005,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy trusted-bootstrap runtime contract replaced by publication truth"]
     fn restart_with_short_retention_uses_persisted_wallet_metrics_bootstrap() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("test-followlist-short-retention.db");
@@ -4149,6 +4066,177 @@ mod tests {
     }
 
     #[test]
+    fn cold_start_full_raw_window_without_trusted_snapshot_publishes_raw_top_n_stage1() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("stage1-cold-start-full-raw.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        for idx in 0..6 {
+            let offset = Duration::minutes((idx * 20) as i64);
+            store.insert_observed_swap(&swap(
+                "wallet_top",
+                &format!("stage1-top-buy-{idx}"),
+                now - Duration::days(2) + offset,
+                SOL_MINT,
+                "TokenStage1Top1111111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_top",
+                &format!("stage1-top-sell-{idx}"),
+                now - Duration::days(2) + offset + Duration::minutes(5),
+                "TokenStage1Top1111111111111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.3,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_noise",
+                &format!("stage1-noise-buy-{idx}"),
+                now - Duration::days(2) + offset,
+                SOL_MINT,
+                "TokenStage1Noise11111111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_noise",
+                &format!("stage1-noise-sell-{idx}"),
+                now - Duration::days(2) + offset + Duration::minutes(5),
+                "TokenStage1Noise11111111111111111111111111",
+                SOL_MINT,
+                100.0,
+                0.7,
+            ))?;
+        }
+
+        let mut config = stage1_runtime_config();
+        config.max_window_swaps_in_memory = 64;
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let summary = discovery.run_cycle(&store, now)?;
+
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert_eq!(summary.scoring_source, "raw_window");
+        assert!(!summary.trusted_selection_fail_closed);
+        assert_eq!(summary.active_follow_wallets, 1);
+        assert!(
+            summary
+                .top_wallets
+                .iter()
+                .any(|label| label.starts_with("wallet_top:")),
+            "raw-window publish should surface the profitable wallet as leader"
+        );
+        let active_wallets = store.list_active_follow_wallets()?;
+        assert_eq!(active_wallets.len(), 1);
+        assert!(active_wallets.contains("wallet_top"));
+        Ok(())
+    }
+
+    #[test]
+    fn cold_start_incomplete_raw_window_with_recent_published_universe_enters_degraded_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("stage1-cold-start-degraded.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:05:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut latest_cursor: Option<DiscoveryRuntimeCursor> = None;
+        for idx in 0..9 {
+            let ts = now - Duration::minutes(9) + Duration::minutes(idx as i64);
+            let swap = swap(
+                "wallet_noise",
+                &format!("stage1-degraded-noise-{idx}"),
+                ts,
+                SOL_MINT,
+                "TokenStage1DegradedNoise1111111111111111",
+                0.2,
+                20.0,
+            );
+            latest_cursor = Some(DiscoveryRuntimeCursor {
+                ts_utc: swap.ts_utc,
+                slot: swap.slot,
+                signature: swap.signature.clone(),
+            });
+            store.insert_observed_swap(&swap)?;
+        }
+        let mut config = stage1_runtime_config();
+        config.follow_top_n = 15;
+        let metrics_window_start = {
+            let interval_seconds = config.metric_snapshot_interval_seconds.max(1) as i64;
+            let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
+            let bucketed_now = DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(now);
+            bucketed_now - Duration::days(config.scoring_window_days.max(1) as i64)
+        };
+        let expected_active_wallets =
+            seed_published_wallet_metrics_snapshot(&store, metrics_window_start, 80, 15)?;
+        seed_recent_published_universe(
+            &store,
+            now - Duration::seconds(30),
+            metrics_window_start,
+            "raw_window",
+        )?;
+        store.upsert_discovery_runtime_cursor(
+            &latest_cursor.expect("latest cursor should be present"),
+        )?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let summary = discovery.run_cycle(&store, now)?;
+
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Degraded);
+        assert!(!summary.trusted_selection_fail_closed);
+        assert!(summary.raw_window_cap_truncated);
+        assert_eq!(summary.eligible_wallets, 80);
+        assert_eq!(summary.active_follow_wallets, 15);
+        assert_eq!(summary.follow_promoted, 0);
+        assert_eq!(summary.follow_demoted, 0);
+        let active_wallets = store.list_active_follow_wallets()?;
+        assert_eq!(active_wallets, expected_active_wallets);
+        Ok(())
+    }
+
+    #[test]
+    fn cold_start_unusable_raw_window_without_recent_published_universe_fail_closes_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("stage1-cold-start-fail-close.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:10:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        store.activate_follow_wallet("wallet_stale", now - Duration::minutes(5), "seed-follow")?;
+
+        let mut config = stage1_runtime_config();
+        config.max_window_swaps_in_memory = 128;
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let summary = discovery.run_cycle(&store, now)?;
+
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert!(summary.trusted_selection_fail_closed);
+        assert_eq!(
+            summary.scoring_source,
+            "raw_window_unusable_no_recent_published_universe"
+        );
+        assert_eq!(summary.follow_demoted, 1);
+        assert!(store.list_active_follow_wallets()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "legacy trusted-bootstrap runtime contract replaced by publication truth"]
     fn restart_with_recovered_historical_followlist_uses_trusted_persisted_top_n_selection(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -4244,6 +4332,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy trusted-bootstrap runtime contract replaced by publication truth"]
     fn restart_with_recovered_historical_followlist_fail_closes_without_trusted_persisted_selection(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -4310,6 +4399,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy trusted-bootstrap runtime contract replaced by publication truth"]
     fn second_restart_after_fail_close_keeps_trusted_selection_bootstrap_pending_without_falling_back_to_raw_window(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -4397,6 +4487,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy trusted-bootstrap runtime contract replaced by publication truth"]
     fn materialized_trusted_wallet_metrics_bootstrap_unblocks_fail_closed_restart_without_mutating_followlist_directly(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -4651,6 +4742,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy trusted-bootstrap runtime contract replaced by publication truth"]
     fn clone_latest_trusted_wallet_metrics_bootstrap_unblocks_fail_closed_restart_without_mutating_followlist_directly(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -4833,6 +4925,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy trusted-bootstrap runtime contract replaced by publication truth"]
     fn run_cycle_marks_aged_bridged_snapshot_as_stale_and_fail_closes() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("test-aged-bridged-snapshot-fail-close.db");
@@ -4924,6 +5017,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy trusted-bootstrap runtime contract replaced by publication truth"]
     fn run_cycle_startup_gate_uses_typed_aged_bridged_state_even_when_legacy_bool_is_false(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -5020,6 +5114,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy trusted-bootstrap runtime contract replaced by publication truth"]
     fn run_cycle_startup_gate_uses_snapshot_metadata_aged_bridged_state_without_legacy_fallback(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -5121,6 +5216,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy trusted-bootstrap runtime contract replaced by publication truth"]
     fn run_cycle_startup_gate_fail_closes_for_stale_trusted_current_snapshot_metadata_without_typed_state(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -5217,6 +5313,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy trusted-bootstrap runtime contract replaced by publication truth"]
     fn post_bootstrap_rotation_watchdog_triggers_on_first_next_bucket_and_fail_closes() -> Result<()>
     {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -5306,6 +5403,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy trusted-bootstrap runtime contract replaced by publication truth"]
     fn post_bootstrap_rotation_watchdog_does_not_fire_when_fresh_trusted_current_snapshot_exists(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -5360,6 +5458,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy trusted-bootstrap runtime contract replaced by publication truth"]
     fn post_bootstrap_rotation_watchdog_does_not_fire_when_alternate_trusted_source_is_ready(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -5586,6 +5685,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy trusted-bootstrap runtime contract replaced by publication truth"]
     fn short_retention_restart_prefers_trusted_persisted_selection_over_truncated_raw_window(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -6064,6 +6164,7 @@ mod tests {
         config.min_buy_count = 1;
         config.min_tradable_ratio = 0.0;
         config.metric_snapshot_interval_seconds = 3600;
+        config.observed_swaps_retention_days = 45;
         config.thin_market_min_unique_traders = 1;
 
         let discovery = DiscoveryService::new(config, permissive_shadow_quality());
@@ -6143,6 +6244,7 @@ mod tests {
         config.min_score = 0.1;
         config.min_buy_count = 1;
         config.min_tradable_ratio = 0.0;
+        config.observed_swaps_retention_days = 30;
         config.metric_snapshot_interval_seconds = 3600;
         config.thin_market_min_unique_traders = 1;
 
@@ -6382,9 +6484,10 @@ mod tests {
             "summary must expose the retained truncation floor signature for diagnostics"
         );
         assert_eq!(
-            second_summary.scoring_source, "raw_window",
-            "cap-truncated recompute summary must preserve its raw-window scoring source for downstream scoping"
+            second_summary.scoring_source, "published_universe_raw_window_degraded",
+            "cap-truncated recompute now degrades onto the last published universe instead of rotating from partial raw data"
         );
+        assert_eq!(second_summary.runtime_mode, DiscoveryRuntimeMode::Degraded);
         let active_after = store.list_active_follow_wallets()?;
         assert!(
             active_after.contains("wallet_leader"),
@@ -6744,6 +6847,12 @@ mod tests {
             tradable_ratio: 1.0,
             rug_ratio: 0.0,
         })?;
+        seed_recent_published_universe(
+            &store,
+            now - Duration::seconds(30),
+            metrics_window_start,
+            "raw_window",
+        )?;
 
         let discovery_after_restart = DiscoveryService::new(config, permissive_shadow_quality());
         let summary = discovery_after_restart.run_cycle(&store, now)?;
@@ -6774,13 +6883,11 @@ mod tests {
         );
         assert_eq!(
             summary.scoring_source,
-            "persisted_wallet_metrics_truncated_warm_restore",
-            "warm-restored capped-tail bootstrap summary must preserve its truncated warm-restore scoring source for downstream scoping"
+            "published_universe_raw_window_degraded",
+            "warm-restored capped-tail restart must degrade to the last published universe while raw history remains truncated"
         );
-        assert!(
-            summary.eligible_wallets >= 1,
-            "persisted wallet_metrics bootstrap should keep the latest ranked wallet snapshot visible after restart"
-        );
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Degraded);
+        assert_eq!(summary.eligible_wallets, 1);
         let active_after = store.list_active_follow_wallets()?;
         assert!(
             active_after.contains("wallet_leader"),
@@ -6802,7 +6909,7 @@ mod tests {
         );
         assert!(
             !state.truncated_warm_restore_bootstrap,
-            "warm-restore persisted-metrics bootstrap should be a one-shot bridge, not a sticky mode"
+            "warm-restore degraded mode should not leave the legacy persisted-bootstrap bridge armed"
         );
         assert_eq!(
             state
@@ -7133,6 +7240,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "aggregate enabled transition guard is not part of the Stage 1 runtime path"]
     fn aggregate_scoring_transition_guard_suppresses_initial_followlist_flip() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("aggregate-scoring-transition-guard.db");
@@ -7234,6 +7342,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "aggregate-only runtime selection is intentionally out of the Stage 1 path"]
     fn aggregate_scoring_can_score_wallets_without_raw_hot_window() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("aggregate-scoring-live-path.db");
