@@ -1,0 +1,204 @@
+{
+  "type": "repeatable_bounded_completion_runs",
+  "activation": false,
+  "server_commit": "630689c4417e0ba2162d19edd648e75553538ae4",
+  "runtime": {
+    "MainPID": 317246,
+    "NRestarts": 0,
+    "ActiveState": "active",
+    "SubState": "running"
+  },
+  "profile": {
+    "batch_size": 250,
+    "sleep_ms": 150,
+    "max_batches_per_run": 4,
+    "abort_on_runtime_pressure": true,
+    "max_yellowstone_fill_ratio": 0.2,
+    "max_ingestion_lag_ms_p95": 8000,
+    "max_runtime_pressure_sample_age_seconds": 35,
+    "abort_on_runtime_infra_stop": true
+  },
+  "cursor_before": {
+    "start_ts": "2026-03-03T17:05:37Z",
+    "ts_utc": "2026-03-08T14:02:15.641388084Z",
+    "slot": 405047954,
+    "signature": "2Wvc6YaoHwcum3QZE5HE6ePk523rUki6HQspeDKKPMv84N2g4BAPPm3tz7b6HfmJsEh9jp6fxFqG6uotUg7Yrppn"
+  },
+  "runs": [
+    {
+      "run": 1,
+      "duration_seconds": 13.675,
+      "outcome": "stopped_due_to_batch_budget",
+      "stop_reason": "stopped_due_to_batch_budget",
+      "fast_guard_fired": false,
+      "infra_stop_guard_fired": false,
+      "cursor_before": {
+        "ts_utc": "2026-03-08T14:02:15.641388084Z",
+        "slot": 405047954,
+        "signature": "2Wvc6YaoHwcum3QZE5HE6ePk523rUki6HQspeDKKPMv84N2g4BAPPm3tz7b6HfmJsEh9jp6fxFqG6uotUg7Yrppn"
+      },
+      "cursor_after": {
+        "ts_utc": "2026-03-08T14:02:20.883838707Z",
+        "slot": 405047967,
+        "signature": "2J29EGhmiTNAZYZNcnCgCso1R4G7rLcJu9nFds4AswuBFSPT2HiQF1YVg9qbp4DuP8AJLSzcn4UoX6gL56rTKvdP"
+      },
+      "runtime": {
+        "nearest_post_run_fill_ratio": 0.0,
+        "nearest_post_run_ingestion_lag_ms_p95": 5847,
+        "later_recovery_fill_ratio": 0.0,
+        "later_recovery_ingestion_lag_ms_p95": 1748,
+        "observed_swap_writer_pending_requests": 0,
+        "sqlite_busy_error_total": 0,
+        "sqlite_write_retry_total": 0,
+        "NRestarts": 0
+      }
+    },
+    {
+      "run": 2,
+      "duration_seconds": 11.251,
+      "outcome": "stopped_due_to_batch_budget",
+      "stop_reason": "stopped_due_to_batch_budget",
+      "fast_guard_fired": false,
+      "infra_stop_guard_fired": false,
+      "cursor_before": {
+        "ts_utc": "2026-03-08T14:02:20.883838707Z",
+        "slot": 405047967,
+        "signature": "2J29EGhmiTNAZYZNcnCgCso1R4G7rLcJu9nFds4AswuBFSPT2HiQF1YVg9qbp4DuP8AJLSzcn4UoX6gL56rTKvdP"
+      },
+      "cursor_after": {
+        "ts_utc": "2026-03-08T14:02:25.499272267Z",
+        "slot": 405047979,
+        "signature": "3KnhS74f5LrnB2tA3KQ8PvvQNbNTi8t1KyxpxuBcTQYFKhfUQDjbjou7Jdycc5fKBdQxangu44MzJaZ78xE1mAoS"
+      },
+      "runtime": {
+        "max_fill_ratio": 0.0,
+        "max_ingestion_lag_ms_p95": 4777,
+        "latest_fill_ratio": 0.0,
+        "latest_ingestion_lag_ms_p95": 1818,
+        "observed_swap_writer_pending_requests": 0,
+        "sqlite_busy_error_total": 0,
+        "sqlite_write_retry_total": 0,
+        "NRestarts": 0
+      }
+    },
+    {
+      "run": 3,
+      "duration_seconds": 9.933,
+      "outcome": "stopped_due_to_batch_budget",
+      "stop_reason": "stopped_due_to_batch_budget",
+      "fast_guard_fired": false,
+      "infra_stop_guard_fired": false,
+      "cursor_before": {
+        "ts_utc": "2026-03-08T14:02:25.499272267Z",
+        "slot": 405047979,
+        "signature": "3KnhS74f5LrnB2tA3KQ8PvvQNbNTi8t1KyxpxuBcTQYFKhfUQDjbjou7Jdycc5fKBdQxangu44MzJaZ78xE1mAoS"
+      },
+      "cursor_after": {
+        "ts_utc": "2026-03-08T14:02:30.410052746Z",
+        "slot": 405047991,
+        "signature": "31L5JN8z4jw8WkbEPYcgzZfhBZtNkwYuwBa7YgZG1zG9D4484gstM8mmAu762vav9iPc81nTfjYZMykovY4WuFgo"
+      },
+      "runtime": {
+        "nearest_post_run_fill_ratio": 0.0,
+        "nearest_post_run_ingestion_lag_ms_p95": 4507,
+        "later_recovery_fill_ratio": 0.0,
+        "later_recovery_ingestion_lag_ms_p95": 1701,
+        "observed_swap_writer_pending_requests": 0,
+        "sqlite_busy_error_total": 0,
+        "sqlite_write_retry_total": 0,
+        "NRestarts": 0
+      }
+    },
+    {
+      "run": 4,
+      "duration_seconds": 9.66,
+      "outcome": "stopped_due_to_batch_budget",
+      "stop_reason": "stopped_due_to_batch_budget",
+      "fast_guard_fired": false,
+      "infra_stop_guard_fired": false,
+      "cursor_before": {
+        "ts_utc": "2026-03-08T14:02:30.410052746Z",
+        "slot": 405047991,
+        "signature": "31L5JN8z4jw8WkbEPYcgzZfhBZtNkwYuwBa7YgZG1zG9D4484gstM8mmAu762vav9iPc81nTfjYZMykovY4WuFgo"
+      },
+      "cursor_after": {
+        "ts_utc": "2026-03-08T14:02:35.526207170Z",
+        "slot": 405048003,
+        "signature": "2BmWcQFVWyS74n2PfF1FBk4zuwNmyA9y16DZGWPZauKydxj3zXAHK36aexp1zZwCHXwP18eBi8Tb24FHizdHSmb4"
+      },
+      "runtime": {
+        "nearest_post_run_fill_ratio": 0.0,
+        "nearest_post_run_ingestion_lag_ms_p95": 4191,
+        "later_recovery_fill_ratio": 0.0,
+        "later_recovery_ingestion_lag_ms_p95": 1697,
+        "observed_swap_writer_pending_requests": 0,
+        "sqlite_busy_error_total": 0,
+        "sqlite_write_retry_total": 0,
+        "NRestarts": 0
+      }
+    },
+    {
+      "run": 5,
+      "duration_seconds": 10.5,
+      "outcome": "stopped_due_to_batch_budget",
+      "stop_reason": "stopped_due_to_batch_budget",
+      "fast_guard_fired": false,
+      "infra_stop_guard_fired": false,
+      "cursor_before": {
+        "ts_utc": "2026-03-08T14:02:35.526207170Z",
+        "slot": 405048003,
+        "signature": "2BmWcQFVWyS74n2PfF1FBk4zuwNmyA9y16DZGWPZauKydxj3zXAHK36aexp1zZwCHXwP18eBi8Tb24FHizdHSmb4"
+      },
+      "cursor_after": {
+        "ts_utc": "2026-03-08T14:02:39.906498746Z",
+        "slot": 405048014,
+        "signature": "2mPgnfKxM7tBMZQueWXYXLw5EC2XDyzEbCBVFeGNi8wF8nqh3WzzLuXMDcFYNr3RPKtyhD6VGcJysFuJgygceNFG"
+      },
+      "runtime": {
+        "peak_fill_ratio": 0.09375,
+        "peak_queue_depth": 192,
+        "peak_ingestion_lag_ms_p95": 3369,
+        "later_recovery_fill_ratio": 0.0,
+        "later_recovery_ingestion_lag_ms_p95": 1944,
+        "observed_swap_writer_pending_requests": 0,
+        "sqlite_busy_error_total": 0,
+        "sqlite_write_retry_total": 0,
+        "NRestarts": 0
+      }
+    }
+  ],
+  "summary": {
+    "runs_completed": 5,
+    "rows_processed": 5000,
+    "all_stop_reason_batch_budget": true,
+    "fast_guard_fired": 0,
+    "infra_stop_guard_fired": 0,
+    "manual_sigint_count": 0,
+    "cursor_after": {
+      "ts_utc": "2026-03-08T14:02:39.906498746Z",
+      "slot": 405048014,
+      "signature": "2mPgnfKxM7tBMZQueWXYXLw5EC2XDyzEbCBVFeGNi8wF8nqh3WzzLuXMDcFYNr3RPKtyhD6VGcJysFuJgygceNFG"
+    }
+  },
+  "post_tranche_readiness": {
+    "covered_since": null,
+    "covered_through_cursor": null,
+    "materialization_gap_cursor": null,
+    "backfill_active": false,
+    "backfill_resume_required": true,
+    "coverage_markers_pending_backfill_completion": true,
+    "effective_writes_ready": false,
+    "effective_reads_ready": false,
+    "write_blockers": [
+      "writes_disabled_by_config",
+      "covered_through_cursor_pending_backfill_completion",
+      "backfill_resume_required"
+    ],
+    "read_blockers": [
+      "reads_disabled_by_config",
+      "covered_since_pending_backfill_completion",
+      "covered_through_cursor_pending_backfill_completion",
+      "backfill_resume_required"
+    ]
+  }
+}

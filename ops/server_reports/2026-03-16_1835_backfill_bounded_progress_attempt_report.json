@@ -1,0 +1,163 @@
+{
+  "type": "bounded_backfill_progress_test",
+  "activation": false,
+  "server_commit": "630689c4417e0ba2162d19edd648e75553538ae4",
+  "host": "ubuntu@52.28.0.218",
+  "command": [
+    "sudo",
+    "/var/www/solana-copy-bot/target/release/backfill_discovery_scoring",
+    "/var/www/solana-copy-bot/state/live_copybot.db",
+    "--config",
+    "/etc/solana-copy-bot/live.server.toml",
+    "--start-ts",
+    "2026-03-03T17:05:37Z",
+    "--resume-ts",
+    "2026-03-08T14:01:56.713958592Z",
+    "--resume-slot",
+    "405047904",
+    "--resume-signature",
+    "3GRqfEVWFE7V9cvdrrkE9ZkdkFWhnznajMN4L88AGMMGQYPywBpgZQSTFDGTNKDcMeTZPZRPTfJrvPAM32DLvna2",
+    "--mark-covered",
+    "--abort-on-runtime-pressure",
+    "--max-yellowstone-fill-ratio",
+    "0.20",
+    "--max-ingestion-lag-ms-p95",
+    "8000",
+    "--max-runtime-pressure-sample-age-seconds",
+    "35",
+    "--abort-on-runtime-infra-stop",
+    "--batch-size",
+    "250",
+    "--sleep-ms",
+    "150",
+    "--max-batches-per-run",
+    "1"
+  ],
+  "log_file": "/tmp/backfill_discovery_scoring_bounded_resume_20260316T1635Z.log",
+  "duration": {
+    "log_birth_utc": "2026-03-16T16:35:01.455201044Z",
+    "log_mtime_utc": "2026-03-16T16:35:13.181205220Z",
+    "seconds": 11.726004176
+  },
+  "result": {
+    "status": "stopped_due_to_batch_budget",
+    "fast_guard_fired": false,
+    "infra_stop_guard_fired": false,
+    "manual_sigint_needed": false,
+    "hard_kill_needed": false,
+    "coverage_marked": false
+  },
+  "pre_run": {
+    "runtime": {
+      "MainPID": 317246,
+      "NRestarts": 0,
+      "ActiveState": "active",
+      "SubState": "running",
+      "yellowstone_output_queue_fill_ratio": 0.0,
+      "yellowstone_output_queue_depth": 0,
+      "ingestion_lag_ms_p95": 1744,
+      "observed_swap_writer_pending_requests": 0,
+      "sqlite_busy_error_total": 0,
+      "sqlite_write_retry_total": 0
+    },
+    "readiness": {
+      "writes_enabled": false,
+      "reads_enabled": false,
+      "covered_since": null,
+      "covered_through_ts": null,
+      "covered_through_cursor": null,
+      "materialization_gap_cursor": null,
+      "backfill_progress": {
+        "start_ts": "2026-03-03T17:05:37Z",
+        "cursor": {
+          "ts_utc": "2026-03-08T14:01:56.713958592Z",
+          "slot": 405047904,
+          "signature": "3GRqfEVWFE7V9cvdrrkE9ZkdkFWhnznajMN4L88AGMMGQYPywBpgZQSTFDGTNKDcMeTZPZRPTfJrvPAM32DLvna2"
+        }
+      },
+      "backfill_protected_since": null,
+      "backfill_active": false,
+      "backfill_resume_required": true,
+      "coverage_markers_pending_backfill_completion": true
+    }
+  },
+  "progress_after_run": {
+    "backfill_progress": {
+      "start_ts": "2026-03-03T17:05:37Z",
+      "cursor": {
+        "ts_utc": "2026-03-08T14:01:58.209012788Z",
+        "slot": 405047908,
+        "signature": "2kKwzCmFLHHYcw4d7y336jf8WMKGBGMXDysTzL4ahyayi96SPSTN1KQSP7a6RkhHgHkq2z2LHzQeNrqzaFHPoDtx"
+      }
+    },
+    "last_committed_batch": {
+      "rows": 250,
+      "total_rows": 250,
+      "batches": 1
+    }
+  },
+  "runtime": {
+    "during": {
+      "yellowstone_output_queue_fill_ratio": 0.16748046875,
+      "yellowstone_output_queue_depth": 343,
+      "yellowstone_output_queue_capacity": 2048,
+      "yellowstone_output_oldest_age_ms": 1926,
+      "ingestion_lag_ms_p95": 5386,
+      "ingestion_lag_ms_p99": 5749,
+      "observed_swap_writer_pending_requests": 0,
+      "sqlite_busy_error_total": 0,
+      "sqlite_write_retry_total": 0,
+      "NRestarts": 0
+    },
+    "after": {
+      "MainPID": 317246,
+      "NRestarts": 0,
+      "ActiveState": "active",
+      "SubState": "running",
+      "yellowstone_output_queue_fill_ratio": 0.0,
+      "yellowstone_output_queue_depth": 0,
+      "ingestion_lag_ms_p95": 1744,
+      "observed_swap_writer_pending_requests": 0,
+      "sqlite_busy_error_total": 0,
+      "sqlite_write_retry_total": 0
+    }
+  },
+  "post_run_readiness": {
+    "writes_enabled": false,
+    "reads_enabled": false,
+    "covered_since": null,
+    "covered_through_ts": null,
+    "covered_through_cursor": null,
+    "covered_through_lag_seconds": null,
+    "materialization_gap_cursor": null,
+    "backfill_progress": {
+      "start_ts": "2026-03-03T17:05:37Z",
+      "cursor": {
+        "ts_utc": "2026-03-08T14:01:58.209012788Z",
+        "slot": 405047908,
+        "signature": "2kKwzCmFLHHYcw4d7y336jf8WMKGBGMXDysTzL4ahyayi96SPSTN1KQSP7a6RkhHgHkq2z2LHzQeNrqzaFHPoDtx"
+      }
+    },
+    "backfill_protected_since": null,
+    "backfill_active": false,
+    "backfill_resume_required": true,
+    "coverage_markers_pending_backfill_completion": true,
+    "scoring_horizon_covered": false,
+    "covered_through_within_runtime_lag": false,
+    "covered_through_within_audit_lag": false,
+    "storage_ready_for_runtime_gate": false,
+    "effective_writes_ready": false,
+    "effective_reads_ready": false,
+    "write_blockers": [
+      "writes_disabled_by_config",
+      "covered_through_cursor_pending_backfill_completion",
+      "backfill_resume_required"
+    ],
+    "read_blockers": [
+      "reads_disabled_by_config",
+      "covered_since_pending_backfill_completion",
+      "covered_through_cursor_pending_backfill_completion",
+      "backfill_resume_required"
+    ]
+  }
+}

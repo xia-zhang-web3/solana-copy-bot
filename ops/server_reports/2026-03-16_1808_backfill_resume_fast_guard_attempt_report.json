@@ -1,0 +1,185 @@
+{
+  "type": "controlled_backfill_resume_attempt",
+  "activation": false,
+  "server_commit": "44a6b4d89bc2638b133dc70d3da28f6ad7e6e15e",
+  "host": "ubuntu@52.28.0.218",
+  "command": [
+    "sudo",
+    "/var/www/solana-copy-bot/target/release/backfill_discovery_scoring",
+    "/var/www/solana-copy-bot/state/live_copybot.db",
+    "--config",
+    "/etc/solana-copy-bot/live.server.toml",
+    "--start-ts",
+    "2026-03-03T17:05:37Z",
+    "--resume-ts",
+    "2026-03-08T14:01:55.315746972Z",
+    "--resume-slot",
+    "405047901",
+    "--resume-signature",
+    "5ZyWHCr3dbnFUVY2qgSwZLA3PoWTEb5UcZvWPPWX8iCCHGcMYECYo4EVqPAdf2GJBqEh18ZW8XX3oC959dad5RKK",
+    "--mark-covered",
+    "--abort-on-runtime-pressure",
+    "--max-yellowstone-fill-ratio",
+    "0.20",
+    "--max-ingestion-lag-ms-p95",
+    "8000",
+    "--max-runtime-pressure-sample-age-seconds",
+    "35",
+    "--abort-on-runtime-infra-stop",
+    "--batch-size",
+    "250",
+    "--sleep-ms",
+    "150"
+  ],
+  "log_file": "/tmp/backfill_discovery_scoring_fast_guard_resume_20260316T1606Z.log",
+  "duration": {
+    "log_birth_utc": "2026-03-16T16:05:56.043567032Z",
+    "log_mtime_utc": "2026-03-16T16:06:08.529571819Z",
+    "seconds": 12.486004787
+  },
+  "result": {
+    "status": "aborted_safely_by_fast_guard",
+    "fast_guard_fired": true,
+    "infra_stop_guard_fired": false,
+    "manual_sigint_needed": false,
+    "hard_kill_needed": false
+  },
+  "pre_run": {
+    "runtime": {
+      "MainPID": 317246,
+      "NRestarts": 0,
+      "ActiveState": "active",
+      "SubState": "running",
+      "yellowstone_output_queue_fill_ratio": 0.0,
+      "yellowstone_output_queue_depth": 0,
+      "ingestion_lag_ms_p95": 1670,
+      "observed_swap_writer_pending_requests": 0,
+      "sqlite_busy_error_total": 0,
+      "sqlite_write_retry_total": 0
+    },
+    "readiness": {
+      "writes_enabled": false,
+      "reads_enabled": false,
+      "covered_since": null,
+      "covered_through_ts": null,
+      "covered_through_cursor": null,
+      "materialization_gap_cursor": null,
+      "backfill_progress": {
+        "start_ts": "2026-03-03T17:05:37Z",
+        "cursor": {
+          "ts_utc": "2026-03-08T14:01:55.315746972Z",
+          "slot": 405047901,
+          "signature": "5ZyWHCr3dbnFUVY2qgSwZLA3PoWTEb5UcZvWPPWX8iCCHGcMYECYo4EVqPAdf2GJBqEh18ZW8XX3oC959dad5RKK"
+        }
+      },
+      "backfill_protected_since": null,
+      "backfill_active": false,
+      "backfill_resume_required": true,
+      "coverage_markers_pending_backfill_completion": true,
+      "write_blockers": [
+        "writes_disabled_by_config",
+        "covered_through_cursor_pending_backfill_completion",
+        "backfill_resume_required"
+      ],
+      "read_blockers": [
+        "reads_disabled_by_config",
+        "covered_since_pending_backfill_completion",
+        "covered_through_cursor_pending_backfill_completion",
+        "backfill_resume_required"
+      ]
+    }
+  },
+  "fast_guard_sample": {
+    "sample_ts_utc": "2026-03-16T16:06:08.344848Z",
+    "source": "journalctl:solana-copy-bot",
+    "reason": "yellowstone_output_queue_fill_ratio=0.2891 threshold=0.2000",
+    "yellowstone_output_queue_fill_ratio": 0.2890625,
+    "yellowstone_output_queue_depth": 592,
+    "yellowstone_output_queue_capacity": 2048,
+    "yellowstone_output_oldest_age_ms": 1983,
+    "ingestion_lag_ms_p95": 2484,
+    "max_yellowstone_fill_ratio": 0.20,
+    "max_ingestion_lag_ms_p95": 8000,
+    "max_runtime_pressure_sample_age_seconds": 35
+  },
+  "progress_after_run": {
+    "backfill_progress": {
+      "start_ts": "2026-03-03T17:05:37Z",
+      "cursor": {
+        "ts_utc": "2026-03-08T14:01:56.713958592Z",
+        "slot": 405047904,
+        "signature": "3GRqfEVWFE7V9cvdrrkE9ZkdkFWhnznajMN4L88AGMMGQYPywBpgZQSTFDGTNKDcMeTZPZRPTfJrvPAM32DLvna2"
+      }
+    },
+    "last_committed_batch": {
+      "rows": 250,
+      "total_rows": 250,
+      "batches": 1
+    }
+  },
+  "runtime": {
+    "during": {
+      "yellowstone_output_queue_fill_ratio": 0.2890625,
+      "yellowstone_output_queue_depth": 592,
+      "yellowstone_output_queue_capacity": 2048,
+      "yellowstone_output_oldest_age_ms": 1983,
+      "ingestion_lag_ms_p95": 2484,
+      "ingestion_lag_ms_p99": 3257,
+      "observed_swap_writer_pending_requests": 0,
+      "sqlite_busy_error_total": 0,
+      "sqlite_write_retry_total": 0,
+      "NRestarts": 0
+    },
+    "after": {
+      "MainPID": 317246,
+      "NRestarts": 0,
+      "ActiveState": "active",
+      "SubState": "running",
+      "yellowstone_output_queue_fill_ratio": 0.0,
+      "yellowstone_output_queue_depth": 0,
+      "ingestion_lag_ms_p95": 1763,
+      "ingestion_lag_ms_p99": 1873,
+      "observed_swap_writer_pending_requests": 0,
+      "sqlite_busy_error_total": 0,
+      "sqlite_write_retry_total": 0
+    }
+  },
+  "post_run_readiness": {
+    "writes_enabled": false,
+    "reads_enabled": false,
+    "covered_since": null,
+    "covered_through_ts": null,
+    "covered_through_cursor": null,
+    "covered_through_lag_seconds": null,
+    "materialization_gap_cursor": null,
+    "backfill_progress": {
+      "start_ts": "2026-03-03T17:05:37Z",
+      "cursor": {
+        "ts_utc": "2026-03-08T14:01:56.713958592Z",
+        "slot": 405047904,
+        "signature": "3GRqfEVWFE7V9cvdrrkE9ZkdkFWhnznajMN4L88AGMMGQYPywBpgZQSTFDGTNKDcMeTZPZRPTfJrvPAM32DLvna2"
+      }
+    },
+    "backfill_protected_since": null,
+    "backfill_active": false,
+    "backfill_resume_required": true,
+    "coverage_markers_pending_backfill_completion": true,
+    "scoring_horizon_covered": false,
+    "covered_through_within_runtime_lag": false,
+    "covered_through_within_audit_lag": false,
+    "storage_ready_for_runtime_gate": false,
+    "effective_writes_ready": false,
+    "effective_reads_ready": false,
+    "write_blockers": [
+      "writes_disabled_by_config",
+      "covered_through_cursor_pending_backfill_completion",
+      "backfill_resume_required"
+    ],
+    "read_blockers": [
+      "reads_disabled_by_config",
+      "covered_since_pending_backfill_completion",
+      "covered_through_cursor_pending_backfill_completion",
+      "backfill_resume_required"
+    ]
+  }
+}

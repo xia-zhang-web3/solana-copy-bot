@@ -1,0 +1,45 @@
+{
+  "config_path": "/etc/solana-copy-bot/live.server.toml",
+  "db_path": "/var/www/solana-copy-bot/state/live_copybot.db",
+  "now": "2026-03-16T14:15:39.878487224Z",
+  "window_start": "2026-03-11T14:15:39.878487224Z",
+  "writes_enabled": false,
+  "reads_enabled": false,
+  "runtime_gate_max_lag_seconds": 600,
+  "audit_max_lag_buckets": 2,
+  "audit_max_lag_seconds": 3600,
+  "covered_since": null,
+  "covered_through_ts": null,
+  "covered_through_cursor": null,
+  "covered_through_lag_seconds": null,
+  "materialization_gap_cursor": null,
+  "backfill_progress": {
+    "start_ts": "2026-03-03T17:05:37Z",
+    "cursor": {
+      "ts_utc": "2026-03-03T17:50:26.766980955Z",
+      "slot": 403986679,
+      "signature": "3QaUt6PeXEd8Pktn47GiYybQgCwnxD5gp6DfUZR7pBegmWw3zR5RYH1xEeXVxYUDsLtq7hxvEBdkDdzFSFHVgtmB"
+    }
+  },
+  "backfill_protected_since": null,
+  "backfill_active": false,
+  "backfill_resume_required": true,
+  "coverage_markers_pending_backfill_completion": true,
+  "scoring_horizon_covered": false,
+  "covered_through_within_runtime_lag": false,
+  "covered_through_within_audit_lag": false,
+  "storage_ready_for_runtime_gate": false,
+  "effective_writes_ready": false,
+  "effective_reads_ready": false,
+  "write_blockers": [
+    "writes_disabled_by_config",
+    "covered_through_cursor_pending_backfill_completion",
+    "backfill_resume_required"
+  ],
+  "read_blockers": [
+    "reads_disabled_by_config",
+    "covered_since_pending_backfill_completion",
+    "covered_through_cursor_pending_backfill_completion",
+    "backfill_resume_required"
+  ]
+}

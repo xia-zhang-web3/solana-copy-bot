@@ -1,0 +1,186 @@
+{
+  "type": "bounded_throughput_staircase_test",
+  "activation": false,
+  "server_commit": "630689c4417e0ba2162d19edd648e75553538ae4",
+  "host": "ubuntu@52.28.0.218",
+  "runtime": {
+    "MainPID": 317246,
+    "NRestarts": 0,
+    "ActiveState": "active",
+    "SubState": "running"
+  },
+  "baseline": {
+    "cursor": {
+      "start_ts": "2026-03-03T17:05:37Z",
+      "ts_utc": "2026-03-08T14:01:58.209012788Z",
+      "slot": 405047908,
+      "signature": "2kKwzCmFLHHYcw4d7y336jf8WMKGBGMXDysTzL4ahyayi96SPSTN1KQSP7a6RkhHgHkq2z2LHzQeNrqzaFHPoDtx"
+    },
+    "runtime": {
+      "yellowstone_output_queue_fill_ratio": 0.0,
+      "yellowstone_output_queue_depth": 0,
+      "ingestion_lag_ms_p95": 1744,
+      "observed_swap_writer_pending_requests": 0,
+      "sqlite_busy_error_total": 0,
+      "sqlite_write_retry_total": 0
+    },
+    "readiness": {
+      "covered_since": null,
+      "covered_through_cursor": null,
+      "materialization_gap_cursor": null,
+      "backfill_active": false,
+      "backfill_resume_required": true,
+      "coverage_markers_pending_backfill_completion": true
+    }
+  },
+  "levels": [
+    {
+      "level": 2,
+      "duration_seconds": 14.258006378,
+      "command_params": {
+        "batch_size": 250,
+        "sleep_ms": 150,
+        "max_batches_per_run": 2,
+        "abort_on_runtime_pressure": true,
+        "max_yellowstone_fill_ratio": 0.20,
+        "max_ingestion_lag_ms_p95": 8000,
+        "max_runtime_pressure_sample_age_seconds": 35,
+        "abort_on_runtime_infra_stop": true
+      },
+      "result": {
+        "outcome": "stopped_due_to_batch_budget",
+        "stop_reason": "stopped_due_to_batch_budget",
+        "fast_guard_fired": false,
+        "infra_stop_guard_fired": false,
+        "manual_sigint_needed": false
+      },
+      "cursor_before": {
+        "ts_utc": "2026-03-08T14:01:58.209012788Z",
+        "slot": 405047908,
+        "signature": "2kKwzCmFLHHYcw4d7y336jf8WMKGBGMXDysTzL4ahyayi96SPSTN1KQSP7a6RkhHgHkq2z2LHzQeNrqzaFHPoDtx"
+      },
+      "cursor_after": {
+        "ts_utc": "2026-03-08T14:02:00.701810275Z",
+        "slot": 405047915,
+        "signature": "4SB9q6oKziqKMoGQJtfqPLSW8Qr2xK9dK4hLwN22VU5tuMT3jqHc7mrESgVvpidnnmLUUWC5sCuwnpW6ApkjgWEr"
+      },
+      "runtime_after": {
+        "yellowstone_output_queue_fill_ratio": 0.0,
+        "yellowstone_output_queue_depth": 0,
+        "ingestion_lag_ms_p95": 1770,
+        "observed_swap_writer_pending_requests": 0,
+        "sqlite_busy_error_total": 0,
+        "sqlite_write_retry_total": 0,
+        "NRestarts": 0
+      }
+    },
+    {
+      "level": 4,
+      "duration_seconds": 9.475003763,
+      "command_params": {
+        "batch_size": 250,
+        "sleep_ms": 150,
+        "max_batches_per_run": 4,
+        "abort_on_runtime_pressure": true,
+        "max_yellowstone_fill_ratio": 0.20,
+        "max_ingestion_lag_ms_p95": 8000,
+        "max_runtime_pressure_sample_age_seconds": 35,
+        "abort_on_runtime_infra_stop": true
+      },
+      "result": {
+        "outcome": "stopped_due_to_batch_budget",
+        "stop_reason": "stopped_due_to_batch_budget",
+        "fast_guard_fired": false,
+        "infra_stop_guard_fired": false,
+        "manual_sigint_needed": false
+      },
+      "cursor_before": {
+        "ts_utc": "2026-03-08T14:02:00.701810275Z",
+        "slot": 405047915,
+        "signature": "4SB9q6oKziqKMoGQJtfqPLSW8Qr2xK9dK4hLwN22VU5tuMT3jqHc7mrESgVvpidnnmLUUWC5sCuwnpW6ApkjgWEr"
+      },
+      "cursor_after": {
+        "ts_utc": "2026-03-08T14:02:05.702307539Z",
+        "slot": 405047927,
+        "signature": "DePhtaC8GwZAEcuWRvkA6LgsuTxW2wdbWDbR547gJAv96hmFLiWdHnMEXEJE7HMyXpk4m5kacy74h4gHujQJGCR"
+      },
+      "runtime_peak_after_run": {
+        "yellowstone_output_queue_fill_ratio": 0.416015625,
+        "yellowstone_output_queue_depth": 852,
+        "yellowstone_output_queue_capacity": 2048,
+        "ingestion_lag_ms_p95": 5541,
+        "ingestion_lag_ms_p99": 5971
+      },
+      "runtime_recovery": {
+        "yellowstone_output_queue_fill_ratio": 0.0,
+        "ingestion_lag_ms_p95": 2057,
+        "NRestarts": 0
+      }
+    },
+    {
+      "level": 8,
+      "duration_seconds": 16.796006358,
+      "command_params": {
+        "batch_size": 250,
+        "sleep_ms": 150,
+        "max_batches_per_run": 8,
+        "abort_on_runtime_pressure": true,
+        "max_yellowstone_fill_ratio": 0.20,
+        "max_ingestion_lag_ms_p95": 8000,
+        "max_runtime_pressure_sample_age_seconds": 35,
+        "abort_on_runtime_infra_stop": true
+      },
+      "result": {
+        "outcome": "stopped_due_to_fast_guard",
+        "stop_reason": "stopped_due_to_fast_guard",
+        "fast_guard_fired": true,
+        "infra_stop_guard_fired": false,
+        "manual_sigint_needed": false
+      },
+      "cursor_before": {
+        "ts_utc": "2026-03-08T14:02:05.702307539Z",
+        "slot": 405047927,
+        "signature": "DePhtaC8GwZAEcuWRvkA6LgsuTxW2wdbWDbR547gJAv96hmFLiWdHnMEXEJE7HMyXpk4m5kacy74h4gHujQJGCR"
+      },
+      "cursor_after": {
+        "ts_utc": "2026-03-08T14:02:15.641388084Z",
+        "slot": 405047954,
+        "signature": "2Wvc6YaoHwcum3QZE5HE6ePk523rUki6HQspeDKKPMv84N2g4BAPPm3tz7b6HfmJsEh9jp6fxFqG6uotUg7Yrppn"
+      },
+      "fast_guard_sample": {
+        "yellowstone_output_queue_fill_ratio": 0.65625,
+        "yellowstone_output_queue_depth": 1344,
+        "yellowstone_output_queue_capacity": 2048,
+        "yellowstone_output_oldest_age_ms": 5309,
+        "ingestion_lag_ms_p95": 5700,
+        "ingestion_lag_ms_p99": 6152
+      },
+      "runtime_recovery": {
+        "yellowstone_output_queue_fill_ratio": 0.0888671875,
+        "yellowstone_output_queue_depth": 182,
+        "yellowstone_output_queue_capacity": 2048,
+        "yellowstone_output_oldest_age_ms": 511,
+        "ingestion_lag_ms_p95": 4564,
+        "ingestion_lag_ms_p99": 4748,
+        "NRestarts": 0
+      }
+    }
+  ],
+  "post_staircase_readiness": {
+    "covered_since": null,
+    "covered_through_cursor": null,
+    "materialization_gap_cursor": null,
+    "backfill_active": false,
+    "backfill_resume_required": true,
+    "coverage_markers_pending_backfill_completion": true,
+    "effective_writes_ready": false,
+    "effective_reads_ready": false
+  },
+  "verdict": {
+    "safe_level": 4,
+    "practical_ceiling": "between_4_and_8",
+    "recommended_per_run_slice": 4,
+    "aggregate_writes_ready": false,
+    "aggregate_reads_ready": false
+  }
+}

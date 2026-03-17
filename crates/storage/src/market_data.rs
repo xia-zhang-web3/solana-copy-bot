@@ -383,11 +383,7 @@ impl SqliteStore {
             )
             .context("failed to prepare observed_swaps distinct buy mint query")?;
         let mut rows = stmt
-            .query(params![
-                since.to_rfc3339(),
-                until.to_rfc3339(),
-                SOL_MINT,
-            ])
+            .query(params![since.to_rfc3339(), until.to_rfc3339(), SOL_MINT,])
             .context("failed to query observed_swaps distinct buy mints")?;
 
         let mut mints = Vec::new();
