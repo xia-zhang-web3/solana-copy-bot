@@ -602,6 +602,7 @@ fn discovery_scoring_source_uses_raw_window_cap_truncation_context(scoring_sourc
         scoring_source,
         "raw_window"
             | "raw_window_empty"
+            | "raw_window_persisted_stream"
             | "persisted_wallet_metrics_truncated_warm_restore"
             | "persisted_wallet_metrics_truncated_warm_restore_empty"
     )
@@ -6208,6 +6209,53 @@ mod app_tests {
             details["cap_truncation_floor_ts"],
             serde_json::json!(floor_ts.to_rfc3339())
         );
+        assert_eq!(
+            details["cap_truncation_floor_signature"],
+            serde_json::json!("restart-noise-buy-1")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_observe_discovery_cycle_persists_cap_truncation_context_for_persisted_stream_scoring(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("universe-stop-cap-truncation-context-persisted")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_universe_min_active_follow_wallets = 15;
+        cfg.shadow_universe_min_eligible_wallets = 80;
+        cfg.shadow_universe_breach_cycles = 1;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        let guard_started_at = now - chrono::Duration::minutes(2);
+        let floor_ts = now - chrono::Duration::minutes(9);
+        let discovery_output = DiscoveryTaskOutput {
+            active_wallets: std::collections::HashSet::new(),
+            cycle_ts: now,
+            eligible_wallets: 5,
+            active_follow_wallets: 5,
+            published: true,
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            scoring_source: "raw_window_persisted_stream",
+            raw_window_cap_truncated: true,
+            cap_truncation_deactivation_guard_active: false,
+            cap_truncation_deactivation_guard_reason: Some("warm_load_truncated"),
+            cap_truncation_deactivation_guard_started_at: Some(guard_started_at),
+            cap_truncation_floor_ts_utc: Some(floor_ts),
+            cap_truncation_floor_signature: Some("restart-noise-buy-1".to_string()),
+        };
+
+        guard.observe_discovery_cycle(&store, now, 5, 5, Some(&discovery_output))?;
+        let universe_stops = store.list_risk_events_by_type_desc("shadow_risk_universe_stop")?;
+        assert_eq!(universe_stops.len(), 1);
+        let details_json = universe_stops[0]
+            .details_json
+            .as_deref()
+            .expect("universe stop event must include details_json");
+        let details: serde_json::Value = serde_json::from_str(details_json)
+            .context("failed to parse universe stop details_json")?;
+        assert_eq!(details["raw_window_cap_truncated"], serde_json::json!(true));
         assert_eq!(
             details["cap_truncation_floor_signature"],
             serde_json::json!("restart-noise-buy-1")

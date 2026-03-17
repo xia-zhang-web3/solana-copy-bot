@@ -303,6 +303,80 @@ Their useful conclusions are already absorbed here:
 
 - Date: 2026-03-17
 - Commit SHA: `self-referential; exact final SHA is reported from git after commit`
+- Stage / substep: `Stage 1 / auditor follow-up for stale persisted history guard + persisted-stream observability`
+- Status: `done`
+- Code changed:
+  - `crates/discovery/src/lib.rs`
+  - `crates/app/src/main.rs`
+- Tests run:
+  - `cargo test -p copybot-discovery cold_start_stale_persisted_history_with_recent_published_universe_enters_degraded_stage1`
+  - `cargo test -p copybot-discovery cold_start_stale_persisted_history_without_recent_published_universe_fail_closes_stage1`
+  - `cargo test -p copybot-discovery cold_start_truncated_in_memory_with_complete_persisted_observed_swaps_publishes_healthy_stage1`
+  - `cargo test -p copybot-app risk_guard_observe_discovery_cycle_persists_cap_truncation_context_for_persisted_stream_scoring`
+  - `cargo test -p copybot-discovery --lib`
+  - `cargo test -p copybot-app`
+- Done:
+  - persisted-stream runtime fallback no longer treats `MIN(ts) <= window_start` as sufficient coverage by itself; it now also requires at least one persisted `observed_swaps` row inside the current scoring window
+  - stale persisted history can no longer produce a false `healthy` / `raw_window_persisted_stream` cycle with an empty published universe
+  - runtime now defensively checks `observed_swaps_loaded` from the persisted stream scan and falls back to `degraded` or `fail_closed` instead of silently publishing an empty healthy universe if the scan returns zero rows
+  - persisted-stream recompute now emits explicit start/finish logs around the SQLite stream scan so cold-start work is observable instead of looking hung
+  - `raw_window_persisted_stream` is now included in raw-window cap-truncation telemetry propagation for universe-stop risk events
+  - new regression coverage proves stale persisted history degrades when a recent published universe exists and fail-closes when it does not
+- In progress:
+  - none on the Stage 1 runtime path
+- Blocked:
+  - none
+- Acceptance criteria closed:
+  - live-like cap-truncated warm load no longer fail-closes when persisted `observed_swaps` covers the scoring window
+  - runtime no longer publishes a false healthy empty universe when persisted history is stale outside the scoring window
+  - raw-window persisted-stream runtime path remains observable in both discovery logs and risk telemetry
+- Acceptance criteria remaining:
+  - none for Stage 1 in code; only rollout confirmation remains operationally
+- Remaining risks:
+  - production still needs post-rollout confirmation that cap-truncated live startup now reaches `healthy` with `scoring_source = raw_window_persisted_stream`
+  - aggregate/bootstrap dead code and related warnings remain intentionally parked outside the Stage 1 runtime path
+- Next action:
+  - deploy this follow-up and confirm live no longer reports false `fail_closed` or false empty-healthy publication under cap pressure or stale persisted history
+
+- Date: 2026-03-17
+- Commit SHA: `self-referential; exact final SHA is reported from git after commit`
+- Stage / substep: `Stage 1 / persisted observed_swaps runtime fallback for cap-truncated warm load`
+- Status: `done`
+- Code changed:
+  - `crates/discovery/src/lib.rs`
+- Tests run:
+  - `cargo test -p copybot-discovery cold_start_truncated_in_memory_with_complete_persisted_observed_swaps_publishes_healthy_stage1`
+  - `cargo test -p copybot-discovery cold_start_incomplete_raw_window_with_recent_published_universe_enters_degraded_stage1`
+  - `cargo test -p copybot-discovery cold_start_truncated_in_memory_with_incomplete_persisted_observed_swaps_and_no_recent_published_universe_fail_closes_stage1`
+  - `cargo test -p copybot-discovery --lib`
+  - `cargo test -p copybot-storage --lib`
+  - `cargo test -p copybot-app`
+- Done:
+  - Stage 1 was only partial after the first server rollout: the new runtime contract was live, but `fail_closed` still triggered because cap-truncated warm load treated incomplete RAM history as missing raw truth
+  - normal runtime discovery now falls back to persisted `observed_swaps` when the in-memory cache is truncated but persisted raw history still covers the scoring window
+  - persisted-stream recompute uses the existing raw-truth snapshot builder and publishes a normal healthy top-N universe instead of degrading solely because the RAM cache hit its swap cap
+  - degraded mode is now reserved for the real fallback case: persisted raw window is still incomplete, but a valid recent published universe exists
+  - fail-closed is now reserved for the real terminal case: persisted raw truth is unusable and no valid recent published universe exists
+  - discovery summary/telemetry now exposes `raw_window_persisted_stream` as the scoring source for this runtime path
+  - new Stage 1 regression coverage proves all three cap-truncated cold-start branches plus the new scoring-source contract
+- In progress:
+  - none on the Stage 1 runtime path
+- Blocked:
+  - none
+- Acceptance criteria closed:
+  - live-like cap-truncated warm load no longer fail-closes when persisted `observed_swaps` covers the scoring window
+  - runtime wallet selection no longer depends on fitting the full scoring window inside the RAM cache
+  - fail-close remains limited to the absence of usable raw truth plus absence of a valid recent published universe
+- Acceptance criteria remaining:
+  - none for Stage 1 in code; only rollout confirmation remains operationally
+- Remaining risks:
+  - this closes the confirmed live blocker in code and tests, but production still needs post-rollout confirmation that the persisted-stream path is the one being exercised under live cap pressure
+  - aggregate/bootstrap dead code and related warnings remain intentionally parked outside the Stage 1 runtime path
+- Next action:
+  - roll out and confirm live discovery leaves `fail_closed` by switching to `healthy` with `scoring_source = raw_window_persisted_stream` under cap-truncated warm load
+
+- Date: 2026-03-17
+- Commit SHA: `self-referential; exact final SHA is reported from git after commit`
 - Stage / substep: `Stage 1 / auditor follow-up hardening for degraded universe counts + bucket-valid published fallback`
 - Status: `done`
 - Code changed:
