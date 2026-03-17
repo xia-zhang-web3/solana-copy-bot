@@ -1,9 +1,9 @@
 use super::{
     DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, DiscoveryScoringBatchStageTimings,
     DiscoveryScoringBoundarySeedLot, DiscoveryScoringBoundarySeedSnapshot,
-    SqliteBatchedDeleteSummary, SqliteStore, TokenMarketStats, WalletScoringBuyFactRow,
-    WalletScoringCloseFactRow, WalletScoringDayRow, WalletScoringQualitySource,
-    WalletScoringSnapshot,
+    DiscoveryScoringSeedBoundaryInstallMarker, SqliteBatchedDeleteSummary, SqliteStore,
+    TokenMarketStats, WalletScoringBuyFactRow, WalletScoringCloseFactRow, WalletScoringDayRow,
+    WalletScoringQualitySource, WalletScoringSnapshot,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
@@ -11,6 +11,8 @@ use copybot_core_types::SwapEvent;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::cmp::Ordering;
 use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::Instant;
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -78,6 +80,33 @@ struct CarryoverLotRow {
     qty: f64,
     cost_sol: f64,
     oldest_opened_ts: DateTime<Utc>,
+}
+
+#[cfg(test)]
+static DISCOVERY_SCORING_FAIL_AFTER_MATERIALIZATION_BEFORE_CHECKPOINT: AtomicBool =
+    AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) fn set_discovery_scoring_atomic_checkpoint_failpoint(enabled: bool) {
+    DISCOVERY_SCORING_FAIL_AFTER_MATERIALIZATION_BEFORE_CHECKPOINT
+        .store(enabled, AtomicOrdering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn maybe_fail_after_materialization_before_checkpoint() -> Result<()> {
+    if DISCOVERY_SCORING_FAIL_AFTER_MATERIALIZATION_BEFORE_CHECKPOINT
+        .swap(false, AtomicOrdering::SeqCst)
+    {
+        anyhow::bail!(
+            "test failpoint: discovery scoring crash after materialization before checkpoint"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+pub(crate) fn maybe_fail_after_materialization_before_checkpoint() -> Result<()> {
+    Ok(())
 }
 
 fn is_sol_buy(swap: &SwapEvent) -> bool {
@@ -149,7 +178,7 @@ fn upsert_discovery_scoring_cursor_state_on_conn(
     Ok(())
 }
 
-fn upsert_discovery_scoring_backfill_progress_on_conn(
+pub(crate) fn upsert_discovery_scoring_backfill_progress_on_conn(
     conn: &Connection,
     start_ts: DateTime<Utc>,
     cursor: &DiscoveryRuntimeCursor,
@@ -169,6 +198,44 @@ fn upsert_discovery_scoring_backfill_progress_on_conn(
         cursor,
         updated_at,
     )?;
+    Ok(())
+}
+
+fn upsert_discovery_scoring_seed_boundary_install_marker_on_conn(
+    conn: &Connection,
+    start_ts: DateTime<Utc>,
+    cursor: &DiscoveryRuntimeCursor,
+    updated_at: &str,
+) -> Result<()> {
+    upsert_discovery_scoring_state_value_on_conn(
+        conn,
+        "seed_boundary_install_start_ts",
+        &start_ts.to_rfc3339(),
+        updated_at,
+    )?;
+    upsert_discovery_scoring_cursor_state_on_conn(
+        conn,
+        "seed_boundary_install_cursor_ts",
+        "seed_boundary_install_cursor_slot",
+        "seed_boundary_install_cursor_signature",
+        cursor,
+        updated_at,
+    )?;
+    Ok(())
+}
+
+fn clear_discovery_scoring_seed_boundary_install_marker_on_conn(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "DELETE FROM discovery_scoring_state
+         WHERE state_key IN (
+            'seed_boundary_install_start_ts',
+            'seed_boundary_install_cursor_ts',
+            'seed_boundary_install_cursor_slot',
+            'seed_boundary_install_cursor_signature'
+         )",
+        [],
+    )
+    .context("failed clearing discovery_scoring_state.seed_boundary_install marker")?;
     Ok(())
 }
 
@@ -1073,6 +1140,31 @@ fn apply_discovery_scoring_swaps_on_conn(
     Ok(())
 }
 
+fn apply_discovery_scoring_swaps_and_checkpoint_on_conn(
+    conn: &Connection,
+    prepared_swaps: &[PreparedScoringSwap],
+    progress_start_ts: DateTime<Utc>,
+    progress_cursor: &DiscoveryRuntimeCursor,
+) -> Result<(u64, u64)> {
+    let apply_started_at = Instant::now();
+    apply_discovery_scoring_swaps_on_conn(conn, prepared_swaps)?;
+    let apply_ms = apply_started_at.elapsed().as_millis() as u64;
+
+    maybe_fail_after_materialization_before_checkpoint()?;
+
+    let progress_started_at = Instant::now();
+    let updated_at = Utc::now().to_rfc3339();
+    upsert_discovery_scoring_backfill_progress_on_conn(
+        conn,
+        progress_start_ts,
+        progress_cursor,
+        &updated_at,
+    )?;
+    let progress_update_ms = progress_started_at.elapsed().as_millis() as u64;
+
+    Ok((apply_ms, progress_update_ms))
+}
+
 impl SqliteStore {
     fn upsert_discovery_scoring_state_ts(
         &self,
@@ -1140,6 +1232,36 @@ impl SqliteStore {
             prepare_ms,
             apply_ms,
             rug_finalize_ms: 0,
+        })
+    }
+
+    pub fn apply_discovery_scoring_batch_and_checkpoint_with_timings(
+        &self,
+        swaps: &[SwapEvent],
+        config: &DiscoveryAggregateWriteConfig,
+        progress_start_ts: DateTime<Utc>,
+        progress_cursor: &DiscoveryRuntimeCursor,
+    ) -> Result<super::DiscoveryScoringCheckpointedBatchTimings> {
+        let prepare_started_at = Instant::now();
+        let prepared = prepare_discovery_scoring_swaps(&self.conn, swaps, config)?;
+        let prepare_ms = prepare_started_at.elapsed().as_millis() as u64;
+
+        let (apply_ms, progress_update_ms) = self.with_immediate_transaction_retry(
+            "discovery scoring batch with checkpoint",
+            |conn| {
+                apply_discovery_scoring_swaps_and_checkpoint_on_conn(
+                    conn,
+                    &prepared,
+                    progress_start_ts,
+                    progress_cursor,
+                )
+            },
+        )?;
+
+        Ok(super::DiscoveryScoringCheckpointedBatchTimings {
+            prepare_ms,
+            apply_ms,
+            progress_update_ms,
         })
     }
 
@@ -1235,6 +1357,12 @@ impl SqliteStore {
                 &snapshot.boundary_cursor,
                 &updated_at,
             )?;
+            upsert_discovery_scoring_seed_boundary_install_marker_on_conn(
+                conn,
+                snapshot.boundary_start_ts,
+                &snapshot.boundary_cursor,
+                &updated_at,
+            )?;
             if let Some(gap_cursor) = preserved_gap_cursor {
                 upsert_discovery_scoring_materialization_gap_cursor_on_conn(
                     conn,
@@ -1281,6 +1409,7 @@ impl SqliteStore {
             "discovery scoring backfill progress update",
             |conn| {
                 let now = Utc::now().to_rfc3339();
+                clear_discovery_scoring_seed_boundary_install_marker_on_conn(conn)?;
                 upsert_discovery_scoring_backfill_progress_on_conn(conn, start_ts, cursor, &now)?;
                 Ok(0usize)
             },
@@ -1451,6 +1580,7 @@ impl SqliteStore {
                     [],
                 )
                 .context("failed clearing discovery scoring backfill progress")?;
+                clear_discovery_scoring_seed_boundary_install_marker_on_conn(conn)?;
                 Ok(0usize)
             },
         )?;
@@ -1510,6 +1640,67 @@ impl SqliteStore {
                 )))
             }
             _ => Ok(None),
+        }
+    }
+
+    pub fn load_discovery_scoring_seed_boundary_install_marker(
+        &self,
+    ) -> Result<Option<DiscoveryScoringSeedBoundaryInstallMarker>> {
+        let Some(boundary_start_ts) =
+            self.load_discovery_scoring_state_ts("seed_boundary_install_start_ts")?
+        else {
+            return Ok(None);
+        };
+        let boundary_cursor_ts =
+            self.load_discovery_scoring_state_ts("seed_boundary_install_cursor_ts")?;
+        let boundary_cursor_slot_raw = self
+            .conn
+            .query_row(
+                "SELECT state_value
+                 FROM discovery_scoring_state
+                 WHERE state_key = 'seed_boundary_install_cursor_slot'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("failed querying discovery_scoring_state.seed_boundary_install_cursor_slot")?;
+        let boundary_cursor_signature = self
+            .conn
+            .query_row(
+                "SELECT state_value
+                 FROM discovery_scoring_state
+                 WHERE state_key = 'seed_boundary_install_cursor_signature'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context(
+                "failed querying discovery_scoring_state.seed_boundary_install_cursor_signature",
+            )?;
+        match (
+            boundary_cursor_ts,
+            boundary_cursor_slot_raw,
+            boundary_cursor_signature,
+        ) {
+            (Some(ts_utc), Some(slot_raw), Some(signature)) => {
+                let slot = slot_raw.parse::<u64>().with_context(|| {
+                    format!(
+                        "invalid discovery_scoring_state.seed_boundary_install_cursor_slot value: {slot_raw}"
+                    )
+                })?;
+                Ok(Some(DiscoveryScoringSeedBoundaryInstallMarker {
+                    boundary_start_ts,
+                    boundary_cursor: DiscoveryRuntimeCursor {
+                        ts_utc,
+                        slot,
+                        signature,
+                    },
+                }))
+            }
+            (None, None, None) => Ok(None),
+            _ => anyhow::bail!(
+                "discovery_scoring_state.seed_boundary_install marker is partially populated"
+            ),
         }
     }
 

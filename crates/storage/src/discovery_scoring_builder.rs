@@ -1,6 +1,8 @@
 use super::{
-    DiscoveryAggregateWriteConfig, DiscoveryScoringBatchStageTimings, SqliteStore,
-    TokenQualityCacheRow, WalletScoringQualitySource,
+    DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, DiscoveryScoringBatchStageTimings,
+    DiscoveryScoringBoundarySeedLot, DiscoveryScoringBoundarySeedSnapshot,
+    DiscoveryScoringCheckpointedBatchTimings, SqliteStore, TokenQualityCacheRow,
+    WalletScoringQualitySource,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
@@ -103,6 +105,16 @@ struct PendingCloseFactRow {
     win: bool,
 }
 
+#[derive(Debug, Default)]
+struct PreparedDiscoveryScoringBuilderBatch {
+    day_deltas: HashMap<(String, NaiveDate), DayDelta>,
+    tx_minute_deltas: HashMap<(String, i64), u32>,
+    buy_rows: Vec<PendingBuyFactRow>,
+    close_rows: Vec<PendingCloseFactRow>,
+    lot_mutations: HashMap<String, Option<BuilderLot>>,
+    quality_upserts: HashMap<String, QualityCacheUpsert>,
+}
+
 #[derive(Debug, Clone, Default)]
 struct DayDelta {
     first_seen: Option<DateTime<Utc>>,
@@ -137,6 +149,23 @@ pub struct DiscoveryScoringReplayBuilder {
     open_lots: HashMap<WalletTokenKey, VecDeque<BuilderLot>>,
     market_windows: HashMap<String, RollingTokenMarketState>,
     quality_cache: HashMap<String, Option<BuilderQualityCacheState>>,
+}
+
+#[derive(Debug)]
+pub struct DiscoveryScoringBoundaryLotBuilder {
+    open_lots: HashMap<WalletTokenKey, VecDeque<BuilderLot>>,
+}
+
+#[derive(Debug, Clone)]
+enum LotMutationAction {
+    Upsert(BuilderLot),
+    Delete(String),
+}
+
+#[derive(Debug, Default)]
+struct LotAccountingStep {
+    close_rows: Vec<PendingCloseFactRow>,
+    mutations: Vec<LotMutationAction>,
 }
 
 fn parse_ts(raw: &str, field: &str) -> Result<DateTime<Utc>> {
@@ -494,6 +523,414 @@ fn upsert_token_quality_cache_on_conn(conn: &Connection, row: &QualityCacheUpser
     Ok(())
 }
 
+fn export_boundary_seed_lots_from_open_lots(
+    open_lots: &HashMap<WalletTokenKey, VecDeque<BuilderLot>>,
+) -> Vec<DiscoveryScoringBoundarySeedLot> {
+    let mut lots = open_lots
+        .values()
+        .flat_map(|wallet_token_lots| wallet_token_lots.iter())
+        .map(|lot| DiscoveryScoringBoundarySeedLot {
+            buy_signature: lot.buy_signature.clone(),
+            wallet_id: lot.wallet_id.clone(),
+            token: lot.token.clone(),
+            qty: lot.qty,
+            cost_sol: lot.cost_sol,
+            opened_ts: lot.opened_ts,
+        })
+        .collect::<Vec<_>>();
+    lots.sort_by(|left, right| {
+        left.wallet_id
+            .cmp(&right.wallet_id)
+            .then_with(|| left.token.cmp(&right.token))
+            .then_with(|| left.opened_ts.cmp(&right.opened_ts))
+            .then_with(|| left.buy_signature.cmp(&right.buy_signature))
+    });
+    lots
+}
+
+fn apply_swap_lot_accounting(
+    open_lots: &mut HashMap<WalletTokenKey, VecDeque<BuilderLot>>,
+    swap: &SwapEvent,
+) -> LotAccountingStep {
+    let mut step = LotAccountingStep::default();
+    if is_sol_buy(swap) {
+        let token = swap.token_out.clone();
+        let lot = BuilderLot {
+            buy_signature: swap.signature.clone(),
+            wallet_id: swap.wallet.clone(),
+            token: token.clone(),
+            qty: swap.amount_out.max(0.0),
+            cost_sol: swap.amount_in.max(0.0),
+            opened_ts: swap.ts_utc,
+        };
+        open_lots
+            .entry(WalletTokenKey {
+                wallet_id: swap.wallet.clone(),
+                token,
+            })
+            .or_default()
+            .push_back(lot.clone());
+        step.mutations.push(LotMutationAction::Upsert(lot));
+        return step;
+    }
+
+    if !is_sol_sell(swap) {
+        return step;
+    }
+
+    let key = WalletTokenKey {
+        wallet_id: swap.wallet.clone(),
+        token: swap.token_in.clone(),
+    };
+    let lots = open_lots.entry(key.clone()).or_default();
+    let mut qty_remaining = swap.amount_in.max(0.0);
+    if qty_remaining <= 1e-12 || swap.amount_out <= 0.0 {
+        if lots.is_empty() {
+            open_lots.remove(&key);
+        }
+        return step;
+    }
+    let mut segment_index = 0i64;
+    while qty_remaining > 1e-12 {
+        let Some(mut lot) = lots.pop_front() else {
+            break;
+        };
+        if lot.qty <= 1e-12 {
+            step.mutations
+                .push(LotMutationAction::Delete(lot.buy_signature.clone()));
+            continue;
+        }
+        let take_qty = qty_remaining.min(lot.qty);
+        let lot_fraction = take_qty / lot.qty;
+        let cost_part = lot.cost_sol * lot_fraction;
+        let proceeds_part = swap.amount_out * (take_qty / swap.amount_in.max(1e-12));
+        let pnl_sol = proceeds_part - cost_part;
+        let remaining_qty = (lot.qty - take_qty).max(0.0);
+        let remaining_cost = (lot.cost_sol - cost_part).max(0.0);
+        step.close_rows.push(PendingCloseFactRow {
+            sell_signature: swap.signature.clone(),
+            segment_index,
+            wallet_id: swap.wallet.clone(),
+            token: swap.token_in.clone(),
+            closed_ts: swap.ts_utc,
+            activity_day: swap.ts_utc.date_naive(),
+            pnl_sol,
+            hold_seconds: (swap.ts_utc - lot.opened_ts).num_seconds().max(0),
+            win: pnl_sol > 0.0,
+        });
+        if remaining_qty <= 1e-12 {
+            step.mutations
+                .push(LotMutationAction::Delete(lot.buy_signature.clone()));
+        } else {
+            lot.qty = remaining_qty;
+            lot.cost_sol = remaining_cost;
+            step.mutations.push(LotMutationAction::Upsert(lot.clone()));
+            lots.push_front(lot);
+        }
+        qty_remaining -= take_qty;
+        segment_index += 1;
+    }
+    if lots.is_empty() {
+        open_lots.remove(&key);
+    }
+
+    step
+}
+
+fn prepare_discovery_scoring_builder_batch(
+    store: &SqliteStore,
+    builder: &mut DiscoveryScoringReplayBuilder,
+    swaps: &[SwapEvent],
+    config: &DiscoveryAggregateWriteConfig,
+) -> Result<(PreparedDiscoveryScoringBuilderBatch, u64)> {
+    if swaps.is_empty() {
+        return Ok((PreparedDiscoveryScoringBuilderBatch::default(), 0));
+    }
+
+    let prepare_started_at = Instant::now();
+    let mut ordered = swaps.to_vec();
+    ordered.sort_by(|left, right| {
+        left.ts_utc
+            .cmp(&right.ts_utc)
+            .then_with(|| left.slot.cmp(&right.slot))
+            .then_with(|| left.signature.cmp(&right.signature))
+    });
+
+    let mut prepared = PreparedDiscoveryScoringBuilderBatch::default();
+    let mut quality_budget = QualityFetchBudget::default();
+
+    let mut offset = 0usize;
+    while offset < ordered.len() {
+        let ts = ordered[offset].ts_utc;
+        let group_end = ordered[offset..]
+            .iter()
+            .take_while(|swap| swap.ts_utc == ts)
+            .count()
+            + offset;
+
+        for state in builder.market_windows.values_mut() {
+            state.evict_before(ts - Duration::minutes(5));
+        }
+
+        let mut group_market_stats = HashMap::<String, TokenMarketSnapshot>::new();
+        for swap in &ordered[offset..group_end] {
+            let day_key = (swap.wallet.clone(), swap.ts_utc.date_naive());
+            let delta = prepared.day_deltas.entry(day_key).or_default();
+            delta.first_seen = Some(
+                delta
+                    .first_seen
+                    .map(|current| current.min(swap.ts_utc))
+                    .unwrap_or(swap.ts_utc),
+            );
+            delta.last_seen = Some(
+                delta
+                    .last_seen
+                    .map(|current| current.max(swap.ts_utc))
+                    .unwrap_or(swap.ts_utc),
+            );
+            delta.trades = delta.trades.saturating_add(1);
+            if is_sol_buy(swap) {
+                delta.spent_sol += swap.amount_in.max(0.0);
+                delta.max_buy_notional_sol =
+                    delta.max_buy_notional_sol.max(swap.amount_in.max(0.0));
+            }
+            *prepared
+                .tx_minute_deltas
+                .entry((swap.wallet.clone(), swap.ts_utc.timestamp().div_euclid(60)))
+                .or_insert(0) += 1;
+
+            if let Some((token, sol_notional)) = sol_pair_market_event(swap) {
+                let state = builder.market_windows.entry(token.to_string()).or_default();
+                state.push(swap, sol_notional);
+                group_market_stats.insert(token.to_string(), state.snapshot());
+            }
+        }
+
+        for swap in &ordered[offset..group_end] {
+            if is_sol_buy(swap) {
+                let token = swap.token_out.clone();
+                let market_stats =
+                    group_market_stats
+                        .get(&token)
+                        .copied()
+                        .unwrap_or(TokenMarketSnapshot {
+                            volume_5m_sol: 0.0,
+                            unique_traders_5m: 0,
+                            liquidity_sol_proxy: 0.0,
+                        });
+                let (quality, quality_upsert) = resolve_quality_snapshot(
+                    store,
+                    &mut builder.quality_cache,
+                    swap.ts_utc,
+                    &token,
+                    config,
+                    &mut quality_budget,
+                )?;
+                if let Some(quality_upsert) = quality_upsert {
+                    prepared
+                        .quality_upserts
+                        .insert(quality_upsert.mint.clone(), quality_upsert);
+                }
+                prepared.buy_rows.push(PendingBuyFactRow {
+                    buy_signature: swap.signature.clone(),
+                    wallet_id: swap.wallet.clone(),
+                    token: token.clone(),
+                    ts: swap.ts_utc,
+                    activity_day: swap.ts_utc.date_naive(),
+                    notional_sol: swap.amount_in.max(0.0),
+                    market_volume_5m_sol: market_stats.volume_5m_sol,
+                    market_unique_traders_5m: market_stats.unique_traders_5m,
+                    market_liquidity_proxy_sol: market_stats.liquidity_sol_proxy,
+                    quality_source: quality.source,
+                    quality_token_age_seconds: quality.token_age_seconds,
+                    quality_holders: quality.holders,
+                    quality_liquidity_sol: quality.liquidity_sol,
+                    rug_check_after_ts: swap.ts_utc
+                        + Duration::seconds(config.rug_lookahead_seconds.max(1) as i64),
+                });
+                for mutation in apply_swap_lot_accounting(&mut builder.open_lots, swap).mutations {
+                    match mutation {
+                        LotMutationAction::Upsert(lot) => {
+                            prepared
+                                .lot_mutations
+                                .insert(lot.buy_signature.clone(), Some(lot));
+                        }
+                        LotMutationAction::Delete(buy_signature) => {
+                            prepared.lot_mutations.insert(buy_signature, None);
+                        }
+                    }
+                }
+            } else if is_sol_sell(swap) {
+                let accounting_step = apply_swap_lot_accounting(&mut builder.open_lots, swap);
+                prepared.close_rows.extend(accounting_step.close_rows);
+                for mutation in accounting_step.mutations {
+                    match mutation {
+                        LotMutationAction::Upsert(lot) => {
+                            prepared
+                                .lot_mutations
+                                .insert(lot.buy_signature.clone(), Some(lot));
+                        }
+                        LotMutationAction::Delete(buy_signature) => {
+                            prepared.lot_mutations.insert(buy_signature, None);
+                        }
+                    }
+                }
+            }
+        }
+
+        offset = group_end;
+    }
+
+    Ok((prepared, prepare_started_at.elapsed().as_millis() as u64))
+}
+
+fn prepare_discovery_scoring_boundary_lot_batch(
+    builder: &mut DiscoveryScoringBoundaryLotBuilder,
+    swaps: &[SwapEvent],
+) -> Result<u64> {
+    if swaps.is_empty() {
+        return Ok(0);
+    }
+
+    let prepare_started_at = Instant::now();
+    let mut ordered = swaps.to_vec();
+    ordered.sort_by(|left, right| {
+        left.ts_utc
+            .cmp(&right.ts_utc)
+            .then_with(|| left.slot.cmp(&right.slot))
+            .then_with(|| left.signature.cmp(&right.signature))
+    });
+
+    for swap in &ordered {
+        let _ = apply_swap_lot_accounting(&mut builder.open_lots, swap);
+    }
+
+    Ok(prepare_started_at.elapsed().as_millis() as u64)
+}
+
+fn flush_prepared_discovery_scoring_builder_batch_on_conn(
+    conn: &Connection,
+    prepared: &PreparedDiscoveryScoringBuilderBatch,
+) -> Result<()> {
+    for row in prepared.quality_upserts.values() {
+        upsert_token_quality_cache_on_conn(conn, row)?;
+    }
+    for ((wallet_id, activity_day), delta) in &prepared.day_deltas {
+        upsert_wallet_scoring_day_delta_on_conn(conn, wallet_id, *activity_day, delta)?;
+    }
+    for ((wallet_id, minute_bucket), tx_count) in &prepared.tx_minute_deltas {
+        upsert_wallet_scoring_tx_minute_delta_on_conn(conn, wallet_id, *minute_bucket, *tx_count)?;
+    }
+    for row in &prepared.buy_rows {
+        conn.execute(
+            "INSERT OR IGNORE INTO wallet_scoring_buy_facts(
+                buy_signature,
+                wallet_id,
+                token,
+                ts,
+                activity_day,
+                notional_sol,
+                market_volume_5m_sol,
+                market_unique_traders_5m,
+                market_liquidity_proxy_sol,
+                quality_source,
+                quality_token_age_seconds,
+                quality_holders,
+                quality_liquidity_sol,
+                rug_check_after_ts,
+                rug_volume_lookahead_sol,
+                rug_unique_traders_lookahead
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, NULL, NULL)",
+            params![
+                &row.buy_signature,
+                &row.wallet_id,
+                &row.token,
+                row.ts.to_rfc3339(),
+                row.activity_day.format("%Y-%m-%d").to_string(),
+                row.notional_sol,
+                row.market_volume_5m_sol,
+                row.market_unique_traders_5m as i64,
+                row.market_liquidity_proxy_sol,
+                match row.quality_source {
+                    WalletScoringQualitySource::Fresh => "fresh",
+                    WalletScoringQualitySource::Stale => "stale",
+                    WalletScoringQualitySource::Deferred => "deferred",
+                    WalletScoringQualitySource::Missing => "missing",
+                },
+                row.quality_token_age_seconds.map(|value| value as i64),
+                row.quality_holders.map(|value| value as i64),
+                row.quality_liquidity_sol,
+                row.rug_check_after_ts.to_rfc3339(),
+            ],
+        )
+        .context("failed builder inserting wallet_scoring_buy_facts row")?;
+    }
+    for row in &prepared.close_rows {
+        conn.execute(
+            "INSERT OR IGNORE INTO wallet_scoring_close_facts(
+                sell_signature,
+                segment_index,
+                wallet_id,
+                token,
+                closed_ts,
+                activity_day,
+                pnl_sol,
+                hold_seconds,
+                win
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                &row.sell_signature,
+                row.segment_index,
+                &row.wallet_id,
+                &row.token,
+                row.closed_ts.to_rfc3339(),
+                row.activity_day.format("%Y-%m-%d").to_string(),
+                row.pnl_sol,
+                row.hold_seconds,
+                if row.win { 1 } else { 0 },
+            ],
+        )
+        .context("failed builder inserting wallet_scoring_close_facts row")?;
+    }
+    for (buy_signature, lot) in &prepared.lot_mutations {
+        match lot {
+            Some(lot) => {
+                conn.execute(
+                    "INSERT INTO wallet_scoring_open_lots(
+                        buy_signature,
+                        wallet_id,
+                        token,
+                        qty,
+                        cost_sol,
+                        opened_ts
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(buy_signature) DO UPDATE SET
+                        qty = excluded.qty,
+                        cost_sol = excluded.cost_sol,
+                        opened_ts = excluded.opened_ts",
+                    params![
+                        buy_signature,
+                        &lot.wallet_id,
+                        &lot.token,
+                        lot.qty,
+                        lot.cost_sol,
+                        lot.opened_ts.to_rfc3339(),
+                    ],
+                )
+                .context("failed builder upserting wallet_scoring_open_lot")?;
+            }
+            None => {
+                conn.execute(
+                    "DELETE FROM wallet_scoring_open_lots WHERE buy_signature = ?1",
+                    params![buy_signature],
+                )
+                .context("failed builder deleting wallet_scoring_open_lot")?;
+            }
+        }
+    }
+    Ok(())
+}
+
 impl SqliteStore {
     pub fn begin_discovery_scoring_replay_builder(
         &self,
@@ -528,319 +965,120 @@ impl SqliteStore {
         })
     }
 
+    pub fn export_discovery_scoring_builder_boundary_seed_snapshot(
+        &self,
+        builder: &DiscoveryScoringReplayBuilder,
+        boundary_start_ts: DateTime<Utc>,
+        boundary_cursor: &DiscoveryRuntimeCursor,
+    ) -> Result<DiscoveryScoringBoundarySeedSnapshot> {
+        let carryover_count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM wallet_scoring_carryover_lots",
+                [],
+                |row| row.get(0),
+            )
+            .context("failed counting wallet_scoring_carryover_lots for builder boundary export")?;
+        if carryover_count != 0 {
+            anyhow::bail!(
+                "builder boundary export does not support wallet_scoring_carryover_lots; carryover_lot_count={carryover_count}"
+            );
+        }
+        Ok(DiscoveryScoringBoundarySeedSnapshot {
+            boundary_start_ts,
+            boundary_cursor: boundary_cursor.clone(),
+            open_lots: export_boundary_seed_lots_from_open_lots(&builder.open_lots),
+        })
+    }
+
+    pub fn begin_discovery_scoring_boundary_lot_builder(
+        &self,
+    ) -> Result<DiscoveryScoringBoundaryLotBuilder> {
+        let carryover_count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM wallet_scoring_carryover_lots",
+                [],
+                |row| row.get(0),
+            )
+            .context(
+                "failed counting wallet_scoring_carryover_lots for boundary lot builder init",
+            )?;
+        if carryover_count != 0 {
+            anyhow::bail!(
+                "boundary lot builder does not support wallet_scoring_carryover_lots; carryover_lot_count={carryover_count}"
+            );
+        }
+        Ok(DiscoveryScoringBoundaryLotBuilder {
+            open_lots: load_all_open_lots(&self.conn)?,
+        })
+    }
+
+    pub fn export_discovery_scoring_boundary_lot_seed_snapshot(
+        &self,
+        builder: &DiscoveryScoringBoundaryLotBuilder,
+        boundary_start_ts: DateTime<Utc>,
+        boundary_cursor: &DiscoveryRuntimeCursor,
+    ) -> Result<DiscoveryScoringBoundarySeedSnapshot> {
+        let carryover_count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM wallet_scoring_carryover_lots",
+                [],
+                |row| row.get(0),
+            )
+            .context("failed counting wallet_scoring_carryover_lots for boundary lot export")?;
+        if carryover_count != 0 {
+            anyhow::bail!(
+                "boundary lot export does not support wallet_scoring_carryover_lots; carryover_lot_count={carryover_count}"
+            );
+        }
+        Ok(DiscoveryScoringBoundarySeedSnapshot {
+            boundary_start_ts,
+            boundary_cursor: boundary_cursor.clone(),
+            open_lots: export_boundary_seed_lots_from_open_lots(&builder.open_lots),
+        })
+    }
+
+    pub fn advance_discovery_scoring_boundary_lot_builder_in_memory_with_timings(
+        &self,
+        builder: &mut DiscoveryScoringBoundaryLotBuilder,
+        swaps: &[SwapEvent],
+    ) -> Result<DiscoveryScoringBatchStageTimings> {
+        let prepare_ms = prepare_discovery_scoring_boundary_lot_batch(builder, swaps)?;
+        Ok(DiscoveryScoringBatchStageTimings {
+            prepare_ms,
+            apply_ms: 0,
+            rug_finalize_ms: 0,
+        })
+    }
+
+    pub fn advance_discovery_scoring_builder_batch_in_memory_with_timings(
+        &self,
+        builder: &mut DiscoveryScoringReplayBuilder,
+        swaps: &[SwapEvent],
+        config: &DiscoveryAggregateWriteConfig,
+    ) -> Result<DiscoveryScoringBatchStageTimings> {
+        let (_prepared, prepare_ms) =
+            prepare_discovery_scoring_builder_batch(self, builder, swaps, config)?;
+        Ok(DiscoveryScoringBatchStageTimings {
+            prepare_ms,
+            apply_ms: 0,
+            rug_finalize_ms: 0,
+        })
+    }
+
     pub fn apply_discovery_scoring_builder_batch_with_timings(
         &self,
         builder: &mut DiscoveryScoringReplayBuilder,
         swaps: &[SwapEvent],
         config: &DiscoveryAggregateWriteConfig,
     ) -> Result<DiscoveryScoringBatchStageTimings> {
-        if swaps.is_empty() {
-            return Ok(DiscoveryScoringBatchStageTimings::default());
-        }
-
-        let prepare_started_at = Instant::now();
-        let mut ordered = swaps.to_vec();
-        ordered.sort_by(|left, right| {
-            left.ts_utc
-                .cmp(&right.ts_utc)
-                .then_with(|| left.slot.cmp(&right.slot))
-                .then_with(|| left.signature.cmp(&right.signature))
-        });
-
-        let mut day_deltas = HashMap::<(String, NaiveDate), DayDelta>::new();
-        let mut tx_minute_deltas = HashMap::<(String, i64), u32>::new();
-        let mut buy_rows = Vec::<PendingBuyFactRow>::new();
-        let mut close_rows = Vec::<PendingCloseFactRow>::new();
-        let mut lot_mutations = HashMap::<String, Option<BuilderLot>>::new();
-        let mut quality_upserts = HashMap::<String, QualityCacheUpsert>::new();
-        let mut quality_budget = QualityFetchBudget::default();
-
-        let mut offset = 0usize;
-        while offset < ordered.len() {
-            let ts = ordered[offset].ts_utc;
-            let group_end = ordered[offset..]
-                .iter()
-                .take_while(|swap| swap.ts_utc == ts)
-                .count()
-                + offset;
-
-            for state in builder.market_windows.values_mut() {
-                state.evict_before(ts - Duration::minutes(5));
-            }
-
-            let mut group_market_stats = HashMap::<String, TokenMarketSnapshot>::new();
-            for swap in &ordered[offset..group_end] {
-                let day_key = (swap.wallet.clone(), swap.ts_utc.date_naive());
-                let delta = day_deltas.entry(day_key).or_default();
-                delta.first_seen = Some(
-                    delta
-                        .first_seen
-                        .map(|current| current.min(swap.ts_utc))
-                        .unwrap_or(swap.ts_utc),
-                );
-                delta.last_seen = Some(
-                    delta
-                        .last_seen
-                        .map(|current| current.max(swap.ts_utc))
-                        .unwrap_or(swap.ts_utc),
-                );
-                delta.trades = delta.trades.saturating_add(1);
-                if is_sol_buy(swap) {
-                    delta.spent_sol += swap.amount_in.max(0.0);
-                    delta.max_buy_notional_sol =
-                        delta.max_buy_notional_sol.max(swap.amount_in.max(0.0));
-                }
-                *tx_minute_deltas
-                    .entry((swap.wallet.clone(), swap.ts_utc.timestamp().div_euclid(60)))
-                    .or_insert(0) += 1;
-
-                if let Some((token, sol_notional)) = sol_pair_market_event(swap) {
-                    let state = builder.market_windows.entry(token.to_string()).or_default();
-                    state.push(swap, sol_notional);
-                    group_market_stats.insert(token.to_string(), state.snapshot());
-                }
-            }
-
-            for swap in &ordered[offset..group_end] {
-                if is_sol_buy(swap) {
-                    let token = swap.token_out.clone();
-                    let market_stats =
-                        group_market_stats
-                            .get(&token)
-                            .copied()
-                            .unwrap_or(TokenMarketSnapshot {
-                                volume_5m_sol: 0.0,
-                                unique_traders_5m: 0,
-                                liquidity_sol_proxy: 0.0,
-                            });
-                    let (quality, quality_upsert) = resolve_quality_snapshot(
-                        self,
-                        &mut builder.quality_cache,
-                        swap.ts_utc,
-                        &token,
-                        config,
-                        &mut quality_budget,
-                    )?;
-                    if let Some(quality_upsert) = quality_upsert {
-                        quality_upserts.insert(quality_upsert.mint.clone(), quality_upsert);
-                    }
-                    buy_rows.push(PendingBuyFactRow {
-                        buy_signature: swap.signature.clone(),
-                        wallet_id: swap.wallet.clone(),
-                        token: token.clone(),
-                        ts: swap.ts_utc,
-                        activity_day: swap.ts_utc.date_naive(),
-                        notional_sol: swap.amount_in.max(0.0),
-                        market_volume_5m_sol: market_stats.volume_5m_sol,
-                        market_unique_traders_5m: market_stats.unique_traders_5m,
-                        market_liquidity_proxy_sol: market_stats.liquidity_sol_proxy,
-                        quality_source: quality.source,
-                        quality_token_age_seconds: quality.token_age_seconds,
-                        quality_holders: quality.holders,
-                        quality_liquidity_sol: quality.liquidity_sol,
-                        rug_check_after_ts: swap.ts_utc
-                            + Duration::seconds(config.rug_lookahead_seconds.max(1) as i64),
-                    });
-                    let lot = BuilderLot {
-                        buy_signature: swap.signature.clone(),
-                        wallet_id: swap.wallet.clone(),
-                        token: token.clone(),
-                        qty: swap.amount_out.max(0.0),
-                        cost_sol: swap.amount_in.max(0.0),
-                        opened_ts: swap.ts_utc,
-                    };
-                    builder
-                        .open_lots
-                        .entry(WalletTokenKey {
-                            wallet_id: swap.wallet.clone(),
-                            token,
-                        })
-                        .or_default()
-                        .push_back(lot.clone());
-                    lot_mutations.insert(lot.buy_signature.clone(), Some(lot));
-                } else if is_sol_sell(swap) {
-                    let key = WalletTokenKey {
-                        wallet_id: swap.wallet.clone(),
-                        token: swap.token_in.clone(),
-                    };
-                    let lots = builder.open_lots.entry(key.clone()).or_default();
-                    let mut qty_remaining = swap.amount_in.max(0.0);
-                    if qty_remaining <= 1e-12 || swap.amount_out <= 0.0 {
-                        continue;
-                    }
-                    let mut segment_index = 0i64;
-                    while qty_remaining > 1e-12 {
-                        let Some(mut lot) = lots.pop_front() else {
-                            break;
-                        };
-                        if lot.qty <= 1e-12 {
-                            lot_mutations.insert(lot.buy_signature.clone(), None);
-                            continue;
-                        }
-                        let take_qty = qty_remaining.min(lot.qty);
-                        let lot_fraction = take_qty / lot.qty;
-                        let cost_part = lot.cost_sol * lot_fraction;
-                        let proceeds_part =
-                            swap.amount_out * (take_qty / swap.amount_in.max(1e-12));
-                        let pnl_sol = proceeds_part - cost_part;
-                        let remaining_qty = (lot.qty - take_qty).max(0.0);
-                        let remaining_cost = (lot.cost_sol - cost_part).max(0.0);
-                        close_rows.push(PendingCloseFactRow {
-                            sell_signature: swap.signature.clone(),
-                            segment_index,
-                            wallet_id: swap.wallet.clone(),
-                            token: swap.token_in.clone(),
-                            closed_ts: swap.ts_utc,
-                            activity_day: swap.ts_utc.date_naive(),
-                            pnl_sol,
-                            hold_seconds: (swap.ts_utc - lot.opened_ts).num_seconds().max(0),
-                            win: pnl_sol > 0.0,
-                        });
-                        if remaining_qty <= 1e-12 {
-                            lot_mutations.insert(lot.buy_signature.clone(), None);
-                        } else {
-                            lot.qty = remaining_qty;
-                            lot.cost_sol = remaining_cost;
-                            lot_mutations.insert(lot.buy_signature.clone(), Some(lot.clone()));
-                            lots.push_front(lot);
-                        }
-                        qty_remaining -= take_qty;
-                        segment_index += 1;
-                    }
-                    if lots.is_empty() {
-                        builder.open_lots.remove(&key);
-                    }
-                }
-            }
-
-            offset = group_end;
-        }
-
-        let prepare_ms = prepare_started_at.elapsed().as_millis() as u64;
-
+        let (prepared, prepare_ms) =
+            prepare_discovery_scoring_builder_batch(self, builder, swaps, config)?;
         let apply_started_at = Instant::now();
         self.with_immediate_transaction_retry("discovery scoring builder batch", |conn| {
-            for row in quality_upserts.values() {
-                upsert_token_quality_cache_on_conn(conn, row)?;
-            }
-            for ((wallet_id, activity_day), delta) in &day_deltas {
-                upsert_wallet_scoring_day_delta_on_conn(conn, wallet_id, *activity_day, delta)?;
-            }
-            for ((wallet_id, minute_bucket), tx_count) in &tx_minute_deltas {
-                upsert_wallet_scoring_tx_minute_delta_on_conn(
-                    conn,
-                    wallet_id,
-                    *minute_bucket,
-                    *tx_count,
-                )?;
-            }
-            for row in &buy_rows {
-                conn.execute(
-                    "INSERT OR IGNORE INTO wallet_scoring_buy_facts(
-                        buy_signature,
-                        wallet_id,
-                        token,
-                        ts,
-                        activity_day,
-                        notional_sol,
-                        market_volume_5m_sol,
-                        market_unique_traders_5m,
-                        market_liquidity_proxy_sol,
-                        quality_source,
-                        quality_token_age_seconds,
-                        quality_holders,
-                        quality_liquidity_sol,
-                        rug_check_after_ts,
-                        rug_volume_lookahead_sol,
-                        rug_unique_traders_lookahead
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, NULL, NULL)",
-                    params![
-                        &row.buy_signature,
-                        &row.wallet_id,
-                        &row.token,
-                        row.ts.to_rfc3339(),
-                        row.activity_day.format("%Y-%m-%d").to_string(),
-                        row.notional_sol,
-                        row.market_volume_5m_sol,
-                        row.market_unique_traders_5m as i64,
-                        row.market_liquidity_proxy_sol,
-                        match row.quality_source {
-                            WalletScoringQualitySource::Fresh => "fresh",
-                            WalletScoringQualitySource::Stale => "stale",
-                            WalletScoringQualitySource::Deferred => "deferred",
-                            WalletScoringQualitySource::Missing => "missing",
-                        },
-                        row.quality_token_age_seconds.map(|value| value as i64),
-                        row.quality_holders.map(|value| value as i64),
-                        row.quality_liquidity_sol,
-                        row.rug_check_after_ts.to_rfc3339(),
-                    ],
-                )
-                .context("failed builder inserting wallet_scoring_buy_facts row")?;
-            }
-            for row in &close_rows {
-                conn.execute(
-                    "INSERT OR IGNORE INTO wallet_scoring_close_facts(
-                        sell_signature,
-                        segment_index,
-                        wallet_id,
-                        token,
-                        closed_ts,
-                        activity_day,
-                        pnl_sol,
-                        hold_seconds,
-                        win
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    params![
-                        &row.sell_signature,
-                        row.segment_index,
-                        &row.wallet_id,
-                        &row.token,
-                        row.closed_ts.to_rfc3339(),
-                        row.activity_day.format("%Y-%m-%d").to_string(),
-                        row.pnl_sol,
-                        row.hold_seconds,
-                        if row.win { 1 } else { 0 },
-                    ],
-                )
-                .context("failed builder inserting wallet_scoring_close_facts row")?;
-            }
-            for (buy_signature, lot) in &lot_mutations {
-                match lot {
-                    Some(lot) => {
-                        conn.execute(
-                            "INSERT INTO wallet_scoring_open_lots(
-                                buy_signature,
-                                wallet_id,
-                                token,
-                                qty,
-                                cost_sol,
-                                opened_ts
-                             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                             ON CONFLICT(buy_signature) DO UPDATE SET
-                                qty = excluded.qty,
-                                cost_sol = excluded.cost_sol,
-                                opened_ts = excluded.opened_ts",
-                            params![
-                                buy_signature,
-                                &lot.wallet_id,
-                                &lot.token,
-                                lot.qty,
-                                lot.cost_sol,
-                                lot.opened_ts.to_rfc3339(),
-                            ],
-                        )
-                        .context("failed builder upserting wallet_scoring_open_lot")?;
-                    }
-                    None => {
-                        conn.execute(
-                            "DELETE FROM wallet_scoring_open_lots WHERE buy_signature = ?1",
-                            params![buy_signature],
-                        )
-                        .context("failed builder deleting wallet_scoring_open_lot")?;
-                    }
-                }
-            }
+            flush_prepared_discovery_scoring_builder_batch_on_conn(conn, &prepared)?;
             Ok(())
         })?;
         let apply_ms = apply_started_at.elapsed().as_millis() as u64;
@@ -849,6 +1087,46 @@ impl SqliteStore {
             prepare_ms,
             apply_ms,
             rug_finalize_ms: 0,
+        })
+    }
+
+    pub fn apply_discovery_scoring_builder_batch_and_checkpoint_with_timings(
+        &self,
+        builder: &mut DiscoveryScoringReplayBuilder,
+        swaps: &[SwapEvent],
+        config: &DiscoveryAggregateWriteConfig,
+        progress_start_ts: DateTime<Utc>,
+        progress_cursor: &DiscoveryRuntimeCursor,
+    ) -> Result<DiscoveryScoringCheckpointedBatchTimings> {
+        let (prepared, prepare_ms) =
+            prepare_discovery_scoring_builder_batch(self, builder, swaps, config)?;
+
+        let (apply_ms, progress_update_ms) = self.with_immediate_transaction_retry(
+            "discovery scoring builder batch with checkpoint",
+            |conn| {
+                let apply_started_at = Instant::now();
+                flush_prepared_discovery_scoring_builder_batch_on_conn(conn, &prepared)?;
+                let apply_ms = apply_started_at.elapsed().as_millis() as u64;
+
+                super::discovery_scoring::maybe_fail_after_materialization_before_checkpoint()?;
+
+                let progress_started_at = Instant::now();
+                let updated_at = Utc::now().to_rfc3339();
+                super::discovery_scoring::upsert_discovery_scoring_backfill_progress_on_conn(
+                    conn,
+                    progress_start_ts,
+                    progress_cursor,
+                    &updated_at,
+                )?;
+                let progress_update_ms = progress_started_at.elapsed().as_millis() as u64;
+                Ok((apply_ms, progress_update_ms))
+            },
+        )?;
+
+        Ok(DiscoveryScoringCheckpointedBatchTimings {
+            prepare_ms,
+            apply_ms,
+            progress_update_ms,
         })
     }
 }
