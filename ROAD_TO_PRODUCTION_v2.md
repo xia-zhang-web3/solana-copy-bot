@@ -35,37 +35,63 @@ It replaces the old mixed roadmap and removes aggregate/backfill recovery from t
 4. Shadow pipeline exists and can process followed wallets.
 5. Execution runtime code exists, but is not enabled in current live config.
 
-### 2.2 What is not working
+### 2.2 What is not working (updated 2026-03-17)
 
-1. Discovery wallet selection is not production-usable in current live state.
-2. Aggregate/backfill recovery is not a safe operational path.
-3. Trusted bootstrap / fail-close logic can leave runtime with no active follow universe.
-4. Current live config still has:
+1. Discovery wallet selection enters the correct runtime path but the first persisted-stream scoring cycle has not completed on live yet.
+2. Aggregate/backfill recovery is not a safe operational path and is removed from the critical path.
+3. Current live config still has:
    - `discovery.scoring_aggregates_write_enabled = false`
    - `discovery.scoring_aggregates_enabled = false`
    - `execution.enabled = false`
 
-### 2.3 What the current code already proves
+### 2.3 What the current code already proves (updated 2026-03-17)
 
-1. The raw-window discovery path already exists:
-   - `PreparedCycleState::Recompute`
-   - `build_wallet_snapshots_from_cached(...)`
-2. The current problem is not missing raw-window scoring logic.
-3. The current problem is that startup/runtime control flow still prioritizes trusted bootstrap state over raw-window publication truth:
-   - startup can arm `trusted_selection_bootstrap_pending`
-   - missing persisted trusted snapshot can still clear the followlist and fail-close runtime
-   - app runtime still treats `trusted_selection_fail_closed` as a hard empty-follow-universe state
-4. Therefore the required change is primarily a runtime contract change, not a new scoring engine.
+1. Stage 1 runtime contract is deployed and live on `0c58aba`:
+   - bootstrap/aggregate/backfill no longer block runtime wallet selection
+   - `healthy / degraded / fail_closed` modes are propagated through discovery and app
+   - publication truth is persisted separately from bootstrap/aggregate recovery truth
+   - persisted-stream fallback (`build_wallet_snapshots_from_persisted_stream`) is the active cold-start path when RAM cache is cap-truncated
+2. The persisted-stream path correctly engages on live (confirmed in logs: `recomputing discovery snapshots from persisted observed_swaps stream`).
+3. The first persisted-stream cycle did not complete in the observed window (6+ minutes).
+4. Current working diagnosis from the second rollout: the next blocker is latency / boundedness of the first persisted-stream rebuild on live-size state, not bootstrap, aggregate, or ingestion.
 
-### 2.4 Current verdict
+### 2.4 Current verdict (updated 2026-03-17)
+
+The project is not blocked by bootstrap, aggregate, or backfill.
 
 The project is not blocked by ingestion.
 
-The project is blocked by wallet selection / discovery truth.
+The first discovery cycle on live has not completed yet.
 
-The production path must move away from aggregate recovery and backfill as runtime dependencies.
+Current working diagnosis: the cold-start persisted-stream rebuild is not yet bounded/resumable enough for live-size state.
 
-The code already contains the right scoring engine, but it is still wrapped in the wrong startup contract.
+Do not start Stage 2 yet.
+
+### 2.5 Server state (updated 2026-03-17)
+
+- Deployed commit: `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c`
+- Service: `solana-copy-bot.service active`, no crash loop
+- `execution.enabled = false`
+- Discovery enters persisted-stream path on startup but first cycle has not completed in observed window
+- `active_follow_wallets = 0` (pending first cycle completion)
+- Observed during validation window:
+  - `%CPU ≈ 17.5`, `RSS ≈ 121148 KiB`
+  - `sqlite_busy_error_total = 0`
+  - `yellowstone_output_queue_fill_ratio` mostly 0.0
+  - repeated `discovery cycle still running, skipping scheduled trigger` every 60s
+  - no `scoring_source = raw_window_persisted_stream` appeared (cycle did not finish)
+  - no `shadow_risk_universe_stop` after restart
+- Rollout reports:
+  - [ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md](ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md) — first Stage 1 deploy (`2eb5c30`), confirmed bootstrap path removed but fail_closed due to cap-truncated warm load
+  - [ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md](ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md) — persisted-stream follow-up (`0c58aba`), confirmed correct path engaged but first cycle did not complete in 6+ minutes
+
+### 2.6 Live data scale (observed)
+
+- `live_copybot.db`: 116 GB
+- `live_copybot.db-wal`: 4.4 GB
+- `observed_swaps_retention_days`: 7
+- `scoring_window_days`: 5
+- `max_window_swaps_in_memory`: 100,000
 
 ## 3. Production principles
 
@@ -150,53 +176,58 @@ No new roadmap documents are needed before Stage 1 lands in code.
 
 ### Stage 1. Remove aggregate recovery from runtime discovery
 
+Status: **code complete, deployed, operationally blocked by first-cycle scan latency**
+
 Goal:
 
 Make discovery choose wallets from the current raw window without aggregate scoring gates.
 
-Work:
+What was done (4 code iterations, 2 server rollouts):
 
-1. Keep the existing raw-window recompute path and make it the default runtime selection path.
-2. Remove aggregate readiness from normal runtime discovery branching while aggregates remain disabled in config.
-3. Stop requiring trusted bootstrap restoration or persisted trusted snapshots before raw-window ranking can become active.
-4. Keep aggregate/backfill code present, but strictly disabled and non-blocking for runtime wallet selection.
-5. Preserve fail-close only for the real terminal condition:
-   - raw scoring window is unusable
-   - there is no valid recent published follow universe
+1. Removed startup dependence on `trusted_selection_bootstrap_pending`, aggregate readiness, and persisted trusted snapshots.
+2. Made raw-window recompute (`PreparedCycleState::Recompute`) the default runtime selection path.
+3. Added `PreparedCycleState::PersistedRecompute` fallback: when RAM cache is cap-truncated but persisted `observed_swaps` covers the scoring window, discovery scores from `build_wallet_snapshots_from_persisted_stream` instead of failing closed.
+4. Separated publication truth from bootstrap/aggregate recovery truth in `discovery_strategy_state`.
+5. Propagated `healthy / degraded / fail_closed` runtime mode through discovery, app startup, and shadow consumption.
+6. Hardened: coverage check requires left-boundary + in-window swap presence; empty-scan guard prevents false healthy; degraded eligible_wallets sourced from last healthy metrics bucket; bucket-stale published universes rejected.
 
-Immediate code hotspots:
+Code hotspots touched:
 
-1. [crates/discovery/src/lib.rs](/Users/tigranambarcumyan/Documents/solana-copy-bot/crates/discovery/src/lib.rs)
-   - remove startup dependence on `trusted_selection_bootstrap_pending` for normal raw-window recompute
-   - stop treating persisted trusted bootstrap as mandatory before raw-window publish
-   - keep `aggregate` and `bootstrap` code as an offline compatibility path, not the steady-state runtime path
-2. [crates/app/src/main.rs](/Users/tigranambarcumyan/Documents/solana-copy-bot/crates/app/src/main.rs)
-   - stop boot-time blanket fail-close behavior that empties the runtime follow universe purely because trusted bootstrap is invalid
-   - let discovery publish a fresh or degraded universe before shadow/copy logic is considered terminally blocked
-3. [crates/storage/src/discovery.rs](/Users/tigranambarcumyan/Documents/solana-copy-bot/crates/storage/src/discovery.rs)
-   - treat publication truth separately from aggregate/bootstrap recovery truth
-   - keep legacy trusted/bootstrap state only as compatibility until Stage 2 replaces it with the new publication contract
+1. `crates/discovery/src/lib.rs` — runtime branching, persisted-stream path, publication state, tests
+2. `crates/app/src/main.rs` — startup boot path, runtime mode consumption, cap-truncation telemetry
+3. `crates/app/src/task_spawns.rs` — runtime_mode propagation
+4. `crates/storage/src/discovery.rs` — publication truth persistence
+5. `crates/storage/src/lib.rs` — publication state types, bucket validity check
 
-Exit criteria:
+Exit criteria (all closed in code and tests):
 
-1. discovery can publish top-N from current `observed_swaps`
-2. no aggregate tables are required for runtime wallet selection
-3. restart does not require offline recovery
-4. restart with a full raw window and no trusted bootstrap snapshot still publishes from raw data
+1. discovery can publish top-N from current `observed_swaps` — done
+2. no aggregate tables are required for runtime wallet selection — done
+3. restart does not require offline recovery — done
+4. restart with a full raw window and no trusted bootstrap snapshot still publishes from raw data — done
 
-Mandatory Stage 1 tests:
+Mandatory Stage 1 tests (all green):
 
-1. restart with sufficient `observed_swaps` and no trusted snapshot:
-   - recompute from raw window
-   - publish top-N
-   - do not fail-close
-2. restart with incomplete raw window but a recent published universe:
-   - enter degraded mode
-   - keep last published follow universe
-   - do not silently rotate or clear wallets
-3. restart with unusable raw window and no recent published universe:
-   - fail-close explicitly
-   - keep runtime observable
+1. cold start + sufficient `observed_swaps` + no trusted snapshot → healthy, top-N published
+2. cold start + cap-truncated RAM + complete persisted `observed_swaps` → healthy via persisted stream
+3. cold start + incomplete raw window + recent published universe → degraded
+4. cold start + stale persisted history + recent published universe → degraded
+5. cold start + unusable raw window + no published universe → fail-closed
+6. cold start + stale persisted history + no published universe → fail-closed
+
+Remaining operational blocker:
+
+The first persisted-stream discovery cycle has not completed on live in the observed window (6+ minutes).
+
+Current working diagnosis:
+
+the first persisted-stream rebuild is too slow / insufficiently bounded for live-size state and needs a resumable or chunked runtime design.
+
+Immediate next coding step before Stage 2:
+
+implement bounded/resumable persisted-stream rebuild with explicit progress telemetry and checkpointed forward progress across cycles.
+
+See section 2.5 for observed server state and section 2.6 for live data scale.
 
 ### Stage 2. Stabilize wallet publication contract
 
@@ -300,6 +331,41 @@ Their useful conclusions are already absorbed here:
 4. Operational incidents on prod must not be repeated just to prove recovery semantics.
 
 ## 10. Execution log
+
+- Date: 2026-03-17
+- Commit SHA: `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c`
+- Stage / substep: `Stage 1 / operational rollout validation of persisted-stream follow-up`
+- Status: `partial`
+- Code changed:
+  - none in this step; this was a server validation of the already-built follow-up artifact
+- Tests run:
+  - live server rollout validation recorded in `ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md`
+- Done:
+  - exact follow-up artifact deployed successfully on live
+  - service remained stable with `NRestarts = 0`
+  - startup entered the correct persisted-stream path (`recomputing discovery snapshots from persisted observed_swaps stream`)
+  - no return to bootstrap-only fail-close behavior
+  - no false empty `healthy`
+  - no `shadow_risk_universe_stop` after restart
+- In progress:
+  - first persisted-stream rebuild on live-size state
+- Blocked:
+  - first persisted-stream cycle did not complete within the observed window
+  - scheduler emitted repeated `discovery cycle still running, skipping scheduled trigger`
+- Acceptance criteria closed:
+  - persisted-stream follow-up is deployed and active on live
+  - the correct runtime path is engaged under cap-truncated warm load
+- Acceptance criteria remaining:
+  - cold-start persisted-stream rebuild must become bounded/resumable enough to complete on live-size state
+  - live must emit a completed discovery cycle with `scoring_source = raw_window_persisted_stream`
+  - live must leave `active_follow_wallets = 0`
+- Remaining risks:
+  - current operational blocker is latency / boundedness of the first persisted-stream rebuild on live-size state
+  - dead aggregate/bootstrap code and warning noise still exist but are not the blocker here
+- Next action:
+  - do not start Stage 2
+  - implement bounded/resumable persisted-stream rebuild with progress telemetry and cycle-level forward progress
+
 
 - Date: 2026-03-17
 - Commit SHA: `self-referential; exact final SHA is reported from git after commit`
