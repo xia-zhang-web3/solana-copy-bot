@@ -23,6 +23,18 @@ pub struct ObservedSwapCursorPage {
     pub time_budget_exhausted: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ObservedBuyMintPage {
+    pub mints: Vec<String>,
+    pub time_budget_exhausted: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ObservedBuyMintCount {
+    pub count: usize,
+    pub time_budget_exhausted: bool,
+}
+
 struct ProgressHandlerGuard<'a> {
     conn: &'a Connection,
 }
@@ -381,7 +393,7 @@ impl SqliteStore {
             .conn
             .prepare(
                 "SELECT DISTINCT token_out
-                 FROM observed_swaps
+                 FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_out_ts
                  WHERE ts >= ?1
                    AND ts <= ?2
                    AND token_in = ?3
@@ -568,6 +580,146 @@ impl SqliteStore {
             rows_seen: seen,
             time_budget_exhausted,
         })
+    }
+
+    pub fn load_observed_buy_mints_in_window_after_token_with_budget(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        token_out_after: Option<&str>,
+        limit: usize,
+        deadline: Instant,
+    ) -> Result<ObservedBuyMintPage> {
+        if limit == 0 {
+            return Ok(ObservedBuyMintPage::default());
+        }
+        if Instant::now() >= deadline {
+            return Ok(ObservedBuyMintPage {
+                mints: Vec::new(),
+                time_budget_exhausted: true,
+            });
+        }
+
+        let limit = (limit.min(i64::MAX as usize)) as i64;
+        let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
+        let (query, params): (&str, Vec<rusqlite::types::Value>) = match token_out_after {
+            Some(token_out_after) => (
+                "SELECT DISTINCT token_out
+                 FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_out_ts
+                 WHERE token_in = ?1
+                   AND token_out <> ?1
+                   AND ts >= ?2
+                   AND ts <= ?3
+                   AND token_out > ?4
+                 ORDER BY token_out ASC
+                 LIMIT ?5",
+                vec![
+                    SOL_MINT.to_string().into(),
+                    since.to_rfc3339().into(),
+                    until.to_rfc3339().into(),
+                    token_out_after.to_string().into(),
+                    limit.into(),
+                ],
+            ),
+            None => (
+                "SELECT DISTINCT token_out
+                 FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_out_ts
+                 WHERE token_in = ?1
+                   AND token_out <> ?1
+                   AND ts >= ?2
+                   AND ts <= ?3
+                 ORDER BY token_out ASC
+                 LIMIT ?4",
+                vec![
+                    SOL_MINT.to_string().into(),
+                    since.to_rfc3339().into(),
+                    until.to_rfc3339().into(),
+                    limit.into(),
+                ],
+            ),
+        };
+        let mut stmt = self
+            .conn
+            .prepare(query)
+            .context("failed to prepare observed_swaps distinct buy mint page query")?;
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params))
+            .context("failed to query observed_swaps distinct buy mint page")?;
+
+        let mut mints = Vec::new();
+        let mut time_budget_exhausted = false;
+        loop {
+            let next_row = match rows.next() {
+                Ok(row) => row,
+                Err(error) => {
+                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                        time_budget_exhausted = true;
+                        break;
+                    }
+                    return Err(error)
+                        .context("failed iterating observed_swaps distinct buy mint page rows");
+                }
+            };
+            let Some(row) = next_row else {
+                break;
+            };
+            mints.push(
+                row.get::<_, String>(0)
+                    .context("failed reading observed_swaps distinct buy mint page row")?,
+            );
+        }
+
+        Ok(ObservedBuyMintPage {
+            mints,
+            time_budget_exhausted,
+        })
+    }
+
+    pub fn count_observed_buy_mints_in_window_up_to_token_with_budget(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        token_out_inclusive: &str,
+        deadline: Instant,
+    ) -> Result<ObservedBuyMintCount> {
+        if Instant::now() >= deadline {
+            return Ok(ObservedBuyMintCount {
+                count: 0,
+                time_budget_exhausted: true,
+            });
+        }
+
+        let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
+        match self.conn.query_row(
+            "SELECT COUNT(DISTINCT token_out)
+             FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_out_ts
+             WHERE token_in = ?1
+               AND token_out <> ?1
+               AND ts >= ?2
+               AND ts <= ?3
+               AND token_out <= ?4",
+            params![
+                SOL_MINT,
+                since.to_rfc3339(),
+                until.to_rfc3339(),
+                token_out_inclusive,
+            ],
+            |row| row.get::<_, i64>(0),
+        ) {
+            Ok(count) => Ok(ObservedBuyMintCount {
+                count: count.max(0) as usize,
+                time_budget_exhausted: false,
+            }),
+            Err(error) if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) => {
+                Ok(ObservedBuyMintCount {
+                    count: 0,
+                    time_budget_exhausted: true,
+                })
+            }
+            Err(error) => {
+                Err(error).context("failed counting observed_swaps distinct buy mints up to token")
+            }
+        }
     }
 
     pub fn for_each_observed_swap_after_cursor<F>(

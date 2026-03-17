@@ -37,7 +37,9 @@ It replaces the old mixed roadmap and removes aggregate/backfill recovery from t
 
 ### 2.2 What is not working (updated 2026-03-17)
 
-1. Discovery wallet selection logic is fixed in code, but the latest live rollout did not reach discovery/runtime because startup stalled earlier in the SQLite path.
+1. Discovery wallet selection logic is fixed in code, startup SQLite no longer stalls before runtime, and the bounded persisted rebuild now makes observable forward progress on live; however, the latest live rollout still has not completed Stage 1 to a healthy published universe on cold start.
+   - current live runtime remains `fail_closed` because there is no valid recent published universe and the bounded cold-start rebuild has not completed yet
+   - `raw_window_persisted_stream` and `active_follow_wallets > 0` are still not confirmed on live
 2. Aggregate/backfill recovery is not a safe operational path and is removed from the critical path.
 3. Current live config still has:
    - `discovery.scoring_aggregates_write_enabled = false`
@@ -57,13 +59,26 @@ It replaces the old mixed roadmap and removes aggregate/backfill recovery from t
    - there was no `sqlite migrations applied`
    - there was no startup WAL checkpoint log
    - there was no `recomputing discovery snapshots from persisted observed_swaps stream`
-4. Current working diagnosis from the latest rollout: the next blocker is startup SQLite path boundedness / observability on live-size DB+WAL, before discovery/runtime begins.
-   - current live evidence localizes the stall only to pre-migration SQLite bootstrap; the old rollout did not have enough stage logs to distinguish `Connection::open` vs PRAGMAs vs schema bootstrap
-5. Current working tree still keeps the bounded/resumable persisted rebuild fix intact:
+4. The next rollout on `3fac9afdafbeb3e4ca2c66486124a8683d281f02` validated the startup SQLite follow-up on live:
+   - after restart at `2026-03-17 19:46:56 UTC`, startup emitted exact per-stage progress logs and reached `app runtime loop started`
+   - startup WAL checkpoint was explicitly `skipped/deferred`
+   - there was no silent `active/running` hang after `configuration loaded`
+5. The same `3fac9afdafbeb3e4ca2c66486124a8683d281f02` rollout also validated the bounded/resumable persisted rebuild contract on live:
+   - runtime resumed an existing persisted rebuild checkpoint instead of restarting from zero
+   - rebuild cycles yielded back to the scheduler with bounded partial progress
+   - discovery cycles completed while rebuild remained in progress
+   - there was no repeated `discovery cycle still running, skipping scheduled trigger`
+   - runtime stayed correctly `fail_closed` with `active_follow_wallets = 0` and no false `healthy` because no valid recent published universe existed yet
+6. Current live blocker has now moved again:
+   - startup SQLite path boundedness / observability is validated on live
+   - persisted rebuild boundedness / resumability is validated on live
+   - the remaining blocker is wall-clock time to completion of the bounded cold-start rebuild on live-size state without a recent published universe
+   - current live logs show the rebuild still in `CollectBuyMints`, making forward progress but not yet reaching `raw_window_persisted_stream`
+7. Current working tree still keeps the bounded/resumable persisted rebuild fix intact:
    - frozen rebuild horizon (`window_start`, `horizon_end`, `metrics_window_start`) is captured once per rebuild
    - rebuild progress is persisted separately from `discovery_runtime_cursor`
    - cold-start rebuild advances in bounded chunks across cycles and restarts instead of monopolizing one long cycle
-6. Current working tree now also makes the startup SQLite path observable and bounded:
+8. Current working tree now also makes the startup SQLite path observable and bounded:
    - startup SQLite bootstrap now emits per-stage `started / waiting / completed / timed_out` progress for connection open, PRAGMAs, and `schema_migrations` bootstrap via the explicit startup bootstrap path
    - startup migrations, heartbeat, alert cursor, and app-loop handoff emit explicit startup progress logs
    - startup WAL checkpoint is removed from the startup critical path and now emits an explicit deferred/skipped outcome instead of blocking startup
@@ -74,34 +89,37 @@ The project is not blocked by bootstrap, aggregate, or backfill.
 
 The project is not blocked by ingestion.
 
-The latest live rollout did not reach discovery/runtime yet.
+The startup SQLite silent-hang blocker is no longer the current blocker.
 
-Stage 1 is still `partial` after live rollout `96606b83880cb1b942de67f61c5ecdb459fe4139`.
+Stage 1 is still `partial` after live rollout `3fac9afdafbeb3e4ca2c66486124a8683d281f02`.
 
-Current working diagnosis: the bounded/resumable persisted rebuild fix is still pending live validation, because startup now stalls earlier on the SQLite open/migration path for live-size `live_copybot.db` / `live_copybot.db-wal`. The current working tree contains a startup observability + fail-explicit/deferred fix for that earlier blocker.
+Current working diagnosis: startup SQLite observability/boundedness is now validated on live, and bounded/resumable persisted rebuild behavior is also validated on live. The remaining blocker is completion latency / throughput of the cold-start bounded rebuild on live-size `observed_swaps` when there is no valid recent published universe. Current live evidence shows bounded forward progress through `CollectBuyMints`, completed discovery cycles, and correct `fail_closed`, but not yet a completed healthy publish with `scoring_source = raw_window_persisted_stream`.
 
 Do not start Stage 2 yet.
 
 ### 2.5 Server state (updated 2026-03-17)
 
-- Deployed commit: `96606b83880cb1b942de67f61c5ecdb459fe4139`
+- Deployed commit: `3fac9afdafbeb3e4ca2c66486124a8683d281f02`
 - Service: `solana-copy-bot.service active`, no crash loop
 - `execution.enabled = false`
-- Latest observed restart: `2026-03-17 18:44:55 UTC`
-- `active_follow_wallets` unknown from this rollout because runtime never reached discovery startup
+- Latest observed restart: `2026-03-17 19:46:56 UTC`
+- `active_follow_wallets = 0` during the observed validation window
 - Observed during validation window:
-  - logs showed only `configuration loaded` for 6+ minutes after restart
-  - no `sqlite migrations applied`
-  - no `startup sqlite wal checkpoint completed`
-  - no `recomputing discovery snapshots from persisted observed_swaps stream`
-  - no completed discovery cycle
-  - process observed in `D` state with `pread64 / folio_wait_bit_common`
-  - SQLite remained locked even on read-only inspection
-  - open files included `live_copybot.db ≈ 117G`, `live_copybot.db-wal ≈ 71G`, `live_copybot.db-shm ≈ 101M`
+  - startup emitted exact stage logs for sqlite open / pragmas / schema bootstrap / migrations / heartbeat / app-loop handoff
+  - startup reached `app runtime loop started`
+  - `startup_sqlite_wal_checkpoint` was explicitly `skipped/deferred`
+  - runtime emitted `resuming bounded discovery persisted observed_swaps rebuild`
+  - rebuild resumed from an existing checkpoint (`collect_buy_mints`, `rebuild_chunks_completed = 17`, `rebuild_prepass_rows_processed = 1700000`) instead of restarting from zero
+  - rebuild yielded bounded partial progress across cycles (`chunks_completed` advanced, `rebuild_prepass_rows_processed` advanced from `1700000` to `2200000`, and discovery cycles completed in between)
+  - runtime stayed `fail_closed` with `scoring_source = raw_window_incomplete_no_recent_published_universe`
+  - there was no false `healthy`
+  - there was no repeated `discovery cycle still running, skipping scheduled trigger`
+  - there was still no completed `raw_window_persisted_stream` promotion and no `active_follow_wallets > 0` during the observed window
 - Rollout reports:
   - [ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md](ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md) — first Stage 1 deploy (`2eb5c30`), confirmed bootstrap path removed but fail_closed due to cap-truncated warm load
   - [ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md](ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md) — persisted-stream follow-up (`0c58aba`), confirmed correct path engaged but first cycle did not complete in 6+ minutes
-  - latest rollout report for `96606b8` should record the earlier startup stall before discovery/runtime
+  - rollout `96606b8` recorded the earlier startup stall before discovery/runtime
+  - rollout `3fac9af` validated startup SQLite observability/deferred WAL checkpoint and bounded persisted rebuild progress, but not yet healthy publication
 
 ### 2.6 Live data scale (observed)
 
@@ -195,7 +213,7 @@ No new roadmap documents are needed before Stage 1 lands in code.
 
 ### Stage 1. Remove aggregate recovery from runtime discovery
 
-Status: **partial after live rollout `96606b83880cb1b942de67f61c5ecdb459fe4139`; startup SQLite boundedness/observability fix and bounded/resumable rebuild fix are now in code and pending rollout validation**
+Status: **partial after live rollout `3fac9afdafbeb3e4ca2c66486124a8683d281f02`; startup SQLite boundedness/observability fix is validated on live, bounded/resumable persisted rebuild is validated on live, but completion to healthy publish on live-size cold start is still pending**
 
 Goal:
 
@@ -210,7 +228,8 @@ What is done in Stage 1 so far:
 5. Propagated `healthy / degraded / fail_closed` runtime mode through discovery, app startup, and shadow consumption.
 6. Hardened: coverage check requires left-boundary + in-window swap presence; empty-scan guard prevents false healthy; degraded eligible_wallets sourced from last healthy metrics bucket; bucket-stale published universes rejected.
 7. Replaced the old one-shot cold-start persisted rebuild with a bounded four-phase design:
-   - `CollectBuyMints` prepass scans the frozen horizon in bounded pages/time and persists a resumable phase cursor
+   - `CollectBuyMints` prepass now pages the direct distinct SOL-buy mint set instead of replaying the full raw window: it runs under the same page/time budgets, uses `INDEXED BY idx_observed_swaps_token_in_out_ts`, and persists its own resumable mint cursor in the rebuild payload
+   - legacy raw-cursor checkpoints are migrated onto the new prepass by recovering the maximal safe lexicographic mint prefix under the covering-index distinct query; any unsafe tail mints are intentionally re-enumerated later in token order so `ResolveTokenQuality` still sees the exact canonical one-shot mint ordering
    - `ResolveTokenQuality` resolves token quality for the frozen mint set in bounded chunks with its own resumable progress index and RPC budget telemetry
    - `Replay` replays the same frozen horizon with the same streaming scoring semantics in bounded pages/time and persists a resumable phase cursor plus streaming state payload
    - `PublishPending` keeps the durable checkpoint alive until healthy publication/trusted-state persistence succeeds, so a failed publish resumes from the completed rebuild instead of restarting from zero
@@ -228,6 +247,11 @@ What is done in Stage 1 so far:
 14. Startup WAL checkpoint is no longer part of the startup critical path:
    - startup explicitly reports the WAL checkpoint as skipped/deferred
    - startup correctness no longer depends on waiting for a checkpoint attempt to finish
+15. Live rollout `3fac9afdafbeb3e4ca2c66486124a8683d281f02` validated the new startup/runtime behavior:
+   - startup stage telemetry appeared exactly as designed and reached `app runtime loop started`
+   - persisted rebuild resumed from its stored checkpoint instead of restarting from zero
+   - rebuild yielded bounded progress back to the scheduler and discovery cycles completed while rebuild remained partial
+   - runtime stayed correctly `fail_closed` without a false `healthy` because no valid recent published universe existed yet
 
 Code hotspots touched:
 
@@ -264,21 +288,21 @@ Mandatory Stage 1 tests (all green):
 
 Remaining operational blocker:
 
-Live rollout validation is still pending for the new startup SQLite fix; only after startup reaches discovery/runtime again can the bounded/resumable rebuild be revalidated on live.
+Live startup validation is now closed. The remaining operational blocker is wall-clock completion of the bounded cold-start persisted rebuild on live-size state without a recent published universe.
 
 Current working diagnosis:
 
-the old deploy `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c` proved that a one-shot first-cycle persisted rebuild is too slow / insufficiently bounded for live-size state; the later deploy `96606b83880cb1b942de67f61c5ecdb459fe4139` showed an earlier blocker on startup SQLite open/migration boundedness for live-size DB+WAL. The current code fixes both layers in order: startup first, then persisted rebuild validation.
+the old deploy `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c` proved that a one-shot first-cycle persisted rebuild is too slow / insufficiently bounded for live-size state; the later deploy `96606b83880cb1b942de67f61c5ecdb459fe4139` exposed an earlier blocker on startup SQLite open/migration boundedness; the latest deploy `3fac9afdafbeb3e4ca2c66486124a8683d281f02` validated both the startup fix and bounded/resumable rebuild behavior on live. The remaining gap is completion throughput: live currently spends bounded cycles in `CollectBuyMints`, but has not yet converged to a healthy `raw_window_persisted_stream` publish.
 
 Immediate next operational step before Stage 2:
 
-roll out the startup SQLite observability/boundedness follow-up and confirm:
+improve persisted cold-start rebuild time-to-completion and confirm on the next rollout:
 
-1. after `configuration loaded`, startup emits exact progress logs for sqlite open/pragmas/schema bootstrap/migrations/heartbeat/cursor/app-loop handoff
-2. startup either reaches discovery/runtime logs or fails fast with an explicit `startup stage ... timed out` / `startup stage ... failed` reason
-3. startup no longer sits silently for minutes on live-size DB+WAL
-4. once startup reaches discovery/runtime again, separately validate the bounded persisted rebuild with `scoring_source = raw_window_persisted_stream` and `active_follow_wallets > 0`
-5. there is no false `healthy` and no empty published universe
+1. `CollectBuyMints` no longer requires an operationally excessive number of bounded cycles on live-size state
+2. bounded progress remains resumable and scheduler-friendly
+3. runtime eventually emits a completed discovery cycle with `scoring_source = raw_window_persisted_stream`
+4. `active_follow_wallets > 0` appears once healthy publication lands
+5. there is still no false `healthy` and no empty published universe
 
 See section 2.5 for observed server state and section 2.6 for live data scale.
 
@@ -384,6 +408,96 @@ Their useful conclusions are already absorbed here:
 4. Operational incidents on prod must not be repeated just to prove recovery semantics.
 
 ## 10. Execution log
+
+- Date: 2026-03-17
+- Commit SHA: `self-referential; exact final SHA is reported from git after commit`
+- Stage / substep: `Stage 1 / CollectBuyMints throughput follow-up on bounded cold-start rebuild`
+- Status: `done in code; Stage 1 remains partial pending rollout validation`
+- Code changed:
+  - `crates/discovery/src/lib.rs`
+  - `crates/storage/src/lib.rs`
+  - `crates/storage/src/market_data.rs`
+  - `ROAD_TO_PRODUCTION_v2.md`
+- Tests run:
+  - `cargo fmt --all`
+  - `cargo test -p copybot-storage --lib`
+  - `cargo test -p copybot-storage --lib observed_buy_mint_count_query_counts_safe_sorted_prefix_for_cursor_migration -- --nocapture`
+  - `cargo test -p copybot-discovery --lib`
+  - `cargo test -p copybot-discovery --lib persisted_stream_collect_buy_mints_migrates_legacy_raw_cursor_to_safe_prefix_stage1 -- --nocapture`
+  - `cargo test -p copybot-discovery --lib persisted_stream_collect_buy_mints_legacy_migration_preserves_canonical_order_stage1 -- --nocapture`
+  - `cargo test -p copybot-discovery --lib persisted_stream_rebuild_repairs_noncanonical_quality_checkpoint_before_resume_stage1 -- --nocapture`
+  - `cargo test -p copybot-app --bin copybot-app`
+  - full `copybot-discovery` and full `copybot-app` were rerun outside sandbox because existing localhost fake-server tests are blocked by sandbox socket restrictions
+- Done:
+  - replaced the `CollectBuyMints` prepass raw-swap replay scan with direct paged distinct SOL-buy mint extraction, so completion work scales with the frozen mint set instead of the entire raw window
+  - forced the prepass query onto `idx_observed_swaps_token_in_out_ts`, avoiding the planner path that preferred `idx_observed_swaps_token_in_ts` and a temp B-tree for distinct mint extraction
+  - moved `CollectBuyMints` resume state onto its own payload cursor (`collect_buy_mints_cursor_token`) instead of overloading the replay cursor contract
+  - tightened legacy checkpoint migration so the new token-sorted prepass keeps only the maximal safe lexicographic prefix and re-enumerates any unsafe tail mints in canonical order instead of carrying forward a mixed chronological/token-sorted mint vector
+  - repaired non-canonical persisted quality/replay checkpoints by rewinding them onto canonical mint order before resume, so post-upgrade parity cannot depend on whichever mint order an older checkpoint happened to serialize
+  - expanded rebuild telemetry with `collect_buy_mints` cursor token, cycle unique-mint growth, and per-cycle throughput
+  - added regression coverage proving that large noisy windows now complete the mint prepass based on unique buy mints rather than all observed swap rows
+  - revalidated the startup-fix regression surface so the fatal-timeout/deferred-WAL startup contract still holds
+- In progress:
+  - server rollout validation on live-size `observed_swaps`
+- Blocked:
+  - Stage 1 still needs a live rollout to prove that the new `CollectBuyMints` query path converges fast enough to reach a healthy `raw_window_persisted_stream` publish
+- Acceptance criteria closed:
+  - startup-fix behavior remains covered in regression tests
+  - bounded/resumable rebuild contract remains covered in regression tests
+  - `CollectBuyMints` no longer scales its bounded progress with the full raw window on the large noisy fixture
+  - legacy in-progress `CollectBuyMints` checkpoints are migrated forward onto a safe sorted prefix and then continue from a persisted token cursor instead of reusing a semantically unsafe mixed-order mint set
+- Acceptance criteria remaining:
+  - live must confirm materially faster `CollectBuyMints` convergence on the persisted window
+  - live must reach a completed healthy discovery cycle with `scoring_source = raw_window_persisted_stream`
+  - live must reach `active_follow_wallets > 0`
+- Remaining risks:
+  - real live convergence still depends on the cardinality of unique buy mints in the frozen window, so rollout validation must confirm that the direct distinct-mint path is fast enough in production
+  - the current follow-up does not change replay semantics, so any remaining latency after `CollectBuyMints` would move to a later bounded phase rather than disappear
+- Next action:
+  - deploy this throughput follow-up
+  - confirm live logs move out of `CollectBuyMints` materially faster than before
+  - confirm eventual healthy publication with `raw_window_persisted_stream` and `active_follow_wallets > 0`
+
+- Date: 2026-03-17
+- Commit SHA: `3fac9afdafbeb3e4ca2c66486124a8683d281f02`
+- Stage / substep: `Stage 1 / live rollout validation of startup SQLite follow-up + bounded persisted rebuild resume`
+- Status: `partial`
+- Code changed:
+  - none in this step; this was a live server rollout validation of the already-built artifact
+- Tests run:
+  - live server rollout validation on `solana-copy-bot.service`
+- Done:
+  - service restarted successfully and remained stable with `ActiveState=active`, `SubState=running`, `Result=success`, `ExecMainStatus=0`, `NRestarts=0`
+  - startup emitted the full expected stage log sequence after `configuration loaded`
+  - startup reached `app runtime loop started`
+  - `startup_sqlite_wal_checkpoint` was explicitly `skipped/deferred`
+  - the earlier silent startup hang after `configuration loaded` is no longer present on live
+  - runtime resumed a persisted rebuild checkpoint from `collect_buy_mints` instead of restarting from zero
+  - bounded rebuild progress was visible on live (`rebuild_chunks_completed`, `rebuild_prepass_rows_processed`, phase cursor, elapsed time, page-budget yield)
+  - discovery cycles completed while rebuild remained partial
+  - there was no repeated `discovery cycle still running, skipping scheduled trigger`
+  - there was no false `healthy`
+- In progress:
+  - cold-start bounded persisted rebuild completion on live-size state without a recent published universe
+- Blocked:
+  - live did not yet reach `scoring_source = raw_window_persisted_stream`
+  - live did not yet reach `active_follow_wallets > 0`
+  - observed runtime remained `fail_closed` with `scoring_source = raw_window_incomplete_no_recent_published_universe` while rebuild stayed in `CollectBuyMints`
+- Acceptance criteria closed:
+  - startup SQLite observability/boundedness fix is validated on live
+  - startup no longer hangs silently before discovery/runtime
+  - bounded/resumable persisted rebuild behavior is validated on live
+  - rebuild makes checkpointed forward progress across cycles on live
+  - discovery cycles complete again while rebuild is in progress
+- Acceptance criteria remaining:
+  - live must converge to a healthy completed publish with `scoring_source = raw_window_persisted_stream`
+  - live must reach `active_follow_wallets > 0`
+- Remaining risks:
+  - current `CollectBuyMints` throughput may require too many bounded cycles to complete on the live-size scoring window
+  - with no recent published universe available, runtime remains correctly `fail_closed` until completion, so operational usability is still blocked on rebuild convergence time
+- Next action:
+  - optimize/shorten wall-clock completion of the bounded cold-start rebuild, especially the `CollectBuyMints` phase
+  - deploy the throughput follow-up and confirm live eventually publishes `raw_window_persisted_stream` and reaches `active_follow_wallets > 0`
 
 - Date: 2026-03-17
 - Commit SHA: `self-referential; exact final SHA is reported from git after commit`
