@@ -1,7 +1,8 @@
 use crate::{
-    discovery::upsert_wallet_activity_days_on_conn, DiscoveryRuntimeCursor,
-    ObservedSwapBatchWriteMetrics, SqliteBatchedDeleteSummary, SqliteStore, TokenMarketStats,
-    TokenQualityCacheRow, TokenQualityRpcRow, WalletActivityDayRow,
+    discovery::upsert_wallet_activity_days_on_conn, DiscoveryPersistedRebuildPhase,
+    DiscoveryPersistedRebuildStateRow, DiscoveryRuntimeCursor, ObservedSwapBatchWriteMetrics,
+    SqliteBatchedDeleteSummary, SqliteStore, TokenMarketStats, TokenQualityCacheRow,
+    TokenQualityRpcRow, WalletActivityDayRow,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -40,6 +41,12 @@ impl Drop for ProgressHandlerGuard<'_> {
     fn drop(&mut self) {
         self.conn.progress_handler(0, None::<fn() -> bool>);
     }
+}
+
+fn parse_rfc3339_utc(raw: &str, field_name: &str) -> Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(raw)
+        .map(|dt| dt.with_timezone(&Utc))
+        .with_context(|| format!("invalid {field_name} timestamp value: {raw}"))
 }
 
 impl SqliteStore {
@@ -470,6 +477,99 @@ impl SqliteStore {
         Ok(seen)
     }
 
+    pub fn for_each_observed_swap_in_window_after_cursor_with_budget<F>(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        cursor: Option<&DiscoveryRuntimeCursor>,
+        limit: usize,
+        deadline: Instant,
+        mut on_swap: F,
+    ) -> Result<ObservedSwapCursorPage>
+    where
+        F: FnMut(SwapEvent) -> Result<()>,
+    {
+        if limit == 0 {
+            return Ok(ObservedSwapCursorPage::default());
+        }
+        if Instant::now() >= deadline {
+            return Ok(ObservedSwapCursorPage {
+                rows_seen: 0,
+                time_budget_exhausted: true,
+            });
+        }
+
+        let limit = (limit.min(i64::MAX as usize)) as i64;
+        let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
+        let (query, params): (&str, Vec<rusqlite::types::Value>) = match cursor {
+            Some(cursor) => (
+                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                        qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
+                 FROM observed_swaps
+                 WHERE ts >= ?1
+                   AND ts <= ?2
+                   AND (ts, slot, signature) > (?3, ?4, ?5)
+                 ORDER BY ts ASC, slot ASC, signature ASC
+                 LIMIT ?6",
+                vec![
+                    since.to_rfc3339().into(),
+                    until.to_rfc3339().into(),
+                    cursor.ts_utc.to_rfc3339().into(),
+                    (cursor.slot as i64).into(),
+                    cursor.signature.clone().into(),
+                    limit.into(),
+                ],
+            ),
+            None => (
+                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                        qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
+                 FROM observed_swaps
+                 WHERE ts >= ?1
+                   AND ts <= ?2
+                 ORDER BY ts ASC, slot ASC, signature ASC
+                 LIMIT ?3",
+                vec![
+                    since.to_rfc3339().into(),
+                    until.to_rfc3339().into(),
+                    limit.into(),
+                ],
+            ),
+        };
+        let mut stmt = self
+            .conn
+            .prepare(query)
+            .context("failed to prepare observed_swaps window cursor query")?;
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params))
+            .context("failed to query observed_swaps by window cursor")?;
+
+        let mut seen = 0usize;
+        let mut time_budget_exhausted = false;
+        loop {
+            let next_row = match rows.next() {
+                Ok(row) => row,
+                Err(error) => {
+                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                        time_budget_exhausted = true;
+                        break;
+                    }
+                    return Err(error)
+                        .context("failed iterating observed_swaps window cursor rows");
+                }
+            };
+            let Some(row) = next_row else {
+                break;
+            };
+            let swap = Self::row_to_swap_event(row)?;
+            on_swap(swap)?;
+            seen = seen.saturating_add(1);
+        }
+        Ok(ObservedSwapCursorPage {
+            rows_seen: seen,
+            time_budget_exhausted,
+        })
+    }
+
     pub fn for_each_observed_swap_after_cursor<F>(
         &self,
         cursor_ts: DateTime<Utc>,
@@ -651,6 +751,210 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn load_discovery_persisted_rebuild_state(
+        &self,
+    ) -> Result<Option<DiscoveryPersistedRebuildStateRow>> {
+        self.ensure_discovery_persisted_rebuild_state_table()?;
+        let raw = self
+            .conn
+            .query_row(
+                "SELECT
+                    phase,
+                    window_start,
+                    horizon_end,
+                    metrics_window_start,
+                    phase_cursor_ts,
+                    phase_cursor_slot,
+                    phase_cursor_signature,
+                    prepass_rows_processed,
+                    prepass_pages_processed,
+                    replay_rows_processed,
+                    replay_pages_processed,
+                    chunks_completed,
+                    state_json,
+                    started_at,
+                    updated_at
+                 FROM discovery_persisted_rebuild_state
+                 WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, i64>(9)?,
+                        row.get::<_, i64>(10)?,
+                        row.get::<_, i64>(11)?,
+                        row.get::<_, String>(12)?,
+                        row.get::<_, String>(13)?,
+                        row.get::<_, String>(14)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("failed reading discovery persisted rebuild state")?;
+
+        raw.map(
+            |(
+                phase_raw,
+                window_start_raw,
+                horizon_end_raw,
+                metrics_window_start_raw,
+                cursor_ts_raw,
+                cursor_slot_raw,
+                cursor_signature,
+                prepass_rows_processed,
+                prepass_pages_processed,
+                replay_rows_processed,
+                replay_pages_processed,
+                chunks_completed,
+                state_json,
+                started_at_raw,
+                updated_at_raw,
+            )| {
+                let phase_cursor = match (cursor_ts_raw, cursor_slot_raw, cursor_signature) {
+                    (None, None, None) => None,
+                    (Some(ts_raw), Some(slot_raw), Some(signature)) => {
+                        Some(DiscoveryRuntimeCursor {
+                            ts_utc: parse_rfc3339_utc(
+                                &ts_raw,
+                                "discovery_persisted_rebuild_state.phase_cursor_ts",
+                            )?,
+                            slot: slot_raw.max(0) as u64,
+                            signature,
+                        })
+                    }
+                    _ => {
+                        return Err(anyhow!(
+                            "discovery_persisted_rebuild_state contains partial phase cursor state"
+                        ));
+                    }
+                };
+                Ok(DiscoveryPersistedRebuildStateRow {
+                    phase: DiscoveryPersistedRebuildPhase::parse(&phase_raw)?,
+                    window_start: parse_rfc3339_utc(
+                        &window_start_raw,
+                        "discovery_persisted_rebuild_state.window_start",
+                    )?,
+                    horizon_end: parse_rfc3339_utc(
+                        &horizon_end_raw,
+                        "discovery_persisted_rebuild_state.horizon_end",
+                    )?,
+                    metrics_window_start: parse_rfc3339_utc(
+                        &metrics_window_start_raw,
+                        "discovery_persisted_rebuild_state.metrics_window_start",
+                    )?,
+                    phase_cursor,
+                    prepass_rows_processed: prepass_rows_processed.max(0) as usize,
+                    prepass_pages_processed: prepass_pages_processed.max(0) as usize,
+                    replay_rows_processed: replay_rows_processed.max(0) as usize,
+                    replay_pages_processed: replay_pages_processed.max(0) as usize,
+                    chunks_completed: chunks_completed.max(0) as usize,
+                    state_json,
+                    started_at: parse_rfc3339_utc(
+                        &started_at_raw,
+                        "discovery_persisted_rebuild_state.started_at",
+                    )?,
+                    updated_at: parse_rfc3339_utc(
+                        &updated_at_raw,
+                        "discovery_persisted_rebuild_state.updated_at",
+                    )?,
+                })
+            },
+        )
+        .transpose()
+    }
+
+    pub fn upsert_discovery_persisted_rebuild_state(
+        &self,
+        state: &DiscoveryPersistedRebuildStateRow,
+    ) -> Result<()> {
+        self.ensure_discovery_persisted_rebuild_state_table()?;
+        self.execute_with_retry(|conn| {
+            conn.execute(
+                "INSERT INTO discovery_persisted_rebuild_state(
+                    id,
+                    phase,
+                    window_start,
+                    horizon_end,
+                    metrics_window_start,
+                    phase_cursor_ts,
+                    phase_cursor_slot,
+                    phase_cursor_signature,
+                    prepass_rows_processed,
+                    prepass_pages_processed,
+                    replay_rows_processed,
+                    replay_pages_processed,
+                    chunks_completed,
+                    state_json,
+                    started_at,
+                    updated_at
+                 ) VALUES (
+                    1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+                 )
+                 ON CONFLICT(id) DO UPDATE SET
+                    phase = excluded.phase,
+                    window_start = excluded.window_start,
+                    horizon_end = excluded.horizon_end,
+                    metrics_window_start = excluded.metrics_window_start,
+                    phase_cursor_ts = excluded.phase_cursor_ts,
+                    phase_cursor_slot = excluded.phase_cursor_slot,
+                    phase_cursor_signature = excluded.phase_cursor_signature,
+                    prepass_rows_processed = excluded.prepass_rows_processed,
+                    prepass_pages_processed = excluded.prepass_pages_processed,
+                    replay_rows_processed = excluded.replay_rows_processed,
+                    replay_pages_processed = excluded.replay_pages_processed,
+                    chunks_completed = excluded.chunks_completed,
+                    state_json = excluded.state_json,
+                    started_at = excluded.started_at,
+                    updated_at = excluded.updated_at",
+                params![
+                    state.phase.as_str(),
+                    state.window_start.to_rfc3339(),
+                    state.horizon_end.to_rfc3339(),
+                    state.metrics_window_start.to_rfc3339(),
+                    state
+                        .phase_cursor
+                        .as_ref()
+                        .map(|cursor| cursor.ts_utc.to_rfc3339()),
+                    state.phase_cursor.as_ref().map(|cursor| cursor.slot as i64),
+                    state
+                        .phase_cursor
+                        .as_ref()
+                        .map(|cursor| cursor.signature.as_str()),
+                    state.prepass_rows_processed as i64,
+                    state.prepass_pages_processed as i64,
+                    state.replay_rows_processed as i64,
+                    state.replay_pages_processed as i64,
+                    state.chunks_completed as i64,
+                    &state.state_json,
+                    state.started_at.to_rfc3339(),
+                    state.updated_at.to_rfc3339(),
+                ],
+            )
+        })
+        .context("failed updating discovery persisted rebuild state")?;
+        Ok(())
+    }
+
+    pub fn clear_discovery_persisted_rebuild_state(&self) -> Result<()> {
+        self.ensure_discovery_persisted_rebuild_state_table()?;
+        self.execute_with_retry(|conn| {
+            conn.execute(
+                "DELETE FROM discovery_persisted_rebuild_state WHERE id = 1",
+                [],
+            )
+        })
+        .context("failed clearing discovery persisted rebuild state")?;
+        Ok(())
+    }
+
     pub fn list_unique_sol_buy_mints_since(&self, since: DateTime<Utc>) -> Result<HashSet<String>> {
         const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
         let mut stmt = self
@@ -692,6 +996,32 @@ impl SqliteStore {
                 )",
             )
             .context("failed to ensure discovery_runtime_state table exists")?;
+        Ok(())
+    }
+
+    fn ensure_discovery_persisted_rebuild_state_table(&self) -> Result<()> {
+        self.conn
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS discovery_persisted_rebuild_state (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    phase TEXT NOT NULL,
+                    window_start TEXT NOT NULL,
+                    horizon_end TEXT NOT NULL,
+                    metrics_window_start TEXT NOT NULL,
+                    phase_cursor_ts TEXT,
+                    phase_cursor_slot INTEGER,
+                    phase_cursor_signature TEXT,
+                    prepass_rows_processed INTEGER NOT NULL DEFAULT 0,
+                    prepass_pages_processed INTEGER NOT NULL DEFAULT 0,
+                    replay_rows_processed INTEGER NOT NULL DEFAULT 0,
+                    replay_pages_processed INTEGER NOT NULL DEFAULT 0,
+                    chunks_completed INTEGER NOT NULL DEFAULT 0,
+                    state_json TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )",
+            )
+            .context("failed to ensure discovery_persisted_rebuild_state table exists")?;
         Ok(())
     }
 

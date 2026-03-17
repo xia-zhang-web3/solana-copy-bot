@@ -9,11 +9,12 @@ use copybot_core_types::SwapEvent;
 use copybot_storage::{
     is_fatal_sqlite_anyhow_error, SqliteStore, TokenQualityCacheRow, TokenQualityRpcRow,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::time::Instant;
+use std::time::{Duration as StdDuration, Instant};
 use tracing::{info, warn};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) enum TokenQualityResolution {
     Fresh(TokenQualityCacheRow),
     Stale(TokenQualityCacheRow),
@@ -28,6 +29,19 @@ pub(super) enum BuyTradability {
     Deferred,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(super) struct TokenQualityResolutionProgress {
+    pub next_mint_index: usize,
+    pub rpc_attempted: usize,
+    pub rpc_spent_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct TokenQualityResolutionChunkOutcome {
+    pub processed_mints: usize,
+    pub source_exhausted: bool,
+}
+
 impl DiscoveryService {
     pub(super) fn resolve_token_quality_for_mints(
         &self,
@@ -40,26 +54,247 @@ impl DiscoveryService {
         }
 
         let mut out = HashMap::new();
-        let ttl = Duration::seconds(QUALITY_CACHE_TTL_SECONDS);
-        let mut to_fetch = Vec::new();
-        let mut fresh_hits = 0usize;
-        let mut stale_hits = 0usize;
-        let mut misses = 0usize;
+        let mut progress = TokenQualityResolutionProgress::default();
+        let deadline = Instant::now() + StdDuration::from_secs(3_600);
+        while progress.next_mint_index < mints.len() {
+            let outcome = self.resolve_token_quality_for_mints_chunk(
+                store,
+                mints,
+                now,
+                &mut out,
+                &mut progress,
+                usize::MAX,
+                deadline,
+            )?;
+            if outcome.source_exhausted {
+                break;
+            }
+            if outcome.processed_mints == 0 {
+                break;
+            }
+        }
 
-        for mint in mints {
-            match store.get_token_quality_cache(mint) {
+        info!(
+            quality_source = if self.helius_http_url.is_some() {
+                "cache+rpc+db_proxy"
+            } else {
+                "cache+db_proxy"
+            },
+            rpc_enabled = self.helius_http_url.is_some(),
+            mints_total = mints.len(),
+            resolved_total = out.len(),
+            rpc_attempted = progress.rpc_attempted,
+            rpc_budget_ms = QUALITY_RPC_BUDGET_MS,
+            rpc_spent_ms = progress.rpc_spent_ms,
+            "discovery token quality cache summary"
+        );
+
+        Ok(out)
+    }
+
+    pub(super) fn resolve_token_quality_for_mints_chunk(
+        &self,
+        store: &SqliteStore,
+        mints: &[String],
+        now: DateTime<Utc>,
+        out: &mut HashMap<String, TokenQualityResolution>,
+        progress: &mut TokenQualityResolutionProgress,
+        max_mints: usize,
+        deadline: Instant,
+    ) -> Result<TokenQualityResolutionChunkOutcome> {
+        if progress.next_mint_index >= mints.len() {
+            return Ok(TokenQualityResolutionChunkOutcome {
+                processed_mints: 0,
+                source_exhausted: true,
+            });
+        }
+
+        let ttl = Duration::seconds(QUALITY_CACHE_TTL_SECONDS);
+        let helius_http_url = self.helius_http_url.as_deref();
+        let mut processed_mints = 0usize;
+        let max_mints = max_mints.max(1);
+
+        while progress.next_mint_index < mints.len() {
+            if processed_mints >= max_mints || Instant::now() >= deadline {
+                break;
+            }
+
+            let mint = mints[progress.next_mint_index].clone();
+            if out.contains_key(&mint) {
+                progress.next_mint_index = progress.next_mint_index.saturating_add(1);
+                processed_mints = processed_mints.saturating_add(1);
+                continue;
+            }
+
+            match store.get_token_quality_cache(&mint) {
                 Ok(Some(row)) => {
                     if now - row.fetched_at <= ttl {
-                        fresh_hits += 1;
-                        out.insert(mint.clone(), TokenQualityResolution::Fresh(row));
+                        out.insert(mint, TokenQualityResolution::Fresh(row));
+                    } else if let Some(helius_http_url) = helius_http_url {
+                        if progress.rpc_attempted >= QUALITY_MAX_FETCH_PER_CYCLE
+                            || progress.rpc_spent_ms >= QUALITY_RPC_BUDGET_MS
+                        {
+                            out.insert(mint, TokenQualityResolution::Stale(row));
+                        } else {
+                            let rpc_started = Instant::now();
+                            progress.rpc_attempted = progress.rpc_attempted.saturating_add(1);
+                            match fetch_token_quality_from_helius_guarded(
+                                helius_http_url,
+                                &mint,
+                                QUALITY_RPC_TIMEOUT_MS,
+                                QUALITY_MAX_SIGNATURE_PAGES,
+                                Some(self.shadow_quality.min_token_age_seconds),
+                            ) {
+                                Ok(fetched) => {
+                                    progress.rpc_spent_ms = progress
+                                        .rpc_spent_ms
+                                        .saturating_add(rpc_started.elapsed().as_millis() as u64);
+                                    if let Err(error) = store.upsert_token_quality_cache(
+                                        &mint,
+                                        fetched.holders,
+                                        fetched.liquidity_sol,
+                                        fetched.token_age_seconds,
+                                        now,
+                                    ) {
+                                        if discovery_quality_cache_error_requires_abort(&error) {
+                                            return Err(error).context(
+                                                "discovery token quality cache refresh write failed with fatal sqlite I/O",
+                                            );
+                                        }
+                                        warn!(
+                                            error = %error,
+                                            mint = %mint,
+                                            "failed updating token quality cache"
+                                        );
+                                    }
+                                    match store.get_token_quality_cache(&mint) {
+                                        Ok(Some(refreshed_row)) => {
+                                            out.insert(
+                                                mint,
+                                                TokenQualityResolution::Fresh(refreshed_row),
+                                            );
+                                        }
+                                        Ok(None) => {
+                                            warn!(
+                                                mint = %mint,
+                                                "token quality cache row missing after refresh"
+                                            );
+                                            out.insert(mint, TokenQualityResolution::Stale(row));
+                                        }
+                                        Err(error) => {
+                                            if discovery_quality_cache_error_requires_abort(&error)
+                                            {
+                                                return Err(error).context(
+                                                    "discovery token quality cache refresh readback failed with fatal sqlite I/O",
+                                                );
+                                            }
+                                            warn!(
+                                                error = %error,
+                                                mint = %mint,
+                                                "failed reading token quality cache after refresh"
+                                            );
+                                            out.insert(mint, TokenQualityResolution::Stale(row));
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    progress.rpc_spent_ms = progress
+                                        .rpc_spent_ms
+                                        .saturating_add(rpc_started.elapsed().as_millis() as u64);
+                                    warn!(
+                                        error = %error,
+                                        mint = %mint,
+                                        "failed to refresh token quality via helius, using fallback"
+                                    );
+                                    out.insert(mint, TokenQualityResolution::Stale(row));
+                                }
+                            }
+                        }
                     } else {
-                        stale_hits += 1;
-                        to_fetch.push((mint.clone(), Some(row)));
+                        out.insert(mint, TokenQualityResolution::Stale(row));
                     }
                 }
                 Ok(None) => {
-                    misses += 1;
-                    to_fetch.push((mint.clone(), None))
+                    if let Some(helius_http_url) = helius_http_url {
+                        if progress.rpc_attempted >= QUALITY_MAX_FETCH_PER_CYCLE
+                            || progress.rpc_spent_ms >= QUALITY_RPC_BUDGET_MS
+                        {
+                            out.insert(mint, TokenQualityResolution::Deferred);
+                        } else {
+                            let rpc_started = Instant::now();
+                            progress.rpc_attempted = progress.rpc_attempted.saturating_add(1);
+                            match fetch_token_quality_from_helius_guarded(
+                                helius_http_url,
+                                &mint,
+                                QUALITY_RPC_TIMEOUT_MS,
+                                QUALITY_MAX_SIGNATURE_PAGES,
+                                Some(self.shadow_quality.min_token_age_seconds),
+                            ) {
+                                Ok(fetched) => {
+                                    progress.rpc_spent_ms = progress
+                                        .rpc_spent_ms
+                                        .saturating_add(rpc_started.elapsed().as_millis() as u64);
+                                    if let Err(error) = store.upsert_token_quality_cache(
+                                        &mint,
+                                        fetched.holders,
+                                        fetched.liquidity_sol,
+                                        fetched.token_age_seconds,
+                                        now,
+                                    ) {
+                                        if discovery_quality_cache_error_requires_abort(&error) {
+                                            return Err(error).context(
+                                                "discovery token quality cache refresh write failed with fatal sqlite I/O",
+                                            );
+                                        }
+                                        warn!(
+                                            error = %error,
+                                            mint = %mint,
+                                            "failed updating token quality cache"
+                                        );
+                                    }
+                                    match store.get_token_quality_cache(&mint) {
+                                        Ok(Some(row)) => {
+                                            out.insert(mint, TokenQualityResolution::Fresh(row));
+                                        }
+                                        Ok(None) => {
+                                            warn!(
+                                                mint = %mint,
+                                                "token quality cache row missing after refresh"
+                                            );
+                                            out.insert(mint, TokenQualityResolution::Missing);
+                                        }
+                                        Err(error) => {
+                                            if discovery_quality_cache_error_requires_abort(&error)
+                                            {
+                                                return Err(error).context(
+                                                    "discovery token quality cache refresh readback failed with fatal sqlite I/O",
+                                                );
+                                            }
+                                            warn!(
+                                                error = %error,
+                                                mint = %mint,
+                                                "failed reading token quality cache after refresh"
+                                            );
+                                            out.insert(mint, TokenQualityResolution::Missing);
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    progress.rpc_spent_ms = progress
+                                        .rpc_spent_ms
+                                        .saturating_add(rpc_started.elapsed().as_millis() as u64);
+                                    warn!(
+                                        error = %error,
+                                        mint = %mint,
+                                        "failed to refresh token quality via helius, using fallback"
+                                    );
+                                    out.insert(mint, TokenQualityResolution::Missing);
+                                }
+                            }
+                        }
+                    } else {
+                        out.insert(mint, TokenQualityResolution::Missing);
+                    }
                 }
                 Err(error) => {
                     if discovery_quality_cache_error_requires_abort(&error) {
@@ -70,168 +305,15 @@ impl DiscoveryService {
                     warn!(error = %error, mint = %mint, "failed reading token quality cache");
                 }
             }
+
+            progress.next_mint_index = progress.next_mint_index.saturating_add(1);
+            processed_mints = processed_mints.saturating_add(1);
         }
 
-        let Some(helius_http_url) = self.helius_http_url.as_deref() else {
-            for (mint, stale_row) in to_fetch {
-                if let Some(row) = stale_row {
-                    out.insert(mint, TokenQualityResolution::Stale(row));
-                } else {
-                    out.insert(mint, TokenQualityResolution::Missing);
-                }
-            }
-            info!(
-                quality_source = "cache+db_proxy",
-                rpc_enabled = false,
-                mints_total = mints.len(),
-                cache_fresh = fresh_hits,
-                cache_stale = stale_hits,
-                cache_miss = misses,
-                fetched_ok = 0usize,
-                fetched_fail = 0usize,
-                fallback_from_stale = stale_hits,
-                budget_exhausted = 0usize,
-                rpc_attempted = 0usize,
-                rpc_budget_ms = QUALITY_RPC_BUDGET_MS,
-                rpc_spent_ms = 0u64,
-                "discovery token quality cache summary"
-            );
-            return Ok(out);
-        };
-
-        let mut fetched_ok = 0usize;
-        let mut fetched_fail = 0usize;
-        let mut fallback_from_stale = 0usize;
-        let mut budget_exhausted = 0usize;
-        let mut deferred_missing = 0usize;
-        let mut missing_hard = 0usize;
-        let mut rpc_attempted = 0usize;
-        let refresh_started = Instant::now();
-        for (mint, stale_row) in to_fetch {
-            let mut stale_fallback = stale_row;
-            if rpc_attempted >= QUALITY_MAX_FETCH_PER_CYCLE {
-                if let Some(stale_row) = stale_fallback.take() {
-                    fallback_from_stale += 1;
-                    out.insert(mint, TokenQualityResolution::Stale(stale_row));
-                } else {
-                    deferred_missing += 1;
-                    out.insert(mint, TokenQualityResolution::Deferred);
-                }
-                continue;
-            }
-            if refresh_started.elapsed().as_millis() as u64 >= QUALITY_RPC_BUDGET_MS {
-                budget_exhausted += 1;
-                if let Some(stale_row) = stale_fallback.take() {
-                    fallback_from_stale += 1;
-                    out.insert(mint, TokenQualityResolution::Stale(stale_row));
-                } else {
-                    deferred_missing += 1;
-                    out.insert(mint, TokenQualityResolution::Deferred);
-                }
-                continue;
-            }
-
-            rpc_attempted += 1;
-            match fetch_token_quality_from_helius_guarded(
-                helius_http_url,
-                &mint,
-                QUALITY_RPC_TIMEOUT_MS,
-                QUALITY_MAX_SIGNATURE_PAGES,
-                Some(self.shadow_quality.min_token_age_seconds),
-            ) {
-                Ok(fetched) => {
-                    if let Err(error) = store.upsert_token_quality_cache(
-                        &mint,
-                        fetched.holders,
-                        fetched.liquidity_sol,
-                        fetched.token_age_seconds,
-                        now,
-                    ) {
-                        if discovery_quality_cache_error_requires_abort(&error) {
-                            return Err(error).context(
-                                "discovery token quality cache refresh write failed with fatal sqlite I/O",
-                            );
-                        }
-                        warn!(error = %error, mint = %mint, "failed updating token quality cache");
-                    }
-                    match store.get_token_quality_cache(&mint) {
-                        Ok(Some(row)) => {
-                            fetched_ok += 1;
-                            out.insert(mint, TokenQualityResolution::Fresh(row));
-                        }
-                        Ok(None) => {
-                            if let Some(stale_row) = stale_fallback.take() {
-                                fallback_from_stale += 1;
-                                out.insert(mint, TokenQualityResolution::Stale(stale_row));
-                            } else {
-                                missing_hard += 1;
-                                out.insert(mint.clone(), TokenQualityResolution::Missing);
-                                warn!(
-                                    mint = %mint,
-                                    "token quality cache row missing after refresh"
-                                );
-                            }
-                        }
-                        Err(error) => {
-                            if discovery_quality_cache_error_requires_abort(&error) {
-                                return Err(error).context(
-                                    "discovery token quality cache refresh readback failed with fatal sqlite I/O",
-                                );
-                            }
-                            warn!(
-                                error = %error,
-                                mint = %mint,
-                                "failed reading token quality cache after refresh"
-                            );
-                            if let Some(stale_row) = stale_fallback.take() {
-                                fallback_from_stale += 1;
-                                out.insert(mint, TokenQualityResolution::Stale(stale_row));
-                            } else {
-                                missing_hard += 1;
-                                out.insert(mint, TokenQualityResolution::Missing);
-                            }
-                        }
-                    }
-                }
-                Err(error) => {
-                    fetched_fail += 1;
-                    warn!(
-                        error = %error,
-                        mint = %mint,
-                        "failed to refresh token quality via helius, using fallback"
-                    );
-                    if let Some(stale_row) = stale_fallback.take() {
-                        fallback_from_stale += 1;
-                        out.insert(mint, TokenQualityResolution::Stale(stale_row));
-                    } else {
-                        missing_hard += 1;
-                        out.insert(mint, TokenQualityResolution::Missing);
-                    }
-                }
-            }
-        }
-
-        let rpc_spent_ms = refresh_started.elapsed().as_millis() as u64;
-        info!(
-            quality_source = "cache+rpc+db_proxy",
-            rpc_enabled = true,
-            mints_total = mints.len(),
-            cache_fresh = fresh_hits,
-            cache_stale = stale_hits,
-            cache_miss = misses,
-            fetched_ok,
-            fetched_fail,
-            fallback_from_stale,
-            budget_exhausted,
-            deferred_missing,
-            missing_hard,
-            rpc_attempted,
-            rpc_budget_ms = QUALITY_RPC_BUDGET_MS,
-            rpc_spent_ms,
-            "discovery token quality cache summary"
-        );
-
-        Ok(out)
+        Ok(TokenQualityResolutionChunkOutcome {
+            processed_mints,
+            source_exhausted: progress.next_mint_index >= mints.len(),
+        })
     }
 
     pub(super) fn update_token_quality_state(

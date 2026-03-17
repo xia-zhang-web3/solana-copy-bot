@@ -46,7 +46,7 @@ It replaces the old mixed roadmap and removes aggregate/backfill recovery from t
 
 ### 2.3 What the current code already proves (updated 2026-03-17)
 
-1. Stage 1 runtime contract is deployed and live on `0c58aba`:
+1. Stage 1 runtime contract was deployed and live on `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c`:
    - bootstrap/aggregate/backfill no longer block runtime wallet selection
    - `healthy / degraded / fail_closed` modes are propagated through discovery and app
    - publication truth is persisted separately from bootstrap/aggregate recovery truth
@@ -54,6 +54,10 @@ It replaces the old mixed roadmap and removes aggregate/backfill recovery from t
 2. The persisted-stream path correctly engages on live (confirmed in logs: `recomputing discovery snapshots from persisted observed_swaps stream`).
 3. The first persisted-stream cycle did not complete in the observed window (6+ minutes).
 4. Current working diagnosis from the second rollout: the next blocker is latency / boundedness of the first persisted-stream rebuild on live-size state, not bootstrap, aggregate, or ingestion.
+5. Current working tree replaces the old one-shot persisted rebuild with a bounded/resumable design:
+   - frozen rebuild horizon (`window_start`, `horizon_end`, `metrics_window_start`) is captured once per rebuild
+   - rebuild progress is persisted separately from `discovery_runtime_cursor`
+   - cold-start rebuild advances in bounded chunks across cycles and restarts instead of monopolizing one long cycle
 
 ### 2.4 Current verdict (updated 2026-03-17)
 
@@ -63,7 +67,9 @@ The project is not blocked by ingestion.
 
 The first discovery cycle on live has not completed yet.
 
-Current working diagnosis: the cold-start persisted-stream rebuild is not yet bounded/resumable enough for live-size state.
+Stage 1 is `partial` again after live rollout `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c`.
+
+Current working diagnosis: live is still running the old unbounded cold-start persisted-stream rebuild from `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c`, while the current working tree now contains the bounded/resumable replacement that needs rollout validation.
 
 Do not start Stage 2 yet.
 
@@ -176,28 +182,39 @@ No new roadmap documents are needed before Stage 1 lands in code.
 
 ### Stage 1. Remove aggregate recovery from runtime discovery
 
-Status: **code complete, deployed, operationally blocked by first-cycle scan latency**
+Status: **partial after live rollout `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c`; bounded/resumable rebuild fix is now in code and pending rollout validation**
 
 Goal:
 
 Make discovery choose wallets from the current raw window without aggregate scoring gates.
 
-What was done (4 code iterations, 2 server rollouts):
+What is done in Stage 1 so far:
 
 1. Removed startup dependence on `trusted_selection_bootstrap_pending`, aggregate readiness, and persisted trusted snapshots.
 2. Made raw-window recompute (`PreparedCycleState::Recompute`) the default runtime selection path.
-3. Added `PreparedCycleState::PersistedRecompute` fallback: when RAM cache is cap-truncated but persisted `observed_swaps` covers the scoring window, discovery scores from `build_wallet_snapshots_from_persisted_stream` instead of failing closed.
+3. Added `PreparedCycleState::PersistedRecompute` fallback: when RAM cache is cap-truncated but persisted `observed_swaps` covers the scoring window, discovery scores from the persisted stream instead of failing closed.
 4. Separated publication truth from bootstrap/aggregate recovery truth in `discovery_strategy_state`.
 5. Propagated `healthy / degraded / fail_closed` runtime mode through discovery, app startup, and shadow consumption.
 6. Hardened: coverage check requires left-boundary + in-window swap presence; empty-scan guard prevents false healthy; degraded eligible_wallets sourced from last healthy metrics bucket; bucket-stale published universes rejected.
+7. Replaced the old one-shot cold-start persisted rebuild with a bounded four-phase design:
+   - `CollectBuyMints` prepass scans the frozen horizon in bounded pages/time and persists a resumable phase cursor
+   - `ResolveTokenQuality` resolves token quality for the frozen mint set in bounded chunks with its own resumable progress index and RPC budget telemetry
+   - `Replay` replays the same frozen horizon with the same streaming scoring semantics in bounded pages/time and persists a resumable phase cursor plus streaming state payload
+   - `PublishPending` keeps the durable checkpoint alive until healthy publication/trusted-state persistence succeeds, so a failed publish resumes from the completed rebuild instead of restarting from zero
+8. Added a dedicated durable rebuild progress contract in storage that is explicitly separate from `discovery_runtime_cursor`:
+   - `discovery_runtime_cursor` still tracks normal live delta fetch
+   - persisted rebuild progress stores its own phase, frozen horizon, checkpoint cursor, processed-row/page counters, chunk count, and serialized replay state
+9. Partial no-fallback rebuild cycles now make bounded durable progress without burning the publish cadence; if rebuild is still incomplete and there is no valid published universe, runtime can remain `fail_closed` while the next cycle resumes from the persisted checkpoint.
+10. Rebuild completion now forces the recovered publish instead of waiting for the next normal publish interval, so a successful bounded cold start can immediately promote the healthy `raw_window_persisted_stream` universe.
+11. Resume validates semantic checkpoint validity before reusing it: if the frozen metrics bucket moved or the stored horizon is invalid for the current wall clock, runtime discards the old rebuild state and starts a new frozen attempt. Longer restarts within the same metrics bucket keep the checkpoint and continue from it.
+12. Completion keeps semantic parity with the previous one-shot persisted rebuild by freezing the same horizon and replaying the same streaming scoring logic; parity is enforced by direct one-shot-vs-bounded regression coverage.
 
 Code hotspots touched:
 
-1. `crates/discovery/src/lib.rs` — runtime branching, persisted-stream path, publication state, tests
-2. `crates/app/src/main.rs` — startup boot path, runtime mode consumption, cap-truncation telemetry
-3. `crates/app/src/task_spawns.rs` — runtime_mode propagation
-4. `crates/storage/src/discovery.rs` — publication truth persistence
-5. `crates/storage/src/lib.rs` — publication state types, bucket validity check
+1. `crates/discovery/src/lib.rs` — runtime branching, bounded persisted-stream path, publication cadence handling, tests
+2. `crates/storage/src/market_data.rs` — bounded window scan with cursor/budget plus durable rebuild-state persistence
+3. `crates/storage/src/lib.rs` — persisted rebuild progress types
+4. `crates/core-types/src/lib.rs` — serde support for persisted rebuild payload types
 
 Exit criteria (all closed in code and tests):
 
@@ -214,18 +231,29 @@ Mandatory Stage 1 tests (all green):
 4. cold start + stale persisted history + recent published universe → degraded
 5. cold start + unusable raw window + no published universe → fail-closed
 6. cold start + stale persisted history + no published universe → fail-closed
+7. large persisted-stream rebuild does not monopolize a cycle; bounded progress row is persisted and observable
+8. bounded rebuild resumes across cycles from its own checkpoint instead of restarting from zero
+9. bounded rebuild resumes after process restart from persisted rebuild state
+10. bounded rebuild completes to `healthy` with `scoring_source = raw_window_persisted_stream`
+11. bounded rebuild matches one-shot persisted-stream scoring semantics across chunk boundaries
 
 Remaining operational blocker:
 
-The first persisted-stream discovery cycle has not completed on live in the observed window (6+ minutes).
+Live rollout validation is still pending for the new bounded/resumable rebuild.
 
 Current working diagnosis:
 
-the first persisted-stream rebuild is too slow / insufficiently bounded for live-size state and needs a resumable or chunked runtime design.
+the old deploy `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c` proved that a one-shot first-cycle persisted rebuild is too slow / insufficiently bounded for live-size state; the new code changes that path to a checkpointed chunked rebuild that must now be validated on live.
 
-Immediate next coding step before Stage 2:
+Immediate next operational step before Stage 2:
 
-implement bounded/resumable persisted-stream rebuild with explicit progress telemetry and checkpointed forward progress across cycles.
+roll out the bounded/resumable persisted-stream rebuild and confirm:
+
+1. completed discovery cycles resume instead of hanging behind `discovery cycle still running, skipping scheduled trigger`
+2. rebuild progress logs show processed rows/pages, chunk count, elapsed time, checkpoint cursor, frozen horizon, and partial/completed outcome
+3. live eventually emits a completed cycle with `scoring_source = raw_window_persisted_stream`
+4. `active_follow_wallets > 0`
+5. there is no false `healthy` and no empty published universe
 
 See section 2.5 for observed server state and section 2.6 for live data scale.
 
@@ -331,6 +359,60 @@ Their useful conclusions are already absorbed here:
 4. Operational incidents on prod must not be repeated just to prove recovery semantics.
 
 ## 10. Execution log
+
+- Date: 2026-03-17
+- Commit SHA: `self-referential; exact final SHA is reported from git after commit`
+- Stage / substep: `Stage 1 / bounded + resumable persisted-stream cold-start rebuild`
+- Status: `done in code; Stage 1 remains partial pending rollout validation`
+- Code changed:
+  - `crates/core-types/src/lib.rs`
+  - `crates/discovery/src/lib.rs`
+  - `crates/discovery/src/quality_cache.rs`
+  - `crates/storage/src/lib.rs`
+  - `crates/storage/src/market_data.rs`
+  - `ROAD_TO_PRODUCTION_v2.md`
+- Tests run:
+  - `cargo fmt --all`
+  - `cargo test -p copybot-discovery --lib persisted_stream_rebuild`
+  - `cargo test -p copybot-discovery --lib cold_start_truncated_in_memory_with_complete_persisted_observed_swaps_publishes_healthy_stage1`
+  - `cargo test -p copybot-discovery --lib raw_window`
+  - `cargo test -p copybot-discovery --lib`
+  - `cargo test -p copybot-storage --lib`
+- Done:
+  - explicitly recorded that Stage 1 became `partial` again after live rollout `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c`
+  - replaced the old one-shot persisted rebuild with a bounded four-phase cold-start rebuild (`CollectBuyMints` + `ResolveTokenQuality` + `Replay` + `PublishPending`)
+  - froze rebuild horizon per attempt (`window_start`, `horizon_end`, `metrics_window_start`) so every bounded cycle works against the same semantic window
+  - introduced a dedicated persisted rebuild progress contract that is separate from normal `discovery_runtime_cursor`
+  - persisted rebuild progress now survives both cycle boundaries and full process restarts
+  - added progress telemetry for processed rows, processed pages, chunk count, elapsed time, rebuild cursor/checkpoint, frozen horizon, and partial vs completed outcomes
+  - bounded token-quality resolution so the pre-replay quality stage can no longer monopolize a cycle on a large unique-mint set
+  - resume now invalidates only semantically invalid checkpoints; longer same-bucket restarts keep the persisted rebuild state instead of restarting from zero
+  - completion now clears the durable rebuild checkpoint only after publish/trusted-state writes succeed, so a publish failure resumes from `PublishPending` instead of restarting the full rebuild
+  - partial no-fallback rebuild cycles no longer burn `last_publish_at`, so the first healthy bounded completion can publish immediately instead of waiting for the next nominal publish tick
+  - persisted-stream no-fallback cycles now force followlist deactivation when they report `fail_closed`, while legacy cap-truncation suppression behavior remains unchanged outside that path
+  - preserved scoring semantic parity with the old one-shot persisted rebuild; bounded replay uses the same streaming scoring logic and is covered by direct equivalence tests
+  - partial no-fallback rebuild cycles remain bounded and `fail_closed` when necessary, but no longer consume publish cadence before the eventual healthy publish
+- In progress:
+  - rollout validation on live-size `observed_swaps`
+- Blocked:
+  - production still needs a new rollout to prove that the bounded rebuild completes under live-size state without reintroducing a hanging cycle
+- Acceptance criteria closed:
+  - cold-start persisted rebuild no longer monopolizes one cycle in code/tests
+  - rebuild progress is resumable across cycles and after restart
+  - completion path reaches `healthy` with `scoring_source = raw_window_persisted_stream` in regression coverage
+  - no-fallback path remains bounded and progress-making instead of hanging
+  - semantic equivalence across chunk boundaries is covered in tests
+- Acceptance criteria remaining:
+  - live must emit completed discovery cycles again instead of endlessly logging `discovery cycle still running, skipping scheduled trigger`
+  - live must emit `scoring_source = raw_window_persisted_stream`
+  - live must reach `active_follow_wallets > 0`
+  - live must avoid both false `healthy` and empty published universe
+- Remaining risks:
+  - this is still unvalidated against the live-size SQLite state on the server
+  - legacy aggregate/bootstrap dead code and warnings remain intentionally out of the Stage 1 runtime fix
+- Next action:
+  - deploy this bounded rebuild follow-up
+  - on rollout, verify rebuild progress logs advance chunk-by-chunk, a completed cycle appears, `scoring_source = raw_window_persisted_stream` appears, `active_follow_wallets > 0`, and no hanging cycle remains
 
 - Date: 2026-03-17
 - Commit SHA: `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c`

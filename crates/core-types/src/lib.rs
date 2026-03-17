@@ -246,7 +246,7 @@ pub enum FinalizeExecutionConfirmOutcome {
     AlreadyConfirmed,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenQualityCacheRow {
     pub mint: String,
     pub holders: Option<u64>,
@@ -255,7 +255,7 @@ pub struct TokenQualityCacheRow {
     pub fetched_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TokenQualityRpcRow {
     pub holders: Option<u64>,
     pub liquidity_sol: Option<f64>,

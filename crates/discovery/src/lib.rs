@@ -3,12 +3,14 @@ use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
 use copybot_storage::{
-    is_fatal_sqlite_anyhow_error, DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor,
+    is_fatal_sqlite_anyhow_error, DiscoveryPersistedRebuildPhase,
+    DiscoveryPersistedRebuildStateRow, DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor,
     DiscoveryRuntimeMode, DiscoveryTrustedSelectionStateUpdate, PersistedWalletMetricSnapshotRow,
     SqliteStore, StartupTrustedSelectionGateStatus, TrustedSelectionState,
     TrustedSnapshotSourceKind, TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite,
     WalletMetricRow, WalletScoringBuyFactRow, WalletScoringQualitySource, WalletUpsertRow,
 };
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -350,7 +352,7 @@ impl DiscoverySummary {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct WalletSnapshot {
     wallet_id: String,
     first_seen: DateTime<Utc>,
@@ -367,7 +369,7 @@ struct WalletSnapshot {
     eligible: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 struct RugMetrics {
     evaluated: u32,
     rugged: u32,
@@ -381,14 +383,14 @@ enum BuyFactRugStatus {
     Unevaluated,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Lot {
     qty: f64,
     cost_sol: f64,
     opened_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 struct BuyObservation {
     token: String,
@@ -397,7 +399,7 @@ struct BuyObservation {
     quality_resolved: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PendingBuyRugCheck {
     token: String,
     wallet_id: String,
@@ -504,14 +506,14 @@ impl PreparedCycleState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SolLegTrade {
     ts: DateTime<Utc>,
     wallet_id: String,
     sol_notional: f64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct TokenRollingState {
     first_seen: Option<DateTime<Utc>>,
     wallets_seen: HashSet<String>,
@@ -520,7 +522,7 @@ struct TokenRollingState {
     sol_traders_5m: HashMap<String, u32>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct WalletAccumulator {
     first_seen: Option<DateTime<Utc>>,
     last_seen: Option<DateTime<Utc>>,
@@ -541,6 +543,99 @@ struct WalletAccumulator {
     tradable_buys: u32,
     rug_metrics: RugMetrics,
     buy_observations: Vec<BuyObservation>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct PersistedStreamRebuildPayload {
+    unique_buy_mints: Vec<String>,
+    token_quality_cache: HashMap<String, quality_cache::TokenQualityResolution>,
+    token_quality_progress: quality_cache::TokenQualityResolutionProgress,
+    by_wallet: HashMap<String, WalletAccumulator>,
+    token_states: HashMap<String, TokenRollingState>,
+    token_recent_sol_trades: HashMap<String, VecDeque<SolLegTrade>>,
+    pending_rug_checks: VecDeque<PendingBuyRugCheck>,
+    token_pending_buy_starts: HashMap<String, VecDeque<DateTime<Utc>>>,
+    completed_snapshots: Vec<WalletSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+struct PersistedStreamRebuildState {
+    phase: DiscoveryPersistedRebuildPhase,
+    window_start: DateTime<Utc>,
+    horizon_end: DateTime<Utc>,
+    metrics_window_start: DateTime<Utc>,
+    phase_cursor: Option<DiscoveryRuntimeCursor>,
+    prepass_rows_processed: usize,
+    prepass_pages_processed: usize,
+    replay_rows_processed: usize,
+    replay_pages_processed: usize,
+    chunks_completed: usize,
+    started_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    payload: PersistedStreamRebuildPayload,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersistedStreamBudgetExhaustedReason {
+    TimeBudget,
+    PageBudget,
+}
+
+impl PersistedStreamBudgetExhaustedReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::TimeBudget => "time_budget",
+            Self::PageBudget => "page_budget",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PersistedStreamProgressTelemetry {
+    phase: DiscoveryPersistedRebuildPhase,
+    window_start: DateTime<Utc>,
+    horizon_end: DateTime<Utc>,
+    metrics_window_start: DateTime<Utc>,
+    phase_cursor: Option<DiscoveryRuntimeCursor>,
+    prepass_rows_processed: usize,
+    prepass_pages_processed: usize,
+    replay_rows_processed: usize,
+    replay_pages_processed: usize,
+    chunks_completed: usize,
+    cycle_rows_processed: usize,
+    cycle_pages_processed: usize,
+    observed_swaps_loaded: usize,
+    unique_buy_mints: usize,
+    quality_next_mint_index: usize,
+    quality_rpc_attempted: usize,
+    quality_rpc_spent_ms: u64,
+    wallets_buffered: usize,
+    started_at: DateTime<Utc>,
+    cycle_elapsed_ms: u64,
+    total_elapsed_ms: u64,
+    partial: bool,
+    completed: bool,
+    budget_exhausted_reason: Option<PersistedStreamBudgetExhaustedReason>,
+}
+
+#[derive(Debug)]
+enum PersistedStreamRebuildAdvanceOutcome {
+    Completed {
+        snapshots: Vec<WalletSnapshot>,
+        telemetry: PersistedStreamProgressTelemetry,
+    },
+    InProgress {
+        telemetry: PersistedStreamProgressTelemetry,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct PersistedStreamPhaseAdvance {
+    rows_processed: usize,
+    pages_processed: usize,
+    source_exhausted: bool,
+    phase_cursor: Option<DiscoveryRuntimeCursor>,
+    budget_exhausted_reason: Option<PersistedStreamBudgetExhaustedReason>,
 }
 
 #[derive(Debug, Default)]
@@ -822,7 +917,8 @@ impl DiscoveryService {
         let Some(publication_state) = store.discovery_publication_state()? else {
             return Ok((active_wallets.len(), active_wallets.len()));
         };
-        let Some(last_published_window_start) = publication_state.last_published_window_start else {
+        let Some(last_published_window_start) = publication_state.last_published_window_start
+        else {
             return Ok((active_wallets.len(), active_wallets.len()));
         };
         let persisted_rows =
@@ -841,13 +937,21 @@ impl DiscoveryService {
         window_start: DateTime<Utc>,
         metrics_window_start: DateTime<Utc>,
         publish_due: bool,
+        force_followlist_deactivation: bool,
         cap_truncation_telemetry: &CapTruncationTelemetrySnapshot,
         scoring_source: &'static str,
         reason: &str,
         now: DateTime<Utc>,
     ) -> Result<DiscoverySummary> {
-        let follow_delta =
-            store.persist_discovery_cycle(&[], &[], &[], false, publish_due, now, reason)?;
+        let follow_delta = store.persist_discovery_cycle(
+            &[],
+            &[],
+            &[],
+            false,
+            publish_due || force_followlist_deactivation,
+            now,
+            reason,
+        )?;
         self.persist_trusted_selection_state(
             store,
             TrustedSelectionState::Invalid,
@@ -893,7 +997,8 @@ impl DiscoveryService {
         store: &SqliteStore,
         window_start: DateTime<Utc>,
     ) -> Result<bool> {
-        let Some(oldest_persisted_observed_swap_ts) = store.oldest_observed_swap_timestamp()? else {
+        let Some(oldest_persisted_observed_swap_ts) = store.oldest_observed_swap_timestamp()?
+        else {
             return Ok(false);
         };
         if oldest_persisted_observed_swap_ts > window_start {
@@ -901,6 +1006,762 @@ impl DiscoveryService {
         }
         let (recent_window_swaps, _) = store.load_recent_observed_swaps_since(window_start, 1)?;
         Ok(!recent_window_swaps.is_empty())
+    }
+
+    fn persisted_stream_rebuild_state_from_row(
+        row: DiscoveryPersistedRebuildStateRow,
+    ) -> Result<PersistedStreamRebuildState> {
+        let payload: PersistedStreamRebuildPayload = serde_json::from_str(&row.state_json)
+            .context("failed deserializing discovery persisted rebuild state payload")?;
+        Ok(PersistedStreamRebuildState {
+            phase: row.phase,
+            window_start: row.window_start,
+            horizon_end: row.horizon_end,
+            metrics_window_start: row.metrics_window_start,
+            phase_cursor: row.phase_cursor,
+            prepass_rows_processed: row.prepass_rows_processed,
+            prepass_pages_processed: row.prepass_pages_processed,
+            replay_rows_processed: row.replay_rows_processed,
+            replay_pages_processed: row.replay_pages_processed,
+            chunks_completed: row.chunks_completed,
+            started_at: row.started_at,
+            updated_at: row.updated_at,
+            payload,
+        })
+    }
+
+    fn persisted_stream_rebuild_row(
+        state: &PersistedStreamRebuildState,
+        updated_at: DateTime<Utc>,
+    ) -> Result<DiscoveryPersistedRebuildStateRow> {
+        Ok(DiscoveryPersistedRebuildStateRow {
+            phase: state.phase,
+            window_start: state.window_start,
+            horizon_end: state.horizon_end,
+            metrics_window_start: state.metrics_window_start,
+            phase_cursor: state.phase_cursor.clone(),
+            prepass_rows_processed: state.prepass_rows_processed,
+            prepass_pages_processed: state.prepass_pages_processed,
+            replay_rows_processed: state.replay_rows_processed,
+            replay_pages_processed: state.replay_pages_processed,
+            chunks_completed: state.chunks_completed,
+            state_json: serde_json::to_string(&state.payload)
+                .context("failed serializing discovery persisted rebuild state payload")?,
+            started_at: state.started_at,
+            updated_at,
+        })
+    }
+
+    fn start_persisted_stream_rebuild_state(
+        &self,
+        window_start: DateTime<Utc>,
+        metrics_window_start: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> PersistedStreamRebuildState {
+        PersistedStreamRebuildState {
+            phase: DiscoveryPersistedRebuildPhase::CollectBuyMints,
+            window_start,
+            horizon_end: now,
+            metrics_window_start,
+            phase_cursor: None,
+            prepass_rows_processed: 0,
+            prepass_pages_processed: 0,
+            replay_rows_processed: 0,
+            replay_pages_processed: 0,
+            chunks_completed: 0,
+            started_at: now,
+            updated_at: now,
+            payload: PersistedStreamRebuildPayload::default(),
+        }
+    }
+
+    fn persisted_stream_rebuild_restart_reason(
+        &self,
+        state: &PersistedStreamRebuildState,
+        window_start: DateTime<Utc>,
+        metrics_window_start: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Option<&'static str> {
+        if state.window_start > window_start {
+            return Some("window_start_in_future");
+        }
+        if state.metrics_window_start != metrics_window_start {
+            return Some("metrics_window_start_changed");
+        }
+        if state.horizon_end > now {
+            return Some("horizon_in_future");
+        }
+        None
+    }
+
+    fn publish_pending_snapshots(state: &PersistedStreamRebuildState) -> Vec<WalletSnapshot> {
+        state.payload.completed_snapshots.clone()
+    }
+
+    fn load_or_start_persisted_stream_rebuild_state(
+        &self,
+        store: &SqliteStore,
+        window_start: DateTime<Utc>,
+        metrics_window_start: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<(PersistedStreamRebuildState, bool)> {
+        let Some(row) = store.load_discovery_persisted_rebuild_state()? else {
+            return Ok((
+                self.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now),
+                false,
+            ));
+        };
+        match Self::persisted_stream_rebuild_state_from_row(row) {
+            Ok(state) => {
+                if let Some(reason) = self.persisted_stream_rebuild_restart_reason(
+                    &state,
+                    window_start,
+                    metrics_window_start,
+                    now,
+                ) {
+                    warn!(
+                        persisted_window_start = %state.window_start,
+                        persisted_metrics_window_start = %state.metrics_window_start,
+                        persisted_horizon_end = %state.horizon_end,
+                        current_window_start = %window_start,
+                        current_metrics_window_start = %metrics_window_start,
+                        current_now = %now,
+                        restart_reason = reason,
+                        "discarding stale persisted discovery rebuild progress and restarting from a fresh frozen horizon"
+                    );
+                    store.clear_discovery_persisted_rebuild_state()?;
+                    return Ok((
+                        self.start_persisted_stream_rebuild_state(
+                            window_start,
+                            metrics_window_start,
+                            now,
+                        ),
+                        false,
+                    ));
+                }
+                Ok((state, true))
+            }
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "failed restoring persisted discovery rebuild progress; restarting from a fresh frozen horizon"
+                );
+                store.clear_discovery_persisted_rebuild_state()?;
+                Ok((
+                    self.start_persisted_stream_rebuild_state(
+                        window_start,
+                        metrics_window_start,
+                        now,
+                    ),
+                    false,
+                ))
+            }
+        }
+    }
+
+    fn persist_persisted_stream_rebuild_state(
+        &self,
+        store: &SqliteStore,
+        state: &mut PersistedStreamRebuildState,
+        updated_at: DateTime<Utc>,
+    ) -> Result<()> {
+        state.updated_at = updated_at;
+        let row = Self::persisted_stream_rebuild_row(state, updated_at)?;
+        store.upsert_discovery_persisted_rebuild_state(&row)
+    }
+
+    fn log_persisted_stream_progress(
+        &self,
+        telemetry: &PersistedStreamProgressTelemetry,
+        message: &'static str,
+    ) {
+        info!(
+            rebuild_phase = telemetry.phase.as_str(),
+            rebuild_window_start = %telemetry.window_start,
+            rebuild_horizon_end = %telemetry.horizon_end,
+            rebuild_metrics_window_start = %telemetry.metrics_window_start,
+            rebuild_partial = telemetry.partial,
+            rebuild_completed = telemetry.completed,
+            rebuild_budget_exhausted_reason = telemetry
+                .budget_exhausted_reason
+                .map(PersistedStreamBudgetExhaustedReason::as_str),
+            rebuild_phase_cursor_ts = ?telemetry
+                .phase_cursor
+                .as_ref()
+                .map(|cursor| cursor.ts_utc),
+            rebuild_phase_cursor_slot = telemetry
+                .phase_cursor
+                .as_ref()
+                .map(|cursor| cursor.slot),
+            rebuild_phase_cursor_signature = telemetry
+                .phase_cursor
+                .as_ref()
+                .map(|cursor| cursor.signature.as_str()),
+            rebuild_cycle_rows_processed = telemetry.cycle_rows_processed,
+            rebuild_cycle_pages_processed = telemetry.cycle_pages_processed,
+            rebuild_prepass_rows_processed = telemetry.prepass_rows_processed,
+            rebuild_prepass_pages_processed = telemetry.prepass_pages_processed,
+            rebuild_replay_rows_processed = telemetry.replay_rows_processed,
+            rebuild_replay_pages_processed = telemetry.replay_pages_processed,
+            rebuild_observed_swaps_loaded = telemetry.observed_swaps_loaded,
+            rebuild_unique_buy_mints = telemetry.unique_buy_mints,
+            rebuild_quality_next_mint_index = telemetry.quality_next_mint_index,
+            rebuild_quality_rpc_attempted = telemetry.quality_rpc_attempted,
+            rebuild_quality_rpc_spent_ms = telemetry.quality_rpc_spent_ms,
+            rebuild_wallets_buffered = telemetry.wallets_buffered,
+            rebuild_chunks_completed = telemetry.chunks_completed,
+            rebuild_started_at = %telemetry.started_at,
+            rebuild_cycle_elapsed_ms = telemetry.cycle_elapsed_ms,
+            rebuild_total_elapsed_ms = telemetry.total_elapsed_ms,
+            "{message}"
+        );
+    }
+
+    fn advance_persisted_stream_prepass(
+        &self,
+        store: &SqliteStore,
+        state: &mut PersistedStreamRebuildState,
+        fetch_limit: usize,
+        fetch_page_limit: usize,
+        deadline: Instant,
+    ) -> Result<PersistedStreamPhaseAdvance> {
+        let mut rows_processed = 0usize;
+        let mut pages_processed = 0usize;
+        let mut cursor = state.phase_cursor.clone();
+        let mut seen_buy_mints: HashSet<String> =
+            state.payload.unique_buy_mints.iter().cloned().collect();
+        let budget_exhausted_reason = loop {
+            if pages_processed >= fetch_page_limit {
+                break Some(PersistedStreamBudgetExhaustedReason::PageBudget);
+            }
+            if Instant::now() >= deadline {
+                break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+            }
+
+            let mut page_last_cursor = cursor.clone();
+            let page = store.for_each_observed_swap_in_window_after_cursor_with_budget(
+                state.window_start,
+                state.horizon_end,
+                cursor.as_ref(),
+                fetch_limit,
+                deadline,
+                |swap| {
+                    page_last_cursor = Some(DiscoveryRuntimeCursor {
+                        ts_utc: swap.ts_utc,
+                        slot: swap.slot,
+                        signature: swap.signature.clone(),
+                    });
+                    if is_sol_buy(&swap) && seen_buy_mints.insert(swap.token_out.clone()) {
+                        state.payload.unique_buy_mints.push(swap.token_out.clone());
+                    }
+                    Ok(())
+                },
+            )?;
+            pages_processed = pages_processed.saturating_add(1);
+            rows_processed = rows_processed.saturating_add(page.rows_seen);
+            cursor = page_last_cursor;
+
+            if page.time_budget_exhausted {
+                break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+            }
+            if page.rows_seen < fetch_limit {
+                return Ok(PersistedStreamPhaseAdvance {
+                    rows_processed,
+                    pages_processed,
+                    source_exhausted: true,
+                    phase_cursor: None,
+                    budget_exhausted_reason: None,
+                });
+            }
+        };
+
+        Ok(PersistedStreamPhaseAdvance {
+            rows_processed,
+            pages_processed,
+            source_exhausted: false,
+            phase_cursor: cursor,
+            budget_exhausted_reason,
+        })
+    }
+
+    fn advance_persisted_stream_token_quality(
+        &self,
+        store: &SqliteStore,
+        state: &mut PersistedStreamRebuildState,
+        fetch_limit: usize,
+        fetch_page_limit: usize,
+        deadline: Instant,
+    ) -> Result<PersistedStreamPhaseAdvance> {
+        let mut rows_processed = 0usize;
+        let mut pages_processed = 0usize;
+        let budget_exhausted_reason = loop {
+            if state.payload.token_quality_progress.next_mint_index
+                >= state.payload.unique_buy_mints.len()
+            {
+                return Ok(PersistedStreamPhaseAdvance {
+                    rows_processed,
+                    pages_processed,
+                    source_exhausted: true,
+                    phase_cursor: None,
+                    budget_exhausted_reason: None,
+                });
+            }
+            if pages_processed >= fetch_page_limit {
+                break Some(PersistedStreamBudgetExhaustedReason::PageBudget);
+            }
+            if Instant::now() >= deadline {
+                break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+            }
+
+            let outcome = self.resolve_token_quality_for_mints_chunk(
+                store,
+                &state.payload.unique_buy_mints,
+                state.horizon_end,
+                &mut state.payload.token_quality_cache,
+                &mut state.payload.token_quality_progress,
+                fetch_limit,
+                deadline,
+            )?;
+            rows_processed = rows_processed.saturating_add(outcome.processed_mints);
+            if outcome.processed_mints > 0 {
+                pages_processed = pages_processed.saturating_add(1);
+            }
+            if outcome.source_exhausted {
+                return Ok(PersistedStreamPhaseAdvance {
+                    rows_processed,
+                    pages_processed,
+                    source_exhausted: true,
+                    phase_cursor: None,
+                    budget_exhausted_reason: None,
+                });
+            }
+            if outcome.processed_mints == 0 {
+                break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+            }
+        };
+
+        Ok(PersistedStreamPhaseAdvance {
+            rows_processed,
+            pages_processed,
+            source_exhausted: false,
+            phase_cursor: None,
+            budget_exhausted_reason,
+        })
+    }
+
+    fn advance_persisted_stream_replay(
+        &self,
+        store: &SqliteStore,
+        state: &mut PersistedStreamRebuildState,
+        fetch_limit: usize,
+        fetch_page_limit: usize,
+        deadline: Instant,
+    ) -> Result<PersistedStreamPhaseAdvance> {
+        let mut rows_processed = 0usize;
+        let mut pages_processed = 0usize;
+        let mut cursor = state.phase_cursor.clone();
+        let lookahead = Duration::seconds(self.config.rug_lookahead_seconds.max(1) as i64);
+
+        let budget_exhausted_reason = loop {
+            if pages_processed >= fetch_page_limit {
+                break Some(PersistedStreamBudgetExhaustedReason::PageBudget);
+            }
+            if Instant::now() >= deadline {
+                break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+            }
+
+            let mut page_last_cursor = cursor.clone();
+            let base_replay_rows_processed = state.replay_rows_processed;
+            let page = store.for_each_observed_swap_in_window_after_cursor_with_budget(
+                state.window_start,
+                state.horizon_end,
+                cursor.as_ref(),
+                fetch_limit,
+                deadline,
+                |swap| {
+                    page_last_cursor = Some(DiscoveryRuntimeCursor {
+                        ts_utc: swap.ts_utc,
+                        slot: swap.slot,
+                        signature: swap.signature.clone(),
+                    });
+                    let buy_quality = self.update_token_quality_state_streaming(
+                        &mut state.payload.token_states,
+                        &mut state.payload.token_recent_sol_trades,
+                        &state.payload.token_quality_cache,
+                        &swap,
+                    );
+                    let entry = state
+                        .payload
+                        .by_wallet
+                        .entry(swap.wallet.clone())
+                        .or_default();
+                    entry.observe_swap_streaming(&swap, self.config.max_tx_per_minute, buy_quality);
+
+                    let Some(token) = sol_leg_token(&swap) else {
+                        rows_processed = rows_processed.saturating_add(1);
+                        return Ok(());
+                    };
+                    self.finalize_streaming_rug_metrics_up_to(
+                        &mut state.payload.by_wallet,
+                        token,
+                        &mut state.payload.token_recent_sol_trades,
+                        &mut state.payload.pending_rug_checks,
+                        &mut state.payload.token_pending_buy_starts,
+                        swap.ts_utc,
+                        lookahead,
+                        state.horizon_end,
+                    );
+                    if is_sol_buy(&swap) {
+                        state
+                            .payload
+                            .pending_rug_checks
+                            .push_back(PendingBuyRugCheck {
+                                token: token.to_string(),
+                                wallet_id: swap.wallet.clone(),
+                                buy_ts: swap.ts_utc,
+                            });
+                        state
+                            .payload
+                            .token_pending_buy_starts
+                            .entry(token.to_string())
+                            .or_default()
+                            .push_back(swap.ts_utc);
+                    }
+                    let processed_total = base_replay_rows_processed
+                        .saturating_add(rows_processed)
+                        .saturating_add(1);
+                    if processed_total % STREAMING_RUG_TRADE_SWEEP_INTERVAL_SWAPS == 0 {
+                        self.evict_idle_streaming_rug_trade_history(
+                            &mut state.payload.token_recent_sol_trades,
+                            &state.payload.token_pending_buy_starts,
+                            swap.ts_utc - lookahead,
+                        );
+                    }
+                    rows_processed = rows_processed.saturating_add(1);
+                    Ok(())
+                },
+            )?;
+            pages_processed = pages_processed.saturating_add(1);
+            cursor = page_last_cursor;
+
+            if page.time_budget_exhausted {
+                break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+            }
+            if page.rows_seen < fetch_limit {
+                return Ok(PersistedStreamPhaseAdvance {
+                    rows_processed,
+                    pages_processed,
+                    source_exhausted: true,
+                    phase_cursor: None,
+                    budget_exhausted_reason: None,
+                });
+            }
+        };
+
+        Ok(PersistedStreamPhaseAdvance {
+            rows_processed,
+            pages_processed,
+            source_exhausted: false,
+            phase_cursor: cursor,
+            budget_exhausted_reason,
+        })
+    }
+
+    fn advance_persisted_stream_rebuild(
+        &self,
+        store: &SqliteStore,
+        window_start: DateTime<Utc>,
+        metrics_window_start: DateTime<Utc>,
+        now: DateTime<Utc>,
+        fetch_limit: usize,
+        fetch_page_limit: usize,
+        rebuild_time_budget: StdDuration,
+    ) -> Result<PersistedStreamRebuildAdvanceOutcome> {
+        let (mut state, resumed_existing) = self.load_or_start_persisted_stream_rebuild_state(
+            store,
+            window_start,
+            metrics_window_start,
+            now,
+        )?;
+        if resumed_existing {
+            info!(
+                rebuild_phase = state.phase.as_str(),
+                rebuild_window_start = %state.window_start,
+                rebuild_horizon_end = %state.horizon_end,
+                rebuild_metrics_window_start = %state.metrics_window_start,
+                rebuild_phase_cursor_ts = ?state.phase_cursor.as_ref().map(|cursor| cursor.ts_utc),
+                rebuild_phase_cursor_slot = state.phase_cursor.as_ref().map(|cursor| cursor.slot),
+                rebuild_phase_cursor_signature =
+                    state.phase_cursor.as_ref().map(|cursor| cursor.signature.as_str()),
+                rebuild_prepass_rows_processed = state.prepass_rows_processed,
+                rebuild_replay_rows_processed = state.replay_rows_processed,
+                rebuild_quality_next_mint_index = state.payload.token_quality_progress.next_mint_index,
+                rebuild_quality_rpc_attempted = state.payload.token_quality_progress.rpc_attempted,
+                rebuild_quality_rpc_spent_ms = state.payload.token_quality_progress.rpc_spent_ms,
+                rebuild_chunks_completed = state.chunks_completed,
+                "resuming bounded discovery persisted observed_swaps rebuild"
+            );
+        } else {
+            info!(
+                rebuild_window_start = %state.window_start,
+                rebuild_horizon_end = %state.horizon_end,
+                rebuild_metrics_window_start = %state.metrics_window_start,
+                "starting bounded discovery persisted observed_swaps rebuild"
+            );
+        }
+
+        let cycle_started = Instant::now();
+        let deadline = cycle_started + rebuild_time_budget;
+        let mut cycle_rows_processed = 0usize;
+        let mut cycle_pages_processed = 0usize;
+        if state.phase == DiscoveryPersistedRebuildPhase::PublishPending {
+            let snapshots = Self::publish_pending_snapshots(&state);
+            let cycle_elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+            let telemetry = PersistedStreamProgressTelemetry {
+                phase: DiscoveryPersistedRebuildPhase::PublishPending,
+                window_start: state.window_start,
+                horizon_end: state.horizon_end,
+                metrics_window_start: state.metrics_window_start,
+                phase_cursor: None,
+                prepass_rows_processed: state.prepass_rows_processed,
+                prepass_pages_processed: state.prepass_pages_processed,
+                replay_rows_processed: state.replay_rows_processed,
+                replay_pages_processed: state.replay_pages_processed,
+                chunks_completed: state.chunks_completed,
+                cycle_rows_processed: 0,
+                cycle_pages_processed: 0,
+                observed_swaps_loaded: state.replay_rows_processed,
+                unique_buy_mints: state.payload.unique_buy_mints.len(),
+                quality_next_mint_index: state.payload.token_quality_progress.next_mint_index,
+                quality_rpc_attempted: state.payload.token_quality_progress.rpc_attempted,
+                quality_rpc_spent_ms: state.payload.token_quality_progress.rpc_spent_ms,
+                wallets_buffered: snapshots.len(),
+                started_at: state.started_at,
+                cycle_elapsed_ms,
+                total_elapsed_ms: (now
+                    .signed_duration_since(state.started_at)
+                    .num_milliseconds()
+                    .max(0) as u64)
+                    .saturating_add(cycle_elapsed_ms),
+                partial: false,
+                completed: true,
+                budget_exhausted_reason: None,
+            };
+            self.log_persisted_stream_progress(
+                &telemetry,
+                "resuming bounded discovery persisted observed_swaps rebuild from publish-pending checkpoint",
+            );
+            return Ok(PersistedStreamRebuildAdvanceOutcome::Completed {
+                snapshots,
+                telemetry,
+            });
+        }
+        let budget_exhausted_reason = loop {
+            if Instant::now() >= deadline {
+                break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+            }
+
+            let active_phase = state.phase;
+            let phase_advance = match active_phase {
+                DiscoveryPersistedRebuildPhase::CollectBuyMints => self
+                    .advance_persisted_stream_prepass(
+                        store,
+                        &mut state,
+                        fetch_limit,
+                        fetch_page_limit,
+                        deadline,
+                    )?,
+                DiscoveryPersistedRebuildPhase::ResolveTokenQuality => self
+                    .advance_persisted_stream_token_quality(
+                        store,
+                        &mut state,
+                        fetch_limit,
+                        fetch_page_limit,
+                        deadline,
+                    )?,
+                DiscoveryPersistedRebuildPhase::Replay => self.advance_persisted_stream_replay(
+                    store,
+                    &mut state,
+                    fetch_limit,
+                    fetch_page_limit,
+                    deadline,
+                )?,
+                DiscoveryPersistedRebuildPhase::PublishPending => {
+                    unreachable!(
+                        "publish-pending checkpoints are returned before phase advancement"
+                    )
+                }
+            };
+            cycle_rows_processed =
+                cycle_rows_processed.saturating_add(phase_advance.rows_processed);
+            cycle_pages_processed =
+                cycle_pages_processed.saturating_add(phase_advance.pages_processed);
+
+            match state.phase {
+                DiscoveryPersistedRebuildPhase::CollectBuyMints => {
+                    state.prepass_rows_processed = state
+                        .prepass_rows_processed
+                        .saturating_add(phase_advance.rows_processed);
+                    state.prepass_pages_processed = state
+                        .prepass_pages_processed
+                        .saturating_add(phase_advance.pages_processed);
+                }
+                DiscoveryPersistedRebuildPhase::ResolveTokenQuality => {}
+                DiscoveryPersistedRebuildPhase::Replay => {
+                    state.replay_rows_processed = state
+                        .replay_rows_processed
+                        .saturating_add(phase_advance.rows_processed);
+                    state.replay_pages_processed = state
+                        .replay_pages_processed
+                        .saturating_add(phase_advance.pages_processed);
+                }
+                DiscoveryPersistedRebuildPhase::PublishPending => {}
+            }
+            state.phase_cursor = phase_advance.phase_cursor;
+
+            if phase_advance.source_exhausted {
+                if active_phase == DiscoveryPersistedRebuildPhase::CollectBuyMints {
+                    state.phase = DiscoveryPersistedRebuildPhase::ResolveTokenQuality;
+                    state.phase_cursor = None;
+                    info!(
+                        rebuild_window_start = %state.window_start,
+                        rebuild_horizon_end = %state.horizon_end,
+                        rebuild_unique_buy_mints = state.payload.unique_buy_mints.len(),
+                        rebuild_prepass_rows_processed = state.prepass_rows_processed,
+                        rebuild_prepass_pages_processed = state.prepass_pages_processed,
+                        "completed bounded discovery persisted observed_swaps prepass; switching to bounded token-quality resolution"
+                    );
+                    continue;
+                }
+                if active_phase == DiscoveryPersistedRebuildPhase::ResolveTokenQuality {
+                    state.phase = DiscoveryPersistedRebuildPhase::Replay;
+                    state.phase_cursor = None;
+                    info!(
+                        rebuild_window_start = %state.window_start,
+                        rebuild_horizon_end = %state.horizon_end,
+                        rebuild_unique_buy_mints = state.payload.unique_buy_mints.len(),
+                        rebuild_quality_next_mint_index = state.payload.token_quality_progress.next_mint_index,
+                        rebuild_quality_rpc_attempted = state.payload.token_quality_progress.rpc_attempted,
+                        rebuild_quality_rpc_spent_ms = state.payload.token_quality_progress.rpc_spent_ms,
+                        "completed bounded discovery token-quality resolution; switching to replay"
+                    );
+                    continue;
+                }
+
+                self.finalize_all_streaming_rug_metrics(
+                    &mut state.payload.by_wallet,
+                    &mut state.payload.token_recent_sol_trades,
+                    &mut state.payload.pending_rug_checks,
+                    &mut state.payload.token_pending_buy_starts,
+                    state.horizon_end,
+                    Duration::seconds(self.config.rug_lookahead_seconds.max(1) as i64),
+                );
+                let empty_token_sol_history = HashMap::new();
+                let unique_buy_mints = state.payload.unique_buy_mints.len();
+                let by_wallet = std::mem::take(&mut state.payload.by_wallet);
+                let snapshots = self.wallet_snapshots_from_accumulators(
+                    store,
+                    by_wallet,
+                    state.horizon_end,
+                    &empty_token_sol_history,
+                )?;
+                state.phase = DiscoveryPersistedRebuildPhase::PublishPending;
+                state.phase_cursor = None;
+                state.payload.completed_snapshots = snapshots.clone();
+                state.payload.token_quality_cache.clear();
+                state.payload.token_states.clear();
+                state.payload.token_recent_sol_trades.clear();
+                state.payload.pending_rug_checks.clear();
+                state.payload.token_pending_buy_starts.clear();
+                self.persist_persisted_stream_rebuild_state(store, &mut state, now)?;
+                let cycle_elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                let telemetry = PersistedStreamProgressTelemetry {
+                    phase: DiscoveryPersistedRebuildPhase::PublishPending,
+                    window_start: state.window_start,
+                    horizon_end: state.horizon_end,
+                    metrics_window_start: state.metrics_window_start,
+                    phase_cursor: None,
+                    prepass_rows_processed: state.prepass_rows_processed,
+                    prepass_pages_processed: state.prepass_pages_processed,
+                    replay_rows_processed: state.replay_rows_processed,
+                    replay_pages_processed: state.replay_pages_processed,
+                    chunks_completed: state.chunks_completed,
+                    cycle_rows_processed,
+                    cycle_pages_processed,
+                    observed_swaps_loaded: state.replay_rows_processed,
+                    unique_buy_mints,
+                    quality_next_mint_index: state.payload.token_quality_progress.next_mint_index,
+                    quality_rpc_attempted: state.payload.token_quality_progress.rpc_attempted,
+                    quality_rpc_spent_ms: state.payload.token_quality_progress.rpc_spent_ms,
+                    wallets_buffered: snapshots.len(),
+                    started_at: state.started_at,
+                    cycle_elapsed_ms,
+                    total_elapsed_ms: (now
+                        .signed_duration_since(state.started_at)
+                        .num_milliseconds()
+                        .max(0) as u64)
+                        .saturating_add(cycle_elapsed_ms),
+                    partial: false,
+                    completed: true,
+                    budget_exhausted_reason: None,
+                };
+                self.log_persisted_stream_progress(
+                    &telemetry,
+                    "completed bounded discovery persisted observed_swaps rebuild",
+                );
+                return Ok(PersistedStreamRebuildAdvanceOutcome::Completed {
+                    snapshots,
+                    telemetry,
+                });
+            }
+
+            if phase_advance.budget_exhausted_reason.is_some() {
+                break phase_advance.budget_exhausted_reason;
+            }
+        };
+
+        state.chunks_completed = state.chunks_completed.saturating_add(1);
+        self.persist_persisted_stream_rebuild_state(store, &mut state, now)?;
+        let cycle_elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+        let telemetry = PersistedStreamProgressTelemetry {
+            phase: state.phase,
+            window_start: state.window_start,
+            horizon_end: state.horizon_end,
+            metrics_window_start: state.metrics_window_start,
+            phase_cursor: state.phase_cursor.clone(),
+            prepass_rows_processed: state.prepass_rows_processed,
+            prepass_pages_processed: state.prepass_pages_processed,
+            replay_rows_processed: state.replay_rows_processed,
+            replay_pages_processed: state.replay_pages_processed,
+            chunks_completed: state.chunks_completed,
+            cycle_rows_processed,
+            cycle_pages_processed,
+            observed_swaps_loaded: state.replay_rows_processed,
+            unique_buy_mints: state.payload.unique_buy_mints.len(),
+            quality_next_mint_index: state.payload.token_quality_progress.next_mint_index,
+            quality_rpc_attempted: state.payload.token_quality_progress.rpc_attempted,
+            quality_rpc_spent_ms: state.payload.token_quality_progress.rpc_spent_ms,
+            wallets_buffered: if state.phase == DiscoveryPersistedRebuildPhase::PublishPending {
+                state.payload.completed_snapshots.len()
+            } else {
+                state.payload.by_wallet.len()
+            },
+            started_at: state.started_at,
+            cycle_elapsed_ms,
+            total_elapsed_ms: (now
+                .signed_duration_since(state.started_at)
+                .num_milliseconds()
+                .max(0) as u64)
+                .saturating_add(cycle_elapsed_ms),
+            partial: true,
+            completed: false,
+            budget_exhausted_reason,
+        };
+        self.log_persisted_stream_progress(
+            &telemetry,
+            "yielding bounded discovery persisted observed_swaps rebuild back to scheduler",
+        );
+        Ok(PersistedStreamRebuildAdvanceOutcome::InProgress { telemetry })
     }
 
     pub fn run_cycle(&self, store: &SqliteStore, now: DateTime<Utc>) -> Result<DiscoverySummary> {
@@ -1203,18 +2064,16 @@ impl DiscoveryService {
                         PreparedCycleState::PersistedRecompute {
                             publish_due,
                             scoring_source: "raw_window_persisted_stream",
-                            empty_window_degraded_scoring_source:
-                                if raw_window_history_incomplete {
-                                    "published_universe_raw_window_degraded"
-                                } else {
-                                    "published_universe_short_retention_degraded"
-                                },
-                            empty_window_unusable_scoring_source:
-                                if raw_window_history_incomplete {
-                                    "raw_window_incomplete_no_recent_published_universe"
-                                } else {
-                                    "raw_window_short_retention_no_recent_published_universe"
-                                },
+                            empty_window_degraded_scoring_source: if raw_window_history_incomplete {
+                                "published_universe_raw_window_degraded"
+                            } else {
+                                "published_universe_short_retention_degraded"
+                            },
+                            empty_window_unusable_scoring_source: if raw_window_history_incomplete {
+                                "raw_window_incomplete_no_recent_published_universe"
+                            } else {
+                                "raw_window_short_retention_no_recent_published_universe"
+                            },
                         },
                     )
                 } else if let Some(active_wallets) = recent_published_follow_wallets.clone() {
@@ -1270,6 +2129,8 @@ impl DiscoveryService {
             metrics_persistence_suppressed,
             snapshots,
             scoring_source,
+            effective_window_start,
+            effective_metrics_window_start,
         ) = match prepared_cycle {
             PreparedCycleState::AggregateRecompute {
                 publish_due,
@@ -1284,6 +2145,8 @@ impl DiscoveryService {
                     false,
                     self.build_wallet_snapshots_from_aggregates(store, now)?,
                     "aggregates",
+                    window_start,
+                    metrics_window_start,
                 )
             }
             PreparedCycleState::Degraded {
@@ -1302,6 +2165,7 @@ impl DiscoveryService {
                     scoring_source,
                     now,
                 )?;
+                store.clear_discovery_persisted_rebuild_state()?;
                 let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
                 info!(
                     window_start = %summary.window_start,
@@ -1346,11 +2210,13 @@ impl DiscoveryService {
                     window_start,
                     metrics_window_start,
                     publish_due,
+                    false,
                     &cap_truncation_telemetry,
                     scoring_source,
                     scoring_source,
                     now,
                 )?;
+                store.clear_discovery_persisted_rebuild_state()?;
                 let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
                 warn!(
                     metrics_window_start = %metrics_window_start,
@@ -1425,6 +2291,7 @@ impl DiscoveryService {
                     summary.scoring_source,
                     now,
                 )?;
+                store.clear_discovery_persisted_rebuild_state()?;
                 info!(
                     window_start = %summary.window_start,
                     wallets_seen = summary.wallets_seen,
@@ -1485,6 +2352,8 @@ impl DiscoveryService {
                 metrics_persistence_suppressed,
                 self.build_wallet_snapshots_from_cached(store, &swaps, now)?,
                 "raw_window",
+                window_start,
+                metrics_window_start,
             ),
             PreparedCycleState::PersistedRecompute {
                 publish_due,
@@ -1492,45 +2361,209 @@ impl DiscoveryService {
                 empty_window_degraded_scoring_source,
                 empty_window_unusable_scoring_source,
             } => {
-                info!(
-                    window_start = %window_start,
-                    metrics_window_start = %metrics_window_start,
-                    swaps_window,
-                    raw_window_cap_truncated = cap_truncation_telemetry.raw_window_cap_truncated,
-                    "recomputing discovery snapshots from persisted observed_swaps stream"
-                );
-                let persisted_stream_started = Instant::now();
-                let (snapshots, observed_swaps_loaded) =
-                    self.build_wallet_snapshots_from_persisted_stream(store, window_start, now)?;
-                let persisted_stream_duration_ms =
-                    persisted_stream_started.elapsed().as_millis() as u64;
-                info!(
-                    window_start = %window_start,
-                    metrics_window_start = %metrics_window_start,
-                    observed_swaps_loaded,
-                    persisted_stream_duration_ms,
-                    "completed discovery persisted observed_swaps scan"
-                );
-                if observed_swaps_loaded == 0 {
-                    warn!(
-                        window_start = %window_start,
-                        metrics_window_start = %metrics_window_start,
-                        persisted_stream_duration_ms,
-                        "persisted observed_swaps runtime fallback returned zero swaps in the scoring window; treating persisted raw truth as unavailable"
-                    );
-                    if let Some(active_wallets) = recent_published_follow_wallets.clone() {
-                        let summary = self.degraded_summary_from_published_universe(
+                match self.advance_persisted_stream_rebuild(
+                    store,
+                    window_start,
+                    metrics_window_start,
+                    now,
+                    fetch_limit,
+                    fetch_page_limit,
+                    fetch_time_budget,
+                )? {
+                    PersistedStreamRebuildAdvanceOutcome::Completed {
+                        snapshots,
+                        telemetry,
+                    } => {
+                        if telemetry.observed_swaps_loaded == 0 {
+                            warn!(
+                                window_start = %telemetry.window_start,
+                                metrics_window_start = %telemetry.metrics_window_start,
+                                rebuild_horizon_end = %telemetry.horizon_end,
+                                rebuild_total_elapsed_ms = telemetry.total_elapsed_ms,
+                                "persisted observed_swaps runtime fallback completed with zero rows in the frozen scoring horizon; treating persisted raw truth as unavailable"
+                            );
+                            if let Some(active_wallets) = recent_published_follow_wallets.clone() {
+                                let summary = self.degraded_summary_from_published_universe(
+                                    store,
+                                    window_start,
+                                    metrics_window_start,
+                                    publish_due,
+                                    active_wallets,
+                                    &cap_truncation_telemetry,
+                                    empty_window_degraded_scoring_source,
+                                    empty_window_degraded_scoring_source,
+                                    now,
+                                )?;
+                                let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                                info!(
+                                    window_start = %summary.window_start,
+                                    wallets_seen = summary.wallets_seen,
+                                    eligible_wallets = summary.eligible_wallets,
+                                    metrics_written = summary.metrics_written,
+                                    follow_promoted = summary.follow_promoted,
+                                    follow_demoted = summary.follow_demoted,
+                                    active_follow_wallets = summary.active_follow_wallets,
+                                    swaps_window,
+                                    swaps_query_rows = fetch_progress.query_rows,
+                                    swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
+                                    swaps_delta_fetched = delta_fetched,
+                                    swaps_warm_loaded,
+                                    swaps_evicted_due_cap,
+                                    swaps_fetch_limit = fetch_limit,
+                                    swaps_fetch_pages = fetch_progress.pages,
+                                    swaps_fetch_page_limit = fetch_page_limit,
+                                    swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                                    swaps_fetch_limit_reached = fetch_progress.saturated,
+                                    swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                                    swaps_fetch_time_budget_exhausted =
+                                        fetch_progress.time_budget_exhausted,
+                                    metrics_window_start = %metrics_window_start,
+                                    scoring_source = summary.scoring_source,
+                                    discovery_runtime_mode = summary.runtime_mode.as_str(),
+                                    metrics_persisted = false,
+                                    snapshot_recomputed = false,
+                                    discovery_published = summary.published,
+                                    discovery_cycle_duration_ms = elapsed_ms,
+                                    "discovery cycle completed"
+                                );
+                                return Ok(summary);
+                            }
+                            let summary = self.fail_close_without_recent_universe(
+                                store,
+                                window_start,
+                                metrics_window_start,
+                                publish_due,
+                                true,
+                                &cap_truncation_telemetry,
+                                empty_window_unusable_scoring_source,
+                                empty_window_unusable_scoring_source,
+                                now,
+                            )?;
+                            let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                            warn!(
+                                metrics_window_start = %metrics_window_start,
+                                scoring_source = summary.scoring_source,
+                                cleared_follow_wallets = summary.follow_demoted,
+                                "discovery fail-closed because persisted observed_swaps runtime fallback completed with zero rows and no recent published universe exists"
+                            );
+                            info!(
+                                window_start = %summary.window_start,
+                                wallets_seen = summary.wallets_seen,
+                                eligible_wallets = summary.eligible_wallets,
+                                metrics_written = summary.metrics_written,
+                                follow_promoted = summary.follow_promoted,
+                                follow_demoted = summary.follow_demoted,
+                                active_follow_wallets = summary.active_follow_wallets,
+                                swaps_window,
+                                swaps_query_rows = fetch_progress.query_rows,
+                                swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
+                                swaps_delta_fetched = delta_fetched,
+                                swaps_warm_loaded,
+                                swaps_evicted_due_cap,
+                                swaps_fetch_limit = fetch_limit,
+                                swaps_fetch_pages = fetch_progress.pages,
+                                swaps_fetch_page_limit = fetch_page_limit,
+                                swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                                swaps_fetch_limit_reached = fetch_progress.saturated,
+                                swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                                swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
+                                metrics_window_start = %metrics_window_start,
+                                scoring_source = summary.scoring_source,
+                                discovery_runtime_mode = summary.runtime_mode.as_str(),
+                                metrics_persisted = false,
+                                snapshot_recomputed = false,
+                                discovery_published = summary.published,
+                                discovery_cycle_duration_ms = elapsed_ms,
+                                "discovery cycle completed"
+                            );
+                            return Ok(summary);
+                        }
+                        (
+                            true,
+                            false,
+                            false,
+                            false,
+                            snapshots,
+                            scoring_source,
+                            telemetry.window_start,
+                            telemetry.metrics_window_start,
+                        )
+                    }
+                    PersistedStreamRebuildAdvanceOutcome::InProgress { telemetry } => {
+                        if let Some(active_wallets) = recent_published_follow_wallets.clone() {
+                            let summary = self.degraded_summary_from_published_universe(
+                                store,
+                                window_start,
+                                metrics_window_start,
+                                false,
+                                active_wallets,
+                                &cap_truncation_telemetry,
+                                empty_window_degraded_scoring_source,
+                                empty_window_degraded_scoring_source,
+                                now,
+                            )?;
+                            let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                            info!(
+                                window_start = %summary.window_start,
+                                wallets_seen = summary.wallets_seen,
+                                eligible_wallets = summary.eligible_wallets,
+                                metrics_written = summary.metrics_written,
+                                follow_promoted = summary.follow_promoted,
+                                follow_demoted = summary.follow_demoted,
+                                active_follow_wallets = summary.active_follow_wallets,
+                                swaps_window,
+                                swaps_query_rows = fetch_progress.query_rows,
+                                swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
+                                swaps_delta_fetched = delta_fetched,
+                                swaps_warm_loaded,
+                                swaps_evicted_due_cap,
+                                swaps_fetch_limit = fetch_limit,
+                                swaps_fetch_pages = fetch_progress.pages,
+                                swaps_fetch_page_limit = fetch_page_limit,
+                                swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                                swaps_fetch_limit_reached = fetch_progress.saturated,
+                                swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                                swaps_fetch_time_budget_exhausted =
+                                    fetch_progress.time_budget_exhausted,
+                                metrics_window_start = %metrics_window_start,
+                                scoring_source = summary.scoring_source,
+                                discovery_runtime_mode = summary.runtime_mode.as_str(),
+                                metrics_persisted = false,
+                                snapshot_recomputed = false,
+                                discovery_published = summary.published,
+                                discovery_cycle_duration_ms = elapsed_ms,
+                                rebuild_phase = telemetry.phase.as_str(),
+                                rebuild_horizon_end = %telemetry.horizon_end,
+                                rebuild_budget_exhausted_reason = telemetry
+                                    .budget_exhausted_reason
+                                    .map(PersistedStreamBudgetExhaustedReason::as_str),
+                                "discovery cycle completed"
+                            );
+                            return Ok(summary);
+                        }
+                        let summary = self.fail_close_without_recent_universe(
                             store,
                             window_start,
                             metrics_window_start,
-                            publish_due,
-                            active_wallets,
+                            false,
+                            true,
                             &cap_truncation_telemetry,
-                            empty_window_degraded_scoring_source,
-                            empty_window_degraded_scoring_source,
+                            empty_window_unusable_scoring_source,
+                            empty_window_unusable_scoring_source,
                             now,
                         )?;
                         let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                        warn!(
+                            metrics_window_start = %metrics_window_start,
+                            scoring_source = summary.scoring_source,
+                            cleared_follow_wallets = summary.follow_demoted,
+                            rebuild_phase = telemetry.phase.as_str(),
+                            rebuild_horizon_end = %telemetry.horizon_end,
+                            rebuild_budget_exhausted_reason = telemetry
+                                .budget_exhausted_reason
+                                .map(PersistedStreamBudgetExhaustedReason::as_str),
+                            "discovery fail-closed while bounded persisted observed_swaps rebuild continues without a recent published universe"
+                        );
                         info!(
                             window_start = %summary.window_start,
                             wallets_seen = summary.wallets_seen,
@@ -1551,8 +2584,7 @@ impl DiscoveryService {
                             swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
                             swaps_fetch_limit_reached = fetch_progress.saturated,
                             swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
-                            swaps_fetch_time_budget_exhausted =
-                                fetch_progress.time_budget_exhausted,
+                            swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
                             metrics_window_start = %metrics_window_start,
                             scoring_source = summary.scoring_source,
                             discovery_runtime_mode = summary.runtime_mode.as_str(),
@@ -1560,69 +2592,21 @@ impl DiscoveryService {
                             snapshot_recomputed = false,
                             discovery_published = summary.published,
                             discovery_cycle_duration_ms = elapsed_ms,
+                            rebuild_phase = telemetry.phase.as_str(),
+                            rebuild_horizon_end = %telemetry.horizon_end,
+                            rebuild_budget_exhausted_reason = telemetry
+                                .budget_exhausted_reason
+                                .map(PersistedStreamBudgetExhaustedReason::as_str),
                             "discovery cycle completed"
                         );
                         return Ok(summary);
                     }
-                    let summary = self.fail_close_without_recent_universe(
-                        store,
-                        window_start,
-                        metrics_window_start,
-                        publish_due,
-                        &cap_truncation_telemetry,
-                        empty_window_unusable_scoring_source,
-                        empty_window_unusable_scoring_source,
-                        now,
-                    )?;
-                    let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
-                    warn!(
-                        metrics_window_start = %metrics_window_start,
-                        scoring_source = summary.scoring_source,
-                        cleared_follow_wallets = summary.follow_demoted,
-                        "discovery fail-closed because persisted observed_swaps runtime fallback returned no rows and no recent published universe exists"
-                    );
-                    info!(
-                        window_start = %summary.window_start,
-                        wallets_seen = summary.wallets_seen,
-                        eligible_wallets = summary.eligible_wallets,
-                        metrics_written = summary.metrics_written,
-                        follow_promoted = summary.follow_promoted,
-                        follow_demoted = summary.follow_demoted,
-                        active_follow_wallets = summary.active_follow_wallets,
-                        swaps_window,
-                        swaps_query_rows = fetch_progress.query_rows,
-                        swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
-                        swaps_delta_fetched = delta_fetched,
-                        swaps_warm_loaded,
-                        swaps_evicted_due_cap,
-                        swaps_fetch_limit = fetch_limit,
-                        swaps_fetch_pages = fetch_progress.pages,
-                        swaps_fetch_page_limit = fetch_page_limit,
-                        swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
-                        swaps_fetch_limit_reached = fetch_progress.saturated,
-                        swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
-                        swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
-                        metrics_window_start = %metrics_window_start,
-                        scoring_source = summary.scoring_source,
-                        discovery_runtime_mode = summary.runtime_mode.as_str(),
-                        metrics_persisted = false,
-                        snapshot_recomputed = false,
-                        discovery_published = summary.published,
-                        discovery_cycle_duration_ms = elapsed_ms,
-                        "discovery cycle completed"
-                    );
-                    return Ok(summary);
                 }
-                (
-                    publish_due,
-                    false,
-                    false,
-                    false,
-                    snapshots,
-                    scoring_source,
-                )
             }
         };
+        if scoring_source != "raw_window_persisted_stream" {
+            store.clear_discovery_persisted_rebuild_state()?;
+        }
         let mut wallet_rows: Vec<WalletUpsertRow> = Vec::with_capacity(snapshots.len());
         let mut metric_rows: Vec<WalletMetricRow> = Vec::with_capacity(snapshots.len());
         for snapshot in snapshots.iter() {
@@ -1639,7 +2623,7 @@ impl DiscoveryService {
             });
             metric_rows.push(WalletMetricRow {
                 wallet_id: snapshot.wallet_id.clone(),
-                window_start: metrics_window_start,
+                window_start: effective_metrics_window_start,
                 pnl: snapshot.pnl_sol,
                 win_rate: snapshot.win_rate,
                 trades: snapshot.trades,
@@ -1652,7 +2636,8 @@ impl DiscoveryService {
             });
         }
 
-        let should_persist_metrics = !store.wallet_metrics_window_exists(metrics_window_start)?;
+        let should_persist_metrics =
+            !store.wallet_metrics_window_exists(effective_metrics_window_start)?;
         let metrics_to_persist = if should_persist_metrics && !metrics_persistence_suppressed {
             metric_rows.as_slice()
         } else {
@@ -1662,11 +2647,11 @@ impl DiscoveryService {
             trusted_snapshot_write(
                 TrustedSnapshotSourceKind::DiscoveryRefresh,
                 TrustedSelectionState::TrustedCurrent,
-                metrics_window_start,
+                effective_metrics_window_start,
                 now,
                 metrics_to_persist.len(),
                 None,
-                Some(metrics_window_start),
+                Some(effective_metrics_window_start),
             )
         });
 
@@ -1686,7 +2671,7 @@ impl DiscoveryService {
         let top_wallets = top_wallet_labels(&ranked, 5);
 
         let summary = DiscoverySummary {
-            window_start,
+            window_start: effective_window_start,
             wallets_seen: snapshots.len(),
             eligible_wallets: ranked.len(),
             metrics_written: metrics_to_persist.len(),
@@ -1707,7 +2692,7 @@ impl DiscoveryService {
             store,
             DiscoveryRuntimeMode::Healthy,
             publish_due,
-            metrics_window_start,
+            effective_metrics_window_start,
             scoring_source,
             "discovery_score_refresh",
             now,
@@ -1720,7 +2705,7 @@ impl DiscoveryService {
                     poisoned.into_inner()
                 }
             };
-            state.last_snapshot_bucket = Some(metrics_window_start);
+            state.last_snapshot_bucket = Some(effective_metrics_window_start);
             state.last_summary = Some(summary.clone());
             state.note_scoring_source(scoring_source == "aggregates");
         }
@@ -1732,8 +2717,8 @@ impl DiscoveryService {
                 "discovery_score_refresh",
                 now,
             )?;
-        } else if let Some(metadata) =
-            store.trusted_wallet_metrics_snapshot_metadata_for_window(metrics_window_start)?
+        } else if let Some(metadata) = store
+            .trusted_wallet_metrics_snapshot_metadata_for_window(effective_metrics_window_start)?
         {
             self.persist_trusted_selection_state(
                 store,
@@ -1750,12 +2735,15 @@ impl DiscoveryService {
                 store,
                 TrustedSelectionState::TrustedCurrent,
                 None,
-                Some(metrics_window_start),
+                Some(effective_metrics_window_start),
                 Some(TrustedSnapshotSourceKind::Legacy),
                 false,
                 "discovery_score_refresh_legacy",
                 now,
             )?;
+        }
+        if scoring_source == "raw_window_persisted_stream" {
+            store.clear_discovery_persisted_rebuild_state()?;
         }
         let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
 
@@ -1780,7 +2768,7 @@ impl DiscoveryService {
             swaps_fetch_limit_reached = fetch_progress.saturated,
             swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
             swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
-            metrics_window_start = %metrics_window_start,
+            metrics_window_start = %effective_metrics_window_start,
             scoring_source,
             metrics_persisted = should_persist_metrics,
             snapshot_recomputed = true,
@@ -2097,8 +3085,12 @@ impl DiscoveryService {
                 metrics_window_start.to_rfc3339()
             ));
         }
-        let (snapshots, observed_swaps_loaded) =
-            self.build_wallet_snapshots_from_persisted_stream(store, metrics_window_start, now)?;
+        let (snapshots, observed_swaps_loaded) = self
+            .build_wallet_snapshots_from_persisted_stream_one_shot(
+                store,
+                metrics_window_start,
+                now,
+            )?;
         if observed_swaps_loaded == 0 {
             return Err(anyhow!(
                 "no persisted observed_swaps found in bootstrap window starting at {}",
@@ -2363,7 +3355,7 @@ impl DiscoveryService {
         self.wallet_snapshots_from_accumulators(store, by_wallet, now, &token_sol_history)
     }
 
-    fn build_wallet_snapshots_from_persisted_stream(
+    fn build_wallet_snapshots_from_persisted_stream_one_shot(
         &self,
         store: &SqliteStore,
         window_start: DateTime<Utc>,
@@ -3480,8 +4472,9 @@ mod tests {
     use anyhow::{anyhow, Context};
     use copybot_config::ShadowConfig;
     use copybot_storage::{
-        DiscoveryAggregateWriteConfig, DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor,
-        DiscoveryRuntimeMode, SqliteStore, WalletActivityDayRow,
+        DiscoveryAggregateWriteConfig, DiscoveryPersistedRebuildPhase,
+        DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor, DiscoveryRuntimeMode, SqliteStore,
+        WalletActivityDayRow,
     };
     use rusqlite::Connection;
     use std::collections::HashSet;
@@ -3587,6 +4580,111 @@ mod tests {
         config.fetch_time_budget_ms = 1_000;
         config.thin_market_min_unique_traders = 1;
         config
+    }
+
+    fn bounded_stage1_runtime_config() -> DiscoveryConfig {
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 5;
+        config.max_fetch_pages_per_cycle = 1;
+        config.fetch_time_budget_ms = 60_000;
+        config
+    }
+
+    fn metrics_window_start_for_test(
+        config: &DiscoveryConfig,
+        now: DateTime<Utc>,
+    ) -> DateTime<Utc> {
+        let interval_seconds = config.metric_snapshot_interval_seconds.max(1) as i64;
+        let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
+        let bucketed_now = DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(now);
+        bucketed_now - Duration::days(config.scoring_window_days.max(1) as i64)
+    }
+
+    fn seed_stage1_persisted_stream_runtime_fixture(
+        store: &SqliteStore,
+        config: &DiscoveryConfig,
+        now: DateTime<Utc>,
+        profitable_pairs: usize,
+        tail_noise_rows: usize,
+    ) -> Result<(DateTime<Utc>, DateTime<Utc>)> {
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(config, now);
+
+        for idx in 0..profitable_pairs {
+            let offset = Duration::minutes((idx * 20) as i64);
+            store.insert_observed_swap(&swap(
+                "wallet_top",
+                &format!("stage1-persisted-top-buy-{idx}"),
+                window_start + offset,
+                SOL_MINT,
+                "TokenStage1PersistedTop111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_top",
+                &format!("stage1-persisted-top-sell-{idx}"),
+                window_start + offset + Duration::minutes(5),
+                "TokenStage1PersistedTop111111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.3,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_noise",
+                &format!("stage1-persisted-noise-early-buy-{idx}"),
+                window_start + offset,
+                SOL_MINT,
+                "TokenStage1PersistedTop111111111111111111111",
+                1.0,
+                100.0,
+            ))?;
+            store.insert_observed_swap(&swap(
+                "wallet_noise",
+                &format!("stage1-persisted-noise-early-sell-{idx}"),
+                window_start + offset + Duration::minutes(5),
+                "TokenStage1PersistedTop111111111111111111111",
+                SOL_MINT,
+                100.0,
+                0.7,
+            ))?;
+        }
+
+        let mut latest_cursor: Option<DiscoveryRuntimeCursor> = None;
+        for idx in 0..tail_noise_rows {
+            let ts =
+                now - Duration::minutes(tail_noise_rows as i64) + Duration::minutes(idx as i64);
+            let swap = swap(
+                "wallet_tail_noise",
+                &format!("stage1-persisted-tail-noise-{idx}"),
+                ts,
+                SOL_MINT,
+                "TokenStage1PersistedNoise1111111111111111",
+                0.2,
+                20.0,
+            );
+            latest_cursor = Some(DiscoveryRuntimeCursor {
+                ts_utc: swap.ts_utc,
+                slot: swap.slot,
+                signature: swap.signature.clone(),
+            });
+            store.insert_observed_swap(&swap)?;
+        }
+        store.upsert_discovery_runtime_cursor(
+            &latest_cursor.expect("latest cursor should be present"),
+        )?;
+
+        Ok((window_start, metrics_window_start))
+    }
+
+    fn load_persisted_stream_rebuild_state_for_test(
+        store: &SqliteStore,
+    ) -> Result<PersistedStreamRebuildState> {
+        let row = store
+            .load_discovery_persisted_rebuild_state()?
+            .expect("persisted rebuild state should exist");
+        DiscoveryService::persisted_stream_rebuild_state_from_row(row)
     }
 
     fn seed_profitable_wallet_window(
@@ -4443,9 +5541,721 @@ mod tests {
             summary.metrics_written > 0,
             "healthy persisted-stream recompute should persist the snapshot bucket"
         );
-        assert_eq!(store.latest_wallet_metrics_window_start()?, Some(metrics_window_start));
+        assert_eq!(
+            store.latest_wallet_metrics_window_start()?,
+            Some(metrics_window_start)
+        );
         let active_wallets = store.list_active_follow_wallets()?;
         assert_eq!(active_wallets, HashSet::from([String::from("wallet_top")]));
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_rebuild_is_bounded_and_observable_without_recent_published_universe_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-bounded-persisted-stream-observable.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = bounded_stage1_runtime_config();
+        let (window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 6, 9)?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let summary = discovery.run_cycle(&store, now)?;
+
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert_eq!(
+            summary.scoring_source,
+            "raw_window_incomplete_no_recent_published_universe"
+        );
+        assert_eq!(summary.active_follow_wallets, 0);
+
+        let rebuild = store
+            .load_discovery_persisted_rebuild_state()?
+            .expect("bounded persisted rebuild progress should be persisted");
+        assert_eq!(
+            rebuild.phase,
+            DiscoveryPersistedRebuildPhase::CollectBuyMints
+        );
+        assert_eq!(rebuild.window_start, window_start);
+        assert_eq!(rebuild.metrics_window_start, metrics_window_start);
+        assert_eq!(rebuild.horizon_end, now);
+        assert_eq!(rebuild.prepass_rows_processed, 5);
+        assert_eq!(rebuild.prepass_pages_processed, 1);
+        assert_eq!(rebuild.replay_rows_processed, 0);
+        assert_eq!(rebuild.replay_pages_processed, 0);
+        assert_eq!(rebuild.chunks_completed, 1);
+        assert!(
+            rebuild.phase_cursor.is_some(),
+            "bounded prepass must persist a resumable cursor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_rebuild_resumes_across_cycles_stage1() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-bounded-persisted-stream-resume.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = bounded_stage1_runtime_config();
+        seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 6, 9)?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let first_summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(first_summary.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        let first_progress = store
+            .load_discovery_persisted_rebuild_state()?
+            .expect("first cycle should persist bounded rebuild progress");
+
+        let second_summary = discovery.run_cycle(&store, now + Duration::minutes(1))?;
+        assert_eq!(
+            second_summary.runtime_mode,
+            DiscoveryRuntimeMode::FailClosed
+        );
+        let second_progress = store
+            .load_discovery_persisted_rebuild_state()?
+            .expect("second cycle should keep persisted rebuild progress");
+
+        assert_eq!(second_progress.window_start, first_progress.window_start);
+        assert_eq!(second_progress.horizon_end, first_progress.horizon_end);
+        assert_eq!(
+            second_progress.metrics_window_start,
+            first_progress.metrics_window_start
+        );
+        assert!(
+            second_progress.prepass_rows_processed > first_progress.prepass_rows_processed,
+            "next cycle must advance the bounded prepass instead of restarting from zero"
+        );
+        assert_eq!(
+            second_progress.chunks_completed,
+            first_progress.chunks_completed + 1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_rebuild_resumes_after_restart_stage1() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-bounded-persisted-stream-restart.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = bounded_stage1_runtime_config();
+        seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 6, 9)?;
+
+        let discovery_first = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let _ = discovery_first.run_cycle(&store, now)?;
+        let first_progress = store
+            .load_discovery_persisted_rebuild_state()?
+            .expect("first cycle should persist rebuild progress");
+
+        let discovery_after_restart = DiscoveryService::new(config, permissive_shadow_quality());
+        let second_summary =
+            discovery_after_restart.run_cycle(&store, now + Duration::minutes(1))?;
+        assert_eq!(
+            second_summary.runtime_mode,
+            DiscoveryRuntimeMode::FailClosed
+        );
+        let second_progress = store
+            .load_discovery_persisted_rebuild_state()?
+            .expect("restart cycle should restore and advance rebuild progress");
+
+        assert_eq!(second_progress.window_start, first_progress.window_start);
+        assert_eq!(second_progress.horizon_end, first_progress.horizon_end);
+        assert!(
+            second_progress.prepass_rows_processed > first_progress.prepass_rows_processed,
+            "restart must continue from the persisted checkpoint instead of replaying from zero"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_rebuild_completes_to_healthy_stage1() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-bounded-persisted-stream-complete.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = bounded_stage1_runtime_config();
+        let (_, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 6, 9)?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let mut final_summary = None;
+        for idx in 0..20 {
+            let cycle_now = now + Duration::minutes(idx as i64);
+            let summary = discovery.run_cycle(&store, cycle_now)?;
+            if summary.runtime_mode == DiscoveryRuntimeMode::Healthy {
+                final_summary = Some(summary);
+                break;
+            }
+        }
+
+        let summary = final_summary.expect("bounded rebuild should complete within 20 cycles");
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert_eq!(summary.scoring_source, "raw_window_persisted_stream");
+        assert!(summary.metrics_written > 0);
+        assert!(summary.active_follow_wallets > 0);
+        assert_eq!(
+            store.latest_wallet_metrics_window_start()?,
+            Some(metrics_window_start)
+        );
+        assert_eq!(
+            store.list_active_follow_wallets()?,
+            HashSet::from([String::from("wallet_top")])
+        );
+        assert!(
+            store.load_discovery_persisted_rebuild_state()?.is_none(),
+            "completed rebuild must clear its durable progress row"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_rebuild_matches_one_shot_semantics_across_chunk_boundaries_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-bounded-persisted-stream-parity.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut reference_config = stage1_runtime_config();
+        reference_config.metric_snapshot_interval_seconds = 3_600;
+        let (window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &reference_config, now, 2, 3)?;
+
+        let reference_discovery =
+            DiscoveryService::new(reference_config.clone(), permissive_shadow_quality());
+        let (reference_snapshots, reference_observed_swaps_loaded) = reference_discovery
+            .build_wallet_snapshots_from_persisted_stream_one_shot(&store, window_start, now)?;
+        assert!(
+            reference_observed_swaps_loaded > 0,
+            "reference one-shot rebuild must observe persisted swaps"
+        );
+        let reference_ranked =
+            rank_follow_candidates(&reference_snapshots, reference_config.min_score);
+        let expected_active_wallets: std::collections::HashSet<_> =
+            desired_wallets(&reference_ranked, reference_config.follow_top_n)
+                .into_iter()
+                .collect();
+
+        let mut bounded_config = reference_config.clone();
+        bounded_config.max_fetch_swaps_per_cycle = 1;
+        bounded_config.max_fetch_pages_per_cycle = 1;
+        bounded_config.fetch_time_budget_ms = 60_000;
+
+        let bounded_discovery =
+            DiscoveryService::new(bounded_config.clone(), permissive_shadow_quality());
+        let rebuild_time_budget =
+            StdDuration::from_millis(bounded_config.fetch_time_budget_ms.max(1));
+        let mut saw_partial = false;
+        let mut completed_snapshots = None;
+        for idx in 0..30 {
+            let cycle_now = now + Duration::minutes(idx as i64);
+            match bounded_discovery.advance_persisted_stream_rebuild(
+                &store,
+                window_start,
+                metrics_window_start,
+                cycle_now,
+                bounded_config.max_fetch_swaps_per_cycle.max(1),
+                bounded_config.max_fetch_pages_per_cycle.max(1),
+                rebuild_time_budget,
+            )? {
+                PersistedStreamRebuildAdvanceOutcome::Completed {
+                    snapshots,
+                    telemetry,
+                } => {
+                    assert!(telemetry.completed);
+                    completed_snapshots = Some(snapshots);
+                    break;
+                }
+                PersistedStreamRebuildAdvanceOutcome::InProgress { telemetry } => {
+                    assert!(telemetry.partial);
+                    saw_partial = true;
+                    assert!(
+                        store.load_discovery_persisted_rebuild_state()?.is_some(),
+                        "partial bounded rebuild must persist state between chunks"
+                    );
+                }
+            }
+        }
+        assert!(
+            saw_partial,
+            "chunk-boundary parity test must exercise multi-cycle partial rebuild"
+        );
+        let publish_pending = load_persisted_stream_rebuild_state_for_test(&store)?;
+        assert_eq!(
+            publish_pending.phase,
+            DiscoveryPersistedRebuildPhase::PublishPending
+        );
+        let bounded_snapshots =
+            completed_snapshots.expect("bounded rebuild should complete within 30 cycles");
+        let bounded_ranked = rank_follow_candidates(&bounded_snapshots, bounded_config.min_score);
+        let actual_active_wallets: std::collections::HashSet<_> =
+            desired_wallets(&bounded_ranked, bounded_config.follow_top_n)
+                .into_iter()
+                .collect();
+        assert_eq!(actual_active_wallets, expected_active_wallets);
+
+        assert_eq!(bounded_snapshots.len(), reference_snapshots.len());
+        let reference_by_wallet: std::collections::HashMap<_, _> = reference_snapshots
+            .into_iter()
+            .map(|snapshot| (snapshot.wallet_id.clone(), snapshot))
+            .collect();
+        for snapshot in bounded_snapshots {
+            let reference = reference_by_wallet
+                .get(&snapshot.wallet_id)
+                .expect("bounded rebuild must preserve the same wallet set as one-shot rebuild");
+            assert_eq!(snapshot.trades, reference.trades);
+            assert_eq!(snapshot.closed_trades, reference.closed_trades);
+            assert_eq!(snapshot.buy_total, reference.buy_total);
+            assert!(
+                (snapshot.score - reference.score).abs() < 1e-9,
+                "bounded rebuild must preserve score parity for {}",
+                snapshot.wallet_id
+            );
+            assert!(
+                (snapshot.tradable_ratio - reference.tradable_ratio).abs() < 1e-9,
+                "bounded rebuild must preserve tradable-ratio parity for {}",
+                snapshot.wallet_id
+            );
+            assert!(
+                (snapshot.rug_ratio - reference.rug_ratio).abs() < 1e-9,
+                "bounded rebuild must preserve rug-ratio parity for {}",
+                snapshot.wallet_id
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_rebuild_publish_failure_keeps_publish_pending_checkpoint_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-persisted-stream-publish-pending.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = bounded_stage1_runtime_config();
+        let (window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 6, 9)?;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let rebuild_time_budget = StdDuration::from_millis(config.fetch_time_budget_ms.max(1));
+
+        for idx in 0..30 {
+            let cycle_now = now + Duration::minutes(idx as i64);
+            match discovery.advance_persisted_stream_rebuild(
+                &store,
+                window_start,
+                metrics_window_start,
+                cycle_now,
+                config.max_fetch_swaps_per_cycle.max(1),
+                config.max_fetch_pages_per_cycle.max(1),
+                rebuild_time_budget,
+            )? {
+                PersistedStreamRebuildAdvanceOutcome::Completed { .. } => break,
+                PersistedStreamRebuildAdvanceOutcome::InProgress { .. } => {}
+            }
+        }
+
+        let publish_pending_before_failure = load_persisted_stream_rebuild_state_for_test(&store)?;
+        assert_eq!(
+            publish_pending_before_failure.phase,
+            DiscoveryPersistedRebuildPhase::PublishPending
+        );
+        assert!(
+            !publish_pending_before_failure
+                .payload
+                .completed_snapshots
+                .is_empty(),
+            "publish-pending checkpoint must persist completed snapshots"
+        );
+
+        let conn = Connection::open(Path::new(&db_path))?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_wallet_metrics_insert
+             BEFORE INSERT ON wallet_metrics
+             BEGIN
+                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
+             END;",
+        )?;
+
+        let error = discovery
+            .run_cycle(&store, now + Duration::minutes(1))
+            .expect_err("publish failure should bubble up");
+        assert!(
+            format!("{error:#}").contains("disk I/O error"),
+            "unexpected publish failure: {error:#}"
+        );
+
+        let publish_pending_after_failure = load_persisted_stream_rebuild_state_for_test(&store)?;
+        assert_eq!(
+            publish_pending_after_failure.phase,
+            DiscoveryPersistedRebuildPhase::PublishPending
+        );
+        assert_eq!(
+            publish_pending_after_failure.replay_rows_processed,
+            publish_pending_before_failure.replay_rows_processed
+        );
+        assert_eq!(
+            publish_pending_after_failure.window_start,
+            publish_pending_before_failure.window_start
+        );
+        assert_eq!(
+            publish_pending_after_failure.metrics_window_start,
+            publish_pending_before_failure.metrics_window_start
+        );
+
+        conn.execute_batch("DROP TRIGGER fail_wallet_metrics_insert;")?;
+        let summary = discovery.run_cycle(&store, now + Duration::minutes(2))?;
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert_eq!(summary.scoring_source, "raw_window_persisted_stream");
+        assert!(
+            store.load_discovery_persisted_rebuild_state()?.is_none(),
+            "successful publish must clear the publish-pending checkpoint"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_rebuild_discards_checkpoint_when_metrics_bucket_moves_stage1() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("stage1-persisted-stream-stale-bucket.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = bounded_stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 60;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:02:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+
+        let mut stale_state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        stale_state.metrics_window_start = metrics_window_start - Duration::minutes(1);
+        stale_state.horizon_end = now - Duration::seconds(30);
+        stale_state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        stale_state.phase_cursor = Some(DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::minutes(5),
+            slot: 77,
+            signature: "stale-bucket-cursor".to_string(),
+        });
+        stale_state.prepass_rows_processed = 10;
+        stale_state.replay_rows_processed = 20;
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&stale_state, stale_state.horizon_end)?,
+        )?;
+
+        let (restarted, resumed_existing) = discovery
+            .load_or_start_persisted_stream_rebuild_state(
+                &store,
+                window_start,
+                metrics_window_start,
+                now,
+            )?;
+        assert!(!resumed_existing);
+        assert_eq!(
+            restarted.phase,
+            DiscoveryPersistedRebuildPhase::CollectBuyMints
+        );
+        assert_eq!(restarted.window_start, window_start);
+        assert_eq!(restarted.metrics_window_start, metrics_window_start);
+        assert_eq!(restarted.horizon_end, now);
+        assert_eq!(restarted.prepass_rows_processed, 0);
+        assert!(
+            store.load_discovery_persisted_rebuild_state()?.is_none(),
+            "stale checkpoint row should be cleared before restart"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_rebuild_resumes_publish_pending_after_long_restart_within_same_bucket_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("stage1-persisted-stream-stale-horizon.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let config = bounded_stage1_runtime_config();
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let checkpoint_now = DateTime::parse_from_rfc3339("2026-03-17T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let restart_now = checkpoint_now + Duration::minutes(15);
+        let window_start = restart_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, restart_now);
+
+        let mut stale_state = discovery.start_persisted_stream_rebuild_state(
+            window_start,
+            metrics_window_start,
+            checkpoint_now,
+        );
+        stale_state.phase = DiscoveryPersistedRebuildPhase::PublishPending;
+        stale_state
+            .payload
+            .completed_snapshots
+            .push(WalletSnapshot {
+                wallet_id: "wallet_stale".to_string(),
+                first_seen: stale_state.window_start,
+                last_seen: stale_state.horizon_end,
+                pnl_sol: 1.0,
+                win_rate: 1.0,
+                trades: 4,
+                closed_trades: 4,
+                hold_median_seconds: 60,
+                score: 1.0,
+                buy_total: 4,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+                eligible: true,
+            });
+        stale_state.updated_at =
+            checkpoint_now - Duration::seconds(config.refresh_seconds.max(1) as i64 + 1);
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&stale_state, stale_state.updated_at)?,
+        )?;
+
+        let (resumed, resumed_existing) = discovery.load_or_start_persisted_stream_rebuild_state(
+            &store,
+            window_start,
+            metrics_window_start,
+            restart_now,
+        )?;
+
+        assert!(resumed_existing);
+        assert_eq!(
+            resumed.phase,
+            DiscoveryPersistedRebuildPhase::PublishPending
+        );
+        assert_eq!(resumed.horizon_end, checkpoint_now);
+        assert_eq!(resumed.metrics_window_start, metrics_window_start);
+        assert_eq!(resumed.payload.completed_snapshots.len(), 1);
+        assert!(
+            store.load_discovery_persisted_rebuild_state()?.is_some(),
+            "long same-bucket restart must keep the persisted checkpoint"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_rebuild_discards_checkpoint_when_horizon_is_in_future_stage1() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-persisted-stream-future-horizon.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let config = bounded_stage1_runtime_config();
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:20:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+
+        let mut invalid_state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        invalid_state.phase = DiscoveryPersistedRebuildPhase::PublishPending;
+        invalid_state.horizon_end = now + Duration::seconds(1);
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(
+                &invalid_state,
+                invalid_state.updated_at,
+            )?,
+        )?;
+
+        let (restarted, resumed_existing) = discovery
+            .load_or_start_persisted_stream_rebuild_state(
+                &store,
+                window_start,
+                metrics_window_start,
+                now,
+            )?;
+        assert!(!resumed_existing);
+        assert_eq!(
+            restarted.phase,
+            DiscoveryPersistedRebuildPhase::CollectBuyMints
+        );
+        assert_eq!(restarted.horizon_end, now);
+        assert!(
+            store.load_discovery_persisted_rebuild_state()?.is_none(),
+            "future frozen horizon must be cleared before restart"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_rebuild_partial_fail_closed_clears_active_followlist_stage1() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-persisted-stream-fail-closed-clears-followlist.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = bounded_stage1_runtime_config();
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let stale_metrics_window_start =
+            metrics_window_start_for_test(&config, now) - Duration::hours(1);
+        seed_published_wallet_metrics_snapshot(&store, stale_metrics_window_start, 1, 1)?;
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            reason: "test_stale_publication".to_string(),
+            last_published_at: Some(
+                now - discovery.published_universe_max_age() - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(stale_metrics_window_start),
+            published_scoring_source: Some("raw_window".to_string()),
+        })?;
+        assert_eq!(store.list_active_follow_wallets()?.len(), 1);
+
+        seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 6, 9)?;
+        let summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert_eq!(summary.active_follow_wallets, 0);
+        assert!(
+            store.list_active_follow_wallets()?.is_empty(),
+            "partial no-fallback fail-closed must clear stale active follow wallets immediately"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_rebuild_token_quality_phase_is_bounded_and_resumable_stage1() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-persisted-stream-quality-phase-bounded.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let config = bounded_stage1_runtime_config();
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+
+        let mut state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        state.phase = DiscoveryPersistedRebuildPhase::ResolveTokenQuality;
+        state.payload.unique_buy_mints = vec![
+            "MintQualityBoundedA1111111111111111111111".to_string(),
+            "MintQualityBoundedB1111111111111111111111".to_string(),
+            "MintQualityBoundedC1111111111111111111111".to_string(),
+            "MintQualityBoundedD1111111111111111111111".to_string(),
+            "MintQualityBoundedE1111111111111111111111".to_string(),
+        ];
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&state, now)?,
+        )?;
+
+        let rebuild_time_budget = StdDuration::from_millis(config.fetch_time_budget_ms.max(1));
+        let first = discovery.advance_persisted_stream_rebuild(
+            &store,
+            window_start,
+            metrics_window_start,
+            now,
+            2,
+            1,
+            rebuild_time_budget,
+        )?;
+        assert!(matches!(
+            first,
+            PersistedStreamRebuildAdvanceOutcome::InProgress { .. }
+        ));
+        let first_state = load_persisted_stream_rebuild_state_for_test(&store)?;
+        assert_eq!(
+            first_state.phase,
+            DiscoveryPersistedRebuildPhase::ResolveTokenQuality
+        );
+        assert_eq!(
+            first_state.payload.token_quality_progress.next_mint_index,
+            2
+        );
+        assert_eq!(first_state.payload.token_quality_cache.len(), 2);
+
+        let second = discovery.advance_persisted_stream_rebuild(
+            &store,
+            window_start,
+            metrics_window_start,
+            now + Duration::minutes(1),
+            2,
+            1,
+            rebuild_time_budget,
+        )?;
+        assert!(matches!(
+            second,
+            PersistedStreamRebuildAdvanceOutcome::InProgress { .. }
+        ));
+        let second_state = load_persisted_stream_rebuild_state_for_test(&store)?;
+        assert_eq!(
+            second_state.phase,
+            DiscoveryPersistedRebuildPhase::ResolveTokenQuality
+        );
+        assert_eq!(
+            second_state.payload.token_quality_progress.next_mint_index,
+            4
+        );
+        assert_eq!(second_state.payload.token_quality_cache.len(), 4);
         Ok(())
     }
 
