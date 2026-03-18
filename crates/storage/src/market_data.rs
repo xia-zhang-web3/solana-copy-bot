@@ -23,6 +23,28 @@ pub struct ObservedSwapCursorPage {
     pub time_budget_exhausted: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObservedSolLegCursorAccessPath {
+    TsCursorFallback,
+    SolLegPartialIndex,
+}
+
+impl ObservedSolLegCursorAccessPath {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TsCursorFallback => "ts_cursor_fallback",
+            Self::SolLegPartialIndex => "sol_leg_partial_index",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObservedSolLegCursorPage {
+    pub rows_seen: usize,
+    pub time_budget_exhausted: bool,
+    pub access_path: ObservedSolLegCursorAccessPath,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ObservedBuyMintPage {
     pub mints: Vec<String>,
@@ -594,6 +616,23 @@ impl SqliteStore {
         })
     }
 
+    fn sqlite_index_exists(&self, index_name: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1
+                 FROM sqlite_master
+                 WHERE type = 'index'
+                   AND name = ?1
+                 LIMIT 1",
+                params![index_name],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .with_context(|| format!("failed checking sqlite index presence for {index_name}"))?
+            .is_some())
+    }
+
     pub fn for_each_observed_sol_leg_swap_in_window_after_cursor_with_budget<F>(
         &self,
         since: DateTime<Utc>,
@@ -602,17 +641,36 @@ impl SqliteStore {
         limit: usize,
         deadline: Instant,
         mut on_swap: F,
-    ) -> Result<ObservedSwapCursorPage>
+    ) -> Result<ObservedSolLegCursorPage>
     where
         F: FnMut(SwapEvent) -> Result<()>,
     {
         if limit == 0 {
-            return Ok(ObservedSwapCursorPage::default());
+            return Ok(ObservedSolLegCursorPage {
+                rows_seen: 0,
+                time_budget_exhausted: false,
+                access_path: ObservedSolLegCursorAccessPath::TsCursorFallback,
+            });
         }
+        let access_path =
+            if self.sqlite_index_exists("idx_observed_swaps_sol_leg_ts_slot_signature")? {
+                ObservedSolLegCursorAccessPath::SolLegPartialIndex
+            } else {
+                ObservedSolLegCursorAccessPath::TsCursorFallback
+            };
+        let index_hint = match access_path {
+            ObservedSolLegCursorAccessPath::SolLegPartialIndex => {
+                "INDEXED BY idx_observed_swaps_sol_leg_ts_slot_signature"
+            }
+            ObservedSolLegCursorAccessPath::TsCursorFallback => {
+                "INDEXED BY idx_observed_swaps_ts_slot_signature"
+            }
+        };
         if Instant::now() >= deadline {
-            return Ok(ObservedSwapCursorPage {
+            return Ok(ObservedSolLegCursorPage {
                 rows_seen: 0,
                 time_budget_exhausted: true,
+                access_path,
             });
         }
 
@@ -623,7 +681,7 @@ impl SqliteStore {
                 format!(
                     "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
                             qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
-                     FROM observed_swaps INDEXED BY idx_observed_swaps_sol_leg_ts_slot_signature
+                     FROM observed_swaps {index_hint}
                      WHERE ts >= ?1
                        AND ts <= ?2
                        AND (token_in = '{SOL_MINT}' OR token_out = '{SOL_MINT}')
@@ -644,7 +702,7 @@ impl SqliteStore {
                 format!(
                     "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
                             qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
-                     FROM observed_swaps INDEXED BY idx_observed_swaps_sol_leg_ts_slot_signature
+                     FROM observed_swaps {index_hint}
                      WHERE ts >= ?1
                        AND ts <= ?2
                        AND (token_in = '{SOL_MINT}' OR token_out = '{SOL_MINT}')
@@ -687,9 +745,10 @@ impl SqliteStore {
             on_swap(swap)?;
             seen = seen.saturating_add(1);
         }
-        Ok(ObservedSwapCursorPage {
+        Ok(ObservedSolLegCursorPage {
             rows_seen: seen,
             time_budget_exhausted,
+            access_path,
         })
     }
 

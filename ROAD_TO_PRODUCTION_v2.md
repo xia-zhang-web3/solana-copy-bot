@@ -101,33 +101,31 @@ The project is not blocked by ingestion.
 
 The startup SQLite silent-hang blocker is no longer the current blocker.
 
-Stage 1 is still `partial` after live rollout `eba671f2215e9114065799be2792262abbb1d2b1`.
+Stage 1 is still `partial` after live rollout `2072123e7ba90a9133494be0d70023d0c9b2cc4b`.
 
-Current working diagnosis: startup SQLite observability/boundedness is validated on live, bounded/resumable persisted rebuild behavior is validated on live, canonical migration/repair is validated on live, carry-forward across `metrics_window_start_changed` is validated on live, and the retryable SQLite lock / observed-swap writer restart path is now also validated on live. The old process-restart blocker is therefore closed. The remaining blocker had moved again to later-phase convergence: the rebuild could repeatedly reach `Replay`, but it still had not completed to a healthy `raw_window_persisted_stream` publish before the next metrics bucket rollover. Each rollover correctly carried forward canonical `CollectBuyMints` membership state, but bucket-sensitive `Replay` state was reset for the new target window and healthy publication still had not landed. The current code change targets that exact limiter with a replay-phase throughput split: exact wallet activity/accounting is buffered first, then bounded replay streams only SOL-leg swaps through a dedicated indexed cursor path, and legacy in-progress replay checkpoints are rewound only at the replay-phase boundary onto that new contract. Stage 1 is still not operationally deployable until the next live rollout proves that this replay-phase throughput fix actually lands healthy publication.
+Current working diagnosis: startup SQLite observability/boundedness is validated on live, bounded/resumable persisted rebuild behavior is validated on live, canonical migration/repair is validated on live, carry-forward across `metrics_window_start_changed` is validated on live, and the retryable SQLite lock / observed-swap writer restart path is validated on live. The replay-phase throughput fix itself is still not live-validated, because deploy `2072123e7ba90a9133494be0d70023d0c9b2cc4b` regressed earlier in startup: the new heavy partial-index migration `0039_observed_swaps_sol_leg_ts_index.sql` ran inside fatal `sqlite_migrations_apply`, timed out at 120s on live-size `observed_swaps`, aborted the process, and never reached `app runtime loop started`. The current code change therefore fixes startup migration safety first: `0039` becomes an explicit startup-deferred performance migration, startup logs that deferral as its own outcome, and replay now has an explicit bounded fallback access path (`ts_cursor_fallback`) until the index is applied offline. Stage 1 is still not operationally deployable until the next live rollout proves startup reaches runtime again and then actually validates the replay throughput fix.
 
 Do not start Stage 2 yet.
 
 ### 2.5 Server state (updated 2026-03-18)
 
-- Deployed commit: `eba671f2215e9114065799be2792262abbb1d2b1`
-- Service: `solana-copy-bot.service active`, stable on the same `MainPID` through the latest observed windows
+- Deployed commit: `2072123e7ba90a9133494be0d70023d0c9b2cc4b`
+- Service: rollout regressed in startup restart loop before runtime
 - `execution.enabled = false`
-- Latest observed restart: none on the current deploy (`NRestarts = 0` through `2026-03-18 13:54 UTC`)
+- Latest observed restart: repeated startup abort/restart loop on the current deploy after `sqlite_migrations_apply` timed out
 - `active_follow_wallets = 0` during the observed validation window
 - Observed during validation window:
-  - startup emitted exact stage logs for sqlite open / pragmas / schema bootstrap / migrations / heartbeat / app-loop handoff
-  - startup reached `app runtime loop started`
-  - `startup_sqlite_wal_checkpoint` was explicitly `skipped/deferred`
-  - the current deploy did not emit `observed swap writer is no longer running; restarting app to avoid silent stale ingestion`
-  - retry counters now grow without process death: by `2026-03-18 13:54 UTC`, live counters reached `sqlite_busy_error_total = 7` and `sqlite_write_retry_total = 7` while `MainPID` remained stable and `NRestarts = 0`
-  - Yellowstone output pressure stayed low on the current deploy (`yellowstone_output_queue_depth` mostly `0`, briefly `1`; `yellowstone_output_queue_fill_ratio` near `0.0`), so the old pressure regime did not reappear in the observed windows
-  - carry-forward across metrics bucket rollover is now validated repeatedly on live on the current deploy as well: at `12:00 UTC`, `12:30 UTC`, and `13:30 UTC` runtime emitted `carrying forward exact canonical buy-mint membership progress across metrics bucket rollover` and resumed through `reconcile_expired_head` / `reconcile_new_tail` instead of restarting from zero
-  - rebuild repeatedly progressed back to `Replay` after rollover reconciliation; by `2026-03-18 13:54 UTC` it had reached `rebuild_chunks_completed = 385`, `rebuild_prepass_rows_processed = 4860355`, and `rebuild_replay_rows_processed = 1944665`
-  - there was still no completed `raw_window_persisted_stream` promotion and no `active_follow_wallets > 0` during the observed window
-  - runtime stayed `fail_closed` with `scoring_source = raw_window_incomplete_no_recent_published_universe`
-  - there was no false `healthy`
-  - there was no repeated `discovery cycle still running, skipping scheduled trigger`
-  - a secondary operational signal appeared at `2026-03-18 13:07:22 UTC`: `shadow risk infra stop activated` with reason `no_ingestion_progress_for=20m` while Yellowstone queue depth stayed `0`; this is noted for follow-up but is not yet the primary Stage 1 blocker
+  - startup emitted `sqlite_migrations_apply started`, then only `waiting` logs every 5 seconds up to `120000 ms`
+  - startup then emitted:
+    - `startup_stage = sqlite_migrations_apply`
+    - `startup_stage_outcome = timed_out`
+    - `detail = timeout_behavior=abort_process`
+  - the process exited with `status=6/ABRT`
+  - systemd restarted the service and the same failure repeated
+  - startup never reached `app runtime loop started`
+  - startup never reached `startup_sqlite_wal_checkpoint`
+  - runtime never started, so there was no replay telemetry, no `rebuild_replay_mode = wallet_stats_then_sol_leg`, and no validation of the replay throughput fix on this deploy
+  - `lsof` showed only the service process itself on the SQLite files during the observed failure window, so the current working assumption is a heavy local index build on live-size `observed_swaps`, not external lock contention
 - Rollout reports:
   - [ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md](ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md) — first Stage 1 deploy (`2eb5c30`), confirmed bootstrap path removed but fail_closed due to cap-truncated warm load
   - [ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md](ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md) — persisted-stream follow-up (`0c58aba`), confirmed correct path engaged but first cycle did not complete in 6+ minutes
@@ -136,6 +134,7 @@ Do not start Stage 2 yet.
   - rollout `aed70c` validated canonical safe-prefix migration / repair on live and showed fresh canonical `CollectBuyMints` progress after `metrics_window_start_changed`, but still did not yet reach healthy publication during the observed window
   - rollout `52e1e8a` validated carry-forward across metrics bucket rollover on live and showed discovery reaching `Replay`, but exposed a later process-stability blocker: restarts under `database is locked` + Yellowstone output queue saturation before healthy completion
   - rollout `eba671f` validated the retryable-lock writer fix on live: the service stayed up with growing SQLite retry counters, carry-forward still worked, and rebuild repeatedly returned to `Replay`, but healthy publication still did not land
+  - rollout `2072123` regressed earlier in startup: the new `0039_observed_swaps_sol_leg_ts_index.sql` partial-index migration ran inside fatal `sqlite_migrations_apply`, timed out at 120s, aborted the process, and prevented any runtime validation of the replay fix
 
 ### 2.6 Live data scale (observed)
 
@@ -338,27 +337,30 @@ Mandatory Stage 1 tests (all green):
 20. irrelevant observed swaps report bounded backpressure and stay retryable/deduped without blocking the runtime event loop
 21. optimized replay preserves one-shot semantics while reducing later-phase heavy replay work to SOL-leg swaps after an exact wallet-activity/accounting prepass
 22. optimized replay resumes after process restart and legacy in-progress replay checkpoints rewind only replay-local state onto the new contract
+23. startup-deferred optional performance migrations do not block `sqlite_migrations_apply`, and replay remains correct before and after the deferred index becomes available
 
 Remaining operational blocker:
 
-Live startup validation is closed. Carry-forward across bucket rollover is also validated on live. The observed-swap writer restart path under retryable SQLite lock contention is now also validated on live. Stage 1 remains partial only because the rebuild still has not completed to healthy publication before later metrics bucket rollovers: live shows `Replay` making bounded progress and then being reset back into bucket-sensitive carry-forward reconciliation for the next target window before `raw_window_persisted_stream` is published. The current code change addresses that exact replay-phase limiter by splitting replay into exact wallet-activity/accounting buffering plus SOL-leg-only later-phase streaming.
+The previous live blocker around replay convergence is not the current blocker, because the latest deploy never reached runtime. Stage 1 is partial because deploy `2072123e7ba90a9133494be0d70023d0c9b2cc4b` regressed at `sqlite_migrations_apply`: the new heavy `0039_observed_swaps_sol_leg_ts_index.sql` startup migration timed out under the fatal startup policy and caused an abort/restart loop before discovery/runtime started. The current code change addresses that exact operational blocker by moving `0039` off the startup critical path and making replay's pre-index contract explicit.
 
 Current working diagnosis:
 
-the old deploy `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c` proved that a one-shot first-cycle persisted rebuild was too slow / insufficiently bounded for live-size state; the later deploy `96606b83880cb1b942de67f61c5ecdb459fe4139` exposed an earlier blocker on startup SQLite open/migration boundedness; deploy `3fac9afdafbeb3e4ca2c66486124a8683d281f02` validated both the startup fix and bounded/resumable rebuild behavior on live; deploy `aed70c91906321e3e80b1a14614454a9db740026` proved the next blocker was bucket-boundary reset of a still-incomplete fresh canonical rebuild; deploy `52e1e8a61612b3e8d95fa808bb25c32a23f39438` validated that carry-forward fixed that blocker but exposed a later operational failure mode; and deploy `eba671f2215e9114065799be2792262abbb1d2b1` validated that retryable raw observed-swap `database is locked` events no longer force writer death or process restart under the observed live windows. The remaining blocker then moved again: the rebuild could survive into `Replay` and across rollovers, but `Replay` still had not completed to a healthy `raw_window_persisted_stream` publish before the next metrics bucket rollover reset bucket-sensitive state for the new target window. The current code change selects the throughput branch of that fix: exact wallet-level activity/accounting is buffered first, then later-phase replay streams only SOL-leg swaps under the same bounded/resumable contract.
+the old deploy `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c` proved that a one-shot first-cycle persisted rebuild was too slow / insufficiently bounded for live-size state; the later deploy `96606b83880cb1b942de67f61c5ecdb459fe4139` exposed an earlier blocker on startup SQLite open/migration boundedness; deploy `3fac9afdafbeb3e4ca2c66486124a8683d281f02` validated both the startup fix and bounded/resumable rebuild behavior on live; deploy `aed70c91906321e3e80b1a14614454a9db740026` proved the next blocker was bucket-boundary reset of a still-incomplete fresh canonical rebuild; deploy `52e1e8a61612b3e8d95fa808bb25c32a23f39438` validated that carry-forward fixed that blocker but exposed a later operational failure mode; deploy `eba671f2215e9114065799be2792262abbb1d2b1` validated that retryable raw observed-swap `database is locked` events no longer force writer death or process restart under the observed live windows; and deploy `2072123e7ba90a9133494be0d70023d0c9b2cc4b` then regressed before runtime because the new heavy partial-index migration ran synchronously inside fatal `sqlite_migrations_apply`. The current code change keeps the replay throughput fix in place, but changes its rollout contract: the partial index becomes an optional startup-deferred performance migration, replay can run correctly before it exists via `ts_cursor_fallback`, and live rollout can finally validate `wallet_stats_then_sol_leg` instead of dying in startup.
 
 Immediate next operational step before Stage 2:
 
-validate the replay-phase throughput fix on the next rollout:
+validate the startup-safe migration rollout and then the replay-phase throughput fix on the next rollout:
 
-1. the new `Replay` contract must complete to a healthy `raw_window_persisted_stream` publish before a later metrics bucket rollover resets bucket-sensitive state again
-2. live logs must show the new replay telemetry:
-   - exact wallet-activity/accounting progress
-   - replay mode = `wallet_stats_then_sol_leg`
-   - bounded SOL-leg replay progress after the wallet prepass completes
-3. discovery must still complete cycles while the optimized replay path is in progress
-4. `active_follow_wallets > 0` must appear once healthy publication lands
-5. there is still no false `healthy` and no empty published universe
+1. startup must reach `app runtime loop started` again without timing out in `sqlite_migrations_apply`
+2. startup logs must show explicit deferred migration telemetry for `0039_observed_swaps_sol_leg_ts_index.sql`
+3. live logs must then show the replay access-path contract explicitly:
+   - `rebuild_replay_mode = wallet_stats_then_sol_leg`
+   - `rebuild_replay_sol_leg_access_path = ts_cursor_fallback` until the deferred index is applied
+   - `rebuild_replay_sol_leg_access_path = sol_leg_partial_index` after the deferred index is applied offline
+4. discovery must still complete cycles while the optimized replay path is in progress
+5. the new `Replay` contract must complete to a healthy `raw_window_persisted_stream` publish before a later metrics bucket rollover resets bucket-sensitive state again
+6. `active_follow_wallets > 0` must appear once healthy publication lands
+7. there is still no false `healthy` and no empty published universe
 
 See section 2.5 for observed server state and section 2.6 for live data scale.
 
@@ -464,6 +466,65 @@ Their useful conclusions are already absorbed here:
 4. Operational incidents on prod must not be repeated just to prove recovery semantics.
 
 ## 10. Execution log
+
+- Date: 2026-03-18
+- Commit SHA: `self-referential; exact final SHA is reported from git after commit`
+- Stage / substep: `Stage 1 / deferred 0039 telemetry truthfulness after offline apply`
+- Status: `done in code; Stage 1 remains partial pending rollout validation`
+- Code changed:
+  - `crates/storage/src/lib.rs`
+  - `crates/storage/src/migrations.rs`
+  - `ROAD_TO_PRODUCTION_v2.md`
+- Tests run:
+  - `cargo test -p copybot-storage --lib sqlite_startup_bootstrap_defers_optional_sol_leg_index_migration -- --nocapture`
+  - `cargo test -p copybot-storage --lib sqlite_startup_bootstrap_does_not_report_deferred_sol_leg_index_after_offline_apply -- --nocapture`
+- Done:
+  - fixed the operationally misleading startup telemetry where `0039_observed_swaps_sol_leg_ts_index.sql` was reported as deferred purely by filename even after the index had already been applied offline
+  - startup now reports `0039` as deferred only while it is actually still pending
+  - if the SOL-leg partial index already exists offline, startup reports `sqlite_migrations_deferred = completed/deferred_count=0` and then records `0039` cheaply through normal migration apply without rebuilding the index
+- Acceptance criteria closed:
+  - deferred migration telemetry now reflects real pending work instead of just migration-file presence
+
+- Date: 2026-03-18
+- Commit SHA: `self-referential; exact final SHA is reported from git after commit`
+- Stage / substep: `Stage 1 / startup-safe deferral of 0039 replay index migration`
+- Status: `done in code; Stage 1 remains partial pending rollout validation`
+- Code changed:
+  - `crates/app/src/main.rs`
+  - `crates/discovery/src/lib.rs`
+  - `crates/storage/src/lib.rs`
+  - `crates/storage/src/market_data.rs`
+  - `crates/storage/src/migrations.rs`
+  - `ROAD_TO_PRODUCTION_v2.md`
+- Tests run:
+  - `cargo fmt --all`
+  - `cargo test -p copybot-storage --lib`
+  - `cargo test -p copybot-discovery --lib persisted_stream_replay_ -- --nocapture`
+  - `cargo test -p copybot-app --bin copybot-app app_tests::startup_ -- --nocapture`
+- Done:
+  - fixed the live regression from deploy `2072123e7ba90a9133494be0d70023d0c9b2cc4b`, where `0039_observed_swaps_sol_leg_ts_index.sql` ran inside fatal `sqlite_migrations_apply` and caused a 120s abort/restart loop before runtime
+  - selected an operationally safe rollout design instead of increasing startup timeout:
+    - `0039` is now an explicit startup-deferred optional performance migration
+    - startup emits an explicit `sqlite_migrations_deferred` outcome with the deferred version list
+    - app startup warns that runtime may use fallback replay access paths until the index is applied offline
+  - preserved replay correctness before and after index availability:
+    - replay sol-leg paging now auto-selects `sol_leg_partial_index` when `0039` exists
+    - otherwise it uses `ts_cursor_fallback` against the older `idx_observed_swaps_ts_slot_signature` path
+    - replay telemetry now logs the chosen access path so live rollout can prove which contract is active
+  - added coverage for:
+    - startup deferral of the heavy 0039 migration
+    - explicit startup deferred-migration progress logging
+    - replay sol-leg correctness before and after the deferred index becomes available
+- Blocked:
+  - Stage 1 is still blocked until the next live rollout proves startup reaches runtime again and then actually validates the replay throughput fix
+- Acceptance criteria closed:
+  - startup no longer requires the heavy 0039 index build inside fatal `sqlite_migrations_apply`
+  - startup observability remains explicit for the deferred-migration path
+  - replay remains correct both before and after index availability
+- Acceptance criteria remaining:
+  - next live rollout must reach `app runtime loop started`
+  - next live rollout must emit replay telemetry under `wallet_stats_then_sol_leg`
+  - next live rollout must still prove a completed healthy discovery cycle with `scoring_source = raw_window_persisted_stream` and `active_follow_wallets > 0`
 
 - Date: 2026-03-18
 - Commit SHA: `self-referential; exact final SHA is reported from git after commit`

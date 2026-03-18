@@ -361,7 +361,15 @@ async fn main() -> Result<()> {
     .context("failed to initialize sqlite store")?;
     let store = bootstrap.store;
     let applied = bootstrap.applied_migrations;
+    let deferred_migrations = bootstrap.deferred_migrations;
     info!(applied, "sqlite migrations applied");
+    if !deferred_migrations.is_empty() {
+        warn!(
+            deferred_migrations = ?deferred_migrations,
+            detail = "deferred_off_startup_critical_path",
+            "startup deferred optional sqlite performance migrations; runtime may use bounded fallback query paths until they are applied offline"
+        );
+    }
     match perform_startup_wal_checkpoint(&startup_reporter) {
         StartupWalCheckpointOutcome::Deferred => {
             warn!(

@@ -5,10 +5,11 @@ use copybot_core_types::SwapEvent;
 use copybot_storage::{
     is_fatal_sqlite_anyhow_error, DiscoveryPersistedRebuildPhase,
     DiscoveryPersistedRebuildStateRow, DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor,
-    DiscoveryRuntimeMode, DiscoveryTrustedSelectionStateUpdate, PersistedWalletMetricSnapshotRow,
-    SqliteStore, StartupTrustedSelectionGateStatus, TrustedSelectionState,
-    TrustedSnapshotSourceKind, TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite,
-    WalletMetricRow, WalletScoringBuyFactRow, WalletScoringQualitySource, WalletUpsertRow,
+    DiscoveryRuntimeMode, DiscoveryTrustedSelectionStateUpdate, ObservedSolLegCursorAccessPath,
+    PersistedWalletMetricSnapshotRow, SqliteStore, StartupTrustedSelectionGateStatus,
+    TrustedSelectionState, TrustedSnapshotSourceKind, TrustedWalletMetricsSnapshotRow,
+    TrustedWalletMetricsSnapshotWrite, WalletMetricRow, WalletScoringBuyFactRow,
+    WalletScoringQualitySource, WalletUpsertRow,
 };
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -667,6 +668,7 @@ struct PersistedStreamProgressTelemetry {
     replay_wallet_stats_complete: bool,
     replay_wallet_stats_rows_processed: usize,
     replay_wallet_stats_pages_processed: usize,
+    replay_sol_leg_access_path: Option<ObservedSolLegCursorAccessPath>,
     replay_rows_processed: usize,
     replay_pages_processed: usize,
     chunks_completed: usize,
@@ -711,6 +713,7 @@ struct PersistedStreamPhaseAdvance {
     pages_processed: usize,
     replay_wallet_stats_rows_processed: usize,
     replay_wallet_stats_pages_processed: usize,
+    replay_sol_leg_access_path: Option<ObservedSolLegCursorAccessPath>,
     source_exhausted: bool,
     phase_cursor: Option<DiscoveryRuntimeCursor>,
     collect_buy_mints_cursor_token: Option<String>,
@@ -1655,6 +1658,9 @@ impl DiscoveryService {
             rebuild_phase = telemetry.phase.as_str(),
             rebuild_collect_buy_mints_mode = telemetry.collect_buy_mints_mode.as_str(),
             rebuild_replay_mode = telemetry.replay_mode.as_str(),
+            rebuild_replay_sol_leg_access_path = telemetry
+                .replay_sol_leg_access_path
+                .map(ObservedSolLegCursorAccessPath::as_str),
             rebuild_window_start = %telemetry.window_start,
             rebuild_horizon_end = %telemetry.horizon_end,
             rebuild_metrics_window_start = %telemetry.metrics_window_start,
@@ -1784,6 +1790,7 @@ impl DiscoveryService {
                     pages_processed: 0,
                     replay_wallet_stats_rows_processed: 0,
                     replay_wallet_stats_pages_processed: 0,
+                    replay_sol_leg_access_path: None,
                     source_exhausted: false,
                     phase_cursor: state.phase_cursor.clone(),
                     collect_buy_mints_cursor_token: None,
@@ -1854,6 +1861,7 @@ impl DiscoveryService {
                             pages_processed,
                             replay_wallet_stats_rows_processed: 0,
                             replay_wallet_stats_pages_processed: 0,
+                            replay_sol_leg_access_path: None,
                             source_exhausted: true,
                             phase_cursor: None,
                             collect_buy_mints_cursor_token: None,
@@ -1957,6 +1965,7 @@ impl DiscoveryService {
                                 pages_processed,
                                 replay_wallet_stats_rows_processed: 0,
                                 replay_wallet_stats_pages_processed: 0,
+                                replay_sol_leg_access_path: None,
                                 source_exhausted: true,
                                 phase_cursor: None,
                                 collect_buy_mints_cursor_token: None,
@@ -2018,6 +2027,7 @@ impl DiscoveryService {
                                 pages_processed,
                                 replay_wallet_stats_rows_processed: 0,
                                 replay_wallet_stats_pages_processed: 0,
+                                replay_sol_leg_access_path: None,
                                 source_exhausted: true,
                                 phase_cursor: None,
                                 collect_buy_mints_cursor_token: None,
@@ -2045,6 +2055,7 @@ impl DiscoveryService {
             pages_processed,
             replay_wallet_stats_rows_processed: 0,
             replay_wallet_stats_pages_processed: 0,
+            replay_sol_leg_access_path: None,
             source_exhausted: false,
             phase_cursor: None,
             collect_buy_mints_cursor_token: cursor_token,
@@ -2072,6 +2083,7 @@ impl DiscoveryService {
                     pages_processed,
                     replay_wallet_stats_rows_processed: 0,
                     replay_wallet_stats_pages_processed: 0,
+                    replay_sol_leg_access_path: None,
                     source_exhausted: true,
                     phase_cursor: None,
                     collect_buy_mints_cursor_token: None,
@@ -2105,6 +2117,7 @@ impl DiscoveryService {
                     pages_processed,
                     replay_wallet_stats_rows_processed: 0,
                     replay_wallet_stats_pages_processed: 0,
+                    replay_sol_leg_access_path: None,
                     source_exhausted: true,
                     phase_cursor: None,
                     collect_buy_mints_cursor_token: None,
@@ -2122,6 +2135,7 @@ impl DiscoveryService {
             pages_processed,
             replay_wallet_stats_rows_processed: 0,
             replay_wallet_stats_pages_processed: 0,
+            replay_sol_leg_access_path: None,
             source_exhausted: false,
             phase_cursor: None,
             collect_buy_mints_cursor_token: None,
@@ -2185,6 +2199,7 @@ impl DiscoveryService {
                     pages_processed: 0,
                     replay_wallet_stats_rows_processed: rows_processed,
                     replay_wallet_stats_pages_processed: pages_processed,
+                    replay_sol_leg_access_path: None,
                     source_exhausted: true,
                     phase_cursor: None,
                     collect_buy_mints_cursor_token: None,
@@ -2199,6 +2214,7 @@ impl DiscoveryService {
             pages_processed: 0,
             replay_wallet_stats_rows_processed: rows_processed,
             replay_wallet_stats_pages_processed: pages_processed,
+            replay_sol_leg_access_path: None,
             source_exhausted: false,
             phase_cursor: cursor,
             collect_buy_mints_cursor_token: None,
@@ -2311,6 +2327,7 @@ impl DiscoveryService {
                     pages_processed,
                     replay_wallet_stats_rows_processed: 0,
                     replay_wallet_stats_pages_processed: 0,
+                    replay_sol_leg_access_path: None,
                     source_exhausted: true,
                     phase_cursor: None,
                     collect_buy_mints_cursor_token: None,
@@ -2325,6 +2342,7 @@ impl DiscoveryService {
             pages_processed,
             replay_wallet_stats_rows_processed: 0,
             replay_wallet_stats_pages_processed: 0,
+            replay_sol_leg_access_path: None,
             source_exhausted: false,
             phase_cursor: cursor,
             collect_buy_mints_cursor_token: None,
@@ -2345,6 +2363,7 @@ impl DiscoveryService {
         let mut replay_pages_processed = 0usize;
         let mut replay_wallet_stats_rows_processed = 0usize;
         let mut replay_wallet_stats_pages_processed = 0usize;
+        let mut replay_sol_leg_access_path = None;
         let mut cursor = state.phase_cursor.clone();
         let lookahead = Duration::seconds(self.config.rug_lookahead_seconds.max(1) as i64);
 
@@ -2400,6 +2419,7 @@ impl DiscoveryService {
                     pages_processed: replay_pages_processed,
                     replay_wallet_stats_rows_processed,
                     replay_wallet_stats_pages_processed,
+                    replay_sol_leg_access_path: None,
                     source_exhausted: false,
                     phase_cursor: cursor,
                     collect_buy_mints_cursor_token: None,
@@ -2493,6 +2513,7 @@ impl DiscoveryService {
                     Ok(())
                 },
             )?;
+            replay_sol_leg_access_path = Some(page.access_path);
             replay_pages_processed = replay_pages_processed.saturating_add(1);
             cursor = page_last_cursor;
 
@@ -2505,6 +2526,7 @@ impl DiscoveryService {
                     pages_processed: replay_pages_processed,
                     replay_wallet_stats_rows_processed,
                     replay_wallet_stats_pages_processed,
+                    replay_sol_leg_access_path,
                     source_exhausted: true,
                     phase_cursor: None,
                     collect_buy_mints_cursor_token: None,
@@ -2519,6 +2541,7 @@ impl DiscoveryService {
             pages_processed: replay_pages_processed,
             replay_wallet_stats_rows_processed,
             replay_wallet_stats_pages_processed,
+            replay_sol_leg_access_path,
             source_exhausted: false,
             phase_cursor: cursor,
             collect_buy_mints_cursor_token: None,
@@ -2628,6 +2651,7 @@ impl DiscoveryService {
         let mut cycle_rows_processed = 0usize;
         let mut cycle_pages_processed = 0usize;
         let mut cycle_unique_buy_mints_discovered = 0usize;
+        let mut cycle_replay_sol_leg_access_path = None;
         if state.phase == DiscoveryPersistedRebuildPhase::PublishPending {
             let snapshots = Self::publish_pending_snapshots(&state);
             let cycle_elapsed_ms = cycle_started.elapsed().as_millis() as u64;
@@ -2663,6 +2687,7 @@ impl DiscoveryService {
                 replay_wallet_stats_pages_processed: state
                     .payload
                     .replay_wallet_stats_pages_processed,
+                replay_sol_leg_access_path: None,
                 replay_rows_processed: state.replay_rows_processed,
                 replay_pages_processed: state.replay_pages_processed,
                 chunks_completed: state.chunks_completed,
@@ -2739,6 +2764,9 @@ impl DiscoveryService {
                 .saturating_add(phase_advance.replay_wallet_stats_pages_processed);
             cycle_unique_buy_mints_discovered = cycle_unique_buy_mints_discovered
                 .saturating_add(phase_advance.unique_buy_mints_discovered);
+            if phase_advance.replay_sol_leg_access_path.is_some() {
+                cycle_replay_sol_leg_access_path = phase_advance.replay_sol_leg_access_path;
+            }
 
             match state.phase {
                 DiscoveryPersistedRebuildPhase::CollectBuyMints => {
@@ -2890,6 +2918,7 @@ impl DiscoveryService {
                     replay_wallet_stats_pages_processed: state
                         .payload
                         .replay_wallet_stats_pages_processed,
+                    replay_sol_leg_access_path: cycle_replay_sol_leg_access_path,
                     replay_rows_processed: state.replay_rows_processed,
                     replay_pages_processed: state.replay_pages_processed,
                     chunks_completed: state.chunks_completed,
@@ -2959,6 +2988,7 @@ impl DiscoveryService {
             replay_wallet_stats_complete: state.payload.replay_wallet_stats_complete,
             replay_wallet_stats_rows_processed: state.payload.replay_wallet_stats_rows_processed,
             replay_wallet_stats_pages_processed: state.payload.replay_wallet_stats_pages_processed,
+            replay_sol_leg_access_path: cycle_replay_sol_leg_access_path,
             replay_rows_processed: state.replay_rows_processed,
             replay_pages_processed: state.replay_pages_processed,
             chunks_completed: state.chunks_completed,

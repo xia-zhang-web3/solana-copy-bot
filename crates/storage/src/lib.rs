@@ -58,6 +58,7 @@ mod system_events;
 pub use discovery_scoring_builder::DiscoveryScoringReplayBuilder;
 pub use execution_orders::{MarkOrderDroppedOutcome, ScheduleOrderRetryOutcome};
 pub use history_retention::{HistoryRetentionCutoffs, HistoryRetentionSummary};
+pub use market_data::ObservedSolLegCursorAccessPath;
 pub use sqlite_retry::{is_fatal_sqlite_anyhow_error, is_retryable_sqlite_anyhow_error};
 pub use system_events::RiskEventRow;
 
@@ -218,6 +219,7 @@ impl Default for SqliteStartupPolicy {
 pub struct SqliteStartupBootstrapResult {
     pub store: SqliteStore,
     pub applied_migrations: usize,
+    pub deferred_migrations: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -8755,6 +8757,10 @@ mod tests {
         )?;
         assert_eq!(first.rows_seen, 2);
         assert!(!first.time_budget_exhausted);
+        assert_eq!(
+            first.access_path,
+            ObservedSolLegCursorAccessPath::SolLegPartialIndex
+        );
         assert_eq!(first_page, vec!["buy-1".to_string(), "sell-1".to_string()]);
 
         let cursor = DiscoveryRuntimeCursor {
@@ -8776,7 +8782,126 @@ mod tests {
         )?;
         assert_eq!(second.rows_seen, 1);
         assert!(!second.time_budget_exhausted);
+        assert_eq!(
+            second.access_path,
+            ObservedSolLegCursorAccessPath::SolLegPartialIndex
+        );
         assert_eq!(second_page, vec!["buy-2".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_sol_leg_swap_cursor_query_works_before_and_after_deferred_index_migration(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("observed-sol-leg-deferred-index-query.db");
+        let legacy_migrations = temp.path().join("legacy-migrations");
+        copy_migrations_through(&legacy_migrations, "0038_alert_delivery_cursor.sql")?;
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&legacy_migrations)?;
+
+        let base = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        for swap in [
+            SwapEvent {
+                signature: "noise-aa".to_string(),
+                wallet: "wallet-noise".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "token-a".to_string(),
+                token_out: "token-b".to_string(),
+                amount_in: 1.0,
+                amount_out: 2.0,
+                slot: 9,
+                ts_utc: base,
+                exact_amounts: None,
+            },
+            SwapEvent {
+                signature: "buy-1".to_string(),
+                wallet: "wallet-a".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-c".to_string(),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                slot: 10,
+                ts_utc: base + Duration::seconds(1),
+                exact_amounts: None,
+            },
+            SwapEvent {
+                signature: "sell-1".to_string(),
+                wallet: "wallet-a".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "token-c".to_string(),
+                token_out: "So11111111111111111111111111111111111111112".to_string(),
+                amount_in: 5.0,
+                amount_out: 0.6,
+                slot: 11,
+                ts_utc: base + Duration::seconds(2),
+                exact_amounts: None,
+            },
+            SwapEvent {
+                signature: "buy-2".to_string(),
+                wallet: "wallet-b".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-d".to_string(),
+                amount_in: 0.8,
+                amount_out: 8.0,
+                slot: 13,
+                ts_utc: base + Duration::seconds(4),
+                exact_amounts: None,
+            },
+        ] {
+            assert!(store.insert_observed_swap(&swap)?);
+        }
+
+        let mut before_index = Vec::new();
+        let fallback = store.for_each_observed_sol_leg_swap_in_window_after_cursor_with_budget(
+            base,
+            base + Duration::seconds(10),
+            None,
+            10,
+            std::time::Instant::now() + StdDuration::from_secs(1),
+            |swap| {
+                before_index.push(swap.signature);
+                Ok(())
+            },
+        )?;
+        assert_eq!(
+            fallback.access_path,
+            ObservedSolLegCursorAccessPath::TsCursorFallback
+        );
+        assert_eq!(
+            before_index,
+            vec![
+                "buy-1".to_string(),
+                "sell-1".to_string(),
+                "buy-2".to_string()
+            ]
+        );
+
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut after_index = Vec::new();
+        let optimized = store.for_each_observed_sol_leg_swap_in_window_after_cursor_with_budget(
+            base,
+            base + Duration::seconds(10),
+            None,
+            10,
+            std::time::Instant::now() + StdDuration::from_secs(1),
+            |swap| {
+                after_index.push(swap.signature);
+                Ok(())
+            },
+        )?;
+        assert_eq!(
+            optimized.access_path,
+            ObservedSolLegCursorAccessPath::SolLegPartialIndex
+        );
+        assert_eq!(after_index, before_index);
         Ok(())
     }
 
@@ -10435,6 +10560,175 @@ mod tests {
                 "startup bootstrap must emit completed progress for stage {stage}"
             );
         }
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == "sqlite_migrations_deferred"
+                    && event.outcome == StartupStepOutcome::Skipped
+                    && event
+                        .detail
+                        .as_deref()
+                        .map(|detail| detail.contains("0039_observed_swaps_sol_leg_ts_index.sql"))
+                        .unwrap_or(false)
+            }),
+            "startup bootstrap must emit an explicit deferred migration outcome for startup-deferred performance indexes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_startup_bootstrap_defers_optional_sol_leg_index_migration() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("sqlite-startup-defers-sol-leg-index.db");
+        let migration_dir = temp.path().join("startup-deferred-migrations");
+        copy_migrations_through(&migration_dir, "0038_alert_delivery_cursor.sql")?;
+        fs::write(
+            migration_dir.join("0039_observed_swaps_sol_leg_ts_index.sql"),
+            "SELECT definitely_missing_function();\n",
+        )
+        .context("failed writing fake deferred migration")?;
+
+        let policy = SqliteStartupPolicy {
+            open_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            pragma_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            schema_bootstrap_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            migrations_scan_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            migrations_apply_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+        };
+
+        let bootstrap = SqliteStore::open_and_migrate_for_startup(
+            Path::new(&db_path),
+            &migration_dir,
+            &policy,
+            None,
+        )?;
+        assert!(
+            bootstrap
+                .deferred_migrations
+                .contains(&"0039_observed_swaps_sol_leg_ts_index.sql".to_string()),
+            "startup bootstrap must explicitly defer the heavy sol-leg partial index migration"
+        );
+
+        let applied: Option<String> = bootstrap
+            .store
+            .conn
+            .query_row(
+                "SELECT version
+                 FROM schema_migrations
+                 WHERE version = '0039_observed_swaps_sol_leg_ts_index.sql'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        assert!(
+            applied.is_none(),
+            "startup bootstrap must not apply the deferred sol-leg index migration"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_startup_bootstrap_does_not_report_deferred_sol_leg_index_after_offline_apply(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("sqlite-startup-no-false-deferred-sol-leg-index.db");
+        let legacy_migrations = temp.path().join("legacy-migrations");
+        copy_migrations_through(&legacy_migrations, "0038_alert_delivery_cursor.sql")?;
+
+        let mut legacy_store = SqliteStore::open(Path::new(&db_path))?;
+        legacy_store.run_migrations(&legacy_migrations)?;
+        legacy_store.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_observed_swaps_sol_leg_ts_slot_signature
+                 ON observed_swaps(ts, slot, signature)
+                 WHERE token_in = 'So11111111111111111111111111111111111111112'
+                    OR token_out = 'So11111111111111111111111111111111111111112';",
+        )?;
+        drop(legacy_store);
+
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reporter_events = events.clone();
+        let reporter: StartupStepProgressReporter = std::sync::Arc::new(move |event| {
+            reporter_events
+                .lock()
+                .expect("startup reporter mutex poisoned")
+                .push(event);
+        });
+        let policy = SqliteStartupPolicy {
+            open_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            pragma_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            schema_bootstrap_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            migrations_scan_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            migrations_apply_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+        };
+
+        let bootstrap = SqliteStore::open_and_migrate_for_startup(
+            Path::new(&db_path),
+            &migration_dir,
+            &policy,
+            Some(&reporter),
+        )?;
+        assert!(
+            bootstrap.deferred_migrations.is_empty(),
+            "startup bootstrap must not report 0039 as deferred once the index already exists offline"
+        );
+        let recorded = events.lock().expect("startup reporter mutex poisoned");
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == "sqlite_migrations_deferred"
+                    && event.outcome == StartupStepOutcome::Completed
+                    && event.detail.as_deref() == Some("deferred_count=0")
+            }),
+            "startup bootstrap must report no deferred migrations after the offline index is already present"
+        );
+
+        let applied: Option<String> = bootstrap
+            .store
+            .conn
+            .query_row(
+                "SELECT version
+                 FROM schema_migrations
+                 WHERE version = '0039_observed_swaps_sol_leg_ts_index.sql'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        assert_eq!(
+            applied.as_deref(),
+            Some("0039_observed_swaps_sol_leg_ts_index.sql"),
+            "startup bootstrap should quickly record 0039 once the offline-created index already exists"
+        );
         Ok(())
     }
 }
