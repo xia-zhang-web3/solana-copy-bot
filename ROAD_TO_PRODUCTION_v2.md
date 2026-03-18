@@ -101,39 +101,39 @@ The project is not blocked by ingestion.
 
 The startup SQLite silent-hang blocker is no longer the current blocker.
 
-Stage 1 is still `partial` after live rollout `aed70c91906321e3e80b1a14614454a9db740026`.
+Stage 1 is still `partial` after live rollout `52e1e8a61612b3e8d95fa808bb25c32a23f39438`.
 
-Current working diagnosis: startup SQLite observability/boundedness is validated on live, bounded/resumable persisted rebuild behavior is validated on live, and the canonical migration/repair upgrade path is now also validated on live. The remaining blocker was no longer "does rebuild progress correctly?" but "can a fresh canonical bounded rebuild survive the next metrics bucket long enough to reach a healthy publish?" Latest live evidence proved the answer was "no" on `aed70c91906321e3e80b1a14614454a9db740026`: the fresh canonical rebuild stayed in `CollectBuyMints`, hit the next `metrics_window_start_changed`, and was discarded before reaching a healthy publish. The current code fix therefore chooses semantically-valid carry-forward across the metrics bucket boundary instead of relying on completion inside one bucket.
+Current working diagnosis: startup SQLite observability/boundedness is validated on live, bounded/resumable persisted rebuild behavior is validated on live, canonical migration/repair is validated on live, and the new carry-forward contract across `metrics_window_start_changed` is now also validated on live. The old bucket-boundary reset blocker is therefore closed. The remaining blocker has moved again: under real live load the process now restarts before healthy completion, with `database is locked` and `yellowstone_output_queue_depth=2048` / `yellowstone_output_queue_fill_ratio=1.0` observed immediately before the exits. Discovery itself is progressing further than before (`CollectBuyMints -> ResolveTokenQuality -> Replay` was observed), but Stage 1 is still not operationally deployable until the SQLite lock / Yellowstone backpressure restart path is fixed.
 
 Do not start Stage 2 yet.
 
 ### 2.5 Server state (updated 2026-03-17)
 
-- Deployed commit: `aed70c91906321e3e80b1a14614454a9db740026`
-- Service: `solana-copy-bot.service active`, no crash loop
+- Deployed commit: `52e1e8a61612b3e8d95fa808bb25c32a23f39438`
+- Service: `solana-copy-bot.service active`, but the current deploy has already auto-restarted twice
 - `execution.enabled = false`
-- Latest observed restart: `2026-03-17 20:59:52 UTC`
+- Latest observed restart: `2026-03-18 10:29:50 UTC`
 - `active_follow_wallets = 0` during the observed validation window
 - Observed during validation window:
   - startup emitted exact stage logs for sqlite open / pragmas / schema bootstrap / migrations / heartbeat / app-loop handoff
   - startup reached `app runtime loop started`
   - `startup_sqlite_wal_checkpoint` was explicitly `skipped/deferred`
-  - runtime emitted `resuming bounded discovery persisted observed_swaps rebuild`
-  - rebuild resumed from an existing legacy checkpoint (`collect_buy_mints`, `rebuild_chunks_completed = 29`, `rebuild_prepass_rows_processed = 2900000`) and emitted the explicit canonical safe-prefix migration log
-  - runtime later discarded that checkpoint with `restart_reason = metrics_window_start_changed` once the frozen metrics bucket changed and started a fresh canonical rebuild from the new frozen attempt
-  - the fresh canonical `CollectBuyMints` prepass advanced with a monotonic token cursor (`2AZ... -> 2Kp... -> 2TF...`), bounded per-cycle unique mint growth, and completed discovery cycles in between
-  - the same fresh canonical rebuild later remained in `CollectBuyMints` up to `rebuild_chunks_completed = 30`, `rebuild_prepass_rows_processed = 11436`, `rebuild_unique_buy_mints = 11436`, and `rebuild_total_elapsed_ms = 1757196`, then hit the next `metrics_window_start_changed` at `2026-03-17 21:30:52 UTC` and was discarded before healthy completion
-  - after that bucket reset, the next fresh canonical rebuild again started in `CollectBuyMints` and only reached `rebuild_chunks_completed = 5`, `rebuild_prepass_rows_processed = 2004`, `rebuild_unique_buy_mints = 2004` during the later observation window
+  - the current deploy emitted one expected conservative restart from a legacy checkpoint without exact buy-mint membership state (`restart_reason = metrics_window_start_changed_without_exact_buy_mint_membership`)
+  - after that, bounded rebuild progressed well past `CollectBuyMints`: live logs showed `completed bounded discovery persisted observed_swaps prepass`, `completed bounded discovery token-quality resolution`, and later `rebuild_phase = replay`
+  - carry-forward across metrics bucket rollover is now validated repeatedly on live: at both the `08:00 UTC` and `08:30 UTC` bucket changes runtime emitted `carrying forward exact canonical buy-mint membership progress across metrics bucket rollover` and resumed from `reconcile_expired_head` / `reconcile_new_tail` instead of restarting from zero
+  - at the `11:00 UTC` rollover carry-forward also worked from `replay`: runtime reset bucket-sensitive phases, returned to `CollectBuyMints` reconciliation for the new target bucket, and kept the canonical membership state alive
+  - there was still no completed `raw_window_persisted_stream` promotion and no `active_follow_wallets > 0` during the observed window
   - runtime stayed `fail_closed` with `scoring_source = raw_window_incomplete_no_recent_published_universe`
   - there was no false `healthy`
   - there was no repeated `discovery cycle still running, skipping scheduled trigger`
-  - there was still no completed `raw_window_persisted_stream` promotion and no `active_follow_wallets > 0` during the observed window
+  - however, the service auto-restarted twice (`2026-03-18 09:48:56 UTC` and `2026-03-18 10:29:50 UTC`) with `status=1/FAILURE`; immediately before both exits logs showed `database is locked: Error code 5` and a saturated Yellowstone output queue (`yellowstone_output_queue_depth=2048`, `yellowstone_output_queue_fill_ratio=1.0`)
 - Rollout reports:
   - [ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md](ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md) — first Stage 1 deploy (`2eb5c30`), confirmed bootstrap path removed but fail_closed due to cap-truncated warm load
   - [ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md](ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md) — persisted-stream follow-up (`0c58aba`), confirmed correct path engaged but first cycle did not complete in 6+ minutes
   - rollout `96606b8` recorded the earlier startup stall before discovery/runtime
   - rollout `3fac9af` validated startup SQLite observability/deferred WAL checkpoint and bounded persisted rebuild progress, but not yet healthy publication
   - rollout `aed70c` validated canonical safe-prefix migration / repair on live and showed fresh canonical `CollectBuyMints` progress after `metrics_window_start_changed`, but still did not yet reach healthy publication during the observed window
+  - rollout `52e1e8a` validated carry-forward across metrics bucket rollover on live and showed discovery reaching `Replay`, but exposed a new process-stability blocker: restarts under `database is locked` + Yellowstone output queue saturation before healthy completion
 
 ### 2.6 Live data scale (observed)
 
@@ -227,7 +227,7 @@ No new roadmap documents are needed before Stage 1 lands in code.
 
 ### Stage 1. Remove aggregate recovery from runtime discovery
 
-Status: **partial after live rollout `3fac9afdafbeb3e4ca2c66486124a8683d281f02`; startup SQLite boundedness/observability fix is validated on live, bounded/resumable persisted rebuild is validated on live, but completion to healthy publish on live-size cold start is still pending**
+Status: **partial after live rollout `52e1e8a61612b3e8d95fa808bb25c32a23f39438`; startup SQLite boundedness/observability is validated on live, bounded/resumable persisted rebuild is validated on live, canonical migration/repair is validated on live, carry-forward across `metrics_window_start_changed` is validated on live, but healthy completion is still blocked by runtime/process instability under SQLite lock contention + Yellowstone output queue saturation**
 
 Goal:
 
@@ -274,6 +274,16 @@ What is done in Stage 1 so far:
    - exact canonical `CollectBuyMints` progress can now survive `metrics_window_start_changed`
    - later bucket-sensitive phases are rebuilt for the new target window instead of publishing stale truth
    - live no longer needs the entire fresh canonical rebuild to finish inside the same metrics bucket just to avoid losing all useful cold-start progress
+17. Live rollout `52e1e8a61612b3e8d95fa808bb25c32a23f39438` validated the carry-forward fix on the real server:
+   - rollover no longer reset the rebuild to zero
+   - runtime reached `CollectBuyMints`, `ResolveTokenQuality`, and `Replay`
+   - discovery cycles kept completing and there was still no false `healthy`
+18. The exact process-restart path is now fixed in code:
+   - the fatal path was not discovery semantics; it was raw observed-swap persistence
+   - retryable `database is locked` failures in the raw observed-swap writer were previously treated as terminal raw-batch failures, which latched writer terminal failure and made the main app loop return `Err` with `observed swap writer is no longer running; restarting app to avoid silent stale ingestion`
+   - retryable busy/locked raw-batch failures are now handled as runtime pressure: the writer stays alive, keeps retrying the same batch, and emits explicit retry/recovery telemetry instead of dying
+   - irrelevant observed swaps now use deferred non-blocking enqueue with a local pending retry slot in the app loop, so Yellowstone queue pressure no longer has to turn into a process restart just because the writer queue is temporarily saturated
+   - bounded rebuild / carry-forward / publication truth contracts remain unchanged: the fix only changes pressure handling and fatal propagation around raw observed-swap persistence
 
 Code hotspots touched:
 
@@ -281,8 +291,9 @@ Code hotspots touched:
 2. `crates/storage/src/market_data.rs` — bounded window scan with cursor/budget, grouped buy-mint count pages, plus durable rebuild-state persistence
 3. `crates/storage/src/lib.rs` — persisted rebuild progress types plus startup SQLite open telemetry/watchdog
 4. `crates/storage/src/migrations.rs` — startup open+migration bootstrap path
-5. `crates/app/src/main.rs` — startup stage orchestration, deferred WAL checkpoint, app-loop handoff telemetry
-6. `crates/core-types/src/lib.rs` — serde support for persisted rebuild payload types
+5. `crates/app/src/main.rs` — startup stage orchestration, deferred WAL checkpoint, app-loop handoff telemetry, non-blocking irrelevant observed-swap backpressure handling
+6. `crates/app/src/observed_swap_writer.rs` — retryable raw observed-swap lock handling, writer pressure recovery, tests
+7. `crates/core-types/src/lib.rs` — serde support for persisted rebuild payload types
 
 Exit criteria (all closed in code and tests):
 
@@ -311,24 +322,27 @@ Mandatory Stage 1 tests (all green):
 16. startup SQLite bootstrap emits explicit stage progress for open / PRAGMA / schema bootstrap / migrations
 17. a blocked startup step emits `waiting` progress and then an explicit timeout instead of hanging silently
 18. deferred startup WAL checkpoint leaves the store usable and does not block startup
+19. retryable `database is locked` during raw observed-swap persistence no longer latches writer terminal failure or forces a process restart when a safe pressure path exists
+20. irrelevant observed swaps report bounded backpressure and stay retryable/deduped without blocking the runtime event loop
 
 Remaining operational blocker:
 
-Live startup validation is now closed. The carry-forward code fix is also now done. Stage 1 remains partial only because the new bucket-roll contract still needs live rollout validation on the real server.
+Live startup validation is closed. Carry-forward across bucket rollover is also validated on live. Stage 1 remains partial only because the latest live rollout exposed a newer blocker: retryable SQLite lock contention in the raw observed-swap writer still escalated to whole-process restart under Yellowstone output queue saturation before healthy completion.
 
 Current working diagnosis:
 
-the old deploy `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c` proved that a one-shot first-cycle persisted rebuild is too slow / insufficiently bounded for live-size state; the later deploy `96606b83880cb1b942de67f61c5ecdb459fe4139` exposed an earlier blocker on startup SQLite open/migration boundedness; the latest deploy `3fac9afdafbeb3e4ca2c66486124a8683d281f02` validated both the startup fix and bounded/resumable rebuild behavior on live; and deploy `aed70c91906321e3e80b1a14614454a9db740026` proved the next blocker was bucket-boundary reset of a still-incomplete fresh canonical rebuild. The new fix therefore changes bucket-roll semantics: exact canonical `CollectBuyMints` progress is now carried forward into the new target bucket instead of being thrown away.
+the old deploy `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c` proved that a one-shot first-cycle persisted rebuild was too slow / insufficiently bounded for live-size state; the later deploy `96606b83880cb1b942de67f61c5ecdb459fe4139` exposed an earlier blocker on startup SQLite open/migration boundedness; deploy `3fac9afdafbeb3e4ca2c66486124a8683d281f02` validated both the startup fix and bounded/resumable rebuild behavior on live; deploy `aed70c91906321e3e80b1a14614454a9db740026` proved the next blocker was bucket-boundary reset of a still-incomplete fresh canonical rebuild; and deploy `52e1e8a61612b3e8d95fa808bb25c32a23f39438` validated that carry-forward fixed that blocker but exposed a later operational failure mode. The exact fatal path is now understood: retryable raw observed-swap `database is locked` failures latched observed-swap writer terminal failure, and the main app loop deliberately returned `Err` once the writer was no longer running, while Yellowstone output queue saturation provided the visible pressure signal before exit.
 
 Immediate next operational step before Stage 2:
 
-validate the new carry-forward contract on the next rollout:
+validate the new runtime-pressure fix on the next rollout:
 
-1. `metrics_window_start_changed` no longer destroys exact canonical `CollectBuyMints` progress on live-size state
-2. bounded progress remains resumable and scheduler-friendly across cycles and restart
-3. runtime eventually emits a completed discovery cycle with `scoring_source = raw_window_persisted_stream` even if the first cold-start attempt spans more than one metrics bucket
-4. `active_follow_wallets > 0` appears once healthy publication lands
-5. there is still no false `healthy` and no empty published universe
+1. retryable raw observed-swap `database is locked` events no longer terminate the writer or restart the process
+2. Yellowstone queue saturation can still happen as telemetry / infra-pressure signal, but the service remains alive and discovery cycles continue completing
+3. carry-forward across `metrics_window_start_changed` still works and rebuild progress is preserved across restart-free runtime pressure
+4. runtime eventually emits a completed discovery cycle with `scoring_source = raw_window_persisted_stream`
+5. `active_follow_wallets > 0` appears once healthy publication lands
+6. there is still no false `healthy` and no empty published universe
 
 See section 2.5 for observed server state and section 2.6 for live data scale.
 
@@ -434,6 +448,97 @@ Their useful conclusions are already absorbed here:
 4. Operational incidents on prod must not be repeated just to prove recovery semantics.
 
 ## 10. Execution log
+
+- Date: 2026-03-18
+- Commit SHA: `self-referential; exact final SHA is reported from git after commit`
+- Stage / substep: `Stage 1 / runtime stability under retryable SQLite lock contention + Yellowstone output queue saturation`
+- Status: `done in code; Stage 1 remains partial pending rollout validation`
+- Code changed:
+  - `crates/app/src/main.rs`
+  - `crates/app/src/observed_swap_writer.rs`
+  - `ROAD_TO_PRODUCTION_v2.md`
+- Tests run:
+  - `cargo test -p copybot-app --bin copybot-app observed_swap_writer_retries_retryable_raw_lock_without_terminal_failure -- --nocapture`
+  - `cargo test -p copybot-app --bin copybot-app enqueue_irrelevant_observed_swap_reports_pending_backpressure_without_forgetting_signature -- --nocapture`
+  - `cargo test -p copybot-app --bin copybot-app observed_swap_writer_ -- --nocapture`
+  - `cargo test -p copybot-app --bin copybot-app app_tests::startup_ -- --nocapture`
+  - `cargo test -p copybot-discovery --lib persisted_stream_rebuild -- --nocapture`
+- Done:
+  - identified the exact fatal path from the live `52e1e8a61612b3e8d95fa808bb25c32a23f39438` rollout:
+    - raw observed-swap writer treated retryable `database is locked` failures as terminal raw-batch failure
+    - that latched writer terminal failure
+    - the app loop then deliberately returned `Err` once `observed_swap_writer.ensure_running()` or a write path saw the dead writer, producing the `status=1/FAILURE` restart
+  - changed the raw observed-swap writer so retryable busy/locked raw-batch failures are no longer fatal:
+    - the writer keeps the batch in-flight
+    - logs bounded retry/recovery telemetry
+    - resumes normal flow once the lock clears
+  - changed irrelevant observed-swap persistence in the app loop from inline commit wait to deferred bounded enqueue:
+    - irrelevant swaps now use non-blocking `try_enqueue`
+    - if the writer queue is saturated, the app loop keeps a single pending irrelevant swap and retries it on a short interval
+    - during that pressure window the runtime event loop keeps servicing discovery / heartbeat / risk / maintenance ticks instead of stalling inside a write await
+  - preserved carry-forward / bounded rebuild / publication truth semantics; the fix changes pressure handling only, not discovery scoring or publication semantics
+  - added regression coverage proving:
+    - retryable raw observed-swap lock no longer causes terminal writer failure
+    - irrelevant observed-swap backpressure is surfaced as a pending bounded retry state without forgetting dedupe state or stalling the runtime thread
+    - startup and persisted rebuild regressions remain green
+- In progress:
+  - live rollout validation of the pressure/stability fix on the real server
+- Blocked:
+  - none in code for the restart-loop blocker; only live validation remains
+- Acceptance criteria closed:
+  - retryable `database is locked` on the affected raw observed-swap path no longer implies whole-process restart in code
+  - Yellowstone/output-queue pressure now has a controlled runtime path instead of forcing a writer-death restart
+  - carry-forward and bounded persisted rebuild regressions remain green
+  - startup observability / fatal-timeout / deferred-WAL regressions remain green
+- Acceptance criteria remaining:
+  - next live rollout must confirm the service stays alive through the previously observed `database is locked` + `yellowstone_output_queue_fill_ratio=1.0` regime
+  - next live rollout must confirm discovery keeps completing cycles under that pressure
+  - next live rollout must still reach healthy completion with `scoring_source = raw_window_persisted_stream`
+  - next live rollout must confirm `active_follow_wallets > 0`
+- Remaining risks:
+  - if live pressure now shifts from process restart to extremely long sustained queue saturation, the next blocker may become throughput/ingestion shedding rather than fatal propagation
+  - relevant observed swaps still use the commit-ack path by design; the current fix specifically removes the live fail-closed restart path where swaps are irrelevant and the service previously died before discovery could finish
+- Next action:
+  - deploy this runtime-pressure fix
+  - confirm the service no longer exits with `status=1/FAILURE` after retryable raw observed-swap lock contention
+  - confirm discovery still reaches `Replay` / healthy completion without losing carry-forward progress
+
+- Date: 2026-03-18
+- Commit SHA: `52e1e8a61612b3e8d95fa808bb25c32a23f39438`
+- Stage / substep: `Stage 1 / live rollout validation of carry-forward across metrics buckets`
+- Status: `partial`
+- Code changed:
+  - none in this step; this was a live server rollout validation of the already-built artifact
+- Tests run:
+  - live server rollout validation on `solana-copy-bot.service`
+- Done:
+  - service restarted successfully and emitted the full expected startup stage sequence
+  - startup again reached `app runtime loop started`
+  - `startup_sqlite_wal_checkpoint` remained explicitly `skipped/deferred`
+  - one expected conservative restart path was observed from a legacy checkpoint without exact canonical buy-mint membership state
+  - after that, rebuild progressed beyond `CollectBuyMints`: live logs showed prepass completion, token-quality completion, and later `rebuild_phase = replay`
+  - carry-forward across `metrics_window_start_changed` was validated repeatedly on live; useful canonical membership progress was preserved and runtime resumed through `reconcile_expired_head` / `reconcile_new_tail` instead of restarting from zero
+  - a rollover from `Replay` back to bucket-sensitive `CollectBuyMints` reconciliation was also validated as expected, without stale `healthy` publication
+  - discovery cycles continued to complete and there was still no false `healthy`
+- In progress:
+  - healthy completion to `raw_window_persisted_stream`
+- Blocked:
+  - the process auto-restarted twice before healthy completion
+  - immediately before both exits logs showed `database is locked: Error code 5` and Yellowstone output queue saturation (`yellowstone_output_queue_depth=2048`, `yellowstone_output_queue_fill_ratio=1.0`)
+- Acceptance criteria closed:
+  - carry-forward across metrics bucket rollover is validated on live
+  - bucket-boundary progress is no longer lost
+  - rebuild can now reach `ResolveTokenQuality` and `Replay` on live
+  - stale `healthy` is still prevented
+- Acceptance criteria remaining:
+  - Stage 1 still needs stable runtime execution without restart loops under live SQLite / ingestion pressure
+  - Stage 1 still needs eventual healthy publication with `scoring_source = raw_window_persisted_stream`
+  - Stage 1 still needs `active_follow_wallets > 0`
+- Remaining risks:
+  - SQLite lock contention and/or observed-swap writer backpressure may now be the primary operational blocker rather than rebuild semantics
+  - Yellowstone queue saturation can force process instability before discovery finishes the carried-forward rebuild
+- Next action:
+  - fix the `database is locked` + Yellowstone output queue saturation restart path without regressing the now-validated carry-forward rebuild contract
 
 - Date: 2026-03-18
 - Commit SHA: `self-referential; exact final SHA is reported from git after commit`

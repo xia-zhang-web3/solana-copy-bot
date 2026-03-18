@@ -3,8 +3,9 @@ use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use copybot_core_types::SwapEvent;
 use copybot_ingestion::IngestionRuntimeSnapshot;
 use copybot_storage::{
-    is_fatal_sqlite_anyhow_error, sqlite_contention_snapshot, DiscoveryAggregateWriteConfig,
-    DiscoveryRuntimeCursor, SqliteBatchedDeleteSummary, SqliteContentionSnapshot, SqliteStore,
+    is_fatal_sqlite_anyhow_error, is_retryable_sqlite_anyhow_error, sqlite_contention_snapshot,
+    DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, SqliteBatchedDeleteSummary,
+    SqliteContentionSnapshot, SqliteStore,
 };
 use std::collections::VecDeque;
 use std::path::Path;
@@ -28,6 +29,8 @@ const OBSERVED_SWAP_RETENTION_MAX_RAW_DELETE_BATCHES_PER_RUN: usize = 8;
 const OBSERVED_SWAP_RETENTION_MAX_SCORING_DELETE_BATCHES_PER_RUN: usize = 4;
 const OBSERVED_SWAP_RETENTION_MAX_DURATION_PER_RUN: StdDuration = StdDuration::from_secs(2);
 const OBSERVED_SWAP_RETENTION_INTER_BATCH_PAUSE: StdDuration = StdDuration::from_millis(50);
+const OBSERVED_SWAP_WRITER_RETRYABLE_LOCK_BACKOFF: StdDuration = StdDuration::from_millis(250);
+const OBSERVED_SWAP_WRITER_RETRYABLE_LOCK_LOG_INTERVAL: StdDuration = StdDuration::from_secs(5);
 pub(crate) const OBSERVED_SWAP_RETENTION_PARTIAL_RETRY_INTERVAL: StdDuration =
     StdDuration::from_secs(60);
 const SQLITE_MAINTENANCE_MAX_YELLOWSTONE_OUTPUT_QUEUE_FILL_RATIO: f64 = 0.25;
@@ -485,6 +488,25 @@ impl ObservedSwapWriter {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn start_for_test(
+        sqlite_path: String,
+        channel_capacity: usize,
+        batch_max_size: usize,
+        aggregate_writes_enabled: bool,
+        aggregate_write_config: DiscoveryAggregateWriteConfig,
+    ) -> Result<Self> {
+        Self::start_with_config(
+            sqlite_path,
+            ObservedSwapWriterConfig {
+                channel_capacity,
+                batch_max_size,
+                aggregate_writes_enabled,
+                aggregate_write_config,
+            },
+        )
+    }
+
     #[allow(dead_code)]
     pub(crate) async fn enqueue(&self, swap: &SwapEvent) -> Result<()> {
         self.send_request(ObservedSwapWriteRequest {
@@ -634,70 +656,132 @@ fn observed_swap_writer_loop(
         }
 
         let batch_started = Instant::now();
-        let raw_batch_started = Instant::now();
-        match store.insert_observed_swaps_batch_with_activity_days_measured(&swaps) {
-            Ok(batch_metrics) => {
-                telemetry.note_raw_batch_completed(elapsed_ms_ceil(raw_batch_started.elapsed()));
-                telemetry
-                    .note_observed_swaps_insert_completed(batch_metrics.observed_swaps_insert_ms);
-                telemetry.note_wallet_activity_days_completed(
-                    batch_metrics.wallet_activity_days_upsert_ms,
-                );
-                let results = batch_metrics.inserted;
-                for (reply_tx, inserted) in replies.into_iter().zip(results.iter().copied()) {
-                    if let Some(reply_tx) = reply_tx {
-                        let _ = reply_tx.send(Ok(inserted));
-                    }
-                }
-                telemetry.note_batch_completed(&queued_at);
-                if let Some(aggregate_sender) = aggregate_sender.as_ref() {
-                    let inserted_swaps: Vec<SwapEvent> = swaps
-                        .iter()
-                        .zip(results.iter())
-                        .filter_map(|(swap, inserted)| inserted.then_some(swap.clone()))
-                        .collect();
-                    if !inserted_swaps.is_empty() {
-                        if let Err(error) = aggregate_sender.send(DiscoveryAggregateWriteRequest {
-                            inserted_swaps,
-                            batch_started,
-                        }) {
-                            telemetry.note_worker_busy_completed(elapsed_ms_ceil(
-                                batch_started.elapsed(),
-                            ));
-                            return Err(anyhow!(
-                                "discovery aggregate writer channel closed: {}",
-                                error
-                            ))
-                            .context(
-                                "observed swap writer stopping after aggregate writer channel closed",
-                            );
-                        }
-                        telemetry.note_aggregate_queue_enqueued();
-                    } else {
-                        telemetry
-                            .note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
-                    }
-                } else {
-                    telemetry.note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
-                }
-            }
-            Err(error) => {
-                telemetry.note_raw_batch_completed(elapsed_ms_ceil(raw_batch_started.elapsed()));
-                telemetry.note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
-                let message = format!("{error:#}");
-                warn!(
-                    error = %error,
-                    batch_swaps = swaps.len(),
-                    "failed to insert observed swap batch with activity days"
-                );
+        let mut retryable_lock_started_at: Option<Instant> = None;
+        let mut last_retryable_lock_log_at: Option<Instant> = None;
+        let mut retryable_lock_attempts = 0u64;
+        loop {
+            if let Some(message) = load_terminal_failure_message(&terminal_failure_message) {
                 for reply_tx in replies {
                     if let Some(reply_tx) = reply_tx {
                         let _ = reply_tx.send(Err(anyhow!(message.clone())));
                     }
                 }
                 telemetry.note_batch_completed(&queued_at);
-                return Err(anyhow!(message))
-                    .context("observed swap writer stopping after raw batch insert failure");
+                return Err(anyhow!(message)).context(
+                    "observed swap writer stopping after aggregate worker terminal failure while raw batch was pending",
+                );
+            }
+
+            let raw_batch_started = Instant::now();
+            match store.insert_observed_swaps_batch_with_activity_days_measured(&swaps) {
+                Ok(batch_metrics) => {
+                    telemetry
+                        .note_raw_batch_completed(elapsed_ms_ceil(raw_batch_started.elapsed()));
+                    telemetry.note_observed_swaps_insert_completed(
+                        batch_metrics.observed_swaps_insert_ms,
+                    );
+                    telemetry.note_wallet_activity_days_completed(
+                        batch_metrics.wallet_activity_days_upsert_ms,
+                    );
+                    if let Some(retryable_lock_started_at) = retryable_lock_started_at {
+                        info!(
+                            batch_swaps = swaps.len(),
+                            retryable_lock_attempts,
+                            retryable_lock_elapsed_ms =
+                                elapsed_ms_ceil(retryable_lock_started_at.elapsed()),
+                            "observed swap writer recovered after retryable sqlite lock pressure"
+                        );
+                    }
+                    let results = batch_metrics.inserted;
+                    for (reply_tx, inserted) in replies.into_iter().zip(results.iter().copied()) {
+                        if let Some(reply_tx) = reply_tx {
+                            let _ = reply_tx.send(Ok(inserted));
+                        }
+                    }
+                    telemetry.note_batch_completed(&queued_at);
+                    if let Some(aggregate_sender) = aggregate_sender.as_ref() {
+                        let inserted_swaps: Vec<SwapEvent> = swaps
+                            .iter()
+                            .zip(results.iter())
+                            .filter_map(|(swap, inserted)| inserted.then_some(swap.clone()))
+                            .collect();
+                        if !inserted_swaps.is_empty() {
+                            if let Err(error) =
+                                aggregate_sender.send(DiscoveryAggregateWriteRequest {
+                                    inserted_swaps,
+                                    batch_started,
+                                })
+                            {
+                                telemetry.note_worker_busy_completed(elapsed_ms_ceil(
+                                    batch_started.elapsed(),
+                                ));
+                                return Err(anyhow!(
+                                    "discovery aggregate writer channel closed: {}",
+                                    error
+                                ))
+                                .context(
+                                    "observed swap writer stopping after aggregate writer channel closed",
+                                );
+                            }
+                            telemetry.note_aggregate_queue_enqueued();
+                        } else {
+                            telemetry.note_worker_busy_completed(elapsed_ms_ceil(
+                                batch_started.elapsed(),
+                            ));
+                        }
+                    } else {
+                        telemetry
+                            .note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
+                    }
+                    break;
+                }
+                Err(error) => {
+                    telemetry
+                        .note_raw_batch_completed(elapsed_ms_ceil(raw_batch_started.elapsed()));
+                    if is_retryable_sqlite_anyhow_error(&error) {
+                        retryable_lock_attempts = retryable_lock_attempts.saturating_add(1);
+                        let retryable_lock_started_at =
+                            *retryable_lock_started_at.get_or_insert_with(Instant::now);
+                        let should_log = last_retryable_lock_log_at
+                            .map(|logged_at| {
+                                logged_at.elapsed()
+                                    >= OBSERVED_SWAP_WRITER_RETRYABLE_LOCK_LOG_INTERVAL
+                            })
+                            .unwrap_or(true);
+                        if should_log {
+                            let contention = sqlite_contention_snapshot();
+                            warn!(
+                                error = %error,
+                                batch_swaps = swaps.len(),
+                                retryable_lock_attempts,
+                                retryable_lock_elapsed_ms =
+                                    elapsed_ms_ceil(retryable_lock_started_at.elapsed()),
+                                sqlite_write_retry_total = contention.write_retry_total,
+                                sqlite_busy_error_total = contention.busy_error_total,
+                                "observed swap writer raw batch blocked by retryable sqlite lock; keeping writer alive and retrying"
+                            );
+                            last_retryable_lock_log_at = Some(Instant::now());
+                        }
+                        thread::sleep(OBSERVED_SWAP_WRITER_RETRYABLE_LOCK_BACKOFF);
+                        continue;
+                    }
+
+                    telemetry.note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
+                    let message = format!("{error:#}");
+                    warn!(
+                        error = %error,
+                        batch_swaps = swaps.len(),
+                        "failed to insert observed swap batch with activity days"
+                    );
+                    for reply_tx in replies {
+                        if let Some(reply_tx) = reply_tx {
+                            let _ = reply_tx.send(Err(anyhow!(message.clone())));
+                        }
+                    }
+                    telemetry.note_batch_completed(&queued_at);
+                    return Err(anyhow!(message))
+                        .context("observed swap writer stopping after raw batch insert failure");
+                }
             }
         }
     }
@@ -1512,6 +1596,104 @@ mod tests {
         assert_eq!(swaps[0].signature, "sig-observed-swap-enqueue");
         let _ = std::fs::remove_file(db_path);
 
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_retries_retryable_raw_lock_without_terminal_failure() -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-retryable-lock-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+
+        let control_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open retryable-lock control sqlite connection")?;
+        control_conn.execute_batch(
+            "CREATE TABLE raw_write_lock_gate(locked INTEGER NOT NULL);
+             INSERT INTO raw_write_lock_gate(locked) VALUES (1);
+             CREATE TRIGGER block_observed_swap_insert_retryable
+             BEFORE INSERT ON observed_swaps
+             WHEN (SELECT locked FROM raw_write_lock_gate LIMIT 1) = 1
+             BEGIN
+                 SELECT RAISE(FAIL, 'database is locked');
+             END;",
+        )?;
+
+        let sqlite_path = db_path
+            .to_str()
+            .context("sqlite path must be valid utf-8")?
+            .to_string();
+        let swap = SwapEvent {
+            wallet: "wallet-retryable-lock".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-retryable-lock".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-observed-swap-retryable-lock".to_string(),
+            slot: 127,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-18T10:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+
+        let runtime_handle = thread::spawn(move || -> Result<()> {
+            let runtime = Builder::new_current_thread().enable_all().build()?;
+            runtime.block_on(async move {
+                let writer = ObservedSwapWriter::start(
+                    sqlite_path,
+                    false,
+                    aggregate_write_config(),
+                )?;
+                timeout(Duration::from_millis(50), writer.enqueue(&swap))
+                    .await
+                    .context("retryable raw lock enqueue should not block runtime")??;
+                timeout(Duration::from_millis(50), sleep(Duration::from_millis(10)))
+                    .await
+                    .context("current-thread runtime stalled while raw writer retried retryable lock")?;
+                timeout(Duration::from_secs(5), async {
+                    loop {
+                        writer.ensure_running()?;
+                        if writer.snapshot().pending_requests == 0 {
+                            break Ok::<(), anyhow::Error>(());
+                        }
+                        sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .context("retryable raw lock batch should eventually drain without terminal writer failure")??;
+                writer.ensure_running()?;
+                writer.shutdown()?;
+                Ok::<(), anyhow::Error>(())
+            })
+        });
+
+        std::thread::sleep(StdDuration::from_millis(250));
+        control_conn.execute("UPDATE raw_write_lock_gate SET locked = 0", [])?;
+
+        runtime_handle
+            .join()
+            .expect("runtime thread panicked")
+            .context("observed swap writer should survive retryable raw lock and recover")?;
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let swaps = verify_store.load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-18T09:59:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )?;
+        assert_eq!(swaps.len(), 1);
+        assert_eq!(swaps[0].signature, "sig-observed-swap-retryable-lock");
+        let _ = std::fs::remove_file(db_path);
         Ok(())
     }
 

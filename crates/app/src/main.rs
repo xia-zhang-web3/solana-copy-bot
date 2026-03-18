@@ -92,6 +92,8 @@ const DEFAULT_OPERATOR_EMERGENCY_STOP_POLL_MS: u64 = 500;
 const APP_LOG_FILTER_ENV: &str = "COPYBOT_APP_LOG_FILTER";
 const LEGACY_RUST_LOG_ENV: &str = "RUST_LOG";
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
+const OBSERVED_SWAP_WRITER_BACKPRESSURE_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+const OBSERVED_SWAP_WRITER_BACKPRESSURE_LOG_THROTTLE: StdDuration = StdDuration::from_secs(5);
 const STARTUP_STEP_LOG_INTERVAL: StdDuration = StdDuration::from_secs(5);
 const STARTUP_REQUIRED_STEP_TIMEOUT: StdDuration = StdDuration::from_secs(120);
 const STARTUP_SQLITE_AUX_STEP_TIMEOUT: StdDuration = StdDuration::from_secs(30);
@@ -892,27 +894,47 @@ async fn enqueue_irrelevant_observed_swap(
     recent_signatures: &mut HashSet<String>,
     recent_signature_order: &mut VecDeque<String>,
     swap: &SwapEvent,
-) -> Result<()> {
+) -> Result<IrrelevantObservedSwapEnqueueOutcome> {
     enqueue_irrelevant_observed_swap_immediately(
         observed_swap_writer,
         recent_signatures,
         recent_signature_order,
         swap,
     )
-    .await
 }
 
-async fn enqueue_irrelevant_observed_swap_immediately(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IrrelevantObservedSwapEnqueueOutcome {
+    Enqueued,
+    PendingWriterBackpressure,
+}
+
+#[derive(Debug, Clone)]
+struct PendingIrrelevantObservedSwap {
+    swap: SwapEvent,
+    processing_started_at: StdInstant,
+    backpressure_started_at: StdInstant,
+    last_backpressure_log_at: Option<StdInstant>,
+}
+
+fn enqueue_irrelevant_observed_swap_immediately(
     observed_swap_writer: &ObservedSwapWriter,
     recent_signatures: &mut HashSet<String>,
     recent_signature_order: &mut VecDeque<String>,
     swap: &SwapEvent,
-) -> Result<()> {
-    if let Err(error) = observed_swap_writer.write(swap).await {
-        forget_recent_swap_signature(recent_signatures, recent_signature_order, &swap.signature);
-        return Err(error);
+) -> Result<IrrelevantObservedSwapEnqueueOutcome> {
+    match observed_swap_writer.try_enqueue(swap) {
+        Ok(true) => Ok(IrrelevantObservedSwapEnqueueOutcome::Enqueued),
+        Ok(false) => Ok(IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure),
+        Err(error) => {
+            forget_recent_swap_signature(
+                recent_signatures,
+                recent_signature_order,
+                &swap.signature,
+            );
+            Err(error)
+        }
     }
-    Ok(())
 }
 
 async fn persist_relevant_observed_swap(
@@ -3017,6 +3039,7 @@ async fn run_app_loop(
     let mut app_consumer_loop_telemetry = AppConsumerLoopTelemetry::default();
     let mut recent_swap_signatures: HashSet<String> = HashSet::new();
     let mut recent_swap_signature_order: VecDeque<String> = VecDeque::new();
+    let mut pending_irrelevant_swap: Option<PendingIrrelevantObservedSwap> = None;
     let mut discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>> = None;
     let mut shadow_scheduler = ShadowScheduler::new();
     let mut execution_handle: Option<JoinHandle<Result<ExecutionBatchReport>>> = None;
@@ -3651,7 +3674,78 @@ async fn run_app_loop(
             }, if ingestion_backoff_until.is_some() => {
                 ingestion_backoff_until = None;
             }
-            maybe_swap = ingestion.next_swap(), if ingestion_backoff_until.is_none() => {
+            _ = time::sleep(OBSERVED_SWAP_WRITER_BACKPRESSURE_RETRY_INTERVAL), if pending_irrelevant_swap.is_some() => {
+                let mut pending = pending_irrelevant_swap
+                    .take()
+                    .expect("guard ensures pending irrelevant observed swap exists");
+                match enqueue_irrelevant_observed_swap(
+                    &observed_swap_writer,
+                    &mut recent_swap_signatures,
+                    &mut recent_swap_signature_order,
+                    &pending.swap,
+                ).await {
+                    Ok(IrrelevantObservedSwapEnqueueOutcome::Enqueued) => {
+                        info!(
+                            signature = %pending.swap.signature,
+                            writer_backpressure_elapsed_ms =
+                                pending.backpressure_started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                            "observed swap writer backpressure cleared; queued pending irrelevant observed swap"
+                        );
+                        app_consumer_loop_telemetry
+                            .note_processing_started_at(pending.processing_started_at);
+                    }
+                    Ok(IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure) => {
+                        let should_log = pending
+                            .last_backpressure_log_at
+                            .map(|last| {
+                                last.elapsed() >= OBSERVED_SWAP_WRITER_BACKPRESSURE_LOG_THROTTLE
+                            })
+                            .unwrap_or(true);
+                        if should_log {
+                            let writer_snapshot = observed_swap_writer.snapshot();
+                            let ingestion_snapshot = ingestion.runtime_snapshot();
+                            warn!(
+                                signature = %pending.swap.signature,
+                                writer_backpressure_elapsed_ms =
+                                    pending.backpressure_started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                                observed_swap_writer_pending_requests =
+                                    writer_snapshot.pending_requests,
+                                observed_swap_writer_aggregate_queue_depth_batches =
+                                    writer_snapshot.aggregate_queue_depth_batches,
+                                yellowstone_output_queue_depth = ingestion_snapshot
+                                    .map(|snapshot| snapshot.yellowstone_output_queue_depth)
+                                    .unwrap_or(0),
+                                yellowstone_output_queue_capacity = ingestion_snapshot
+                                    .map(|snapshot| snapshot.yellowstone_output_queue_capacity)
+                                    .unwrap_or(0),
+                                yellowstone_output_queue_fill_ratio = ingestion_snapshot
+                                    .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio)
+                                    .unwrap_or(0.0),
+                                "observed swap writer backpressure is delaying irrelevant observed swap persistence"
+                            );
+                            pending.last_backpressure_log_at = Some(StdInstant::now());
+                        }
+                        pending_irrelevant_swap = Some(pending);
+                    }
+                    Err(error) => {
+                        app_consumer_loop_telemetry
+                            .note_processing_started_at(pending.processing_started_at);
+                        let error_chain = format_error_chain(&error);
+                        if observed_swap_writer_error_requires_restart(&error) {
+                            return Err(error).context(
+                                "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
+                            );
+                        }
+                        warn!(
+                            error = %error,
+                            error_chain = %error_chain,
+                            signature = %pending.swap.signature,
+                            "failed retrying pending irrelevant observed swap"
+                        );
+                    }
+                }
+            }
+            maybe_swap = ingestion.next_swap(), if ingestion_backoff_until.is_none() && pending_irrelevant_swap.is_none() => {
                 let now = Utc::now();
                 shadow_risk_guard.observe_ingestion_snapshot(
                     &store,
@@ -3717,62 +3811,67 @@ async fn run_app_loop(
                     &open_shadow_lots,
                 ) {
                     ObservedSwapShadowRelevance::IrrelevantUnclassified => {
-                        if let Err(error) = enqueue_irrelevant_observed_swap(
+                        match enqueue_irrelevant_observed_swap(
                             &observed_swap_writer,
                             &mut recent_swap_signatures,
                             &mut recent_swap_signature_order,
                             &swap,
                         )
-                        .await
-                        {
-                            app_consumer_loop_telemetry
-                                .note_processing_started_at(swap_processing_started_at);
-                            let error_chain = format_error_chain(&error);
-                            if observed_swap_writer_error_requires_restart(&error) {
-                                return Err(error).context(
-                                    "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
-                                );
+                        .await {
+                            Ok(IrrelevantObservedSwapEnqueueOutcome::Enqueued) => {
+                                app_consumer_loop_telemetry
+                                    .note_processing_started_at(swap_processing_started_at);
+                                continue;
                             }
-                            warn!(
-                                error = %error,
-                                error_chain = %error_chain,
-                                signature = %swap.signature,
-                                "failed enqueueing observed swap"
-                            );
-                            continue;
+                            Ok(IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure) => {
+                                let writer_snapshot = observed_swap_writer.snapshot();
+                                let ingestion_snapshot = ingestion.runtime_snapshot();
+                                warn!(
+                                    signature = %swap.signature,
+                                    observed_swap_writer_pending_requests =
+                                        writer_snapshot.pending_requests,
+                                    observed_swap_writer_aggregate_queue_depth_batches =
+                                        writer_snapshot.aggregate_queue_depth_batches,
+                                    yellowstone_output_queue_depth = ingestion_snapshot
+                                        .map(|snapshot| snapshot.yellowstone_output_queue_depth)
+                                        .unwrap_or(0),
+                                    yellowstone_output_queue_capacity = ingestion_snapshot
+                                        .map(|snapshot| snapshot.yellowstone_output_queue_capacity)
+                                        .unwrap_or(0),
+                                    yellowstone_output_queue_fill_ratio = ingestion_snapshot
+                                        .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio)
+                                        .unwrap_or(0.0),
+                                    "observed swap writer queue is saturated; deferring irrelevant observed swap persistence without restarting runtime"
+                                );
+                                pending_irrelevant_swap = Some(PendingIrrelevantObservedSwap {
+                                    swap,
+                                    processing_started_at: swap_processing_started_at,
+                                    backpressure_started_at: StdInstant::now(),
+                                    last_backpressure_log_at: Some(StdInstant::now()),
+                                });
+                                continue;
+                            }
+                            Err(error) => {
+                                app_consumer_loop_telemetry
+                                    .note_processing_started_at(swap_processing_started_at);
+                                let error_chain = format_error_chain(&error);
+                                if observed_swap_writer_error_requires_restart(&error) {
+                                    return Err(error).context(
+                                        "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
+                                    );
+                                }
+                                warn!(
+                                    error = %error,
+                                    error_chain = %error_chain,
+                                    signature = %swap.signature,
+                                    "failed enqueueing observed swap"
+                                );
+                                continue;
+                            }
                         }
-                        app_consumer_loop_telemetry
-                            .note_processing_started_at(swap_processing_started_at);
-                        continue;
                     }
                     ObservedSwapShadowRelevance::IrrelevantNotFollowed(side) => {
-                        if let Err(error) = enqueue_irrelevant_observed_swap(
-                            &observed_swap_writer,
-                            &mut recent_swap_signatures,
-                            &mut recent_swap_signature_order,
-                            &swap,
-                        )
-                        .await
-                        {
-                            app_consumer_loop_telemetry
-                                .note_processing_started_at(swap_processing_started_at);
-                            let error_chain = format_error_chain(&error);
-                            if observed_swap_writer_error_requires_restart(&error) {
-                                return Err(error).context(
-                                    "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
-                                );
-                            }
-                            warn!(
-                                error = %error,
-                                error_chain = %error_chain,
-                                signature = %swap.signature,
-                                "failed enqueueing observed swap"
-                            );
-                            continue;
-                        }
                         app_consumer_loop_telemetry.note_follow_rejected();
-                        app_consumer_loop_telemetry
-                            .note_processing_started_at(swap_processing_started_at);
                         let reason = "not_followed";
                         *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
                         *shadow_drop_stage_counts.entry("follow").or_insert(0) += 1;
@@ -3788,7 +3887,64 @@ async fn run_app_loop(
                             signature = %swap.signature,
                             "shadow gate dropped"
                         );
-                        continue;
+                        match enqueue_irrelevant_observed_swap(
+                            &observed_swap_writer,
+                            &mut recent_swap_signatures,
+                            &mut recent_swap_signature_order,
+                            &swap,
+                        )
+                        .await {
+                            Ok(IrrelevantObservedSwapEnqueueOutcome::Enqueued) => {
+                                app_consumer_loop_telemetry
+                                    .note_processing_started_at(swap_processing_started_at);
+                                continue;
+                            }
+                            Ok(IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure) => {
+                                let writer_snapshot = observed_swap_writer.snapshot();
+                                let ingestion_snapshot = ingestion.runtime_snapshot();
+                                warn!(
+                                    signature = %swap.signature,
+                                    observed_swap_writer_pending_requests =
+                                        writer_snapshot.pending_requests,
+                                    observed_swap_writer_aggregate_queue_depth_batches =
+                                        writer_snapshot.aggregate_queue_depth_batches,
+                                    yellowstone_output_queue_depth = ingestion_snapshot
+                                        .map(|snapshot| snapshot.yellowstone_output_queue_depth)
+                                        .unwrap_or(0),
+                                    yellowstone_output_queue_capacity = ingestion_snapshot
+                                        .map(|snapshot| snapshot.yellowstone_output_queue_capacity)
+                                        .unwrap_or(0),
+                                    yellowstone_output_queue_fill_ratio = ingestion_snapshot
+                                        .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio)
+                                        .unwrap_or(0.0),
+                                    "observed swap writer queue is saturated; deferring irrelevant observed swap persistence without restarting runtime"
+                                );
+                                pending_irrelevant_swap = Some(PendingIrrelevantObservedSwap {
+                                    swap,
+                                    processing_started_at: swap_processing_started_at,
+                                    backpressure_started_at: StdInstant::now(),
+                                    last_backpressure_log_at: Some(StdInstant::now()),
+                                });
+                                continue;
+                            }
+                            Err(error) => {
+                                app_consumer_loop_telemetry
+                                    .note_processing_started_at(swap_processing_started_at);
+                                let error_chain = format_error_chain(&error);
+                                if observed_swap_writer_error_requires_restart(&error) {
+                                    return Err(error).context(
+                                        "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
+                                    );
+                                }
+                                warn!(
+                                    error = %error,
+                                    error_chain = %error_chain,
+                                    signature = %swap.signature,
+                                    "failed enqueueing observed swap"
+                                );
+                                continue;
+                            }
+                        }
                     }
                     ObservedSwapShadowRelevance::Relevant(side) => side,
                 };
@@ -10511,84 +10667,150 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     }
 
     #[test]
-    fn enqueue_irrelevant_observed_swap_rolls_back_recent_signature_on_write_error() -> Result<()> {
-        let (_store, db_path) = make_test_store("irrelevant-observed-swap-write-failure")?;
-        let conn = rusqlite::Connection::open(&db_path)?;
-        conn.execute_batch(
-            "CREATE TRIGGER fail_irrelevant_observed_swap_insert
-             BEFORE INSERT ON observed_swaps
-             BEGIN
-                 SELECT RAISE(FAIL, 'disk I/O error: Error code 4874: I/O error within the xShmMap method');
-             END;",
+    fn enqueue_irrelevant_observed_swap_reports_pending_backpressure_without_forgetting_signature(
+    ) -> Result<()> {
+        let (_store, db_path) = make_test_store("irrelevant-observed-swap-backpressure")?;
+        let blocker_conn = rusqlite::Connection::open(&db_path)?;
+        blocker_conn.busy_timeout(StdDuration::from_millis(1))?;
+        blocker_conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let db_path_for_runtime = db_path.clone();
+        let runtime_handle = std::thread::spawn(move || -> Result<usize> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async move {
+                let writer = ObservedSwapWriter::start_for_test(
+                    db_path_for_runtime
+                        .to_str()
+                        .context("sqlite path must be valid utf-8")?
+                        .to_string(),
+                    1,
+                    1,
+                    false,
+                    DiscoveryAggregateWriteConfig::default(),
+                )?;
+                let first_swap = test_swap("sig-irrelevant-backpressure-a");
+                let second_swap = test_swap("sig-irrelevant-backpressure-b");
+                let third_swap = test_swap("sig-irrelevant-backpressure-c");
+                let fourth_swap = test_swap("sig-irrelevant-backpressure-d");
+                let mut recent_signatures = HashSet::new();
+                let mut recent_signature_order = VecDeque::new();
+
+                for swap in [&first_swap, &second_swap, &third_swap, &fourth_swap] {
+                    assert!(note_recent_swap_signature(
+                        &mut recent_signatures,
+                        &mut recent_signature_order,
+                        &swap.signature,
+                    ));
+                }
+
+                assert_eq!(
+                    enqueue_irrelevant_observed_swap(
+                        &writer,
+                        &mut recent_signatures,
+                        &mut recent_signature_order,
+                        &first_swap,
+                    )
+                    .await?,
+                    IrrelevantObservedSwapEnqueueOutcome::Enqueued
+                );
+                let mut pending_swap = None;
+                let mut expected_persisted = 1usize;
+                for swap in [&second_swap, &third_swap, &fourth_swap] {
+                    let outcome = tokio::time::timeout(
+                        Duration::from_millis(50),
+                        enqueue_irrelevant_observed_swap(
+                            &writer,
+                            &mut recent_signatures,
+                            &mut recent_signature_order,
+                            swap,
+                        ),
+                    )
+                    .await
+                    .context("irrelevant observed swap backpressure check stalled runtime")??;
+                    match outcome {
+                        IrrelevantObservedSwapEnqueueOutcome::Enqueued => {
+                            expected_persisted = expected_persisted.saturating_add(1);
+                        }
+                        IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure => {
+                            pending_swap = Some(swap.clone());
+                            expected_persisted = expected_persisted.saturating_add(1);
+                            break;
+                        }
+                    }
+                }
+                let pending_swap = pending_swap
+                    .context("expected bounded irrelevant observed swap queue to report backpressure")?;
+                assert!(
+                    !note_recent_swap_signature(
+                        &mut recent_signatures,
+                        &mut recent_signature_order,
+                        &pending_swap.signature,
+                    ),
+                    "backpressured irrelevant observed swap must remain deduped until retried"
+                );
+
+                tokio::time::timeout(
+                    Duration::from_millis(50),
+                    tokio::time::sleep(Duration::from_millis(10)),
+                )
+                    .await
+                    .context("current-thread runtime stalled while irrelevant observed swap was backpressured")?;
+
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        match enqueue_irrelevant_observed_swap(
+                            &writer,
+                            &mut recent_signatures,
+                            &mut recent_signature_order,
+                            &pending_swap,
+                        )
+                        .await? {
+                            IrrelevantObservedSwapEnqueueOutcome::Enqueued => {
+                                break Ok::<(), anyhow::Error>(())
+                            }
+                            IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure => {
+                                tokio::time::sleep(Duration::from_millis(20)).await;
+                            }
+                        }
+                    }
+                })
+                .await
+                .context("backpressured irrelevant observed swap should eventually enqueue")??;
+
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        writer.ensure_running()?;
+                        if writer.snapshot().pending_requests == 0 {
+                            break Ok::<(), anyhow::Error>(());
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .context("observed swap writer should drain pending irrelevant swaps")??;
+
+                writer.shutdown()?;
+                Ok::<usize, anyhow::Error>(expected_persisted)
+            })
+        });
+
+        std::thread::sleep(StdDuration::from_millis(150));
+        blocker_conn.execute_batch("COMMIT")?;
+
+        let expected_persisted = runtime_handle
+            .join()
+            .expect("runtime thread panicked")
+            .context("irrelevant observed swap backpressure path should stay healthy")?;
+
+        let verify_store = SqliteStore::open(&db_path)?;
+        let swaps = verify_store.load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-06T11:59:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
         )?;
-
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        runtime.block_on(async {
-            let writer = ObservedSwapWriter::start(
-                db_path
-                    .to_str()
-                    .context("sqlite path must be valid utf-8")?
-                    .to_string(),
-                false,
-                DiscoveryAggregateWriteConfig::default(),
-            )?;
-            let swap = test_swap("sig-irrelevant-write-failure");
-            let mut recent_signatures = HashSet::new();
-            let mut recent_signature_order = VecDeque::new();
-
-            assert!(note_recent_swap_signature(
-                &mut recent_signatures,
-                &mut recent_signature_order,
-                &swap.signature,
-            ));
-            assert!(
-                !note_recent_swap_signature(
-                    &mut recent_signatures,
-                    &mut recent_signature_order,
-                    &swap.signature,
-                ),
-                "signature should stay deduped until the failed irrelevant write forgets it"
-            );
-
-            let error = enqueue_irrelevant_observed_swap(
-                &writer,
-                &mut recent_signatures,
-                &mut recent_signature_order,
-                &swap,
-            )
-            .await
-            .expect_err("fatal irrelevant observed-swap write must bubble");
-            let error_text = format!("{error:#}");
-            assert!(
-                error_text.contains("failed to insert observed swap batch with activity days"),
-                "expected fatal writer batch error to survive irrelevant-path helper, got: {error_text}"
-            );
-            assert!(
-                error_text.contains("xShmMap"),
-                "expected fatal sqlite I/O marker to survive irrelevant-path helper, got: {error_text}"
-            );
-
-            assert!(
-                note_recent_swap_signature(
-                    &mut recent_signatures,
-                    &mut recent_signature_order,
-                    &swap.signature,
-                ),
-                "failed irrelevant write must forget the signature so the swap can be retried"
-            );
-
-            let shutdown_error = writer
-                .shutdown()
-                .expect_err("fatal writer failure should surface again on shutdown");
-            assert!(
-                error_chain_contains(&shutdown_error, "failed to insert observed swap batch"),
-                "expected shutdown to surface the writer failure, got: {shutdown_error:#}"
-            );
-
-            Ok::<(), anyhow::Error>(())
-        })?;
+        assert_eq!(swaps.len(), expected_persisted);
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
