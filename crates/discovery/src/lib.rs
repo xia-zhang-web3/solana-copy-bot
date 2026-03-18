@@ -1209,9 +1209,28 @@ impl DiscoveryService {
         let was_zero = *entry == 0;
         *entry = entry.saturating_add(count.min(u32::MAX as usize) as u32);
         if was_zero {
-            payload.unique_buy_mints.push(mint.to_string());
+            Self::insert_unique_buy_mint(payload, mint);
         }
         was_zero
+    }
+
+    fn insert_unique_buy_mint(payload: &mut PersistedStreamRebuildPayload, mint: &str) {
+        match payload
+            .unique_buy_mints
+            .binary_search_by(|existing| existing.as_str().cmp(mint))
+        {
+            Ok(_) => {}
+            Err(index) => payload.unique_buy_mints.insert(index, mint.to_string()),
+        }
+    }
+
+    fn remove_unique_buy_mint(payload: &mut PersistedStreamRebuildPayload, mint: &str) {
+        if let Ok(index) = payload
+            .unique_buy_mints
+            .binary_search_by(|existing| existing.as_str().cmp(mint))
+        {
+            payload.unique_buy_mints.remove(index);
+        }
     }
 
     fn set_buy_mint_occurrences(
@@ -1222,13 +1241,16 @@ impl DiscoveryService {
         let was_missing = payload.buy_mint_counts.get(mint).copied().unwrap_or(0) == 0;
         if count == 0 {
             payload.buy_mint_counts.remove(mint);
+            if !was_missing {
+                Self::remove_unique_buy_mint(payload, mint);
+            }
             return was_missing;
         }
         payload
             .buy_mint_counts
             .insert(mint.to_string(), count.min(u32::MAX as usize) as u32);
         if was_missing {
-            payload.unique_buy_mints.push(mint.to_string());
+            Self::insert_unique_buy_mint(payload, mint);
         }
         was_missing
     }
@@ -1255,6 +1277,7 @@ impl DiscoveryService {
         };
         if remove {
             payload.buy_mint_counts.remove(mint);
+            Self::remove_unique_buy_mint(payload, mint);
         }
     }
 
@@ -2010,7 +2033,6 @@ impl DiscoveryService {
                         .payload
                         .collect_buy_mints_reconcile_expired_head_cursor_token =
                         page.rows.last().map(|row| row.mint.clone());
-                    Self::sync_unique_buy_mints_from_counts(&mut state.payload);
                     if page.time_budget_exhausted {
                         break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
                     }
@@ -2054,7 +2076,6 @@ impl DiscoveryService {
                             .payload
                             .collect_buy_mints_reconcile_source_window_start = None;
                         state.payload.collect_buy_mints_reconcile_source_horizon_end = None;
-                        Self::sync_unique_buy_mints_from_counts(&mut state.payload);
                         if state.payload.collect_buy_mints_prepass_complete {
                             return Ok(PersistedStreamPhaseAdvance {
                                 rows_processed,
@@ -2105,7 +2126,6 @@ impl DiscoveryService {
                         .payload
                         .collect_buy_mints_reconcile_new_tail_cursor_token =
                         page.rows.last().map(|row| row.mint.clone());
-                    Self::sync_unique_buy_mints_from_counts(&mut state.payload);
                     if page.time_budget_exhausted {
                         break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
                     }
@@ -5992,6 +6012,15 @@ mod tests {
         bucketed_now - Duration::days(config.scoring_window_days.max(1) as i64)
     }
 
+    fn assert_sorted_strings(values: &[String]) {
+        assert!(
+            values
+                .windows(2)
+                .all(|pair| pair[0].as_str() <= pair[1].as_str()),
+            "expected canonical sorted strings, got {values:?}"
+        );
+    }
+
     fn seed_stage1_persisted_stream_runtime_fixture(
         store: &SqliteStore,
         config: &DiscoveryConfig,
@@ -8469,8 +8498,8 @@ mod tests {
         ];
         state.payload.buy_mint_counts = BTreeMap::from([
             (token_expired_a, 1),
-            (token_expired_b, 1),
-            (token_survives, 1),
+            (token_expired_b.clone(), 1),
+            (token_survives.clone(), 1),
         ]);
         assert!(
             discovery.prepare_persisted_stream_rebuild_for_metrics_window_rollover(
@@ -8499,6 +8528,21 @@ mod tests {
         assert_eq!(
             state.payload.collect_buy_mints_mode,
             CollectBuyMintsMode::ReconcileExpiredHead
+        );
+        assert_eq!(
+            state.payload.unique_buy_mints,
+            vec![token_expired_b.clone(), token_survives.clone()],
+            "partial stale expired-head reconcile should keep exact canonical membership incrementally without a full counts->vector rebuild"
+        );
+        assert_eq!(
+            state.payload.buy_mint_counts.keys().cloned().collect::<Vec<_>>(),
+            state.payload.unique_buy_mints,
+            "authoritative buy-mint counts and resumable unique mint prefix must stay aligned after a partial stale reconcile page"
+        );
+        assert_sorted_strings(&state.payload.unique_buy_mints);
+        assert!(
+            DiscoveryService::state_can_resume_stale_metrics_window_until_exact_checkpoint(&state),
+            "partial stale expired-head reconcile must remain eligible for stale-resume on the next bucket rollover"
         );
         assert!(state
             .payload
@@ -8536,6 +8580,84 @@ mod tests {
                 .collect_buy_mints_reconcile_expired_head_cursor_token
         );
         assert_eq!(resumed.prepass_rows_processed, state.prepass_rows_processed);
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_stale_reconcile_membership_stays_sorted_and_exact_without_full_resync_stage1(
+    ) -> Result<()> {
+        let config = bounded_stage1_runtime_config();
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let now = DateTime::parse_from_rfc3339("2026-03-18T22:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+
+        let mut state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        state.phase = DiscoveryPersistedRebuildPhase::CollectBuyMints;
+        state.payload.collect_buy_mints_mode = CollectBuyMintsMode::ReconcileExpiredHead;
+        state.payload.collect_buy_mints_prepass_complete = true;
+        for mint in [
+            "TokenStage1IncrementalExactC1111111111111",
+            "TokenStage1IncrementalExactA1111111111111",
+            "TokenStage1IncrementalExactB1111111111111",
+        ] {
+            assert!(DiscoveryService::add_buy_mint_occurrences(
+                &mut state.payload,
+                mint,
+                1,
+            ));
+        }
+        assert_eq!(
+            state.payload.unique_buy_mints,
+            vec![
+                "TokenStage1IncrementalExactA1111111111111".to_string(),
+                "TokenStage1IncrementalExactB1111111111111".to_string(),
+                "TokenStage1IncrementalExactC1111111111111".to_string(),
+            ]
+        );
+
+        DiscoveryService::subtract_buy_mint_occurrences(
+            &mut state.payload,
+            "TokenStage1IncrementalExactB1111111111111",
+            1,
+        );
+        assert_eq!(
+            state.payload.unique_buy_mints,
+            vec![
+                "TokenStage1IncrementalExactA1111111111111".to_string(),
+                "TokenStage1IncrementalExactC1111111111111".to_string(),
+            ]
+        );
+
+        assert!(DiscoveryService::add_buy_mint_occurrences(
+            &mut state.payload,
+            "TokenStage1IncrementalExactB1111111111111",
+            2,
+        ));
+        assert_eq!(
+            state.payload.unique_buy_mints,
+            vec![
+                "TokenStage1IncrementalExactA1111111111111".to_string(),
+                "TokenStage1IncrementalExactB1111111111111".to_string(),
+                "TokenStage1IncrementalExactC1111111111111".to_string(),
+            ]
+        );
+        assert_eq!(
+            state
+                .payload
+                .buy_mint_counts
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            state.payload.unique_buy_mints
+        );
+        assert_sorted_strings(&state.payload.unique_buy_mints);
+        assert!(
+            DiscoveryService::state_can_resume_stale_metrics_window_until_exact_checkpoint(&state)
+        );
         Ok(())
     }
 
