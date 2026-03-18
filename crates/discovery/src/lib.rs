@@ -12,7 +12,7 @@ use copybot_storage::{
 };
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant};
 use tracing::{info, warn};
@@ -545,10 +545,43 @@ struct WalletAccumulator {
     buy_observations: Vec<BuyObservation>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+enum CollectBuyMintsMode {
+    #[default]
+    FreshScan,
+    ReconcileExpiredHead,
+    ReconcileNewTail,
+}
+
+impl CollectBuyMintsMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::FreshScan => "fresh_scan",
+            Self::ReconcileExpiredHead => "reconcile_expired_head",
+            Self::ReconcileNewTail => "reconcile_new_tail",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct PersistedStreamRebuildPayload {
     unique_buy_mints: Vec<String>,
+    #[serde(default)]
+    buy_mint_counts: BTreeMap<String, u32>,
+    #[serde(default)]
     collect_buy_mints_cursor_token: Option<String>,
+    #[serde(default)]
+    collect_buy_mints_prepass_complete: bool,
+    #[serde(default)]
+    collect_buy_mints_mode: CollectBuyMintsMode,
+    #[serde(default)]
+    collect_buy_mints_reconcile_source_window_start: Option<DateTime<Utc>>,
+    #[serde(default)]
+    collect_buy_mints_reconcile_source_horizon_end: Option<DateTime<Utc>>,
+    #[serde(default)]
+    collect_buy_mints_reconcile_expired_head_cursor: Option<DiscoveryRuntimeCursor>,
+    #[serde(default)]
+    collect_buy_mints_reconcile_new_tail_cursor: Option<DiscoveryRuntimeCursor>,
     token_quality_cache: HashMap<String, quality_cache::TokenQualityResolution>,
     token_quality_progress: quality_cache::TokenQualityResolutionProgress,
     by_wallet: HashMap<String, WalletAccumulator>,
@@ -594,11 +627,16 @@ impl PersistedStreamBudgetExhaustedReason {
 #[derive(Debug, Clone)]
 struct PersistedStreamProgressTelemetry {
     phase: DiscoveryPersistedRebuildPhase,
+    collect_buy_mints_mode: CollectBuyMintsMode,
     window_start: DateTime<Utc>,
     horizon_end: DateTime<Utc>,
     metrics_window_start: DateTime<Utc>,
     phase_cursor: Option<DiscoveryRuntimeCursor>,
     collect_buy_mints_cursor_token: Option<String>,
+    collect_buy_mints_reconcile_source_window_start: Option<DateTime<Utc>>,
+    collect_buy_mints_reconcile_source_horizon_end: Option<DateTime<Utc>>,
+    collect_buy_mints_reconcile_expired_head_cursor: Option<DiscoveryRuntimeCursor>,
+    collect_buy_mints_reconcile_new_tail_cursor: Option<DiscoveryRuntimeCursor>,
     prepass_rows_processed: usize,
     prepass_pages_processed: usize,
     replay_rows_processed: usize,
@@ -630,6 +668,13 @@ enum PersistedStreamRebuildAdvanceOutcome {
     InProgress {
         telemetry: PersistedStreamProgressTelemetry,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersistedStreamRebuildRestoreOutcome {
+    StartedFresh,
+    ResumedExisting,
+    CarriedForwardMetricsWindow,
 }
 
 #[derive(Debug, Clone)]
@@ -1080,18 +1125,167 @@ impl DiscoveryService {
         }
     }
 
+    fn sync_unique_buy_mints_from_counts(payload: &mut PersistedStreamRebuildPayload) {
+        payload.unique_buy_mints = payload
+            .buy_mint_counts
+            .iter()
+            .filter_map(|(mint, count)| (*count > 0).then_some(mint.clone()))
+            .collect();
+    }
+
+    fn payload_has_exact_buy_mint_membership(payload: &PersistedStreamRebuildPayload) -> bool {
+        payload.unique_buy_mints.is_empty()
+            || payload.buy_mint_counts.len() == payload.unique_buy_mints.len()
+    }
+
+    fn state_can_carry_forward_metrics_rollover(state: &PersistedStreamRebuildState) -> bool {
+        state.payload.collect_buy_mints_mode == CollectBuyMintsMode::FreshScan
+            && Self::payload_has_exact_buy_mint_membership(&state.payload)
+    }
+
+    fn add_buy_mint_occurrences(
+        payload: &mut PersistedStreamRebuildPayload,
+        mint: &str,
+        count: usize,
+    ) -> bool {
+        if count == 0 {
+            return false;
+        }
+        let entry = payload.buy_mint_counts.entry(mint.to_string()).or_insert(0);
+        let was_zero = *entry == 0;
+        *entry = entry.saturating_add(count.min(u32::MAX as usize) as u32);
+        if was_zero {
+            payload.unique_buy_mints.push(mint.to_string());
+        }
+        was_zero
+    }
+
+    fn set_buy_mint_occurrences(
+        payload: &mut PersistedStreamRebuildPayload,
+        mint: &str,
+        count: usize,
+    ) -> bool {
+        let was_missing = payload.buy_mint_counts.get(mint).copied().unwrap_or(0) == 0;
+        if count == 0 {
+            payload.buy_mint_counts.remove(mint);
+            return was_missing;
+        }
+        payload
+            .buy_mint_counts
+            .insert(mint.to_string(), count.min(u32::MAX as usize) as u32);
+        if was_missing {
+            payload.unique_buy_mints.push(mint.to_string());
+        }
+        was_missing
+    }
+
+    fn subtract_buy_mint_occurrences(
+        payload: &mut PersistedStreamRebuildPayload,
+        mint: &str,
+        count: usize,
+    ) {
+        if count == 0 {
+            return;
+        }
+        let count = count.min(u32::MAX as usize) as u32;
+        let remove = match payload.buy_mint_counts.get_mut(mint) {
+            Some(existing) if *existing <= count => {
+                *existing = 0;
+                true
+            }
+            Some(existing) => {
+                *existing -= count;
+                false
+            }
+            None => false,
+        };
+        if remove {
+            payload.buy_mint_counts.remove(mint);
+        }
+    }
+
+    fn reset_bucket_sensitive_rebuild_state_for_rollover(state: &mut PersistedStreamRebuildState) {
+        state.phase = DiscoveryPersistedRebuildPhase::CollectBuyMints;
+        state.phase_cursor = None;
+        state.replay_rows_processed = 0;
+        state.replay_pages_processed = 0;
+        state.payload.collect_buy_mints_mode = CollectBuyMintsMode::ReconcileExpiredHead;
+        state.payload.token_quality_cache.clear();
+        state.payload.token_quality_progress =
+            quality_cache::TokenQualityResolutionProgress::default();
+        state.payload.by_wallet.clear();
+        state.payload.token_states.clear();
+        state.payload.token_recent_sol_trades.clear();
+        state.payload.pending_rug_checks.clear();
+        state.payload.token_pending_buy_starts.clear();
+        state.payload.completed_snapshots.clear();
+    }
+
+    fn prepare_persisted_stream_rebuild_for_metrics_window_rollover(
+        &self,
+        state: &mut PersistedStreamRebuildState,
+        window_start: DateTime<Utc>,
+        metrics_window_start: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        if state.metrics_window_start == metrics_window_start {
+            return Ok(false);
+        }
+        if !Self::state_can_carry_forward_metrics_rollover(state) {
+            return Ok(false);
+        }
+
+        let source_window_start = state.window_start;
+        let source_horizon_end = state.horizon_end;
+        let source_metrics_window_start = state.metrics_window_start;
+        let old_phase = state.phase;
+        let old_collect_cursor = state.payload.collect_buy_mints_cursor_token.clone();
+        let prepass_complete = state.payload.collect_buy_mints_prepass_complete
+            || state.phase != DiscoveryPersistedRebuildPhase::CollectBuyMints;
+
+        state.window_start = window_start;
+        state.horizon_end = now;
+        state.metrics_window_start = metrics_window_start;
+        state.payload.collect_buy_mints_prepass_complete = prepass_complete;
+        state.payload.collect_buy_mints_cursor_token = if prepass_complete {
+            None
+        } else {
+            old_collect_cursor
+        };
+        state
+            .payload
+            .collect_buy_mints_reconcile_source_window_start = Some(source_window_start);
+        state.payload.collect_buy_mints_reconcile_source_horizon_end = Some(source_horizon_end);
+        state
+            .payload
+            .collect_buy_mints_reconcile_expired_head_cursor = None;
+        state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
+        Self::sync_unique_buy_mints_from_counts(&mut state.payload);
+        Self::reset_bucket_sensitive_rebuild_state_for_rollover(state);
+        info!(
+            rebuild_previous_phase = old_phase.as_str(),
+            rebuild_previous_window_start = %source_window_start,
+            rebuild_previous_horizon_end = %source_horizon_end,
+            rebuild_previous_metrics_window_start = %source_metrics_window_start,
+            rebuild_target_window_start = %window_start,
+            rebuild_target_horizon_end = %now,
+            rebuild_target_metrics_window_start = %metrics_window_start,
+            rebuild_collect_buy_mints_cursor_token =
+                state.payload.collect_buy_mints_cursor_token.as_deref(),
+            rebuild_unique_buy_mints = state.payload.unique_buy_mints.len(),
+            "carrying forward exact canonical buy-mint membership progress across metrics bucket rollover; bucket-sensitive quality/replay state reset for fresh target-window rebuild"
+        );
+        Ok(true)
+    }
+
     fn persisted_stream_rebuild_restart_reason(
         &self,
         state: &PersistedStreamRebuildState,
         window_start: DateTime<Utc>,
-        metrics_window_start: DateTime<Utc>,
         now: DateTime<Utc>,
     ) -> Option<&'static str> {
         if state.window_start > window_start {
             return Some("window_start_in_future");
-        }
-        if state.metrics_window_start != metrics_window_start {
-            return Some("metrics_window_start_changed");
         }
         if state.horizon_end > now {
             return Some("horizon_in_future");
@@ -1121,8 +1315,15 @@ impl DiscoveryService {
                 .payload
                 .unique_buy_mints
                 .retain(|mint| mint.as_str() <= cursor_token);
+            state
+                .payload
+                .buy_mint_counts
+                .retain(|mint, count| *count > 0 && mint.as_str() <= cursor_token);
         }
         let truncated = state.payload.unique_buy_mints.len() != original_len;
+        if Self::payload_has_exact_buy_mint_membership(&state.payload) {
+            Self::sync_unique_buy_mints_from_counts(&mut state.payload);
+        }
         if changed || truncated {
             info!(
                 rebuild_window_start = %state.window_start,
@@ -1145,11 +1346,17 @@ impl DiscoveryService {
     ) {
         match state.phase {
             DiscoveryPersistedRebuildPhase::CollectBuyMints => {
+                if Self::payload_has_exact_buy_mint_membership(&state.payload) {
+                    Self::sync_unique_buy_mints_from_counts(&mut state.payload);
+                }
                 if state.payload.collect_buy_mints_cursor_token.is_some() {
                     self.repair_collect_buy_mints_payload_for_cursor(state);
                 }
             }
             DiscoveryPersistedRebuildPhase::ResolveTokenQuality => {
+                if Self::payload_has_exact_buy_mint_membership(&state.payload) {
+                    Self::sync_unique_buy_mints_from_counts(&mut state.payload);
+                }
                 if Self::canonicalize_unique_buy_mints(&mut state.payload.unique_buy_mints) {
                     warn!(
                         rebuild_window_start = %state.window_start,
@@ -1165,6 +1372,9 @@ impl DiscoveryService {
             }
             DiscoveryPersistedRebuildPhase::Replay
             | DiscoveryPersistedRebuildPhase::PublishPending => {
+                if Self::payload_has_exact_buy_mint_membership(&state.payload) {
+                    Self::sync_unique_buy_mints_from_counts(&mut state.payload);
+                }
                 if Self::canonicalize_unique_buy_mints(&mut state.payload.unique_buy_mints) {
                     warn!(
                         rebuild_window_start = %state.window_start,
@@ -1236,21 +1446,21 @@ impl DiscoveryService {
         window_start: DateTime<Utc>,
         metrics_window_start: DateTime<Utc>,
         now: DateTime<Utc>,
-    ) -> Result<(PersistedStreamRebuildState, bool)> {
+    ) -> Result<(
+        PersistedStreamRebuildState,
+        PersistedStreamRebuildRestoreOutcome,
+    )> {
         let Some(row) = store.load_discovery_persisted_rebuild_state()? else {
             return Ok((
                 self.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now),
-                false,
+                PersistedStreamRebuildRestoreOutcome::StartedFresh,
             ));
         };
         match Self::persisted_stream_rebuild_state_from_row(row) {
-            Ok(state) => {
-                if let Some(reason) = self.persisted_stream_rebuild_restart_reason(
-                    &state,
-                    window_start,
-                    metrics_window_start,
-                    now,
-                ) {
+            Ok(mut state) => {
+                if let Some(reason) =
+                    self.persisted_stream_rebuild_restart_reason(&state, window_start, now)
+                {
                     warn!(
                         persisted_window_start = %state.window_start,
                         persisted_metrics_window_start = %state.metrics_window_start,
@@ -1268,12 +1478,43 @@ impl DiscoveryService {
                             metrics_window_start,
                             now,
                         ),
-                        false,
+                        PersistedStreamRebuildRestoreOutcome::StartedFresh,
                     ));
                 }
-                let mut state = state;
                 self.repair_restored_persisted_stream_state_for_resume(&mut state);
-                Ok((state, true))
+                if state.metrics_window_start != metrics_window_start {
+                    if self.prepare_persisted_stream_rebuild_for_metrics_window_rollover(
+                        &mut state,
+                        window_start,
+                        metrics_window_start,
+                        now,
+                    )? {
+                        return Ok((
+                            state,
+                            PersistedStreamRebuildRestoreOutcome::CarriedForwardMetricsWindow,
+                        ));
+                    }
+                    warn!(
+                        persisted_window_start = %state.window_start,
+                        persisted_metrics_window_start = %state.metrics_window_start,
+                        persisted_horizon_end = %state.horizon_end,
+                        current_window_start = %window_start,
+                        current_metrics_window_start = %metrics_window_start,
+                        current_now = %now,
+                        restart_reason = "metrics_window_start_changed_without_exact_buy_mint_membership",
+                        "discarding persisted discovery rebuild progress because the metrics bucket moved before exact canonical buy-mint membership state was available"
+                    );
+                    store.clear_discovery_persisted_rebuild_state()?;
+                    return Ok((
+                        self.start_persisted_stream_rebuild_state(
+                            window_start,
+                            metrics_window_start,
+                            now,
+                        ),
+                        PersistedStreamRebuildRestoreOutcome::StartedFresh,
+                    ));
+                }
+                Ok((state, PersistedStreamRebuildRestoreOutcome::ResumedExisting))
             }
             Err(error) => {
                 warn!(
@@ -1287,7 +1528,7 @@ impl DiscoveryService {
                         metrics_window_start,
                         now,
                     ),
-                    false,
+                    PersistedStreamRebuildRestoreOutcome::StartedFresh,
                 ))
             }
         }
@@ -1311,6 +1552,7 @@ impl DiscoveryService {
     ) {
         info!(
             rebuild_phase = telemetry.phase.as_str(),
+            rebuild_collect_buy_mints_mode = telemetry.collect_buy_mints_mode.as_str(),
             rebuild_window_start = %telemetry.window_start,
             rebuild_horizon_end = %telemetry.horizon_end,
             rebuild_metrics_window_start = %telemetry.metrics_window_start,
@@ -1333,6 +1575,34 @@ impl DiscoveryService {
                 .map(|cursor| cursor.signature.as_str()),
             rebuild_collect_buy_mints_cursor_token =
                 telemetry.collect_buy_mints_cursor_token.as_deref(),
+            rebuild_collect_buy_mints_reconcile_source_window_start =
+                ?telemetry.collect_buy_mints_reconcile_source_window_start,
+            rebuild_collect_buy_mints_reconcile_source_horizon_end =
+                ?telemetry.collect_buy_mints_reconcile_source_horizon_end,
+            rebuild_collect_buy_mints_reconcile_expired_head_cursor_ts = ?telemetry
+                .collect_buy_mints_reconcile_expired_head_cursor
+                .as_ref()
+                .map(|cursor| cursor.ts_utc),
+            rebuild_collect_buy_mints_reconcile_expired_head_cursor_slot = ?telemetry
+                .collect_buy_mints_reconcile_expired_head_cursor
+                .as_ref()
+                .map(|cursor| cursor.slot),
+            rebuild_collect_buy_mints_reconcile_expired_head_cursor_signature = ?telemetry
+                .collect_buy_mints_reconcile_expired_head_cursor
+                .as_ref()
+                .map(|cursor| cursor.signature.as_str()),
+            rebuild_collect_buy_mints_reconcile_new_tail_cursor_ts = ?telemetry
+                .collect_buy_mints_reconcile_new_tail_cursor
+                .as_ref()
+                .map(|cursor| cursor.ts_utc),
+            rebuild_collect_buy_mints_reconcile_new_tail_cursor_slot = ?telemetry
+                .collect_buy_mints_reconcile_new_tail_cursor
+                .as_ref()
+                .map(|cursor| cursor.slot),
+            rebuild_collect_buy_mints_reconcile_new_tail_cursor_signature = ?telemetry
+                .collect_buy_mints_reconcile_new_tail_cursor
+                .as_ref()
+                .map(|cursor| cursor.signature.as_str()),
             rebuild_cycle_rows_processed = telemetry.cycle_rows_processed,
             rebuild_cycle_pages_processed = telemetry.cycle_pages_processed,
             rebuild_cycle_unique_buy_mints_discovered =
@@ -1373,7 +1643,10 @@ impl DiscoveryService {
         let mut pages_processed = 0usize;
         let mut unique_buy_mints_discovered = 0usize;
         let mut cursor_token = state.payload.collect_buy_mints_cursor_token.clone();
-        if cursor_token.is_none() && state.phase_cursor.is_some() {
+        if state.payload.collect_buy_mints_mode == CollectBuyMintsMode::FreshScan
+            && cursor_token.is_none()
+            && state.phase_cursor.is_some()
+        {
             let mut canonical_mints = state.payload.unique_buy_mints.clone();
             Self::canonicalize_unique_buy_mints(&mut canonical_mints);
             info!(
@@ -1422,8 +1695,6 @@ impl DiscoveryService {
                 "recovered canonical safe-prefix progress for legacy collect_buy_mints checkpoint before resuming direct distinct mint pagination"
             );
         }
-        let mut seen_buy_mints: HashSet<String> =
-            state.payload.unique_buy_mints.iter().cloned().collect();
         let budget_exhausted_reason = loop {
             if pages_processed >= fetch_page_limit {
                 break Some(PersistedStreamBudgetExhaustedReason::PageBudget);
@@ -1432,36 +1703,225 @@ impl DiscoveryService {
                 break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
             }
 
-            let page = store.load_observed_buy_mints_in_window_after_token_with_budget(
-                state.window_start,
-                state.horizon_end,
-                cursor_token.as_deref(),
-                fetch_limit,
-                deadline,
-            )?;
-            pages_processed = pages_processed.saturating_add(1);
-            rows_processed = rows_processed.saturating_add(page.mints.len());
-            for mint in &page.mints {
-                if seen_buy_mints.insert(mint.clone()) {
-                    state.payload.unique_buy_mints.push(mint.clone());
-                    unique_buy_mints_discovered = unique_buy_mints_discovered.saturating_add(1);
+            match state.payload.collect_buy_mints_mode {
+                CollectBuyMintsMode::FreshScan => {
+                    let page = store
+                        .load_observed_buy_mint_counts_in_window_after_token_with_budget(
+                            state.window_start,
+                            state.horizon_end,
+                            cursor_token.as_deref(),
+                            None,
+                            fetch_limit,
+                            deadline,
+                        )?;
+                    pages_processed = pages_processed.saturating_add(1);
+                    rows_processed = rows_processed.saturating_add(page.rows.len());
+                    for row in &page.rows {
+                        if Self::set_buy_mint_occurrences(
+                            &mut state.payload,
+                            &row.mint,
+                            row.buy_count,
+                        ) {
+                            unique_buy_mints_discovered =
+                                unique_buy_mints_discovered.saturating_add(1);
+                        }
+                    }
+                    cursor_token = page.rows.last().map(|row| row.mint.clone());
+                    if page.time_budget_exhausted {
+                        break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+                    }
+                    if page.rows.len() < fetch_limit {
+                        state.payload.collect_buy_mints_prepass_complete = true;
+                        state.payload.collect_buy_mints_cursor_token = None;
+                        if Self::payload_has_exact_buy_mint_membership(&state.payload) {
+                            Self::sync_unique_buy_mints_from_counts(&mut state.payload);
+                        } else {
+                            Self::canonicalize_unique_buy_mints(
+                                &mut state.payload.unique_buy_mints,
+                            );
+                        }
+                        return Ok(PersistedStreamPhaseAdvance {
+                            rows_processed,
+                            pages_processed,
+                            source_exhausted: true,
+                            phase_cursor: None,
+                            collect_buy_mints_cursor_token: None,
+                            unique_buy_mints_discovered,
+                            budget_exhausted_reason: None,
+                        });
+                    }
                 }
-            }
-            cursor_token = page.mints.last().cloned();
+                CollectBuyMintsMode::ReconcileExpiredHead => {
+                    let Some(source_window_start) = state
+                        .payload
+                        .collect_buy_mints_reconcile_source_window_start
+                    else {
+                        state.payload.collect_buy_mints_mode =
+                            CollectBuyMintsMode::ReconcileNewTail;
+                        continue;
+                    };
+                    if source_window_start >= state.window_start {
+                        state.payload.collect_buy_mints_mode =
+                            CollectBuyMintsMode::ReconcileNewTail;
+                        state
+                            .payload
+                            .collect_buy_mints_reconcile_expired_head_cursor = None;
+                        continue;
+                    }
 
-            if page.time_budget_exhausted {
-                break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
-            }
-            if page.mints.len() < fetch_limit {
-                return Ok(PersistedStreamPhaseAdvance {
-                    rows_processed,
-                    pages_processed,
-                    source_exhausted: true,
-                    phase_cursor: None,
-                    collect_buy_mints_cursor_token: None,
-                    unique_buy_mints_discovered,
-                    budget_exhausted_reason: None,
-                });
+                    let reconcile_cursor = state
+                        .payload
+                        .collect_buy_mints_reconcile_expired_head_cursor
+                        .clone();
+                    let mut page_last_cursor = reconcile_cursor.clone();
+                    let page = store.for_each_observed_swap_in_window_after_cursor_with_budget(
+                        source_window_start,
+                        state.window_start,
+                        reconcile_cursor.as_ref(),
+                        fetch_limit,
+                        deadline,
+                        |swap| {
+                            page_last_cursor = Some(DiscoveryRuntimeCursor {
+                                ts_utc: swap.ts_utc,
+                                slot: swap.slot,
+                                signature: swap.signature.clone(),
+                            });
+                            rows_processed = rows_processed.saturating_add(1);
+                            if swap.ts_utc < state.window_start && is_sol_buy(&swap) {
+                                Self::subtract_buy_mint_occurrences(
+                                    &mut state.payload,
+                                    &swap.token_out,
+                                    1,
+                                );
+                            }
+                            Ok(())
+                        },
+                    )?;
+                    pages_processed = pages_processed.saturating_add(1);
+                    state
+                        .payload
+                        .collect_buy_mints_reconcile_expired_head_cursor = page_last_cursor;
+                    Self::sync_unique_buy_mints_from_counts(&mut state.payload);
+                    if page.time_budget_exhausted {
+                        break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+                    }
+                    if page.rows_seen < fetch_limit {
+                        state.payload.collect_buy_mints_mode =
+                            CollectBuyMintsMode::ReconcileNewTail;
+                        state
+                            .payload
+                            .collect_buy_mints_reconcile_expired_head_cursor = None;
+                        info!(
+                            rebuild_window_start = %state.window_start,
+                            rebuild_horizon_end = %state.horizon_end,
+                            rebuild_reconcile_source_window_start = ?state
+                                .payload
+                                .collect_buy_mints_reconcile_source_window_start,
+                            rebuild_reconcile_source_horizon_end = ?state
+                                .payload
+                                .collect_buy_mints_reconcile_source_horizon_end,
+                            rebuild_unique_buy_mints = state.payload.unique_buy_mints.len(),
+                            "completed expired-head reconciliation for carried-forward collect_buy_mints state; switching to new-tail reconciliation"
+                        );
+                        continue;
+                    }
+                }
+                CollectBuyMintsMode::ReconcileNewTail => {
+                    let Some(source_horizon_end) =
+                        state.payload.collect_buy_mints_reconcile_source_horizon_end
+                    else {
+                        state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+                        continue;
+                    };
+                    if source_horizon_end >= state.horizon_end {
+                        state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
+                        state
+                            .payload
+                            .collect_buy_mints_reconcile_source_window_start = None;
+                        state.payload.collect_buy_mints_reconcile_source_horizon_end = None;
+                        Self::sync_unique_buy_mints_from_counts(&mut state.payload);
+                        if state.payload.collect_buy_mints_prepass_complete {
+                            return Ok(PersistedStreamPhaseAdvance {
+                                rows_processed,
+                                pages_processed,
+                                source_exhausted: true,
+                                phase_cursor: None,
+                                collect_buy_mints_cursor_token: None,
+                                unique_buy_mints_discovered,
+                                budget_exhausted_reason: None,
+                            });
+                        }
+                        state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+                        continue;
+                    }
+
+                    let reconcile_cursor = state
+                        .payload
+                        .collect_buy_mints_reconcile_new_tail_cursor
+                        .clone();
+                    let mut page_last_cursor = reconcile_cursor.clone();
+                    let page = store.for_each_observed_swap_in_window_after_cursor_with_budget(
+                        source_horizon_end,
+                        state.horizon_end,
+                        reconcile_cursor.as_ref(),
+                        fetch_limit,
+                        deadline,
+                        |swap| {
+                            page_last_cursor = Some(DiscoveryRuntimeCursor {
+                                ts_utc: swap.ts_utc,
+                                slot: swap.slot,
+                                signature: swap.signature.clone(),
+                            });
+                            rows_processed = rows_processed.saturating_add(1);
+                            if swap.ts_utc > source_horizon_end
+                                && is_sol_buy(&swap)
+                                && Self::add_buy_mint_occurrences(
+                                    &mut state.payload,
+                                    &swap.token_out,
+                                    1,
+                                )
+                            {
+                                unique_buy_mints_discovered =
+                                    unique_buy_mints_discovered.saturating_add(1);
+                            }
+                            Ok(())
+                        },
+                    )?;
+                    pages_processed = pages_processed.saturating_add(1);
+                    state.payload.collect_buy_mints_reconcile_new_tail_cursor = page_last_cursor;
+                    Self::sync_unique_buy_mints_from_counts(&mut state.payload);
+                    if page.time_budget_exhausted {
+                        break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+                    }
+                    if page.rows_seen < fetch_limit {
+                        state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
+                        state
+                            .payload
+                            .collect_buy_mints_reconcile_source_window_start = None;
+                        state.payload.collect_buy_mints_reconcile_source_horizon_end = None;
+                        if state.payload.collect_buy_mints_prepass_complete {
+                            return Ok(PersistedStreamPhaseAdvance {
+                                rows_processed,
+                                pages_processed,
+                                source_exhausted: true,
+                                phase_cursor: None,
+                                collect_buy_mints_cursor_token: None,
+                                unique_buy_mints_discovered,
+                                budget_exhausted_reason: None,
+                            });
+                        }
+                        state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+                        info!(
+                            rebuild_window_start = %state.window_start,
+                            rebuild_horizon_end = %state.horizon_end,
+                            rebuild_collect_buy_mints_cursor_token =
+                                state.payload.collect_buy_mints_cursor_token.as_deref(),
+                            rebuild_unique_buy_mints = state.payload.unique_buy_mints.len(),
+                            "completed new-tail reconciliation for carried-forward collect_buy_mints state; resuming canonical distinct mint scan from persisted cursor"
+                        );
+                        continue;
+                    }
+                }
             }
         };
 
@@ -1679,39 +2139,57 @@ impl DiscoveryService {
         fetch_page_limit: usize,
         rebuild_time_budget: StdDuration,
     ) -> Result<PersistedStreamRebuildAdvanceOutcome> {
-        let (mut state, resumed_existing) = self.load_or_start_persisted_stream_rebuild_state(
+        let (mut state, restore_outcome) = self.load_or_start_persisted_stream_rebuild_state(
             store,
             window_start,
             metrics_window_start,
             now,
         )?;
-        if resumed_existing {
-            info!(
-                rebuild_phase = state.phase.as_str(),
-                rebuild_window_start = %state.window_start,
-                rebuild_horizon_end = %state.horizon_end,
-                rebuild_metrics_window_start = %state.metrics_window_start,
-                rebuild_phase_cursor_ts = ?state.phase_cursor.as_ref().map(|cursor| cursor.ts_utc),
-                rebuild_phase_cursor_slot = state.phase_cursor.as_ref().map(|cursor| cursor.slot),
-                rebuild_phase_cursor_signature =
-                    state.phase_cursor.as_ref().map(|cursor| cursor.signature.as_str()),
-                rebuild_collect_buy_mints_cursor_token =
-                    state.payload.collect_buy_mints_cursor_token.as_deref(),
-                rebuild_prepass_rows_processed = state.prepass_rows_processed,
-                rebuild_replay_rows_processed = state.replay_rows_processed,
-                rebuild_quality_next_mint_index = state.payload.token_quality_progress.next_mint_index,
-                rebuild_quality_rpc_attempted = state.payload.token_quality_progress.rpc_attempted,
-                rebuild_quality_rpc_spent_ms = state.payload.token_quality_progress.rpc_spent_ms,
-                rebuild_chunks_completed = state.chunks_completed,
-                "resuming bounded discovery persisted observed_swaps rebuild"
-            );
-        } else {
-            info!(
-                rebuild_window_start = %state.window_start,
-                rebuild_horizon_end = %state.horizon_end,
-                rebuild_metrics_window_start = %state.metrics_window_start,
-                "starting bounded discovery persisted observed_swaps rebuild"
-            );
+        match restore_outcome {
+            PersistedStreamRebuildRestoreOutcome::StartedFresh => {
+                info!(
+                    rebuild_window_start = %state.window_start,
+                    rebuild_horizon_end = %state.horizon_end,
+                    rebuild_metrics_window_start = %state.metrics_window_start,
+                    "starting bounded discovery persisted observed_swaps rebuild"
+                );
+            }
+            PersistedStreamRebuildRestoreOutcome::ResumedExisting
+            | PersistedStreamRebuildRestoreOutcome::CarriedForwardMetricsWindow => {
+                let message = if restore_outcome
+                    == PersistedStreamRebuildRestoreOutcome::CarriedForwardMetricsWindow
+                {
+                    "resuming carried-forward bounded discovery persisted observed_swaps rebuild after metrics bucket rollover"
+                } else {
+                    "resuming bounded discovery persisted observed_swaps rebuild"
+                };
+                info!(
+                    rebuild_phase = state.phase.as_str(),
+                    rebuild_collect_buy_mints_mode = state.payload.collect_buy_mints_mode.as_str(),
+                    rebuild_window_start = %state.window_start,
+                    rebuild_horizon_end = %state.horizon_end,
+                    rebuild_metrics_window_start = %state.metrics_window_start,
+                    rebuild_phase_cursor_ts = ?state.phase_cursor.as_ref().map(|cursor| cursor.ts_utc),
+                    rebuild_phase_cursor_slot = state.phase_cursor.as_ref().map(|cursor| cursor.slot),
+                    rebuild_phase_cursor_signature =
+                        state.phase_cursor.as_ref().map(|cursor| cursor.signature.as_str()),
+                    rebuild_collect_buy_mints_cursor_token =
+                        state.payload.collect_buy_mints_cursor_token.as_deref(),
+                    rebuild_collect_buy_mints_reconcile_source_window_start = ?state
+                        .payload
+                        .collect_buy_mints_reconcile_source_window_start,
+                    rebuild_collect_buy_mints_reconcile_source_horizon_end = ?state
+                        .payload
+                        .collect_buy_mints_reconcile_source_horizon_end,
+                    rebuild_prepass_rows_processed = state.prepass_rows_processed,
+                    rebuild_replay_rows_processed = state.replay_rows_processed,
+                    rebuild_quality_next_mint_index = state.payload.token_quality_progress.next_mint_index,
+                    rebuild_quality_rpc_attempted = state.payload.token_quality_progress.rpc_attempted,
+                    rebuild_quality_rpc_spent_ms = state.payload.token_quality_progress.rpc_spent_ms,
+                    rebuild_chunks_completed = state.chunks_completed,
+                    "{message}"
+                );
+            }
         }
 
         let cycle_started = Instant::now();
@@ -1724,11 +2202,26 @@ impl DiscoveryService {
             let cycle_elapsed_ms = cycle_started.elapsed().as_millis() as u64;
             let telemetry = PersistedStreamProgressTelemetry {
                 phase: DiscoveryPersistedRebuildPhase::PublishPending,
+                collect_buy_mints_mode: state.payload.collect_buy_mints_mode,
                 window_start: state.window_start,
                 horizon_end: state.horizon_end,
                 metrics_window_start: state.metrics_window_start,
                 phase_cursor: None,
                 collect_buy_mints_cursor_token: None,
+                collect_buy_mints_reconcile_source_window_start: state
+                    .payload
+                    .collect_buy_mints_reconcile_source_window_start,
+                collect_buy_mints_reconcile_source_horizon_end: state
+                    .payload
+                    .collect_buy_mints_reconcile_source_horizon_end,
+                collect_buy_mints_reconcile_expired_head_cursor: state
+                    .payload
+                    .collect_buy_mints_reconcile_expired_head_cursor
+                    .clone(),
+                collect_buy_mints_reconcile_new_tail_cursor: state
+                    .payload
+                    .collect_buy_mints_reconcile_new_tail_cursor
+                    .clone(),
                 prepass_rows_processed: state.prepass_rows_processed,
                 prepass_pages_processed: state.prepass_pages_processed,
                 replay_rows_processed: state.replay_rows_processed,
@@ -1834,6 +2327,9 @@ impl DiscoveryService {
 
             if phase_advance.source_exhausted {
                 if active_phase == DiscoveryPersistedRebuildPhase::CollectBuyMints {
+                    if Self::payload_has_exact_buy_mint_membership(&state.payload) {
+                        Self::sync_unique_buy_mints_from_counts(&mut state.payload);
+                    }
                     if Self::canonicalize_unique_buy_mints(&mut state.payload.unique_buy_mints) {
                         warn!(
                             rebuild_window_start = %state.window_start,
@@ -1845,6 +2341,16 @@ impl DiscoveryService {
                     state.phase = DiscoveryPersistedRebuildPhase::ResolveTokenQuality;
                     state.phase_cursor = None;
                     state.payload.collect_buy_mints_cursor_token = None;
+                    state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+                    state.payload.collect_buy_mints_prepass_complete = true;
+                    state
+                        .payload
+                        .collect_buy_mints_reconcile_source_window_start = None;
+                    state.payload.collect_buy_mints_reconcile_source_horizon_end = None;
+                    state
+                        .payload
+                        .collect_buy_mints_reconcile_expired_head_cursor = None;
+                    state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
                     info!(
                         rebuild_window_start = %state.window_start,
                         rebuild_horizon_end = %state.horizon_end,
@@ -1901,11 +2407,26 @@ impl DiscoveryService {
                 let cycle_elapsed_ms = cycle_started.elapsed().as_millis() as u64;
                 let telemetry = PersistedStreamProgressTelemetry {
                     phase: DiscoveryPersistedRebuildPhase::PublishPending,
+                    collect_buy_mints_mode: state.payload.collect_buy_mints_mode,
                     window_start: state.window_start,
                     horizon_end: state.horizon_end,
                     metrics_window_start: state.metrics_window_start,
                     phase_cursor: None,
                     collect_buy_mints_cursor_token: None,
+                    collect_buy_mints_reconcile_source_window_start: state
+                        .payload
+                        .collect_buy_mints_reconcile_source_window_start,
+                    collect_buy_mints_reconcile_source_horizon_end: state
+                        .payload
+                        .collect_buy_mints_reconcile_source_horizon_end,
+                    collect_buy_mints_reconcile_expired_head_cursor: state
+                        .payload
+                        .collect_buy_mints_reconcile_expired_head_cursor
+                        .clone(),
+                    collect_buy_mints_reconcile_new_tail_cursor: state
+                        .payload
+                        .collect_buy_mints_reconcile_new_tail_cursor
+                        .clone(),
                     prepass_rows_processed: state.prepass_rows_processed,
                     prepass_pages_processed: state.prepass_pages_processed,
                     replay_rows_processed: state.replay_rows_processed,
@@ -1951,11 +2472,26 @@ impl DiscoveryService {
         let cycle_elapsed_ms = cycle_started.elapsed().as_millis() as u64;
         let telemetry = PersistedStreamProgressTelemetry {
             phase: state.phase,
+            collect_buy_mints_mode: state.payload.collect_buy_mints_mode,
             window_start: state.window_start,
             horizon_end: state.horizon_end,
             metrics_window_start: state.metrics_window_start,
             phase_cursor: state.phase_cursor.clone(),
             collect_buy_mints_cursor_token: state.payload.collect_buy_mints_cursor_token.clone(),
+            collect_buy_mints_reconcile_source_window_start: state
+                .payload
+                .collect_buy_mints_reconcile_source_window_start,
+            collect_buy_mints_reconcile_source_horizon_end: state
+                .payload
+                .collect_buy_mints_reconcile_source_horizon_end,
+            collect_buy_mints_reconcile_expired_head_cursor: state
+                .payload
+                .collect_buy_mints_reconcile_expired_head_cursor
+                .clone(),
+            collect_buy_mints_reconcile_new_tail_cursor: state
+                .payload
+                .collect_buy_mints_reconcile_new_tail_cursor
+                .clone(),
             prepass_rows_processed: state.prepass_rows_processed,
             prepass_pages_processed: state.prepass_pages_processed,
             replay_rows_processed: state.replay_rows_processed,
@@ -6563,8 +7099,8 @@ mod tests {
     }
 
     #[test]
-    fn persisted_stream_rebuild_discards_checkpoint_when_metrics_bucket_moves_stage1() -> Result<()>
-    {
+    fn persisted_stream_rebuild_carries_forward_partial_collect_buy_mints_across_metrics_bucket_stage1(
+    ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("stage1-persisted-stream-stale-bucket.db");
         let mut store = SqliteStore::open(Path::new(&db_path))?;
@@ -6574,47 +7110,236 @@ mod tests {
         let mut config = bounded_stage1_runtime_config();
         config.metric_snapshot_interval_seconds = 60;
         let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
-        let now = DateTime::parse_from_rfc3339("2026-03-17T12:02:00Z")
+        let checkpoint_now = DateTime::parse_from_rfc3339("2026-03-17T12:00:50Z")
             .expect("valid timestamp")
             .with_timezone(&Utc);
-        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
-        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let rollover_now = checkpoint_now + Duration::seconds(20);
+        let window_start =
+            checkpoint_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, checkpoint_now);
+        let next_window_start =
+            rollover_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let next_metrics_window_start = metrics_window_start_for_test(&config, rollover_now);
 
-        let mut stale_state =
-            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
-        stale_state.metrics_window_start = metrics_window_start - Duration::minutes(1);
-        stale_state.horizon_end = now - Duration::seconds(30);
-        stale_state.phase = DiscoveryPersistedRebuildPhase::Replay;
-        stale_state.phase_cursor = Some(DiscoveryRuntimeCursor {
-            ts_utc: now - Duration::minutes(5),
-            slot: 77,
-            signature: "stale-bucket-cursor".to_string(),
-        });
-        stale_state.prepass_rows_processed = 10;
-        stale_state.replay_rows_processed = 20;
+        let token_old_only = "TokenStage1CarryForwardAOldOnly111111111111".to_string();
+        let token_survives = "TokenStage1CarryForwardBSurvives1111111111".to_string();
+        let token_future_c = "TokenStage1CarryForwardCFuture11111111111".to_string();
+        let token_future_d = "TokenStage1CarryForwardDFuture11111111111".to_string();
+        let token_new_tail_before_cursor =
+            "TokenStage1CarryForwardAANewTail1111111111111".to_string();
+
+        for (idx, (token, ts)) in [
+            (token_old_only.as_str(), window_start + Duration::seconds(5)),
+            (
+                token_survives.as_str(),
+                window_start + Duration::seconds(70),
+            ),
+            (
+                token_future_c.as_str(),
+                window_start + Duration::seconds(80),
+            ),
+            (
+                token_future_d.as_str(),
+                window_start + Duration::seconds(90),
+            ),
+            (
+                token_new_tail_before_cursor.as_str(),
+                checkpoint_now + Duration::seconds(5),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            store.insert_observed_swap(&swap(
+                "wallet_carry_forward",
+                &format!("stage1-carry-forward-buy-{idx}"),
+                ts,
+                SOL_MINT,
+                token,
+                0.5,
+                50.0,
+            ))?;
+        }
+
+        let mut stale_state = discovery.start_persisted_stream_rebuild_state(
+            window_start,
+            metrics_window_start,
+            checkpoint_now,
+        );
+        stale_state.phase = DiscoveryPersistedRebuildPhase::CollectBuyMints;
+        stale_state.prepass_rows_processed = 2;
+        stale_state.prepass_pages_processed = 1;
+        stale_state.payload.unique_buy_mints = vec![token_old_only.clone(), token_survives.clone()];
+        stale_state.payload.buy_mint_counts =
+            BTreeMap::from([(token_old_only.clone(), 1), (token_survives.clone(), 1)]);
+        stale_state.payload.collect_buy_mints_cursor_token = Some(token_survives.clone());
+        stale_state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
         store.upsert_discovery_persisted_rebuild_state(
             &DiscoveryService::persisted_stream_rebuild_row(&stale_state, stale_state.horizon_end)?,
         )?;
 
-        let (restarted, resumed_existing) = discovery
+        let (mut carried, resumed_existing) = discovery
             .load_or_start_persisted_stream_rebuild_state(
                 &store,
-                window_start,
-                metrics_window_start,
-                now,
+                next_window_start,
+                next_metrics_window_start,
+                rollover_now,
             )?;
-        assert!(!resumed_existing);
         assert_eq!(
-            restarted.phase,
+            resumed_existing,
+            PersistedStreamRebuildRestoreOutcome::CarriedForwardMetricsWindow
+        );
+        assert_eq!(
+            carried.phase,
             DiscoveryPersistedRebuildPhase::CollectBuyMints
         );
-        assert_eq!(restarted.window_start, window_start);
-        assert_eq!(restarted.metrics_window_start, metrics_window_start);
-        assert_eq!(restarted.horizon_end, now);
-        assert_eq!(restarted.prepass_rows_processed, 0);
+        assert_eq!(carried.window_start, next_window_start);
+        assert_eq!(carried.metrics_window_start, next_metrics_window_start);
+        assert_eq!(carried.horizon_end, rollover_now);
+        assert_eq!(
+            carried.payload.collect_buy_mints_mode,
+            CollectBuyMintsMode::ReconcileExpiredHead
+        );
+        assert_eq!(
+            carried.payload.collect_buy_mints_cursor_token.as_deref(),
+            Some(token_survives.as_str())
+        );
+
+        let phase_advance = discovery.advance_persisted_stream_prepass(
+            &store,
+            &mut carried,
+            1,
+            10,
+            Instant::now() + StdDuration::from_secs(1),
+        )?;
+        assert!(phase_advance.source_exhausted);
+        assert_eq!(
+            carried.payload.unique_buy_mints,
+            store.load_observed_buy_mints_in_window(next_window_start, rollover_now)?,
+            "carry-forward reconciliation must produce the exact canonical target-window mint set before token-quality resolution"
+        );
+        assert_eq!(
+            carried.payload.unique_buy_mints,
+            vec![
+                token_new_tail_before_cursor,
+                token_survives,
+                token_future_c,
+                token_future_d,
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_rebuild_eventually_completes_healthy_after_metrics_bucket_roll_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-persisted-stream-carry-forward-eventual-healthy.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:00:59Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.max_fetch_swaps_per_cycle = 1;
+        config.max_fetch_pages_per_cycle = 1;
+        config.fetch_time_budget_ms = 1_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 2, 3)?;
+
+        let first_summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(first_summary.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        let first_progress = load_persisted_stream_rebuild_state_for_test(&store)?;
+        assert_eq!(
+            first_progress.phase,
+            DiscoveryPersistedRebuildPhase::CollectBuyMints
+        );
+
+        let rollover_now = now + Duration::seconds(2);
+        let second_summary = discovery.run_cycle(&store, rollover_now)?;
+        assert_eq!(
+            second_summary.runtime_mode,
+            DiscoveryRuntimeMode::FailClosed
+        );
+        let second_progress = load_persisted_stream_rebuild_state_for_test(&store)?;
+        assert_eq!(
+            second_progress.metrics_window_start,
+            metrics_window_start_for_test(&config, rollover_now)
+        );
         assert!(
-            store.load_discovery_persisted_rebuild_state()?.is_none(),
-            "stale checkpoint row should be cleared before restart"
+            second_progress.prepass_rows_processed >= first_progress.prepass_rows_processed,
+            "carry-forward after bucket rollover must preserve bounded collect_buy_mints progress instead of restarting from zero"
+        );
+
+        for step in 1..=75 {
+            let cycle_now = rollover_now + Duration::seconds(step);
+            let summary = discovery.run_cycle(&store, cycle_now)?;
+            if summary.runtime_mode == DiscoveryRuntimeMode::Healthy {
+                assert_eq!(summary.scoring_source, "raw_window_persisted_stream");
+                assert!(
+                    store.load_discovery_persisted_rebuild_state()?.is_none(),
+                    "healthy completion after carried-forward rebuild must clear the persisted rebuild checkpoint"
+                );
+                return Ok(());
+            }
+        }
+
+        anyhow::bail!(
+            "carried-forward persisted rebuild did not reach healthy completion before the next test cutoff"
+        );
+    }
+
+    #[test]
+    fn persisted_stream_rebuild_carried_forward_collect_buy_mints_resumes_after_restart_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-persisted-stream-carry-forward-restart.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:00:59Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.max_fetch_swaps_per_cycle = 1;
+        config.max_fetch_pages_per_cycle = 1;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 2, 3)?;
+
+        let _ = discovery.run_cycle(&store, now)?;
+        let rollover_now = now + Duration::seconds(2);
+        let _ = discovery.run_cycle(&store, rollover_now)?;
+        let carried_before_restart = load_persisted_stream_rebuild_state_for_test(&store)?;
+        assert_eq!(
+            carried_before_restart.metrics_window_start,
+            metrics_window_start_for_test(&config, rollover_now)
+        );
+
+        let discovery_after_restart =
+            DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let _ = discovery_after_restart.run_cycle(&store, rollover_now + Duration::seconds(1))?;
+        let carried_after_restart = load_persisted_stream_rebuild_state_for_test(&store)?;
+
+        assert_eq!(
+            carried_after_restart.metrics_window_start,
+            carried_before_restart.metrics_window_start
+        );
+        assert!(
+            carried_after_restart.prepass_rows_processed
+                > carried_before_restart.prepass_rows_processed
+                || carried_after_restart.prepass_pages_processed
+                    > carried_before_restart.prepass_pages_processed
+                || carried_after_restart.phase != carried_before_restart.phase
+                || carried_after_restart.payload.collect_buy_mints_mode
+                    != carried_before_restart.payload.collect_buy_mints_mode,
+            "restart must continue the carried-forward collect_buy_mints reconciliation instead of resetting it"
         );
         Ok(())
     }
@@ -6674,7 +7399,10 @@ mod tests {
             restart_now,
         )?;
 
-        assert!(resumed_existing);
+        assert_eq!(
+            resumed_existing,
+            PersistedStreamRebuildRestoreOutcome::ResumedExisting
+        );
         assert_eq!(
             resumed.phase,
             DiscoveryPersistedRebuildPhase::PublishPending
@@ -6685,6 +7413,93 @@ mod tests {
         assert!(
             store.load_discovery_persisted_rebuild_state()?.is_some(),
             "long same-bucket restart must keep the persisted checkpoint"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_rebuild_publish_pending_bucket_roll_does_not_publish_stale_healthy_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-persisted-stream-publish-pending-bucket-roll.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:00:50Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.max_fetch_swaps_per_cycle = 1;
+        config.max_fetch_pages_per_cycle = 1;
+        config.fetch_time_budget_ms = 1_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 6, 9)?;
+        let count_page = store.load_observed_buy_mint_counts_in_window_after_token_with_budget(
+            window_start,
+            now,
+            None,
+            None,
+            64,
+            Instant::now() + StdDuration::from_secs(1),
+        )?;
+        let mut publish_pending =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        publish_pending.phase = DiscoveryPersistedRebuildPhase::PublishPending;
+        publish_pending.payload.collect_buy_mints_prepass_complete = true;
+        publish_pending.payload.unique_buy_mints =
+            count_page.rows.iter().map(|row| row.mint.clone()).collect();
+        publish_pending.payload.buy_mint_counts = count_page
+            .rows
+            .iter()
+            .map(|row| (row.mint.clone(), row.buy_count as u32))
+            .collect();
+        publish_pending
+            .payload
+            .completed_snapshots
+            .push(WalletSnapshot {
+                wallet_id: "wallet_publish_pending".to_string(),
+                first_seen: window_start,
+                last_seen: now,
+                pnl_sol: 1.0,
+                win_rate: 1.0,
+                trades: 4,
+                closed_trades: 4,
+                hold_median_seconds: 60,
+                score: 1.0,
+                buy_total: 4,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+                eligible: true,
+            });
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&publish_pending, now)?,
+        )?;
+
+        let rollover_now = now + Duration::seconds(20);
+        let summary = discovery.run_cycle(&store, rollover_now)?;
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert_eq!(
+            summary.scoring_source,
+            "raw_window_incomplete_no_recent_published_universe"
+        );
+        assert_eq!(summary.active_follow_wallets, 0);
+        let carried = load_persisted_stream_rebuild_state_for_test(&store)?;
+        assert_eq!(
+            carried.phase,
+            DiscoveryPersistedRebuildPhase::CollectBuyMints
+        );
+        assert_ne!(
+            carried.metrics_window_start,
+            metrics_window_start,
+            "publish-pending checkpoint must not publish stale healthy truth after bucket rollover; it should be reset into a fresh target-window collect_buy_mints carry-forward"
+        );
+        assert!(
+            carried.payload.completed_snapshots.is_empty(),
+            "stale publish-pending snapshots must be discarded before the carried-forward target-window rebuild resumes"
         );
         Ok(())
     }
@@ -6726,7 +7541,10 @@ mod tests {
                 metrics_window_start,
                 now,
             )?;
-        assert!(!resumed_existing);
+        assert_eq!(
+            resumed_existing,
+            PersistedStreamRebuildRestoreOutcome::StartedFresh
+        );
         assert_eq!(
             restarted.phase,
             DiscoveryPersistedRebuildPhase::CollectBuyMints

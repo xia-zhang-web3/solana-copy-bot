@@ -29,6 +29,18 @@ pub struct ObservedBuyMintPage {
     pub time_budget_exhausted: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ObservedBuyMintCountRow {
+    pub mint: String,
+    pub buy_count: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ObservedBuyMintCountPage {
+    pub rows: Vec<ObservedBuyMintCountRow>,
+    pub time_budget_exhausted: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ObservedBuyMintCount {
     pub count: usize,
@@ -671,6 +683,149 @@ impl SqliteStore {
 
         Ok(ObservedBuyMintPage {
             mints,
+            time_budget_exhausted,
+        })
+    }
+
+    pub fn load_observed_buy_mint_counts_in_window_after_token_with_budget(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        token_out_after: Option<&str>,
+        token_out_at_most: Option<&str>,
+        limit: usize,
+        deadline: Instant,
+    ) -> Result<ObservedBuyMintCountPage> {
+        if limit == 0 {
+            return Ok(ObservedBuyMintCountPage::default());
+        }
+        if Instant::now() >= deadline {
+            return Ok(ObservedBuyMintCountPage {
+                rows: Vec::new(),
+                time_budget_exhausted: true,
+            });
+        }
+
+        let limit = (limit.min(i64::MAX as usize)) as i64;
+        let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
+        let (query, params): (&str, Vec<rusqlite::types::Value>) =
+            match (token_out_after, token_out_at_most) {
+                (Some(token_out_after), Some(token_out_at_most)) => (
+                    "SELECT token_out, COUNT(*)
+                     FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_out_ts
+                     WHERE token_in = ?1
+                       AND token_out <> ?1
+                       AND ts >= ?2
+                       AND ts <= ?3
+                       AND token_out > ?4
+                       AND token_out <= ?5
+                     GROUP BY token_out
+                     ORDER BY token_out ASC
+                     LIMIT ?6",
+                    vec![
+                        SOL_MINT.to_string().into(),
+                        since.to_rfc3339().into(),
+                        until.to_rfc3339().into(),
+                        token_out_after.to_string().into(),
+                        token_out_at_most.to_string().into(),
+                        limit.into(),
+                    ],
+                ),
+                (Some(token_out_after), None) => (
+                    "SELECT token_out, COUNT(*)
+                     FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_out_ts
+                     WHERE token_in = ?1
+                       AND token_out <> ?1
+                       AND ts >= ?2
+                       AND ts <= ?3
+                       AND token_out > ?4
+                     GROUP BY token_out
+                     ORDER BY token_out ASC
+                     LIMIT ?5",
+                    vec![
+                        SOL_MINT.to_string().into(),
+                        since.to_rfc3339().into(),
+                        until.to_rfc3339().into(),
+                        token_out_after.to_string().into(),
+                        limit.into(),
+                    ],
+                ),
+                (None, Some(token_out_at_most)) => (
+                    "SELECT token_out, COUNT(*)
+                     FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_out_ts
+                     WHERE token_in = ?1
+                       AND token_out <> ?1
+                       AND ts >= ?2
+                       AND ts <= ?3
+                       AND token_out <= ?4
+                     GROUP BY token_out
+                     ORDER BY token_out ASC
+                     LIMIT ?5",
+                    vec![
+                        SOL_MINT.to_string().into(),
+                        since.to_rfc3339().into(),
+                        until.to_rfc3339().into(),
+                        token_out_at_most.to_string().into(),
+                        limit.into(),
+                    ],
+                ),
+                (None, None) => (
+                    "SELECT token_out, COUNT(*)
+                     FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_out_ts
+                     WHERE token_in = ?1
+                       AND token_out <> ?1
+                       AND ts >= ?2
+                       AND ts <= ?3
+                     GROUP BY token_out
+                     ORDER BY token_out ASC
+                     LIMIT ?4",
+                    vec![
+                        SOL_MINT.to_string().into(),
+                        since.to_rfc3339().into(),
+                        until.to_rfc3339().into(),
+                        limit.into(),
+                    ],
+                ),
+            };
+
+        let mut stmt = self
+            .conn
+            .prepare(query)
+            .context("failed to prepare observed_swaps grouped buy mint count page query")?;
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params))
+            .context("failed to query observed_swaps grouped buy mint count page")?;
+
+        let mut mint_rows = Vec::new();
+        let mut time_budget_exhausted = false;
+        loop {
+            let next_row = match rows.next() {
+                Ok(row) => row,
+                Err(error) => {
+                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                        time_budget_exhausted = true;
+                        break;
+                    }
+                    return Err(error)
+                        .context("failed iterating observed_swaps grouped buy mint count rows");
+                }
+            };
+            let Some(row) = next_row else {
+                break;
+            };
+            mint_rows.push(ObservedBuyMintCountRow {
+                mint: row
+                    .get::<_, String>(0)
+                    .context("failed reading observed_swaps grouped buy mint token")?,
+                buy_count: row
+                    .get::<_, i64>(1)
+                    .context("failed reading observed_swaps grouped buy mint count")?
+                    .max(0) as usize,
+            });
+        }
+
+        Ok(ObservedBuyMintCountPage {
+            rows: mint_rows,
             time_budget_exhausted,
         })
     }

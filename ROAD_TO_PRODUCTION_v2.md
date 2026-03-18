@@ -69,16 +69,26 @@ It replaces the old mixed roadmap and removes aggregate/backfill recovery from t
    - discovery cycles completed while rebuild remained in progress
    - there was no repeated `discovery cycle still running, skipping scheduled trigger`
    - runtime stayed correctly `fail_closed` with `active_follow_wallets = 0` and no false `healthy` because no valid recent published universe existed yet
-6. Current live blocker has now moved again:
+6. The next rollout on `aed70c91906321e3e80b1a14614454a9db740026` validated the canonical migration parity follow-up on live:
+   - after restart at `2026-03-17 20:59:52 UTC`, startup again emitted the full expected stage sequence and reached `app runtime loop started`
+   - runtime resumed an existing legacy `CollectBuyMints` checkpoint and emitted the explicit canonical safe-prefix migration log instead of silently continuing the old raw-cursor state
+   - once the frozen metrics bucket changed, runtime correctly discarded the stale persisted rebuild state with `restart_reason = metrics_window_start_changed` and started a fresh canonical frozen rebuild
+   - the fresh rebuild then advanced in bounded `CollectBuyMints` cycles with a monotonic direct distinct-mint token cursor and completed discovery cycles in between
+7. Current live blocker is now narrower:
    - startup SQLite path boundedness / observability is validated on live
    - persisted rebuild boundedness / resumability is validated on live
-   - the remaining blocker is wall-clock time to completion of the bounded cold-start rebuild on live-size state without a recent published universe
-   - current live logs show the rebuild still in `CollectBuyMints`, making forward progress but not yet reaching `raw_window_persisted_stream`
-7. Current working tree still keeps the bounded/resumable persisted rebuild fix intact:
+   - upgrade-path migration / canonical repair is validated on live
+   - the remaining blocker is whether a fresh canonical bounded rebuild can reach healthy completion within one metrics bucket on live-size state without a recent published universe
+8. Current working tree now lands the chosen fix for that blocker in code:
+   - `CollectBuyMints` now persists exact canonical buy-mint membership counts, not only the token cursor / mint vector
+   - `metrics_window_start_changed` no longer blindly discards a carry-forwardable canonical rebuild; it now carries forward only the exact mint-membership state through bounded expired-head + new-tail reconciliation
+   - bucket-sensitive `ResolveTokenQuality` / `Replay` / `PublishPending` state is reset on rollover, so no stale `healthy` or stale publish can leak across the metrics bucket boundary
+   - the runtime contract remains bounded / resumable / observable, but useful canonical progress no longer dies just because the next metrics bucket starts before healthy completion
+9. Current working tree still keeps the bounded/resumable persisted rebuild fix intact:
    - frozen rebuild horizon (`window_start`, `horizon_end`, `metrics_window_start`) is captured once per rebuild
    - rebuild progress is persisted separately from `discovery_runtime_cursor`
    - cold-start rebuild advances in bounded chunks across cycles and restarts instead of monopolizing one long cycle
-8. Current working tree now also makes the startup SQLite path observable and bounded:
+10. Current working tree now also makes the startup SQLite path observable and bounded:
    - startup SQLite bootstrap now emits per-stage `started / waiting / completed / timed_out` progress for connection open, PRAGMAs, and `schema_migrations` bootstrap via the explicit startup bootstrap path
    - startup migrations, heartbeat, alert cursor, and app-loop handoff emit explicit startup progress logs
    - startup WAL checkpoint is removed from the startup critical path and now emits an explicit deferred/skipped outcome instead of blocking startup
@@ -91,26 +101,29 @@ The project is not blocked by ingestion.
 
 The startup SQLite silent-hang blocker is no longer the current blocker.
 
-Stage 1 is still `partial` after live rollout `3fac9afdafbeb3e4ca2c66486124a8683d281f02`.
+Stage 1 is still `partial` after live rollout `aed70c91906321e3e80b1a14614454a9db740026`.
 
-Current working diagnosis: startup SQLite observability/boundedness is now validated on live, and bounded/resumable persisted rebuild behavior is also validated on live. The remaining blocker is completion latency / throughput of the cold-start bounded rebuild on live-size `observed_swaps` when there is no valid recent published universe. Current live evidence shows bounded forward progress through `CollectBuyMints`, completed discovery cycles, and correct `fail_closed`, but not yet a completed healthy publish with `scoring_source = raw_window_persisted_stream`.
+Current working diagnosis: startup SQLite observability/boundedness is validated on live, bounded/resumable persisted rebuild behavior is validated on live, and the canonical migration/repair upgrade path is now also validated on live. The remaining blocker was no longer "does rebuild progress correctly?" but "can a fresh canonical bounded rebuild survive the next metrics bucket long enough to reach a healthy publish?" Latest live evidence proved the answer was "no" on `aed70c91906321e3e80b1a14614454a9db740026`: the fresh canonical rebuild stayed in `CollectBuyMints`, hit the next `metrics_window_start_changed`, and was discarded before reaching a healthy publish. The current code fix therefore chooses semantically-valid carry-forward across the metrics bucket boundary instead of relying on completion inside one bucket.
 
 Do not start Stage 2 yet.
 
 ### 2.5 Server state (updated 2026-03-17)
 
-- Deployed commit: `3fac9afdafbeb3e4ca2c66486124a8683d281f02`
+- Deployed commit: `aed70c91906321e3e80b1a14614454a9db740026`
 - Service: `solana-copy-bot.service active`, no crash loop
 - `execution.enabled = false`
-- Latest observed restart: `2026-03-17 19:46:56 UTC`
+- Latest observed restart: `2026-03-17 20:59:52 UTC`
 - `active_follow_wallets = 0` during the observed validation window
 - Observed during validation window:
   - startup emitted exact stage logs for sqlite open / pragmas / schema bootstrap / migrations / heartbeat / app-loop handoff
   - startup reached `app runtime loop started`
   - `startup_sqlite_wal_checkpoint` was explicitly `skipped/deferred`
   - runtime emitted `resuming bounded discovery persisted observed_swaps rebuild`
-  - rebuild resumed from an existing checkpoint (`collect_buy_mints`, `rebuild_chunks_completed = 17`, `rebuild_prepass_rows_processed = 1700000`) instead of restarting from zero
-  - rebuild yielded bounded partial progress across cycles (`chunks_completed` advanced, `rebuild_prepass_rows_processed` advanced from `1700000` to `2200000`, and discovery cycles completed in between)
+  - rebuild resumed from an existing legacy checkpoint (`collect_buy_mints`, `rebuild_chunks_completed = 29`, `rebuild_prepass_rows_processed = 2900000`) and emitted the explicit canonical safe-prefix migration log
+  - runtime later discarded that checkpoint with `restart_reason = metrics_window_start_changed` once the frozen metrics bucket changed and started a fresh canonical rebuild from the new frozen attempt
+  - the fresh canonical `CollectBuyMints` prepass advanced with a monotonic token cursor (`2AZ... -> 2Kp... -> 2TF...`), bounded per-cycle unique mint growth, and completed discovery cycles in between
+  - the same fresh canonical rebuild later remained in `CollectBuyMints` up to `rebuild_chunks_completed = 30`, `rebuild_prepass_rows_processed = 11436`, `rebuild_unique_buy_mints = 11436`, and `rebuild_total_elapsed_ms = 1757196`, then hit the next `metrics_window_start_changed` at `2026-03-17 21:30:52 UTC` and was discarded before healthy completion
+  - after that bucket reset, the next fresh canonical rebuild again started in `CollectBuyMints` and only reached `rebuild_chunks_completed = 5`, `rebuild_prepass_rows_processed = 2004`, `rebuild_unique_buy_mints = 2004` during the later observation window
   - runtime stayed `fail_closed` with `scoring_source = raw_window_incomplete_no_recent_published_universe`
   - there was no false `healthy`
   - there was no repeated `discovery cycle still running, skipping scheduled trigger`
@@ -120,6 +133,7 @@ Do not start Stage 2 yet.
   - [ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md](ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md) — persisted-stream follow-up (`0c58aba`), confirmed correct path engaged but first cycle did not complete in 6+ minutes
   - rollout `96606b8` recorded the earlier startup stall before discovery/runtime
   - rollout `3fac9af` validated startup SQLite observability/deferred WAL checkpoint and bounded persisted rebuild progress, but not yet healthy publication
+  - rollout `aed70c` validated canonical safe-prefix migration / repair on live and showed fresh canonical `CollectBuyMints` progress after `metrics_window_start_changed`, but still did not yet reach healthy publication during the observed window
 
 ### 2.6 Live data scale (observed)
 
@@ -228,7 +242,7 @@ What is done in Stage 1 so far:
 5. Propagated `healthy / degraded / fail_closed` runtime mode through discovery, app startup, and shadow consumption.
 6. Hardened: coverage check requires left-boundary + in-window swap presence; empty-scan guard prevents false healthy; degraded eligible_wallets sourced from last healthy metrics bucket; bucket-stale published universes rejected.
 7. Replaced the old one-shot cold-start persisted rebuild with a bounded four-phase design:
-   - `CollectBuyMints` prepass now pages the direct distinct SOL-buy mint set instead of replaying the full raw window: it runs under the same page/time budgets, uses `INDEXED BY idx_observed_swaps_token_in_out_ts`, and persists its own resumable mint cursor in the rebuild payload
+   - `CollectBuyMints` prepass now pages the direct distinct SOL-buy mint set instead of replaying the full raw window: it runs under the same page/time budgets, uses `INDEXED BY idx_observed_swaps_token_in_out_ts`, persists its own resumable mint cursor in the rebuild payload, and records exact per-mint buy counts for canonical carry-forward
    - legacy raw-cursor checkpoints are migrated onto the new prepass by recovering the maximal safe lexicographic mint prefix under the covering-index distinct query; any unsafe tail mints are intentionally re-enumerated later in token order so `ResolveTokenQuality` still sees the exact canonical one-shot mint ordering
    - `ResolveTokenQuality` resolves token quality for the frozen mint set in bounded chunks with its own resumable progress index and RPC budget telemetry
    - `Replay` replays the same frozen horizon with the same streaming scoring semantics in bounded pages/time and persists a resumable phase cursor plus streaming state payload
@@ -238,8 +252,12 @@ What is done in Stage 1 so far:
    - persisted rebuild progress stores its own phase, frozen horizon, checkpoint cursor, processed-row/page counters, chunk count, and serialized replay state
 9. Partial no-fallback rebuild cycles now make bounded durable progress without burning the publish cadence; if rebuild is still incomplete and there is no valid published universe, runtime can remain `fail_closed` while the next cycle resumes from the persisted checkpoint.
 10. Rebuild completion now forces the recovered publish instead of waiting for the next normal publish interval, so a successful bounded cold start can immediately promote the healthy `raw_window_persisted_stream` universe.
-11. Resume validates semantic checkpoint validity before reusing it: if the frozen metrics bucket moved or the stored horizon is invalid for the current wall clock, runtime discards the old rebuild state and starts a new frozen attempt. Longer restarts within the same metrics bucket keep the checkpoint and continue from it.
-12. Completion keeps semantic parity with the previous one-shot persisted rebuild by freezing the same horizon and replaying the same streaming scoring logic; parity is enforced by direct one-shot-vs-bounded regression coverage.
+11. `metrics_window_start_changed` no longer blindly discards a carry-forwardable canonical rebuild:
+   - if the rebuild has exact canonical `CollectBuyMints` membership state, runtime carries forward only that state into the new target bucket
+   - rollover applies bounded expired-head reconciliation plus bounded new-tail reconciliation before resuming fresh canonical mint discovery on the new target window
+   - bucket-sensitive `ResolveTokenQuality` / `Replay` / `PublishPending` state is intentionally reset, so stale publishable snapshots never cross the bucket boundary
+   - invalid future horizons still restart fresh, and old checkpoints without exact canonical mint-membership state still conservatively restart instead of pretending they are safe to carry forward
+12. Completion keeps semantic parity with the previous one-shot persisted rebuild by freezing the same horizon and replaying the same streaming scoring logic; carry-forward parity is enforced by direct canonical target-window set comparisons plus end-to-end one-shot-vs-bounded regression coverage.
 13. Startup SQLite is now observable and bounded before discovery/runtime:
    - the explicit startup SQLite bootstrap path reports exact startup stage progress for connection open, `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, and `schema_migrations` bootstrap
    - startup migrations / heartbeat / alert cursor / app-loop handoff report explicit start/finish/waiting/failure outcomes
@@ -252,11 +270,15 @@ What is done in Stage 1 so far:
    - persisted rebuild resumed from its stored checkpoint instead of restarting from zero
    - rebuild yielded bounded progress back to the scheduler and discovery cycles completed while rebuild remained partial
    - runtime stayed correctly `fail_closed` without a false `healthy` because no valid recent published universe existed yet
+16. Current code now closes the fresh-bucket-reset blocker in design:
+   - exact canonical `CollectBuyMints` progress can now survive `metrics_window_start_changed`
+   - later bucket-sensitive phases are rebuilt for the new target window instead of publishing stale truth
+   - live no longer needs the entire fresh canonical rebuild to finish inside the same metrics bucket just to avoid losing all useful cold-start progress
 
 Code hotspots touched:
 
-1. `crates/discovery/src/lib.rs` — runtime branching, bounded persisted-stream path, publication cadence handling, tests
-2. `crates/storage/src/market_data.rs` — bounded window scan with cursor/budget plus durable rebuild-state persistence
+1. `crates/discovery/src/lib.rs` — runtime branching, bounded persisted-stream path, bucket-roll carry-forward contract, publication cadence handling, tests
+2. `crates/storage/src/market_data.rs` — bounded window scan with cursor/budget, grouped buy-mint count pages, plus durable rebuild-state persistence
 3. `crates/storage/src/lib.rs` — persisted rebuild progress types plus startup SQLite open telemetry/watchdog
 4. `crates/storage/src/migrations.rs` — startup open+migration bootstrap path
 5. `crates/app/src/main.rs` — startup stage orchestration, deferred WAL checkpoint, app-loop handoff telemetry
@@ -282,25 +304,29 @@ Mandatory Stage 1 tests (all green):
 9. bounded rebuild resumes after process restart from persisted rebuild state
 10. bounded rebuild completes to `healthy` with `scoring_source = raw_window_persisted_stream`
 11. bounded rebuild matches one-shot persisted-stream scoring semantics across chunk boundaries
-12. startup SQLite bootstrap emits explicit stage progress for open / PRAGMA / schema bootstrap / migrations
-13. a blocked startup step emits `waiting` progress and then an explicit timeout instead of hanging silently
-14. deferred startup WAL checkpoint leaves the store usable and does not block startup
+12. carry-forward across `metrics_window_start_changed` preserves the exact canonical target-window mint set and does not miss new tail mints that sort before the old token cursor
+13. carry-forwarded `CollectBuyMints` resume survives process restart and continues bounded progress instead of resetting from zero
+14. publish-pending bucket rollover does not publish stale `healthy`; it resets into a bounded carry-forward rebuild for the new target window
+15. cold-start rebuild can still converge to `healthy` after a metrics bucket roll without losing the carried-forward canonical prepass state
+16. startup SQLite bootstrap emits explicit stage progress for open / PRAGMA / schema bootstrap / migrations
+17. a blocked startup step emits `waiting` progress and then an explicit timeout instead of hanging silently
+18. deferred startup WAL checkpoint leaves the store usable and does not block startup
 
 Remaining operational blocker:
 
-Live startup validation is now closed. The remaining operational blocker is wall-clock completion of the bounded cold-start persisted rebuild on live-size state without a recent published universe.
+Live startup validation is now closed. The carry-forward code fix is also now done. Stage 1 remains partial only because the new bucket-roll contract still needs live rollout validation on the real server.
 
 Current working diagnosis:
 
-the old deploy `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c` proved that a one-shot first-cycle persisted rebuild is too slow / insufficiently bounded for live-size state; the later deploy `96606b83880cb1b942de67f61c5ecdb459fe4139` exposed an earlier blocker on startup SQLite open/migration boundedness; the latest deploy `3fac9afdafbeb3e4ca2c66486124a8683d281f02` validated both the startup fix and bounded/resumable rebuild behavior on live. The remaining gap is completion throughput: live currently spends bounded cycles in `CollectBuyMints`, but has not yet converged to a healthy `raw_window_persisted_stream` publish.
+the old deploy `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c` proved that a one-shot first-cycle persisted rebuild is too slow / insufficiently bounded for live-size state; the later deploy `96606b83880cb1b942de67f61c5ecdb459fe4139` exposed an earlier blocker on startup SQLite open/migration boundedness; the latest deploy `3fac9afdafbeb3e4ca2c66486124a8683d281f02` validated both the startup fix and bounded/resumable rebuild behavior on live; and deploy `aed70c91906321e3e80b1a14614454a9db740026` proved the next blocker was bucket-boundary reset of a still-incomplete fresh canonical rebuild. The new fix therefore changes bucket-roll semantics: exact canonical `CollectBuyMints` progress is now carried forward into the new target bucket instead of being thrown away.
 
 Immediate next operational step before Stage 2:
 
-improve persisted cold-start rebuild time-to-completion and confirm on the next rollout:
+validate the new carry-forward contract on the next rollout:
 
-1. `CollectBuyMints` no longer requires an operationally excessive number of bounded cycles on live-size state
-2. bounded progress remains resumable and scheduler-friendly
-3. runtime eventually emits a completed discovery cycle with `scoring_source = raw_window_persisted_stream`
+1. `metrics_window_start_changed` no longer destroys exact canonical `CollectBuyMints` progress on live-size state
+2. bounded progress remains resumable and scheduler-friendly across cycles and restart
+3. runtime eventually emits a completed discovery cycle with `scoring_source = raw_window_persisted_stream` even if the first cold-start attempt spans more than one metrics bucket
 4. `active_follow_wallets > 0` appears once healthy publication lands
 5. there is still no false `healthy` and no empty published universe
 
@@ -409,6 +435,61 @@ Their useful conclusions are already absorbed here:
 
 ## 10. Execution log
 
+- Date: 2026-03-18
+- Commit SHA: `self-referential; exact final SHA is reported from git after commit`
+- Stage / substep: `Stage 1 / semantically-valid carry-forward across metrics bucket boundary for bounded cold-start rebuild`
+- Status: `done in code; Stage 1 remains partial pending rollout validation`
+- Code changed:
+  - `crates/discovery/src/lib.rs`
+  - `crates/storage/src/lib.rs`
+  - `crates/storage/src/market_data.rs`
+  - `ROAD_TO_PRODUCTION_v2.md`
+- Tests run:
+  - `cargo fmt --all`
+  - `cargo test -p copybot-storage --lib`
+  - `cargo test -p copybot-discovery --lib persisted_stream_rebuild -- --nocapture`
+  - `cargo test -p copybot-discovery --lib`
+  - `cargo test -p copybot-app --bin copybot-app app_tests::startup_ -- --nocapture`
+  - `cargo test -p copybot-app --bin copybot-app`
+  - full `copybot-discovery` and full `copybot-app` were rerun outside sandbox because the quality-cache / alert tests bind localhost fake servers that sandboxed runs cannot open
+- Done:
+  - kept the bounded/resumable persisted rebuild contract, but changed bucket-roll semantics: `metrics_window_start_changed` no longer blindly discards an exact canonical rebuild
+  - `CollectBuyMints` now persists exact per-mint SOL-buy counts alongside the canonical mint set and the direct distinct-mint cursor
+  - added bounded carry-forward reconciliation for the new target bucket:
+    - expired-head reconciliation subtracts qualifying buys that left the scoring window
+    - new-tail reconciliation adds qualifying buys that entered after the previous frozen horizon
+    - once reconciliation finishes, fresh canonical mint discovery resumes from the persisted token cursor if the old prepass was still partial
+  - bucket-sensitive `ResolveTokenQuality` / `Replay` / `PublishPending` state is reset on rollover, so stale publishable snapshots cannot leak across the bucket boundary
+  - publish-pending rollover now returns to bounded carry-forward rebuild instead of publishing stale `healthy`
+  - added explicit carry-forward telemetry for `collect_buy_mints_mode`, source/target bounds, and reconciliation cursors
+  - added storage coverage for grouped buy-mint count pages
+  - added regression coverage proving:
+    - exact canonical `CollectBuyMints` progress survives `metrics_window_start_changed`
+    - new tail mints that sort before the old token cursor are not missed
+    - carried-forward `CollectBuyMints` resumes after restart
+    - a carried-forward cold-start rebuild can still converge to `healthy`
+    - stale publish-pending snapshots are not published as `healthy` after bucket roll
+- In progress:
+  - live rollout validation of the new carry-forward contract on the real server
+- Blocked:
+  - none in code for the old bucket-boundary reset blocker; only live validation remains
+- Acceptance criteria closed:
+  - exact canonical progress no longer dies just because the next metrics bucket starts before healthy completion
+  - bounded/resumable/observable contracts remain intact
+  - stale `healthy` publication is still prevented
+  - restart-resume and canonical migration/repair regressions remain green
+- Acceptance criteria remaining:
+  - next live rollout must confirm `metrics_window_start_changed` now carries forward canonical cold-start progress instead of restarting from zero
+  - next live rollout must confirm eventual completed discovery cycle with `scoring_source = raw_window_persisted_stream`
+  - next live rollout must confirm `active_follow_wallets > 0`
+- Remaining risks:
+  - legacy pre-existing checkpoints that do not yet contain exact canonical buy-mint membership state still conservatively restart instead of pretending they are safe to carry forward
+  - if live later proves a new throughput limiter after the carried-forward `CollectBuyMints` phase, the next blocker will move to a later bounded phase rather than disappear
+- Next action:
+  - deploy this carry-forward build
+  - confirm live logs now show carry-forward / reconciliation telemetry instead of repeated discard-on-bucket-boundary resets
+  - confirm the rebuild can bridge bucket rollover and still reach a healthy `raw_window_persisted_stream` publish
+
 - Date: 2026-03-17
 - Commit SHA: `self-referential; exact final SHA is reported from git after commit`
 - Stage / substep: `Stage 1 / CollectBuyMints throughput follow-up on bounded cold-start rebuild`
@@ -457,6 +538,47 @@ Their useful conclusions are already absorbed here:
   - deploy this throughput follow-up
   - confirm live logs move out of `CollectBuyMints` materially faster than before
   - confirm eventual healthy publication with `raw_window_persisted_stream` and `active_follow_wallets > 0`
+
+- Date: 2026-03-17
+- Commit SHA: `aed70c91906321e3e80b1a14614454a9db740026`
+- Stage / substep: `Stage 1 / live rollout validation of canonical migration parity + fresh canonical rebuild convergence`
+- Status: `partial`
+- Code changed:
+  - none in this step; this was a live server rollout validation of the already-built artifact
+- Tests run:
+  - live server rollout validation on `solana-copy-bot.service`
+- Done:
+  - service restarted successfully and remained stable with `ActiveState=active`, `SubState=running`, `Result=success`, `ExecMainStatus=0`, `NRestarts=0`
+  - startup again emitted the full expected stage log sequence and reached `app runtime loop started`
+  - `startup_sqlite_wal_checkpoint` remained explicitly `skipped/deferred`
+  - runtime resumed an existing `CollectBuyMints` rebuild checkpoint and emitted the explicit canonical safe-prefix migration log instead of silently continuing the legacy raw cursor
+  - runtime later discarded the stale persisted rebuild state with `restart_reason = metrics_window_start_changed` and started a fresh canonical rebuild from a new frozen metrics bucket
+  - the fresh canonical `CollectBuyMints` prepass advanced with a monotonic token cursor (`2AZ... -> 2Kp... -> 2TF...`), bounded unique-mint growth, bounded time-budget yields, and completed discovery cycles in between
+  - the later validation slice proved that this fresh canonical rebuild still did not complete before the next metrics bucket boundary: it remained in `CollectBuyMints` up to `rebuild_chunks_completed = 30` / `rebuild_prepass_rows_processed = 11436`, then was discarded at `2026-03-17 21:30:52 UTC` with `restart_reason = metrics_window_start_changed`
+  - after the boundary reset, the next fresh canonical rebuild again remained in `CollectBuyMints` during the observed window (`rebuild_chunks_completed = 5`, `rebuild_prepass_rows_processed = 2004`)
+  - there was no repeated `discovery cycle still running, skipping scheduled trigger`
+  - there was no false `healthy`
+- In progress:
+  - fresh canonical rebuild completion on live-size state inside one metrics bucket
+- Blocked:
+  - a fresh canonical rebuild still does not reach `scoring_source = raw_window_persisted_stream` before the next metrics bucket reset
+  - a fresh canonical rebuild still does not reach `active_follow_wallets > 0` before the next metrics bucket reset
+  - live now proves that the current fresh canonical rebuild remains in `CollectBuyMints` long enough to be discarded by the next `metrics_window_start_changed`
+- Acceptance criteria closed:
+  - startup SQLite fix remains validated on live
+  - bounded/resumable rebuild remains validated on live
+  - upgrade-path migration onto canonical mint order is validated on live
+  - discovery cycles continue to complete while rebuild is in progress
+- Acceptance criteria remaining:
+  - a fresh canonical bounded rebuild must complete before the next metrics bucket reset
+  - live must converge to a healthy publish with `scoring_source = raw_window_persisted_stream`
+  - live must reach `active_follow_wallets > 0`
+- Remaining risks:
+  - live has now confirmed the risk: if a fresh canonical rebuild cannot finish before the next `metrics_window_start_changed`, runtime keeps discarding partial progress at the bucket boundary and never reaches healthy publication
+  - the current bottleneck is still `CollectBuyMints`; later phases are not yet the operational limiter on live
+- Next action:
+  - implement a code fix for fresh canonical rebuild completion throughput and/or bucket-roll completion semantics, with `CollectBuyMints` as the first target
+  - validate on the next rollout that a fresh canonical rebuild exits `CollectBuyMints` and reaches healthy publication before the next metrics bucket reset
 
 - Date: 2026-03-17
 - Commit SHA: `3fac9afdafbeb3e4ca2c66486124a8683d281f02`
