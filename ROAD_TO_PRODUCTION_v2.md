@@ -101,27 +101,32 @@ The project is not blocked by ingestion.
 
 The startup SQLite silent-hang blocker is no longer the current blocker.
 
-Stage 1 is still `partial` after live rollout `1093a5556e82f8adb6ec73bb51e73d62b8d9ac02`.
+Stage 1 is still `partial` after live rollout `bc9f6d7d946a34b1f854680c9c53a9c117cde735`.
 
-Current working diagnosis: startup SQLite observability/boundedness is validated on live, bounded/resumable persisted rebuild behavior is validated on live, canonical migration/repair is validated on live, carry-forward across `metrics_window_start_changed` is validated on live, the retryable SQLite lock / observed-swap writer restart path is validated on live, and the startup-safe deferral contract for `0039_observed_swaps_sol_leg_ts_index.sql` is now validated on live as well. Deploy `1093a5556e82f8adb6ec73bb51e73d62b8d9ac02` reached `app runtime loop started`, emitted truthful `sqlite_migrations_deferred` telemetry for pending `0039`, and showed `rebuild_replay_mode = wallet_stats_then_sol_leg` in runtime telemetry without regressing startup or process stability. However, the remaining blocker moved earlier again: across the observed live windows the rebuild still stayed in `CollectBuyMints`, repeatedly carried forward correctly at metrics-bucket rollover, but did not yet emit a first actual replay slice or `rebuild_replay_sol_leg_access_path`. The current code change addresses that exact pre-replay blocker by replacing carry-forward `CollectBuyMints` head/tail reconciliation over raw swaps with grouped SOL-buy mint-count delta pagination on the existing `idx_observed_swaps_token_in_out_ts`, preserving bounded/resumable carry-forward without introducing any new startup migration or startup-critical index dependency. Stage 1 is therefore still not operationally deployable until the next live rollout proves this grouped-delta reconcile exits `CollectBuyMints` fast enough to validate the replay access-path contract in runtime and then land a healthy publication.
+Current working diagnosis: startup SQLite observability/boundedness is validated on live, bounded/resumable persisted rebuild behavior is validated on live, canonical migration/repair is validated on live, carry-forward across `metrics_window_start_changed` is validated on live, the retryable SQLite lock / observed-swap writer restart path is validated on live, the startup-safe deferral contract for `0039_observed_swaps_sol_leg_ts_index.sql` is validated on live, and the grouped-delta `CollectBuyMints` reconcile fix is partially validated on live as well. Deploy `bc9f6d7d946a34b1f854680c9c53a9c117cde735` reached `Replay` before the first observed rollover, proving the previous pre-replay blocker moved forward. But the next live blocker was narrower and rollover-specific: at `2026-03-18 19:00 UTC` the boundary hit while rebuild was still in `collect_buy_mints / reconcile_expired_head`, there was no carry-forward log and no explicit discard log, and the next slice resumed as a new `fresh_scan` with `chunks_completed = 1`. The current code change closes that exact gap by changing the semantic contract for in-progress grouped-delta reconcile: mixed `reconcile_expired_head` / `reconcile_new_tail` state is no longer discarded and is also not lied about as current-bucket truth; instead runtime resumes that stale frozen target in bounded cycles until the next exact carry-forward checkpoint is available, and only then rolls the rebuild onto the current metrics bucket. Stage 1 remains `partial` pending the next live rollout proving that this frozen-target resume contract actually prevents boundary-time progress loss and gets runtime to the first replay access-path slice.
 
 Do not start Stage 2 yet.
 
 ### 2.5 Server state (updated 2026-03-18)
 
-- Deployed commit: `1093a5556e82f8adb6ec73bb51e73d62b8d9ac02`
-- Service: rollout reached runtime and remained stable through the observed validation windows
+- Deployed commit: `bc9f6d7d946a34b1f854680c9c53a9c117cde735`
+- Service: rollout reached runtime, remained stable, and advanced farther than the previous build before the next rollover
 - `execution.enabled = false`
-- Latest observed restart: none during the observed validation windows on the current deploy (`MainPID = 22242`, `NRestarts = 0`)
+- Latest observed restart: none during the observed validation windows on the current deploy (`MainPID = 24755`, `NRestarts = 0`)
 - `active_follow_wallets = 0` during the observed validation window
 - Observed during validation window:
   - startup emitted `sqlite_migrations_deferred` with `deferred_versions=0039_observed_swaps_sol_leg_ts_index.sql`
   - startup then completed `sqlite_migrations_apply` immediately instead of timing out, kept `startup_sqlite_wal_checkpoint` explicitly deferred, and reached `app runtime loop started`
-  - runtime emitted `rebuild_replay_mode = wallet_stats_then_sol_leg` from the first bounded rebuild cycles onward, confirming the optimized replay contract is wired
-  - carry-forward across `metrics_window_start_changed` was observed again at `2026-03-18 16:00 UTC`, `2026-03-18 16:30 UTC`, and `2026-03-18 17:30 UTC` without discard/restart-from-zero
-  - process stability held throughout the observed windows: `MainPID = 22242`, `NRestarts = 0`, no restart loop, no writer-death path, and no false `healthy`
-  - despite that stability, rebuild still remained in `CollectBuyMints` through `2026-03-18 17:50 UTC`, reaching `rebuild_chunks_completed = 139`, `rebuild_prepass_rows_processed = 1660899`, `rebuild_unique_buy_mints = 38862`, while `rebuild_replay_wallet_stats_rows_processed = 0` and `rebuild_replay_rows_processed = 0`
-  - because runtime had not yet exited `CollectBuyMints`, there was still no emitted `rebuild_replay_sol_leg_access_path`, no `raw_window_persisted_stream`, and no healthy publication on this deploy
+  - runtime again emitted `rebuild_replay_mode = wallet_stats_then_sol_leg` from the first bounded rebuild cycles onward, confirming the optimized replay contract stayed wired
+  - grouped-delta carry-forward reconcile clearly engaged after the first observed rollover:
+    - `rebuild_collect_buy_mints_reconcile_expired_head_cursor_token` was emitted repeatedly
+    - rebuild reached `Replay` before the `2026-03-18 18:30 UTC` rollover
+    - pre-rollover replay telemetry showed `rebuild_replay_wallet_stats_rows_processed = 1329082`, `rebuild_replay_wallet_stats_pages_processed = 67`, `rebuild_replay_rows_processed = 0`
+  - process stability held throughout the observed windows: `MainPID = 24755`, `NRestarts = 0`, no restart loop, no writer-death path, no false `healthy`
+  - at the next boundary, `2026-03-18 19:00 UTC`, the rebuild was still in `collect_buy_mints / reconcile_expired_head` just before rollover (`rebuild_chunks_completed = 209`, `rebuild_prepass_rows_processed = 2154114`, token cursor `5csfa95Xf8ebiCwP9joQ7mtC8KwFvnnejnYx5FbYpump`)
+  - there was then no new carry-forward log and no explicit discard log; instead the next slice resumed as a new `fresh_scan` with `rebuild_started_at = 2026-03-18 19:00:41 UTC`, `rebuild_chunks_completed = 1`, and a fresh `collect_buy_mints_cursor_token`
+  - by `2026-03-18 19:25 UTC`, rebuild was again in `collect_buy_mints / fresh_scan` with `rebuild_chunks_completed = 26`, `rebuild_prepass_rows_processed = 18167`, `rebuild_replay_wallet_stats_rows_processed = 0`, and `rebuild_replay_rows_processed = 0`
+  - because runtime had not yet re-entered `Replay` after that boundary, there was still no emitted `rebuild_replay_sol_leg_access_path`, no `raw_window_persisted_stream`, and no healthy publication on this deploy
 - Rollout reports:
   - [ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md](ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md) — first Stage 1 deploy (`2eb5c30`), confirmed bootstrap path removed but fail_closed due to cap-truncated warm load
   - [ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md](ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md) — persisted-stream follow-up (`0c58aba`), confirmed correct path engaged but first cycle did not complete in 6+ minutes
@@ -132,6 +137,7 @@ Do not start Stage 2 yet.
   - rollout `eba671f` validated the retryable-lock writer fix on live: the service stayed up with growing SQLite retry counters, carry-forward still worked, and rebuild repeatedly returned to `Replay`, but healthy publication still did not land
   - rollout `2072123` regressed earlier in startup: the new `0039_observed_swaps_sol_leg_ts_index.sql` partial-index migration ran inside fatal `sqlite_migrations_apply`, timed out at 120s, aborted the process, and prevented any runtime validation of the replay fix
   - rollout `1093a55` validated the startup-safe 0039 deferral contract and showed `rebuild_replay_mode = wallet_stats_then_sol_leg` on live, but rebuild still remained in `CollectBuyMints` through the observed windows, so replay access-path telemetry and healthy publication were still not reached
+  - rollout `bc9f6d7` validated the grouped-delta `CollectBuyMints` reconcile improvement on live by reaching `Replay` before rollover and emitting reconcile token-cursor telemetry, but also exposed the next rollover-specific blocker: if the boundary lands while runtime is still in `reconcile_expired_head`, the next slice restarts as a new `fresh_scan`
 
 ### 2.6 Live data scale (observed)
 
@@ -338,25 +344,27 @@ Mandatory Stage 1 tests (all green):
 
 Remaining operational blocker:
 
-The previous live blocker around startup-safe replay-index rollout is no longer the current blocker: deploy `1093a5556e82f8adb6ec73bb51e73d62b8d9ac02` reached runtime, deferred `0039` explicitly, and showed `wallet_stats_then_sol_leg` in live telemetry. Stage 1 is partial because even with startup fixed, process stability intact, and carry-forward still working, the rebuild still did not exit `CollectBuyMints` during the observed windows. The current operational blocker is therefore back in prepass convergence on live-size state: `CollectBuyMints` still has not completed quickly enough to validate actual replay access-path telemetry or land a healthy publication. The chosen fix is to stop reconciling carry-forward delta windows by streaming every raw swap and instead reconcile exact buy-mint membership through grouped SOL-buy mint-count pages on the existing storage access path.
+The previous live blocker around startup-safe replay-index rollout is no longer the current blocker: deploy `1093a5556e82f8adb6ec73bb51e73d62b8d9ac02` reached runtime, deferred `0039` explicitly, and showed `wallet_stats_then_sol_leg` in live telemetry. Deploy `bc9f6d7d946a34b1f854680c9c53a9c117cde735` then validated that the grouped-delta reconcile fix moved progress farther: runtime now reaches `Replay` before rollover. Stage 1 is partial because the remaining blocker became narrower and rollover-specific: if the bucket boundary lands while rebuild is still in `collect_buy_mints / reconcile_expired_head`, the next slice restarted as a new `fresh_scan` instead of continuing from exact in-progress reconcile state. The chosen fix now closes that gap by resuming stale in-progress reconcile on its frozen target window until the next exact carry-forward checkpoint is reached, rather than discarding the checkpoint or pretending mixed reconcile state is already safe to roll onto the new bucket.
 
 Current working diagnosis:
 
-the old deploy `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c` proved that a one-shot first-cycle persisted rebuild was too slow / insufficiently bounded for live-size state; the later deploy `96606b83880cb1b942de67f61c5ecdb459fe4139` exposed an earlier blocker on startup SQLite open/migration boundedness; deploy `3fac9afdafbeb3e4ca2c66486124a8683d281f02` validated both the startup fix and bounded/resumable rebuild behavior on live; deploy `aed70c91906321e3e80b1a14614454a9db740026` proved the next blocker was bucket-boundary reset of a still-incomplete fresh canonical rebuild; deploy `52e1e8a61612b3e8d95fa808bb25c32a23f39438` validated that carry-forward fixed that blocker but exposed a later operational failure mode; deploy `eba671f2215e9114065799be2792262abbb1d2b1` validated that retryable raw observed-swap `database is locked` events no longer force writer death or process restart under the observed live windows; deploy `2072123e7ba90a9133494be0d70023d0c9b2cc4b` then regressed before runtime because the new heavy partial-index migration ran synchronously inside fatal `sqlite_migrations_apply`; and deploy `1093a5556e82f8adb6ec73bb51e73d62b8d9ac02` validated the startup-safe deferred rollout contract for `0039` and confirmed that `wallet_stats_then_sol_leg` is live. The remaining blocker is now earlier again: `CollectBuyMints` still does not complete fast enough on live-size state to reach the first actual replay slice and healthy publication inside the observed windows because carry-forward reconciliation was still paying raw-swap cost in the expired-head and new-tail delta windows. The current fix removes that raw-swap carry-forward cost without changing replay/publication truth or reintroducing startup risk.
+the old deploy `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c` proved that a one-shot first-cycle persisted rebuild was too slow / insufficiently bounded for live-size state; the later deploy `96606b83880cb1b942de67f61c5ecdb459fe4139` exposed an earlier blocker on startup SQLite open/migration boundedness; deploy `3fac9afdafbeb3e4ca2c66486124a8683d281f02` validated both the startup fix and bounded/resumable rebuild behavior on live; deploy `aed70c91906321e3e80b1a14614454a9db740026` proved the next blocker was bucket-boundary reset of a still-incomplete fresh canonical rebuild; deploy `52e1e8a61612b3e8d95fa808bb25c32a23f39438` validated that carry-forward fixed that blocker but exposed a later operational failure mode; deploy `eba671f2215e9114065799be2792262abbb1d2b1` validated that retryable raw observed-swap `database is locked` events no longer force writer death or process restart under the observed live windows; deploy `2072123e7ba90a9133494be0d70023d0c9b2cc4b` then regressed before runtime because the new heavy partial-index migration ran synchronously inside fatal `sqlite_migrations_apply`; deploy `1093a5556e82f8adb6ec73bb51e73d62b8d9ac02` validated the startup-safe deferred rollout contract for `0039` and confirmed that `wallet_stats_then_sol_leg` is live; and deploy `bc9f6d7d946a34b1f854680c9c53a9c117cde735` validated that grouped-delta reconcile moves the rebuild far enough to reach `Replay` before rollover. The current code change resolves the next rollover-specific gap by making in-progress grouped-delta reconcile survive a metrics bucket boundary operationally: runtime keeps advancing the stale frozen target in bounded cycles until an exact carry-forward checkpoint is re-established, and only exact state is allowed to roll onto the newer bucket. That preserves exact membership truth and prevents false healthy publication while removing the observed restart-to-fresh-scan pattern.
 
 Immediate next operational step before Stage 2:
 
-validate the grouped-delta `CollectBuyMints` reconcile fix and then re-validate the later replay path on the next rollout:
+validate the stale-frozen-target reconcile rollover fix and then re-validate the later replay path on the next rollout:
 
-1. `CollectBuyMints` must exit materially faster on live-size state even after repeated carry-forward rollover
-2. runtime must reach the first actual replay slice and emit:
+1. runtime must no longer fall back to a new `fresh_scan` from chunk `1` when exact in-progress grouped-delta reconcile state exists
+2. live logs must show that a boundary during `reconcile_expired_head` or `reconcile_new_tail` resumes the stale frozen target instead of discarding it
+3. once an exact carry-forward checkpoint is reached, runtime must roll onto the current metrics bucket without false `healthy`
+4. `CollectBuyMints` must then exit materially faster on live-size state and runtime must reach the first actual replay slice, emitting:
    - `rebuild_replay_mode = wallet_stats_then_sol_leg`
    - `rebuild_replay_sol_leg_access_path = ts_cursor_fallback` until the deferred index is applied
    - `rebuild_replay_sol_leg_access_path = sol_leg_partial_index` after the deferred index is applied offline
-3. discovery must still complete cycles while the optimized replay path is in progress
-4. the new `Replay` contract must then complete to a healthy `raw_window_persisted_stream` publish
-5. `active_follow_wallets > 0` must appear once healthy publication lands
-6. there is still no false `healthy` and no empty published universe
+5. discovery must still complete cycles while the optimized replay path is in progress
+6. the new `Replay` contract must then complete to a healthy `raw_window_persisted_stream` publish
+7. `active_follow_wallets > 0` must appear once healthy publication lands
+8. there is still no false `healthy` and no empty published universe
 
 See section 2.5 for observed server state and section 2.6 for live data scale.
 
@@ -462,6 +470,85 @@ Their useful conclusions are already absorbed here:
 4. Operational incidents on prod must not be repeated just to prove recovery semantics.
 
 ## 10. Execution log
+
+- Date: 2026-03-18
+- Commit SHA: `self-referential; exact final SHA is reported from git after commit`
+- Stage / substep: `Stage 1 / stale frozen-target resume for in-progress grouped-delta reconcile`
+- Status: `done in code; Stage 1 remains partial pending rollout validation`
+- Code changed:
+  - `crates/discovery/src/lib.rs`
+  - `ROAD_TO_PRODUCTION_v2.md`
+- Tests run:
+  - `cargo fmt --all`
+  - `cargo test -p copybot-discovery --lib persisted_stream_reconcile_ -- --nocapture`
+  - `cargo test -p copybot-discovery --lib persisted_stream_rebuild -- --nocapture`
+  - `cargo test -p copybot-discovery --lib persisted_stream_replay_ -- --nocapture`
+  - `cargo test -p copybot-app --bin copybot-app observed_swap_writer_retries_retryable_raw_lock_without_terminal_failure -- --nocapture`
+  - `cargo test -p copybot-app --bin copybot-app app_tests::startup_ -- --nocapture`
+- Done:
+  - identified the exact cause of the live `fresh_scan` restart after `bc9f6d7`: `state_can_carry_forward_metrics_rollover()` only accepted exact `FreshScan` state, so a boundary during `reconcile_expired_head` / `reconcile_new_tail` fell through to the old discard-and-start-fresh branch
+  - replaced that discard behavior with an explicit stale-metrics-window resume contract for in-progress grouped-delta reconcile
+  - runtime now keeps bounded progress on the stale frozen target until the next exact carry-forward checkpoint exists, then performs the normal metrics-bucket carry-forward from exact state
+  - exact membership truth is preserved because mixed reconcile state is never published and is never re-labeled as current-bucket truth before the exact checkpoint is reached
+  - added targeted regressions for stale-bucket `reconcile_expired_head`, stale-bucket `reconcile_new_tail`, and a noisy live-like boundary case that previously would have restarted to `fresh_scan`
+- Acceptance criteria closed:
+  - in-progress `reconcile_expired_head` now survives metrics bucket rollover by the chosen semantic contract
+  - in-progress `reconcile_new_tail` now survives metrics bucket rollover by the chosen semantic contract
+  - large noisy stale-bucket reconcile no longer restarts operationally as a fresh scan
+  - startup-safe 0039 deferral, replay-mode regressions, writer retry stability, and no-stale-publish regressions remain green
+- Acceptance criteria remaining:
+  - next live rollout must show boundary-time reconcile progress surviving without returning to `fresh_scan`
+  - next live rollout must emit `rebuild_replay_sol_leg_access_path`
+  - next live rollout must still land `scoring_source = raw_window_persisted_stream` and `active_follow_wallets > 0`
+- Remaining risks:
+  - if live still stalls before the first replay access-path slice after this fix, the remaining blocker will move to another bounded later-phase convergence gap rather than disappear silently
+- Next action:
+  - rollout this stale-frozen-target reconcile-resume fix and verify that boundary-time `reconcile_expired_head` / `reconcile_new_tail` progress is preserved operationally until the next exact carry-forward checkpoint
+
+- Date: 2026-03-18
+- Commit SHA: `bc9f6d7d946a34b1f854680c9c53a9c117cde735`
+- Stage / substep: `Stage 1 / live rollout validation of grouped-delta CollectBuyMints reconcile`
+- Status: `partial`
+- Code changed:
+  - none; live rollout validation only
+- Tests run:
+  - server rollout observation only
+- Done:
+  - startup still reached runtime cleanly:
+    - `sqlite_migrations_deferred` emitted `skipped` with pending `0039`
+    - `sqlite_migrations_apply` completed without hang/timeout/abort
+    - `app runtime loop started` appeared
+  - process stability held:
+    - `MainPID = 24755`
+    - `NRestarts = 0`
+    - no writer-death path
+    - no restart loop
+  - grouped-delta carry-forward reconcile clearly engaged after rollover:
+    - `rebuild_collect_buy_mints_reconcile_expired_head_cursor_token` was emitted repeatedly
+  - the previous pre-replay blocker is no longer the active blocker:
+    - runtime reached `Replay` before the `2026-03-18 18:30 UTC` rollover
+    - live telemetry showed `rebuild_replay_mode = wallet_stats_then_sol_leg`
+    - pre-rollover replay telemetry reached `rebuild_replay_wallet_stats_rows_processed = 1329082`
+- Blocked:
+  - at `2026-03-18 19:00 UTC`, the boundary landed while runtime was still in `collect_buy_mints / reconcile_expired_head`
+  - there was then no carry-forward log and no explicit discard log
+  - the next slice resumed as a new `fresh_scan` with:
+    - `rebuild_started_at = 2026-03-18 19:00:41 UTC`
+    - `rebuild_chunks_completed = 1`
+    - a fresh `collect_buy_mints_cursor_token`
+  - by `2026-03-18 19:25 UTC`, runtime was still back in `CollectBuyMints`, so there was still no emitted `rebuild_replay_sol_leg_access_path`, no `raw_window_persisted_stream`, and no healthy publication
+- Acceptance criteria closed:
+  - grouped-delta reconcile fix materially improved pre-replay progress on live
+  - runtime can now reach `Replay` before rollover on live
+  - startup safety, carry-forward, and process stability did not regress
+- Acceptance criteria remaining:
+  - next code change must preserve exact progress when rollover lands during `reconcile_expired_head` or `reconcile_new_tail`
+  - next rollout must still emit `rebuild_replay_sol_leg_access_path`
+  - next rollout must still land `scoring_source = raw_window_persisted_stream` and `active_follow_wallets > 0`
+- Remaining risks:
+  - the new remaining blocker is now a narrower metrics-bucket-boundary case inside in-progress grouped-delta reconcile, not startup and not the earlier raw-swap reconcile cost
+- Next action:
+  - fix rollover handling for in-progress grouped-delta reconcile and then re-rollout to validate actual replay access-path telemetry and healthy publication
 
 - Date: 2026-03-18
 - Commit SHA: `self-referential; exact final SHA is reported from git after commit`
