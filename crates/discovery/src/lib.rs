@@ -39,6 +39,7 @@ const AGGREGATE_FOLLOWLIST_TRANSITION_GUARD_CYCLES: u32 = 3;
 const AGGREGATE_READINESS_MAX_LAG_BUCKETS: u64 = 2;
 const CAP_TRUNCATION_FOLLOWLIST_DEACTIVATION_GUARD_CYCLES: u32 = 2;
 const STREAMING_RUG_TRADE_SWEEP_INTERVAL_SWAPS: usize = 2_048;
+const STALE_RECONCILE_TOKEN_BATCH_CAP: usize = 256;
 const POST_BOOTSTRAP_ROTATION_BLOCKED_REASON: &str =
     "post_bootstrap_rotation_blocked_cap_truncated";
 
@@ -1197,6 +1198,31 @@ impl DiscoveryService {
             && Self::payload_has_exact_buy_mint_membership(&state.payload)
     }
 
+    fn stale_reconcile_token_batch_size(fetch_limit: usize) -> usize {
+        fetch_limit.max(1).min(STALE_RECONCILE_TOKEN_BATCH_CAP)
+    }
+
+    fn next_sorted_unique_buy_mint_batch_end(
+        sorted_unique_buy_mints: &[String],
+        after_token: Option<&str>,
+        batch_size: usize,
+    ) -> Option<String> {
+        if batch_size == 0 || sorted_unique_buy_mints.is_empty() {
+            return None;
+        }
+        let start_index = after_token.map_or(0, |cursor| {
+            sorted_unique_buy_mints.partition_point(|mint| mint.as_str() <= cursor)
+        });
+        if start_index >= sorted_unique_buy_mints.len() {
+            return None;
+        }
+        let end_index = start_index
+            .saturating_add(batch_size)
+            .min(sorted_unique_buy_mints.len())
+            .saturating_sub(1);
+        sorted_unique_buy_mints.get(end_index).cloned()
+    }
+
     fn add_buy_mint_occurrences(
         payload: &mut PersistedStreamRebuildPayload,
         mint: &str,
@@ -2006,6 +2032,36 @@ impl DiscoveryService {
                         .payload
                         .collect_buy_mints_reconcile_expired_head_cursor_token
                         .clone();
+                    let reconcile_batch_size = Self::stale_reconcile_token_batch_size(fetch_limit);
+                    let Some(reconcile_batch_end_token) =
+                        Self::next_sorted_unique_buy_mint_batch_end(
+                            &state.payload.unique_buy_mints,
+                            reconcile_cursor_token.as_deref(),
+                            reconcile_batch_size,
+                        )
+                    else {
+                        state.payload.collect_buy_mints_mode =
+                            CollectBuyMintsMode::ReconcileNewTail;
+                        state
+                            .payload
+                            .collect_buy_mints_reconcile_expired_head_cursor = None;
+                        state
+                            .payload
+                            .collect_buy_mints_reconcile_expired_head_cursor_token = None;
+                        info!(
+                            rebuild_window_start = %state.window_start,
+                            rebuild_horizon_end = %state.horizon_end,
+                            rebuild_reconcile_source_window_start = ?state
+                                .payload
+                                .collect_buy_mints_reconcile_source_window_start,
+                            rebuild_reconcile_source_horizon_end = ?state
+                                .payload
+                                .collect_buy_mints_reconcile_source_horizon_end,
+                            rebuild_unique_buy_mints = state.payload.unique_buy_mints.len(),
+                            "completed expired-head reconciliation for carried-forward collect_buy_mints state; switching to new-tail reconciliation"
+                        );
+                        continue;
+                    };
                     let page = store
                         .load_observed_buy_mint_counts_in_time_bounds_after_token_with_budget(
                             source_window_start,
@@ -2013,8 +2069,8 @@ impl DiscoveryService {
                             state.window_start,
                             false,
                             reconcile_cursor_token.as_deref(),
-                            None,
-                            fetch_limit,
+                            Some(reconcile_batch_end_token.as_str()),
+                            reconcile_batch_size,
                             deadline,
                         )?;
                     pages_processed = pages_processed.saturating_add(1);
@@ -2029,14 +2085,30 @@ impl DiscoveryService {
                     state
                         .payload
                         .collect_buy_mints_reconcile_expired_head_cursor = None;
+                    if page.time_budget_exhausted {
+                        state
+                            .payload
+                            .collect_buy_mints_reconcile_expired_head_cursor_token = page
+                            .rows
+                            .last()
+                            .map(|row| row.mint.clone())
+                            .or(reconcile_cursor_token);
+                        break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+                    }
                     state
                         .payload
                         .collect_buy_mints_reconcile_expired_head_cursor_token =
-                        page.rows.last().map(|row| row.mint.clone());
-                    if page.time_budget_exhausted {
-                        break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
-                    }
-                    if page.rows.len() < fetch_limit {
+                        Some(reconcile_batch_end_token);
+                    if Self::next_sorted_unique_buy_mint_batch_end(
+                        &state.payload.unique_buy_mints,
+                        state
+                            .payload
+                            .collect_buy_mints_reconcile_expired_head_cursor_token
+                            .as_deref(),
+                        1,
+                    )
+                    .is_none()
+                    {
                         state.payload.collect_buy_mints_mode =
                             CollectBuyMintsMode::ReconcileNewTail;
                         state
@@ -8920,6 +8992,132 @@ mod tests {
             resumed.phase != DiscoveryPersistedRebuildPhase::CollectBuyMints
                 || resumed.payload.collect_buy_mints_mode != CollectBuyMintsMode::FreshScan,
             "the noisy stale-bucket path must not operationally restart collect_buy_mints from a fresh-scan baseline"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_reconcile_expired_head_live_like_cycle_advances_exact_token_batches_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-reconcile-expired-head-live-like-batch-advance.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = bounded_stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 60;
+        config.max_fetch_swaps_per_cycle = 20_000;
+        config.max_fetch_pages_per_cycle = 5;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let source_now = DateTime::parse_from_rfc3339("2026-03-18T23:00:50Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let target_now = source_now + Duration::seconds(60);
+        let source_window_start =
+            source_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let source_metrics_window_start = metrics_window_start_for_test(&config, source_now);
+        let target_window_start =
+            target_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let target_metrics_window_start = metrics_window_start_for_test(&config, target_now);
+
+        let expired_token_count = STALE_RECONCILE_TOKEN_BATCH_CAP
+            .saturating_mul(config.max_fetch_pages_per_cycle.max(1))
+            .saturating_add(37);
+        let mut exact_counts = BTreeMap::new();
+        let mut expired_tokens = Vec::new();
+        for idx in 0..expired_token_count {
+            let token = format!("TokenStage1LiveLikeExpiredHead{idx:05}111111111");
+            store.insert_observed_swap(&swap(
+                "wallet_stage1_live_like_expired",
+                &format!("stage1-live-like-expired-buy-{idx}"),
+                source_window_start + Duration::seconds((idx % 30) as i64),
+                SOL_MINT,
+                &token,
+                1.0,
+                10.0,
+            ))?;
+            exact_counts.insert(token.clone(), 1u32);
+            expired_tokens.push(token);
+        }
+        let survivor = "TokenStage1LiveLikeExpiredHeadSurvivor111".to_string();
+        store.insert_observed_swap(&swap(
+            "wallet_stage1_live_like_expired",
+            "stage1-live-like-expired-survivor",
+            target_window_start + Duration::seconds(5),
+            SOL_MINT,
+            &survivor,
+            1.0,
+            10.0,
+        ))?;
+        exact_counts.insert(survivor.clone(), 1);
+
+        let mut state = discovery.start_persisted_stream_rebuild_state(
+            source_window_start,
+            source_metrics_window_start,
+            source_now,
+        );
+        state.phase = DiscoveryPersistedRebuildPhase::CollectBuyMints;
+        state.payload.collect_buy_mints_prepass_complete = true;
+        state.payload.buy_mint_counts = exact_counts;
+        state.payload.unique_buy_mints = expired_tokens
+            .iter()
+            .cloned()
+            .chain(std::iter::once(survivor.clone()))
+            .collect();
+        assert_sorted_strings(&state.payload.unique_buy_mints);
+        assert!(
+            discovery.prepare_persisted_stream_rebuild_for_metrics_window_rollover(
+                &mut state,
+                target_window_start,
+                target_metrics_window_start,
+                target_now,
+            )?
+        );
+
+        let phase_advance = discovery.advance_persisted_stream_prepass(
+            &store,
+            &mut state,
+            config.max_fetch_swaps_per_cycle,
+            config.max_fetch_pages_per_cycle,
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+
+        let expected_rows =
+            STALE_RECONCILE_TOKEN_BATCH_CAP.saturating_mul(config.max_fetch_pages_per_cycle.max(1));
+        assert_eq!(
+            phase_advance.rows_processed,
+            expected_rows,
+            "live-like stale expired-head reconcile should advance by capped exact token batches instead of issuing one giant grouped query over the entire remaining token range"
+        );
+        assert_eq!(
+            phase_advance.pages_processed,
+            config.max_fetch_pages_per_cycle
+        );
+        assert!(!phase_advance.source_exhausted);
+        assert_eq!(
+            state.payload.collect_buy_mints_mode,
+            CollectBuyMintsMode::ReconcileExpiredHead
+        );
+        assert_eq!(
+            state
+                .payload
+                .collect_buy_mints_reconcile_expired_head_cursor_token
+                .as_deref(),
+            expired_tokens
+                .get(expected_rows.saturating_sub(1))
+                .map(|token| token.as_str())
+        );
+        assert_eq!(
+            state.payload.unique_buy_mints.len(),
+            expired_token_count.saturating_sub(expected_rows).saturating_add(1),
+            "expired-head reconcile should subtract the bounded candidate token batches while keeping the surviving overlap mint"
+        );
+        assert!(
+            DiscoveryService::state_can_resume_stale_metrics_window_until_exact_checkpoint(&state),
+            "batched live-like stale reconcile must stay exact and resumable after the first bounded cycle"
         );
         Ok(())
     }
