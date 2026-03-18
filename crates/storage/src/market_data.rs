@@ -594,6 +594,105 @@ impl SqliteStore {
         })
     }
 
+    pub fn for_each_observed_sol_leg_swap_in_window_after_cursor_with_budget<F>(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        cursor: Option<&DiscoveryRuntimeCursor>,
+        limit: usize,
+        deadline: Instant,
+        mut on_swap: F,
+    ) -> Result<ObservedSwapCursorPage>
+    where
+        F: FnMut(SwapEvent) -> Result<()>,
+    {
+        if limit == 0 {
+            return Ok(ObservedSwapCursorPage::default());
+        }
+        if Instant::now() >= deadline {
+            return Ok(ObservedSwapCursorPage {
+                rows_seen: 0,
+                time_budget_exhausted: true,
+            });
+        }
+
+        let limit = (limit.min(i64::MAX as usize)) as i64;
+        let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
+        let (query, params): (String, Vec<rusqlite::types::Value>) = match cursor {
+            Some(cursor) => (
+                format!(
+                    "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                            qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
+                     FROM observed_swaps INDEXED BY idx_observed_swaps_sol_leg_ts_slot_signature
+                     WHERE ts >= ?1
+                       AND ts <= ?2
+                       AND (token_in = '{SOL_MINT}' OR token_out = '{SOL_MINT}')
+                       AND (ts, slot, signature) > (?3, ?4, ?5)
+                     ORDER BY ts ASC, slot ASC, signature ASC
+                     LIMIT ?6"
+                ),
+                vec![
+                    since.to_rfc3339().into(),
+                    until.to_rfc3339().into(),
+                    cursor.ts_utc.to_rfc3339().into(),
+                    (cursor.slot as i64).into(),
+                    cursor.signature.clone().into(),
+                    limit.into(),
+                ],
+            ),
+            None => (
+                format!(
+                    "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                            qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
+                     FROM observed_swaps INDEXED BY idx_observed_swaps_sol_leg_ts_slot_signature
+                     WHERE ts >= ?1
+                       AND ts <= ?2
+                       AND (token_in = '{SOL_MINT}' OR token_out = '{SOL_MINT}')
+                     ORDER BY ts ASC, slot ASC, signature ASC
+                     LIMIT ?3"
+                ),
+                vec![
+                    since.to_rfc3339().into(),
+                    until.to_rfc3339().into(),
+                    limit.into(),
+                ],
+            ),
+        };
+        let mut stmt = self
+            .conn
+            .prepare(&query)
+            .context("failed to prepare observed_swaps sol-leg window cursor query")?;
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params))
+            .context("failed to query observed_swaps sol-leg window cursor")?;
+
+        let mut seen = 0usize;
+        let mut time_budget_exhausted = false;
+        loop {
+            let next_row = match rows.next() {
+                Ok(row) => row,
+                Err(error) => {
+                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                        time_budget_exhausted = true;
+                        break;
+                    }
+                    return Err(error)
+                        .context("failed iterating observed_swaps sol-leg window cursor rows");
+                }
+            };
+            let Some(row) = next_row else {
+                break;
+            };
+            let swap = Self::row_to_swap_event(row)?;
+            on_swap(swap)?;
+            seen = seen.saturating_add(1);
+        }
+        Ok(ObservedSwapCursorPage {
+            rows_seen: seen,
+            time_budget_exhausted,
+        })
+    }
+
     pub fn load_observed_buy_mints_in_window_after_token_with_budget(
         &self,
         since: DateTime<Utc>,

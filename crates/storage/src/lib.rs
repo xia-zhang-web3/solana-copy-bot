@@ -8665,6 +8665,122 @@ mod tests {
     }
 
     #[test]
+    fn observed_sol_leg_swap_cursor_query_filters_and_resumes_in_order() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("observed-sol-leg-page-query.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let base = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        for swap in [
+            SwapEvent {
+                signature: "noise-aa".to_string(),
+                wallet: "wallet-noise".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "token-a".to_string(),
+                token_out: "token-b".to_string(),
+                amount_in: 1.0,
+                amount_out: 2.0,
+                slot: 9,
+                ts_utc: base,
+                exact_amounts: None,
+            },
+            SwapEvent {
+                signature: "buy-1".to_string(),
+                wallet: "wallet-a".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-c".to_string(),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                slot: 10,
+                ts_utc: base + Duration::seconds(1),
+                exact_amounts: None,
+            },
+            SwapEvent {
+                signature: "sell-1".to_string(),
+                wallet: "wallet-a".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "token-c".to_string(),
+                token_out: "So11111111111111111111111111111111111111112".to_string(),
+                amount_in: 5.0,
+                amount_out: 0.6,
+                slot: 11,
+                ts_utc: base + Duration::seconds(2),
+                exact_amounts: None,
+            },
+            SwapEvent {
+                signature: "noise-bb".to_string(),
+                wallet: "wallet-noise".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "token-x".to_string(),
+                token_out: "token-y".to_string(),
+                amount_in: 3.0,
+                amount_out: 4.0,
+                slot: 12,
+                ts_utc: base + Duration::seconds(3),
+                exact_amounts: None,
+            },
+            SwapEvent {
+                signature: "buy-2".to_string(),
+                wallet: "wallet-b".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-d".to_string(),
+                amount_in: 0.8,
+                amount_out: 8.0,
+                slot: 13,
+                ts_utc: base + Duration::seconds(4),
+                exact_amounts: None,
+            },
+        ] {
+            assert!(store.insert_observed_swap(&swap)?);
+        }
+
+        let mut first_page = Vec::new();
+        let first = store.for_each_observed_sol_leg_swap_in_window_after_cursor_with_budget(
+            base,
+            base + Duration::seconds(10),
+            None,
+            2,
+            std::time::Instant::now() + StdDuration::from_secs(1),
+            |swap| {
+                first_page.push(swap.signature);
+                Ok(())
+            },
+        )?;
+        assert_eq!(first.rows_seen, 2);
+        assert!(!first.time_budget_exhausted);
+        assert_eq!(first_page, vec!["buy-1".to_string(), "sell-1".to_string()]);
+
+        let cursor = DiscoveryRuntimeCursor {
+            ts_utc: base + Duration::seconds(2),
+            slot: 11,
+            signature: "sell-1".to_string(),
+        };
+        let mut second_page = Vec::new();
+        let second = store.for_each_observed_sol_leg_swap_in_window_after_cursor_with_budget(
+            base,
+            base + Duration::seconds(10),
+            Some(&cursor),
+            2,
+            std::time::Instant::now() + StdDuration::from_secs(1),
+            |swap| {
+                second_page.push(swap.signature);
+                Ok(())
+            },
+        )?;
+        assert_eq!(second.rows_seen, 1);
+        assert!(!second.time_budget_exhausted);
+        assert_eq!(second_page, vec!["buy-2".to_string()]);
+        Ok(())
+    }
+
+    #[test]
     fn live_max_drawdown_since_respects_subsecond_closed_ts_order() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("live-max-drawdown-subsecond-order.db");
@@ -10292,7 +10408,7 @@ mod tests {
             ),
             migrations_apply_step: StartupStepRuntimePolicy::new(
                 StdDuration::from_millis(10),
-                Some(StdDuration::from_secs(1)),
+                Some(StdDuration::from_secs(3)),
             ),
         };
 
