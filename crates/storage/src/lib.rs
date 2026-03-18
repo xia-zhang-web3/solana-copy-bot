@@ -8093,6 +8093,81 @@ mod tests {
     }
 
     #[test]
+    fn observed_buy_mint_count_page_query_respects_exclusive_time_bounds() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("observed-buy-mint-count-page-time-bounds.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let base = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        for (signature, token, ts) in [
+            ("buy-a", "token-a", base + Duration::seconds(1)),
+            ("buy-b", "token-b", base + Duration::seconds(2)),
+            ("buy-c", "token-c", base + Duration::seconds(3)),
+        ] {
+            assert!(store.insert_observed_swap(&SwapEvent {
+                signature: signature.to_string(),
+                wallet: "wallet-buy-count-bounds".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: token.to_string(),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                slot: 10,
+                ts_utc: ts,
+                exact_amounts: None,
+            })?);
+        }
+
+        let lower_exclusive = store
+            .load_observed_buy_mint_counts_in_time_bounds_after_token_with_budget(
+                base + Duration::seconds(1),
+                false,
+                base + Duration::seconds(3),
+                true,
+                None,
+                None,
+                10,
+                std::time::Instant::now() + StdDuration::from_secs(1),
+            )?;
+        assert_eq!(
+            lower_exclusive
+                .rows
+                .iter()
+                .map(|row| row.mint.as_str())
+                .collect::<Vec<_>>(),
+            vec!["token-b", "token-c"]
+        );
+
+        let upper_exclusive = store
+            .load_observed_buy_mint_counts_in_time_bounds_after_token_with_budget(
+                base + Duration::seconds(1),
+                true,
+                base + Duration::seconds(3),
+                false,
+                None,
+                None,
+                10,
+                std::time::Instant::now() + StdDuration::from_secs(1),
+            )?;
+        assert_eq!(
+            upper_exclusive
+                .rows
+                .iter()
+                .map(|row| row.mint.as_str())
+                .collect::<Vec<_>>(),
+            vec!["token-a", "token-b"]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn persist_discovery_cycle_retries_after_immediate_write_lock() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("discovery-write-retry.db");

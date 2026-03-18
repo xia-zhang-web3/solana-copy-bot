@@ -101,31 +101,27 @@ The project is not blocked by ingestion.
 
 The startup SQLite silent-hang blocker is no longer the current blocker.
 
-Stage 1 is still `partial` after live rollout `2072123e7ba90a9133494be0d70023d0c9b2cc4b`.
+Stage 1 is still `partial` after live rollout `1093a5556e82f8adb6ec73bb51e73d62b8d9ac02`.
 
-Current working diagnosis: startup SQLite observability/boundedness is validated on live, bounded/resumable persisted rebuild behavior is validated on live, canonical migration/repair is validated on live, carry-forward across `metrics_window_start_changed` is validated on live, and the retryable SQLite lock / observed-swap writer restart path is validated on live. The replay-phase throughput fix itself is still not live-validated, because deploy `2072123e7ba90a9133494be0d70023d0c9b2cc4b` regressed earlier in startup: the new heavy partial-index migration `0039_observed_swaps_sol_leg_ts_index.sql` ran inside fatal `sqlite_migrations_apply`, timed out at 120s on live-size `observed_swaps`, aborted the process, and never reached `app runtime loop started`. The current code change therefore fixes startup migration safety first: `0039` becomes an explicit startup-deferred performance migration, startup logs that deferral as its own outcome, and replay now has an explicit bounded fallback access path (`ts_cursor_fallback`) until the index is applied offline. Stage 1 is still not operationally deployable until the next live rollout proves startup reaches runtime again and then actually validates the replay throughput fix.
+Current working diagnosis: startup SQLite observability/boundedness is validated on live, bounded/resumable persisted rebuild behavior is validated on live, canonical migration/repair is validated on live, carry-forward across `metrics_window_start_changed` is validated on live, the retryable SQLite lock / observed-swap writer restart path is validated on live, and the startup-safe deferral contract for `0039_observed_swaps_sol_leg_ts_index.sql` is now validated on live as well. Deploy `1093a5556e82f8adb6ec73bb51e73d62b8d9ac02` reached `app runtime loop started`, emitted truthful `sqlite_migrations_deferred` telemetry for pending `0039`, and showed `rebuild_replay_mode = wallet_stats_then_sol_leg` in runtime telemetry without regressing startup or process stability. However, the remaining blocker moved earlier again: across the observed live windows the rebuild still stayed in `CollectBuyMints`, repeatedly carried forward correctly at metrics-bucket rollover, but did not yet emit a first actual replay slice or `rebuild_replay_sol_leg_access_path`. The current code change addresses that exact pre-replay blocker by replacing carry-forward `CollectBuyMints` head/tail reconciliation over raw swaps with grouped SOL-buy mint-count delta pagination on the existing `idx_observed_swaps_token_in_out_ts`, preserving bounded/resumable carry-forward without introducing any new startup migration or startup-critical index dependency. Stage 1 is therefore still not operationally deployable until the next live rollout proves this grouped-delta reconcile exits `CollectBuyMints` fast enough to validate the replay access-path contract in runtime and then land a healthy publication.
 
 Do not start Stage 2 yet.
 
 ### 2.5 Server state (updated 2026-03-18)
 
-- Deployed commit: `2072123e7ba90a9133494be0d70023d0c9b2cc4b`
-- Service: rollout regressed in startup restart loop before runtime
+- Deployed commit: `1093a5556e82f8adb6ec73bb51e73d62b8d9ac02`
+- Service: rollout reached runtime and remained stable through the observed validation windows
 - `execution.enabled = false`
-- Latest observed restart: repeated startup abort/restart loop on the current deploy after `sqlite_migrations_apply` timed out
+- Latest observed restart: none during the observed validation windows on the current deploy (`MainPID = 22242`, `NRestarts = 0`)
 - `active_follow_wallets = 0` during the observed validation window
 - Observed during validation window:
-  - startup emitted `sqlite_migrations_apply started`, then only `waiting` logs every 5 seconds up to `120000 ms`
-  - startup then emitted:
-    - `startup_stage = sqlite_migrations_apply`
-    - `startup_stage_outcome = timed_out`
-    - `detail = timeout_behavior=abort_process`
-  - the process exited with `status=6/ABRT`
-  - systemd restarted the service and the same failure repeated
-  - startup never reached `app runtime loop started`
-  - startup never reached `startup_sqlite_wal_checkpoint`
-  - runtime never started, so there was no replay telemetry, no `rebuild_replay_mode = wallet_stats_then_sol_leg`, and no validation of the replay throughput fix on this deploy
-  - `lsof` showed only the service process itself on the SQLite files during the observed failure window, so the current working assumption is a heavy local index build on live-size `observed_swaps`, not external lock contention
+  - startup emitted `sqlite_migrations_deferred` with `deferred_versions=0039_observed_swaps_sol_leg_ts_index.sql`
+  - startup then completed `sqlite_migrations_apply` immediately instead of timing out, kept `startup_sqlite_wal_checkpoint` explicitly deferred, and reached `app runtime loop started`
+  - runtime emitted `rebuild_replay_mode = wallet_stats_then_sol_leg` from the first bounded rebuild cycles onward, confirming the optimized replay contract is wired
+  - carry-forward across `metrics_window_start_changed` was observed again at `2026-03-18 16:00 UTC`, `2026-03-18 16:30 UTC`, and `2026-03-18 17:30 UTC` without discard/restart-from-zero
+  - process stability held throughout the observed windows: `MainPID = 22242`, `NRestarts = 0`, no restart loop, no writer-death path, and no false `healthy`
+  - despite that stability, rebuild still remained in `CollectBuyMints` through `2026-03-18 17:50 UTC`, reaching `rebuild_chunks_completed = 139`, `rebuild_prepass_rows_processed = 1660899`, `rebuild_unique_buy_mints = 38862`, while `rebuild_replay_wallet_stats_rows_processed = 0` and `rebuild_replay_rows_processed = 0`
+  - because runtime had not yet exited `CollectBuyMints`, there was still no emitted `rebuild_replay_sol_leg_access_path`, no `raw_window_persisted_stream`, and no healthy publication on this deploy
 - Rollout reports:
   - [ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md](ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md) — first Stage 1 deploy (`2eb5c30`), confirmed bootstrap path removed but fail_closed due to cap-truncated warm load
   - [ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md](ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md) — persisted-stream follow-up (`0c58aba`), confirmed correct path engaged but first cycle did not complete in 6+ minutes
@@ -135,6 +131,7 @@ Do not start Stage 2 yet.
   - rollout `52e1e8a` validated carry-forward across metrics bucket rollover on live and showed discovery reaching `Replay`, but exposed a later process-stability blocker: restarts under `database is locked` + Yellowstone output queue saturation before healthy completion
   - rollout `eba671f` validated the retryable-lock writer fix on live: the service stayed up with growing SQLite retry counters, carry-forward still worked, and rebuild repeatedly returned to `Replay`, but healthy publication still did not land
   - rollout `2072123` regressed earlier in startup: the new `0039_observed_swaps_sol_leg_ts_index.sql` partial-index migration ran inside fatal `sqlite_migrations_apply`, timed out at 120s, aborted the process, and prevented any runtime validation of the replay fix
+  - rollout `1093a55` validated the startup-safe 0039 deferral contract and showed `rebuild_replay_mode = wallet_stats_then_sol_leg` on live, but rebuild still remained in `CollectBuyMints` through the observed windows, so replay access-path telemetry and healthy publication were still not reached
 
 ### 2.6 Live data scale (observed)
 
@@ -341,26 +338,25 @@ Mandatory Stage 1 tests (all green):
 
 Remaining operational blocker:
 
-The previous live blocker around replay convergence is not the current blocker, because the latest deploy never reached runtime. Stage 1 is partial because deploy `2072123e7ba90a9133494be0d70023d0c9b2cc4b` regressed at `sqlite_migrations_apply`: the new heavy `0039_observed_swaps_sol_leg_ts_index.sql` startup migration timed out under the fatal startup policy and caused an abort/restart loop before discovery/runtime started. The current code change addresses that exact operational blocker by moving `0039` off the startup critical path and making replay's pre-index contract explicit.
+The previous live blocker around startup-safe replay-index rollout is no longer the current blocker: deploy `1093a5556e82f8adb6ec73bb51e73d62b8d9ac02` reached runtime, deferred `0039` explicitly, and showed `wallet_stats_then_sol_leg` in live telemetry. Stage 1 is partial because even with startup fixed, process stability intact, and carry-forward still working, the rebuild still did not exit `CollectBuyMints` during the observed windows. The current operational blocker is therefore back in prepass convergence on live-size state: `CollectBuyMints` still has not completed quickly enough to validate actual replay access-path telemetry or land a healthy publication. The chosen fix is to stop reconciling carry-forward delta windows by streaming every raw swap and instead reconcile exact buy-mint membership through grouped SOL-buy mint-count pages on the existing storage access path.
 
 Current working diagnosis:
 
-the old deploy `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c` proved that a one-shot first-cycle persisted rebuild was too slow / insufficiently bounded for live-size state; the later deploy `96606b83880cb1b942de67f61c5ecdb459fe4139` exposed an earlier blocker on startup SQLite open/migration boundedness; deploy `3fac9afdafbeb3e4ca2c66486124a8683d281f02` validated both the startup fix and bounded/resumable rebuild behavior on live; deploy `aed70c91906321e3e80b1a14614454a9db740026` proved the next blocker was bucket-boundary reset of a still-incomplete fresh canonical rebuild; deploy `52e1e8a61612b3e8d95fa808bb25c32a23f39438` validated that carry-forward fixed that blocker but exposed a later operational failure mode; deploy `eba671f2215e9114065799be2792262abbb1d2b1` validated that retryable raw observed-swap `database is locked` events no longer force writer death or process restart under the observed live windows; and deploy `2072123e7ba90a9133494be0d70023d0c9b2cc4b` then regressed before runtime because the new heavy partial-index migration ran synchronously inside fatal `sqlite_migrations_apply`. The current code change keeps the replay throughput fix in place, but changes its rollout contract: the partial index becomes an optional startup-deferred performance migration, replay can run correctly before it exists via `ts_cursor_fallback`, and live rollout can finally validate `wallet_stats_then_sol_leg` instead of dying in startup.
+the old deploy `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c` proved that a one-shot first-cycle persisted rebuild was too slow / insufficiently bounded for live-size state; the later deploy `96606b83880cb1b942de67f61c5ecdb459fe4139` exposed an earlier blocker on startup SQLite open/migration boundedness; deploy `3fac9afdafbeb3e4ca2c66486124a8683d281f02` validated both the startup fix and bounded/resumable rebuild behavior on live; deploy `aed70c91906321e3e80b1a14614454a9db740026` proved the next blocker was bucket-boundary reset of a still-incomplete fresh canonical rebuild; deploy `52e1e8a61612b3e8d95fa808bb25c32a23f39438` validated that carry-forward fixed that blocker but exposed a later operational failure mode; deploy `eba671f2215e9114065799be2792262abbb1d2b1` validated that retryable raw observed-swap `database is locked` events no longer force writer death or process restart under the observed live windows; deploy `2072123e7ba90a9133494be0d70023d0c9b2cc4b` then regressed before runtime because the new heavy partial-index migration ran synchronously inside fatal `sqlite_migrations_apply`; and deploy `1093a5556e82f8adb6ec73bb51e73d62b8d9ac02` validated the startup-safe deferred rollout contract for `0039` and confirmed that `wallet_stats_then_sol_leg` is live. The remaining blocker is now earlier again: `CollectBuyMints` still does not complete fast enough on live-size state to reach the first actual replay slice and healthy publication inside the observed windows because carry-forward reconciliation was still paying raw-swap cost in the expired-head and new-tail delta windows. The current fix removes that raw-swap carry-forward cost without changing replay/publication truth or reintroducing startup risk.
 
 Immediate next operational step before Stage 2:
 
-validate the startup-safe migration rollout and then the replay-phase throughput fix on the next rollout:
+validate the grouped-delta `CollectBuyMints` reconcile fix and then re-validate the later replay path on the next rollout:
 
-1. startup must reach `app runtime loop started` again without timing out in `sqlite_migrations_apply`
-2. startup logs must show explicit deferred migration telemetry for `0039_observed_swaps_sol_leg_ts_index.sql`
-3. live logs must then show the replay access-path contract explicitly:
+1. `CollectBuyMints` must exit materially faster on live-size state even after repeated carry-forward rollover
+2. runtime must reach the first actual replay slice and emit:
    - `rebuild_replay_mode = wallet_stats_then_sol_leg`
    - `rebuild_replay_sol_leg_access_path = ts_cursor_fallback` until the deferred index is applied
    - `rebuild_replay_sol_leg_access_path = sol_leg_partial_index` after the deferred index is applied offline
-4. discovery must still complete cycles while the optimized replay path is in progress
-5. the new `Replay` contract must complete to a healthy `raw_window_persisted_stream` publish before a later metrics bucket rollover resets bucket-sensitive state again
-6. `active_follow_wallets > 0` must appear once healthy publication lands
-7. there is still no false `healthy` and no empty published universe
+3. discovery must still complete cycles while the optimized replay path is in progress
+4. the new `Replay` contract must then complete to a healthy `raw_window_persisted_stream` publish
+5. `active_follow_wallets > 0` must appear once healthy publication lands
+6. there is still no false `healthy` and no empty published universe
 
 See section 2.5 for observed server state and section 2.6 for live data scale.
 
@@ -466,6 +462,89 @@ Their useful conclusions are already absorbed here:
 4. Operational incidents on prod must not be repeated just to prove recovery semantics.
 
 ## 10. Execution log
+
+- Date: 2026-03-18
+- Commit SHA: `self-referential; exact final SHA is reported from git after commit`
+- Stage / substep: `Stage 1 / grouped-delta CollectBuyMints reconcile throughput fix`
+- Status: `done in code; Stage 1 remains partial pending rollout validation`
+- Code changed:
+  - `crates/discovery/src/lib.rs`
+  - `crates/storage/src/lib.rs`
+  - `crates/storage/src/market_data.rs`
+  - `ROAD_TO_PRODUCTION_v2.md`
+- Tests run:
+  - `cargo fmt --all`
+  - `cargo test -p copybot-storage --lib observed_buy_mint_count_page_query_respects_exclusive_time_bounds -- --nocapture`
+  - `cargo test -p copybot-discovery --lib persisted_stream_collect_buy_mints_carry_forward_reconcile_reduces_work_on_large_noise_fixture_stage1 -- --nocapture`
+  - `cargo test -p copybot-discovery --lib persisted_stream_collect_buy_mints_reconcile_legacy_raw_cursor_repairs_to_grouped_delta_stage1 -- --nocapture`
+  - `cargo test -p copybot-storage --lib`
+  - `cargo test -p copybot-discovery --lib persisted_stream_collect_buy_ -- --nocapture`
+  - `cargo test -p copybot-discovery --lib persisted_stream_rebuild -- --nocapture`
+  - `cargo test -p copybot-app --bin copybot-app app_tests::startup_ -- --nocapture`
+- Done:
+  - identified the remaining live wall-clock cost inside `CollectBuyMints`: carry-forward `ReconcileExpiredHead` and `ReconcileNewTail` were still streaming every raw swap in the delta windows even after fresh-scan had moved to direct distinct-mint pagination
+  - replaced those two carry-forward subphases with grouped SOL-buy mint-count delta pagination on the existing `idx_observed_swaps_token_in_out_ts`
+  - preserved exact canonical buy-mint membership semantics by subtracting/adding per-mint counts, then resyncing the canonical sorted mint set from those counts
+  - added dedicated token cursors for the carry-forward reconcile subphases, plus progress telemetry for those cursors
+  - added resume repair for already-persisted legacy raw reconcile cursors, rewinding only the current reconcile subphase onto the new grouped-delta contract instead of resetting the whole rebuild
+  - avoided any new startup-critical migration or index requirement; this fix reuses the existing storage access path
+- Acceptance criteria closed:
+  - startup-safe migration rollout contract is not regressed by this fix
+  - `CollectBuyMints` remains bounded and resumable across cycles and restarts
+  - carry-forward still works, but now reconciles delta windows by grouped buy-mint work instead of raw-swap work
+  - large noisy fixtures show materially faster exit-from-`CollectBuyMints` trajectory for carry-forwarded rebuilds
+- Acceptance criteria remaining:
+  - next live rollout must actually exit `CollectBuyMints`
+  - next live rollout must emit `rebuild_replay_sol_leg_access_path`
+  - next live rollout must still land `scoring_source = raw_window_persisted_stream` and `active_follow_wallets > 0`
+- Remaining risks:
+  - if live still spends too long before the first replay slice after this prepass optimization, the next blocker will move to another bounded pre-replay subpath rather than disappear silently
+- Next action:
+  - rollout this grouped-delta reconcile fix and confirm live telemetry reaches the first replay slice without regressing startup safety, carry-forward, or process stability
+
+- Date: 2026-03-18
+- Commit SHA: `1093a5556e82f8adb6ec73bb51e73d62b8d9ac02`
+- Stage / substep: `Stage 1 / live rollout validation of startup-safe 0039 deferral + replay telemetry wiring`
+- Status: `partial`
+- Code changed:
+  - none; live rollout validation only
+- Tests run:
+  - server rollout observation only
+- Done:
+  - startup-safe migration rollout contract is now validated on live:
+    - `sqlite_migrations_deferred` emitted `skipped` with `deferred_versions=0039_observed_swaps_sol_leg_ts_index.sql`
+    - `sqlite_migrations_apply` completed immediately instead of timing out or aborting
+    - startup reached `app runtime loop started`
+  - process stability held in the observed live windows:
+    - `MainPID = 22242`
+    - `NRestarts = 0`
+    - no writer-death restart path
+    - no startup abort loop
+  - carry-forward across metrics bucket rollover remained validated on live at `16:00 UTC`, `16:30 UTC`, and `17:30 UTC`
+  - runtime telemetry now proves the new replay contract is wired:
+    - `rebuild_replay_mode = wallet_stats_then_sol_leg`
+    - no sign of fallback to legacy full-window replay mode
+- Blocked:
+  - the rollout still did not reach the first actual replay slice
+  - by `2026-03-18 17:50 UTC` runtime remained in `CollectBuyMints` with:
+    - `rebuild_chunks_completed = 139`
+    - `rebuild_prepass_rows_processed = 1660899`
+    - `rebuild_unique_buy_mints = 38862`
+    - `rebuild_replay_wallet_stats_rows_processed = 0`
+    - `rebuild_replay_rows_processed = 0`
+  - therefore there was still no emitted `rebuild_replay_sol_leg_access_path`, no `raw_window_persisted_stream`, and no healthy publication
+- Acceptance criteria closed:
+  - startup-safe deferral of the heavy `0039` replay index migration is validated on live
+  - runtime now reaches discovery again with `wallet_stats_then_sol_leg` telemetry present
+  - carry-forward and process stability did not regress
+- Acceptance criteria remaining:
+  - the next code change must make `CollectBuyMints` converge fast enough to reach the first replay slice on live
+  - the next rollout must emit `rebuild_replay_sol_leg_access_path`
+  - the next rollout must still land `scoring_source = raw_window_persisted_stream` and `active_follow_wallets > 0`
+- Remaining risks:
+  - the current remaining bottleneck is back in pre-replay convergence on live-size `CollectBuyMints`, not startup and not the replay access-path contract itself
+- Next action:
+  - fix `CollectBuyMints` completion time / convergence on live-size state, then re-rollout to validate actual replay slices and healthy publication
 
 - Date: 2026-03-18
 - Commit SHA: `self-referential; exact final SHA is reported from git after commit`

@@ -600,6 +600,10 @@ struct PersistedStreamRebuildPayload {
     #[serde(default)]
     collect_buy_mints_reconcile_new_tail_cursor: Option<DiscoveryRuntimeCursor>,
     #[serde(default)]
+    collect_buy_mints_reconcile_expired_head_cursor_token: Option<String>,
+    #[serde(default)]
+    collect_buy_mints_reconcile_new_tail_cursor_token: Option<String>,
+    #[serde(default)]
     replay_mode: ReplayMode,
     #[serde(default)]
     replay_wallet_stats_complete: bool,
@@ -663,6 +667,8 @@ struct PersistedStreamProgressTelemetry {
     collect_buy_mints_reconcile_source_horizon_end: Option<DateTime<Utc>>,
     collect_buy_mints_reconcile_expired_head_cursor: Option<DiscoveryRuntimeCursor>,
     collect_buy_mints_reconcile_new_tail_cursor: Option<DiscoveryRuntimeCursor>,
+    collect_buy_mints_reconcile_expired_head_cursor_token: Option<String>,
+    collect_buy_mints_reconcile_new_tail_cursor_token: Option<String>,
     prepass_rows_processed: usize,
     prepass_pages_processed: usize,
     replay_wallet_stats_complete: bool,
@@ -1250,6 +1256,16 @@ impl DiscoveryService {
         state.payload.replay_wallet_stats_rows_processed = 0;
         state.payload.replay_wallet_stats_pages_processed = 0;
         state.payload.collect_buy_mints_mode = CollectBuyMintsMode::ReconcileExpiredHead;
+        state
+            .payload
+            .collect_buy_mints_reconcile_expired_head_cursor = None;
+        state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
+        state
+            .payload
+            .collect_buy_mints_reconcile_expired_head_cursor_token = None;
+        state
+            .payload
+            .collect_buy_mints_reconcile_new_tail_cursor_token = None;
         state.payload.token_quality_cache.clear();
         state.payload.token_quality_progress =
             quality_cache::TokenQualityResolutionProgress::default();
@@ -1328,6 +1344,12 @@ impl DiscoveryService {
             .payload
             .collect_buy_mints_reconcile_expired_head_cursor = None;
         state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
+        state
+            .payload
+            .collect_buy_mints_reconcile_expired_head_cursor_token = None;
+        state
+            .payload
+            .collect_buy_mints_reconcile_new_tail_cursor_token = None;
         Self::sync_unique_buy_mints_from_counts(&mut state.payload);
         Self::reset_bucket_sensitive_rebuild_state_for_rollover(state);
         info!(
@@ -1426,6 +1448,34 @@ impl DiscoveryService {
                 }
                 if state.payload.collect_buy_mints_cursor_token.is_some() {
                     self.repair_collect_buy_mints_payload_for_cursor(state);
+                }
+                if state.payload.collect_buy_mints_mode != CollectBuyMintsMode::FreshScan
+                    && (state
+                        .payload
+                        .collect_buy_mints_reconcile_expired_head_cursor
+                        .is_some()
+                        || state
+                            .payload
+                            .collect_buy_mints_reconcile_new_tail_cursor
+                            .is_some())
+                {
+                    warn!(
+                        rebuild_window_start = %state.window_start,
+                        rebuild_horizon_end = %state.horizon_end,
+                        rebuild_phase = state.phase.as_str(),
+                        rebuild_collect_buy_mints_mode = state.payload.collect_buy_mints_mode.as_str(),
+                        "rewinding legacy raw-swap collect_buy_mints reconciliation cursor onto grouped buy-mint delta pagination before resume"
+                    );
+                    state
+                        .payload
+                        .collect_buy_mints_reconcile_expired_head_cursor = None;
+                    state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
+                    state
+                        .payload
+                        .collect_buy_mints_reconcile_expired_head_cursor_token = None;
+                    state
+                        .payload
+                        .collect_buy_mints_reconcile_new_tail_cursor_token = None;
                 }
             }
             DiscoveryPersistedRebuildPhase::ResolveTokenQuality => {
@@ -1699,6 +1749,9 @@ impl DiscoveryService {
                 .collect_buy_mints_reconcile_expired_head_cursor
                 .as_ref()
                 .map(|cursor| cursor.signature.as_str()),
+            rebuild_collect_buy_mints_reconcile_expired_head_cursor_token = telemetry
+                .collect_buy_mints_reconcile_expired_head_cursor_token
+                .as_deref(),
             rebuild_collect_buy_mints_reconcile_new_tail_cursor_ts = ?telemetry
                 .collect_buy_mints_reconcile_new_tail_cursor
                 .as_ref()
@@ -1711,6 +1764,9 @@ impl DiscoveryService {
                 .collect_buy_mints_reconcile_new_tail_cursor
                 .as_ref()
                 .map(|cursor| cursor.signature.as_str()),
+            rebuild_collect_buy_mints_reconcile_new_tail_cursor_token = telemetry
+                .collect_buy_mints_reconcile_new_tail_cursor_token
+                .as_deref(),
             rebuild_cycle_rows_processed = telemetry.cycle_rows_processed,
             rebuild_cycle_pages_processed = telemetry.cycle_pages_processed,
             rebuild_cycle_unique_buy_mints_discovered =
@@ -1885,51 +1941,56 @@ impl DiscoveryService {
                         state
                             .payload
                             .collect_buy_mints_reconcile_expired_head_cursor = None;
+                        state
+                            .payload
+                            .collect_buy_mints_reconcile_expired_head_cursor_token = None;
                         continue;
                     }
 
-                    let reconcile_cursor = state
+                    let reconcile_cursor_token = state
                         .payload
-                        .collect_buy_mints_reconcile_expired_head_cursor
+                        .collect_buy_mints_reconcile_expired_head_cursor_token
                         .clone();
-                    let mut page_last_cursor = reconcile_cursor.clone();
-                    let page = store.for_each_observed_swap_in_window_after_cursor_with_budget(
-                        source_window_start,
-                        state.window_start,
-                        reconcile_cursor.as_ref(),
-                        fetch_limit,
-                        deadline,
-                        |swap| {
-                            page_last_cursor = Some(DiscoveryRuntimeCursor {
-                                ts_utc: swap.ts_utc,
-                                slot: swap.slot,
-                                signature: swap.signature.clone(),
-                            });
-                            rows_processed = rows_processed.saturating_add(1);
-                            if swap.ts_utc < state.window_start && is_sol_buy(&swap) {
-                                Self::subtract_buy_mint_occurrences(
-                                    &mut state.payload,
-                                    &swap.token_out,
-                                    1,
-                                );
-                            }
-                            Ok(())
-                        },
-                    )?;
+                    let page = store
+                        .load_observed_buy_mint_counts_in_time_bounds_after_token_with_budget(
+                            source_window_start,
+                            true,
+                            state.window_start,
+                            false,
+                            reconcile_cursor_token.as_deref(),
+                            None,
+                            fetch_limit,
+                            deadline,
+                        )?;
                     pages_processed = pages_processed.saturating_add(1);
+                    rows_processed = rows_processed.saturating_add(page.rows.len());
+                    for row in &page.rows {
+                        Self::subtract_buy_mint_occurrences(
+                            &mut state.payload,
+                            &row.mint,
+                            row.buy_count,
+                        );
+                    }
                     state
                         .payload
-                        .collect_buy_mints_reconcile_expired_head_cursor = page_last_cursor;
+                        .collect_buy_mints_reconcile_expired_head_cursor = None;
+                    state
+                        .payload
+                        .collect_buy_mints_reconcile_expired_head_cursor_token =
+                        page.rows.last().map(|row| row.mint.clone());
                     Self::sync_unique_buy_mints_from_counts(&mut state.payload);
                     if page.time_budget_exhausted {
                         break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
                     }
-                    if page.rows_seen < fetch_limit {
+                    if page.rows.len() < fetch_limit {
                         state.payload.collect_buy_mints_mode =
                             CollectBuyMintsMode::ReconcileNewTail;
                         state
                             .payload
                             .collect_buy_mints_reconcile_expired_head_cursor = None;
+                        state
+                            .payload
+                            .collect_buy_mints_reconcile_expired_head_cursor_token = None;
                         info!(
                             rebuild_window_start = %state.window_start,
                             rebuild_horizon_end = %state.horizon_end,
@@ -1956,6 +2017,9 @@ impl DiscoveryService {
                         state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
                         state
                             .payload
+                            .collect_buy_mints_reconcile_new_tail_cursor_token = None;
+                        state
+                            .payload
                             .collect_buy_mints_reconcile_source_window_start = None;
                         state.payload.collect_buy_mints_reconcile_source_horizon_end = None;
                         Self::sync_unique_buy_mints_from_counts(&mut state.payload);
@@ -1977,46 +2041,47 @@ impl DiscoveryService {
                         continue;
                     }
 
-                    let reconcile_cursor = state
+                    let reconcile_cursor_token = state
                         .payload
-                        .collect_buy_mints_reconcile_new_tail_cursor
+                        .collect_buy_mints_reconcile_new_tail_cursor_token
                         .clone();
-                    let mut page_last_cursor = reconcile_cursor.clone();
-                    let page = store.for_each_observed_swap_in_window_after_cursor_with_budget(
-                        source_horizon_end,
-                        state.horizon_end,
-                        reconcile_cursor.as_ref(),
-                        fetch_limit,
-                        deadline,
-                        |swap| {
-                            page_last_cursor = Some(DiscoveryRuntimeCursor {
-                                ts_utc: swap.ts_utc,
-                                slot: swap.slot,
-                                signature: swap.signature.clone(),
-                            });
-                            rows_processed = rows_processed.saturating_add(1);
-                            if swap.ts_utc > source_horizon_end
-                                && is_sol_buy(&swap)
-                                && Self::add_buy_mint_occurrences(
-                                    &mut state.payload,
-                                    &swap.token_out,
-                                    1,
-                                )
-                            {
-                                unique_buy_mints_discovered =
-                                    unique_buy_mints_discovered.saturating_add(1);
-                            }
-                            Ok(())
-                        },
-                    )?;
+                    let page = store
+                        .load_observed_buy_mint_counts_in_time_bounds_after_token_with_budget(
+                            source_horizon_end,
+                            false,
+                            state.horizon_end,
+                            true,
+                            reconcile_cursor_token.as_deref(),
+                            None,
+                            fetch_limit,
+                            deadline,
+                        )?;
                     pages_processed = pages_processed.saturating_add(1);
-                    state.payload.collect_buy_mints_reconcile_new_tail_cursor = page_last_cursor;
+                    rows_processed = rows_processed.saturating_add(page.rows.len());
+                    for row in &page.rows {
+                        if Self::add_buy_mint_occurrences(
+                            &mut state.payload,
+                            &row.mint,
+                            row.buy_count,
+                        ) {
+                            unique_buy_mints_discovered =
+                                unique_buy_mints_discovered.saturating_add(1);
+                        }
+                    }
+                    state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
+                    state
+                        .payload
+                        .collect_buy_mints_reconcile_new_tail_cursor_token =
+                        page.rows.last().map(|row| row.mint.clone());
                     Self::sync_unique_buy_mints_from_counts(&mut state.payload);
                     if page.time_budget_exhausted {
                         break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
                     }
-                    if page.rows_seen < fetch_limit {
+                    if page.rows.len() < fetch_limit {
                         state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
+                        state
+                            .payload
+                            .collect_buy_mints_reconcile_new_tail_cursor_token = None;
                         state
                             .payload
                             .collect_buy_mints_reconcile_source_window_start = None;
@@ -2678,6 +2743,14 @@ impl DiscoveryService {
                     .payload
                     .collect_buy_mints_reconcile_new_tail_cursor
                     .clone(),
+                collect_buy_mints_reconcile_expired_head_cursor_token: state
+                    .payload
+                    .collect_buy_mints_reconcile_expired_head_cursor_token
+                    .clone(),
+                collect_buy_mints_reconcile_new_tail_cursor_token: state
+                    .payload
+                    .collect_buy_mints_reconcile_new_tail_cursor_token
+                    .clone(),
                 prepass_rows_processed: state.prepass_rows_processed,
                 prepass_pages_processed: state.prepass_pages_processed,
                 replay_wallet_stats_complete: state.payload.replay_wallet_stats_complete,
@@ -2828,6 +2901,12 @@ impl DiscoveryService {
                         .payload
                         .collect_buy_mints_reconcile_expired_head_cursor = None;
                     state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
+                    state
+                        .payload
+                        .collect_buy_mints_reconcile_expired_head_cursor_token = None;
+                    state
+                        .payload
+                        .collect_buy_mints_reconcile_new_tail_cursor_token = None;
                     info!(
                         rebuild_window_start = %state.window_start,
                         rebuild_horizon_end = %state.horizon_end,
@@ -2909,6 +2988,14 @@ impl DiscoveryService {
                         .payload
                         .collect_buy_mints_reconcile_new_tail_cursor
                         .clone(),
+                    collect_buy_mints_reconcile_expired_head_cursor_token: state
+                        .payload
+                        .collect_buy_mints_reconcile_expired_head_cursor_token
+                        .clone(),
+                    collect_buy_mints_reconcile_new_tail_cursor_token: state
+                        .payload
+                        .collect_buy_mints_reconcile_new_tail_cursor_token
+                        .clone(),
                     prepass_rows_processed: state.prepass_rows_processed,
                     prepass_pages_processed: state.prepass_pages_processed,
                     replay_wallet_stats_complete: state.payload.replay_wallet_stats_complete,
@@ -2982,6 +3069,14 @@ impl DiscoveryService {
             collect_buy_mints_reconcile_new_tail_cursor: state
                 .payload
                 .collect_buy_mints_reconcile_new_tail_cursor
+                .clone(),
+            collect_buy_mints_reconcile_expired_head_cursor_token: state
+                .payload
+                .collect_buy_mints_reconcile_expired_head_cursor_token
+                .clone(),
+            collect_buy_mints_reconcile_new_tail_cursor_token: state
+                .payload
+                .collect_buy_mints_reconcile_new_tail_cursor_token
                 .clone(),
             prepass_rows_processed: state.prepass_rows_processed,
             prepass_pages_processed: state.prepass_pages_processed,
@@ -7041,6 +7136,152 @@ mod tests {
     }
 
     #[test]
+    fn persisted_stream_collect_buy_mints_carry_forward_reconcile_reduces_work_on_large_noise_fixture_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-collect-buy-mints-carry-forward-noise-throughput.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = bounded_stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 60;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let checkpoint_now = DateTime::parse_from_rfc3339("2026-03-17T12:00:50Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let rollover_now = checkpoint_now + Duration::seconds(20);
+        let window_start =
+            checkpoint_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, checkpoint_now);
+        let next_window_start =
+            rollover_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let next_metrics_window_start = metrics_window_start_for_test(&config, rollover_now);
+
+        let token_old_only = "TokenStage1CarryThroughputOldOnly111111111".to_string();
+        let token_survives = "TokenStage1CarryThroughputSurvives11111".to_string();
+        let token_new_tail_a = "TokenStage1CarryThroughputNewTailA1111".to_string();
+        let token_new_tail_b = "TokenStage1CarryThroughputNewTailB1111".to_string();
+
+        for (idx, (token, ts)) in [
+            (token_old_only.as_str(), window_start + Duration::seconds(5)),
+            (
+                token_survives.as_str(),
+                next_window_start + Duration::seconds(5),
+            ),
+            (
+                token_new_tail_a.as_str(),
+                checkpoint_now + Duration::seconds(5),
+            ),
+            (
+                token_new_tail_b.as_str(),
+                checkpoint_now + Duration::seconds(6),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            store.insert_observed_swap(&swap(
+                "wallet_carry_throughput",
+                &format!("stage1-carry-throughput-buy-{idx}"),
+                ts,
+                SOL_MINT,
+                token,
+                0.5,
+                50.0,
+            ))?;
+        }
+
+        let expired_head_noise_rows = 2_000usize;
+        for idx in 0..expired_head_noise_rows {
+            let ts = window_start + Duration::milliseconds((idx % 20_000) as i64);
+            store.insert_observed_swap(&swap(
+                "wallet_expired_head_noise",
+                &format!("stage1-expired-head-noise-{idx}"),
+                ts,
+                &format!("NoiseExpiredHeadToken{idx:05}111111111111"),
+                SOL_MINT,
+                100.0,
+                0.01,
+            ))?;
+        }
+        let new_tail_noise_rows = 2_000usize;
+        for idx in 0..new_tail_noise_rows {
+            let ts = checkpoint_now + Duration::milliseconds((idx % 19_000) as i64 + 1);
+            store.insert_observed_swap(&swap(
+                "wallet_new_tail_noise",
+                &format!("stage1-new-tail-noise-{idx}"),
+                ts,
+                &format!("NoiseNewTailToken{idx:05}11111111111111"),
+                SOL_MINT,
+                100.0,
+                0.02,
+            ))?;
+        }
+
+        let mut stale_state = discovery.start_persisted_stream_rebuild_state(
+            window_start,
+            metrics_window_start,
+            checkpoint_now,
+        );
+        stale_state.phase = DiscoveryPersistedRebuildPhase::CollectBuyMints;
+        stale_state.prepass_rows_processed = 2;
+        stale_state.prepass_pages_processed = 1;
+        stale_state.payload.unique_buy_mints = vec![token_old_only.clone(), token_survives.clone()];
+        stale_state.payload.buy_mint_counts =
+            BTreeMap::from([(token_old_only.clone(), 1), (token_survives.clone(), 1)]);
+        stale_state.payload.collect_buy_mints_prepass_complete = true;
+        stale_state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&stale_state, stale_state.horizon_end)?,
+        )?;
+
+        let (mut carried, restore_outcome) = discovery
+            .load_or_start_persisted_stream_rebuild_state(
+                &store,
+                next_window_start,
+                next_metrics_window_start,
+                rollover_now,
+            )?;
+        assert_eq!(
+            restore_outcome,
+            PersistedStreamRebuildRestoreOutcome::CarriedForwardMetricsWindow
+        );
+        assert_eq!(
+            carried.payload.collect_buy_mints_mode,
+            CollectBuyMintsMode::ReconcileExpiredHead
+        );
+
+        let phase_advance = discovery.advance_persisted_stream_prepass(
+            &store,
+            &mut carried,
+            10,
+            10,
+            Instant::now() + StdDuration::from_secs(1),
+        )?;
+
+        assert!(
+            phase_advance.source_exhausted,
+            "grouped delta reconcile should finish the carry-forward collect_buy_mints phase in bounded pages on a large noisy fixture"
+        );
+        assert_eq!(phase_advance.pages_processed, 2);
+        assert_eq!(phase_advance.rows_processed, 3);
+        assert_eq!(phase_advance.unique_buy_mints_discovered, 2);
+        assert!(
+            phase_advance.rows_processed
+                < expired_head_noise_rows.saturating_add(new_tail_noise_rows),
+            "carry-forward grouped reconcile should process buy-mint delta groups, not every raw swap in the expired/new tail windows"
+        );
+        assert_eq!(
+            carried.payload.unique_buy_mints,
+            vec![token_new_tail_a, token_new_tail_b, token_survives]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn persisted_stream_rebuild_resumes_across_cycles_stage1() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp
@@ -8099,6 +8340,91 @@ mod tests {
                 token_future_c,
                 token_future_d,
             ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_collect_buy_mints_reconcile_legacy_raw_cursor_repairs_to_grouped_delta_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-collect-buy-mints-reconcile-upgrade-repair.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let config = bounded_stage1_runtime_config();
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let now = DateTime::parse_from_rfc3339("2026-03-18T18:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+
+        let mut legacy_state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        legacy_state.phase = DiscoveryPersistedRebuildPhase::CollectBuyMints;
+        legacy_state.payload.collect_buy_mints_mode = CollectBuyMintsMode::ReconcileNewTail;
+        legacy_state.payload.collect_buy_mints_prepass_complete = false;
+        legacy_state.payload.collect_buy_mints_cursor_token =
+            Some("TokenStage1FreshResumeCursor111111111111".to_string());
+        legacy_state
+            .payload
+            .collect_buy_mints_reconcile_source_window_start =
+            Some(window_start - Duration::seconds(20));
+        legacy_state
+            .payload
+            .collect_buy_mints_reconcile_source_horizon_end = Some(now - Duration::seconds(20));
+        legacy_state
+            .payload
+            .collect_buy_mints_reconcile_new_tail_cursor = Some(DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::seconds(10),
+            slot: 42,
+            signature: "legacy-reconcile-raw-cursor".to_string(),
+        });
+        legacy_state.payload.unique_buy_mints =
+            vec!["TokenStage1CarryResumeMint1111111111111".to_string()];
+        legacy_state.payload.buy_mint_counts =
+            BTreeMap::from([("TokenStage1CarryResumeMint1111111111111".to_string(), 1)]);
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&legacy_state, now)?,
+        )?;
+
+        let (repaired, restore_outcome) = discovery.load_or_start_persisted_stream_rebuild_state(
+            &store,
+            window_start,
+            metrics_window_start,
+            now,
+        )?;
+
+        assert_eq!(
+            restore_outcome,
+            PersistedStreamRebuildRestoreOutcome::ResumedExisting
+        );
+        assert_eq!(
+            repaired.payload.collect_buy_mints_mode,
+            CollectBuyMintsMode::ReconcileNewTail
+        );
+        assert_eq!(
+            repaired.payload.collect_buy_mints_cursor_token.as_deref(),
+            legacy_state.payload.collect_buy_mints_cursor_token.as_deref(),
+            "repair must preserve the fresh-scan resume cursor instead of resetting the whole collect_buy_mints attempt"
+        );
+        assert!(
+            repaired
+                .payload
+                .collect_buy_mints_reconcile_new_tail_cursor
+                .is_none(),
+            "legacy raw-swap reconcile cursor must be cleared before grouped delta pagination resumes"
+        );
+        assert!(
+            repaired
+                .payload
+                .collect_buy_mints_reconcile_new_tail_cursor_token
+                .is_none(),
+            "grouped delta reconciliation should restart only the current delta subphase from token cursor None"
         );
         Ok(())
     }
