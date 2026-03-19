@@ -760,9 +760,22 @@ struct PersistedStreamProgressTelemetry {
 fn should_request_persisted_stream_catch_up(
     telemetry: &PersistedStreamProgressTelemetry,
 ) -> bool {
-    telemetry.phase == DiscoveryPersistedRebuildPhase::CollectBuyMints
-        && telemetry.budget_exhausted_reason
-            == Some(PersistedStreamBudgetExhaustedReason::PageBudget)
+    if telemetry.phase != DiscoveryPersistedRebuildPhase::CollectBuyMints {
+        return false;
+    }
+    matches!(
+        (
+            telemetry.collect_buy_mints_mode,
+            telemetry.budget_exhausted_reason,
+        ),
+        (
+            _,
+            Some(PersistedStreamBudgetExhaustedReason::PageBudget)
+        ) | (
+            CollectBuyMintsMode::FreshScan,
+            Some(PersistedStreamBudgetExhaustedReason::TimeBudget)
+        )
+    )
 }
 
 #[derive(Debug)]
@@ -14856,7 +14869,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_stream_catch_up_request_targets_collect_buy_mints_page_budget_only() {
+    fn persisted_stream_catch_up_request_targets_page_budget_and_fresh_scan_time_budget() {
         assert!(should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
             DiscoveryPersistedRebuildPhase::CollectBuyMints,
             CollectBuyMintsMode::ReconcileExpiredHead,
@@ -14870,16 +14883,16 @@ mod tests {
         assert!(should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
             DiscoveryPersistedRebuildPhase::CollectBuyMints,
             CollectBuyMintsMode::FreshScan,
-            Some(PersistedStreamBudgetExhaustedReason::PageBudget),
-        )));
-        assert!(!should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
-            DiscoveryPersistedRebuildPhase::CollectBuyMints,
-            CollectBuyMintsMode::FreshScan,
             Some(PersistedStreamBudgetExhaustedReason::TimeBudget),
         )));
         assert!(!should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
             DiscoveryPersistedRebuildPhase::CollectBuyMints,
             CollectBuyMintsMode::ReconcileExpiredHead,
+            Some(PersistedStreamBudgetExhaustedReason::TimeBudget),
+        )));
+        assert!(!should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
+            DiscoveryPersistedRebuildPhase::CollectBuyMints,
+            CollectBuyMintsMode::ReconcileNewTail,
             Some(PersistedStreamBudgetExhaustedReason::TimeBudget),
         )));
         assert!(!should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
