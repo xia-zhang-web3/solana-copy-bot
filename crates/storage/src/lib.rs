@@ -8024,6 +8024,64 @@ mod tests {
     }
 
     #[test]
+    fn observed_buy_mint_exact_batch_count_query_counts_only_requested_tokens() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("observed-buy-mint-exact-batch-count-query.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let base = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        for (signature, token, ts) in [
+            ("buy-a-1", "token-a", base + Duration::seconds(1)),
+            ("buy-a-2", "token-a", base + Duration::seconds(2)),
+            ("buy-b-1", "token-b", base + Duration::seconds(3)),
+            ("buy-c-1", "token-c", base + Duration::seconds(4)),
+        ] {
+            assert!(store.insert_observed_swap(&SwapEvent {
+                signature: signature.to_string(),
+                wallet: "wallet-buy-batch-count".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: token.to_string(),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                slot: 10,
+                ts_utc: ts,
+                exact_amounts: None,
+            })?);
+        }
+
+        let page = store
+            .load_observed_buy_mint_counts_for_exact_tokens_in_time_bounds_with_budget(
+                base + Duration::seconds(1),
+                true,
+                base + Duration::seconds(4),
+                true,
+                &[
+                    "token-a".to_string(),
+                    "token-c".to_string(),
+                    "token-z".to_string(),
+                ],
+                std::time::Instant::now() + StdDuration::from_secs(1),
+            )?;
+        assert!(!page.time_budget_exhausted);
+        assert_eq!(
+            page.rows
+                .iter()
+                .map(|row| (row.mint.as_str(), row.buy_count))
+                .collect::<Vec<_>>(),
+            vec![("token-a", 2usize), ("token-c", 1usize)]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn observed_buy_mint_count_query_counts_safe_sorted_prefix_for_cursor_migration() -> Result<()>
     {
         let temp = tempdir().context("failed to create tempdir")?;

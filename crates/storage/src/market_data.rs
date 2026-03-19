@@ -51,7 +51,7 @@ pub struct ObservedBuyMintPage {
     pub time_budget_exhausted: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ObservedBuyMintCountRow {
     pub mint: String,
     pub buy_count: usize,
@@ -1075,6 +1075,94 @@ impl SqliteStore {
             Err(error) => Err(error)
                 .context("failed counting observed_swaps buy mint occurrences for exact token"),
         }
+    }
+
+    pub fn load_observed_buy_mint_counts_for_exact_tokens_in_time_bounds_with_budget(
+        &self,
+        since: DateTime<Utc>,
+        since_inclusive: bool,
+        until: DateTime<Utc>,
+        until_inclusive: bool,
+        token_outs: &[String],
+        deadline: Instant,
+    ) -> Result<ObservedBuyMintCountPage> {
+        if token_outs.is_empty() {
+            return Ok(ObservedBuyMintCountPage::default());
+        }
+        if Instant::now() >= deadline {
+            return Ok(ObservedBuyMintCountPage {
+                rows: Vec::new(),
+                time_budget_exhausted: true,
+            });
+        }
+
+        let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
+        let since_op = if since_inclusive { ">=" } else { ">" };
+        let until_op = if until_inclusive { "<=" } else { "<" };
+        let mut params: Vec<rusqlite::types::Value> = vec![
+            SOL_MINT.to_string().into(),
+            since.to_rfc3339().into(),
+            until.to_rfc3339().into(),
+        ];
+        let mut token_placeholders = Vec::with_capacity(token_outs.len());
+        for token_out in token_outs {
+            let placeholder = format!("?{}", params.len() + 1);
+            token_placeholders.push(placeholder);
+            params.push(token_out.clone().into());
+        }
+        let query = format!(
+            "SELECT token_out, COUNT(*)
+             FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_out_ts
+             WHERE token_in = ?1
+               AND token_out <> ?1
+               AND ts {since_op} ?2
+               AND ts {until_op} ?3
+               AND token_out IN ({})
+             GROUP BY token_out
+             ORDER BY token_out ASC",
+            token_placeholders.join(", ")
+        );
+        let mut stmt = self
+            .conn
+            .prepare(&query)
+            .context("failed to prepare exact observed_swaps buy mint batch count query")?;
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params))
+            .context("failed to query exact observed_swaps buy mint batch count page")?;
+
+        let mut mint_rows = Vec::new();
+        let mut time_budget_exhausted = false;
+        loop {
+            let next_row = match rows.next() {
+                Ok(row) => row,
+                Err(error) => {
+                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                        time_budget_exhausted = true;
+                        break;
+                    }
+                    return Err(error).context(
+                        "failed iterating exact observed_swaps buy mint batch count rows",
+                    );
+                }
+            };
+            let Some(row) = next_row else {
+                break;
+            };
+            mint_rows.push(ObservedBuyMintCountRow {
+                mint: row
+                    .get::<_, String>(0)
+                    .context("failed reading exact observed_swaps buy mint batch token")?,
+                buy_count: row
+                    .get::<_, i64>(1)
+                    .context("failed reading exact observed_swaps buy mint batch count")?
+                    .max(0) as usize,
+            });
+        }
+
+        Ok(ObservedBuyMintCountPage {
+            rows: mint_rows,
+            time_budget_exhausted,
+        })
     }
 
     pub fn for_each_observed_swap_after_cursor<F>(
