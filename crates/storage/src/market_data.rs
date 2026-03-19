@@ -760,6 +760,27 @@ impl SqliteStore {
         limit: usize,
         deadline: Instant,
     ) -> Result<ObservedBuyMintPage> {
+        self.load_observed_buy_mints_in_time_bounds_after_token_with_budget(
+            since,
+            true,
+            until,
+            true,
+            token_out_after,
+            limit,
+            deadline,
+        )
+    }
+
+    pub fn load_observed_buy_mints_in_time_bounds_after_token_with_budget(
+        &self,
+        since: DateTime<Utc>,
+        since_inclusive: bool,
+        until: DateTime<Utc>,
+        until_inclusive: bool,
+        token_out_after: Option<&str>,
+        limit: usize,
+        deadline: Instant,
+    ) -> Result<ObservedBuyMintPage> {
         if limit == 0 {
             return Ok(ObservedBuyMintPage::default());
         }
@@ -772,45 +793,33 @@ impl SqliteStore {
 
         let limit = (limit.min(i64::MAX as usize)) as i64;
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
-        let (query, params): (&str, Vec<rusqlite::types::Value>) = match token_out_after {
-            Some(token_out_after) => (
-                "SELECT DISTINCT token_out
-                 FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_out_ts
-                 WHERE token_in = ?1
-                   AND token_out <> ?1
-                   AND ts >= ?2
-                   AND ts <= ?3
-                   AND token_out > ?4
-                 ORDER BY token_out ASC
-                 LIMIT ?5",
-                vec![
-                    SOL_MINT.to_string().into(),
-                    since.to_rfc3339().into(),
-                    until.to_rfc3339().into(),
-                    token_out_after.to_string().into(),
-                    limit.into(),
-                ],
-            ),
-            None => (
-                "SELECT DISTINCT token_out
-                 FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_out_ts
-                 WHERE token_in = ?1
-                   AND token_out <> ?1
-                   AND ts >= ?2
-                   AND ts <= ?3
-                 ORDER BY token_out ASC
-                 LIMIT ?4",
-                vec![
-                    SOL_MINT.to_string().into(),
-                    since.to_rfc3339().into(),
-                    until.to_rfc3339().into(),
-                    limit.into(),
-                ],
-            ),
-        };
+        let since_op = if since_inclusive { ">=" } else { ">" };
+        let until_op = if until_inclusive { "<=" } else { "<" };
+        let mut params: Vec<rusqlite::types::Value> = vec![
+            SOL_MINT.to_string().into(),
+            since.to_rfc3339().into(),
+            until.to_rfc3339().into(),
+        ];
+        let mut query = format!(
+            "SELECT DISTINCT token_out
+             FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_out_ts
+             WHERE token_in = ?1
+               AND token_out <> ?1
+               AND ts {since_op} ?2
+               AND ts {until_op} ?3"
+        );
+        let mut next_param = 4usize;
+        if let Some(token_out_after) = token_out_after {
+            query.push_str(&format!(" AND token_out > ?{next_param}"));
+            params.push(token_out_after.to_string().into());
+            next_param = next_param.saturating_add(1);
+        }
+        query.push_str(" ORDER BY token_out ASC");
+        query.push_str(&format!(" LIMIT ?{next_param}"));
+        params.push(limit.into());
         let mut stmt = self
             .conn
-            .prepare(query)
+            .prepare(&query)
             .context("failed to prepare observed_swaps distinct buy mint page query")?;
         let mut rows = stmt
             .query(rusqlite::params_from_iter(params))

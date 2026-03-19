@@ -2170,6 +2170,55 @@ impl DiscoveryService {
                         .payload
                         .collect_buy_mints_reconcile_new_tail_cursor_token
                         .clone();
+                    let reconcile_batch_size = Self::stale_reconcile_token_batch_size(fetch_limit);
+                    let candidate_page = store
+                        .load_observed_buy_mints_in_time_bounds_after_token_with_budget(
+                            source_horizon_end,
+                            false,
+                            state.horizon_end,
+                            true,
+                            reconcile_cursor_token.as_deref(),
+                            reconcile_batch_size,
+                            deadline,
+                        )?;
+                    let Some(reconcile_batch_end_token) = candidate_page.mints.last().cloned()
+                    else {
+                        if candidate_page.time_budget_exhausted {
+                            break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+                        }
+                        state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
+                        state
+                            .payload
+                            .collect_buy_mints_reconcile_new_tail_cursor_token = None;
+                        state
+                            .payload
+                            .collect_buy_mints_reconcile_source_window_start = None;
+                        state.payload.collect_buy_mints_reconcile_source_horizon_end = None;
+                        if state.payload.collect_buy_mints_prepass_complete {
+                            return Ok(PersistedStreamPhaseAdvance {
+                                rows_processed,
+                                pages_processed,
+                                replay_wallet_stats_rows_processed: 0,
+                                replay_wallet_stats_pages_processed: 0,
+                                replay_sol_leg_access_path: None,
+                                source_exhausted: true,
+                                phase_cursor: None,
+                                collect_buy_mints_cursor_token: None,
+                                unique_buy_mints_discovered,
+                                budget_exhausted_reason: None,
+                            });
+                        }
+                        state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+                        info!(
+                            rebuild_window_start = %state.window_start,
+                            rebuild_horizon_end = %state.horizon_end,
+                            rebuild_collect_buy_mints_cursor_token =
+                                state.payload.collect_buy_mints_cursor_token.as_deref(),
+                            rebuild_unique_buy_mints = state.payload.unique_buy_mints.len(),
+                            "completed new-tail reconciliation for carried-forward collect_buy_mints state; resuming canonical distinct mint scan from persisted cursor"
+                        );
+                        continue;
+                    };
                     let page = store
                         .load_observed_buy_mint_counts_in_time_bounds_after_token_with_budget(
                             source_horizon_end,
@@ -2177,8 +2226,8 @@ impl DiscoveryService {
                             state.horizon_end,
                             true,
                             reconcile_cursor_token.as_deref(),
-                            None,
-                            fetch_limit,
+                            Some(reconcile_batch_end_token.as_str()),
+                            reconcile_batch_size,
                             deadline,
                         )?;
                     pages_processed = pages_processed.saturating_add(1);
@@ -2194,14 +2243,24 @@ impl DiscoveryService {
                         }
                     }
                     state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
+                    if page.time_budget_exhausted {
+                        state
+                            .payload
+                            .collect_buy_mints_reconcile_new_tail_cursor_token = page
+                            .rows
+                            .last()
+                            .map(|row| row.mint.clone())
+                            .or(reconcile_cursor_token);
+                        break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+                    }
                     state
                         .payload
                         .collect_buy_mints_reconcile_new_tail_cursor_token =
-                        page.rows.last().map(|row| row.mint.clone());
-                    if page.time_budget_exhausted {
+                        Some(reconcile_batch_end_token);
+                    if candidate_page.time_budget_exhausted {
                         break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
                     }
-                    if page.rows.len() < fetch_limit {
+                    if candidate_page.mints.len() < reconcile_batch_size {
                         state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
                         state
                             .payload
@@ -8864,6 +8923,142 @@ mod tests {
                 .collect_buy_mints_reconcile_new_tail_cursor_token
         );
         assert_eq!(resumed.prepass_rows_processed, state.prepass_rows_processed);
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_reconcile_new_tail_live_like_cycle_advances_exact_token_batches_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-reconcile-new-tail-live-like-batch-advance.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = bounded_stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 60;
+        config.max_fetch_swaps_per_cycle = 20_000;
+        config.max_fetch_pages_per_cycle = 5;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let source_now = DateTime::parse_from_rfc3339("2026-03-19T00:10:50Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let target_now = source_now + Duration::seconds(60);
+        let source_window_start =
+            source_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let source_metrics_window_start = metrics_window_start_for_test(&config, source_now);
+        let target_window_start =
+            target_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let target_metrics_window_start = metrics_window_start_for_test(&config, target_now);
+
+        let new_tail_token_count = STALE_RECONCILE_TOKEN_BATCH_CAP
+            .saturating_mul(config.max_fetch_pages_per_cycle.max(1))
+            .saturating_add(37);
+        let survivor = "TokenStage1LiveLikeNewTailSurvivor11111111".to_string();
+        store.insert_observed_swap(&swap(
+            "wallet_stage1_live_like_new_tail",
+            "stage1-live-like-new-tail-survivor",
+            target_window_start + Duration::seconds(5),
+            SOL_MINT,
+            &survivor,
+            1.0,
+            10.0,
+        ))?;
+        let mut new_tail_tokens = Vec::new();
+        for idx in 0..new_tail_token_count {
+            let token = format!("TokenStage1LiveLikeNewTail{idx:05}1111111111111");
+            store.insert_observed_swap(&swap(
+                "wallet_stage1_live_like_new_tail",
+                &format!("stage1-live-like-new-tail-buy-{idx}"),
+                source_now + Duration::seconds((idx % 30) as i64 + 1),
+                SOL_MINT,
+                &token,
+                1.0,
+                10.0,
+            ))?;
+            new_tail_tokens.push(token);
+        }
+        let future_noise = "TokenStage1LiveLikeNewTailFuture1111111".to_string();
+        store.insert_observed_swap(&swap(
+            "wallet_stage1_live_like_new_tail",
+            "stage1-live-like-new-tail-future",
+            target_now + Duration::seconds(5),
+            SOL_MINT,
+            &future_noise,
+            1.0,
+            10.0,
+        ))?;
+
+        let mut state = discovery.start_persisted_stream_rebuild_state(
+            source_window_start,
+            source_metrics_window_start,
+            source_now,
+        );
+        state.phase = DiscoveryPersistedRebuildPhase::CollectBuyMints;
+        state.payload.collect_buy_mints_prepass_complete = true;
+        state.payload.buy_mint_counts = BTreeMap::from([(survivor.clone(), 1u32)]);
+        state.payload.unique_buy_mints = vec![survivor.clone()];
+        assert!(
+            discovery.prepare_persisted_stream_rebuild_for_metrics_window_rollover(
+                &mut state,
+                target_window_start,
+                target_metrics_window_start,
+                target_now,
+            )?
+        );
+        state.payload.collect_buy_mints_mode = CollectBuyMintsMode::ReconcileNewTail;
+        state
+            .payload
+            .collect_buy_mints_reconcile_expired_head_cursor = None;
+        state
+            .payload
+            .collect_buy_mints_reconcile_expired_head_cursor_token = None;
+
+        let phase_advance = discovery.advance_persisted_stream_prepass(
+            &store,
+            &mut state,
+            config.max_fetch_swaps_per_cycle,
+            config.max_fetch_pages_per_cycle,
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+
+        let expected_rows =
+            STALE_RECONCILE_TOKEN_BATCH_CAP.saturating_mul(config.max_fetch_pages_per_cycle.max(1));
+        assert_eq!(
+            phase_advance.rows_processed,
+            expected_rows,
+            "live-like stale new-tail reconcile should advance by capped exact token batches instead of issuing one giant grouped query over the full remaining new-tail range"
+        );
+        assert_eq!(
+            phase_advance.pages_processed,
+            config.max_fetch_pages_per_cycle
+        );
+        assert!(!phase_advance.source_exhausted);
+        assert_eq!(
+            state.payload.collect_buy_mints_mode,
+            CollectBuyMintsMode::ReconcileNewTail
+        );
+        assert_eq!(
+            state
+                .payload
+                .collect_buy_mints_reconcile_new_tail_cursor_token
+                .as_deref(),
+            new_tail_tokens
+                .get(expected_rows.saturating_sub(1))
+                .map(|token| token.as_str())
+        );
+        assert_eq!(
+            state.payload.unique_buy_mints.len(),
+            expected_rows.saturating_add(1),
+            "new-tail reconcile should add the bounded candidate token batches while preserving the overlapping carried-forward mint"
+        );
+        assert_sorted_strings(&state.payload.unique_buy_mints);
+        assert!(
+            DiscoveryService::state_can_resume_stale_metrics_window_until_exact_checkpoint(&state),
+            "batched live-like stale new-tail reconcile must stay exact and resumable after the first bounded cycle"
+        );
         Ok(())
     }
 
