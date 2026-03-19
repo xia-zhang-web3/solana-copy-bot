@@ -7937,6 +7937,7 @@ mod tests {
                 base + Duration::seconds(3),
                 true,
                 None,
+                None,
                 10,
                 std::time::Instant::now() + StdDuration::from_secs(1),
             )?;
@@ -7952,6 +7953,7 @@ mod tests {
                 base + Duration::seconds(3),
                 false,
                 None,
+                None,
                 10,
                 std::time::Instant::now() + StdDuration::from_secs(1),
             )?;
@@ -7959,6 +7961,65 @@ mod tests {
             upper_exclusive.mints,
             vec!["token-a".to_string(), "token-b".to_string()]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn observed_buy_mint_occurrence_count_query_respects_exclusive_time_bounds() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("observed-buy-mint-occurrence-count-time-bounds.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let base = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        for (signature, token, ts) in [
+            ("buy-a-1", "token-a", base + Duration::seconds(1)),
+            ("buy-a-2", "token-a", base + Duration::seconds(2)),
+            ("buy-b-1", "token-b", base + Duration::seconds(3)),
+        ] {
+            assert!(store.insert_observed_swap(&SwapEvent {
+                signature: signature.to_string(),
+                wallet: "wallet-buy-page-bounds".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: token.to_string(),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                slot: 10,
+                ts_utc: ts,
+                exact_amounts: None,
+            })?);
+        }
+
+        let lower_exclusive = store
+            .count_observed_buy_mint_occurrences_in_time_bounds_with_budget(
+                base + Duration::seconds(1),
+                false,
+                base + Duration::seconds(3),
+                true,
+                "token-a",
+                std::time::Instant::now() + StdDuration::from_secs(1),
+            )?;
+        assert!(!lower_exclusive.time_budget_exhausted);
+        assert_eq!(lower_exclusive.buy_count, 1);
+
+        let upper_exclusive = store
+            .count_observed_buy_mint_occurrences_in_time_bounds_with_budget(
+                base + Duration::seconds(1),
+                true,
+                base + Duration::seconds(2),
+                false,
+                "token-a",
+                std::time::Instant::now() + StdDuration::from_secs(1),
+            )?;
+        assert!(!upper_exclusive.time_budget_exhausted);
+        assert_eq!(upper_exclusive.buy_count, 1);
         Ok(())
     }
 

@@ -69,6 +69,12 @@ pub struct ObservedBuyMintCount {
     pub time_budget_exhausted: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ObservedBuyMintOccurrenceCount {
+    pub buy_count: usize,
+    pub time_budget_exhausted: bool,
+}
+
 struct ProgressHandlerGuard<'a> {
     conn: &'a Connection,
 }
@@ -766,6 +772,7 @@ impl SqliteStore {
             until,
             true,
             token_out_after,
+            None,
             limit,
             deadline,
         )
@@ -778,6 +785,7 @@ impl SqliteStore {
         until: DateTime<Utc>,
         until_inclusive: bool,
         token_out_after: Option<&str>,
+        token_out_at_most: Option<&str>,
         limit: usize,
         deadline: Instant,
     ) -> Result<ObservedBuyMintPage> {
@@ -812,6 +820,11 @@ impl SqliteStore {
         if let Some(token_out_after) = token_out_after {
             query.push_str(&format!(" AND token_out > ?{next_param}"));
             params.push(token_out_after.to_string().into());
+            next_param = next_param.saturating_add(1);
+        }
+        if let Some(token_out_at_most) = token_out_at_most {
+            query.push_str(&format!(" AND token_out <= ?{next_param}"));
+            params.push(token_out_at_most.to_string().into());
             next_param = next_param.saturating_add(1);
         }
         query.push_str(" ORDER BY token_out ASC");
@@ -1014,6 +1027,53 @@ impl SqliteStore {
             Err(error) => {
                 Err(error).context("failed counting observed_swaps distinct buy mints up to token")
             }
+        }
+    }
+
+    pub fn count_observed_buy_mint_occurrences_in_time_bounds_with_budget(
+        &self,
+        since: DateTime<Utc>,
+        since_inclusive: bool,
+        until: DateTime<Utc>,
+        until_inclusive: bool,
+        token_out: &str,
+        deadline: Instant,
+    ) -> Result<ObservedBuyMintOccurrenceCount> {
+        if Instant::now() >= deadline {
+            return Ok(ObservedBuyMintOccurrenceCount {
+                buy_count: 0,
+                time_budget_exhausted: true,
+            });
+        }
+
+        let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
+        let since_op = if since_inclusive { ">=" } else { ">" };
+        let until_op = if until_inclusive { "<=" } else { "<" };
+        let query = format!(
+            "SELECT COUNT(*)
+             FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_out_ts
+             WHERE token_in = ?1
+               AND token_out = ?2
+               AND ts {since_op} ?3
+               AND ts {until_op} ?4"
+        );
+        match self.conn.query_row(
+            &query,
+            params![SOL_MINT, token_out, since.to_rfc3339(), until.to_rfc3339(),],
+            |row| row.get::<_, i64>(0),
+        ) {
+            Ok(count) => Ok(ObservedBuyMintOccurrenceCount {
+                buy_count: count.max(0) as usize,
+                time_budget_exhausted: false,
+            }),
+            Err(error) if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) => {
+                Ok(ObservedBuyMintOccurrenceCount {
+                    buy_count: 0,
+                    time_budget_exhausted: true,
+                })
+            }
+            Err(error) => Err(error)
+                .context("failed counting observed_swaps buy mint occurrences for exact token"),
         }
     }
 
