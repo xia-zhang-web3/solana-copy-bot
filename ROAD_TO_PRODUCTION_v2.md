@@ -89,8 +89,8 @@ It replaces the old mixed roadmap and removes aggregate/backfill recovery from t
    - `buy_mint_counts` remains authoritative, while `unique_buy_mints` is now maintained incrementally in exact canonical sorted order as counts are added/removed
    - this removes the per-page `O(total unique mints)` rebuild cost from stale reconcile, keeps exact carry-forward truth available after every bounded page, and does so without adding any new startup-critical migration or storage dependency
 10. Current working tree now also narrows the remaining stale expired-head SQL page contract:
-   - stale `reconcile_expired_head` now walks the authoritative canonical membership set in capped exact token batches (`256` mints per grouped page) instead of asking SQLite to aggregate the entire remaining token range under the live `fetch_limit = 20000`
-   - page completion now advances the stale reconcile cursor by candidate batch boundary, so each bounded cycle makes deterministic exact progress toward the next carry-forward checkpoint even before Replay resumes
+   - stale `reconcile_expired_head` now discovers exact candidate mint batches directly from the expired delta window, instead of walking the whole carried-forward canonical membership set just to find which mints were touched by the expired head
+   - those exact expired-head candidate batches are persisted and then drained through capped exact count sub-batches, so bounded cycles keep making deterministic progress toward the next carry-forward checkpoint without reopening the same expired-head work
 11. Current working tree still keeps the bounded/resumable persisted rebuild fix intact:
    - frozen rebuild horizon (`window_start`, `horizon_end`, `metrics_window_start`) is captured once per rebuild
    - rebuild progress is persisted separately from `discovery_runtime_cursor`
@@ -108,16 +108,16 @@ The project is not blocked by ingestion.
 
 The startup SQLite silent-hang blocker is no longer the current blocker.
 
-Stage 1 is still `partial` after live rollout `661ca3f7e73e4f451cce68c4e2df50766157f31`.
+Stage 1 is still `partial` after live rollout `08c65adc0377537dce0644c82fe14c8321e12093`.
 
-Current working diagnosis: startup SQLite observability/boundedness is validated on live, bounded/resumable persisted rebuild behavior is validated on live, canonical migration/repair is validated on live, carry-forward across `metrics_window_start_changed` is validated on live, the retryable SQLite lock / observed-swap writer restart path is validated on live, the startup-safe deferral contract for `0039_observed_swaps_sol_leg_ts_index.sql` is validated on live, the grouped-delta `CollectBuyMints` reconcile fix is validated on live as a pre-replay improvement, and the stale-frozen-target resume contract for in-progress grouped-delta reconcile is validated on live as well. Deploy `5e8d71beadc9e5adabce357c65f2f8a2785b1a6d` proved that boundary during `collect_buy_mints / reconcile_expired_head` no longer causes an effective fresh restart. Deploy `94847aaf1eda6f19b04c0988ea15e60646757e9d` still did not return runtime to `Replay` while stale `reconcile_expired_head` was the active bottleneck. Deploy `7d28c7607d380cd4711de24b49ec325c2302a1c6` then moved progress farther: runtime entered stale `reconcile_new_tail`, preserved progress across another bucket boundary there, and advanced bounded new-tail cursor lineage without fresh restart. Deploy `dd8c6e5c2798347808e375573edc7105da4f35e4` kept that semantic/stability contract intact, but revealed a narrower stall: stale `reconcile_new_tail` could still sit on the same token slice with zero processed rows and unchanged cursor across many bounded cycles. Deploy `8d99e324bfd1d0312d98a0cfa3f179243cbec35e` then validated that the narrowed-slice / exact single-token fallback breaks that pinned zero-row stall on live: stale `reconcile_new_tail` cursor and slice-end lineage advanced across multiple bounded cycles, `rebuild_cycle_rows_processed` became non-zero again, and no fresh restart returned across later bucket boundaries. Deploy `c01487f2453c02ef25164ebb41ee0e0312c72782` then validated that stale `reconcile_new_tail` preserves an exact pending candidate batch across bounded cycles and repeated bucket rollovers instead of reopening the same tail candidate slice each time. Deploy `661ca3f7e73e4f451cce68c4e2df50766157f31` then validated the next throughput step on live as well: exact sub-batch counting carried stale `reconcile_new_tail` to an exact carry-forward checkpoint, runtime exited stale `reconcile_new_tail`, and the next observed boundary already landed in stale `reconcile_expired_head`. The remaining blocker is therefore narrower again and later in the same path: runtime is now past stale new-tail, but still has not yet returned from stale `collect_buy_mints / reconcile_expired_head` into `Replay`, so `rebuild_replay_sol_leg_access_path` and healthy publication remain blocked. The current working tree addresses that later blocker by persisting stale expired-head exact candidate batches and draining them through exact count sub-batches, so runtime no longer has to reopen or recount the same stale expired-head candidate range on every bounded cycle before it can return to `Replay`. Stage 1 remains `partial` until a live rollout proves that runtime returns from stale `CollectBuyMints` reconciliation into `Replay` and emits `rebuild_replay_sol_leg_access_path`.
+Current working diagnosis: startup SQLite observability/boundedness is validated on live, bounded/resumable persisted rebuild behavior is validated on live, canonical migration/repair is validated on live, carry-forward across `metrics_window_start_changed` is validated on live, the retryable SQLite lock / observed-swap writer restart path is validated on live, the startup-safe deferral contract for `0039_observed_swaps_sol_leg_ts_index.sql` is validated on live, the grouped-delta `CollectBuyMints` reconcile fix is validated on live as a pre-replay improvement, and the stale-frozen-target resume contract for in-progress grouped-delta reconcile is validated on live as well. Deploy `5e8d71beadc9e5adabce357c65f2f8a2785b1a6d` proved that boundary during `collect_buy_mints / reconcile_expired_head` no longer causes an effective fresh restart. Deploy `94847aaf1eda6f19b04c0988ea15e60646757e9d` still did not return runtime to `Replay` while stale `reconcile_expired_head` was the active bottleneck. Deploy `7d28c7607d380cd4711de24b49ec325c2302a1c6` then moved progress farther: runtime entered stale `reconcile_new_tail`, preserved progress across another bucket boundary there, and advanced bounded new-tail cursor lineage without fresh restart. Deploy `dd8c6e5c2798347808e375573edc7105da4f35e4` kept that semantic/stability contract intact, but revealed a narrower stall: stale `reconcile_new_tail` could still sit on the same token slice with zero processed rows and unchanged cursor across many bounded cycles. Deploy `8d99e324bfd1d0312d98a0cfa3f179243cbec35e` then validated that the narrowed-slice / exact single-token fallback breaks that pinned zero-row stall on live: stale `reconcile_new_tail` cursor and slice-end lineage advanced across multiple bounded cycles, `rebuild_cycle_rows_processed` became non-zero again, and no fresh restart returned across later bucket boundaries. Deploy `c01487f2453c02ef25164ebb41ee0e0312c72782` then validated that stale `reconcile_new_tail` preserves an exact pending candidate batch across bounded cycles and repeated bucket rollovers instead of reopening the same tail candidate slice each time. Deploy `661ca3f7e73e4f451cce68c4e2df50766157f31` then validated the next throughput step on live as well: exact sub-batch counting carried stale `reconcile_new_tail` to an exact carry-forward checkpoint, runtime exited stale `reconcile_new_tail`, and the next observed boundary already landed in stale `reconcile_expired_head`. Deploy `08c65adc0377537dce0644c82fe14c8321e12093` then validated the analogous expired-head pending-batch / exact sub-batch contract on live as well: stale `reconcile_expired_head` cursor and pending-batch telemetry both moved with non-zero rows, no new pin appeared, and later windows showed runtime cycling between stale `reconcile_expired_head` and stale `reconcile_new_tail` without fresh restart. The remaining blocker is therefore later and broader than either individual reconcile subpath: stale `CollectBuyMints` as a whole still does not converge back into `Replay` quickly enough on live-size state, even though both stale `reconcile_expired_head` and stale `reconcile_new_tail` now make truthful bounded progress. The current working tree now attacks that broader blocker by discovering stale expired-head candidates directly from the expired delta window and draining them through persisted exact sub-batches, so runtime no longer has to walk the full carried-forward membership set just to identify which mints should be decremented before `Replay` can resume. Stage 1 remains `partial` until a live rollout proves that runtime returns from stale `CollectBuyMints` into `Replay` and emits `rebuild_replay_sol_leg_access_path`.
 
 Do not start Stage 2 yet.
 
 ### 2.5 Server state (updated 2026-03-19)
 
-- Deployed commit: `661ca3f7e73e4f451cce68c4e2df50766157f31`
-- Service: rollout reached runtime, remained stable, preserved stale-resume behavior, and validated that exact sub-batch stale-new-tail counting now carries progress to an exact carry-forward checkpoint on live; runtime then exited stale `reconcile_new_tail`, but still has not yet re-entered `Replay`, so the remaining blocker is now the later stale `reconcile_expired_head` / post-checkpoint path back into `Replay`
+- Deployed commit: `08c65adc0377537dce0644c82fe14c8321e12093`
+- Service: rollout reached runtime, remained stable, preserved stale-resume behavior, and validated that stale `reconcile_expired_head` now also uses exact pending-batch progress without reopening the same stale candidate range each bounded cycle; however, runtime still has not yet re-entered `Replay`, so the remaining blocker is now overall stale `CollectBuyMints` time-to-`Replay`, not one isolated reconcile subpath
 - `execution.enabled = false`
 - Latest observed restart: none during the observed validation windows on the current deploy (`NRestarts = 0`)
 - `active_follow_wallets = 0` during the observed validation window
@@ -131,22 +131,20 @@ Do not start Stage 2 yet.
     - `rebuild_chunks_completed` kept advancing instead of resetting
     - there was still no effective fresh restart
   - process stability held throughout the observed windows: `NRestarts = 0`, the same `MainPID` stayed active during the rollout, there was no restart loop, no writer-death path, and no false `healthy`
-  - the previous stale new-tail throughput blocker no longer appeared to be the active blocker:
-    - runtime surfaced `rebuild_collect_buy_mints_reconcile_new_tail_pending_mints` telemetry before the exact checkpoint
-    - stale `reconcile_new_tail` no longer appeared to reopen or fully recount the same pending tail slice every bounded cycle
-    - at `2026-03-19 11:50:28 UTC`, runtime emitted the exact carry-forward log for canonical buy-mint membership across the metrics bucket rollover
-    - runtime then resumed from that exact checkpoint and exited stale `collect_buy_mints / reconcile_new_tail`
-    - by the next observed boundary at `2026-03-19 12:00 UTC`, runtime was already in stale `collect_buy_mints / reconcile_expired_head`, not stale `reconcile_new_tail`
+  - the previous stale expired-head throughput blocker no longer appeared to be the active blocker:
+    - runtime surfaced `rebuild_collect_buy_mints_reconcile_expired_head_pending_mints` telemetry on live
+    - stale `reconcile_expired_head` cursor lineage advanced materially with non-zero `rebuild_cycle_rows_processed`
+    - no new operational pin of `same cursor + same pending batch + zero rows` appeared in the observed windows
+    - later observed windows showed runtime already back in stale `collect_buy_mints / reconcile_new_tail`, with pending batch also draining there and no fresh restart across the next boundaries
   - however, the rollout still did not validate return to `Replay`:
     - runtime still remained in stale `collect_buy_mints`
-    - latest observed mode had moved to `reconcile_expired_head`
+    - later observed modes alternated between `reconcile_expired_head` and `reconcile_new_tail`
     - `rebuild_replay_wallet_stats_rows_processed = 0`
     - `rebuild_replay_rows_processed = 0`
   - because runtime still had not re-entered `Replay`, there was still no emitted `rebuild_replay_sol_leg_access_path`, no `raw_window_persisted_stream`, and no healthy publication on this deploy
-  - current working tree response:
-    - stale `reconcile_expired_head` now persists exact pending candidate batches from the authoritative canonical membership set
-    - bounded cycles drain those pending batches via exact count sub-batches instead of repeating grouped expired-head range work
-    - no new startup-critical migration or deferred-index contract was introduced
+  - secondary signal:
+    - `runtime_pressure` / `ws_notifications_backpressured` were observed again while the process remained alive
+    - this is not yet proven as the primary Stage 1 blocker, but it is now a plausible coupled limiter for stale `CollectBuyMints` time-to-`Replay`
 - Rollout reports:
   - [ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md](ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md) — first Stage 1 deploy (`2eb5c30`), confirmed bootstrap path removed but fail_closed due to cap-truncated warm load
   - [ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md](ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md) — persisted-stream follow-up (`0c58aba`), confirmed correct path engaged but first cycle did not complete in 6+ minutes
@@ -392,7 +390,7 @@ Mandatory Stage 1 tests (all green):
 
 Remaining operational blocker:
 
-The previous live blocker around startup-safe replay-index rollout is no longer the current blocker: deploy `1093a5556e82f8adb6ec73bb51e73d62b8d9ac02` reached runtime, deferred `0039` explicitly, and showed `wallet_stats_then_sol_leg` in live telemetry. Deploy `bc9f6d7d946a34b1f854680c9c53a9c117cde735` then validated that the grouped-delta reconcile fix moved progress farther: runtime now reaches `Replay` before rollover. Deploy `5e8d71beadc9e5adabce357c65f2f8a2785b1a6d` then validated that the stale-frozen-target resume fix closed the boundary-loss bug: in-progress `reconcile_expired_head` no longer restarts as a new `fresh_scan` at bucket rollover. Deploy `94847aaf1eda6f19b04c0988ea15e60646757e9d` preserved that semantic fix but still did not return runtime to `Replay`. Deploy `7d28c7607d380cd4711de24b49ec325c2302a1c6` then showed that the candidate-batch expired-head fix moved the stale path farther again: runtime was already in `reconcile_new_tail` and stayed there across another boundary without fresh restart. Deploy `dd8c6e5c2798347808e375573edc7105da4f35e4` then showed that the first candidate-batch new-tail fix still was not enough: runtime remained on the same stale new-tail cursor with zero processed rows across many bounded cycles. Deploy `8d99e324bfd1d0312d98a0cfa3f179243cbec35e` then validated that persisted slice narrowing and exact single-token fallback break that pinned zero-row stall on live: narrowed-slice telemetry is emitted, new-tail cursor/slice lineage advances, and `rebuild_cycle_rows_processed` is non-zero again. Deploy `c01487f2453c02ef25164ebb41ee0e0312c72782` then validated that persisted exact pending-batch state survives bounded cycles and boundary handling as intended, so runtime no longer appears to reopen the same stale tail candidate slice on every cycle. Deploy `661ca3f7e73e4f451cce68c4e2df50766157f31` then validated the next throughput step on live as well: exact sub-batch counting carried stale `reconcile_new_tail` to an exact carry-forward checkpoint, runtime exited stale `reconcile_new_tail`, and the next observed boundary already landed in stale `reconcile_expired_head`. Stage 1 is still partial because the remaining blocker observed on live has now moved later again: runtime is past stale new-tail, but still has not yet returned from stale `reconcile_expired_head` into `Replay`, so access-path telemetry and healthy publication remain blocked. The current working tree now targets that later blocker directly by persisting stale expired-head exact candidate batches and draining them through exact count sub-batches, rather than repeatedly recounting the same expired-head candidate range each cycle.
+The previous live blocker around startup-safe replay-index rollout is no longer the current blocker: deploy `1093a5556e82f8adb6ec73bb51e73d62b8d9ac02` reached runtime, deferred `0039` explicitly, and showed `wallet_stats_then_sol_leg` in live telemetry. Deploy `bc9f6d7d946a34b1f854680c9c53a9c117cde735` then validated that the grouped-delta reconcile fix moved progress farther: runtime now reaches `Replay` before rollover. Deploy `5e8d71beadc9e5adabce357c65f2f8a2785b1a6d` then validated that the stale-frozen-target resume fix closed the boundary-loss bug: in-progress `reconcile_expired_head` no longer restarts as a new `fresh_scan` at bucket rollover. Deploy `94847aaf1eda6f19b04c0988ea15e60646757e9d` preserved that semantic fix but still did not return runtime to `Replay`. Deploy `7d28c7607d380cd4711de24b49ec325c2302a1c6` then showed that the candidate-batch expired-head fix moved the stale path farther again: runtime was already in `reconcile_new_tail` and stayed there across another boundary without fresh restart. Deploy `dd8c6e5c2798347808e375573edc7105da4f35e4` then showed that the first candidate-batch new-tail fix still was not enough: runtime remained on the same stale new-tail cursor with zero processed rows across many bounded cycles. Deploy `8d99e324bfd1d0312d98a0cfa3f179243cbec35e` then validated that persisted slice narrowing and exact single-token fallback break that pinned zero-row stall on live: narrowed-slice telemetry is emitted, new-tail cursor/slice lineage advances, and `rebuild_cycle_rows_processed` is non-zero again. Deploy `c01487f2453c02ef25164ebb41ee0e0312c72782` then validated that persisted exact pending-batch state survives bounded cycles and boundary handling as intended, so runtime no longer appears to reopen the same stale tail candidate slice on every cycle. Deploy `661ca3f7e73e4f451cce68c4e2df50766157f31` then validated the next throughput step on live as well: exact sub-batch counting carried stale `reconcile_new_tail` to an exact carry-forward checkpoint, runtime exited stale `reconcile_new_tail`, and the next observed boundary already landed in stale `reconcile_expired_head`. Deploy `08c65adc0377537dce0644c82fe14c8321e12093` then validated the analogous stale expired-head contract on live: exact pending-batch telemetry appeared, expired-head cursor and pending batches advanced with non-zero rows, and later windows again showed runtime reaching stale `reconcile_new_tail` without any fresh restart. Stage 1 is still partial because the remaining blocker observed on live is no longer one isolated stale reconcile subpath: stale `CollectBuyMints` as a whole still does not converge back into `Replay` quickly enough on live-size state, even though both stale `reconcile_expired_head` and stale `reconcile_new_tail` now make truthful bounded progress. The next code change should therefore target overall stale `CollectBuyMints` time-to-`Replay`, and should consider whether recurring `runtime_pressure` / backlog gating is coupled to that later convergence path.
 
 Current working diagnosis:
 
@@ -400,11 +398,11 @@ the old deploy `0c58abadd2f0d3e3807cc0013ac37e6047d9c71c` proved that a one-shot
 
 Immediate next operational step before Stage 2:
 
-roll out the stale `reconcile_expired_head` exact pending-batch / exact sub-batch convergence fix and then re-validate the later replay path on the next rollout:
+roll out a follow-up fix for overall stale `CollectBuyMints` time-to-`Replay` and then re-validate the later replay path on the next rollout:
 
 1. stale frozen-target `reconcile_new_tail` must continue to avoid the old zero-row unchanged-cursor stall seen on deploy `dd8c6e5c2798347808e375573edc7105da4f35e4`
 2. runtime must continue to preserve in-progress reconcile across boundaries without falling back to a new `fresh_scan`
-3. after the now-live-validated exact carry-forward from stale `reconcile_new_tail`, runtime must materially shorten the remaining stale `reconcile_expired_head` path on live-size state by persisting exact expired-head candidate batches and draining them without reopening the same stale candidate range
+3. after the now-live-validated exact pending-batch contracts for both stale `reconcile_expired_head` and stale `reconcile_new_tail`, runtime must materially shorten overall stale `CollectBuyMints` convergence on live-size state
 4. once stale `CollectBuyMints` returns to an exact checkpoint on the current bucket, runtime must roll back into `Replay` without false `healthy`
 5. runtime must then re-enter `Replay` and emit the first actual replay slice, emitting:
    - `rebuild_replay_mode = wallet_stats_then_sol_leg`
@@ -841,11 +839,11 @@ Their useful conclusions are already absorbed here:
   - `cargo test -p copybot-discovery --lib persisted_stream_reconcile_expired_head_ -- --nocapture`
   - `cargo test -p copybot-app --bin copybot-app app_tests::startup_ -- --nocapture`
 - Done:
-  - identified the remaining post-`661ca3f...` hot path: stale `ReconcileExpiredHead` still counted one canonical expired-head candidate range at a time and therefore could revisit the same later stale work across bounded cycles even after stale new-tail had already exited successfully
-  - replaced that later stale expired-head path with the same kind of exact pending-batch contract already proven on stale new-tail:
-    - when a stale expired-head candidate range is opened, runtime now persists the exact candidate mint batch in rebuild state instead of only remembering the end cursor
-    - bounded cycles then drain that exact batch via capped exact count sub-batches, updating the expired-head cursor as each exact prefix is fully accounted
-    - once the persisted batch is empty, runtime opens the next exact expired-head candidate batch instead of recounting the same stale range again
+  - identified the remaining post-`661ca3f...` hot path: stale `ReconcileExpiredHead` still walked the carried-forward canonical membership set just to discover which mints actually had buys inside the expired delta window, so later stale cycles kept paying that candidate-discovery cost even after stale new-tail had already exited successfully
+  - replaced that later stale expired-head path with a direct expired-delta exact pending-batch contract:
+    - when a stale expired-head page is opened, runtime now asks SQLite for the next distinct mint batch directly from the expired delta window instead of paging over the full carried-forward membership set
+    - that exact expired-head candidate batch is then persisted in rebuild state and drained via capped exact count sub-batches, updating the expired-head cursor as each exact prefix is fully accounted
+    - once the persisted batch is empty, runtime opens the next direct expired-delta candidate batch instead of recounting the same later stale work again
   - kept exact truth intact:
     - `buy_mint_counts` remains the authoritative membership source
     - `unique_buy_mints` remains canonical and exact
@@ -864,6 +862,61 @@ Their useful conclusions are already absorbed here:
   - if live still does not re-enter `Replay`, the blocker will move farther down the post-checkpoint path rather than remain hidden behind repeated stale expired-head recount work
 - Next action:
   - rollout this stale expired-head exact pending-batch / exact sub-batch fix and validate `Replay` re-entry, `rebuild_replay_sol_leg_access_path`, and then healthy publication on live
+
+- Date: 2026-03-19
+- Commit SHA: `08c65adc0377537dce0644c82fe14c8321e12093`
+- Stage / substep: `Stage 1 / live rollout validation of stale reconcile_expired_head exact pending-batch convergence fix`
+- Status: `partial`
+- Code changed:
+  - none; live rollout validation only
+- Tests run:
+  - server rollout observation only
+- Done:
+  - startup stayed healthy:
+    - `sqlite_migrations_deferred` still emitted `skipped` with pending `0039`
+    - `sqlite_migrations_apply` completed immediately
+    - `startup_sqlite_wal_checkpoint` remained explicitly deferred
+    - `app runtime loop started` was observed on the rollout
+  - process stability held:
+    - `MainPID` stayed stable during the observed windows
+    - `NRestarts = 0`
+    - no writer-death path
+    - no restart loop
+  - stale-resume boundary contract remained intact on live:
+    - the `2026-03-19 13:00 UTC`, `15:30 UTC`, and `17:00 UTC` boundaries all emitted stale-resume logs without restarting fresh
+    - later windows showed runtime boundary handling in both stale `reconcile_expired_head` and stale `reconcile_new_tail`
+    - `rebuild_started_at` stayed unchanged on the frozen target
+    - `rebuild_chunks_completed` advanced instead of resetting
+  - the new exact pending-batch stale-expired-head contract appears live-valid:
+    - runtime surfaced `rebuild_collect_buy_mints_reconcile_expired_head_pending_mints` telemetry on live
+    - stale `reconcile_expired_head` cursor lineage advanced materially with non-zero `rebuild_cycle_rows_processed`
+    - no new operational pin of same expired-head cursor + same pending batch + zero rows appeared in the observed windows
+    - later windows showed runtime again in stale `reconcile_new_tail`, with `rebuild_collect_buy_mints_reconcile_new_tail_pending_mints` draining and no fresh restart there either
+  - pressure signals rose but did not regress stability:
+    - `sqlite_busy_error_total` and `sqlite_write_retry_total` increased without crashing the process
+    - `ws_notifications_backpressured` and `runtime_pressure` gating were observed
+    - writer-failure / abort paths still did not appear
+- Blocked:
+  - runtime still did not re-enter `Replay`
+  - `rebuild_replay_sol_leg_access_path` was still not emitted
+  - `raw_window_persisted_stream` and healthy publication still did not appear
+  - the remaining blocker is no longer one isolated stale reconcile subpath; stale `CollectBuyMints` as a whole still does not converge back into `Replay` quickly enough on live-size state
+- Acceptance criteria closed:
+  - startup-safe `0039` deferral did not regress
+  - process stability did not regress
+  - stale-resume during boundary remained live-validated
+  - stale `reconcile_expired_head` exact pending-batch telemetry appeared and advanced without a new zero-row pin
+  - runtime again showed truthful bounded progress in stale `reconcile_new_tail` without fresh restart
+- Acceptance criteria remaining:
+  - next code change must materially shorten overall stale `CollectBuyMints` time-to-`Replay`
+  - next rollout must re-enter `Replay`
+  - next rollout must emit `rebuild_replay_sol_leg_access_path`
+  - next rollout must still land `scoring_source = raw_window_persisted_stream` and `active_follow_wallets > 0`
+- Remaining risks:
+  - the blocker is no longer expired-head or new-tail in isolation; it is now overall stale `CollectBuyMints` convergence back into `Replay`
+  - recurring `runtime_pressure` / backlog gating may be coupled to that later convergence path and should be evaluated in the next fix if evidence continues to accumulate
+- Next action:
+  - optimize overall stale `CollectBuyMints` time-to-`Replay`, then re-rollout specifically for replay access-path telemetry and healthy publication
 
 - Date: 2026-03-19
 - Commit SHA: `self-referential; exact final SHA is reported from git after commit`

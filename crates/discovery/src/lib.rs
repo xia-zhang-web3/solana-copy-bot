@@ -1277,47 +1277,6 @@ impl DiscoveryService {
             .clear();
     }
 
-    fn next_sorted_unique_buy_mint_batch(
-        sorted_unique_buy_mints: &[String],
-        after_token: Option<&str>,
-        batch_size: usize,
-    ) -> Vec<String> {
-        if batch_size == 0 || sorted_unique_buy_mints.is_empty() {
-            return Vec::new();
-        }
-        let start_index = after_token.map_or(0, |cursor| {
-            sorted_unique_buy_mints.partition_point(|mint| mint.as_str() <= cursor)
-        });
-        if start_index >= sorted_unique_buy_mints.len() {
-            return Vec::new();
-        }
-        let end_index = start_index
-            .saturating_add(batch_size)
-            .min(sorted_unique_buy_mints.len());
-        sorted_unique_buy_mints[start_index..end_index].to_vec()
-    }
-
-    fn next_sorted_unique_buy_mint_batch_end(
-        sorted_unique_buy_mints: &[String],
-        after_token: Option<&str>,
-        batch_size: usize,
-    ) -> Option<String> {
-        if batch_size == 0 || sorted_unique_buy_mints.is_empty() {
-            return None;
-        }
-        let start_index = after_token.map_or(0, |cursor| {
-            sorted_unique_buy_mints.partition_point(|mint| mint.as_str() <= cursor)
-        });
-        if start_index >= sorted_unique_buy_mints.len() {
-            return None;
-        }
-        let end_index = start_index
-            .saturating_add(batch_size)
-            .min(sorted_unique_buy_mints.len())
-            .saturating_sub(1);
-        sorted_unique_buy_mints.get(end_index).cloned()
-    }
-
     fn stale_reconcile_exact_count_batch_size(fetch_limit: usize) -> usize {
         fetch_limit
             .max(1)
@@ -2166,12 +2125,21 @@ impl DiscoveryService {
                         .collect_buy_mints_reconcile_expired_head_pending_mints
                         .is_empty()
                     {
-                        let candidate_batch = Self::next_sorted_unique_buy_mint_batch(
-                            &state.payload.unique_buy_mints,
-                            reconcile_cursor_token.as_deref(),
-                            reconcile_batch_size,
-                        );
-                        if candidate_batch.is_empty() {
+                        let candidate_page = store
+                            .load_observed_buy_mints_in_time_bounds_after_token_with_budget(
+                                source_window_start,
+                                true,
+                                state.window_start,
+                                false,
+                                reconcile_cursor_token.as_deref(),
+                                None,
+                                reconcile_batch_size,
+                                deadline,
+                            )?;
+                        if candidate_page.mints.is_empty() {
+                            if candidate_page.time_budget_exhausted {
+                                break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+                            }
                             state.payload.collect_buy_mints_mode =
                                 CollectBuyMintsMode::ReconcileNewTail;
                             state
@@ -2198,7 +2166,10 @@ impl DiscoveryService {
                         state
                             .payload
                             .collect_buy_mints_reconcile_expired_head_pending_mints =
-                            candidate_batch;
+                            candidate_page.mints;
+                        if candidate_page.time_budget_exhausted {
+                            break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+                        }
                     }
 
                     let active_pending_mints = state
@@ -2331,46 +2302,7 @@ impl DiscoveryService {
                     {
                         continue;
                     }
-                    if state
-                        .payload
-                        .collect_buy_mints_reconcile_expired_head_cursor_token
-                        .is_none()
-                    {
-                        continue;
-                    }
-                    if Self::next_sorted_unique_buy_mint_batch_end(
-                        &state.payload.unique_buy_mints,
-                        state
-                            .payload
-                            .collect_buy_mints_reconcile_expired_head_cursor_token
-                            .as_deref(),
-                        1,
-                    )
-                    .is_none()
-                    {
-                        state.payload.collect_buy_mints_mode =
-                            CollectBuyMintsMode::ReconcileNewTail;
-                        state
-                            .payload
-                            .collect_buy_mints_reconcile_expired_head_cursor = None;
-                        state
-                            .payload
-                            .collect_buy_mints_reconcile_expired_head_cursor_token = None;
-                        Self::clear_reconcile_expired_head_pending_batch(&mut state.payload);
-                        info!(
-                            rebuild_window_start = %state.window_start,
-                            rebuild_horizon_end = %state.horizon_end,
-                            rebuild_reconcile_source_window_start = ?state
-                                .payload
-                                .collect_buy_mints_reconcile_source_window_start,
-                            rebuild_reconcile_source_horizon_end = ?state
-                                .payload
-                                .collect_buy_mints_reconcile_source_horizon_end,
-                            rebuild_unique_buy_mints = state.payload.unique_buy_mints.len(),
-                            "completed expired-head reconciliation for carried-forward collect_buy_mints state; switching to new-tail reconciliation"
-                        );
-                        continue;
-                    }
+                    continue;
                 }
                 CollectBuyMintsMode::ReconcileNewTail => {
                     let Some(source_horizon_end) =
@@ -10505,7 +10437,7 @@ mod tests {
                 .payload
                 .collect_buy_mints_reconcile_expired_head_pending_mints
                 .len(),
-            expired_token_count.saturating_add(1).saturating_sub(expected_rows),
+            expired_token_count.saturating_sub(expected_rows),
             "expired-head exact sub-batches should keep only the still-unprocessed suffix pending after all bounded pages are used"
         );
         assert_eq!(
