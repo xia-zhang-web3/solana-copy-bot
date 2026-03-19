@@ -808,9 +808,12 @@ impl SqliteStore {
             since.to_rfc3339().into(),
             until.to_rfc3339().into(),
         ];
+        // Candidate discovery is used by stale expired-head/new-tail reconciliation.
+        // Those paths operate on narrow time windows, so a time-first access path
+        // avoids crawling token-order space just to find the next touched mints.
         let mut query = format!(
             "SELECT DISTINCT token_out
-             FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_out_ts
+             FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_ts
              WHERE token_in = ?1
                AND token_out <> ?1
                AND ts {since_op} ?2
