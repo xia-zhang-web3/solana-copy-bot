@@ -761,7 +761,6 @@ fn should_request_persisted_stream_catch_up(
     telemetry: &PersistedStreamProgressTelemetry,
 ) -> bool {
     telemetry.phase == DiscoveryPersistedRebuildPhase::CollectBuyMints
-        && telemetry.collect_buy_mints_mode != CollectBuyMintsMode::FreshScan
         && telemetry.budget_exhausted_reason
             == Some(PersistedStreamBudgetExhaustedReason::PageBudget)
 }
@@ -14857,7 +14856,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_stream_catch_up_request_targets_stale_collect_buy_mints_page_budget_only() {
+    fn persisted_stream_catch_up_request_targets_collect_buy_mints_page_budget_only() {
         assert!(should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
             DiscoveryPersistedRebuildPhase::CollectBuyMints,
             CollectBuyMintsMode::ReconcileExpiredHead,
@@ -14868,10 +14867,15 @@ mod tests {
             CollectBuyMintsMode::ReconcileNewTail,
             Some(PersistedStreamBudgetExhaustedReason::PageBudget),
         )));
-        assert!(!should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
+        assert!(should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
             DiscoveryPersistedRebuildPhase::CollectBuyMints,
             CollectBuyMintsMode::FreshScan,
             Some(PersistedStreamBudgetExhaustedReason::PageBudget),
+        )));
+        assert!(!should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
+            DiscoveryPersistedRebuildPhase::CollectBuyMints,
+            CollectBuyMintsMode::FreshScan,
+            Some(PersistedStreamBudgetExhaustedReason::TimeBudget),
         )));
         assert!(!should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
             DiscoveryPersistedRebuildPhase::CollectBuyMints,

@@ -94,6 +94,7 @@ const LEGACY_RUST_LOG_ENV: &str = "RUST_LOG";
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 const OBSERVED_SWAP_WRITER_BACKPRESSURE_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const OBSERVED_SWAP_WRITER_BACKPRESSURE_LOG_THROTTLE: StdDuration = StdDuration::from_secs(5);
+const DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD: usize = 128;
 const STARTUP_STEP_LOG_INTERVAL: StdDuration = StdDuration::from_secs(5);
 const STARTUP_REQUIRED_STEP_TIMEOUT: StdDuration = StdDuration::from_secs(120);
 const STARTUP_SQLITE_AUX_STEP_TIMEOUT: StdDuration = StdDuration::from_secs(30);
@@ -3265,6 +3266,8 @@ async fn run_app_loop(
                                 shadow_queue_full,
                                 writer_pending_requests =
                                     observed_swap_writer_snapshot.pending_requests,
+                                writer_pending_requests_threshold =
+                                    DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD,
                                 writer_aggregate_queue_depth_batches =
                                     observed_swap_writer_snapshot.aggregate_queue_depth_batches,
                                 yellowstone_output_queue_fill_ratio =
@@ -3280,6 +3283,8 @@ async fn run_app_loop(
                                 shadow_queue_full,
                                 writer_pending_requests =
                                     observed_swap_writer_snapshot.pending_requests,
+                                writer_pending_requests_threshold =
+                                    DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD,
                                 writer_aggregate_queue_depth_batches =
                                     observed_swap_writer_snapshot.aggregate_queue_depth_batches,
                                 yellowstone_output_queue_fill_ratio =
@@ -4308,7 +4313,8 @@ fn should_schedule_discovery_catch_up(
     if !discovery_output.persisted_stream_catch_up_requested || shadow_queue_full {
         return false;
     }
-    if observed_swap_writer_snapshot.pending_requests > 0
+    if observed_swap_writer_snapshot.pending_requests
+        >= DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD
         || observed_swap_writer_snapshot.aggregate_queue_depth_batches > 0
     {
         return false;
@@ -4500,13 +4506,14 @@ mod app_tests {
     }
 
     #[test]
-    fn discovery_catch_up_scheduler_skips_when_writer_has_backlog() {
+    fn discovery_catch_up_scheduler_allows_normal_writer_flow_below_threshold() {
         let discovery_output = discovery_output_for_catch_up_tests(true);
         let mut writer_snapshot = maintenance_test_writer_snapshot();
-        writer_snapshot.pending_requests = 1;
+        writer_snapshot.pending_requests =
+            DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD.saturating_sub(1);
         let ingestion_snapshot = maintenance_test_ingestion_snapshot(0.0);
 
-        assert!(!should_schedule_discovery_catch_up(
+        assert!(should_schedule_discovery_catch_up(
             &discovery_output,
             false,
             &writer_snapshot,
@@ -4533,6 +4540,31 @@ mod app_tests {
         ));
         assert!(!should_schedule_discovery_catch_up(
             &discovery_output_for_catch_up_tests(false),
+            false,
+            &writer_snapshot,
+            Some(&maintenance_test_ingestion_snapshot(0.0)),
+        ));
+    }
+
+    #[test]
+    fn discovery_catch_up_scheduler_skips_when_writer_crosses_threshold() {
+        let discovery_output = discovery_output_for_catch_up_tests(true);
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.pending_requests =
+            DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD;
+
+        assert!(!should_schedule_discovery_catch_up(
+            &discovery_output,
+            false,
+            &writer_snapshot,
+            Some(&maintenance_test_ingestion_snapshot(0.0)),
+        ));
+
+        writer_snapshot.pending_requests = 0;
+        writer_snapshot.aggregate_queue_depth_batches = 1;
+
+        assert!(!should_schedule_discovery_catch_up(
+            &discovery_output,
             false,
             &writer_snapshot,
             Some(&maintenance_test_ingestion_snapshot(0.0)),
