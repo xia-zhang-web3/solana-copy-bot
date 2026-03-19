@@ -3049,6 +3049,7 @@ async fn run_app_loop(
     let mut recent_swap_signature_order: VecDeque<String> = VecDeque::new();
     let mut pending_irrelevant_swap: Option<PendingIrrelevantObservedSwap> = None;
     let mut discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>> = None;
+    let mut discovery_catch_up_pending = false;
     let mut shadow_scheduler = ShadowScheduler::new();
     let mut execution_handle: Option<JoinHandle<Result<ExecutionBatchReport>>> = None;
     let observed_swap_writer = ObservedSwapWriter::start(
@@ -3249,8 +3250,48 @@ async fn run_app_loop(
                                 Some(&discovery_output),
                             ).context("shadow risk discovery-cycle universe event failed with fatal sqlite I/O")?;
                         }
+                        let observed_swap_writer_snapshot = observed_swap_writer.snapshot();
+                        let ingestion_snapshot = ingestion.runtime_snapshot();
+                        discovery_catch_up_pending = should_schedule_discovery_catch_up(
+                            &discovery_output,
+                            shadow_queue_full,
+                            &observed_swap_writer_snapshot,
+                            ingestion_snapshot.as_ref(),
+                        );
+                        if discovery_catch_up_pending {
+                            info!(
+                                discovery_runtime_mode = discovery_output.runtime_mode.as_str(),
+                                discovery_scoring_source = discovery_output.scoring_source,
+                                shadow_queue_full,
+                                writer_pending_requests =
+                                    observed_swap_writer_snapshot.pending_requests,
+                                writer_aggregate_queue_depth_batches =
+                                    observed_swap_writer_snapshot.aggregate_queue_depth_batches,
+                                yellowstone_output_queue_fill_ratio =
+                                    ingestion_snapshot
+                                        .as_ref()
+                                        .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio),
+                                "bounded partial discovery rebuild requested immediate catch-up cycle"
+                            );
+                        } else if discovery_output.persisted_stream_catch_up_requested {
+                            info!(
+                                discovery_runtime_mode = discovery_output.runtime_mode.as_str(),
+                                discovery_scoring_source = discovery_output.scoring_source,
+                                shadow_queue_full,
+                                writer_pending_requests =
+                                    observed_swap_writer_snapshot.pending_requests,
+                                writer_aggregate_queue_depth_batches =
+                                    observed_swap_writer_snapshot.aggregate_queue_depth_batches,
+                                yellowstone_output_queue_fill_ratio =
+                                    ingestion_snapshot
+                                        .as_ref()
+                                        .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio),
+                                "bounded partial discovery rebuild requested catch-up, but runtime pressure gate deferred immediate retrigger"
+                            );
+                        }
                     }
                     Ok(Err(error)) => {
+                        discovery_catch_up_pending = false;
                         if discovery_task_error_requires_restart(&error) {
                             return Err(error)
                                 .context("discovery cycle failed with fatal sqlite I/O");
@@ -3258,9 +3299,18 @@ async fn run_app_loop(
                         warn!(error = %error, "discovery cycle failed");
                     }
                     Err(error) => {
+                        discovery_catch_up_pending = false;
                         warn!(error = %error, "discovery task join failed");
                     }
                 }
+            }
+            _ = async {}, if discovery_catch_up_pending && discovery_handle.is_none() => {
+                discovery_catch_up_pending = false;
+                discovery_handle = Some(tokio::task::spawn_blocking(spawn_discovery_task(
+                    sqlite_path.clone(),
+                    discovery.clone(),
+                    Utc::now(),
+                )));
             }
             shadow_result = shadow_scheduler.shadow_workers.join_next(), if !shadow_scheduler.shadow_workers.is_empty() => {
                 match shadow_result {
@@ -4132,6 +4182,7 @@ async fn run_app_loop(
                     warn!("discovery cycle still running, skipping scheduled trigger");
                     continue;
                 }
+                discovery_catch_up_pending = false;
                 discovery_handle = Some(tokio::task::spawn_blocking(spawn_discovery_task(
                     sqlite_path.clone(),
                     discovery.clone(),
@@ -4248,6 +4299,29 @@ fn bootstrap_follow_snapshot(
     }
 }
 
+fn should_schedule_discovery_catch_up(
+    discovery_output: &DiscoveryTaskOutput,
+    shadow_queue_full: bool,
+    observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
+    ingestion_runtime_snapshot: Option<&IngestionRuntimeSnapshot>,
+) -> bool {
+    if !discovery_output.persisted_stream_catch_up_requested || shadow_queue_full {
+        return false;
+    }
+    if observed_swap_writer_snapshot.pending_requests > 0
+        || observed_swap_writer_snapshot.aggregate_queue_depth_batches > 0
+    {
+        return false;
+    }
+    if ingestion_runtime_snapshot.is_some_and(|snapshot| {
+        snapshot.yellowstone_output_queue_capacity > 0
+            && snapshot.yellowstone_output_queue_fill_ratio > 0.0
+    }) {
+        return false;
+    }
+    true
+}
+
 struct DiscoveryTaskOutput {
     active_wallets: HashSet<String>,
     cycle_ts: DateTime<Utc>,
@@ -4262,6 +4336,7 @@ struct DiscoveryTaskOutput {
     cap_truncation_deactivation_guard_started_at: Option<DateTime<Utc>>,
     cap_truncation_floor_ts_utc: Option<DateTime<Utc>>,
     cap_truncation_floor_signature: Option<String>,
+    persisted_stream_catch_up_requested: bool,
 }
 
 #[cfg(test)]
@@ -4374,6 +4449,25 @@ mod app_tests {
         }
     }
 
+    fn discovery_output_for_catch_up_tests(requested: bool) -> DiscoveryTaskOutput {
+        DiscoveryTaskOutput {
+            active_wallets: std::collections::HashSet::new(),
+            cycle_ts: Utc::now(),
+            eligible_wallets: 0,
+            active_follow_wallets: 0,
+            published: false,
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            scoring_source: "raw_window_persisted_stream",
+            raw_window_cap_truncated: false,
+            cap_truncation_deactivation_guard_active: false,
+            cap_truncation_deactivation_guard_reason: None,
+            cap_truncation_deactivation_guard_started_at: None,
+            cap_truncation_floor_ts_utc: None,
+            cap_truncation_floor_signature: None,
+            persisted_stream_catch_up_requested: requested,
+        }
+    }
+
     fn test_swap(signature: &str) -> SwapEvent {
         SwapEvent {
             wallet: "wallet-test".to_string(),
@@ -4389,6 +4483,60 @@ mod app_tests {
                 .with_timezone(&Utc),
             exact_amounts: None,
         }
+    }
+
+    #[test]
+    fn discovery_catch_up_scheduler_retriggers_only_for_safe_requested_runtime() {
+        let discovery_output = discovery_output_for_catch_up_tests(true);
+        let writer_snapshot = maintenance_test_writer_snapshot();
+        let ingestion_snapshot = maintenance_test_ingestion_snapshot(0.0);
+
+        assert!(should_schedule_discovery_catch_up(
+            &discovery_output,
+            false,
+            &writer_snapshot,
+            Some(&ingestion_snapshot),
+        ));
+    }
+
+    #[test]
+    fn discovery_catch_up_scheduler_skips_when_writer_has_backlog() {
+        let discovery_output = discovery_output_for_catch_up_tests(true);
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.pending_requests = 1;
+        let ingestion_snapshot = maintenance_test_ingestion_snapshot(0.0);
+
+        assert!(!should_schedule_discovery_catch_up(
+            &discovery_output,
+            false,
+            &writer_snapshot,
+            Some(&ingestion_snapshot),
+        ));
+    }
+
+    #[test]
+    fn discovery_catch_up_scheduler_skips_when_runtime_pressure_is_present() {
+        let discovery_output = discovery_output_for_catch_up_tests(true);
+        let writer_snapshot = maintenance_test_writer_snapshot();
+
+        assert!(!should_schedule_discovery_catch_up(
+            &discovery_output,
+            false,
+            &writer_snapshot,
+            Some(&maintenance_test_ingestion_snapshot(0.25)),
+        ));
+        assert!(!should_schedule_discovery_catch_up(
+            &discovery_output,
+            true,
+            &writer_snapshot,
+            Some(&maintenance_test_ingestion_snapshot(0.0)),
+        ));
+        assert!(!should_schedule_discovery_catch_up(
+            &discovery_output_for_catch_up_tests(false),
+            false,
+            &writer_snapshot,
+            Some(&maintenance_test_ingestion_snapshot(0.0)),
+        ));
     }
 
     #[test]
@@ -6524,6 +6672,7 @@ mod app_tests {
             cap_truncation_deactivation_guard_started_at: Some(guard_started_at),
             cap_truncation_floor_ts_utc: Some(floor_ts),
             cap_truncation_floor_signature: Some("restart-noise-buy-1".to_string()),
+            persisted_stream_catch_up_requested: false,
         };
 
         guard.observe_discovery_cycle(&store, now, 5, 5, Some(&discovery_output))?;
@@ -6589,6 +6738,7 @@ mod app_tests {
             cap_truncation_deactivation_guard_started_at: Some(guard_started_at),
             cap_truncation_floor_ts_utc: Some(floor_ts),
             cap_truncation_floor_signature: Some("restart-noise-buy-1".to_string()),
+            persisted_stream_catch_up_requested: false,
         };
 
         guard.observe_discovery_cycle(&store, now, 5, 5, Some(&discovery_output))?;
@@ -6634,6 +6784,7 @@ mod app_tests {
             cap_truncation_deactivation_guard_started_at: Some(now),
             cap_truncation_floor_ts_utc: Some(now),
             cap_truncation_floor_signature: Some("cap-sig-001".to_string()),
+            persisted_stream_catch_up_requested: false,
         };
 
         guard.observe_discovery_cycle(&store, now, 5, 5, Some(&discovery_output))?;
@@ -6688,6 +6839,7 @@ mod app_tests {
             cap_truncation_deactivation_guard_started_at: Some(now),
             cap_truncation_floor_ts_utc: Some(now),
             cap_truncation_floor_signature: Some("aggregate-floor-sig".to_string()),
+            persisted_stream_catch_up_requested: false,
         };
 
         guard.observe_discovery_cycle(&store, now, 5, 5, Some(&discovery_output))?;

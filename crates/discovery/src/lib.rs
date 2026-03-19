@@ -219,6 +219,7 @@ pub struct DiscoverySummary {
     pub cap_truncation_deactivation_guard_started_at: Option<DateTime<Utc>>,
     pub cap_truncation_floor_ts_utc: Option<DateTime<Utc>>,
     pub cap_truncation_floor_signature: Option<String>,
+    pub persisted_stream_catch_up_requested: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -396,6 +397,11 @@ impl DiscoverySummary {
             telemetry.cap_truncation_deactivation_guard_started_at;
         self.cap_truncation_floor_ts_utc = telemetry.cap_truncation_floor_ts_utc;
         self.cap_truncation_floor_signature = telemetry.cap_truncation_floor_signature.clone();
+        self
+    }
+
+    fn with_persisted_stream_catch_up_requested(mut self, requested: bool) -> Self {
+        self.persisted_stream_catch_up_requested = requested;
         self
     }
 }
@@ -749,6 +755,15 @@ struct PersistedStreamProgressTelemetry {
     partial: bool,
     completed: bool,
     budget_exhausted_reason: Option<PersistedStreamBudgetExhaustedReason>,
+}
+
+fn should_request_persisted_stream_catch_up(
+    telemetry: &PersistedStreamProgressTelemetry,
+) -> bool {
+    telemetry.phase == DiscoveryPersistedRebuildPhase::CollectBuyMints
+        && telemetry.collect_buy_mints_mode != CollectBuyMintsMode::FreshScan
+        && telemetry.budget_exhausted_reason
+            == Some(PersistedStreamBudgetExhaustedReason::PageBudget)
 }
 
 #[derive(Debug)]
@@ -4389,18 +4404,22 @@ impl DiscoveryService {
                         )
                     }
                     PersistedStreamRebuildAdvanceOutcome::InProgress { telemetry } => {
+                        let catch_up_requested =
+                            should_request_persisted_stream_catch_up(&telemetry);
                         if let Some(active_wallets) = recent_published_follow_wallets.clone() {
-                            let summary = self.degraded_summary_from_published_universe(
-                                store,
-                                window_start,
-                                metrics_window_start,
-                                false,
-                                active_wallets,
-                                &cap_truncation_telemetry,
-                                empty_window_degraded_scoring_source,
-                                empty_window_degraded_scoring_source,
-                                now,
-                            )?;
+                            let summary = self
+                                .degraded_summary_from_published_universe(
+                                    store,
+                                    window_start,
+                                    metrics_window_start,
+                                    false,
+                                    active_wallets,
+                                    &cap_truncation_telemetry,
+                                    empty_window_degraded_scoring_source,
+                                    empty_window_degraded_scoring_source,
+                                    now,
+                                )?
+                                .with_persisted_stream_catch_up_requested(false);
                             let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
                             info!(
                                 window_start = %summary.window_start,
@@ -4433,6 +4452,8 @@ impl DiscoveryService {
                                 discovery_cycle_duration_ms = elapsed_ms,
                                 rebuild_phase = telemetry.phase.as_str(),
                                 rebuild_horizon_end = %telemetry.horizon_end,
+                                discovery_persisted_stream_catch_up_requested =
+                                    summary.persisted_stream_catch_up_requested,
                                 rebuild_budget_exhausted_reason = telemetry
                                     .budget_exhausted_reason
                                     .map(PersistedStreamBudgetExhaustedReason::as_str),
@@ -4440,17 +4461,19 @@ impl DiscoveryService {
                             );
                             return Ok(summary);
                         }
-                        let summary = self.fail_close_without_recent_universe(
-                            store,
-                            window_start,
-                            metrics_window_start,
-                            false,
-                            true,
-                            &cap_truncation_telemetry,
-                            empty_window_unusable_scoring_source,
-                            empty_window_unusable_scoring_source,
-                            now,
-                        )?;
+                        let summary = self
+                            .fail_close_without_recent_universe(
+                                store,
+                                window_start,
+                                metrics_window_start,
+                                false,
+                                true,
+                                &cap_truncation_telemetry,
+                                empty_window_unusable_scoring_source,
+                                empty_window_unusable_scoring_source,
+                                now,
+                            )?
+                            .with_persisted_stream_catch_up_requested(catch_up_requested);
                         let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
                         warn!(
                             metrics_window_start = %metrics_window_start,
@@ -4493,6 +4516,8 @@ impl DiscoveryService {
                             discovery_cycle_duration_ms = elapsed_ms,
                             rebuild_phase = telemetry.phase.as_str(),
                             rebuild_horizon_end = %telemetry.horizon_end,
+                            discovery_persisted_stream_catch_up_requested =
+                                summary.persisted_stream_catch_up_requested,
                             rebuild_budget_exhausted_reason = telemetry
                                 .budget_exhausted_reason
                                 .map(PersistedStreamBudgetExhaustedReason::as_str),
@@ -14776,6 +14801,88 @@ mod tests {
     fn discovery_recent_window_load_error_does_not_require_abort_on_busy_lock() {
         let error = anyhow!("database is locked");
         assert!(!discovery_recent_window_load_error_requires_abort(&error));
+    }
+
+    fn catch_up_test_telemetry(
+        phase: DiscoveryPersistedRebuildPhase,
+        mode: CollectBuyMintsMode,
+        budget_exhausted_reason: Option<PersistedStreamBudgetExhaustedReason>,
+    ) -> PersistedStreamProgressTelemetry {
+        let now = DateTime::parse_from_rfc3339("2026-03-19T18:30:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        PersistedStreamProgressTelemetry {
+            phase,
+            collect_buy_mints_mode: mode,
+            replay_mode: ReplayMode::WalletStatsThenSolLeg,
+            window_start: now - Duration::days(5),
+            horizon_end: now,
+            metrics_window_start: now,
+            phase_cursor: None,
+            collect_buy_mints_cursor_token: None,
+            collect_buy_mints_reconcile_source_window_start: None,
+            collect_buy_mints_reconcile_source_horizon_end: None,
+            collect_buy_mints_reconcile_expired_head_cursor: None,
+            collect_buy_mints_reconcile_new_tail_cursor: None,
+            collect_buy_mints_reconcile_expired_head_cursor_token: None,
+            collect_buy_mints_reconcile_new_tail_cursor_token: None,
+            collect_buy_mints_reconcile_expired_head_pending_mints: 0,
+            collect_buy_mints_reconcile_new_tail_slice_end_token: None,
+            collect_buy_mints_reconcile_new_tail_pending_mints: 0,
+            prepass_rows_processed: 0,
+            prepass_pages_processed: 0,
+            replay_wallet_stats_complete: false,
+            replay_wallet_stats_rows_processed: 0,
+            replay_wallet_stats_pages_processed: 0,
+            replay_sol_leg_access_path: None,
+            replay_rows_processed: 0,
+            replay_pages_processed: 0,
+            chunks_completed: 0,
+            cycle_rows_processed: 0,
+            cycle_pages_processed: 0,
+            cycle_unique_buy_mints_discovered: 0,
+            observed_swaps_loaded: 0,
+            unique_buy_mints: 0,
+            quality_next_mint_index: 0,
+            quality_rpc_attempted: 0,
+            quality_rpc_spent_ms: 0,
+            wallets_buffered: 0,
+            started_at: now,
+            cycle_elapsed_ms: 0,
+            total_elapsed_ms: 0,
+            partial: true,
+            completed: false,
+            budget_exhausted_reason,
+        }
+    }
+
+    #[test]
+    fn persisted_stream_catch_up_request_targets_stale_collect_buy_mints_page_budget_only() {
+        assert!(should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
+            DiscoveryPersistedRebuildPhase::CollectBuyMints,
+            CollectBuyMintsMode::ReconcileExpiredHead,
+            Some(PersistedStreamBudgetExhaustedReason::PageBudget),
+        )));
+        assert!(should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
+            DiscoveryPersistedRebuildPhase::CollectBuyMints,
+            CollectBuyMintsMode::ReconcileNewTail,
+            Some(PersistedStreamBudgetExhaustedReason::PageBudget),
+        )));
+        assert!(!should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
+            DiscoveryPersistedRebuildPhase::CollectBuyMints,
+            CollectBuyMintsMode::FreshScan,
+            Some(PersistedStreamBudgetExhaustedReason::PageBudget),
+        )));
+        assert!(!should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
+            DiscoveryPersistedRebuildPhase::CollectBuyMints,
+            CollectBuyMintsMode::ReconcileExpiredHead,
+            Some(PersistedStreamBudgetExhaustedReason::TimeBudget),
+        )));
+        assert!(!should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
+            DiscoveryPersistedRebuildPhase::Replay,
+            CollectBuyMintsMode::ReconcileExpiredHead,
+            Some(PersistedStreamBudgetExhaustedReason::PageBudget),
+        )));
     }
 
     fn aggregate_write_config(config: &DiscoveryConfig) -> DiscoveryAggregateWriteConfig {
