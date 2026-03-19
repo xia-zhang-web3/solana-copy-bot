@@ -42,6 +42,7 @@ const AGGREGATE_READINESS_MAX_LAG_BUCKETS: u64 = 2;
 const CAP_TRUNCATION_FOLLOWLIST_DEACTIVATION_GUARD_CYCLES: u32 = 2;
 const STREAMING_RUG_TRADE_SWEEP_INTERVAL_SWAPS: usize = 2_048;
 const STALE_RECONCILE_TOKEN_BATCH_CAP: usize = 256;
+const STALE_RECONCILE_EXACT_COUNT_BATCH_CAP: usize = 32;
 const POST_BOOTSTRAP_ROTATION_BLOCKED_REASON: &str =
     "post_bootstrap_rotation_blocked_cap_truncated";
 
@@ -1274,6 +1275,13 @@ impl DiscoveryService {
         sorted_unique_buy_mints.get(end_index).cloned()
     }
 
+    fn stale_reconcile_exact_count_batch_size(fetch_limit: usize) -> usize {
+        fetch_limit
+            .max(1)
+            .min(STALE_RECONCILE_TOKEN_BATCH_CAP)
+            .min(STALE_RECONCILE_EXACT_COUNT_BATCH_CAP)
+    }
+
     fn add_buy_mint_occurrences(
         payload: &mut PersistedStreamRebuildPayload,
         mint: &str,
@@ -2243,6 +2251,8 @@ impl DiscoveryService {
                         .collect_buy_mints_reconcile_new_tail_cursor_token
                         .clone();
                     let reconcile_batch_size = Self::stale_reconcile_token_batch_size(fetch_limit);
+                    let exact_count_batch_size =
+                        Self::stale_reconcile_exact_count_batch_size(fetch_limit);
                     if state
                         .payload
                         .collect_buy_mints_reconcile_new_tail_pending_mints
@@ -2319,12 +2329,15 @@ impl DiscoveryService {
                         }
                     }
 
-                    if state
+                    let active_pending_mints = state
                         .payload
                         .collect_buy_mints_reconcile_new_tail_pending_mints
-                        .len()
-                        == 1
-                    {
+                        .iter()
+                        .take(exact_count_batch_size)
+                        .cloned()
+                        .collect::<Vec<_>>();
+
+                    if active_pending_mints.len() == 1 {
                         let exact_mint = state
                             .payload
                             .collect_buy_mints_reconcile_new_tail_pending_mints
@@ -2392,9 +2405,7 @@ impl DiscoveryService {
                             false,
                             state.horizon_end,
                             true,
-                            &state
-                                .payload
-                                .collect_buy_mints_reconcile_new_tail_pending_mints,
+                            &active_pending_mints,
                             deadline,
                         )?;
                     #[cfg(test)]
@@ -2412,23 +2423,15 @@ impl DiscoveryService {
                     }
                     pages_processed = pages_processed.saturating_add(1);
                     if page.rows.is_empty() {
-                        let candidate_mints = state
-                            .payload
-                            .collect_buy_mints_reconcile_new_tail_pending_mints
-                            .len();
-                        let narrowed_slice_end_token = Self::narrowed_stale_reconcile_slice_end(
-                            &state
-                                .payload
-                                .collect_buy_mints_reconcile_new_tail_pending_mints,
-                        )
-                        .unwrap_or_else(|| {
-                            state
-                                .payload
-                                .collect_buy_mints_reconcile_new_tail_pending_mints
-                                .last()
-                                .cloned()
-                                .expect("pending stale new-tail batch end token")
-                        });
+                        let candidate_mints = active_pending_mints.len();
+                        let narrowed_slice_end_token =
+                            Self::narrowed_stale_reconcile_slice_end(&active_pending_mints)
+                                .unwrap_or_else(|| {
+                                    active_pending_mints
+                                        .last()
+                                        .cloned()
+                                        .expect("pending stale new-tail batch end token")
+                                });
                         state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
                         Self::clear_reconcile_new_tail_pending_batch(&mut state.payload);
                         state
@@ -2462,12 +2465,9 @@ impl DiscoveryService {
                     state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
                     let last_processed_cursor = page.rows.last().map(|row| row.mint.clone());
                     if let Some(last_processed_cursor) = last_processed_cursor.clone() {
-                        let processed_prefix_len = state
-                            .payload
-                            .collect_buy_mints_reconcile_new_tail_pending_mints
-                            .partition_point(|mint| {
-                                mint.as_str() <= last_processed_cursor.as_str()
-                            });
+                        let processed_prefix_len = active_pending_mints.partition_point(|mint| {
+                            mint.as_str() <= last_processed_cursor.as_str()
+                        });
                         if processed_prefix_len > 0 {
                             state
                                 .payload
@@ -9261,12 +9261,12 @@ mod tests {
             Instant::now() + StdDuration::from_secs(5),
         )?;
 
-        let expected_rows =
-            STALE_RECONCILE_TOKEN_BATCH_CAP.saturating_mul(config.max_fetch_pages_per_cycle.max(1));
+        let expected_rows = STALE_RECONCILE_EXACT_COUNT_BATCH_CAP
+            .saturating_mul(config.max_fetch_pages_per_cycle.max(1));
         assert_eq!(
             phase_advance.rows_processed,
             expected_rows,
-            "live-like stale new-tail reconcile should advance by capped exact token batches instead of issuing one giant grouped query over the full remaining new-tail range"
+            "live-like stale new-tail reconcile should advance by capped exact count sub-batches instead of letting one oversized exact candidate batch monopolize the cycle"
         );
         assert_eq!(
             phase_advance.pages_processed,
@@ -9313,7 +9313,7 @@ mod tests {
         let mut config = bounded_stage1_runtime_config();
         config.metric_snapshot_interval_seconds = 60;
         config.max_fetch_swaps_per_cycle = 20_000;
-        config.max_fetch_pages_per_cycle = 1;
+        config.max_fetch_pages_per_cycle = 8;
         let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
         let source_now = DateTime::parse_from_rfc3339("2026-03-19T01:10:50Z")
             .expect("valid timestamp")
@@ -9465,12 +9465,13 @@ mod tests {
             "after narrowing the exact token slice, the next bounded cycle must escape the zero-row stall and make durable progress"
         );
         assert!(
-            resumed
-                .payload
-                .collect_buy_mints_reconcile_new_tail_cursor_token
-                .as_deref()
-                > Some(original_cursor.as_str()),
-            "resumed stale new-tail reconcile must advance beyond the previously pinned cursor"
+            resumed_phase_advance.source_exhausted
+                || resumed
+                    .payload
+                    .collect_buy_mints_reconcile_new_tail_cursor_token
+                    .as_deref()
+                    > Some(original_cursor.as_str()),
+            "resumed stale new-tail reconcile must either advance beyond the previously pinned cursor or finish the remaining stale tail work in the same bounded cycle"
         );
         assert!(
             resumed
@@ -9622,29 +9623,152 @@ mod tests {
         )?;
         assert_eq!(
             resumed_phase_advance.rows_processed,
-            STALE_RECONCILE_TOKEN_BATCH_CAP.saturating_sub(forced_first_cycle_rows),
-            "once the persisted stale new-tail exact batch is resumed, the next bounded cycle should finish the remaining candidate batch without redoing candidate discovery work"
+            STALE_RECONCILE_EXACT_COUNT_BATCH_CAP,
+            "once the persisted stale new-tail exact batch is resumed, the next bounded cycle should continue from that batch directly instead of rediscovering candidates from the same stale tail slice"
         );
         assert_eq!(resumed_phase_advance.pages_processed, 1);
-        assert!(
-            resumed
-                .payload
-                .collect_buy_mints_reconcile_new_tail_pending_mints
-                .is_empty(),
-            "resumed stale new-tail exact batch should be fully consumed after the second bounded cycle"
+        assert_eq!(
+            resumed.payload.collect_buy_mints_reconcile_new_tail_pending_mints.len(),
+            STALE_RECONCILE_TOKEN_BATCH_CAP
+                .saturating_sub(forced_first_cycle_rows)
+                .saturating_sub(STALE_RECONCILE_EXACT_COUNT_BATCH_CAP),
+            "resumed stale new-tail exact batch should drain the next exact sub-batch without discarding the still-pending remainder"
         );
         assert_eq!(
             resumed
                 .payload
                 .collect_buy_mints_reconcile_new_tail_cursor_token
                 .as_deref(),
-            new_tail_tokens.last().map(|token| token.as_str())
+            new_tail_tokens
+                .get(
+                    forced_first_cycle_rows
+                        .saturating_add(STALE_RECONCILE_EXACT_COUNT_BATCH_CAP)
+                        .saturating_sub(1),
+                )
+                .map(|token| token.as_str())
         );
         assert!(
             DiscoveryService::state_can_resume_stale_metrics_window_until_exact_checkpoint(
                 &resumed
             ),
             "persisted exact stale new-tail batches must remain exact and stale-resumable after rollover-driven resume"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_reconcile_new_tail_exact_subbatches_reduce_live_like_timeout_pressure_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-reconcile-new-tail-exact-subbatches.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = bounded_stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 60;
+        config.max_fetch_swaps_per_cycle = 20_000;
+        config.max_fetch_pages_per_cycle = 5;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let source_now = DateTime::parse_from_rfc3339("2026-03-19T03:10:50Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let target_now = source_now + Duration::seconds(60);
+        let source_window_start =
+            source_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let source_metrics_window_start = metrics_window_start_for_test(&config, source_now);
+        let target_window_start =
+            target_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let target_metrics_window_start = metrics_window_start_for_test(&config, target_now);
+
+        let survivor = "TokenStage1ExactSubbatchSurvivor111111111".to_string();
+        store.insert_observed_swap(&swap(
+            "wallet_stage1_exact_subbatch_new_tail",
+            "stage1-exact-subbatch-survivor",
+            target_window_start + Duration::seconds(5),
+            SOL_MINT,
+            &survivor,
+            1.0,
+            10.0,
+        ))?;
+
+        let pending_token_count = STALE_RECONCILE_EXACT_COUNT_BATCH_CAP
+            .saturating_mul(config.max_fetch_pages_per_cycle.max(1))
+            .saturating_add(7);
+        let mut pending_tokens = Vec::new();
+        for idx in 0..pending_token_count {
+            let token = format!("TokenStage1ExactSubbatch{idx:05}111111111111111");
+            store.insert_observed_swap(&swap(
+                "wallet_stage1_exact_subbatch_new_tail",
+                &format!("stage1-exact-subbatch-buy-{idx}"),
+                source_now + Duration::seconds((idx % 20) as i64 + 1),
+                SOL_MINT,
+                &token,
+                1.0,
+                10.0,
+            ))?;
+            pending_tokens.push(token);
+        }
+
+        let mut state = discovery.start_persisted_stream_rebuild_state(
+            source_window_start,
+            source_metrics_window_start,
+            source_now,
+        );
+        state.phase = DiscoveryPersistedRebuildPhase::CollectBuyMints;
+        state.payload.collect_buy_mints_prepass_complete = true;
+        state.payload.buy_mint_counts = BTreeMap::from([(survivor.clone(), 1u32)]);
+        state.payload.unique_buy_mints = vec![survivor];
+        assert!(
+            discovery.prepare_persisted_stream_rebuild_for_metrics_window_rollover(
+                &mut state,
+                target_window_start,
+                target_metrics_window_start,
+                target_now,
+            )?
+        );
+        state.payload.collect_buy_mints_mode = CollectBuyMintsMode::ReconcileNewTail;
+        state
+            .payload
+            .collect_buy_mints_reconcile_new_tail_pending_mints = pending_tokens.clone();
+
+        arm_test_force_reconcile_new_tail_exact_batch_row_limit(
+            STALE_RECONCILE_EXACT_COUNT_BATCH_CAP,
+        );
+        let phase_advance = discovery.advance_persisted_stream_prepass(
+            &store,
+            &mut state,
+            config.max_fetch_swaps_per_cycle,
+            config.max_fetch_pages_per_cycle,
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+
+        let expected_rows = STALE_RECONCILE_EXACT_COUNT_BATCH_CAP
+            .saturating_mul(config.max_fetch_pages_per_cycle.max(1));
+        assert_eq!(
+            phase_advance.rows_processed,
+            expected_rows,
+            "stale new-tail should process multiple exact sub-batches per bounded cycle instead of letting one oversized exact batch query consume the whole cycle"
+        );
+        assert_eq!(
+            phase_advance.pages_processed,
+            config.max_fetch_pages_per_cycle
+        );
+        assert_eq!(
+            state.payload.collect_buy_mints_reconcile_new_tail_pending_mints.len(),
+            pending_token_count.saturating_sub(expected_rows),
+            "processing exact sub-batches should drain the persisted pending batch prefix across all available bounded pages"
+        );
+        assert_eq!(
+            state
+                .payload
+                .collect_buy_mints_reconcile_new_tail_cursor_token
+                .as_deref(),
+            pending_tokens
+                .get(expected_rows.saturating_sub(1))
+                .map(|token| token.as_str())
         );
         Ok(())
     }
