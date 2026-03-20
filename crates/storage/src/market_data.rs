@@ -5,12 +5,12 @@ use crate::{
     TokenQualityRpcRow, WalletActivityDayRow,
 };
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_core_types::{ExactSwapAmounts, SwapEvent};
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration as StdDuration, Instant};
 
 const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
@@ -48,6 +48,23 @@ pub struct ObservedSolLegCursorPage {
 #[derive(Debug, Clone, Default)]
 pub struct ObservedBuyMintPage {
     pub mints: Vec<String>,
+    pub time_budget_exhausted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedWalletActivityRow {
+    pub wallet_id: String,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+    pub trades: usize,
+    pub active_days: Vec<NaiveDate>,
+    pub suspicious: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ObservedWalletActivityPage {
+    pub rows: Vec<ObservedWalletActivityRow>,
+    pub rows_seen: usize,
     pub time_budget_exhausted: bool,
 }
 
@@ -619,6 +636,297 @@ impl SqliteStore {
         Ok(ObservedSwapCursorPage {
             rows_seen: seen,
             time_budget_exhausted,
+        })
+    }
+
+    pub fn observed_wallet_activity_page_in_window_with_budget(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        wallet_cursor: Option<&str>,
+        wallet_limit: usize,
+        max_tx_per_minute: u32,
+        deadline: Instant,
+    ) -> Result<ObservedWalletActivityPage> {
+        if wallet_limit == 0 {
+            return Ok(ObservedWalletActivityPage::default());
+        }
+        if Instant::now() >= deadline {
+            return Ok(ObservedWalletActivityPage {
+                rows: Vec::new(),
+                rows_seen: 0,
+                time_budget_exhausted: true,
+            });
+        }
+
+        let wallet_limit = wallet_limit.min(900).max(1) as i64;
+        let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
+        let since_raw = since.to_rfc3339();
+        let until_raw = until.to_rfc3339();
+
+        let (wallet_ids_query, wallet_ids_params): (&str, Vec<rusqlite::types::Value>) =
+            match wallet_cursor {
+                Some(wallet_cursor) => (
+                    "SELECT wallet_id
+                     FROM (
+                        SELECT wallet_id
+                        FROM observed_swaps INDEXED BY idx_observed_swaps_wallet_ts
+                        WHERE ts >= ?1
+                          AND ts <= ?2
+                          AND wallet_id > ?3
+                        GROUP BY wallet_id
+                        ORDER BY wallet_id ASC
+                        LIMIT ?4
+                     )
+                     ORDER BY wallet_id ASC",
+                    vec![
+                        since_raw.clone().into(),
+                        until_raw.clone().into(),
+                        wallet_cursor.to_string().into(),
+                        wallet_limit.into(),
+                    ],
+                ),
+                None => (
+                    "SELECT wallet_id
+                     FROM (
+                        SELECT wallet_id
+                        FROM observed_swaps INDEXED BY idx_observed_swaps_wallet_ts
+                        WHERE ts >= ?1
+                          AND ts <= ?2
+                        GROUP BY wallet_id
+                        ORDER BY wallet_id ASC
+                        LIMIT ?3
+                     )
+                     ORDER BY wallet_id ASC",
+                    vec![
+                        since_raw.clone().into(),
+                        until_raw.clone().into(),
+                        wallet_limit.into(),
+                    ],
+                ),
+            };
+
+        let mut wallet_ids_stmt = self
+            .conn
+            .prepare(wallet_ids_query)
+            .context("failed to prepare observed wallet activity wallet-id page query")?;
+        let mut wallet_ids_rows = wallet_ids_stmt
+            .query(rusqlite::params_from_iter(wallet_ids_params))
+            .context("failed querying observed wallet activity wallet-id page")?;
+        let mut wallet_ids = Vec::new();
+        loop {
+            let next_row = match wallet_ids_rows.next() {
+                Ok(row) => row,
+                Err(error) => {
+                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                        return Ok(ObservedWalletActivityPage {
+                            rows: Vec::new(),
+                            rows_seen: 0,
+                            time_budget_exhausted: true,
+                        });
+                    }
+                    return Err(error)
+                        .context("failed iterating observed wallet activity wallet-id rows");
+                }
+            };
+            let Some(row) = next_row else {
+                break;
+            };
+            wallet_ids.push(
+                row.get::<_, String>(0)
+                    .context("failed reading observed wallet activity wallet_id")?,
+            );
+        }
+
+        if wallet_ids.is_empty() {
+            return Ok(ObservedWalletActivityPage::default());
+        }
+
+        let placeholders = std::iter::repeat_n("?", wallet_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let mut summaries: HashMap<String, ObservedWalletActivityRow> = HashMap::new();
+        let summary_query = format!(
+            "SELECT wallet_id, MIN(ts), MAX(ts), COUNT(*)
+             FROM observed_swaps INDEXED BY idx_observed_swaps_wallet_ts
+             WHERE ts >= ?1
+               AND ts <= ?2
+               AND wallet_id IN ({placeholders})
+             GROUP BY wallet_id
+             ORDER BY wallet_id ASC"
+        );
+        let mut summary_params = vec![since_raw.clone().into(), until_raw.clone().into()];
+        summary_params.extend(wallet_ids.iter().cloned().map(rusqlite::types::Value::from));
+        let mut summary_stmt = self
+            .conn
+            .prepare(&summary_query)
+            .context("failed to prepare observed wallet activity summary query")?;
+        let mut summary_rows = summary_stmt
+            .query(rusqlite::params_from_iter(summary_params))
+            .context("failed querying observed wallet activity summary rows")?;
+        let mut rows_seen = 0usize;
+        loop {
+            let next_row = match summary_rows.next() {
+                Ok(row) => row,
+                Err(error) => {
+                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                        return Ok(ObservedWalletActivityPage {
+                            rows: Vec::new(),
+                            rows_seen: 0,
+                            time_budget_exhausted: true,
+                        });
+                    }
+                    return Err(error)
+                        .context("failed iterating observed wallet activity summary rows");
+                }
+            };
+            let Some(row) = next_row else {
+                break;
+            };
+            let wallet_id: String = row
+                .get(0)
+                .context("failed reading observed wallet activity summary wallet_id")?;
+            let first_seen_raw: String = row
+                .get(1)
+                .context("failed reading observed wallet activity summary first_seen")?;
+            let last_seen_raw: String = row
+                .get(2)
+                .context("failed reading observed wallet activity summary last_seen")?;
+            let trades_raw: i64 = row
+                .get(3)
+                .context("failed reading observed wallet activity summary trades")?;
+            let trades = trades_raw.max(0) as usize;
+            rows_seen = rows_seen.saturating_add(trades);
+            summaries.insert(
+                wallet_id.clone(),
+                ObservedWalletActivityRow {
+                    wallet_id,
+                    first_seen: parse_rfc3339_utc(
+                        &first_seen_raw,
+                        "observed wallet activity summary first_seen",
+                    )?,
+                    last_seen: parse_rfc3339_utc(
+                        &last_seen_raw,
+                        "observed wallet activity summary last_seen",
+                    )?,
+                    trades,
+                    active_days: Vec::new(),
+                    suspicious: false,
+                },
+            );
+        }
+
+        let activity_days_query = format!(
+            "SELECT wallet_id, substr(ts, 1, 10) AS activity_day
+             FROM observed_swaps INDEXED BY idx_observed_swaps_wallet_ts
+             WHERE ts >= ?1
+               AND ts <= ?2
+               AND wallet_id IN ({placeholders})
+             GROUP BY wallet_id, activity_day
+             ORDER BY wallet_id ASC, activity_day ASC"
+        );
+        let mut activity_days_params = vec![since_raw.clone().into(), until_raw.clone().into()];
+        activity_days_params.extend(wallet_ids.iter().cloned().map(rusqlite::types::Value::from));
+        let mut activity_days_stmt = self
+            .conn
+            .prepare(&activity_days_query)
+            .context("failed to prepare observed wallet activity day query")?;
+        let mut activity_days_rows = activity_days_stmt
+            .query(rusqlite::params_from_iter(activity_days_params))
+            .context("failed querying observed wallet activity day rows")?;
+        loop {
+            let next_row = match activity_days_rows.next() {
+                Ok(row) => row,
+                Err(error) => {
+                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                        return Ok(ObservedWalletActivityPage {
+                            rows: Vec::new(),
+                            rows_seen: 0,
+                            time_budget_exhausted: true,
+                        });
+                    }
+                    return Err(error)
+                        .context("failed iterating observed wallet activity day rows");
+                }
+            };
+            let Some(row) = next_row else {
+                break;
+            };
+            let wallet_id: String = row
+                .get(0)
+                .context("failed reading observed wallet activity day wallet_id")?;
+            let activity_day_raw: String = row
+                .get(1)
+                .context("failed reading observed wallet activity day")?;
+            if let Some(summary) = summaries.get_mut(&wallet_id) {
+                summary.active_days.push(parse_day(
+                    &activity_day_raw,
+                    "observed wallet activity day activity_day",
+                )?);
+            }
+        }
+
+        let max_tx_query = format!(
+            "SELECT wallet_id, MAX(tx_count)
+             FROM (
+                SELECT wallet_id,
+                       CAST(strftime('%s', ts) AS INTEGER) / 60 AS minute_bucket,
+                       COUNT(*) AS tx_count
+                FROM observed_swaps INDEXED BY idx_observed_swaps_wallet_ts
+                WHERE ts >= ?1
+                  AND ts <= ?2
+                  AND wallet_id IN ({placeholders})
+                GROUP BY wallet_id, minute_bucket
+             )
+             GROUP BY wallet_id"
+        );
+        let mut max_tx_params = vec![since_raw.into(), until_raw.into()];
+        max_tx_params.extend(wallet_ids.iter().cloned().map(rusqlite::types::Value::from));
+        let mut max_tx_stmt = self
+            .conn
+            .prepare(&max_tx_query)
+            .context("failed to prepare observed wallet activity max-tx query")?;
+        let mut max_tx_rows = max_tx_stmt
+            .query(rusqlite::params_from_iter(max_tx_params))
+            .context("failed querying observed wallet activity max-tx rows")?;
+        loop {
+            let next_row = match max_tx_rows.next() {
+                Ok(row) => row,
+                Err(error) => {
+                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                        return Ok(ObservedWalletActivityPage {
+                            rows: Vec::new(),
+                            rows_seen: 0,
+                            time_budget_exhausted: true,
+                        });
+                    }
+                    return Err(error)
+                        .context("failed iterating observed wallet activity max-tx rows");
+                }
+            };
+            let Some(row) = next_row else {
+                break;
+            };
+            let wallet_id: String = row
+                .get(0)
+                .context("failed reading observed wallet activity max-tx wallet_id")?;
+            let max_tx_raw: i64 = row
+                .get(1)
+                .context("failed reading observed wallet activity max(tx_count)")?;
+            if let Some(summary) = summaries.get_mut(&wallet_id) {
+                summary.suspicious = (max_tx_raw.max(0) as u32) > max_tx_per_minute.max(1);
+            }
+        }
+
+        let rows = wallet_ids
+            .into_iter()
+            .filter_map(|wallet_id| summaries.remove(&wallet_id))
+            .collect();
+        Ok(ObservedWalletActivityPage {
+            rows,
+            rows_seen,
+            time_budget_exhausted: false,
         })
     }
 
@@ -1908,6 +2216,11 @@ impl SqliteStore {
             token_age_seconds,
         })
     }
+}
+
+fn parse_day(raw: &str, field_name: &str) -> Result<NaiveDate> {
+    NaiveDate::parse_from_str(raw, "%Y-%m-%d")
+        .with_context(|| format!("invalid {field_name} day value: {raw}"))
 }
 
 fn duration_ms_ceil(duration: StdDuration) -> u64 {

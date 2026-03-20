@@ -58,7 +58,9 @@ mod system_events;
 pub use discovery_scoring_builder::DiscoveryScoringReplayBuilder;
 pub use execution_orders::{MarkOrderDroppedOutcome, ScheduleOrderRetryOutcome};
 pub use history_retention::{HistoryRetentionCutoffs, HistoryRetentionSummary};
-pub use market_data::ObservedSolLegCursorAccessPath;
+pub use market_data::{
+    ObservedSolLegCursorAccessPath, ObservedWalletActivityPage, ObservedWalletActivityRow,
+};
 pub use sqlite_retry::{is_fatal_sqlite_anyhow_error, is_retryable_sqlite_anyhow_error};
 pub use system_events::RiskEventRow;
 
