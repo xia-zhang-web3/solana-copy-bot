@@ -43,6 +43,7 @@ const CAP_TRUNCATION_FOLLOWLIST_DEACTIVATION_GUARD_CYCLES: u32 = 2;
 const STREAMING_RUG_TRADE_SWEEP_INTERVAL_SWAPS: usize = 2_048;
 const STALE_RECONCILE_TOKEN_BATCH_CAP: usize = 256;
 const STALE_RECONCILE_EXACT_COUNT_BATCH_CAP: usize = 32;
+const REPLAY_WALLET_STATS_CATCH_UP_PAGE_LIMIT_MULTIPLIER: usize = 2;
 const POST_BOOTSTRAP_ROTATION_BLOCKED_REASON: &str =
     "post_bootstrap_rotation_blocked_cap_truncated";
 
@@ -1313,6 +1314,12 @@ impl DiscoveryService {
             .max(1)
             .min(STALE_RECONCILE_TOKEN_BATCH_CAP)
             .min(STALE_RECONCILE_EXACT_COUNT_BATCH_CAP)
+    }
+
+    fn replay_wallet_stats_catch_up_page_limit(fetch_page_limit: usize) -> usize {
+        fetch_page_limit
+            .max(1)
+            .saturating_mul(REPLAY_WALLET_STATS_CATCH_UP_PAGE_LIMIT_MULTIPLIER)
     }
 
     fn add_buy_mint_occurrences(
@@ -2949,9 +2956,14 @@ impl DiscoveryService {
         let lookahead = Duration::seconds(self.config.rug_lookahead_seconds.max(1) as i64);
 
         let budget_exhausted_reason = loop {
+            let phase_page_limit = if state.payload.replay_wallet_stats_complete {
+                fetch_page_limit
+            } else {
+                Self::replay_wallet_stats_catch_up_page_limit(fetch_page_limit)
+            };
             let total_pages_processed =
                 replay_pages_processed.saturating_add(replay_wallet_stats_pages_processed);
-            if total_pages_processed >= fetch_page_limit {
+            if total_pages_processed >= phase_page_limit {
                 break Some(PersistedStreamBudgetExhaustedReason::PageBudget);
             }
             if Instant::now() >= deadline {
@@ -2964,7 +2976,7 @@ impl DiscoveryService {
                     store,
                     state,
                     fetch_limit,
-                    fetch_page_limit.saturating_sub(total_pages_processed),
+                    phase_page_limit.saturating_sub(total_pages_processed),
                     deadline,
                 )?;
                 replay_wallet_stats_rows_processed = replay_wallet_stats_rows_processed
@@ -8709,6 +8721,78 @@ mod tests {
         );
         assert_eq!(resumed.replay_rows_processed, state.replay_rows_processed);
         assert_eq!(resumed.phase_cursor, state.phase_cursor);
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_replay_wallet_stats_width_is_wider_than_sol_leg_stage1() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("stage1-replay-wallet-stats-width.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-20T06:45:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = bounded_stage1_runtime_config();
+        config.max_fetch_swaps_per_cycle = 1;
+        config.max_fetch_pages_per_cycle = 1;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (window_start, metrics_window_start, _, _) =
+            seed_stage1_replay_noise_fixture(&store, &config, now, 3, 6)?;
+        let unique_buy_mints = store.load_observed_buy_mints_in_window(window_start, now)?;
+
+        let mut wallet_stats_state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        wallet_stats_state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        wallet_stats_state.horizon_end = now;
+        wallet_stats_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        wallet_stats_state.payload.unique_buy_mints = unique_buy_mints.clone();
+
+        let wallet_stats_advance = discovery.advance_persisted_stream_replay_optimized(
+            &store,
+            &mut wallet_stats_state,
+            1,
+            1,
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+        assert_eq!(
+            wallet_stats_advance.replay_wallet_stats_rows_processed,
+            2,
+            "wallet-stats prepass should get a replay-only widened page budget"
+        );
+        assert_eq!(wallet_stats_advance.replay_wallet_stats_pages_processed, 2);
+        assert_eq!(wallet_stats_advance.rows_processed, 0);
+        assert_eq!(
+            wallet_stats_advance.budget_exhausted_reason,
+            Some(PersistedStreamBudgetExhaustedReason::PageBudget)
+        );
+
+        let mut sol_leg_state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        sol_leg_state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        sol_leg_state.horizon_end = now;
+        sol_leg_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        sol_leg_state.payload.replay_wallet_stats_complete = true;
+        sol_leg_state.payload.unique_buy_mints = unique_buy_mints;
+
+        let sol_leg_advance = discovery.advance_persisted_stream_replay_optimized(
+            &store,
+            &mut sol_leg_state,
+            1,
+            1,
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+        assert_eq!(
+            sol_leg_advance.pages_processed, 1,
+            "SOL-leg replay should still respect the base page budget"
+        );
+        assert_eq!(sol_leg_advance.replay_wallet_stats_pages_processed, 0);
+        assert_eq!(
+            sol_leg_advance.budget_exhausted_reason,
+            Some(PersistedStreamBudgetExhaustedReason::PageBudget)
+        );
         Ok(())
     }
 
