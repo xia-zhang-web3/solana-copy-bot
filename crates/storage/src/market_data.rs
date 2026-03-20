@@ -90,6 +90,19 @@ struct ObservedWalletActiveDayCountPage {
     time_budget_exhausted: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ObservedWalletActivityDaySummaryRow {
+    inclusive_day_count: u32,
+    has_start_day: bool,
+    has_end_day: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ObservedWalletActivityDaySummaryPage {
+    rows: HashMap<String, ObservedWalletActivityDaySummaryRow>,
+    time_budget_exhausted: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ObservedBuyMintCountRow {
     pub mint: String,
@@ -845,14 +858,16 @@ impl SqliteStore {
         // wallet_activity_days is maintained atomically with observed_swaps inserts, so it can
         // provide exact day counts without paying COUNT(DISTINCT day) on the raw swap window.
         // If the auxiliary table looks incomplete for this page, fall back to the exact raw scan.
-        let mut active_day_counts = self.observed_wallet_active_day_counts_in_window_with_budget(
-            &wallet_ids,
-            since,
-            deadline,
-        )?;
+        let active_day_summaries = self
+            .observed_wallet_activity_day_summaries_in_window_with_budget(
+                &wallet_ids,
+                since,
+                until,
+                deadline,
+            )?;
         let mut active_day_count_source =
             Some(ObservedWalletActivityDayCountSource::WalletActivityDays);
-        if active_day_counts.time_budget_exhausted {
+        if active_day_summaries.time_budget_exhausted {
             return Ok(ObservedWalletActivityPage {
                 rows: Vec::new(),
                 rows_seen: 0,
@@ -860,15 +875,19 @@ impl SqliteStore {
                 active_day_count_source: None,
             });
         }
-        if active_day_counts.counts.len() != wallet_ids.len() {
-            active_day_counts = self
+        let since_day = since.date_naive();
+        let until_day = until.date_naive();
+        let same_day_window = since_day == until_day;
+        let mut active_day_counts = HashMap::new();
+        if active_day_summaries.rows.len() != wallet_ids.len() {
+            let fallback_active_day_counts = self
                 .observed_wallet_active_day_counts_from_swaps_in_window_with_budget(
                     &wallet_ids,
                     since,
                     until,
                     deadline,
                 )?;
-            if active_day_counts.time_budget_exhausted {
+            if fallback_active_day_counts.time_budget_exhausted {
                 return Ok(ObservedWalletActivityPage {
                     rows: Vec::new(),
                     rows_seen: 0,
@@ -876,11 +895,51 @@ impl SqliteStore {
                     active_day_count_source: None,
                 });
             }
+            active_day_counts = fallback_active_day_counts.counts;
             active_day_count_source =
                 Some(ObservedWalletActivityDayCountSource::ObservedSwapsFallback);
+        } else {
+            for wallet_id in &wallet_ids {
+                let summary = summaries.get(wallet_id).ok_or_else(|| {
+                    anyhow!(
+                        "missing observed wallet activity summary for wallet {} while loading exact day counts",
+                        wallet_id
+                    )
+                })?;
+                let activity_day_summary =
+                    active_day_summaries.rows.get(wallet_id).ok_or_else(|| {
+                        anyhow!(
+                            "missing wallet_activity_days summary for wallet {} in observed wallet activity page",
+                            wallet_id
+                        )
+                    })?;
+                let active_day_count = if same_day_window {
+                    1
+                } else {
+                    let mut count = activity_day_summary.inclusive_day_count;
+                    if activity_day_summary.has_start_day
+                        && summary.first_seen.date_naive() > since_day
+                    {
+                        count = count.saturating_sub(1);
+                    }
+                    if activity_day_summary.has_end_day
+                        && summary.last_seen.date_naive() < until_day
+                    {
+                        count = count.saturating_sub(1);
+                    }
+                    if count == 0 {
+                        return Err(anyhow!(
+                            "wallet_activity_days summary resolved to zero in-window days for wallet {} despite observed_swaps summary rows",
+                            wallet_id
+                        ));
+                    }
+                    count
+                };
+                active_day_counts.insert(wallet_id.clone(), active_day_count);
+            }
         }
         for wallet_id in &wallet_ids {
-            let active_day_count = active_day_counts.counts.get(wallet_id).copied().ok_or_else(|| {
+            let active_day_count = active_day_counts.get(wallet_id).copied().ok_or_else(|| {
                 anyhow!(
                     "failed loading exact wallet activity day count for wallet {} in observed wallet activity page",
                     wallet_id
@@ -956,18 +1015,19 @@ impl SqliteStore {
         })
     }
 
-    fn observed_wallet_active_day_counts_in_window_with_budget(
+    fn observed_wallet_activity_day_summaries_in_window_with_budget(
         &self,
         wallet_ids: &[String],
         since: DateTime<Utc>,
+        until: DateTime<Utc>,
         deadline: Instant,
-    ) -> Result<ObservedWalletActiveDayCountPage> {
+    ) -> Result<ObservedWalletActivityDaySummaryPage> {
         if wallet_ids.is_empty() {
-            return Ok(ObservedWalletActiveDayCountPage::default());
+            return Ok(ObservedWalletActivityDaySummaryPage::default());
         }
         if Instant::now() >= deadline {
-            return Ok(ObservedWalletActiveDayCountPage {
-                counts: HashMap::new(),
+            return Ok(ObservedWalletActivityDaySummaryPage {
+                rows: HashMap::new(),
                 time_budget_exhausted: true,
             });
         }
@@ -977,41 +1037,42 @@ impl SqliteStore {
             .collect::<Vec<_>>()
             .join(", ");
         let day_start = since.date_naive().format("%Y-%m-%d").to_string();
+        let day_end = until.date_naive().format("%Y-%m-%d").to_string();
         let sql = format!(
-            "SELECT wallet_id, COUNT(*)
+            "SELECT wallet_id,
+                    COUNT(*),
+                    MAX(CASE WHEN activity_day = ?1 THEN 1 ELSE 0 END),
+                    MAX(CASE WHEN activity_day = ?2 THEN 1 ELSE 0 END)
              FROM wallet_activity_days INDEXED BY idx_wallet_activity_days_day_wallet
-             WHERE (
-                    activity_day > ?1
-                    OR (activity_day = ?1 AND last_seen >= ?2)
-                )
+             WHERE activity_day >= ?1
+               AND activity_day <= ?2
                AND wallet_id IN ({placeholders})
              GROUP BY wallet_id"
         );
         let mut params = vec![
             rusqlite::types::Value::from(day_start),
-            rusqlite::types::Value::from(since.to_rfc3339()),
+            rusqlite::types::Value::from(day_end),
         ];
         params.extend(wallet_ids.iter().cloned().map(rusqlite::types::Value::from));
         let mut stmt = self
             .conn
             .prepare(&sql)
-            .context("failed to prepare wallet_activity_days exact count query")?;
+            .context("failed to prepare wallet_activity_days summary query")?;
         let mut rows = stmt
             .query(rusqlite::params_from_iter(params))
-            .context("failed querying wallet_activity_days exact counts")?;
-        let mut counts = HashMap::new();
+            .context("failed querying wallet_activity_days summaries")?;
+        let mut activity_day_summaries = HashMap::new();
         loop {
             let next_row = match rows.next() {
                 Ok(row) => row,
                 Err(error) => {
                     if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
-                        return Ok(ObservedWalletActiveDayCountPage {
-                            counts: HashMap::new(),
+                        return Ok(ObservedWalletActivityDaySummaryPage {
+                            rows: HashMap::new(),
                             time_budget_exhausted: true,
                         });
                     }
-                    return Err(error)
-                        .context("failed iterating wallet_activity_days exact counts");
+                    return Err(error).context("failed iterating wallet_activity_days summaries");
                 }
             };
             let Some(row) = next_row else {
@@ -1019,15 +1080,28 @@ impl SqliteStore {
             };
             let wallet_id: String = row
                 .get(0)
-                .context("failed reading wallet_activity_days exact count wallet_id")?;
-            let count: i64 = row
+                .context("failed reading wallet_activity_days summary wallet_id")?;
+            let inclusive_day_count: i64 = row
                 .get(1)
-                .context("failed reading wallet_activity_days exact day count")?;
-            counts.insert(wallet_id, count.max(0) as u32);
+                .context("failed reading wallet_activity_days inclusive day count")?;
+            let has_start_day: i64 = row
+                .get(2)
+                .context("failed reading wallet_activity_days start-day presence")?;
+            let has_end_day: i64 = row
+                .get(3)
+                .context("failed reading wallet_activity_days end-day presence")?;
+            activity_day_summaries.insert(
+                wallet_id,
+                ObservedWalletActivityDaySummaryRow {
+                    inclusive_day_count: inclusive_day_count.max(0) as u32,
+                    has_start_day: has_start_day > 0,
+                    has_end_day: has_end_day > 0,
+                },
+            );
         }
 
-        Ok(ObservedWalletActiveDayCountPage {
-            counts,
+        Ok(ObservedWalletActivityDaySummaryPage {
+            rows: activity_day_summaries,
             time_budget_exhausted: false,
         })
     }
@@ -2862,6 +2936,132 @@ mod tests {
             .collect();
         assert_eq!(by_wallet["wallet-fallback-a"].active_day_count, 2);
         assert_eq!(by_wallet["wallet-fallback-b"].active_day_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_wallet_activity_page_does_not_count_future_until_day_from_fast_path() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("wallet-activity-page-future-until-day.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let window_start = DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let window_end = DateTime::parse_from_rfc3339("2026-03-07T12:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+
+        store.insert_observed_swap(&swap(
+            "sig-wallet-until-future-in-window",
+            "wallet-until-future",
+            DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+            SOL_MINT,
+            "TokenUntilFuture111111111111111111111111111",
+            1,
+        ))?;
+        store.insert_observed_swap(&swap(
+            "sig-wallet-until-future-after-window",
+            "wallet-until-future",
+            DateTime::parse_from_rfc3339("2026-03-07T20:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+            SOL_MINT,
+            "TokenUntilFuture111111111111111111111111111",
+            2,
+        ))?;
+        store.insert_observed_swap(&swap(
+            "sig-wallet-until-present-day-one",
+            "wallet-until-present",
+            DateTime::parse_from_rfc3339("2026-03-06T13:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+            SOL_MINT,
+            "TokenUntilPresent11111111111111111111111111",
+            3,
+        ))?;
+        store.insert_observed_swap(&swap(
+            "sig-wallet-until-present-day-two",
+            "wallet-until-present",
+            DateTime::parse_from_rfc3339("2026-03-07T11:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+            SOL_MINT,
+            "TokenUntilPresent11111111111111111111111111",
+            4,
+        ))?;
+        store.upsert_wallet_activity_days(&[
+            WalletActivityDayRow {
+                wallet_id: "wallet-until-future".to_string(),
+                activity_day: DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc)
+                    .date_naive(),
+                last_seen: DateTime::parse_from_rfc3339("2026-03-06T12:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+            },
+            WalletActivityDayRow {
+                wallet_id: "wallet-until-future".to_string(),
+                activity_day: DateTime::parse_from_rfc3339("2026-03-07T20:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc)
+                    .date_naive(),
+                last_seen: DateTime::parse_from_rfc3339("2026-03-07T20:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+            },
+            WalletActivityDayRow {
+                wallet_id: "wallet-until-present".to_string(),
+                activity_day: DateTime::parse_from_rfc3339("2026-03-06T13:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc)
+                    .date_naive(),
+                last_seen: DateTime::parse_from_rfc3339("2026-03-06T13:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+            },
+            WalletActivityDayRow {
+                wallet_id: "wallet-until-present".to_string(),
+                activity_day: DateTime::parse_from_rfc3339("2026-03-07T11:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc)
+                    .date_naive(),
+                last_seen: DateTime::parse_from_rfc3339("2026-03-07T11:00:00Z")
+                    .expect("ts")
+                    .with_timezone(&Utc),
+            },
+        ])?;
+
+        let page = store.observed_wallet_activity_page_in_window_with_budget(
+            window_start,
+            window_end,
+            None,
+            10,
+            50,
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+        assert!(!page.time_budget_exhausted);
+        assert_eq!(
+            page.active_day_count_source,
+            Some(ObservedWalletActivityDayCountSource::WalletActivityDays)
+        );
+        let by_wallet: HashMap<String, ObservedWalletActivityRow> = page
+            .rows
+            .into_iter()
+            .map(|row| (row.wallet_id.clone(), row))
+            .collect();
+        assert_eq!(
+            by_wallet["wallet-until-future"].active_day_count,
+            1,
+            "future activity after until on the same day must not inflate fast-path active_day_count"
+        );
+        assert_eq!(by_wallet["wallet-until-present"].active_day_count, 2);
         Ok(())
     }
 }

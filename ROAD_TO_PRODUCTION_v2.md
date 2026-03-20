@@ -102,63 +102,75 @@ It replaces the old mixed roadmap and removes aggregate/backfill recovery from t
 
 ### 2.4 Current verdict (updated 2026-03-20)
 
-The project is not blocked by bootstrap, aggregate, or backfill.
-
 The project is not blocked by ingestion.
 
 The startup SQLite silent-hang blocker is no longer the current blocker.
 
-Stage 1 is still `partial` after live rollout `371403cd6bb642035464b07a33a909bf780a5d62`.
+Stage 1 is still `partial` after aggregate-cutover experiment `824c9174cbed61a28ec50dadedea121f7cf39720` and the subsequent live stabilization pass.
 
-Current working diagnosis: startup SQLite observability/boundedness is validated on live, bounded/resumable persisted rebuild behavior is validated on live, canonical migration/repair is validated on live, carry-forward across `metrics_window_start_changed` is validated on live, the retryable SQLite lock / observed-swap writer restart path is validated on live, the startup-safe deferral contract for `0039_observed_swaps_sol_leg_ts_index.sql` is validated on live, the stale candidate-discovery SQL access-path fix is validated on live, and the narrow catch-up scheduler follow-ups are validated on live. Deploys `9b5f8cd6529fd72f2853b10b3f70e9ba0751536e`, `8efd6c49d57602e19a45b030d75ad7a6378898e0`, and `423fd519c09ccac3d40a5cd9565ab27a1394ce96` materially broke the old `CollectBuyMints -> Replay` blocker: safe back-to-back catch-up cycles now work under guarded conditions, `fresh_scan / time_budget` can request catch-up as intended, runtime re-entered `Replay` for the first time in this fix series, and later bucket rollover from `Replay` now carries forward exact canonical buy-mint state and returns back to `Replay` quickly instead of getting trapped in a long stale `CollectBuyMints` treadmill. The next replay-focused follow-ups (`e339b6045684ec023f2519d5c9bbbe82610a225f`, `b98727bac3a21abb89495dcf422940c763a46ef7`, `898a488ff8b7fc8e131b1a4a4eea1d63e62aaf10`, and `371403cd6bb642035464b07a33a909bf780a5d62`) proved that the remaining blocker now sits inside `Replay wallet-stats` completion on live-size state. The latest observed rollout (`371403cd6bb642035464b07a33a909bf780a5d62`) kept runtime healthy, carried forward correctly from `Replay` at the `2026-03-20 12:00 UTC` boundary, and returned back into `Replay`, but still did not materially improve replay wallet-stats enough to finish the prepass before rollover: `rebuild_replay_wallet_stats_complete` stayed `false`, `rebuild_replay_rows_processed` stayed `0`, `rebuild_replay_sol_leg_access_path` never emitted, and repeated `discovery cycle still running, skipping scheduled trigger` signals showed the replay wallet-stats cycle itself is now too heavy on wall-clock. Stage 1 therefore remains `partial` until a live rollout proves that bounded replay exits wallet-stats prepass, emits `completed bounded replay wallet-stats prepass; switching to SOL-leg replay`, then emits `rebuild_replay_sol_leg_access_path`, and finally lands healthy publication with `scoring_source = raw_window_persisted_stream` and `active_follow_wallets > 0`. The current planned operational validation is config-only rollout `c6e0af8` (`metric_snapshot_interval_seconds = 3600`) to test whether a longer live bucket lets replay wallet-stats finish before rollover without further semantic changes.
+Current working diagnosis: startup SQLite observability/boundedness is validated on live, bounded/resumable persisted rebuild behavior is validated on live, canonical migration/repair is validated on live, carry-forward across `metrics_window_start_changed` is validated on live, the retryable SQLite lock / observed-swap writer restart path is validated on live, the startup-safe deferral contract for `0039_observed_swaps_sol_leg_ts_index.sql` is validated on live, the stale candidate-discovery SQL access-path fix is validated on live, and the narrow catch-up scheduler follow-ups are validated on live. Deploys `9b5f8cd6529fd72f2853b10b3f70e9ba0751536e`, `8efd6c49d57602e19a45b030d75ad7a6378898e0`, and `423fd519c09ccac3d40a5cd9565ab27a1394ce96` materially broke the old `CollectBuyMints -> Replay` blocker: safe back-to-back catch-up cycles now work under guarded conditions, `fresh_scan / time_budget` can request catch-up as intended, runtime re-entered `Replay` for the first time in this fix series, and later bucket rollover from `Replay` now carries forward exact canonical buy-mint state and returns back to `Replay` quickly instead of getting trapped in a long stale `CollectBuyMints` treadmill. The replay-focused follow-ups (`e339b6045684ec023f2519d5c9bbbe82610a225f`, `b98727bac3a21abb89495dcf422940c763a46ef7`, `898a488ff8b7fc8e131b1a4a4eea1d63e62aaf10`, `371403cd6bb642035464b07a33a909bf780a5d62`, and config-only `c6e0af8e1b4a34f32b698d6ce26f4f492c542a34`) proved that the remaining blocker on the raw path sits inside `Replay wallet-stats` completion on live-size state. The aggregate runtime cutover experiment (`824c9174cbed61a28ec50dadedea121f7cf39720`) did not solve that blocker because aggregate reads never became ready on live: `covered_since` remained unset, `backfill_resume_required` remained true, `effective_reads_ready` stayed false, `scoring_source = aggregates` never appeared, and enabling aggregate writes before historical backfill completion materially worsened live pressure (`observed_swap_writer_pending_requests = 4096`, `sqlite_busy_error_total = 2700`, `sqlite_write_retry_total = 2025`) and pushed runtime into a stale frozen-window `collect_buy_mints` loop. A manual stabilization pass on the same build then disabled aggregate writes/reads on live, cleared the frozen-window loop, and restored bounded progress back into raw `Replay`. Stage 1 therefore remains `partial`: the current live blocker is still raw replay wallet-stats completion before SOL-leg replay and healthy publication, while the permanent-solution track now requires fixing aggregate backfill / resume so aggregate readiness can safely become true before any future cutover attempt. Do not re-enable aggregate reads or writes on the production host until bounded historical backfill produces durable progress and `effective_reads_ready = true`.
 
 Do not start Stage 2 yet.
 
 ### 2.5 Server state (updated 2026-03-20)
 
-- Deployed commit: `371403cd6bb642035464b07a33a909bf780a5d62`
-- Service: rollout reached runtime, remained stable through the observed window, carried forward correctly from `Replay` at the `2026-03-20 12:00 UTC` boundary, and returned quickly back into `Replay`; however, replay wallet-stats still did not complete, SOL-leg replay still did not start, and healthy publication still did not land
+- Deployed commit: `824c9174cbed61a28ec50dadedea121f7cf39720`
+- Effective live config after stabilization restart:
+  - `metric_snapshot_interval_seconds = 3600`
+  - `scoring_aggregates_write_enabled = false`
+  - `scoring_aggregates_enabled = false`
+- Service: aggregate-cutover rollout itself did not reach aggregate scoring readiness and materially degraded live pressure; after manual stabilization with aggregate writes/reads disabled, runtime cleared the frozen stale-window loop, re-entered raw `Replay`, and remained operationally stable, but replay wallet-stats still did not complete, SOL-leg replay still did not start, and healthy publication still did not land
 - `execution.enabled = false`
-- Latest observed restart: none during the observed validation windows on the current deploy (`NRestarts = 0`)
+- Latest observed restart: stabilization restart at `2026-03-20 19:00:53 UTC`; no restart loop after that (`NRestarts = 0`)
 - `active_follow_wallets = 0` during the observed validation window
 - Observed during validation window:
   - startup emitted `sqlite_migrations_deferred` with `deferred_versions=0039_observed_swaps_sol_leg_ts_index.sql`
   - startup then completed `sqlite_migrations_apply` immediately, kept `startup_sqlite_wal_checkpoint` explicitly deferred, and reached `app runtime loop started`
-  - runtime immediately re-entered `Replay` after deploy:
-    - first replay resume was already visible at `2026-03-20T11:37:26.413208Z`
-    - `rebuild_phase = replay`
-    - `rebuild_replay_mode = wallet_stats_then_sol_leg`
-  - process stability held throughout the observed window:
-    - `MainPID = 59562`
-    - `NRestarts = 0`
-    - no restart loop
-    - no writer-death path
-    - no false `healthy`
-  - the `2026-03-20 12:00 UTC` boundary carried forward correctly from `Replay`:
-    - `2026-03-20T12:00:21.396588Z` emitted `carrying forward exact canonical buy-mint membership progress across metrics bucket rollover`
-    - `rebuild_previous_phase = "replay"`
-    - runtime then traversed `collect_buy_mints`, completed bounded prepass and token-quality resolution, and re-entered `Replay` by `2026-03-20T12:01:50.426340Z`
-  - replay wallet-stats throughput on this rollout still did not close the blocker:
-    - `2026-03-20T11:37:26Z -> 8,593,984`
-    - `2026-03-20T11:43:20Z -> 12,975,126`
-    - `2026-03-20T11:59:43Z -> 21,826,756`
-    - carry-forward reset at `2026-03-20T12:00:21Z`
-    - `2026-03-20T12:01:50Z -> 220,393`
-    - `2026-03-20T12:04:01Z -> 2,307,493`
-    - sampled pre-boundary replay rate was about `579k rows/min`, below the sampled `898a488` baseline of about `1.19M rows/min`
-  - the remaining blocker is still replay wallet-stats completion before rollover:
-    - latest observed state at `2026-03-20 12:04 UTC` was still `rebuild_phase = replay`
+  - aggregate-cutover rollout failed to become ready:
+    - effective config on the failed cutover attempt was `metric_snapshot_interval_seconds = 3600`, `scoring_aggregates_write_enabled = true`, `scoring_aggregates_enabled = true`
+    - `covered_since = null`
+    - `backfill_resume_required = true`
+    - `effective_reads_ready = false`
+    - `scoring_source = aggregates` was never observed
+    - no healthy publication landed
+  - aggregate-cutover rollout introduced material live pressure before stabilization:
+    - `observed_swap_writer_pending_requests` reached `4096`
+    - `sqlite_busy_error_total` reached `2700`
+    - `sqlite_write_retry_total` reached `2025`
+    - `sqlite_wal_size_bytes = 2084221512`
+    - runtime repeatedly emitted `restart_reason = metrics_window_start_changed_awaiting_exact_carry_forward_checkpoint`
+    - stale reconcile froze on `persisted_horizon_end = 2026-03-20 15:00:14.356172037 UTC`
+  - after stabilization restart with aggregate writes/reads disabled, the frozen-window loop cleared:
+    - frozen stale mode was still visible immediately after restart from `2026-03-20T19:01:03.094678Z` through `2026-03-20T19:02:08.627799Z`
+    - at `2026-03-20T19:02:08.748703Z` the frozen prepass completed and runtime resumed a fresh target with `rebuild_horizon_end = 2026-03-20 19:02:08.613360747 UTC`
+    - `restart_reason = metrics_window_start_changed_awaiting_exact_carry_forward_checkpoint` was not observed again after `2026-03-20T19:02:08.627799Z`
+  - runtime then returned to raw `Replay` on the stabilized live config:
+    - `2026-03-20T19:14:11.898709Z` completed bounded discovery persisted observed_swaps prepass
+    - `2026-03-20T19:14:14.021608Z` completed bounded discovery token-quality resolution and switched to replay
+    - first explicit replay sample after stabilization appeared at `2026-03-20T19:15:43.690624Z`
+    - replay progress then advanced:
+      - `2026-03-20T19:15:58Z -> 1,499,035`
+      - `2026-03-20T19:16:22Z -> 1,736,609`
+      - `2026-03-20T19:18:54Z -> 3,403,652`
+      - `2026-03-20T19:21:25Z -> 4,977,640`
+      - `2026-03-20T19:23:28Z -> 5,998,380`
+    - sampled replay wallet-stats rate on the stabilized raw path was about `600k rows/min`
+  - the current live blocker is again the raw replay wallet-stats path:
+    - latest observed state at `2026-03-20T19:23:30.997196Z` was `rebuild_phase = replay`
     - `rebuild_replay_wallet_stats_complete = false`
     - `rebuild_replay_rows_processed = 0`
     - `rebuild_replay_sol_leg_access_path` had still not been emitted
     - `rebuild_budget_exhausted_reason = time_budget`
-  - overlap/pressure signals are now visible during this replay-heavy path:
-    - `discovery cycle still running, skipping scheduled trigger` was observed repeatedly in the window
-    - latest/max `sqlite_busy_error_total = 5`
-    - latest/max `sqlite_write_retry_total = 5`
-    - `yellowstone_output_queue_depth = 0` at latest and briefly peaked at `6`
-    - `yellowstone_output_queue_fill_ratio = 0.0` at latest and briefly peaked at `0.0029296875`
-  - healthy publication still has not landed on this deploy:
+    - `discovery_runtime_mode = fail_closed`
+    - `scoring_source = raw_window_incomplete_no_recent_published_universe`
+  - pressure/stability improved materially after stabilization:
+    - post-restart `observed_swap_writer_pending_requests` dropped from the pre-pass `4096` baseline to mostly `0-45`, with brief spikes to `1325` and `1852`
+    - `writer_aggregate_queue_depth_batches` stayed `0`
+    - `sqlite_busy_error_total` and `sqlite_write_retry_total` remained `0` through `2026-03-20T19:19:23Z` and were only `4 / 4` at `2026-03-20T19:22:53.879944Z`
+    - `yellowstone_output_queue_depth = 0` in sampled post-restart telemetry
+    - `yellowstone_output_queue_fill_ratio = 0.0` in sampled post-restart telemetry
+    - rare `discovery cycle still running, skipping scheduled trigger` warnings still appeared, but no writer-death path, no restart loop, and no false `healthy` were observed
+  - healthy publication still has not landed on the stabilized deploy:
     - no `raw_window_persisted_stream`
     - `active_follow_wallets = 0`
     - no completed healthy cycle yet
@@ -539,6 +551,109 @@ Their useful conclusions are already absorbed here:
 4. Operational incidents on prod must not be repeated just to prove recovery semantics.
 
 ## 10. Execution log
+
+- Date: 2026-03-20
+- Commit SHA: `824c9174cbed61a28ec50dadedea121f7cf39720`
+- Stage / substep: `Stage 1 / live rollout validation of aggregate discovery runtime cutover`
+- Status: `failed`
+- Code changed:
+  - none in this step; this was a live server rollout validation of the already-built artifact
+- Tests run:
+  - live server rollout validation on `solana-copy-bot.service`
+- Done:
+  - startup stayed healthy on live:
+    - `app runtime loop started` appeared at `2026-03-20T14:45:14.355456Z`
+    - `sqlite_migrations_deferred` still emitted deferred `0039_observed_swaps_sol_leg_ts_index.sql`
+    - `sqlite_migrations_apply` completed immediately with `applied = 0`
+    - `startup_sqlite_wal_checkpoint` remained explicitly deferred
+  - the rollout correctly proved the aggregate readiness gate would not switch prematurely:
+    - effective config on deploy was `metric_snapshot_interval_seconds = 3600`, `scoring_aggregates_write_enabled = true`, `scoring_aggregates_enabled = true`
+    - `covered_since = null`
+    - `backfill_resume_required = true`
+    - `effective_reads_ready = false`
+    - `scoring_source = aggregates` never appeared
+  - no healthy publication landed:
+    - `active_follow_wallets = 0`
+    - `discovery_published = false`
+- Acceptance criteria closed:
+  - aggregate cutover is now proven to require completed historical backfill / readiness on live
+  - simply enabling aggregate writes/reads in config does not switch runtime scoring when `effective_reads_ready = false`
+- Blocked:
+  - no new backfill progress was observed:
+    - latest persisted backfill cursor remained `2026-03-08T21:06:45.726139749Z / 405112624 / 2wsWtL4...`
+    - `covered_since` stayed unset
+    - `materialization_gap_cursor = null`
+  - runtime stayed on the old fail-closed raw path:
+    - `scoring_source = raw_window_incomplete_no_recent_published_universe`
+    - aggregate cutover never occurred
+  - the rollout materially worsened live pressure:
+    - `observed_swap_writer_pending_requests = 4096`
+    - `sqlite_busy_error_total = 2700`
+    - `sqlite_write_retry_total = 2025`
+    - `sqlite_wal_size_bytes = 2084221512`
+  - runtime regressed into a frozen stale-window loop:
+    - repeated `restart_reason = metrics_window_start_changed_awaiting_exact_carry_forward_checkpoint`
+    - frozen `persisted_horizon_end = 2026-03-20 15:00:14.356172037 UTC`
+    - stale `collect_buy_mints / reconcile_expired_head` persisted through the observed window
+- Acceptance criteria remaining:
+  - stabilize live by disabling aggregate writes/reads again
+  - keep runtime on the raw path until bounded aggregate historical backfill makes `effective_reads_ready = true`
+  - only then re-attempt aggregate runtime cutover
+- Remaining risks:
+  - aggregate writes without readiness/backfill can add material live pressure even though aggregate reads never switch on
+  - leaving this rollout enabled risks continued writer backlog, retry growth, and stale frozen-window runtime behavior
+- Next action:
+  - immediately run a live stabilization pass on the same build with aggregate writes/reads disabled in config and validate that runtime returns to raw `Replay`
+
+- Date: 2026-03-20
+- Commit SHA: `824c9174cbed61a28ec50dadedea121f7cf39720`
+- Stage / substep: `Stage 1 / live stabilization pass with aggregate writes and reads disabled`
+- Status: `partial`
+- Code changed:
+  - none in this step; this was a manual live config stabilization pass on the already-deployed artifact
+- Tests run:
+  - live server stabilization validation on `solana-copy-bot.service`
+- Done:
+  - live config after restart was stabilized to:
+    - `metric_snapshot_interval_seconds = 3600`
+    - `scoring_aggregates_write_enabled = false`
+    - `scoring_aggregates_enabled = false`
+  - startup stayed healthy on live:
+    - `app runtime loop started` appeared at `2026-03-20T19:00:53.878122Z`
+    - `sqlite_migrations_deferred` still emitted deferred `0039_observed_swaps_sol_leg_ts_index.sql`
+    - `sqlite_migrations_apply` completed immediately with `applied = 0`
+    - `startup_sqlite_wal_checkpoint` remained explicitly deferred
+  - the frozen stale-window loop cleared after restart:
+    - the last `metrics_window_start_changed_awaiting_exact_carry_forward_checkpoint` warning was observed at `2026-03-20T19:02:08.627799Z`
+    - by `2026-03-20T19:02:08.748703Z` runtime had resumed a fresh target with `rebuild_horizon_end = 2026-03-20 19:02:08.613360747 UTC`
+  - runtime returned to raw `Replay`:
+    - `2026-03-20T19:14:11.898709Z` completed bounded discovery persisted observed_swaps prepass
+    - `2026-03-20T19:14:14.021608Z` completed bounded discovery token-quality resolution and switched to replay
+    - replay then advanced from `1,499,035` at `2026-03-20T19:15:58Z` to `5,998,380` at `2026-03-20T19:23:28Z`
+    - sampled replay wallet-stats rate was about `600k rows/min`
+  - live pressure improved materially:
+    - `observed_swap_writer_pending_requests` fell from the pre-restart `4096` baseline to mostly `0-45`
+    - `writer_aggregate_queue_depth_batches` stayed `0`
+    - `sqlite_busy_error_total` and `sqlite_write_retry_total` were only `4 / 4` at `2026-03-20T19:22:53.879944Z`
+- Acceptance criteria closed:
+  - aggregate writes/reads were correctly identified as the main source of the extra live pressure introduced by the previous rollout
+  - live no longer remained stuck in the frozen stale-window loop after stabilization
+  - runtime returned to bounded raw-path progress and then back into `Replay`
+- Blocked:
+  - the original raw replay blocker remains:
+    - `rebuild_replay_wallet_stats_complete = false`
+    - `rebuild_replay_rows_processed = 0`
+    - `rebuild_replay_sol_leg_access_path` is still not emitted
+    - `scoring_source = raw_window_incomplete_no_recent_published_universe`
+    - no healthy publication landed
+- Acceptance criteria remaining:
+  - either raw replay must eventually finish wallet-stats and enter SOL-leg on the stabilized config, or the team must fix aggregate backfill / resume so readiness can become true and aggregate cutover can replace the raw replay treadmill
+  - do not re-enable aggregate writes/reads on the production host before that readiness path is proven
+- Remaining risks:
+  - occasional writer-pressure spikes (`1325`, `1852`) and rare overlap warnings still appear
+  - the stabilized raw replay path is operationally better but still fail-closed and still blocked before healthy publication
+- Next action:
+  - keep live in the stabilized raw configuration, align repo config with that live state, and move the main engineering effort to fixing aggregate backfill / durable resume off the critical production path
 
 - Date: 2026-03-20
 - Commit SHA: `371403cd6bb642035464b07a33a909bf780a5d62`
