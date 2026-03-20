@@ -5,7 +5,7 @@ use crate::{
     TokenQualityRpcRow, WalletActivityDayRow,
 };
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::{ExactSwapAmounts, SwapEvent};
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
@@ -57,7 +57,7 @@ pub struct ObservedWalletActivityRow {
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
     pub trades: usize,
-    pub active_days: Vec<NaiveDate>,
+    pub active_day_count: u32,
     pub suspicious: bool,
 }
 
@@ -748,7 +748,7 @@ impl SqliteStore {
 
         let mut summaries: HashMap<String, ObservedWalletActivityRow> = HashMap::new();
         let summary_query = format!(
-            "SELECT wallet_id, MIN(ts), MAX(ts), COUNT(*)
+            "SELECT wallet_id, MIN(ts), MAX(ts), COUNT(*), COUNT(DISTINCT substr(ts, 1, 10))
              FROM observed_swaps INDEXED BY idx_observed_swaps_wallet_ts
              WHERE ts >= ?1
                AND ts <= ?2
@@ -796,6 +796,9 @@ impl SqliteStore {
             let trades_raw: i64 = row
                 .get(3)
                 .context("failed reading observed wallet activity summary trades")?;
+            let active_day_count_raw: i64 = row
+                .get(4)
+                .context("failed reading observed wallet activity summary active_day_count")?;
             let trades = trades_raw.max(0) as usize;
             rows_seen = rows_seen.saturating_add(trades);
             summaries.insert(
@@ -811,60 +814,10 @@ impl SqliteStore {
                         "observed wallet activity summary last_seen",
                     )?,
                     trades,
-                    active_days: Vec::new(),
+                    active_day_count: active_day_count_raw.max(0) as u32,
                     suspicious: false,
                 },
             );
-        }
-
-        let activity_days_query = format!(
-            "SELECT wallet_id, substr(ts, 1, 10) AS activity_day
-             FROM observed_swaps INDEXED BY idx_observed_swaps_wallet_ts
-             WHERE ts >= ?1
-               AND ts <= ?2
-               AND wallet_id IN ({placeholders})
-             GROUP BY wallet_id, activity_day
-             ORDER BY wallet_id ASC, activity_day ASC"
-        );
-        let mut activity_days_params = vec![since_raw.clone().into(), until_raw.clone().into()];
-        activity_days_params.extend(wallet_ids.iter().cloned().map(rusqlite::types::Value::from));
-        let mut activity_days_stmt = self
-            .conn
-            .prepare(&activity_days_query)
-            .context("failed to prepare observed wallet activity day query")?;
-        let mut activity_days_rows = activity_days_stmt
-            .query(rusqlite::params_from_iter(activity_days_params))
-            .context("failed querying observed wallet activity day rows")?;
-        loop {
-            let next_row = match activity_days_rows.next() {
-                Ok(row) => row,
-                Err(error) => {
-                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
-                        return Ok(ObservedWalletActivityPage {
-                            rows: Vec::new(),
-                            rows_seen: 0,
-                            time_budget_exhausted: true,
-                        });
-                    }
-                    return Err(error)
-                        .context("failed iterating observed wallet activity day rows");
-                }
-            };
-            let Some(row) = next_row else {
-                break;
-            };
-            let wallet_id: String = row
-                .get(0)
-                .context("failed reading observed wallet activity day wallet_id")?;
-            let activity_day_raw: String = row
-                .get(1)
-                .context("failed reading observed wallet activity day")?;
-            if let Some(summary) = summaries.get_mut(&wallet_id) {
-                summary.active_days.push(parse_day(
-                    &activity_day_raw,
-                    "observed wallet activity day activity_day",
-                )?);
-            }
         }
 
         let max_tx_query = format!(
@@ -2216,11 +2169,6 @@ impl SqliteStore {
             token_age_seconds,
         })
     }
-}
-
-fn parse_day(raw: &str, field_name: &str) -> Result<NaiveDate> {
-    NaiveDate::parse_from_str(raw, "%Y-%m-%d")
-        .with_context(|| format!("invalid {field_name} day value: {raw}"))
 }
 
 fn duration_ms_ceil(duration: StdDuration) -> u64 {

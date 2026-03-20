@@ -583,6 +583,8 @@ struct WalletAccumulator {
     first_seen: Option<DateTime<Utc>>,
     last_seen: Option<DateTime<Utc>>,
     trades: u32,
+    #[serde(default)]
+    exact_active_day_count: Option<u32>,
     spent_sol: f64,
     realized_pnl_sol: f64,
     max_buy_notional_sol: f64,
@@ -1345,7 +1347,12 @@ impl DiscoveryService {
         entry.trades = entry
             .trades
             .saturating_add(row.trades.min(u32::MAX as usize) as u32);
-        entry.active_days.extend(row.active_days);
+        entry.exact_active_day_count = Some(
+            entry
+                .exact_active_day_count
+                .unwrap_or(0)
+                .saturating_add(row.active_day_count),
+        );
         entry.suspicious |= row.suspicious;
     }
 
@@ -5969,7 +5976,9 @@ impl DiscoveryService {
     ) -> WalletSnapshot {
         let first_seen = acc.first_seen.unwrap_or(now);
         let last_seen = acc.last_seen.unwrap_or(now);
-        let active_days = acc.active_days.len() as u32;
+        let active_days = acc
+            .exact_active_day_count
+            .unwrap_or(acc.active_days.len() as u32);
         let eligibility_active_days = active_days.max(persisted_active_days);
         let (buy_total, quality_resolved_buys, tradable_buys, rug_metrics) =
             if acc.buy_observations.is_empty() {
@@ -6189,6 +6198,7 @@ impl WalletAccumulator {
                 .map(|current| current.max(swap.ts_utc))
                 .unwrap_or(swap.ts_utc),
         );
+        self.exact_active_day_count = None;
         self.active_days.insert(swap.ts_utc.date_naive());
         self.mark_tx_minute(swap.ts_utc.timestamp() / 60, max_tx_per_minute);
     }
@@ -8898,7 +8908,12 @@ mod tests {
             assert_eq!(actual.last_seen, reference.last_seen);
             assert_eq!(actual.trades, reference.trades);
             assert_eq!(actual.suspicious, reference.suspicious);
-            assert_eq!(actual.active_days, reference.active_days);
+            assert_eq!(
+                actual
+                    .exact_active_day_count
+                    .unwrap_or(actual.active_days.len() as u32),
+                reference.active_days.len() as u32
+            );
         }
         Ok(())
     }
