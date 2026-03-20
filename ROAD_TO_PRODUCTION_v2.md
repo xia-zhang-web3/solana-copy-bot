@@ -108,51 +108,60 @@ The project is not blocked by ingestion.
 
 The startup SQLite silent-hang blocker is no longer the current blocker.
 
-Stage 1 is still `partial` after live rollout `423fd519c09ccac3d40a5cd9565ab27a1394ce96`.
+Stage 1 is still `partial` after live rollout `371403cd6bb642035464b07a33a909bf780a5d62`.
 
-Current working diagnosis: startup SQLite observability/boundedness is validated on live, bounded/resumable persisted rebuild behavior is validated on live, canonical migration/repair is validated on live, carry-forward across `metrics_window_start_changed` is validated on live, the retryable SQLite lock / observed-swap writer restart path is validated on live, the startup-safe deferral contract for `0039_observed_swaps_sol_leg_ts_index.sql` is validated on live, the stale candidate-discovery SQL access-path fix is validated on live, and the narrow catch-up scheduler follow-ups are validated on live. Deploys `9b5f8cd6529fd72f2853b10b3f70e9ba0751536e`, `8efd6c49d57602e19a45b030d75ad7a6378898e0`, and `423fd519c09ccac3d40a5cd9565ab27a1394ce96` together proved that the old `CollectBuyMints -> Replay` blocker has been materially broken: safe back-to-back catch-up cycles now work under guarded conditions, `fresh_scan / time_budget` can request catch-up as intended, runtime re-entered `Replay` for the first time in this fix series, and later bucket rollover from `Replay` now carries forward exact canonical buy-mint state and returns back to `Replay` quickly instead of getting trapped in a long stale `CollectBuyMints` treadmill. The remaining blocker has therefore moved later again: on live-size state, `Replay` now stays in the `wallet_stats_then_sol_leg` contract but appears to spend the whole bucket in the wallet-stats prepass, after which bucket-sensitive replay progress is reset on rollover before SOL-leg replay begins. Stage 1 therefore remains `partial` until a live rollout proves that bounded replay exits wallet-stats prepass, emits `completed bounded replay wallet-stats prepass; switching to SOL-leg replay`, then emits `rebuild_replay_sol_leg_access_path`, and finally lands healthy publication with `scoring_source = raw_window_persisted_stream` and `active_follow_wallets > 0`.
+Current working diagnosis: startup SQLite observability/boundedness is validated on live, bounded/resumable persisted rebuild behavior is validated on live, canonical migration/repair is validated on live, carry-forward across `metrics_window_start_changed` is validated on live, the retryable SQLite lock / observed-swap writer restart path is validated on live, the startup-safe deferral contract for `0039_observed_swaps_sol_leg_ts_index.sql` is validated on live, the stale candidate-discovery SQL access-path fix is validated on live, and the narrow catch-up scheduler follow-ups are validated on live. Deploys `9b5f8cd6529fd72f2853b10b3f70e9ba0751536e`, `8efd6c49d57602e19a45b030d75ad7a6378898e0`, and `423fd519c09ccac3d40a5cd9565ab27a1394ce96` materially broke the old `CollectBuyMints -> Replay` blocker: safe back-to-back catch-up cycles now work under guarded conditions, `fresh_scan / time_budget` can request catch-up as intended, runtime re-entered `Replay` for the first time in this fix series, and later bucket rollover from `Replay` now carries forward exact canonical buy-mint state and returns back to `Replay` quickly instead of getting trapped in a long stale `CollectBuyMints` treadmill. The next replay-focused follow-ups (`e339b6045684ec023f2519d5c9bbbe82610a225f`, `b98727bac3a21abb89495dcf422940c763a46ef7`, `898a488ff8b7fc8e131b1a4a4eea1d63e62aaf10`, and `371403cd6bb642035464b07a33a909bf780a5d62`) proved that the remaining blocker now sits inside `Replay wallet-stats` completion on live-size state. The latest observed rollout (`371403cd6bb642035464b07a33a909bf780a5d62`) kept runtime healthy, carried forward correctly from `Replay` at the `2026-03-20 12:00 UTC` boundary, and returned back into `Replay`, but still did not materially improve replay wallet-stats enough to finish the prepass before rollover: `rebuild_replay_wallet_stats_complete` stayed `false`, `rebuild_replay_rows_processed` stayed `0`, `rebuild_replay_sol_leg_access_path` never emitted, and repeated `discovery cycle still running, skipping scheduled trigger` signals showed the replay wallet-stats cycle itself is now too heavy on wall-clock. Stage 1 therefore remains `partial` until a live rollout proves that bounded replay exits wallet-stats prepass, emits `completed bounded replay wallet-stats prepass; switching to SOL-leg replay`, then emits `rebuild_replay_sol_leg_access_path`, and finally lands healthy publication with `scoring_source = raw_window_persisted_stream` and `active_follow_wallets > 0`. The current planned operational validation is config-only rollout `c6e0af8` (`metric_snapshot_interval_seconds = 3600`) to test whether a longer live bucket lets replay wallet-stats finish before rollover without further semantic changes.
 
 Do not start Stage 2 yet.
 
 ### 2.5 Server state (updated 2026-03-20)
 
-- Deployed commit: `423fd519c09ccac3d40a5cd9565ab27a1394ce96`
-- Service: rollout reached runtime, remained stable overnight, validated the widened guarded catch-up behavior on live, and for the first time in this fix series returned runtime back into `Replay` and kept it there across later bucket rollover; however, replay still remains on the wallet-stats prepass and has not yet emitted SOL-leg replay access-path telemetry or healthy publication
+- Deployed commit: `371403cd6bb642035464b07a33a909bf780a5d62`
+- Service: rollout reached runtime, remained stable through the observed window, carried forward correctly from `Replay` at the `2026-03-20 12:00 UTC` boundary, and returned quickly back into `Replay`; however, replay wallet-stats still did not complete, SOL-leg replay still did not start, and healthy publication still did not land
 - `execution.enabled = false`
 - Latest observed restart: none during the observed validation windows on the current deploy (`NRestarts = 0`)
 - `active_follow_wallets = 0` during the observed validation window
 - Observed during validation window:
   - startup emitted `sqlite_migrations_deferred` with `deferred_versions=0039_observed_swaps_sol_leg_ts_index.sql`
-  - startup then completed `sqlite_migrations_apply` immediately instead of timing out, kept `startup_sqlite_wal_checkpoint` explicitly deferred, and reached `app runtime loop started`
-  - runtime emitted `rebuild_replay_mode = wallet_stats_then_sol_leg` from the bounded rebuild cycles onward, confirming the optimized replay contract stayed wired
-  - process stability held throughout the observed windows: the same `MainPID = 48007` stayed active overnight, `NRestarts = 0`, there was no restart loop, no writer-death path, no overlap (`discovery cycle still running, skipping scheduled trigger` did not appear), and no false `healthy`
-  - the catch-up scheduler follow-ups validated on live:
-    - `fresh_scan / time_budget` slices now request catch-up on live as designed
-    - immediate retrigger now passes at moderate writer backlog (`writer_pending_requests = 14..19`)
-    - deferred retrigger now appears only at higher backlog (`writer_pending_requests = 166..191`) under the explicit threshold `128`
-    - later overnight rollover also showed immediate catch-up at `writer_pending_requests = 56`, confirming the relaxed gate is active without requiring an empty writer queue
-  - the old `CollectBuyMints -> Replay` blocker is no longer the active limiter on this deploy:
-    - runtime first re-entered `Replay` at `2026-03-19T20:58:06.841826Z`
-    - exact carry-forward at `2026-03-19T21:00:06.931230Z` occurred while `rebuild_previous_phase = "replay"`
-    - later overnight exact carry-forward at `2026-03-20T05:30:08.661621Z` again occurred from `Replay`
-    - after that boundary, runtime briefly passed through `collect_buy_mints / reconcile_expired_head` and `collect_buy_mints / reconcile_new_tail`, then re-entered `Replay` already by `2026-03-20T05:30:25.950155Z`
-  - the remaining blocker is now later-phase replay convergence:
-    - latest observed state at `2026-03-20 05:37 UTC` was still `rebuild_phase = replay`
+  - startup then completed `sqlite_migrations_apply` immediately, kept `startup_sqlite_wal_checkpoint` explicitly deferred, and reached `app runtime loop started`
+  - runtime immediately re-entered `Replay` after deploy:
+    - first replay resume was already visible at `2026-03-20T11:37:26.413208Z`
+    - `rebuild_phase = replay`
     - `rebuild_replay_mode = wallet_stats_then_sol_leg`
-    - `rebuild_replay_wallet_stats_rows_processed = 900000`
+  - process stability held throughout the observed window:
+    - `MainPID = 59562`
+    - `NRestarts = 0`
+    - no restart loop
+    - no writer-death path
+    - no false `healthy`
+  - the `2026-03-20 12:00 UTC` boundary carried forward correctly from `Replay`:
+    - `2026-03-20T12:00:21.396588Z` emitted `carrying forward exact canonical buy-mint membership progress across metrics bucket rollover`
+    - `rebuild_previous_phase = "replay"`
+    - runtime then traversed `collect_buy_mints`, completed bounded prepass and token-quality resolution, and re-entered `Replay` by `2026-03-20T12:01:50.426340Z`
+  - replay wallet-stats throughput on this rollout still did not close the blocker:
+    - `2026-03-20T11:37:26Z -> 8,593,984`
+    - `2026-03-20T11:43:20Z -> 12,975,126`
+    - `2026-03-20T11:59:43Z -> 21,826,756`
+    - carry-forward reset at `2026-03-20T12:00:21Z`
+    - `2026-03-20T12:01:50Z -> 220,393`
+    - `2026-03-20T12:04:01Z -> 2,307,493`
+    - sampled pre-boundary replay rate was about `579k rows/min`, below the sampled `898a488` baseline of about `1.19M rows/min`
+  - the remaining blocker is still replay wallet-stats completion before rollover:
+    - latest observed state at `2026-03-20 12:04 UTC` was still `rebuild_phase = replay`
+    - `rebuild_replay_wallet_stats_complete = false`
     - `rebuild_replay_rows_processed = 0`
     - `rebuild_replay_sol_leg_access_path` had still not been emitted
-    - `latest rebuild_cycle_rows_processed = 100000`
-    - by `2026-03-20T05:29:31.083698Z`, just before the `05:30 UTC` boundary, replay wallet-stats progress had already reached `3,000,000` rows, which strongly suggests the bounded wallet-stats prepass itself is now the dominant live limiter rather than stale `CollectBuyMints`
+    - `rebuild_budget_exhausted_reason = time_budget`
+  - overlap/pressure signals are now visible during this replay-heavy path:
+    - `discovery cycle still running, skipping scheduled trigger` was observed repeatedly in the window
+    - latest/max `sqlite_busy_error_total = 5`
+    - latest/max `sqlite_write_retry_total = 5`
+    - `yellowstone_output_queue_depth = 0` at latest and briefly peaked at `6`
+    - `yellowstone_output_queue_fill_ratio = 0.0` at latest and briefly peaked at `0.0029296875`
   - healthy publication still has not landed on this deploy:
     - no `raw_window_persisted_stream`
     - `active_follow_wallets = 0`
     - no completed healthy cycle yet
-  - pressure stayed controlled enough for continued runtime progress, though the new replay-heavy overnight window did introduce mild retry counters:
-    - `sqlite_busy_error_total = 8`
-    - `sqlite_write_retry_total = 7`
-    - `yellowstone_output_queue_depth = 0` or briefly `1` without consequence
-    - `yellowstone_output_queue_fill_ratio = 0.0` or briefly `0.00048828125` without consequence
 - Rollout reports:
   - [ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md](ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md) — first Stage 1 deploy (`2eb5c30`), confirmed bootstrap path removed but fail_closed due to cap-truncated warm load
   - [ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md](ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md) — persisted-stream follow-up (`0c58aba`), confirmed correct path engaged but first cycle did not complete in 6+ minutes
@@ -174,6 +183,7 @@ Do not start Stage 2 yet.
   - rollout `9b5f8cd` validated the first guarded catch-up scheduler step on live: exact carry-forward checkpoints were reached much faster, but runtime still had not yet re-entered `Replay`
   - rollout `8efd6c4` validated the relaxed catch-up gate / moderate writer-backlog threshold on live and confirmed `fresh_scan / time_budget` catch-up behavior under safe conditions, but the old `CollectBuyMints -> Replay` blocker still was not yet fully closed in the earlier observed window
   - rollout `423fd51` validated the next step: `fresh_scan / time_budget` catch-up is now live, runtime re-entered `Replay` for the first time in this fix series, and overnight replay survived later bucket rollover and returned quickly to `Replay`; the remaining limiter is now replay wallet-stats prepass throughput before SOL-leg replay and healthy publication
+  - rollout `371403c` validated that folding replay wallet-stats `active_days` into the main summary query does not regress startup, replay re-entry, or exact carry-forward from `Replay`, but it still did not materially improve replay wallet-stats enough to finish the prepass before rollover; Stage 1 remained blocked before SOL-leg replay, and the next operational experiment is hourly live buckets via `c6e0af8`
 
 ### 2.6 Live data scale (observed)
 
@@ -529,6 +539,62 @@ Their useful conclusions are already absorbed here:
 4. Operational incidents on prod must not be repeated just to prove recovery semantics.
 
 ## 10. Execution log
+
+- Date: 2026-03-20
+- Commit SHA: `371403cd6bb642035464b07a33a909bf780a5d62`
+- Stage / substep: `Stage 1 / live rollout validation of replay wallet-stats active-day summary fold`
+- Status: `partial`
+- Code changed:
+  - none in this step; this was a live server rollout validation of the already-built artifact
+- Tests run:
+  - live server rollout validation on `solana-copy-bot.service`
+- Done:
+  - startup stayed healthy on live:
+    - `app runtime loop started` appeared at `2026-03-20T11:37:20.068827Z`
+    - `sqlite_migrations_deferred` still emitted deferred `0039_observed_swaps_sol_leg_ts_index.sql`
+    - `sqlite_migrations_apply` completed immediately with `applied = 0`
+    - `startup_sqlite_wal_checkpoint` remained explicitly deferred
+  - process stability held throughout the observed window:
+    - `MainPID = 59562`
+    - `NRestarts = 0`
+    - no restart loop
+    - no writer-death path
+    - no shadow-risk stop
+    - no false `healthy`
+  - replay resumed immediately after deploy and survived the next boundary:
+    - first replay resume appeared at `2026-03-20T11:37:26.413208Z`
+    - `2026-03-20T12:00:21.396588Z` carried forward exact canonical buy-mint state with `rebuild_previous_phase = "replay"`
+    - runtime then traversed bounded `collect_buy_mints`, completed token-quality resolution, and re-entered `Replay` by `2026-03-20T12:01:50.426340Z`
+  - replay wallet-stats still did not finish:
+    - `2026-03-20T11:37:26Z -> 8,593,984`
+    - `2026-03-20T11:43:20Z -> 12,975,126`
+    - `2026-03-20T11:59:43Z -> 21,826,756`
+    - carry-forward reset at `2026-03-20T12:00:21Z`
+    - `2026-03-20T12:01:50Z -> 220,393`
+    - `2026-03-20T12:04:01Z -> 2,307,493`
+    - sampled pre-boundary replay rate was about `579k rows/min`
+    - sampled post-boundary recovery reached about `956k rows/min`
+- Acceptance criteria closed:
+  - the replay wallet-stats active-day summary fold did not regress startup, replay re-entry, or exact carry-forward from `Replay`
+  - Stage 1 remains clearly beyond the old `CollectBuyMints -> Replay` blocker
+  - the current blocker is confirmed to sit inside replay wallet-stats completion before SOL-leg replay
+- Blocked:
+  - `rebuild_replay_wallet_stats_complete = false`
+  - `rebuild_replay_rows_processed = 0`
+  - `rebuild_replay_sol_leg_access_path` is still not emitted
+  - `discovery cycle still running, skipping scheduled trigger` appeared repeatedly, showing the replay wallet-stats cycle itself is now heavy enough to overlap the normal cadence
+  - no healthy `raw_window_persisted_stream` publication landed yet
+- Acceptance criteria remaining:
+  - next operational change must prove that replay wallet-stats can finish before rollover
+  - next rollout must emit `completed bounded replay wallet-stats prepass; switching to SOL-leg replay`
+  - next rollout must emit `rebuild_replay_sol_leg_access_path`
+  - next rollout must still land `scoring_source = raw_window_persisted_stream` and `active_follow_wallets > 0`
+- Remaining risks:
+  - replay wallet-stats still resets on rollover before SOL-leg replay starts
+  - mild retry counters and repeated overlap warnings imply the replay wallet-stats cycle is now wall-clock heavy even after the latest SQL fold
+  - further raw-window replay micro-optimizations are likely to have diminishing returns
+- Next action:
+  - deploy config-only rollout `c6e0af8` to extend `metric_snapshot_interval_seconds` from `1800` to `3600` and validate whether replay wallet-stats can complete inside an hourly bucket without further semantic changes
 
 - Date: 2026-03-20
 - Commit SHA: `423fd519c09ccac3d40a5cd9565ab27a1394ce96`

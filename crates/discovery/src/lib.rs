@@ -3747,6 +3747,14 @@ impl DiscoveryService {
         let window_days = self.config.scoring_window_days.max(1);
         let window_start = now - Duration::days(window_days as i64);
         let metrics_window_start = self.metrics_window_start(now);
+        let aggregate_scoring_ready = self
+            .aggregate_readiness_status(store, now)?
+            .effective_reads_ready;
+        let aggregate_transition_active_wallets = if aggregate_scoring_ready {
+            Some(store.list_active_follow_wallets()?)
+        } else {
+            None
+        };
         let mut delta_fetched = 0usize;
         let mut swaps_evicted_due_cap = 0usize;
         let mut swaps_warm_loaded = 0usize;
@@ -3775,327 +3783,355 @@ impl DiscoveryService {
             if !short_retention_window {
                 state.bootstrap_from_persisted_metrics = false;
             }
-            let mut out_of_order = false;
-            let mut cursor_restored_from_store = false;
-            if state.cursor.is_none() {
-                let restored = match store.load_discovery_runtime_cursor() {
-                    Ok(cursor) => cursor,
-                    Err(error) => {
-                        if discovery_runtime_cursor_load_error_requires_abort(&error) {
-                            return Err(error).context(
-                                "failed loading discovery runtime cursor with fatal sqlite I/O",
+            let publish_due = state.last_publish_at.map_or(true, |last_publish_at| {
+                now.signed_duration_since(last_publish_at).num_seconds() >= publish_interval_seconds
+            });
+            if aggregate_scoring_ready {
+                if !state.last_summary_from_aggregates
+                    && aggregate_transition_active_wallets
+                        .as_ref()
+                        .is_some_and(|wallets| !wallets.is_empty())
+                {
+                    state.arm_aggregate_transition_guard(
+                        AGGREGATE_FOLLOWLIST_TRANSITION_GUARD_CYCLES,
+                    );
+                }
+                state.bootstrap_from_persisted_metrics = false;
+                state.truncated_warm_restore_bootstrap = false;
+                let followlist_transition_suppressed = state.aggregate_transition_suppressed();
+                (
+                    state.swaps.len(),
+                    FetchProgress::default(),
+                    snapshot_cap_truncation_telemetry(&state, followlist_transition_suppressed),
+                    PreparedCycleState::AggregateRecompute {
+                        publish_due,
+                        followlist_activations_suppressed: followlist_transition_suppressed,
+                        followlist_deactivations_suppressed: followlist_transition_suppressed,
+                    },
+                )
+            } else {
+                let mut out_of_order = false;
+                let mut cursor_restored_from_store = false;
+                if state.cursor.is_none() {
+                    let restored = match store.load_discovery_runtime_cursor() {
+                        Ok(cursor) => cursor,
+                        Err(error) => {
+                            if discovery_runtime_cursor_load_error_requires_abort(&error) {
+                                return Err(error).context(
+                                    "failed loading discovery runtime cursor with fatal sqlite I/O",
+                                );
+                            }
+                            warn!(
+                                error = %error,
+                                "failed loading discovery runtime cursor; falling back to window_start bootstrap"
+                            );
+                            None
+                        }
+                    };
+                    cursor_restored_from_store = restored.is_some();
+                    let restored = restored.map(|cursor| DiscoveryCursor {
+                        ts_utc: cursor.ts_utc,
+                        slot: cursor.slot,
+                        signature: cursor.signature,
+                    });
+                    state.cursor =
+                        Some(restored.unwrap_or_else(|| DiscoveryCursor::bootstrap(window_start)));
+                }
+
+                let mut cursor = state
+                    .cursor
+                    .clone()
+                    .unwrap_or_else(|| DiscoveryCursor::bootstrap(window_start));
+                if cursor.ts_utc < window_start {
+                    cursor = DiscoveryCursor::bootstrap(window_start);
+                }
+                if state.swaps.is_empty() && cursor_restored_from_store {
+                    if short_retention_window {
+                        state.bootstrap_from_persisted_metrics = true;
+                    }
+                    match store
+                        .load_recent_observed_swaps_since(window_start, max_window_swaps_in_memory)
+                    {
+                        Ok((swaps, truncated_by_limit)) => {
+                            for swap in swaps {
+                                if let Some(back) = state.swaps.back() {
+                                    if cmp_swap_order(&swap, back) == Ordering::Less {
+                                        out_of_order = true;
+                                    }
+                                }
+                                if state.signatures.insert(swap.signature.clone()) {
+                                    swaps_evicted_due_cap = swaps_evicted_due_cap.saturating_add(
+                                        state.push_swap_capped(swap, max_window_swaps_in_memory),
+                                    );
+                                    swaps_warm_loaded = swaps_warm_loaded.saturating_add(1);
+                                }
+                            }
+                            if truncated_by_limit {
+                                state.mark_warm_load_truncated();
+                                maybe_arm_cap_truncation_deactivation_guard(
+                                    &mut state,
+                                    now,
+                                    CapTruncationDeactivationGuardReason::WarmLoadTruncated,
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            if discovery_recent_window_load_error_requires_abort(&error) {
+                                return Err(error).context(
+                                "failed warm-loading discovery window from sqlite recent slice with fatal sqlite I/O",
+                            );
+                            }
+                            warn!(
+                                error = %error,
+                                "failed warm-loading discovery window from sqlite recent slice"
                             );
                         }
-                        warn!(
-                            error = %error,
-                            "failed loading discovery runtime cursor; falling back to window_start bootstrap"
-                        );
-                        None
                     }
-                };
-                cursor_restored_from_store = restored.is_some();
-                let restored = restored.map(|cursor| DiscoveryCursor {
-                    ts_utc: cursor.ts_utc,
-                    slot: cursor.slot,
-                    signature: cursor.signature,
-                });
-                state.cursor =
-                    Some(restored.unwrap_or_else(|| DiscoveryCursor::bootstrap(window_start)));
-            }
-
-            let mut cursor = state
-                .cursor
-                .clone()
-                .unwrap_or_else(|| DiscoveryCursor::bootstrap(window_start));
-            if cursor.ts_utc < window_start {
-                cursor = DiscoveryCursor::bootstrap(window_start);
-            }
-            if state.swaps.is_empty() && cursor_restored_from_store {
-                if short_retention_window {
-                    state.bootstrap_from_persisted_metrics = true;
                 }
-                match store
-                    .load_recent_observed_swaps_since(window_start, max_window_swaps_in_memory)
-                {
-                    Ok((swaps, truncated_by_limit)) => {
-                        for swap in swaps {
+                if !state.swaps.is_empty() {
+                    state.bootstrap_from_persisted_metrics = false;
+                }
+
+                let mut fetch_progress = FetchProgress::default();
+                let fetch_deadline = Instant::now() + fetch_time_budget;
+                loop {
+                    if fetch_progress.pages >= fetch_page_limit {
+                        fetch_progress.page_budget_exhausted =
+                            fetch_progress.query_rows_last_page >= fetch_limit;
+                        break;
+                    }
+                    if Instant::now() >= fetch_deadline {
+                        fetch_progress.time_budget_exhausted = true;
+                        break;
+                    }
+
+                    let cursor_signature = cursor.signature.clone();
+                    let page_result = store.for_each_observed_swap_after_cursor_with_budget(
+                        cursor.ts_utc,
+                        cursor.slot,
+                        cursor_signature.as_str(),
+                        fetch_limit,
+                        fetch_deadline,
+                        |swap| {
+                            cursor = DiscoveryCursor::from_swap(&swap);
+                            if swap.ts_utc < window_start {
+                                return Ok(());
+                            }
+                            if state.signatures.contains(&swap.signature) {
+                                return Ok(());
+                            }
                             if let Some(back) = state.swaps.back() {
                                 if cmp_swap_order(&swap, back) == Ordering::Less {
                                     out_of_order = true;
                                 }
                             }
-                            if state.signatures.insert(swap.signature.clone()) {
-                                swaps_evicted_due_cap = swaps_evicted_due_cap.saturating_add(
-                                    state.push_swap_capped(swap, max_window_swaps_in_memory),
+                            state.signatures.insert(swap.signature.clone());
+                            let evicted = state.push_swap_capped(swap, max_window_swaps_in_memory);
+                            if evicted > 0 {
+                                maybe_arm_cap_truncation_deactivation_guard(
+                                    &mut state,
+                                    now,
+                                    CapTruncationDeactivationGuardReason::LiveCapEviction,
                                 );
-                                swaps_warm_loaded = swaps_warm_loaded.saturating_add(1);
                             }
-                        }
-                        if truncated_by_limit {
-                            state.mark_warm_load_truncated();
-                            maybe_arm_cap_truncation_deactivation_guard(
-                                &mut state,
-                                now,
-                                CapTruncationDeactivationGuardReason::WarmLoadTruncated,
-                            );
-                        }
+                            swaps_evicted_due_cap = swaps_evicted_due_cap.saturating_add(evicted);
+                            delta_fetched = delta_fetched.saturating_add(1);
+                            Ok(())
+                        },
+                    )?;
+                    let page_rows = page_result.rows_seen;
+                    fetch_progress.pages = fetch_progress.pages.saturating_add(1);
+                    fetch_progress.query_rows = fetch_progress.query_rows.saturating_add(page_rows);
+                    fetch_progress.query_rows_last_page = page_rows;
+                    fetch_progress.time_budget_exhausted |= page_result.time_budget_exhausted;
+
+                    if page_result.time_budget_exhausted {
+                        break;
                     }
-                    Err(error) => {
-                        if discovery_recent_window_load_error_requires_abort(&error) {
+
+                    if page_rows < fetch_limit {
+                        break;
+                    }
+                }
+                fetch_progress.saturated =
+                    fetch_progress.page_budget_exhausted || fetch_progress.time_budget_exhausted;
+
+                if fetch_progress.query_rows > 0 {
+                    state.cursor = Some(cursor.clone());
+                    let persisted = DiscoveryRuntimeCursor {
+                        ts_utc: cursor.ts_utc,
+                        slot: cursor.slot,
+                        signature: cursor.signature,
+                    };
+                    if let Err(error) = store.upsert_discovery_runtime_cursor(&persisted) {
+                        if discovery_runtime_cursor_error_requires_abort(&error) {
                             return Err(error).context(
-                                "failed warm-loading discovery window from sqlite recent slice with fatal sqlite I/O",
+                                "failed persisting discovery runtime cursor with fatal sqlite I/O",
                             );
                         }
                         warn!(
                             error = %error,
-                            "failed warm-loading discovery window from sqlite recent slice"
+                            "failed persisting discovery runtime cursor"
                         );
                     }
                 }
-            }
-            if !state.swaps.is_empty() {
-                state.bootstrap_from_persisted_metrics = false;
-            }
 
-            let mut fetch_progress = FetchProgress::default();
-            let fetch_deadline = Instant::now() + fetch_time_budget;
-            loop {
-                if fetch_progress.pages >= fetch_page_limit {
-                    fetch_progress.page_budget_exhausted =
-                        fetch_progress.query_rows_last_page >= fetch_limit;
-                    break;
+                if out_of_order {
+                    let mut sorted: Vec<SwapEvent> = state.swaps.drain(..).collect();
+                    sorted.sort_by(cmp_swap_order);
+                    state.swaps = sorted.into();
                 }
-                if Instant::now() >= fetch_deadline {
-                    fetch_progress.time_budget_exhausted = true;
-                    break;
-                }
-
-                let cursor_signature = cursor.signature.clone();
-                let page_result = store.for_each_observed_swap_after_cursor_with_budget(
-                    cursor.ts_utc,
-                    cursor.slot,
-                    cursor_signature.as_str(),
-                    fetch_limit,
-                    fetch_deadline,
-                    |swap| {
-                        cursor = DiscoveryCursor::from_swap(&swap);
-                        if swap.ts_utc < window_start {
-                            return Ok(());
-                        }
-                        if state.signatures.contains(&swap.signature) {
-                            return Ok(());
-                        }
-                        if let Some(back) = state.swaps.back() {
-                            if cmp_swap_order(&swap, back) == Ordering::Less {
-                                out_of_order = true;
-                            }
-                        }
-                        state.signatures.insert(swap.signature.clone());
-                        let evicted = state.push_swap_capped(swap, max_window_swaps_in_memory);
-                        if evicted > 0 {
-                            maybe_arm_cap_truncation_deactivation_guard(
-                                &mut state,
-                                now,
-                                CapTruncationDeactivationGuardReason::LiveCapEviction,
-                            );
-                        }
-                        swaps_evicted_due_cap = swaps_evicted_due_cap.saturating_add(evicted);
-                        delta_fetched = delta_fetched.saturating_add(1);
-                        Ok(())
-                    },
-                )?;
-                let page_rows = page_result.rows_seen;
-                fetch_progress.pages = fetch_progress.pages.saturating_add(1);
-                fetch_progress.query_rows = fetch_progress.query_rows.saturating_add(page_rows);
-                fetch_progress.query_rows_last_page = page_rows;
-                fetch_progress.time_budget_exhausted |= page_result.time_budget_exhausted;
-
-                if page_result.time_budget_exhausted {
-                    break;
-                }
-
-                if page_rows < fetch_limit {
-                    break;
-                }
-            }
-            fetch_progress.saturated =
-                fetch_progress.page_budget_exhausted || fetch_progress.time_budget_exhausted;
-
-            if fetch_progress.query_rows > 0 {
-                state.cursor = Some(cursor.clone());
-                let persisted = DiscoveryRuntimeCursor {
-                    ts_utc: cursor.ts_utc,
-                    slot: cursor.slot,
-                    signature: cursor.signature,
-                };
-                if let Err(error) = store.upsert_discovery_runtime_cursor(&persisted) {
-                    if discovery_runtime_cursor_error_requires_abort(&error) {
-                        return Err(error).context(
-                            "failed persisting discovery runtime cursor with fatal sqlite I/O",
-                        );
-                    }
-                    warn!(
-                        error = %error,
-                        "failed persisting discovery runtime cursor"
+                let raw_window_history_incomplete =
+                    raw_window_history_incomplete_for_followlist_or_metrics(&state);
+                let followlist_deactivations_suppressed =
+                    state.cap_truncation_deactivations_suppressed(raw_window_history_incomplete);
+                let cap_truncation_telemetry =
+                    snapshot_cap_truncation_telemetry(&state, followlist_deactivations_suppressed);
+                if state.consume_cap_truncation_deactivation_guard_cycle() {
+                    maybe_warn_on_cap_truncation_deactivation_guard_expiry(
+                        &state,
+                        followlist_deactivations_suppressed,
                     );
                 }
-            }
-
-            if out_of_order {
-                let mut sorted: Vec<SwapEvent> = state.swaps.drain(..).collect();
-                sorted.sort_by(cmp_swap_order);
-                state.swaps = sorted.into();
-            }
-            let raw_window_history_incomplete =
-                raw_window_history_incomplete_for_followlist_or_metrics(&state);
-            let followlist_deactivations_suppressed =
-                state.cap_truncation_deactivations_suppressed(raw_window_history_incomplete);
-            let cap_truncation_telemetry =
-                snapshot_cap_truncation_telemetry(&state, followlist_deactivations_suppressed);
-            let publish_due = state.last_publish_at.map_or(true, |last_publish_at| {
-                now.signed_duration_since(last_publish_at).num_seconds() >= publish_interval_seconds
-            });
-            if state.consume_cap_truncation_deactivation_guard_cycle() {
-                maybe_warn_on_cap_truncation_deactivation_guard_expiry(
-                    &state,
-                    followlist_deactivations_suppressed,
-                );
-            }
-            state.bootstrap_from_persisted_metrics = false;
-            state.truncated_warm_restore_bootstrap = false;
-            state.trusted_selection_bootstrap_pending = false;
-            let swaps_window = state.swaps.len();
-            let persisted_raw_window_complete =
-                if swaps_window == 0 || raw_window_history_incomplete || short_retention_window {
-                    self.persisted_observed_swaps_cover_window(store, window_start)?
-                } else {
-                    false
-                };
-            if swaps_window == 0 {
-                state.clear_cap_truncation();
-                state.last_snapshot_bucket = None;
-                state.last_summary = None;
-                state.note_scoring_source(false);
-                if persisted_raw_window_complete {
-                    (
-                        swaps_window,
-                        fetch_progress,
-                        cap_truncation_telemetry,
-                        PreparedCycleState::PersistedRecompute {
-                            publish_due,
-                            scoring_source: "raw_window_persisted_stream",
-                            empty_window_degraded_scoring_source:
-                                "published_universe_raw_window_unavailable",
-                            empty_window_unusable_scoring_source:
-                                "raw_window_unusable_no_recent_published_universe",
-                        },
-                    )
-                } else if let Some(active_wallets) = recent_published_follow_wallets.clone() {
-                    (
-                        swaps_window,
-                        fetch_progress,
-                        cap_truncation_telemetry,
-                        PreparedCycleState::Degraded {
-                            publish_due,
-                            active_wallets,
-                            scoring_source: "published_universe_raw_window_unavailable",
-                        },
-                    )
-                } else {
-                    (
-                        swaps_window,
-                        fetch_progress,
-                        cap_truncation_telemetry,
-                        PreparedCycleState::Unusable {
-                            publish_due,
-                            scoring_source: "raw_window_unusable_no_recent_published_universe",
-                        },
-                    )
-                }
-            } else if state.last_snapshot_bucket == Some(metrics_window_start)
-                && !state.last_summary_from_aggregates
-                && state.last_summary.is_some()
-            {
-                (
-                    swaps_window,
-                    fetch_progress,
-                    cap_truncation_telemetry,
-                    PreparedCycleState::Cached {
-                        publish_due,
-                        followlist_activations_suppressed: false,
-                        followlist_deactivations_suppressed,
-                        summary: state
-                            .last_summary
-                            .clone()
-                            .expect("checked last_summary exists above"),
-                    },
-                )
-            } else if raw_window_history_incomplete || short_retention_window {
                 state.bootstrap_from_persisted_metrics = false;
                 state.truncated_warm_restore_bootstrap = false;
-                if persisted_raw_window_complete {
+                state.trusted_selection_bootstrap_pending = false;
+                let swaps_window = state.swaps.len();
+                let persisted_raw_window_complete =
+                    if swaps_window == 0 || raw_window_history_incomplete || short_retention_window
+                    {
+                        self.persisted_observed_swaps_cover_window(store, window_start)?
+                    } else {
+                        false
+                    };
+                if swaps_window == 0 {
+                    state.clear_cap_truncation();
+                    state.last_snapshot_bucket = None;
+                    state.last_summary = None;
+                    state.note_scoring_source(false);
+                    if persisted_raw_window_complete {
+                        (
+                            swaps_window,
+                            fetch_progress,
+                            cap_truncation_telemetry,
+                            PreparedCycleState::PersistedRecompute {
+                                publish_due,
+                                scoring_source: "raw_window_persisted_stream",
+                                empty_window_degraded_scoring_source:
+                                    "published_universe_raw_window_unavailable",
+                                empty_window_unusable_scoring_source:
+                                    "raw_window_unusable_no_recent_published_universe",
+                            },
+                        )
+                    } else if let Some(active_wallets) = recent_published_follow_wallets.clone() {
+                        (
+                            swaps_window,
+                            fetch_progress,
+                            cap_truncation_telemetry,
+                            PreparedCycleState::Degraded {
+                                publish_due,
+                                active_wallets,
+                                scoring_source: "published_universe_raw_window_unavailable",
+                            },
+                        )
+                    } else {
+                        (
+                            swaps_window,
+                            fetch_progress,
+                            cap_truncation_telemetry,
+                            PreparedCycleState::Unusable {
+                                publish_due,
+                                scoring_source: "raw_window_unusable_no_recent_published_universe",
+                            },
+                        )
+                    }
+                } else if state.last_snapshot_bucket == Some(metrics_window_start)
+                    && !state.last_summary_from_aggregates
+                    && state.last_summary.is_some()
+                {
                     (
                         swaps_window,
                         fetch_progress,
                         cap_truncation_telemetry,
-                        PreparedCycleState::PersistedRecompute {
+                        PreparedCycleState::Cached {
                             publish_due,
-                            scoring_source: "raw_window_persisted_stream",
-                            empty_window_degraded_scoring_source: if raw_window_history_incomplete {
-                                "published_universe_raw_window_degraded"
-                            } else {
-                                "published_universe_short_retention_degraded"
-                            },
-                            empty_window_unusable_scoring_source: if raw_window_history_incomplete {
-                                "raw_window_incomplete_no_recent_published_universe"
-                            } else {
-                                "raw_window_short_retention_no_recent_published_universe"
-                            },
+                            followlist_activations_suppressed: false,
+                            followlist_deactivations_suppressed,
+                            summary: state
+                                .last_summary
+                                .clone()
+                                .expect("checked last_summary exists above"),
                         },
                     )
-                } else if let Some(active_wallets) = recent_published_follow_wallets.clone() {
-                    (
-                        swaps_window,
-                        fetch_progress,
-                        cap_truncation_telemetry,
-                        PreparedCycleState::Degraded {
-                            publish_due,
-                            active_wallets,
-                            scoring_source: if raw_window_history_incomplete {
-                                "published_universe_raw_window_degraded"
-                            } else {
-                                "published_universe_short_retention_degraded"
+                } else if raw_window_history_incomplete || short_retention_window {
+                    state.bootstrap_from_persisted_metrics = false;
+                    state.truncated_warm_restore_bootstrap = false;
+                    if persisted_raw_window_complete {
+                        (
+                            swaps_window,
+                            fetch_progress,
+                            cap_truncation_telemetry,
+                            PreparedCycleState::PersistedRecompute {
+                                publish_due,
+                                scoring_source: "raw_window_persisted_stream",
+                                empty_window_degraded_scoring_source:
+                                    if raw_window_history_incomplete {
+                                        "published_universe_raw_window_degraded"
+                                    } else {
+                                        "published_universe_short_retention_degraded"
+                                    },
+                                empty_window_unusable_scoring_source:
+                                    if raw_window_history_incomplete {
+                                        "raw_window_incomplete_no_recent_published_universe"
+                                    } else {
+                                        "raw_window_short_retention_no_recent_published_universe"
+                                    },
                             },
-                        },
-                    )
+                        )
+                    } else if let Some(active_wallets) = recent_published_follow_wallets.clone() {
+                        (
+                            swaps_window,
+                            fetch_progress,
+                            cap_truncation_telemetry,
+                            PreparedCycleState::Degraded {
+                                publish_due,
+                                active_wallets,
+                                scoring_source: if raw_window_history_incomplete {
+                                    "published_universe_raw_window_degraded"
+                                } else {
+                                    "published_universe_short_retention_degraded"
+                                },
+                            },
+                        )
+                    } else {
+                        (
+                            swaps_window,
+                            fetch_progress,
+                            cap_truncation_telemetry,
+                            PreparedCycleState::Unusable {
+                                publish_due,
+                                scoring_source: if raw_window_history_incomplete {
+                                    "raw_window_incomplete_no_recent_published_universe"
+                                } else {
+                                    "raw_window_short_retention_no_recent_published_universe"
+                                },
+                            },
+                        )
+                    }
                 } else {
                     (
                         swaps_window,
                         fetch_progress,
                         cap_truncation_telemetry,
-                        PreparedCycleState::Unusable {
+                        PreparedCycleState::Recompute {
                             publish_due,
-                            scoring_source: if raw_window_history_incomplete {
-                                "raw_window_incomplete_no_recent_published_universe"
-                            } else {
-                                "raw_window_short_retention_no_recent_published_universe"
-                            },
+                            followlist_activations_suppressed: false,
+                            followlist_deactivations_suppressed,
+                            metrics_persistence_suppressed: false,
+                            swaps: state.swaps.clone(),
                         },
                     )
                 }
-            } else {
-                (
-                    swaps_window,
-                    fetch_progress,
-                    cap_truncation_telemetry,
-                    PreparedCycleState::Recompute {
-                        publish_due,
-                        followlist_activations_suppressed: false,
-                        followlist_deactivations_suppressed,
-                        metrics_persistence_suppressed: false,
-                        swaps: state.swaps.clone(),
-                    },
-                )
             }
         };
 
@@ -14583,7 +14619,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "aggregate enabled transition guard is not part of the Stage 1 runtime path"]
     fn aggregate_scoring_transition_guard_suppresses_initial_followlist_flip() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("aggregate-scoring-transition-guard.db");
@@ -14676,16 +14711,23 @@ mod tests {
         assert_eq!(third.follow_demoted, 0);
 
         let fourth = discovery.run_cycle(&store, now + Duration::minutes(30))?;
-        assert_eq!(fourth.follow_promoted, 1);
-        assert_eq!(fourth.follow_demoted, 1);
+        assert_eq!(fourth.follow_promoted, 0);
+        assert_eq!(fourth.follow_demoted, 0);
+
+        let fifth = discovery.run_cycle(&store, now + Duration::minutes(60))?;
+        assert_eq!(fifth.follow_promoted, 1);
+        assert_eq!(fifth.follow_demoted, 1);
         let active = store.list_active_follow_wallets()?;
         assert!(!active.contains("wallet_legacy_follow"));
         assert!(active.contains("wallet_aggregate_new"));
+
+        let sixth = discovery.run_cycle(&store, now + Duration::minutes(70))?;
+        assert_eq!(sixth.follow_promoted, 0);
+        assert_eq!(sixth.follow_demoted, 0);
         Ok(())
     }
 
     #[test]
-    #[ignore = "aggregate-only runtime selection is intentionally out of the Stage 1 path"]
     fn aggregate_scoring_can_score_wallets_without_raw_hot_window() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("aggregate-scoring-live-path.db");
@@ -14753,7 +14795,10 @@ mod tests {
         let discovery = DiscoveryService::new(config, permissive_shadow_quality());
         let summary = discovery.run_cycle(&store, now)?;
         assert_eq!(summary.eligible_wallets, 1);
-        assert_eq!(summary.active_follow_wallets, 0);
+        assert_eq!(summary.follow_promoted, 1);
+        assert_eq!(summary.follow_demoted, 0);
+        assert_eq!(summary.active_follow_wallets, 1);
+        assert_eq!(summary.scoring_source, "aggregates");
         assert!(
             summary
                 .top_wallets
@@ -14761,6 +14806,8 @@ mod tests {
                 .any(|label| label.starts_with("wallet_aggregate_live:")),
             "aggregate scoring should produce the profitable wallet even with an empty raw window"
         );
+        let active = store.list_active_follow_wallets()?;
+        assert!(active.contains("wallet_aggregate_live"));
         Ok(())
     }
 
