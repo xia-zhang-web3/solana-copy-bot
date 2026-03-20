@@ -760,6 +760,10 @@ struct PersistedStreamProgressTelemetry {
 fn should_request_persisted_stream_catch_up(
     telemetry: &PersistedStreamProgressTelemetry,
 ) -> bool {
+    if telemetry.phase == DiscoveryPersistedRebuildPhase::Replay {
+        return !telemetry.replay_wallet_stats_complete
+            && telemetry.budget_exhausted_reason.is_some();
+    }
     if telemetry.phase != DiscoveryPersistedRebuildPhase::CollectBuyMints {
         return false;
     }
@@ -14818,6 +14822,7 @@ mod tests {
     fn catch_up_test_telemetry(
         phase: DiscoveryPersistedRebuildPhase,
         mode: CollectBuyMintsMode,
+        replay_wallet_stats_complete: bool,
         budget_exhausted_reason: Option<PersistedStreamBudgetExhaustedReason>,
     ) -> PersistedStreamProgressTelemetry {
         let now = DateTime::parse_from_rfc3339("2026-03-19T18:30:00Z")
@@ -14843,7 +14848,7 @@ mod tests {
             collect_buy_mints_reconcile_new_tail_pending_mints: 0,
             prepass_rows_processed: 0,
             prepass_pages_processed: 0,
-            replay_wallet_stats_complete: false,
+            replay_wallet_stats_complete,
             replay_wallet_stats_rows_processed: 0,
             replay_wallet_stats_pages_processed: 0,
             replay_sol_leg_access_path: None,
@@ -14869,36 +14874,60 @@ mod tests {
     }
 
     #[test]
-    fn persisted_stream_catch_up_request_targets_page_budget_and_fresh_scan_time_budget() {
+    fn persisted_stream_catch_up_request_targets_collect_buy_mints_and_replay_wallet_stats_only() {
         assert!(should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
             DiscoveryPersistedRebuildPhase::CollectBuyMints,
             CollectBuyMintsMode::ReconcileExpiredHead,
+            false,
             Some(PersistedStreamBudgetExhaustedReason::PageBudget),
         )));
         assert!(should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
             DiscoveryPersistedRebuildPhase::CollectBuyMints,
             CollectBuyMintsMode::ReconcileNewTail,
+            false,
             Some(PersistedStreamBudgetExhaustedReason::PageBudget),
         )));
         assert!(should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
             DiscoveryPersistedRebuildPhase::CollectBuyMints,
             CollectBuyMintsMode::FreshScan,
+            false,
             Some(PersistedStreamBudgetExhaustedReason::TimeBudget),
         )));
         assert!(!should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
             DiscoveryPersistedRebuildPhase::CollectBuyMints,
             CollectBuyMintsMode::ReconcileExpiredHead,
+            false,
             Some(PersistedStreamBudgetExhaustedReason::TimeBudget),
         )));
         assert!(!should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
             DiscoveryPersistedRebuildPhase::CollectBuyMints,
             CollectBuyMintsMode::ReconcileNewTail,
+            false,
             Some(PersistedStreamBudgetExhaustedReason::TimeBudget),
+        )));
+        assert!(should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
+            DiscoveryPersistedRebuildPhase::Replay,
+            CollectBuyMintsMode::FreshScan,
+            false,
+            Some(PersistedStreamBudgetExhaustedReason::TimeBudget),
+        )));
+        assert!(should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
+            DiscoveryPersistedRebuildPhase::Replay,
+            CollectBuyMintsMode::FreshScan,
+            false,
+            Some(PersistedStreamBudgetExhaustedReason::PageBudget),
         )));
         assert!(!should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
             DiscoveryPersistedRebuildPhase::Replay,
-            CollectBuyMintsMode::ReconcileExpiredHead,
+            CollectBuyMintsMode::FreshScan,
+            true,
             Some(PersistedStreamBudgetExhaustedReason::PageBudget),
+        )));
+        assert!(!should_request_persisted_stream_catch_up(&catch_up_test_telemetry(
+            DiscoveryPersistedRebuildPhase::Replay,
+            CollectBuyMintsMode::FreshScan,
+            false,
+            None,
         )));
     }
 
