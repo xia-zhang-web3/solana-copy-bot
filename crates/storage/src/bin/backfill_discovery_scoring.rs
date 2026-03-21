@@ -471,6 +471,25 @@ fn bounded_run_stop_reason(
     None
 }
 
+fn bounded_run_scan_deadline(
+    config: &Config,
+    run_started_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Option<Instant> {
+    let max_runtime_seconds = config.max_runtime_seconds?;
+    let elapsed_ms = now
+        .signed_duration_since(run_started_at)
+        .num_milliseconds()
+        .max(0) as u64;
+    let budget_ms = max_runtime_seconds.saturating_mul(1_000);
+    let remaining_ms = budget_ms.saturating_sub(elapsed_ms);
+    Some(Instant::now() + StdDuration::from_millis(remaining_ms))
+}
+
+fn replay_builder_enabled(config: &Config) -> bool {
+    config.max_runtime_seconds.is_none()
+}
+
 fn run_outcome(stop_reason: RunStopReason, coverage_marked: bool) -> &'static str {
     if coverage_marked {
         "completed_and_marked_covered"
@@ -1109,30 +1128,61 @@ fn run_boundary_build_phase(
         let scan_started_at = Instant::now();
         let mut page = Vec::<SwapEvent>::with_capacity(config.batch_size);
         let mut reached_end_ts = false;
-        let rows_seen = store.for_each_observed_swap_after_cursor(
-            cursor.ts,
-            cursor.slot,
-            cursor.signature.as_str(),
-            config.batch_size,
-            |swap| {
-                if swap.ts_utc >= config.start_ts {
-                    reached_end_ts = true;
-                    return Ok(());
-                }
-                if gap_cursor.as_ref().is_some_and(|gap_cursor| {
-                    gap_cursor.ts_utc == swap.ts_utc
-                        && gap_cursor.slot == swap.slot
-                        && gap_cursor.signature == swap.signature
-                }) {
-                    gap_cursor_observed = true;
-                }
-                page.push(swap);
-                Ok(())
-            },
-        )?;
+        let (rows_seen, time_budget_exhausted) =
+            if let Some(deadline) = bounded_run_scan_deadline(config, run_started_at, Utc::now()) {
+                let cursor_page = store.for_each_observed_swap_after_cursor_with_budget(
+                    cursor.ts,
+                    cursor.slot,
+                    cursor.signature.as_str(),
+                    config.batch_size,
+                    deadline,
+                    |swap| {
+                        if swap.ts_utc >= config.start_ts {
+                            reached_end_ts = true;
+                            return Ok(());
+                        }
+                        if gap_cursor.as_ref().is_some_and(|gap_cursor| {
+                            gap_cursor.ts_utc == swap.ts_utc
+                                && gap_cursor.slot == swap.slot
+                                && gap_cursor.signature == swap.signature
+                        }) {
+                            gap_cursor_observed = true;
+                        }
+                        page.push(swap);
+                        Ok(())
+                    },
+                )?;
+                (cursor_page.rows_seen, cursor_page.time_budget_exhausted)
+            } else {
+                let rows_seen = store.for_each_observed_swap_after_cursor(
+                    cursor.ts,
+                    cursor.slot,
+                    cursor.signature.as_str(),
+                    config.batch_size,
+                    |swap| {
+                        if swap.ts_utc >= config.start_ts {
+                            reached_end_ts = true;
+                            return Ok(());
+                        }
+                        if gap_cursor.as_ref().is_some_and(|gap_cursor| {
+                            gap_cursor.ts_utc == swap.ts_utc
+                                && gap_cursor.slot == swap.slot
+                                && gap_cursor.signature == swap.signature
+                        }) {
+                            gap_cursor_observed = true;
+                        }
+                        page.push(swap);
+                        Ok(())
+                    },
+                )?;
+                (rows_seen, false)
+            };
         let scan_ms = scan_started_at.elapsed().as_millis() as u64;
 
         if page.is_empty() {
+            if time_budget_exhausted {
+                break RunStopReason::StoppedDueToRuntimeBudget;
+            }
             break if reached_end_ts {
                 RunStopReason::CompletedRequestedEndTs
             } else {
@@ -1201,6 +1251,9 @@ fn run_boundary_build_phase(
         )?;
         if let Some(reason) = bounded_run_stop_reason(config, run_started_at, batches, Utc::now()) {
             break reason;
+        }
+        if time_budget_exhausted {
+            break RunStopReason::StoppedDueToRuntimeBudget;
         }
         if reached_end_ts || rows_seen < config.batch_size {
             break if reached_end_ts {
@@ -1277,21 +1330,37 @@ fn run_replay_phase(
     let mut total_rows = starting_total_rows;
     let mut batches = starting_batches;
     let mut stage_totals = BatchStageTimings::default();
-    let mut builder = match store.begin_discovery_scoring_replay_builder(
-        cursor.ts,
-        cursor.slot,
-        cursor.signature.as_str(),
-    ) {
-        Ok(builder) => Some(builder),
-        Err(error) if config.seeded_reset => return Err(error),
-        Err(error) => {
-            println!(
-                "event=builder_replay_unavailable phase={} reason={}",
-                phase_label,
-                sanitize_log_value(&format!("{error:#}"))
-            );
-            None
+    let mut builder = if replay_builder_enabled(config) {
+        let builder_bootstrap_started_at = Instant::now();
+        match store.begin_discovery_scoring_replay_builder(
+            cursor.ts,
+            cursor.slot,
+            cursor.signature.as_str(),
+        ) {
+            Ok(builder) => {
+                println!(
+                    "event=builder_replay_ready phase={} bootstrap_ms={}",
+                    phase_label,
+                    builder_bootstrap_started_at.elapsed().as_millis() as u64,
+                );
+                Some(builder)
+            }
+            Err(error) if config.seeded_reset => return Err(error),
+            Err(error) => {
+                println!(
+                    "event=builder_replay_unavailable phase={} reason={}",
+                    phase_label,
+                    sanitize_log_value(&format!("{error:#}"))
+                );
+                None
+            }
         }
+    } else {
+        println!(
+            "event=builder_replay_disabled phase={} reason=runtime_budget_bounded",
+            phase_label
+        );
+        None
     };
 
     let stop_reason = loop {
@@ -1311,36 +1380,73 @@ fn run_replay_phase(
         let scan_started_at = Instant::now();
         let mut page = Vec::<SwapEvent>::with_capacity(config.batch_size);
         let mut reached_end_ts = false;
-        let rows_seen = store.for_each_observed_swap_after_cursor(
-            cursor.ts,
-            cursor.slot,
-            cursor.signature.as_str(),
-            config.batch_size,
-            |swap| {
-                if phase_end_ts.is_some_and(|end_ts| {
-                    if end_ts_inclusive {
-                        swap.ts_utc > end_ts
-                    } else {
-                        swap.ts_utc >= end_ts
-                    }
-                }) {
-                    reached_end_ts = true;
-                    return Ok(());
-                }
-                if gap_cursor.as_ref().is_some_and(|gap_cursor| {
-                    gap_cursor.ts_utc == swap.ts_utc
-                        && gap_cursor.slot == swap.slot
-                        && gap_cursor.signature == swap.signature
-                }) {
-                    gap_cursor_observed = true;
-                }
-                page.push(swap);
-                Ok(())
-            },
-        )?;
+        let (rows_seen, time_budget_exhausted) =
+            if let Some(deadline) = bounded_run_scan_deadline(config, run_started_at, Utc::now()) {
+                let cursor_page = store.for_each_observed_swap_after_cursor_with_budget(
+                    cursor.ts,
+                    cursor.slot,
+                    cursor.signature.as_str(),
+                    config.batch_size,
+                    deadline,
+                    |swap| {
+                        if phase_end_ts.is_some_and(|end_ts| {
+                            if end_ts_inclusive {
+                                swap.ts_utc > end_ts
+                            } else {
+                                swap.ts_utc >= end_ts
+                            }
+                        }) {
+                            reached_end_ts = true;
+                            return Ok(());
+                        }
+                        if gap_cursor.as_ref().is_some_and(|gap_cursor| {
+                            gap_cursor.ts_utc == swap.ts_utc
+                                && gap_cursor.slot == swap.slot
+                                && gap_cursor.signature == swap.signature
+                        }) {
+                            gap_cursor_observed = true;
+                        }
+                        page.push(swap);
+                        Ok(())
+                    },
+                )?;
+                (cursor_page.rows_seen, cursor_page.time_budget_exhausted)
+            } else {
+                let rows_seen = store.for_each_observed_swap_after_cursor(
+                    cursor.ts,
+                    cursor.slot,
+                    cursor.signature.as_str(),
+                    config.batch_size,
+                    |swap| {
+                        if phase_end_ts.is_some_and(|end_ts| {
+                            if end_ts_inclusive {
+                                swap.ts_utc > end_ts
+                            } else {
+                                swap.ts_utc >= end_ts
+                            }
+                        }) {
+                            reached_end_ts = true;
+                            return Ok(());
+                        }
+                        if gap_cursor.as_ref().is_some_and(|gap_cursor| {
+                            gap_cursor.ts_utc == swap.ts_utc
+                                && gap_cursor.slot == swap.slot
+                                && gap_cursor.signature == swap.signature
+                        }) {
+                            gap_cursor_observed = true;
+                        }
+                        page.push(swap);
+                        Ok(())
+                    },
+                )?;
+                (rows_seen, false)
+            };
         let scan_ms = scan_started_at.elapsed().as_millis() as u64;
 
         if page.is_empty() {
+            if time_budget_exhausted {
+                break RunStopReason::StoppedDueToRuntimeBudget;
+            }
             break if reached_end_ts {
                 RunStopReason::CompletedRequestedEndTs
             } else {
@@ -1453,6 +1559,9 @@ fn run_replay_phase(
         )?;
         if let Some(reason) = bounded_run_stop_reason(config, run_started_at, batches, Utc::now()) {
             break reason;
+        }
+        if time_budget_exhausted {
+            break RunStopReason::StoppedDueToRuntimeBudget;
         }
         if reached_end_ts || rows_seen < config.batch_size {
             break if reached_end_ts {
@@ -1943,10 +2052,10 @@ fn refresh_backfill_source_protection(
 #[cfg(test)]
 mod tests {
     use super::{
-        abort_if_control_requested_at, run_boundary_build_phase, run_outcome, run_with_cleanup,
-        run_with_store, run_with_store_stop_reason, set_backfill_test_failpoint,
-        BackfillTestFailpoint, Config, Cursor, RunStopReason, RuntimePressureMonitor,
-        DEFAULT_RUNTIME_PRESSURE_FETCH_INTERVAL_MS,
+        abort_if_control_requested_at, bounded_run_scan_deadline, replay_builder_enabled,
+        run_boundary_build_phase, run_outcome, run_with_cleanup, run_with_store,
+        run_with_store_stop_reason, set_backfill_test_failpoint, BackfillTestFailpoint, Config,
+        Cursor, RunStopReason, RuntimePressureMonitor, DEFAULT_RUNTIME_PRESSURE_FETCH_INTERVAL_MS,
         DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO, DEFAULT_RUNTIME_PRESSURE_SERVICE,
         RUNTIME_INFRA_CLEARED_EVENT_TYPE, RUNTIME_INFRA_STOP_EVENT_TYPE,
     };
@@ -4624,6 +4733,73 @@ mod tests {
         assert_eq!(store.load_discovery_scoring_covered_since()?, None);
         assert_eq!(store.load_discovery_scoring_covered_through_cursor()?, None);
         Ok(())
+    }
+
+    #[test]
+    fn replay_builder_is_disabled_for_runtime_bounded_runs() {
+        let base = Config {
+            db_path: PathBuf::from("test.db"),
+            start_ts: Utc::now(),
+            seeded_reset_max_start_ts: None,
+            end_ts: None,
+            batch_size: 1,
+            sleep_ms: 0,
+            max_batches_per_run: None,
+            max_runtime_seconds: None,
+            reset: false,
+            seeded_reset: false,
+            stop_after_seed_install: false,
+            mark_covered: false,
+            resume_after: None,
+            abort_on_runtime_pressure: false,
+            runtime_pressure_service: DEFAULT_RUNTIME_PRESSURE_SERVICE.to_string(),
+            runtime_pressure_log_path: None,
+            max_yellowstone_fill_ratio: DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO,
+            max_ingestion_lag_ms_p95: 10_000,
+            max_runtime_pressure_sample_age_seconds: 35,
+            abort_on_runtime_infra_stop: false,
+            aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+        };
+
+        assert!(replay_builder_enabled(&base));
+
+        let mut bounded = base.clone();
+        bounded.max_runtime_seconds = Some(1);
+        assert!(!replay_builder_enabled(&bounded));
+    }
+
+    #[test]
+    fn bounded_run_scan_deadline_saturates_when_runtime_budget_is_exhausted() {
+        let config = Config {
+            db_path: PathBuf::from("test.db"),
+            start_ts: Utc::now(),
+            seeded_reset_max_start_ts: None,
+            end_ts: None,
+            batch_size: 1,
+            sleep_ms: 0,
+            max_batches_per_run: None,
+            max_runtime_seconds: Some(1),
+            reset: false,
+            seeded_reset: false,
+            stop_after_seed_install: false,
+            mark_covered: false,
+            resume_after: None,
+            abort_on_runtime_pressure: false,
+            runtime_pressure_service: DEFAULT_RUNTIME_PRESSURE_SERVICE.to_string(),
+            runtime_pressure_log_path: None,
+            max_yellowstone_fill_ratio: DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO,
+            max_ingestion_lag_ms_p95: 10_000,
+            max_runtime_pressure_sample_age_seconds: 35,
+            abort_on_runtime_infra_stop: false,
+            aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+        };
+        let exhausted_started_at = Utc::now() - chrono::Duration::seconds(5);
+        let deadline = bounded_run_scan_deadline(&config, exhausted_started_at, Utc::now())
+            .expect("deadline must exist for bounded runtime");
+        assert!(
+            deadline <= std::time::Instant::now() + std::time::Duration::from_millis(5),
+            "deadline should saturate near immediate when runtime budget is already exhausted",
+        );
     }
 
     #[test]
