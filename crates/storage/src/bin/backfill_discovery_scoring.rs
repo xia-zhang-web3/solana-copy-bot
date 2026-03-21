@@ -4,7 +4,8 @@ use copybot_config::load_from_path;
 use copybot_core_types::SwapEvent;
 use copybot_storage::{
     DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, DiscoveryScoringBoundarySeedSnapshot,
-    RiskEventRow, SqliteStore,
+    RiskEventRow, SqliteStartupPolicy, SqliteStore, StartupStepProgress,
+    StartupStepProgressReporter,
 };
 use serde::Deserialize;
 use signal_hook::consts::signal::SIGINT;
@@ -849,17 +850,70 @@ fn sanitize_log_value(raw: &str) -> String {
         .collect()
 }
 
+fn build_backfill_startup_progress_reporter() -> StartupStepProgressReporter {
+    Arc::new(|event| log_backfill_startup_progress_event(&event))
+}
+
+fn log_backfill_startup_progress_event(event: &StartupStepProgress) {
+    let budget_ms = event
+        .budget_ms
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let detail = event
+        .detail
+        .as_deref()
+        .map(sanitize_log_value)
+        .unwrap_or_else(|| "none".to_string());
+    println!(
+        "event=sqlite_startup_progress stage={} outcome={} elapsed_ms={} budget_ms={} detail={}",
+        event.stage,
+        event.outcome.as_str(),
+        event.elapsed_ms,
+        budget_ms,
+        detail,
+    );
+}
+
 fn run(config: Config) -> Result<()> {
     let termination_requested = install_termination_signal_handlers()?;
-    let mut store = SqliteStore::open(Path::new(&config.db_path))
-        .with_context(|| format!("failed opening sqlite db {}", config.db_path.display()))?;
     let migrations_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
-    store.run_migrations(&migrations_dir).with_context(|| {
+    println!(
+        "event=backfill_tool_start db_path={} start_ts={} end_ts={} seeded_reset={} reset={} stop_after_seed_install={} resume_after_present={}",
+        sanitize_log_value(&config.db_path.display().to_string()),
+        config.start_ts.to_rfc3339(),
+        config
+            .end_ts
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "none".to_string()),
+        config.seeded_reset,
+        config.reset,
+        config.stop_after_seed_install,
+        config.resume_after.is_some(),
+    );
+    let reporter = build_backfill_startup_progress_reporter();
+    let bootstrap = SqliteStore::open_and_migrate_for_startup(
+        Path::new(&config.db_path),
+        &migrations_dir,
+        &SqliteStartupPolicy::default(),
+        Some(&reporter),
+    )
+    .with_context(|| {
         format!(
-            "failed applying migrations from {}",
+            "failed opening+migrating sqlite db {} with startup-safe migration deferral from {}",
+            config.db_path.display(),
             migrations_dir.display()
         )
     })?;
+    let deferred_migrations = if bootstrap.deferred_migrations.is_empty() {
+        "none".to_string()
+    } else {
+        sanitize_log_value(&bootstrap.deferred_migrations.join(","))
+    };
+    println!(
+        "event=backfill_sqlite_bootstrap_complete applied_migrations={} deferred_migrations={}",
+        bootstrap.applied_migrations, deferred_migrations,
+    );
+    let mut store = bootstrap.store;
 
     run_with_cleanup(&mut store, &config, termination_requested.as_ref())
 }
