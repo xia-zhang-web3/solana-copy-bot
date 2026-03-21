@@ -132,6 +132,12 @@ struct BatchStageTimings {
     progress_update_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayEngineSelection {
+    Auto,
+    ForceSql,
+}
+
 #[derive(Debug, Clone)]
 struct ReplayLoopOutcome {
     stop_reason: RunStopReason,
@@ -1091,6 +1097,7 @@ fn run_seeded_boundary_install_and_replay(
         run_started_at,
         boundary_build.replay.total_rows,
         boundary_build.replay.batches,
+        ReplayEngineSelection::Auto,
     )?))
 }
 
@@ -1103,201 +1110,32 @@ fn run_boundary_build_phase(
     starting_cursor: Cursor,
     run_started_at: DateTime<Utc>,
 ) -> Result<BoundarySeedBuildOutcome> {
-    let gap_cursor = store.load_discovery_scoring_materialization_gap_cursor()?;
-    let mut gap_cursor_observed = false;
-    let mut cursor = starting_cursor.clone();
-    let mut total_rows = 0usize;
-    let mut batches = 0usize;
-    let mut stage_totals = BatchStageTimings::default();
-    let mut builder = store.begin_discovery_scoring_boundary_lot_builder()?;
+    let replay = run_replay_phase(
+        store,
+        config,
+        termination_requested,
+        runtime_pressure_monitor,
+        "boundary_build",
+        progress_start_ts,
+        starting_cursor,
+        Some(config.start_ts),
+        false,
+        run_started_at,
+        0,
+        0,
+        ReplayEngineSelection::ForceSql,
+    )?;
 
-    let stop_reason = loop {
-        abort_if_control_requested(
-            store,
-            config,
-            termination_requested,
-            total_rows,
-            batches,
-            &cursor,
-            runtime_pressure_monitor,
-        )?;
-        if let Some(reason) = bounded_run_stop_reason(config, run_started_at, batches, Utc::now()) {
-            break reason;
-        }
-
-        let scan_started_at = Instant::now();
-        let mut page = Vec::<SwapEvent>::with_capacity(config.batch_size);
-        let mut reached_end_ts = false;
-        let (rows_seen, time_budget_exhausted) =
-            if let Some(deadline) = bounded_run_scan_deadline(config, run_started_at, Utc::now()) {
-                let cursor_page = store.for_each_observed_swap_after_cursor_with_budget(
-                    cursor.ts,
-                    cursor.slot,
-                    cursor.signature.as_str(),
-                    config.batch_size,
-                    deadline,
-                    |swap| {
-                        if swap.ts_utc >= config.start_ts {
-                            reached_end_ts = true;
-                            return Ok(());
-                        }
-                        if gap_cursor.as_ref().is_some_and(|gap_cursor| {
-                            gap_cursor.ts_utc == swap.ts_utc
-                                && gap_cursor.slot == swap.slot
-                                && gap_cursor.signature == swap.signature
-                        }) {
-                            gap_cursor_observed = true;
-                        }
-                        page.push(swap);
-                        Ok(())
-                    },
-                )?;
-                (cursor_page.rows_seen, cursor_page.time_budget_exhausted)
-            } else {
-                let rows_seen = store.for_each_observed_swap_after_cursor(
-                    cursor.ts,
-                    cursor.slot,
-                    cursor.signature.as_str(),
-                    config.batch_size,
-                    |swap| {
-                        if swap.ts_utc >= config.start_ts {
-                            reached_end_ts = true;
-                            return Ok(());
-                        }
-                        if gap_cursor.as_ref().is_some_and(|gap_cursor| {
-                            gap_cursor.ts_utc == swap.ts_utc
-                                && gap_cursor.slot == swap.slot
-                                && gap_cursor.signature == swap.signature
-                        }) {
-                            gap_cursor_observed = true;
-                        }
-                        page.push(swap);
-                        Ok(())
-                    },
-                )?;
-                (rows_seen, false)
-            };
-        let scan_ms = scan_started_at.elapsed().as_millis() as u64;
-
-        if page.is_empty() {
-            if time_budget_exhausted {
-                break RunStopReason::StoppedDueToRuntimeBudget;
-            }
-            break if reached_end_ts {
-                RunStopReason::CompletedRequestedEndTs
-            } else {
-                RunStopReason::CompletedSourceExhausted
-            };
-        }
-
-        let last_swap = page
-            .last()
-            .cloned()
-            .ok_or_else(|| anyhow!("boundary build page unexpectedly empty"))?;
-        abort_if_control_requested(
-            store,
-            config,
-            termination_requested,
-            total_rows,
-            batches,
-            &cursor,
-            runtime_pressure_monitor,
-        )?;
-        refresh_backfill_source_protection(store, progress_start_ts)?;
-
-        let storage_timings = store
-            .advance_discovery_scoring_boundary_lot_builder_in_memory_with_timings(
-                &mut builder,
-                &page,
-            )?;
-        cursor = Cursor {
-            ts: last_swap.ts_utc,
-            slot: last_swap.slot,
-            signature: last_swap.signature.clone(),
-        };
-        total_rows = total_rows.saturating_add(page.len());
-        batches = batches.saturating_add(1);
-        stage_totals.scan_ms = stage_totals.scan_ms.saturating_add(scan_ms);
-        stage_totals.prepare_ms = stage_totals
-            .prepare_ms
-            .saturating_add(storage_timings.prepare_ms);
-        stage_totals.apply_ms = stage_totals
-            .apply_ms
-            .saturating_add(storage_timings.apply_ms);
-
-        println!(
-            "event=boundary_batch_buffered phase=boundary_build replay_engine=lot_only_boundary durable=false rows={} total_rows={} batches={} cursor_ts={} cursor_slot={} cursor_signature={} scan_ms={} prepare_ms={} apply_ms={} rug_finalize_ms={} progress_update_ms={}",
-            page.len(),
-            total_rows,
-            batches,
-            cursor.ts.to_rfc3339(),
-            cursor.slot,
-            cursor.signature,
-            scan_ms,
-            storage_timings.prepare_ms,
-            storage_timings.apply_ms,
-            0,
-            0,
-        );
-
-        abort_if_control_requested(
-            store,
-            config,
-            termination_requested,
-            total_rows,
-            batches,
-            &cursor,
-            runtime_pressure_monitor,
-        )?;
-        if let Some(reason) = bounded_run_stop_reason(config, run_started_at, batches, Utc::now()) {
-            break reason;
-        }
-        if time_budget_exhausted {
-            break RunStopReason::StoppedDueToRuntimeBudget;
-        }
-        if reached_end_ts || rows_seen < config.batch_size {
-            break if reached_end_ts {
-                RunStopReason::CompletedRequestedEndTs
-            } else {
-                RunStopReason::CompletedSourceExhausted
-            };
-        }
-        if config.sleep_ms > 0 {
-            if let Some(reason) = sleep_with_interrupt(
-                store,
-                config,
-                config.sleep_ms,
-                termination_requested,
-                total_rows,
-                batches,
-                &cursor,
-                run_started_at,
-                runtime_pressure_monitor,
-            )? {
-                break reason;
-            }
-        }
-    };
-
-    let replay = ReplayLoopOutcome {
-        stop_reason,
-        cursor: cursor.clone(),
-        total_rows,
-        batches,
-        gap_cursor_observed,
-        stage_totals,
-    };
     let seed_snapshot = if matches!(
-        stop_reason,
+        replay.stop_reason,
         RunStopReason::CompletedRequestedEndTs | RunStopReason::CompletedSourceExhausted
     ) {
-        Some(store.export_discovery_scoring_boundary_lot_seed_snapshot(
-            &builder,
+        Some(store.export_discovery_scoring_boundary_seed_snapshot(
             config.start_ts,
             &DiscoveryRuntimeCursor {
-                ts_utc: cursor.ts,
-                slot: cursor.slot,
-                signature: cursor.signature,
+                ts_utc: replay.cursor.ts,
+                slot: replay.cursor.slot,
+                signature: replay.cursor.signature.clone(),
             },
         )?)
     } else {
@@ -1323,6 +1161,7 @@ fn run_replay_phase(
     run_started_at: DateTime<Utc>,
     starting_total_rows: usize,
     starting_batches: usize,
+    replay_engine_selection: ReplayEngineSelection,
 ) -> Result<ReplayLoopOutcome> {
     let gap_cursor = store.load_discovery_scoring_materialization_gap_cursor()?;
     let mut gap_cursor_observed = false;
@@ -1330,7 +1169,9 @@ fn run_replay_phase(
     let mut total_rows = starting_total_rows;
     let mut batches = starting_batches;
     let mut stage_totals = BatchStageTimings::default();
-    let mut builder = if replay_builder_enabled(config) {
+    let mut builder = if matches!(replay_engine_selection, ReplayEngineSelection::Auto)
+        && replay_builder_enabled(config)
+    {
         let builder_bootstrap_started_at = Instant::now();
         match store.begin_discovery_scoring_replay_builder(
             cursor.ts,
@@ -1357,8 +1198,12 @@ fn run_replay_phase(
         }
     } else {
         println!(
-            "event=builder_replay_disabled phase={} reason=runtime_budget_bounded",
-            phase_label
+            "event=builder_replay_disabled phase={} reason={}",
+            phase_label,
+            match replay_engine_selection {
+                ReplayEngineSelection::Auto => "runtime_budget_bounded",
+                ReplayEngineSelection::ForceSql => "forced_sql_replay",
+            }
         );
         None
     };
@@ -1702,6 +1547,7 @@ fn run_with_store_inner(
                         run_started_at,
                         0,
                         0,
+                        ReplayEngineSelection::Auto,
                     )?;
                 }
             } else if persisted_progress_start_ts == config.start_ts {
@@ -1781,6 +1627,7 @@ fn run_with_store_inner(
             run_started_at,
             0,
             0,
+            ReplayEngineSelection::Auto,
         )?;
     }
 
@@ -3623,6 +3470,188 @@ mod tests {
     }
 
     #[test]
+    fn seeded_reset_boundary_build_can_checkpoint_before_seed_install_and_resume() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let stopped_db_path = temp.path().join("seeded-boundary-checkpoint-stop.db");
+        let uninterrupted_db_path = temp.path().join("seeded-boundary-checkpoint-full.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut stopped_store = SqliteStore::open(&stopped_db_path)?;
+        let mut uninterrupted_store = SqliteStore::open(&uninterrupted_db_path)?;
+        stopped_store.run_migrations(&migration_dir)?;
+        uninterrupted_store.run_migrations(&migration_dir)?;
+
+        let partial_start_ts = DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let boundary_start_ts = DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let pre_boundary_1 = SwapEvent {
+            signature: "sig-seeded-boundary-checkpoint-pre-1".to_string(),
+            wallet: "wallet-seeded-boundary-checkpoint".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeededBoundaryCheckpoint1111111".to_string(),
+            amount_in: 0.5,
+            amount_out: 5.0,
+            exact_amounts: None,
+            slot: 810,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T09:05:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let pre_boundary_2 = SwapEvent {
+            signature: "sig-seeded-boundary-checkpoint-pre-2".to_string(),
+            wallet: "wallet-seeded-boundary-checkpoint".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeededBoundaryCheckpoint1111111".to_string(),
+            amount_in: 0.7,
+            amount_out: 7.0,
+            exact_amounts: None,
+            slot: 811,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T09:20:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let pre_boundary_3 = SwapEvent {
+            signature: "sig-seeded-boundary-checkpoint-pre-3".to_string(),
+            wallet: "wallet-seeded-boundary-checkpoint".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "TokenSeededBoundaryCheckpoint1111111".to_string(),
+            token_out: "So11111111111111111111111111111111111111112".to_string(),
+            amount_in: 3.0,
+            amount_out: 0.8,
+            exact_amounts: None,
+            slot: 812,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T09:40:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let boundary_buy = SwapEvent {
+            signature: "sig-seeded-boundary-checkpoint-boundary".to_string(),
+            wallet: "wallet-seeded-boundary-checkpoint".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenSeededBoundaryCheckpoint1111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 813,
+            ts_utc: boundary_start_ts,
+        };
+        let later_sell = SwapEvent {
+            signature: "sig-seeded-boundary-checkpoint-later-sell".to_string(),
+            wallet: "wallet-seeded-boundary-checkpoint".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "TokenSeededBoundaryCheckpoint1111111".to_string(),
+            token_out: "So11111111111111111111111111111111111111112".to_string(),
+            amount_in: 6.0,
+            amount_out: 1.2,
+            exact_amounts: None,
+            slot: 814,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:10:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let observed = vec![
+            pre_boundary_1.clone(),
+            pre_boundary_2.clone(),
+            pre_boundary_3.clone(),
+            boundary_buy,
+            later_sell,
+        ];
+        for store in [&mut stopped_store, &mut uninterrupted_store] {
+            store.insert_observed_swaps_batch(&observed)?;
+            store.apply_discovery_scoring_batch(
+                std::slice::from_ref(&pre_boundary_1),
+                &DiscoveryAggregateWriteConfig::default(),
+            )?;
+            store.set_discovery_scoring_backfill_progress(
+                partial_start_ts,
+                &DiscoveryRuntimeCursor {
+                    ts_utc: pre_boundary_1.ts_utc,
+                    slot: pre_boundary_1.slot,
+                    signature: pre_boundary_1.signature.clone(),
+                },
+            )?;
+        }
+
+        let mut first_slice_config = seeded_reset_config(
+            &stopped_db_path,
+            boundary_start_ts,
+            Cursor {
+                ts: pre_boundary_1.ts_utc,
+                slot: pre_boundary_1.slot,
+                signature: pre_boundary_1.signature.clone(),
+            },
+        );
+        first_slice_config.batch_size = 1;
+        first_slice_config.max_batches_per_run = Some(1);
+
+        let stop_reason = run_with_store_stop_reason(&mut stopped_store, &first_slice_config)?;
+        assert_eq!(stop_reason, RunStopReason::StoppedDueToBatchBudget);
+
+        let (advanced_start_ts, advanced_cursor) = stopped_store
+            .load_discovery_scoring_backfill_progress()?
+            .ok_or_else(|| anyhow::anyhow!("seeded boundary checkpoint should persist progress"))?;
+        assert_eq!(advanced_start_ts, partial_start_ts);
+        assert_eq!(
+            advanced_cursor,
+            DiscoveryRuntimeCursor {
+                ts_utc: pre_boundary_2.ts_utc,
+                slot: pre_boundary_2.slot,
+                signature: pre_boundary_2.signature.clone(),
+            }
+        );
+        assert_eq!(
+            stopped_store.load_discovery_scoring_seed_boundary_install_marker()?,
+            None
+        );
+
+        let resume_config = seeded_reset_config(
+            &stopped_db_path,
+            boundary_start_ts,
+            Cursor {
+                ts: advanced_cursor.ts_utc,
+                slot: advanced_cursor.slot,
+                signature: advanced_cursor.signature.clone(),
+            },
+        );
+        let uninterrupted_config = seeded_reset_config(
+            &uninterrupted_db_path,
+            boundary_start_ts,
+            Cursor {
+                ts: pre_boundary_1.ts_utc,
+                slot: pre_boundary_1.slot,
+                signature: pre_boundary_1.signature.clone(),
+            },
+        );
+
+        run_with_store(&mut stopped_store, &resume_config)?;
+        run_with_store(&mut uninterrupted_store, &uninterrupted_config)?;
+
+        assert_eq!(
+            stopped_store.load_discovery_scoring_backfill_progress()?,
+            uninterrupted_store.load_discovery_scoring_backfill_progress()?,
+        );
+        assert_eq!(
+            stopped_store.load_discovery_scoring_seed_boundary_install_marker()?,
+            uninterrupted_store.load_discovery_scoring_seed_boundary_install_marker()?,
+        );
+        assert_eq!(
+            stopped_store.load_discovery_scoring_covered_since()?,
+            uninterrupted_store.load_discovery_scoring_covered_since()?,
+        );
+        assert_eq!(
+            stopped_store.load_discovery_scoring_covered_through_cursor()?,
+            uninterrupted_store.load_discovery_scoring_covered_through_cursor()?,
+        );
+        assert_comparable_scoring_state_eq(&stopped_db_path, &uninterrupted_db_path)?;
+        Ok(())
+    }
+
+    #[test]
     fn seeded_reset_aborts_when_start_ts_exceeds_effective_horizon_start() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("seeded-boundary-horizon-validation.db");
@@ -3685,7 +3714,7 @@ mod tests {
     }
 
     #[test]
-    fn seeded_reset_crash_before_seed_install_leaves_preseed_lineage_intact() -> Result<()> {
+    fn seeded_reset_crash_before_seed_install_keeps_durable_preseed_checkpoint() -> Result<()> {
         let _guard = FAILPOINT_TEST_MUTEX
             .lock()
             .expect("failpoint mutex poisoned");
@@ -3743,7 +3772,7 @@ mod tests {
         };
         store.insert_observed_swaps_batch(&[
             pre_boundary.clone(),
-            between_cursor_and_boundary,
+            between_cursor_and_boundary.clone(),
             boundary_buy,
         ])?;
         store.apply_discovery_scoring_batch(
@@ -3758,27 +3787,6 @@ mod tests {
                 signature: pre_boundary.signature.clone(),
             },
         )?;
-
-        let before_days = {
-            let conn = Connection::open(&db_path)?;
-            comparable_days(&conn)?
-        };
-        let before_tx_minutes = {
-            let conn = Connection::open(&db_path)?;
-            comparable_tx_minutes(&conn)?
-        };
-        let before_buy_facts = {
-            let conn = Connection::open(&db_path)?;
-            comparable_buy_facts(&conn)?
-        };
-        let before_close_facts = {
-            let conn = Connection::open(&db_path)?;
-            comparable_close_facts(&conn)?
-        };
-        let before_open_lots = {
-            let conn = Connection::open(&db_path)?;
-            comparable_open_lots(&conn)?
-        };
 
         set_backfill_test_failpoint(BackfillTestFailpoint::AfterBoundaryExportBeforeSeedInstall);
         let termination_requested = AtomicBool::new(false);
@@ -3803,22 +3811,58 @@ mod tests {
         );
 
         let conn = Connection::open(&db_path)?;
-        assert_eq!(comparable_days(&conn)?, before_days);
-        assert_eq!(comparable_tx_minutes(&conn)?, before_tx_minutes);
-        assert_eq!(comparable_buy_facts(&conn)?, before_buy_facts);
-        assert_eq!(comparable_close_facts(&conn)?, before_close_facts);
-        assert_eq!(comparable_open_lots(&conn)?, before_open_lots);
+        assert_eq!(
+            comparable_days(&conn)?,
+            vec![(
+                "wallet-seeded-crash".to_string(),
+                "2026-03-06".to_string(),
+                "2026-03-06T09:55:00+00:00".to_string(),
+                "2026-03-06T09:59:59+00:00".to_string(),
+                2,
+                "1.200000000000".to_string(),
+                "0.700000000000".to_string(),
+            )]
+        );
+        assert_eq!(query_table_count(&conn, "wallet_scoring_buy_facts")?, 2);
+        assert_eq!(query_table_count(&conn, "wallet_scoring_close_facts")?, 0);
+        assert_eq!(query_table_count(&conn, "wallet_scoring_tx_minutes")?, 2);
+        assert_eq!(
+            comparable_open_lots(&conn)?,
+            vec![
+                (
+                    "sig-seeded-crash-pre".to_string(),
+                    "wallet-seeded-crash".to_string(),
+                    "TokenSeededCrash11111111111111111111".to_string(),
+                    "5.000000000000".to_string(),
+                    "0.500000000000".to_string(),
+                    "2026-03-06T09:55:00+00:00".to_string(),
+                ),
+                (
+                    "sig-seeded-crash-gap".to_string(),
+                    "wallet-seeded-crash".to_string(),
+                    "TokenSeededCrash11111111111111111111".to_string(),
+                    "7.000000000000".to_string(),
+                    "0.700000000000".to_string(),
+                    "2026-03-06T09:59:59+00:00".to_string(),
+                ),
+            ]
+        );
+        assert_eq!(
+            store.load_discovery_scoring_seed_boundary_install_marker()?,
+            None,
+            "crash before committed seed install must not leave a durable seed marker",
+        );
         assert_eq!(
             store.load_discovery_scoring_backfill_progress()?,
             Some((
                 partial_start_ts,
                 DiscoveryRuntimeCursor {
-                    ts_utc: pre_boundary.ts_utc,
-                    slot: pre_boundary.slot,
-                    signature: pre_boundary.signature.clone(),
+                    ts_utc: between_cursor_and_boundary.ts_utc,
+                    slot: between_cursor_and_boundary.slot,
+                    signature: between_cursor_and_boundary.signature.clone(),
                 },
             )),
-            "crash before committed seed install must keep pre-seed durable lineage intact",
+            "crash before committed seed install must keep the latest durable pre-seed checkpoint",
         );
         Ok(())
     }

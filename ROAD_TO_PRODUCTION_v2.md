@@ -100,80 +100,109 @@ It replaces the old mixed roadmap and removes aggregate/backfill recovery from t
    - startup migrations, heartbeat, alert cursor, and app-loop handoff emit explicit startup progress logs
    - startup WAL checkpoint is removed from the startup critical path and now emits an explicit deferred/skipped outcome instead of blocking startup
 
-### 2.4 Current verdict (updated 2026-03-20)
+### 2.4 Current verdict (updated 2026-03-21)
 
 The project is not blocked by ingestion.
 
 The startup SQLite silent-hang blocker is no longer the current blocker.
 
-Stage 1 is still `partial` after aggregate-cutover experiment `824c9174cbed61a28ec50dadedea121f7cf39720` and the subsequent live stabilization pass.
+Stage 1 is still `partial`. The emergency raw-bridge track is no longer "in progress"; it has now failed as a durable closure path.
 
-Current working diagnosis: startup SQLite observability/boundedness is validated on live, bounded/resumable persisted rebuild behavior is validated on live, canonical migration/repair is validated on live, carry-forward across `metrics_window_start_changed` is validated on live, the retryable SQLite lock / observed-swap writer restart path is validated on live, the startup-safe deferral contract for `0039_observed_swaps_sol_leg_ts_index.sql` is validated on live, the stale candidate-discovery SQL access-path fix is validated on live, and the narrow catch-up scheduler follow-ups are validated on live. Deploys `9b5f8cd6529fd72f2853b10b3f70e9ba0751536e`, `8efd6c49d57602e19a45b030d75ad7a6378898e0`, and `423fd519c09ccac3d40a5cd9565ab27a1394ce96` materially broke the old `CollectBuyMints -> Replay` blocker: safe back-to-back catch-up cycles now work under guarded conditions, `fresh_scan / time_budget` can request catch-up as intended, runtime re-entered `Replay` for the first time in this fix series, and later bucket rollover from `Replay` now carries forward exact canonical buy-mint state and returns back to `Replay` quickly instead of getting trapped in a long stale `CollectBuyMints` treadmill. The replay-focused follow-ups (`e339b6045684ec023f2519d5c9bbbe82610a225f`, `b98727bac3a21abb89495dcf422940c763a46ef7`, `898a488ff8b7fc8e131b1a4a4eea1d63e62aaf10`, `371403cd6bb642035464b07a33a909bf780a5d62`, and config-only `c6e0af8e1b4a34f32b698d6ce26f4f492c542a34`) proved that the remaining blocker on the raw path sits inside `Replay wallet-stats` completion on live-size state. The aggregate runtime cutover experiment (`824c9174cbed61a28ec50dadedea121f7cf39720`) did not solve that blocker because aggregate reads never became ready on live: `covered_since` remained unset, `backfill_resume_required` remained true, `effective_reads_ready` stayed false, `scoring_source = aggregates` never appeared, and enabling aggregate writes before historical backfill completion materially worsened live pressure (`observed_swap_writer_pending_requests = 4096`, `sqlite_busy_error_total = 2700`, `sqlite_write_retry_total = 2025`) and pushed runtime into a stale frozen-window `collect_buy_mints` loop. A manual stabilization pass on the same build then disabled aggregate writes/reads on live, cleared the frozen-window loop, and restored bounded progress back into raw `Replay`. Stage 1 therefore remains `partial`: the current live blocker is still raw replay wallet-stats completion before SOL-leg replay and healthy publication, while the permanent-solution track now requires fixing aggregate backfill / resume so aggregate readiness can safely become true before any future cutover attempt. Do not re-enable aggregate reads or writes on the production host until bounded historical backfill produces durable progress and `effective_reads_ready = true`.
+Current working diagnosis: raw-path micro-fixes are exhausted. The series of deploys from `492c7e3` through `70e959d` proved the old blocker is gone: time-first SQL access paths work, catch-up scheduler changes work, grouped wallet-stats SQL works, and the corrected `wallet_activity_days` fast path works on live with sustained `100%` fast-path utilization and `0%` fallback. But none of those fixes produced the missing end-to-end outcome: `Replay wallet-stats` still did not complete durably before rollover, `SOL-leg` never started, and publication never reached `raw_window_persisted_stream`.
+
+The config-only raw bridge also failed. Reducing `scoring_window_days` from `5` to `3` did lower the scoring horizon, but the first attempt stayed frozen behind stale persisted rebuild state from the old 5-day window. Clearing only `discovery_persisted_rebuild_state` was the correct operational fix: after that cleanup the service restarted fresh, completed `CollectBuyMints`, completed bounded token-quality resolution, and re-entered `Replay`. But the bridge still did not survive the next decisive bucket. `Replay wallet-stats` started once, then the runtime rolled back into `collect_buy_mints / reconcile_*`, stale-window warnings returned, and the success signals still never appeared:
+
+- no `completed bounded replay wallet-stats prepass; switching to SOL-leg replay`
+- no `rebuild_replay_sol_leg_access_path`
+- no `scoring_source = raw_window_persisted_stream`
+- no `active_follow_wallets > 0`
+
+Aggregate/backfill recovery is therefore back to being the main engineering blocker. The safe operational findings are now clear:
+
+1. same-host hot clone while the production service is running is unsafe because it materially increases live SQLite / writer pressure
+2. same-host cold clone with the service intentionally stopped is operationally safe
+3. the current aggregate blocker is not generic operator orchestration anymore, but the seeded boundary / backfill path before the first durable checkpoint
+
+Three separate offline aggregate attempts failed to land that first durable checkpoint:
+
+1. coarse bounded wrapper run on `a25c1e5`
+2. budget-aware bounded retry on `02f887a`
+3. direct unbounded phase-1 `seeded-reset --stop-after-seed-install` run on a fresh cold clone
+
+The current aggregate blocker is therefore the pre-seed boundary build path itself. It must be fixed in code. Do not re-enable aggregate reads or writes on the production host until bounded historical backfill produces durable progress and `effective_reads_ready = true`.
+
+Recommended operational posture until that blocker is fixed: stabilize the server by stopping the bot if it is still fail-closed and non-publishing, so it stops burning Yellowstone / gRPC tokens without producing trusted selection. When stabilizing, revert the temporary `scoring_window_days = 3` bridge back to `5`.
 
 Do not start Stage 2 yet.
 
-### 2.5 Server state (updated 2026-03-20)
+### 2.5 Server state (updated 2026-03-21)
 
-- Deployed commit: `824c9174cbed61a28ec50dadedea121f7cf39720`
-- Effective live config after stabilization restart:
+- Deployed binary commit: `70e959df677f35347fd25b2a1ed91481b6d90769` (unchanged)
+- Production repo / offline tooling commit: `02f887a3a37ad57cf09578c9105d1f11d08744d8`
+- Current stabilized host config after stopping the failed raw bridge:
+  - `scoring_window_days = 5`
   - `metric_snapshot_interval_seconds = 3600`
   - `scoring_aggregates_write_enabled = false`
   - `scoring_aggregates_enabled = false`
-- Service: aggregate-cutover rollout itself did not reach aggregate scoring readiness and materially degraded live pressure; after manual stabilization with aggregate writes/reads disabled, runtime cleared the frozen stale-window loop, re-entered raw `Replay`, and remained operationally stable, but replay wallet-stats still did not complete, SOL-leg replay still did not start, and healthy publication still did not land
+- Service: intentionally stopped and left inactive to stop burning Yellowstone / gRPC tokens while discovery remains fail-closed and non-publishing
 - `execution.enabled = false`
-- Latest observed restart: stabilization restart at `2026-03-20 19:00:53 UTC`; no restart loop after that (`NRestarts = 0`)
-- `active_follow_wallets = 0` during the observed validation window
+- `active_follow_wallets = 0`
+- Stabilized stopped-state checks:
+  - `systemctl is-active solana-copy-bot.service -> inactive`
+  - no active `copybot-app`
+  - no active `backfill_discovery_scoring`
+  - no active `sqlite3 .*live_copybot`
+  - unrelated `copybot-executor` / `copybot-adapter` processes may still exist; they are not the stopped discovery runtime
+- Aggregate backfill status: **blocked** — the exact blocker is now the pre-seed boundary build path before the first durable checkpoint:
+  - same-host hot clone under active live load was aborted as unsafe after pressure spiked to:
+    - `observed_swap_writer_pending_requests = 4224`
+    - `sqlite_busy_error_total = 469`
+    - `sqlite_write_retry_total = 399`
+    - host IO wait `wa = 90.5%`
+  - same-host cold clone with the service intentionally stopped succeeded
+  - offline coarse wrapper run on `a25c1e5` still produced no first durable checkpoint
+  - offline budget-aware bounded retry on `02f887a` still produced no first durable checkpoint
+  - offline direct unbounded phase-1 `seeded-reset --stop-after-seed-install` also failed to reach:
+    - `boundary_batch_buffered`
+    - `seed_boundary_installed`
+    - or any durable change to `backfill_progress`
+- Observed data scale: `SELECT COUNT(*) FROM observed_swaps WHERE ts >= datetime('now', '-5 days')` returned `48,386,266`; the failed `3`-day bridge was expected to shrink this to roughly `~29M`, but the bridge still did not close Stage 1 durably
 - Observed during validation window:
-  - startup emitted `sqlite_migrations_deferred` with `deferred_versions=0039_observed_swaps_sol_leg_ts_index.sql`
-  - startup then completed `sqlite_migrations_apply` immediately, kept `startup_sqlite_wal_checkpoint` explicitly deferred, and reached `app runtime loop started`
-  - aggregate-cutover rollout failed to become ready:
-    - effective config on the failed cutover attempt was `metric_snapshot_interval_seconds = 3600`, `scoring_aggregates_write_enabled = true`, `scoring_aggregates_enabled = true`
-    - `covered_since = null`
-    - `backfill_resume_required = true`
-    - `effective_reads_ready = false`
-    - `scoring_source = aggregates` was never observed
-    - no healthy publication landed
-  - aggregate-cutover rollout introduced material live pressure before stabilization:
-    - `observed_swap_writer_pending_requests` reached `4096`
-    - `sqlite_busy_error_total` reached `2700`
-    - `sqlite_write_retry_total` reached `2025`
-    - `sqlite_wal_size_bytes = 2084221512`
-    - runtime repeatedly emitted `restart_reason = metrics_window_start_changed_awaiting_exact_carry_forward_checkpoint`
-    - stale reconcile froze on `persisted_horizon_end = 2026-03-20 15:00:14.356172037 UTC`
-  - after stabilization restart with aggregate writes/reads disabled, the frozen-window loop cleared:
-    - frozen stale mode was still visible immediately after restart from `2026-03-20T19:01:03.094678Z` through `2026-03-20T19:02:08.627799Z`
-    - at `2026-03-20T19:02:08.748703Z` the frozen prepass completed and runtime resumed a fresh target with `rebuild_horizon_end = 2026-03-20 19:02:08.613360747 UTC`
-    - `restart_reason = metrics_window_start_changed_awaiting_exact_carry_forward_checkpoint` was not observed again after `2026-03-20T19:02:08.627799Z`
-  - runtime then returned to raw `Replay` on the stabilized live config:
-    - `2026-03-20T19:14:11.898709Z` completed bounded discovery persisted observed_swaps prepass
-    - `2026-03-20T19:14:14.021608Z` completed bounded discovery token-quality resolution and switched to replay
-    - first explicit replay sample after stabilization appeared at `2026-03-20T19:15:43.690624Z`
-    - replay progress then advanced:
-      - `2026-03-20T19:15:58Z -> 1,499,035`
-      - `2026-03-20T19:16:22Z -> 1,736,609`
-      - `2026-03-20T19:18:54Z -> 3,403,652`
-      - `2026-03-20T19:21:25Z -> 4,977,640`
-      - `2026-03-20T19:23:28Z -> 5,998,380`
-    - sampled replay wallet-stats rate on the stabilized raw path was about `600k rows/min`
-  - the current live blocker is again the raw replay wallet-stats path:
-    - latest observed state at `2026-03-20T19:23:30.997196Z` was `rebuild_phase = replay`
-    - `rebuild_replay_wallet_stats_complete = false`
-    - `rebuild_replay_rows_processed = 0`
-    - `rebuild_replay_sol_leg_access_path` had still not been emitted
-    - `rebuild_budget_exhausted_reason = time_budget`
-    - `discovery_runtime_mode = fail_closed`
-    - `scoring_source = raw_window_incomplete_no_recent_published_universe`
-  - pressure/stability improved materially after stabilization:
-    - post-restart `observed_swap_writer_pending_requests` dropped from the pre-pass `4096` baseline to mostly `0-45`, with brief spikes to `1325` and `1852`
-    - `writer_aggregate_queue_depth_batches` stayed `0`
-    - `sqlite_busy_error_total` and `sqlite_write_retry_total` remained `0` through `2026-03-20T19:19:23Z` and were only `4 / 4` at `2026-03-20T19:22:53.879944Z`
-    - `yellowstone_output_queue_depth = 0` in sampled post-restart telemetry
-    - `yellowstone_output_queue_fill_ratio = 0.0` in sampled post-restart telemetry
-    - rare `discovery cycle still running, skipping scheduled trigger` warnings still appeared, but no writer-death path, no restart loop, and no false `healthy` were observed
-  - healthy publication still has not landed on the stabilized deploy:
-    - no `raw_window_persisted_stream`
-    - `active_follow_wallets = 0`
-    - no completed healthy cycle yet
+  - corrected raw replay fast path was validated before the bridge experiments:
+    - live deploy of `70e959d` stayed healthy overnight
+    - replay ran through the sampled window with:
+      - `rebuild_replay_wallet_stats_fast_path_pages_processed = 534`
+      - `rebuild_replay_wallet_stats_fast_path_wallets_processed = 480,600`
+      - `rebuild_replay_wallet_stats_fallback_pages_processed = 0`
+      - `rebuild_replay_wallet_stats_fallback_wallets_processed = 0`
+    - this proved the corrected `wallet_activity_days` fast path is not the remaining blocker
+  - same-host hot clone was disproven, but cold clone was proven:
+    - hot clone under live load materially increased pressure and was aborted
+    - cold clone on the same host succeeded once the service was intentionally stopped
+    - exact persisted resume lineage before offline work:
+      - `backfill_progress.start_ts = 2026-03-03T17:05:37Z`
+      - `backfill_progress.cursor.ts_utc = 2026-03-08T21:06:45.726139749Z`
+      - `backfill_progress.cursor.slot = 405112624`
+      - `backfill_progress.cursor.signature = 2wsWtL4P7TzBS52S74LMkGqyhFu7Jfq83PomHiPzXLu27vr2QvBNuS9kKjVJrRDhsCn6BU17vYLSUvPEHiFNB2d`
+    - clone path used for the offline runs:
+      - `/var/www/solana-copy-bot/state/live_copybot.aggregate_clone_offline_20260321.db`
+    - all three offline aggregate attempts still failed before the first durable seeded-boundary checkpoint
+  - raw-bridge experiment sequence is now complete:
+    - initial `scoring_window_days = 3` restart stayed pinned behind stale persisted rebuild state from the old `5`-day window
+    - clearing only `discovery_persisted_rebuild_state` correctly restarted a fresh 3-day rebuild
+    - that fresh restart reached:
+      - bounded observed-swaps prepass completion
+      - bounded token-quality completion
+      - `Replay`
+    - but the decisive next bucket still failed:
+      - latest decisive sample `2026-03-21T19:11:35.899184Z`
+      - `rebuild_phase = collect_buy_mints`
+      - `rebuild_collect_buy_mints_mode = reconcile_new_tail`
+      - `rebuild_replay_rows_processed = 0`
+      - `rebuild_replay_sol_leg_access_path` not emitted
+      - `scoring_source = raw_window_incomplete_no_recent_published_universe`
+      - `active_follow_wallets = 0`
+      - stale warning returned near the end of that decisive window
 - Rollout reports:
   - [ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md](ops/server_reports/2026-03-17_1758_stage1_discovery_runtime_contract_rollout_report.md) — first Stage 1 deploy (`2eb5c30`), confirmed bootstrap path removed but fail_closed due to cap-truncated warm load
   - [ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md](ops/server_reports/2026-03-17_1839_stage1_persisted_stream_followup_rollout_report.md) — persisted-stream follow-up (`0c58aba`), confirmed correct path engaged but first cycle did not complete in 6+ minutes
@@ -199,11 +228,11 @@ Do not start Stage 2 yet.
 
 ### 2.6 Live data scale (observed)
 
-- `live_copybot.db`: 117 GB
-- `live_copybot.db-wal`: 71 GB
-- `live_copybot.db-shm`: 101 MB
+- `live_copybot.db`: ~140 GB
+- `live_copybot.db-wal`: ranged from `0` during the stopped-service cold clone up to ~`2.0 GB` during later live runtime
+- `live_copybot.db-shm`: ~3.4 MB
 - `observed_swaps_retention_days`: 7
-- `scoring_window_days`: 5
+- `scoring_window_days`: failed emergency bridge used `3`; stabilized stopped host is reverted to `5`
 - `max_window_swaps_in_memory`: 100,000
 
 ## 3. Production principles
@@ -551,6 +580,348 @@ Their useful conclusions are already absorbed here:
 4. Operational incidents on prod must not be repeated just to prove recovery semantics.
 
 ## 10. Execution log
+
+- Date: 2026-03-21
+- Commit SHA: `70e959df677f35347fd25b2a1ed91481b6d90769`
+- Stage / substep: `Stage 1 / production host stabilization after raw-bridge failure`
+- Status: `completed`
+- Code changed:
+  - none in the binary; this was an operational stabilization step on the production host
+- Tests run:
+  - service stop / process audit on the production host
+- Done:
+  - `solana-copy-bot.service` was stopped and left inactive
+  - `scoring_window_days` in `/etc/solana-copy-bot/live.server.toml` was reverted from `3` back to `5`
+  - other config invariants remained unchanged:
+    - `metric_snapshot_interval_seconds = 3600`
+    - `scoring_aggregates_write_enabled = false`
+    - `scoring_aggregates_enabled = false`
+  - exact stabilization checks passed:
+    - `systemctl is-active solana-copy-bot.service -> inactive`
+    - no active `copybot-app`
+    - no active `backfill_discovery_scoring`
+    - no active `sqlite3 .*live_copybot`
+- Acceptance criteria closed:
+  - production is no longer wasting Yellowstone / gRPC tokens on a fail-closed non-publishing runtime
+  - temporary raw-bridge config drift is removed
+- Blocked:
+  - discovery remains unavailable until the aggregate/backfill blocker is fixed and revalidated offline
+- Next action:
+  - deploy the aggregate/backfill checkpointability fix and rerun offline cold-clone seeded-reset validation
+
+- Date: 2026-03-21
+- Commit SHA: `70e959df677f35347fd25b2a1ed91481b6d90769`
+- Stage / substep: `Stage 1 / emergency raw 3-day bridge after clearing stale persisted rebuild state`
+- Status: `failed`
+- Code changed:
+  - none in this step on the binary; this was a live config + persisted-state operational experiment on the already-deployed runtime
+- Tests run:
+  - live restart on `solana-copy-bot.service`
+  - live runtime observation through the decisive next bucket after fresh restart
+- Done:
+  - the stale persisted rebuild row was dumped before cleanup and showed the expected frozen old-window shape:
+    - `phase = collect_buy_mints`
+    - `window_start = 2026-03-18T14:41:17.794541987+00:00`
+    - `metrics_window_start = 2026-03-18T14:00:00+00:00`
+    - `prepass_rows_processed = 217344`
+    - `prepass_pages_processed = 6697`
+    - `replay_rows_processed = 0`
+    - `replay_pages_processed = 0`
+  - only `discovery_persisted_rebuild_state` was cleared:
+    - `DELETE FROM discovery_persisted_rebuild_state WHERE id = 1;`
+    - post-delete `SELECT COUNT(*) FROM discovery_persisted_rebuild_state; -> 0`
+  - config remained intentionally narrowed for the bridge:
+    - `scoring_window_days = 3`
+    - `metric_snapshot_interval_seconds = 3600`
+    - `scoring_aggregates_write_enabled = false`
+    - `scoring_aggregates_enabled = false`
+  - the restart fixed the stale-freeze branch exactly as intended:
+    - `metrics_window_start_changed_awaiting_exact_carry_forward_checkpoint` disappeared immediately after restart
+    - first sample at `2026-03-21T16:11:56.825005Z` showed fresh `collect_buy_mints / fresh_scan`
+    - `completed bounded discovery persisted observed_swaps prepass; switching to bounded token-quality resolution` appeared at `2026-03-21T17:54:37.322320Z`
+    - `completed bounded discovery token-quality resolution; switching to replay` appeared at `2026-03-21T17:54:39.161897Z`
+    - `rebuild_phase = replay` appeared at `2026-03-21T17:54:46.060821Z`
+    - replay wallet-stats then advanced:
+      - `2026-03-21T17:55:01.209681Z -> rebuild_replay_wallet_stats_rows_processed = 25075`
+      - `2026-03-21T17:55:17.404683Z -> rebuild_replay_wallet_stats_rows_processed = 55257`
+      - `2026-03-21T17:59:00.608178Z -> rebuild_replay_wallet_stats_rows_processed = 130568`
+- Acceptance criteria closed:
+  - the 3-day bridge was given a fair fresh-start test instead of being judged through stale persisted state from the prior 5-day run
+  - stale persisted rebuild state is now proven to be a separate operational hazard that must be cleared when changing the scoring window
+- Blocked:
+  - the bridge still failed on the decisive next bucket:
+    - latest decisive sample at `2026-03-21T19:11:35.899184Z` had returned to `collect_buy_mints / reconcile_new_tail`
+    - `rebuild_replay_wallet_stats_complete = false`
+    - `rebuild_replay_wallet_stats_rows_processed = 0`
+    - `rebuild_replay_rows_processed = 0`
+    - `rebuild_replay_sol_leg_access_path` still never appeared
+    - `scoring_source` remained `raw_window_incomplete_no_recent_published_universe`
+    - `active_follow_wallets = 0`
+    - stale warning returned near the end of the decisive window
+- Acceptance criteria remaining:
+  - raw `Replay wallet-stats` would still need to finish durably before rollover and enter `SOL-leg` / publication to make raw the closing path
+- Remaining risks:
+  - this bridge can re-enter `Replay`, but still does not survive the next bucket as a durable path to publication
+  - leaving the runtime up in this state continues to consume live ingestion resources without producing trusted output
+- Next action:
+  - stop treating the raw bridge as a viable closing track
+  - stabilize the host by stopping the bot if it remains fail-closed
+  - move engineering effort back to the aggregate/backfill blocker
+
+- Date: 2026-03-21
+- Commit SHA: `70e959df677f35347fd25b2a1ed91481b6d90769`
+- Stage / substep: `Stage 1 / emergency raw 3-day bridge initial rollout`
+- Status: `failed`
+- Code changed:
+  - none in this step on the binary; this was a live config-only operational bridge experiment
+- Tests run:
+  - live config rollout validation on `solana-copy-bot.service`
+- Done:
+  - live config was changed only by:
+    - `scoring_window_days = 5 -> 3`
+  - other invariants stayed unchanged:
+    - `metric_snapshot_interval_seconds = 3600`
+    - `scoring_aggregates_write_enabled = false`
+    - `scoring_aggregates_enabled = false`
+  - service restarted cleanly:
+    - exact start timestamp `2026-03-21 14:41:12 UTC`
+    - `MainPID = 90076`
+    - `NRestarts = 0`
+- Acceptance criteria closed:
+  - the config-only bridge was validated under production runtime conditions instead of by arithmetic alone
+- Blocked:
+  - the bridge did not even reach `Replay` because runtime remained frozen behind stale persisted rebuild state from the old 5-day run:
+    - first sample already showed `collect_buy_mints / reconcile_expired_head`
+    - after two buckets `rebuild_phase = replay` still never appeared
+    - `restart_reason = metrics_window_start_changed_awaiting_exact_carry_forward_checkpoint` returned
+    - all replay counters stayed `0`
+  - no publication signals appeared:
+    - no `raw_window_persisted_stream`
+    - `active_follow_wallets = 0`
+- Acceptance criteria remaining:
+  - if the bridge was to be judged fairly, stale persisted rebuild state first had to be cleared and the runtime restarted fresh
+- Remaining risks:
+  - changing `scoring_window_days` without clearing stale persisted rebuild state can keep runtime pinned to the old window
+- Next action:
+  - dump the persisted rebuild row, clear only `discovery_persisted_rebuild_state`, and rerun the bridge from a fresh restart
+
+- Date: 2026-03-21
+- Commit SHA: `02f887a3a37ad57cf09578c9105d1f11d08744d8`
+- Stage / substep: `Stage 1 / offline seeded-reset phase-1 seed install attempt`
+- Status: `failed`
+- Code changed:
+  - none in this step on the live runtime; this was an offline cold-clone validation of the rebuilt `backfill_discovery_scoring` binary
+- Tests run:
+  - fresh cold clone creation while `solana-copy-bot.service` remained `inactive`
+  - direct unbounded `seeded-reset --stop-after-seed-install` run on the clone
+- Done:
+  - a fresh cold clone was recreated successfully with the service still stopped
+  - exact `SEED_START_TS` was derived from clone readiness:
+    - `SEED_START_TS = 2026-03-16T13:45:58.613850438Z`
+  - phase 1 was then run directly, without the bounded wrapper:
+    - `stdbuf -oL -eL backfill_discovery_scoring ... --seeded-reset --stop-after-seed-install --mark-covered --batch-size 10000 --sleep-ms 0`
+  - the process itself was alive and doing work:
+    - CPU remained non-zero
+    - `/proc/<pid>/io` kept growing
+    - the clone DB was being read and written
+- Acceptance criteria closed:
+  - the team now has a clean separation between "bounded wrapper" behavior and the raw phase-1 seeded-reset install path
+  - the lack of progress was confirmed against a fresh cold clone, not against a partial or live-contended clone
+- Blocked:
+  - phase 1 still did not reach any durable seeded-boundary milestone:
+    - `/tmp/seed_install_offline.log` stayed empty
+    - no `boundary_batch_buffered`
+    - no `seed_boundary_installed`
+    - clone post-state still showed:
+      - `covered_since = null`
+      - `backfill_resume_required = true`
+      - `backfill_progress.start_ts = 2026-03-03T17:05:37Z`
+      - no new seed-boundary marker
+  - because phase 1 never reached a durable seed install, phase 2 was intentionally not started
+- Acceptance criteria remaining:
+  - land a first durable checkpoint before seed install
+  - then land a durable `seed_boundary_installed`
+- Remaining risks:
+  - the aggregate blocker is now clearly before the first durable seed-boundary checkpoint, not just in the bounded wrapper
+- Next action:
+  - debug and fix the pre-seed boundary build path in code
+
+- Date: 2026-03-21
+- Commit SHA: `02f887a3a37ad57cf09578c9105d1f11d08744d8`
+- Stage / substep: `Stage 1 / offline budget-aware bounded aggregate retry`
+- Status: `failed`
+- Code changed:
+  - runtime-budget-aware bounded replay patch was built into `backfill_discovery_scoring`
+- Tests run:
+  - fresh cold clone creation while `solana-copy-bot.service` remained `inactive`
+  - bounded wrapper rerun against the offline clone with the same exact persisted resume cursor
+- Done:
+  - repo on the server was updated to `02f887a3a37ad57cf09578c9105d1f11d08744d8`
+  - `backfill_discovery_scoring` was rebuilt
+  - old offline clone was deleted and recreated cold with the service still off
+- Acceptance criteria closed:
+  - the exact previous failure mode was re-tested after the runtime-budget patch instead of being inferred
+- Blocked:
+  - the exact offline bounded-resume scenario still repeated the old failure mode:
+    - first run still lasted `42m+`
+    - `001_backfill.log` stayed empty
+    - `next_resume.env` stayed unchanged
+    - final readiness still showed:
+      - `covered_since = null`
+      - `backfill_resume_required = true`
+      - unchanged March 8 `backfill_progress` cursor
+    - wrapper ended `verdict = run_failed`
+- Acceptance criteria remaining:
+  - a first durable checkpoint still had to land before any bounded recovery loop could be considered viable
+- Remaining risks:
+  - this was no longer credibly an operator-profile problem; the blocker had moved to the binary's pre-checkpoint execution path itself
+- Next action:
+  - separate the first seed-install attempt from the bounded wrapper and debug the pre-seed path directly
+
+- Date: 2026-03-21
+- Commit SHA: `a25c1e5fa1ab766d8f866520e6292c02fd7df361`
+- Stage / substep: `Stage 1 / same-host live clone attempt under active production load`
+- Status: `failed`
+- Code changed:
+  - none in this step on the live runtime; this was an operational clone attempt using the existing server state
+- Tests run:
+  - same-host `sqlite3 .backup` clone attempt while the production service was still running
+- Done:
+  - stale `.bak*` backup artifacts were deleted to free enough disk space for a same-host clone
+  - the clone copy itself did start and the clone file grew as expected
+- Acceptance criteria closed:
+  - the original capacity blocker ("no room for a clone") was removed by deleting stale backup artifacts
+- Blocked:
+  - clone creation on the same host while the service was live materially degraded runtime pressure:
+    - `observed_swap_writer_pending_requests = 4224`
+    - `sqlite_busy_error_total = 469`
+    - `sqlite_write_retry_total = 399`
+    - host IO wait `wa = 90.5%`
+  - the clone and partial clone file were intentionally aborted and deleted
+- Acceptance criteria remaining:
+  - any same-host clone path must not materially degrade live runtime pressure
+- Remaining risks:
+  - same-host hot clone is operationally unsafe even if there is enough disk space
+- Next action:
+  - do not repeat hot clone under live load
+  - only perform cold clone with the service intentionally stopped
+
+- Date: 2026-03-21
+- Commit SHA: `a25c1e5fa1ab766d8f866520e6292c02fd7df361`
+- Stage / substep: `Stage 1 / offline aggregate clone and first bounded recovery attempt`
+- Status: `failed`
+- Code changed:
+  - none in this step on the live runtime; this was an offline operator attempt using the rebuilt aggregate recovery tooling
+- Tests run:
+  - cold offline clone creation on the production host with the service intentionally stopped
+  - aggregate recovery wrapper run against the offline clone
+- Done:
+  - production repo was updated to `a25c1e5fa1ab766d8f866520e6292c02fd7df361`
+  - release binaries `backfill_discovery_scoring` and `aggregate_readiness_status` were built successfully
+  - live config remained stabilized:
+    - `metric_snapshot_interval_seconds = 3600`
+    - `scoring_aggregates_write_enabled = false`
+    - `scoring_aggregates_enabled = false`
+  - the production service was intentionally stopped and left off before clone work:
+    - `systemctl is-active solana-copy-bot.service -> inactive`
+  - a cold clone was created successfully at:
+    - `/var/www/solana-copy-bot/state/live_copybot.aggregate_clone_offline_20260321.db`
+  - source readiness captured the exact persisted resume lineage before offline work:
+    - `backfill_progress.start_ts = 2026-03-03T17:05:37Z`
+    - `backfill_progress.cursor.ts_utc = 2026-03-08T21:06:45.726139749Z`
+    - `backfill_progress.cursor.slot = 405112624`
+    - `backfill_progress.cursor.signature = 2wsWtL4P7TzBS52S74LMkGqyhFu7Jfq83PomHiPzXLu27vr2QvBNuS9kKjVJrRDhsCn6BU17vYLSUvPEHiFNB2d`
+  - the wrapper report directory and artifacts were captured:
+    - `/tmp/aggregate-backfill-loop-offline/summary.txt`
+    - `/tmp/aggregate-backfill-loop-offline/final_aggregate_readiness_status.json` or equivalent final readiness JSON artifact
+    - `/tmp/aggregate-backfill-loop-offline/next_resume.env`
+- Acceptance criteria closed:
+  - the team now has a safe way to create a cold SQLite clone on the same host, but only with the production service intentionally stopped
+  - the exact source resume lineage was captured before offline recovery
+  - the wrapper correctly did not invent new lineage or fake progress when the first offline run failed to reach a checkpoint
+- Blocked:
+  - the first offline recovery attempt used too-coarse bounded-run settings and failed before the first durable checkpoint:
+    - `--batch-size 10000`
+    - `--max-runtime-seconds 1800`
+    - no first persisted progress update after `42m+`
+    - `covered_since = null`
+    - `materialization_gap_cursor = null`
+    - `backfill_progress` remained unchanged at the original March 8 cursor
+    - `next_resume.env` remained unchanged
+    - wrapper ended `verdict = run_failed`
+  - because the first durable checkpoint never landed, aggregate readiness did not advance:
+    - `effective_writes_ready = false`
+    - `effective_reads_ready = false`
+- Acceptance criteria remaining:
+  - land a first durable checkpoint on the offline clone
+  - then continue bounded resumable progress until `covered_since != null`, `materialization_gap_cursor = null`, and `backfill_resume_required = false`
+  - only after that re-evaluate any production tail catch-up or aggregate cutover step
+- Remaining risks:
+  - if the first offline checkpoint cannot be reached even with much smaller bounded slices, the blocker is no longer operator orchestration but a code-path problem before the first durable commit inside `backfill_discovery_scoring`
+  - keeping the production service down for too long still has business cost, so offline recovery should now move in small deterministic slices instead of another coarse long run
+- Next action:
+  - keep the service down for now, keep the existing offline clone, and retry the first checkpoint as a direct micro-slice on that clone:
+    - `--batch-size 250`
+    - `--max-batches-per-run 1`
+    - `--max-runtime-seconds 120`
+  - if that lands a first durable checkpoint, continue with the operator loop using small bounded slices (for example `250 x 4`)
+  - if even the micro-slice does not produce a first checkpoint, stop treating this as an operator-profile issue and debug `backfill_discovery_scoring` before the first commit
+
+- Date: 2026-03-21
+- Commit SHA: `70e959df677f35347fd25b2a1ed91481b6d90769`
+- Stage / substep: `Stage 1 / live rollout validation of corrected wallet_activity_days fast path`
+- Status: `partial`
+- Code changed:
+  - none in this step; this was a live server rollout validation of the already-built artifact
+- Tests run:
+  - live server rollout validation on `solana-copy-bot.service`
+- Done:
+  - deploy/startup stayed healthy on live:
+    - `app runtime loop started` appeared at `2026-03-20T21:02:59.903726Z`
+    - `sqlite_migrations_deferred` still emitted deferred `0039_observed_swaps_sol_leg_ts_index.sql`
+    - `sqlite_migrations_apply` completed immediately with `applied = 0`
+    - `startup_sqlite_wal_checkpoint` remained explicitly deferred
+    - service stayed on the same `MainPID = 70143` overnight with `NRestarts = 0`
+  - the corrected `wallet_activity_days` fast path was proven active on live:
+    - first replay sample after deploy appeared at `2026-03-20T21:06:02.881379Z`
+    - latest replay sample in the overnight window appeared at `2026-03-21T06:32:43.833556Z`
+    - `rebuild_replay_wallet_stats_fast_path_pages_processed = 534`
+    - `rebuild_replay_wallet_stats_fast_path_wallets_processed = 480,600`
+    - `rebuild_replay_wallet_stats_fallback_pages_processed = 0`
+    - `rebuild_replay_wallet_stats_fallback_wallets_processed = 0`
+    - full observed replay window stayed on the fast path with zero fallback pages
+  - replay remained alive and bounded through the window:
+    - `rebuild_replay_wallet_stats_rows_processed = 19,803,724`
+    - `rebuild_replay_wallet_stats_pages_processed = 621`
+    - `rebuild_budget_exhausted_reason = time_budget`
+    - no restart loop
+    - no writer-death path
+    - no `metrics_window_start_changed_awaiting_exact_carry_forward_checkpoint`
+- Acceptance criteria closed:
+  - the corrected `wallet_activity_days` fast path is now validated on live and does not silently degrade into the raw fallback path
+  - config invariants stayed aligned with the stabilized live state (`scoring_aggregates_write_enabled = false`, `scoring_aggregates_enabled = false`)
+  - Stage 1 remains clearly beyond the old `CollectBuyMints -> Replay` blocker
+- Blocked:
+  - even with the corrected fast path, replay wallet-stats still did not finish:
+    - `rebuild_replay_wallet_stats_complete = false`
+    - `rebuild_replay_rows_processed = 0`
+    - `rebuild_replay_sol_leg_access_path` is still not emitted
+    - no `raw_window_persisted_stream`
+    - `active_follow_wallets = 0`
+  - `discovery_runtime_mode` remained `fail_closed`
+  - `scoring_source` remained `raw_window_incomplete_no_recent_published_universe`
+- Acceptance criteria remaining:
+  - a future rollout must still emit `completed bounded replay wallet-stats prepass; switching to SOL-leg replay`
+  - a future rollout must emit `rebuild_replay_sol_leg_access_path`
+  - a future rollout must land `scoring_source = raw_window_persisted_stream`
+  - a future rollout must land `active_follow_wallets > 0`
+- Remaining risks:
+  - the corrected fast path materially lowers one hot-path cost, but the raw replay wallet-stats prepass is still not sufficient to reach SOL-leg/publication inside the current live runtime contract
+  - `discovery cycle still running, skipping scheduled trigger` continued through the night
+  - `shadow risk infra stop activated` continued through the night
+  - retry counters remained non-zero (`sqlite_busy_error_total = 261`, `sqlite_write_retry_total = 225`) even though they only crept slowly in the sampled window
+- Next action:
+  - stop treating raw replay micro-optimizations as the main solution path; keep the raw path only as a bridge and move the permanent-solution work to aggregate backfill / resume, with any further raw-path runtime experiments treated as temporary operational bridges only
 
 - Date: 2026-03-20
 - Commit SHA: `824c9174cbed61a28ec50dadedea121f7cf39720`
