@@ -3,9 +3,9 @@ use chrono::{DateTime, Duration, Utc};
 use copybot_config::load_from_path;
 use copybot_core_types::SwapEvent;
 use copybot_storage::{
-    DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, DiscoveryScoringBoundarySeedSnapshot,
-    DiscoveryScoringReplayBuilder, RiskEventRow, SqliteStartupPolicy, SqliteStore,
-    StartupStepProgress, StartupStepProgressReporter,
+    DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, DiscoveryScoringReplayBuilder,
+    RiskEventRow, SqliteStartupPolicy, SqliteStore, StartupStepProgress,
+    StartupStepProgressReporter,
 };
 use serde::Deserialize;
 use signal_hook::consts::signal::SIGINT;
@@ -148,7 +148,6 @@ struct ReplayLoopOutcome {
     batches: usize,
     gap_cursor_observed: bool,
     stage_totals: BatchStageTimings,
-    seed_snapshot: Option<DiscoveryScoringBoundarySeedSnapshot>,
 }
 
 #[derive(Debug)]
@@ -1089,34 +1088,39 @@ fn run_seeded_boundary_install_and_replay(
         other => other,
     };
 
-    let seed_snapshot = boundary_build
-        .replay
-        .seed_snapshot
-        .ok_or_else(|| anyhow!("boundary build completed without a durable seed snapshot"))?;
+    let boundary_start_ts = config.start_ts;
+    let boundary_cursor = DiscoveryRuntimeCursor {
+        ts_utc: boundary_build.replay.cursor.ts,
+        slot: boundary_build.replay.cursor.slot,
+        signature: boundary_build.replay.cursor.signature.clone(),
+    };
+    let seed_lot_count = store.count_discovery_scoring_boundary_seed_open_lots()?;
     println!(
         "event=seed_boundary_exported boundary_start_ts={} boundary_cursor_ts={} boundary_cursor_slot={} boundary_cursor_signature={} seed_lot_count={} durable=false",
-        seed_snapshot.boundary_start_ts.to_rfc3339(),
-        seed_snapshot.boundary_cursor.ts_utc.to_rfc3339(),
-        seed_snapshot.boundary_cursor.slot,
-        seed_snapshot.boundary_cursor.signature,
-        seed_snapshot.open_lots.len(),
+        boundary_start_ts.to_rfc3339(),
+        boundary_cursor.ts_utc.to_rfc3339(),
+        boundary_cursor.slot,
+        boundary_cursor.signature,
+        seed_lot_count,
     );
     maybe_fire_backfill_test_failpoint(
         BackfillTestFailpoint::AfterBoundaryExportBeforeSeedInstall,
     )?;
 
-    store.reset_discovery_scoring_tables_and_install_boundary_seed_snapshot(
-        &seed_snapshot,
-        preserved_gap_cursor.as_ref(),
-    )?;
+    let installed_seed_lot_count = store
+        .reset_discovery_scoring_tables_and_commit_existing_boundary_open_lots(
+            boundary_start_ts,
+            &boundary_cursor,
+            preserved_gap_cursor.as_ref(),
+        )?;
     refresh_backfill_source_protection(store, config.start_ts)?;
     println!(
         "event=seed_boundary_installed boundary_start_ts={} boundary_cursor_ts={} boundary_cursor_slot={} boundary_cursor_signature={} seed_lot_count={} durable=true replay_resume_semantics=strictly_after_boundary_cursor",
-        seed_snapshot.boundary_start_ts.to_rfc3339(),
-        seed_snapshot.boundary_cursor.ts_utc.to_rfc3339(),
-        seed_snapshot.boundary_cursor.slot,
-        seed_snapshot.boundary_cursor.signature,
-        seed_snapshot.open_lots.len(),
+        boundary_start_ts.to_rfc3339(),
+        boundary_cursor.ts_utc.to_rfc3339(),
+        boundary_cursor.slot,
+        boundary_cursor.signature,
+        installed_seed_lot_count,
     );
     maybe_fire_backfill_test_failpoint(
         BackfillTestFailpoint::AfterCommittedSeedInstallBeforeReplayAfterSeed,
@@ -1125,24 +1129,23 @@ fn run_seeded_boundary_install_and_replay(
     if config.stop_after_seed_install {
         println!(
             "event=seed_boundary_stop_requested boundary_start_ts={} boundary_cursor_ts={} boundary_cursor_slot={} boundary_cursor_signature={} seed_lot_count={} durable=true requested_stop=after_seed_install",
-            seed_snapshot.boundary_start_ts.to_rfc3339(),
-            seed_snapshot.boundary_cursor.ts_utc.to_rfc3339(),
-            seed_snapshot.boundary_cursor.slot,
-            seed_snapshot.boundary_cursor.signature,
-            seed_snapshot.open_lots.len(),
+            boundary_start_ts.to_rfc3339(),
+            boundary_cursor.ts_utc.to_rfc3339(),
+            boundary_cursor.slot,
+            boundary_cursor.signature,
+            installed_seed_lot_count,
         );
         return Ok(SeededReplayOutcome::Stopped(ReplayLoopOutcome {
             stop_reason: RunStopReason::StoppedAfterSeedInstall,
             cursor: Cursor {
-                ts: seed_snapshot.boundary_cursor.ts_utc,
-                slot: seed_snapshot.boundary_cursor.slot,
-                signature: seed_snapshot.boundary_cursor.signature.clone(),
+                ts: boundary_cursor.ts_utc,
+                slot: boundary_cursor.slot,
+                signature: boundary_cursor.signature.clone(),
             },
             total_rows: boundary_build.replay.total_rows,
             batches: boundary_build.replay.batches,
             gap_cursor_observed: boundary_build.replay.gap_cursor_observed,
             stage_totals: boundary_build.replay.stage_totals,
-            seed_snapshot: None,
         }));
     }
 
@@ -1154,9 +1157,9 @@ fn run_seeded_boundary_install_and_replay(
         "replay_after_seed",
         config.start_ts,
         Cursor {
-            ts: seed_snapshot.boundary_cursor.ts_utc,
-            slot: seed_snapshot.boundary_cursor.slot,
-            signature: seed_snapshot.boundary_cursor.signature.clone(),
+            ts: boundary_cursor.ts_utc,
+            slot: boundary_cursor.slot,
+            signature: boundary_cursor.signature.clone(),
         },
         None,
         true,
@@ -1550,28 +1553,6 @@ fn run_replay_phase(
         }
     };
 
-    let seed_snapshot = if matches!(
-        replay_engine_selection,
-        ReplayEngineSelection::ForceBoundaryLotSql
-    ) && matches!(
-        stop_reason,
-        RunStopReason::CompletedRequestedEndTs | RunStopReason::CompletedSourceExhausted
-    ) {
-        let boundary_start_ts = phase_end_ts.ok_or_else(|| {
-            anyhow!("boundary lot sql replay completed without a boundary start ts")
-        })?;
-        Some(store.export_discovery_scoring_boundary_seed_snapshot(
-            boundary_start_ts,
-            &DiscoveryRuntimeCursor {
-                ts_utc: cursor.ts,
-                slot: cursor.slot,
-                signature: cursor.signature.clone(),
-            },
-        )?)
-    } else {
-        None
-    };
-
     Ok(ReplayLoopOutcome {
         stop_reason,
         cursor,
@@ -1579,7 +1560,6 @@ fn run_replay_phase(
         batches,
         gap_cursor_observed,
         stage_totals,
-        seed_snapshot,
     })
 }
 
@@ -1669,7 +1649,6 @@ fn run_with_store_inner(
                         batches: 0,
                         gap_cursor_observed: false,
                         stage_totals: BatchStageTimings::default(),
-                        seed_snapshot: None,
                     };
                 } else {
                     final_outcome = run_replay_phase(
@@ -2684,10 +2663,14 @@ mod tests {
             },
             Utc::now(),
         )?;
-        let lot_snapshot = lot_boundary
-            .replay
-            .seed_snapshot
-            .ok_or_else(|| anyhow::anyhow!("lot-only boundary build did not export a snapshot"))?;
+        let lot_snapshot = lot_store.export_discovery_scoring_boundary_seed_snapshot(
+            boundary_start_ts,
+            &DiscoveryRuntimeCursor {
+                ts_utc: lot_boundary.replay.cursor.ts,
+                slot: lot_boundary.replay.cursor.slot,
+                signature: lot_boundary.replay.cursor.signature.clone(),
+            },
+        )?;
 
         assert_eq!(full_snapshot.boundary_cursor, lot_snapshot.boundary_cursor);
         assert_eq!(full_snapshot.open_lots, lot_snapshot.open_lots);
