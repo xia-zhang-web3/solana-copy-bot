@@ -537,6 +537,10 @@ fn flush_stdout() {
     let _ = io::stdout().flush();
 }
 
+fn should_skip_batch_rug_finalize(phase_label: &str) -> bool {
+    phase_label == "boundary_build"
+}
+
 fn log_runtime_pressure_abort_event(config: &Config, sample: &RuntimePressureSample, reason: &str) {
     println!(
         "event=runtime_pressure_fast_abort source={} sample_ts={} reason={} yellowstone_output_queue_depth={} yellowstone_output_queue_capacity={} yellowstone_output_queue_fill_ratio={} yellowstone_output_oldest_age_ms={} ingestion_lag_ms_p95={} max_yellowstone_fill_ratio={:.4} max_ingestion_lag_ms_p95={} max_runtime_pressure_sample_age_seconds={}",
@@ -1429,6 +1433,17 @@ fn run_replay_phase(
         let rug_finalize_ms = if builder.is_some() {
             println!(
                 "event=rug_finalize_skipped phase={} replay_engine={} reason=builder_path",
+                phase_label, replay_engine
+            );
+            flush_stdout();
+            0
+        } else if should_skip_batch_rug_finalize(phase_label) {
+            // Boundary seed export only depends on materialized open lots. The pre-seed
+            // buy/close fact tables are discarded during seeded install, so per-batch rug
+            // finalization here is wasted work and can dominate the slice after the durable
+            // checkpoint has already been persisted.
+            println!(
+                "event=rug_finalize_skipped phase={} replay_engine={} reason=boundary_seed_phase",
                 phase_label, replay_engine
             );
             flush_stdout();
