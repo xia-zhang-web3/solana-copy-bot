@@ -148,6 +148,7 @@ struct ReplayLoopOutcome {
     total_rows: usize,
     batches: usize,
     gap_cursor_observed: bool,
+    defer_final_rug_finalize: bool,
     stage_totals: BatchStageTimings,
 }
 
@@ -550,6 +551,23 @@ fn flush_stdout() {
 
 fn should_skip_batch_rug_finalize(phase_label: &str) -> bool {
     phase_label == "boundary_build"
+}
+
+fn should_defer_final_rug_finalize(
+    phase_label: &str,
+    replay_builder_used: bool,
+    stop_reason: RunStopReason,
+) -> bool {
+    replay_builder_used
+        && phase_label == "replay_after_seed"
+        && matches!(
+            stop_reason,
+            RunStopReason::StoppedDueToBatchBudget
+                | RunStopReason::StoppedDueToRuntimeBudget
+                | RunStopReason::StoppedDueToFastGuard
+                | RunStopReason::StoppedDueToInfraGuard
+                | RunStopReason::StoppedDueToTerminationSignal
+        )
 }
 
 fn log_runtime_pressure_abort_event(config: &Config, sample: &RuntimePressureSample, reason: &str) {
@@ -1157,6 +1175,7 @@ fn run_seeded_boundary_install_and_replay(
             total_rows: boundary_build.replay.total_rows,
             batches: boundary_build.replay.batches,
             gap_cursor_observed: boundary_build.replay.gap_cursor_observed,
+            defer_final_rug_finalize: false,
             stage_totals: boundary_build.replay.stage_totals,
         }));
     }
@@ -1580,12 +1599,16 @@ fn run_replay_phase(
         }
     };
 
+    let defer_final_rug_finalize =
+        should_defer_final_rug_finalize(phase_label, replay_builder.is_some(), stop_reason);
+
     Ok(ReplayLoopOutcome {
         stop_reason,
         cursor,
         total_rows,
         batches,
         gap_cursor_observed,
+        defer_final_rug_finalize,
         stage_totals,
     })
 }
@@ -1675,6 +1698,7 @@ fn run_with_store_inner(
                         total_rows: 0,
                         batches: 0,
                         gap_cursor_observed: false,
+                        defer_final_rug_finalize: false,
                         stage_totals: BatchStageTimings::default(),
                     };
                 } else {
@@ -1783,13 +1807,20 @@ fn run_with_store_inner(
         final_outcome.stop_reason,
         RunStopReason::CompletedSourceExhausted
     ) && config.end_ts.is_none();
-    let skip_final_rug_finalize = matches!(
+    let final_rug_finalize_skip_reason = if matches!(
         final_outcome.stop_reason,
         RunStopReason::StoppedAfterSeedInstall
-    );
-    let final_finalize_ms = if skip_final_rug_finalize {
+    ) {
+        Some("stopped_after_seed_install")
+    } else if final_outcome.defer_final_rug_finalize {
+        Some("bounded_post_seed_builder_path")
+    } else {
+        None
+    };
+    let final_finalize_ms = if let Some(reason) = final_rug_finalize_skip_reason {
         println!(
-            "event=final_rug_finalize_skipped phase=run_complete reason=stopped_after_seed_install watermark_ts={}",
+            "event=final_rug_finalize_skipped phase=run_complete reason={} watermark_ts={}",
+            reason,
             final_outcome.cursor.ts.to_rfc3339(),
         );
         0
@@ -2050,8 +2081,9 @@ mod tests {
         abort_if_control_requested_at, bounded_run_scan_deadline, replay_builder_enabled,
         run_boundary_build_phase, run_outcome, run_with_cleanup, run_with_store,
         run_with_store_stop_reason, set_backfill_test_failpoint, should_attempt_replay_builder,
-        BackfillTestFailpoint, Config, Cursor, ReplayEngineSelection, RunStopReason,
-        RuntimePressureMonitor, DEFAULT_RUNTIME_PRESSURE_FETCH_INTERVAL_MS,
+        should_defer_final_rug_finalize, BackfillTestFailpoint, Config, Cursor,
+        ReplayEngineSelection, RunStopReason, RuntimePressureMonitor,
+        DEFAULT_RUNTIME_PRESSURE_FETCH_INTERVAL_MS,
         DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO, DEFAULT_RUNTIME_PRESSURE_SERVICE,
         RUNTIME_INFRA_CLEARED_EVENT_TYPE, RUNTIME_INFRA_STOP_EVENT_TYPE,
     };
@@ -4974,6 +5006,35 @@ mod tests {
         assert!(!should_attempt_replay_builder(
             &bounded,
             ReplayEngineSelection::Auto
+        ));
+    }
+
+    #[test]
+    fn bounded_post_seed_builder_path_defers_final_rug_finalize() {
+        assert!(should_defer_final_rug_finalize(
+            "replay_after_seed",
+            true,
+            RunStopReason::StoppedDueToRuntimeBudget
+        ));
+        assert!(should_defer_final_rug_finalize(
+            "replay_after_seed",
+            true,
+            RunStopReason::StoppedDueToBatchBudget
+        ));
+        assert!(!should_defer_final_rug_finalize(
+            "replay_after_seed",
+            true,
+            RunStopReason::CompletedSourceExhausted
+        ));
+        assert!(!should_defer_final_rug_finalize(
+            "replay_after_seed",
+            false,
+            RunStopReason::StoppedDueToRuntimeBudget
+        ));
+        assert!(!should_defer_final_rug_finalize(
+            "boundary_build",
+            true,
+            RunStopReason::StoppedDueToRuntimeBudget
         ));
     }
 

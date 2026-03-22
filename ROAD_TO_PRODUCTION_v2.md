@@ -124,6 +124,14 @@ It replaces the old mixed roadmap and removes aggregate/backfill recovery from t
    - bounded `replay_after_seed` still attempts the replay builder after committed seed install
    - but builder bootstrap no longer needs to preload all `wallet_scoring_open_lots` for that path
    - open lots are now loaded lazily per touched `wallet_id + token`, with the goal of preserving builder replay semantics without reintroducing the full-table bootstrap stall on the real clone
+19. Commit `c3e057fc504e1941e385ed25c872fa8f0722ac44` then validated that lazy bootstrap on the real clone:
+   - bounded `replay_after_seed` repeatedly emitted `event=builder_replay_ready`, `event=checkpoint_persisted`, and builder `event=batch_committed`
+   - repeated bounded chains advanced the persisted cursor from `2026-03-08T22:17:02.935800892Z | 405123360 | 5G2cGVUFuDDDPXCuqpaUaeVfUQXxNWE6xxeoX1NCEwgzfycTTYaJDiUYNW5UuL3zqD2j2qWuk3FUVMG1AkbsUC3x` to `2026-03-08T22:56:27.923141336Z | 405129333 | 3o16UWsam85kXYhsj594snQNaKSqpPWoHFb8bdMCuFHkDfnPnTi1gbCaKHvmMae36QBkZDoxo8jVx4cqE1MuBaGf`
+   - the remaining dominant cost is no longer builder bootstrap or SQL prepare; it is the expensive final rug-finalize tail on bounded post-seed runs
+20. Current working tree now targets that newest narrowed blocker:
+   - bounded builder replay after seed now explicitly defers `final_rug_finalize` at `run_complete`
+   - the defer is limited to incomplete bounded `replay_after_seed` builder runs, so full completion and non-builder paths keep the old finalize contract
+   - the goal is to turn runtime budget back into checkpointable replay work instead of spending most of it in the final rug-finalize pass
 
 ### 2.4 Current verdict (updated 2026-03-22)
 
@@ -152,6 +160,7 @@ Aggregate/backfill recovery is therefore back to being the main engineering bloc
 6. later server-side validation on `edf90a7caa4e455ca0f3e46d8bdeb3148d8fee02` also proved durable `seed_boundary_install_*` and post-seed resume on the same clone
 7. the current aggregate blocker is now narrower again: runtime-bounded `replay_after_seed` still falls into an extremely expensive prepare stage on the SQL replay path, even after seed install is committed
 8. the first direct attempt to escape that SQL prepare cost (`87a7052`) was not operationally viable on the real clone because eager builder bootstrap timed out before the first replay-after-seed batch
+9. the second attempt (`c3e057f`) fixed that bootstrap problem, but the next runtime-budget bottleneck appeared immediately afterward: bounded post-seed runs now spend too much time in `final_rug_finalize` after durable builder checkpoints have already been written
 
 Three separate offline aggregate attempts on the old tool path really did fail to land that first durable checkpoint:
 
@@ -172,11 +181,11 @@ That blocker then narrowed again across the next stopped-host validation sequenc
 - `7b6ab59` moved the real clone onto `boundary_lot_sql`, which removed the pre-seed `prepare_ms` problem and reached the exact near-boundary cursor
 - `edf90a7caa4e455ca0f3e46d8bdeb3148d8fee02` then completed `seed_boundary_exported`, `seed_boundary_installed`, and a real post-seed resume on that same clone
 
-The current aggregate blocker is therefore no longer "before the first durable checkpoint" and no longer "before committed seed install". It is now the next narrower post-seed blocker: runtime-bounded `replay_after_seed` can still spend almost the entire budget in SQL prepare (`prepare_ms = 213313`, `apply_ms = 24336` on the first `10000`-row Step 2 run), while the first eager-builder follow-up (`87a7052`) also proved that full open-lot bootstrap is too expensive on the same clone.
+The current aggregate blocker is therefore no longer "before the first durable checkpoint" and no longer "before committed seed install". It is now the next narrower post-seed blocker: runtime-bounded `replay_after_seed` first spent almost the entire budget in SQL prepare (`prepare_ms = 213313`, `apply_ms = 24336` on the first `10000`-row Step 2 run), then the eager-builder follow-up (`87a7052`) proved that full open-lot bootstrap was too expensive, and finally the lazy-builder follow-up (`c3e057f`) showed that the next dominant tail is `final_rug_finalize` after builder checkpoints have already been durably persisted.
 
 Do not re-enable aggregate reads or writes on the production host until bounded historical backfill reaches either durable `seed_boundary_install_*` or full readiness (`effective_reads_ready = true`).
 
-Recommended operational posture until that blocker is fixed: keep the bot stopped if it is still fail-closed and non-publishing, so it stops burning Yellowstone / gRPC tokens without producing trusted selection. Keep `scoring_window_days` reverted back to `5`. Do not spend more stopped-host time on additional validation runs until the new lazy post-seed replay patch is deployed. When stopped-host validation resumes, continue using only the existing offline clone and treat `discovery_scoring_state` as the source of truth for progress.
+Recommended operational posture until that blocker is fixed: keep the bot stopped if it is still fail-closed and non-publishing, so it stops burning Yellowstone / gRPC tokens without producing trusted selection. Keep `scoring_window_days` reverted back to `5`. Do not spend more stopped-host time on additional validation runs until the new deferred-finalize post-seed replay patch is deployed. When stopped-host validation resumes, continue using only the existing offline clone and treat `discovery_scoring_state` as the source of truth for progress.
 
 Do not start Stage 2 yet.
 
@@ -184,7 +193,7 @@ Do not start Stage 2 yet.
 
 - Deployed binary commit: `70e959df677f35347fd25b2a1ed91481b6d90769` (unchanged)
 - Production runtime repo / last old offline tooling commit before the latest investigation: `02f887a3a37ad57cf09578c9105d1f11d08744d8`
-- Current server repo / offline tooling checkout used for the latest stopped-host investigation: `87a705296e3643f64cca4d7c3797c68b89b0bca4`
+- Current server repo / offline tooling checkout used for the latest stopped-host investigation: `c3e057fc504e1941e385ed25c872fa8f0722ac44`
 - Current stabilized host config after stopping the failed raw bridge:
   - `scoring_window_days = 5`
   - `metric_snapshot_interval_seconds = 3600`
@@ -271,11 +280,18 @@ Do not start Stage 2 yet.
         - `event=seed_boundary_resume_from_persisted_progress` still appeared, so the committed seed marker contract remained intact
         - but no `event=builder_replay_ready`, no post-seed `checkpoint_persisted`, no builder `batch_committed`, and no `summary outcome=...` were emitted before the outer timeout fired
         - the persisted cursor therefore remained unchanged at `2026-03-08T22:17:02.935800892Z | 405123360 | 5G2cGVUFuDDDPXCuqpaUaeVfUQXxNWE6xxeoX1NCEwgzfycTTYaJDiUYNW5UuL3zqD2j2qWuk3FUVMG1AkbsUC3x`
+      - `c3e057fc504e1941e385ed25c872fa8f0722ac44` then validated the lazy builder recovery on that same clone:
+        - one initial bounded run emitted `event=builder_replay_ready`, three durable builder checkpoints, and builder `batch_committed` lines with no outer timeout
+        - a later 5-run chain repeated the same builder events on every run and advanced the cursor to `2026-03-08T22:38:03.568827634Z | 405126550 | 2biGRk8Yozn3vor5rMKscdWZf6EdurhirSyRYYtchAy4ovTERdvNUUM36pTeK83y4CrZwRnQUanfxvkzLfSqDwyy`
+        - the step-up chain with `max-batches-per-run = 10` then advanced further to `2026-03-08T22:56:27.923141336Z | 405129333 | 3o16UWsam85kXYhsj594snQNaKSqpPWoHFb8bdMCuFHkDfnPnTi1gbCaKHvmMae36QBkZDoxo8jVx4cqE1MuBaGf`
       - the remaining blocker is now post-seed, not pre-seed:
-        - bounded `replay_after_seed` on that Step 2 run still used `replay_engine=sql`
+        - bounded `replay_after_seed` on the original Step 2 run still used `replay_engine=sql`
         - it spent `prepare_ms = 213313` and `apply_ms = 24336` on the first bounded `10000`-row batch
         - the first eager-builder escape hatch also timed out before first replay output
-        - that leaves one active candidate in the current working tree: lazy per-wallet-token builder bootstrap for post-seed replay
+        - the lazy-builder fix then removed those two blockers, but exposed the next one:
+          - later step-up runs now stop on `runtime_budget`, not `batch_budget`
+          - `final_rug_finalize` dominates the tail (`rug_finalize_ms = 29995`, then `144187`, then `146688`) after durable builder checkpoints have already been written
+        - that leaves one active candidate in the current working tree: defer `final_rug_finalize` for incomplete bounded post-seed builder runs so the runtime budget is spent on replay progress instead of the expensive finalize tail
   - raw-bridge experiment sequence is now complete:
     - initial `scoring_window_days = 3` restart stayed pinned behind stale persisted rebuild state from the old `5`-day window
     - clearing only `discovery_persisted_rebuild_state` correctly restarted a fresh 3-day rebuild
