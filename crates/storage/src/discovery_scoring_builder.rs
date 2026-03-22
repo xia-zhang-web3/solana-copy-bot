@@ -7,7 +7,8 @@ use super::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_core_types::SwapEvent;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
@@ -17,6 +18,7 @@ const QUALITY_MAX_SIGNATURE_PAGES: u32 = 1;
 const QUALITY_MAX_FETCH_PER_BATCH: usize = 20;
 const QUALITY_RPC_BUDGET_MS: u64 = 1_500;
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+const BOUNDARY_LOT_BUILDER_STATE_KEY: &str = "boundary_lot_builder_state_json";
 
 #[derive(Debug, Clone)]
 struct BuilderLot {
@@ -156,6 +158,13 @@ pub struct DiscoveryScoringBoundaryLotBuilder {
     open_lots: HashMap<WalletTokenKey, VecDeque<BuilderLot>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedBoundaryLotBuilderState {
+    progress_start_ts: DateTime<Utc>,
+    cursor: DiscoveryRuntimeCursor,
+    open_lots: Vec<DiscoveryScoringBoundarySeedLot>,
+}
+
 #[derive(Debug, Clone)]
 enum LotMutationAction {
     Upsert(BuilderLot),
@@ -285,6 +294,83 @@ fn load_all_open_lots(conn: &Connection) -> Result<HashMap<WalletTokenKey, VecDe
         });
     }
     Ok(out)
+}
+
+fn load_boundary_seed_lots_into_open_lots(
+    seed_lots: &[DiscoveryScoringBoundarySeedLot],
+) -> HashMap<WalletTokenKey, VecDeque<BuilderLot>> {
+    let mut ordered = seed_lots.to_vec();
+    ordered.sort_by(|left, right| {
+        left.wallet_id
+            .cmp(&right.wallet_id)
+            .then_with(|| left.token.cmp(&right.token))
+            .then_with(|| left.opened_ts.cmp(&right.opened_ts))
+            .then_with(|| left.buy_signature.cmp(&right.buy_signature))
+    });
+
+    let mut out: HashMap<WalletTokenKey, VecDeque<BuilderLot>> = HashMap::new();
+    for lot in ordered {
+        out.entry(WalletTokenKey {
+            wallet_id: lot.wallet_id.clone(),
+            token: lot.token.clone(),
+        })
+        .or_default()
+        .push_back(BuilderLot {
+            buy_signature: lot.buy_signature,
+            wallet_id: lot.wallet_id,
+            token: lot.token,
+            qty: lot.qty,
+            cost_sol: lot.cost_sol,
+            opened_ts: lot.opened_ts,
+        });
+    }
+    out
+}
+
+fn load_persisted_boundary_lot_builder_state_on_conn(
+    conn: &Connection,
+) -> Result<Option<PersistedBoundaryLotBuilderState>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT state_value
+             FROM discovery_scoring_state
+             WHERE state_key = ?1",
+            params![BOUNDARY_LOT_BUILDER_STATE_KEY],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("failed querying persisted boundary lot builder state")?;
+    raw.map(|raw| {
+        serde_json::from_str::<PersistedBoundaryLotBuilderState>(&raw)
+            .context("failed decoding persisted boundary lot builder state json")
+    })
+    .transpose()
+}
+
+fn upsert_persisted_boundary_lot_builder_state_on_conn(
+    conn: &Connection,
+    progress_start_ts: DateTime<Utc>,
+    progress_cursor: &DiscoveryRuntimeCursor,
+    builder: &DiscoveryScoringBoundaryLotBuilder,
+    updated_at: &str,
+) -> Result<()> {
+    let state = PersistedBoundaryLotBuilderState {
+        progress_start_ts,
+        cursor: progress_cursor.clone(),
+        open_lots: export_boundary_seed_lots_from_open_lots(&builder.open_lots),
+    };
+    let state_json = serde_json::to_string(&state)
+        .context("failed encoding persisted boundary lot builder state json")?;
+    conn.execute(
+        "INSERT INTO discovery_scoring_state(state_key, state_value, updated_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(state_key) DO UPDATE SET
+            state_value = excluded.state_value,
+            updated_at = excluded.updated_at",
+        params![BOUNDARY_LOT_BUILDER_STATE_KEY, state_json, updated_at],
+    )
+    .context("failed upserting persisted boundary lot builder state")?;
+    Ok(())
 }
 
 fn seed_market_windows_from_lookback(
@@ -993,6 +1079,10 @@ impl SqliteStore {
 
     pub fn begin_discovery_scoring_boundary_lot_builder(
         &self,
+        progress_start_ts: DateTime<Utc>,
+        starting_cursor_ts: DateTime<Utc>,
+        starting_cursor_slot: u64,
+        starting_cursor_signature: &str,
     ) -> Result<DiscoveryScoringBoundaryLotBuilder> {
         let carryover_count: i64 = self
             .conn
@@ -1008,6 +1098,18 @@ impl SqliteStore {
             anyhow::bail!(
                 "boundary lot builder does not support wallet_scoring_carryover_lots; carryover_lot_count={carryover_count}"
             );
+        }
+        if let Some(state) = load_persisted_boundary_lot_builder_state_on_conn(&self.conn)? {
+            let expected_cursor = DiscoveryRuntimeCursor {
+                ts_utc: starting_cursor_ts,
+                slot: starting_cursor_slot,
+                signature: starting_cursor_signature.to_string(),
+            };
+            if state.progress_start_ts == progress_start_ts && state.cursor == expected_cursor {
+                return Ok(DiscoveryScoringBoundaryLotBuilder {
+                    open_lots: load_boundary_seed_lots_into_open_lots(&state.open_lots),
+                });
+            }
         }
         Ok(DiscoveryScoringBoundaryLotBuilder {
             open_lots: load_all_open_lots(&self.conn)?,
@@ -1050,6 +1152,46 @@ impl SqliteStore {
             prepare_ms,
             apply_ms: 0,
             rug_finalize_ms: 0,
+        })
+    }
+
+    pub fn advance_discovery_scoring_boundary_lot_builder_and_checkpoint_with_timings(
+        &self,
+        builder: &mut DiscoveryScoringBoundaryLotBuilder,
+        swaps: &[SwapEvent],
+        progress_start_ts: DateTime<Utc>,
+        progress_cursor: &DiscoveryRuntimeCursor,
+    ) -> Result<DiscoveryScoringCheckpointedBatchTimings> {
+        let prepare_ms = prepare_discovery_scoring_boundary_lot_batch(builder, swaps)?;
+
+        let progress_update_ms = self.with_immediate_transaction_retry(
+            "discovery scoring boundary lot batch with checkpoint",
+            |conn| {
+                super::discovery_scoring::maybe_fail_after_materialization_before_checkpoint()?;
+
+                let progress_started_at = Instant::now();
+                let updated_at = Utc::now().to_rfc3339();
+                super::discovery_scoring::upsert_discovery_scoring_backfill_progress_on_conn(
+                    conn,
+                    progress_start_ts,
+                    progress_cursor,
+                    &updated_at,
+                )?;
+                upsert_persisted_boundary_lot_builder_state_on_conn(
+                    conn,
+                    progress_start_ts,
+                    progress_cursor,
+                    builder,
+                    &updated_at,
+                )?;
+                Ok(progress_started_at.elapsed().as_millis() as u64)
+            },
+        )?;
+
+        Ok(DiscoveryScoringCheckpointedBatchTimings {
+            prepare_ms,
+            apply_ms: 0,
+            progress_update_ms,
         })
     }
 

@@ -3,9 +3,9 @@ use chrono::{DateTime, Duration, Utc};
 use copybot_config::load_from_path;
 use copybot_core_types::SwapEvent;
 use copybot_storage::{
-    DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, DiscoveryScoringBoundarySeedSnapshot,
-    RiskEventRow, SqliteStartupPolicy, SqliteStore, StartupStepProgress,
-    StartupStepProgressReporter,
+    DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, DiscoveryScoringBoundaryLotBuilder,
+    DiscoveryScoringBoundarySeedSnapshot, DiscoveryScoringReplayBuilder, RiskEventRow,
+    SqliteStartupPolicy, SqliteStore, StartupStepProgress, StartupStepProgressReporter,
 };
 use serde::Deserialize;
 use signal_hook::consts::signal::SIGINT;
@@ -138,9 +138,10 @@ struct BatchStageTimings {
 enum ReplayEngineSelection {
     Auto,
     ForceSql,
+    ForceBoundaryLotBuilder,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ReplayLoopOutcome {
     stop_reason: RunStopReason,
     cursor: Cursor,
@@ -148,15 +149,15 @@ struct ReplayLoopOutcome {
     batches: usize,
     gap_cursor_observed: bool,
     stage_totals: BatchStageTimings,
-}
-
-#[derive(Debug, Clone)]
-struct BoundarySeedBuildOutcome {
-    replay: ReplayLoopOutcome,
     seed_snapshot: Option<DiscoveryScoringBoundarySeedSnapshot>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+struct BoundarySeedBuildOutcome {
+    replay: ReplayLoopOutcome,
+}
+
+#[derive(Debug)]
 enum SeededReplayOutcome {
     Stopped(ReplayLoopOutcome),
     ReplayAfterSeed(ReplayLoopOutcome),
@@ -1090,6 +1091,7 @@ fn run_seeded_boundary_install_and_replay(
     };
 
     let seed_snapshot = boundary_build
+        .replay
         .seed_snapshot
         .ok_or_else(|| anyhow!("boundary build completed without a durable seed snapshot"))?;
     println!(
@@ -1141,6 +1143,7 @@ fn run_seeded_boundary_install_and_replay(
             batches: boundary_build.replay.batches,
             gap_cursor_observed: boundary_build.replay.gap_cursor_observed,
             stage_totals: boundary_build.replay.stage_totals,
+            seed_snapshot: None,
         }));
     }
 
@@ -1187,29 +1190,9 @@ fn run_boundary_build_phase(
         run_started_at,
         0,
         0,
-        ReplayEngineSelection::ForceSql,
+        ReplayEngineSelection::ForceBoundaryLotBuilder,
     )?;
-
-    let seed_snapshot = if matches!(
-        replay.stop_reason,
-        RunStopReason::CompletedRequestedEndTs | RunStopReason::CompletedSourceExhausted
-    ) {
-        Some(store.export_discovery_scoring_boundary_seed_snapshot(
-            config.start_ts,
-            &DiscoveryRuntimeCursor {
-                ts_utc: replay.cursor.ts,
-                slot: replay.cursor.slot,
-                signature: replay.cursor.signature.clone(),
-            },
-        )?)
-    } else {
-        None
-    };
-
-    Ok(BoundarySeedBuildOutcome {
-        replay,
-        seed_snapshot,
-    })
+    Ok(BoundarySeedBuildOutcome { replay })
 }
 
 fn run_replay_phase(
@@ -1233,44 +1216,63 @@ fn run_replay_phase(
     let mut total_rows = starting_total_rows;
     let mut batches = starting_batches;
     let mut stage_totals = BatchStageTimings::default();
-    let mut builder = if matches!(replay_engine_selection, ReplayEngineSelection::Auto)
-        && replay_builder_enabled(config)
-    {
-        let builder_bootstrap_started_at = Instant::now();
-        match store.begin_discovery_scoring_replay_builder(
-            cursor.ts,
-            cursor.slot,
-            cursor.signature.as_str(),
-        ) {
-            Ok(builder) => {
-                println!(
-                    "event=builder_replay_ready phase={} bootstrap_ms={}",
-                    phase_label,
-                    builder_bootstrap_started_at.elapsed().as_millis() as u64,
-                );
-                Some(builder)
-            }
-            Err(error) if config.seeded_reset => return Err(error),
-            Err(error) => {
-                println!(
-                    "event=builder_replay_unavailable phase={} reason={}",
-                    phase_label,
-                    sanitize_log_value(&format!("{error:#}"))
-                );
-                None
+    let mut replay_builder: Option<DiscoveryScoringReplayBuilder> = None;
+    let mut boundary_lot_builder: Option<DiscoveryScoringBoundaryLotBuilder> = None;
+    match replay_engine_selection {
+        ReplayEngineSelection::Auto if replay_builder_enabled(config) => {
+            let builder_bootstrap_started_at = Instant::now();
+            match store.begin_discovery_scoring_replay_builder(
+                cursor.ts,
+                cursor.slot,
+                cursor.signature.as_str(),
+            ) {
+                Ok(builder) => {
+                    println!(
+                        "event=builder_replay_ready phase={} bootstrap_ms={}",
+                        phase_label,
+                        builder_bootstrap_started_at.elapsed().as_millis() as u64,
+                    );
+                    replay_builder = Some(builder);
+                }
+                Err(error) if config.seeded_reset => return Err(error),
+                Err(error) => {
+                    println!(
+                        "event=builder_replay_unavailable phase={} reason={}",
+                        phase_label,
+                        sanitize_log_value(&format!("{error:#}"))
+                    );
+                }
             }
         }
-    } else {
-        println!(
-            "event=builder_replay_disabled phase={} reason={}",
-            phase_label,
-            match replay_engine_selection {
-                ReplayEngineSelection::Auto => "runtime_budget_bounded",
-                ReplayEngineSelection::ForceSql => "forced_sql_replay",
-            }
-        );
-        None
-    };
+        ReplayEngineSelection::ForceBoundaryLotBuilder => {
+            let builder_bootstrap_started_at = Instant::now();
+            let builder = store.begin_discovery_scoring_boundary_lot_builder(
+                progress_start_ts,
+                cursor.ts,
+                cursor.slot,
+                cursor.signature.as_str(),
+            )?;
+            println!(
+                "event=boundary_lot_builder_ready phase={} bootstrap_ms={}",
+                phase_label,
+                builder_bootstrap_started_at.elapsed().as_millis() as u64,
+            );
+            boundary_lot_builder = Some(builder);
+        }
+        other => {
+            println!(
+                "event=builder_replay_disabled phase={} reason={}",
+                phase_label,
+                match other {
+                    ReplayEngineSelection::Auto => "runtime_budget_bounded",
+                    ReplayEngineSelection::ForceSql => "forced_sql_replay",
+                    ReplayEngineSelection::ForceBoundaryLotBuilder => {
+                        "forced_boundary_lot_builder"
+                    }
+                }
+            );
+        }
+    }
 
     let stop_reason = loop {
         abort_if_control_requested(
@@ -1384,7 +1386,9 @@ fn run_replay_phase(
         refresh_backfill_source_protection(store, progress_start_ts)?;
 
         let batch_rows = page.len();
-        let (storage_timings, replay_engine): (_, &str) = if let Some(builder) = builder.as_mut() {
+        let (storage_timings, replay_engine): (_, &str) = if let Some(builder) =
+            replay_builder.as_mut()
+        {
             (
                 store.apply_discovery_scoring_builder_batch_and_checkpoint_with_timings(
                     builder,
@@ -1398,6 +1402,20 @@ fn run_replay_phase(
                     },
                 )?,
                 "builder",
+            )
+        } else if let Some(builder) = boundary_lot_builder.as_mut() {
+            (
+                store.advance_discovery_scoring_boundary_lot_builder_and_checkpoint_with_timings(
+                    builder,
+                    &page,
+                    progress_start_ts,
+                    &DiscoveryRuntimeCursor {
+                        ts_utc: next_cursor.ts,
+                        slot: next_cursor.slot,
+                        signature: next_cursor.signature.clone(),
+                    },
+                )?,
+                "boundary_lot_builder",
             )
         } else {
             (
@@ -1430,9 +1448,16 @@ fn run_replay_phase(
             storage_timings.progress_update_ms,
         );
         flush_stdout();
-        let rug_finalize_ms = if builder.is_some() {
+        let rug_finalize_ms = if replay_builder.is_some() {
             println!(
                 "event=rug_finalize_skipped phase={} replay_engine={} reason=builder_path",
+                phase_label, replay_engine
+            );
+            flush_stdout();
+            0
+        } else if boundary_lot_builder.is_some() {
+            println!(
+                "event=rug_finalize_skipped phase={} replay_engine={} reason=boundary_lot_builder_path",
                 phase_label, replay_engine
             );
             flush_stdout();
@@ -1539,6 +1564,32 @@ fn run_replay_phase(
         }
     };
 
+    let seed_snapshot = if matches!(
+        replay_engine_selection,
+        ReplayEngineSelection::ForceBoundaryLotBuilder
+    ) && matches!(
+        stop_reason,
+        RunStopReason::CompletedRequestedEndTs | RunStopReason::CompletedSourceExhausted
+    ) {
+        let builder = boundary_lot_builder.as_ref().ok_or_else(|| {
+            anyhow!("boundary lot builder missing after completed boundary replay")
+        })?;
+        let boundary_start_ts = phase_end_ts.ok_or_else(|| {
+            anyhow!("boundary lot builder replay completed without a boundary start ts")
+        })?;
+        Some(store.export_discovery_scoring_boundary_lot_seed_snapshot(
+            builder,
+            boundary_start_ts,
+            &DiscoveryRuntimeCursor {
+                ts_utc: cursor.ts,
+                slot: cursor.slot,
+                signature: cursor.signature.clone(),
+            },
+        )?)
+    } else {
+        None
+    };
+
     Ok(ReplayLoopOutcome {
         stop_reason,
         cursor,
@@ -1546,6 +1597,7 @@ fn run_replay_phase(
         batches,
         gap_cursor_observed,
         stage_totals,
+        seed_snapshot,
     })
 }
 
@@ -1635,6 +1687,7 @@ fn run_with_store_inner(
                         batches: 0,
                         gap_cursor_observed: false,
                         stage_totals: BatchStageTimings::default(),
+                        seed_snapshot: None,
                     };
                 } else {
                     final_outcome = run_replay_phase(
@@ -2650,6 +2703,7 @@ mod tests {
             Utc::now(),
         )?;
         let lot_snapshot = lot_boundary
+            .replay
             .seed_snapshot
             .ok_or_else(|| anyhow::anyhow!("lot-only boundary build did not export a snapshot"))?;
 
@@ -3924,35 +3978,25 @@ mod tests {
                 "wallet-seeded-crash".to_string(),
                 "2026-03-06".to_string(),
                 "2026-03-06T09:55:00+00:00".to_string(),
-                "2026-03-06T09:59:59+00:00".to_string(),
-                2,
-                "1.200000000000".to_string(),
-                "0.700000000000".to_string(),
+                "2026-03-06T09:55:00+00:00".to_string(),
+                1,
+                "0.500000000000".to_string(),
+                "0.500000000000".to_string(),
             )]
         );
-        assert_eq!(query_table_count(&conn, "wallet_scoring_buy_facts")?, 2);
+        assert_eq!(query_table_count(&conn, "wallet_scoring_buy_facts")?, 1);
         assert_eq!(query_table_count(&conn, "wallet_scoring_close_facts")?, 0);
-        assert_eq!(query_table_count(&conn, "wallet_scoring_tx_minutes")?, 2);
+        assert_eq!(query_table_count(&conn, "wallet_scoring_tx_minutes")?, 1);
         assert_eq!(
             comparable_open_lots(&conn)?,
-            vec![
-                (
-                    "sig-seeded-crash-pre".to_string(),
-                    "wallet-seeded-crash".to_string(),
-                    "TokenSeededCrash11111111111111111111".to_string(),
-                    "5.000000000000".to_string(),
-                    "0.500000000000".to_string(),
-                    "2026-03-06T09:55:00+00:00".to_string(),
-                ),
-                (
-                    "sig-seeded-crash-gap".to_string(),
-                    "wallet-seeded-crash".to_string(),
-                    "TokenSeededCrash11111111111111111111".to_string(),
-                    "7.000000000000".to_string(),
-                    "0.700000000000".to_string(),
-                    "2026-03-06T09:59:59+00:00".to_string(),
-                ),
-            ]
+            vec![(
+                "sig-seeded-crash-pre".to_string(),
+                "wallet-seeded-crash".to_string(),
+                "TokenSeededCrash11111111111111111111".to_string(),
+                "5.000000000000".to_string(),
+                "0.500000000000".to_string(),
+                "2026-03-06T09:55:00+00:00".to_string(),
+            )]
         );
         assert_eq!(
             store.load_discovery_scoring_seed_boundary_install_marker()?,

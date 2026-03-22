@@ -55,7 +55,9 @@ mod shadow;
 mod sqlite_retry;
 mod system_events;
 
-pub use discovery_scoring_builder::DiscoveryScoringReplayBuilder;
+pub use discovery_scoring_builder::{
+    DiscoveryScoringBoundaryLotBuilder, DiscoveryScoringReplayBuilder,
+};
 pub use execution_orders::{MarkOrderDroppedOutcome, ScheduleOrderRetryOutcome};
 pub use history_retention::{HistoryRetentionCutoffs, HistoryRetentionSummary};
 pub use market_data::{
@@ -225,7 +227,7 @@ pub struct SqliteStartupBootstrapResult {
     pub deferred_migrations: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiscoveryScoringBoundarySeedLot {
     pub buy_signature: String,
     pub wallet_id: String,
