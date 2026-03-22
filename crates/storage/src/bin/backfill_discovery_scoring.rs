@@ -1234,11 +1234,23 @@ fn run_replay_phase(
     match replay_engine_selection {
         selection if should_attempt_replay_builder(config, selection) => {
             let builder_bootstrap_started_at = Instant::now();
-            match store.begin_discovery_scoring_replay_builder(
-                cursor.ts,
-                cursor.slot,
-                cursor.signature.as_str(),
-            ) {
+            let builder_result = match selection {
+                ReplayEngineSelection::AllowBoundedBuilder => store
+                    .begin_discovery_scoring_replay_builder_lazy_open_lots(
+                        cursor.ts,
+                        cursor.slot,
+                        cursor.signature.as_str(),
+                    ),
+                ReplayEngineSelection::Auto => store.begin_discovery_scoring_replay_builder(
+                    cursor.ts,
+                    cursor.slot,
+                    cursor.signature.as_str(),
+                ),
+                ReplayEngineSelection::ForceBoundaryLotSql => {
+                    unreachable!("force boundary lot sql path should not attempt builder bootstrap")
+                }
+            };
+            match builder_result {
                 Ok(builder) => {
                     println!(
                         "event=builder_replay_ready phase={} bootstrap_ms={}",
@@ -3448,6 +3460,9 @@ mod tests {
     #[test]
     fn seeded_reset_stop_after_seed_install_then_normal_resume_matches_uninterrupted_seeded_path(
     ) -> Result<()> {
+        let _guard = FAILPOINT_TEST_MUTEX
+            .lock()
+            .expect("failpoint mutex poisoned");
         let temp = tempdir().context("failed to create tempdir")?;
         let stopped_db_path = temp.path().join("seeded-stop-then-resume.db");
         let uninterrupted_db_path = temp.path().join("seeded-uninterrupted.db");

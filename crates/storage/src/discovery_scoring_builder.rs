@@ -9,7 +9,7 @@ use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_core_types::SwapEvent;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
 const QUALITY_CACHE_TTL_SECONDS: i64 = 10 * 60;
@@ -149,6 +149,8 @@ struct CursorRef<'a> {
 #[derive(Debug)]
 pub struct DiscoveryScoringReplayBuilder {
     open_lots: HashMap<WalletTokenKey, VecDeque<BuilderLot>>,
+    loaded_open_lot_keys: HashSet<WalletTokenKey>,
+    lazy_open_lot_loading: bool,
     market_windows: HashMap<String, RollingTokenMarketState>,
     quality_cache: HashMap<String, Option<BuilderQualityCacheState>>,
 }
@@ -289,6 +291,48 @@ fn load_all_open_lots(conn: &Connection) -> Result<HashMap<WalletTokenKey, VecDe
             opened_ts: parse_ts(
                 &row.get::<_, String>(5)
                     .context("failed reading builder lot opened_ts")?,
+                "wallet_scoring_open_lots.opened_ts",
+            )?,
+        });
+    }
+    Ok(out)
+}
+
+fn load_open_lots_for_wallet_token(
+    conn: &Connection,
+    wallet_id: &str,
+    token: &str,
+) -> Result<VecDeque<BuilderLot>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT buy_signature, qty, cost_sol, opened_ts
+             FROM wallet_scoring_open_lots
+             WHERE wallet_id = ?1
+               AND token = ?2
+             ORDER BY opened_ts ASC, buy_signature ASC",
+        )
+        .context("failed preparing wallet_scoring_open_lots lazy builder query")?;
+    let mut rows = stmt
+        .query(params![wallet_id, token])
+        .context("failed querying wallet_scoring_open_lots for lazy builder bootstrap")?;
+    let mut out = VecDeque::new();
+    while let Some(row) = rows
+        .next()
+        .context("failed iterating wallet_scoring_open_lots for lazy builder bootstrap")?
+    {
+        out.push_back(BuilderLot {
+            buy_signature: row
+                .get(0)
+                .context("failed reading lazy builder lot buy_signature")?,
+            wallet_id: wallet_id.to_string(),
+            token: token.to_string(),
+            qty: row.get(1).context("failed reading lazy builder lot qty")?,
+            cost_sol: row
+                .get(2)
+                .context("failed reading lazy builder lot cost_sol")?,
+            opened_ts: parse_ts(
+                &row.get::<_, String>(3)
+                    .context("failed reading lazy builder lot opened_ts")?,
                 "wallet_scoring_open_lots.opened_ts",
             )?,
         });
@@ -723,6 +767,29 @@ fn apply_swap_lot_accounting(
     step
 }
 
+fn ensure_builder_open_lots_loaded(
+    store: &SqliteStore,
+    builder: &mut DiscoveryScoringReplayBuilder,
+    wallet_id: &str,
+    token: &str,
+) -> Result<()> {
+    if !builder.lazy_open_lot_loading {
+        return Ok(());
+    }
+    let key = WalletTokenKey {
+        wallet_id: wallet_id.to_string(),
+        token: token.to_string(),
+    };
+    if !builder.loaded_open_lot_keys.insert(key.clone()) {
+        return Ok(());
+    }
+    let loaded = load_open_lots_for_wallet_token(&store.conn, wallet_id, token)?;
+    if !loaded.is_empty() {
+        builder.open_lots.insert(key, loaded);
+    }
+    Ok(())
+}
+
 fn prepare_discovery_scoring_builder_batch(
     store: &SqliteStore,
     builder: &mut DiscoveryScoringReplayBuilder,
@@ -795,6 +862,7 @@ fn prepare_discovery_scoring_builder_batch(
         for swap in &ordered[offset..group_end] {
             if is_sol_buy(swap) {
                 let token = swap.token_out.clone();
+                ensure_builder_open_lots_loaded(store, builder, &swap.wallet, &token)?;
                 let market_stats =
                     group_market_stats
                         .get(&token)
@@ -847,6 +915,7 @@ fn prepare_discovery_scoring_builder_batch(
                     }
                 }
             } else if is_sol_sell(swap) {
+                ensure_builder_open_lots_loaded(store, builder, &swap.wallet, &swap.token_in)?;
                 let accounting_step = apply_swap_lot_accounting(&mut builder.open_lots, swap);
                 prepared.close_rows.extend(accounting_step.close_rows);
                 for mutation in accounting_step.mutations {
@@ -1024,6 +1093,35 @@ impl SqliteStore {
         starting_cursor_slot: u64,
         starting_cursor_signature: &str,
     ) -> Result<DiscoveryScoringReplayBuilder> {
+        self.begin_discovery_scoring_replay_builder_with_lot_bootstrap(
+            starting_cursor_ts,
+            starting_cursor_slot,
+            starting_cursor_signature,
+            false,
+        )
+    }
+
+    pub fn begin_discovery_scoring_replay_builder_lazy_open_lots(
+        &self,
+        starting_cursor_ts: DateTime<Utc>,
+        starting_cursor_slot: u64,
+        starting_cursor_signature: &str,
+    ) -> Result<DiscoveryScoringReplayBuilder> {
+        self.begin_discovery_scoring_replay_builder_with_lot_bootstrap(
+            starting_cursor_ts,
+            starting_cursor_slot,
+            starting_cursor_signature,
+            true,
+        )
+    }
+
+    fn begin_discovery_scoring_replay_builder_with_lot_bootstrap(
+        &self,
+        starting_cursor_ts: DateTime<Utc>,
+        starting_cursor_slot: u64,
+        starting_cursor_signature: &str,
+        lazy_open_lot_loading: bool,
+    ) -> Result<DiscoveryScoringReplayBuilder> {
         let carryover_count: i64 = self
             .conn
             .query_row(
@@ -1038,7 +1136,13 @@ impl SqliteStore {
             );
         }
         Ok(DiscoveryScoringReplayBuilder {
-            open_lots: load_all_open_lots(&self.conn)?,
+            open_lots: if lazy_open_lot_loading {
+                HashMap::new()
+            } else {
+                load_all_open_lots(&self.conn)?
+            },
+            loaded_open_lot_keys: HashSet::new(),
+            lazy_open_lot_loading,
             market_windows: seed_market_windows_from_lookback(
                 self,
                 CursorRef {
