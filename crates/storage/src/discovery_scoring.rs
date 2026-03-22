@@ -763,6 +763,12 @@ fn insert_wallet_scoring_buy_fact_on_conn(
     )
     .context("failed inserting wallet_scoring_buy_facts row")?;
 
+    insert_wallet_scoring_open_lot_on_conn(conn, swap)?;
+    Ok(())
+}
+
+fn insert_wallet_scoring_open_lot_on_conn(conn: &Connection, swap: &SwapEvent) -> Result<()> {
+    let token = swap.token_out.as_str();
     conn.execute(
         "INSERT OR IGNORE INTO wallet_scoring_open_lots(
             buy_signature,
@@ -929,6 +935,48 @@ fn apply_wallet_scoring_carryover_sell_on_conn(
     Ok(1)
 }
 
+fn apply_wallet_scoring_carryover_sell_lot_only_on_conn(
+    conn: &Connection,
+    swap: &SwapEvent,
+) -> Result<()> {
+    let token = swap.token_in.as_str();
+    let Some(carryover) = load_wallet_scoring_carryover_lot_on_conn(conn, &swap.wallet, token)?
+    else {
+        return Ok(());
+    };
+    let qty_remaining = swap.amount_in.max(0.0);
+    if qty_remaining <= 1e-12 || carryover.qty <= 1e-12 {
+        return Ok(());
+    }
+
+    let take_qty = qty_remaining.min(carryover.qty);
+    let lot_fraction = take_qty / carryover.qty;
+    let cost_part = carryover.cost_sol * lot_fraction;
+    let remaining_qty = (carryover.qty - take_qty).max(0.0);
+    let remaining_cost = (carryover.cost_sol - cost_part).max(0.0);
+
+    if remaining_qty <= 1e-12 {
+        conn.execute(
+            "DELETE FROM wallet_scoring_carryover_lots
+             WHERE wallet_id = ?1
+               AND token = ?2",
+            params![&swap.wallet, token],
+        )
+        .context("failed deleting consumed wallet_scoring_carryover_lot")?;
+    } else {
+        conn.execute(
+            "UPDATE wallet_scoring_carryover_lots
+             SET qty = ?3, cost_sol = ?4
+             WHERE wallet_id = ?1
+               AND token = ?2",
+            params![&swap.wallet, token, remaining_qty, remaining_cost],
+        )
+        .context("failed updating partially consumed wallet_scoring_carryover_lot")?;
+    }
+
+    Ok(())
+}
+
 fn apply_wallet_scoring_sell_on_conn(conn: &Connection, swap: &SwapEvent) -> Result<()> {
     let token = swap.token_in.as_str();
     let lots = load_wallet_scoring_open_lots_on_conn(conn, &swap.wallet, token)?;
@@ -1017,6 +1065,68 @@ fn apply_wallet_scoring_sell_on_conn(conn: &Connection, swap: &SwapEvent) -> Res
             ..swap.clone()
         };
         let _ = apply_wallet_scoring_carryover_sell_on_conn(conn, &carryover_sell, segment_index)?;
+    }
+
+    Ok(())
+}
+
+fn apply_wallet_scoring_sell_lot_only_on_conn(conn: &Connection, swap: &SwapEvent) -> Result<()> {
+    let token = swap.token_in.as_str();
+    let lots = load_wallet_scoring_open_lots_on_conn(conn, &swap.wallet, token)?;
+    if lots.is_empty() {
+        apply_wallet_scoring_carryover_sell_lot_only_on_conn(conn, swap)?;
+        return Ok(());
+    }
+
+    let mut qty_remaining = swap.amount_in.max(0.0);
+    if qty_remaining <= 1e-12 || swap.amount_out <= 0.0 {
+        return Ok(());
+    }
+
+    for lot in lots {
+        if qty_remaining <= 1e-12 {
+            break;
+        }
+        if lot.qty <= 1e-12 {
+            conn.execute(
+                "DELETE FROM wallet_scoring_open_lots WHERE buy_signature = ?1",
+                params![&lot.buy_signature],
+            )
+            .context("failed deleting empty wallet_scoring_open_lot")?;
+            continue;
+        }
+
+        let take_qty = qty_remaining.min(lot.qty);
+        let lot_fraction = take_qty / lot.qty;
+        let cost_part = lot.cost_sol * lot_fraction;
+        let remaining_qty = (lot.qty - take_qty).max(0.0);
+        let remaining_cost = (lot.cost_sol - cost_part).max(0.0);
+
+        if remaining_qty <= 1e-12 {
+            conn.execute(
+                "DELETE FROM wallet_scoring_open_lots WHERE buy_signature = ?1",
+                params![&lot.buy_signature],
+            )
+            .context("failed deleting consumed wallet_scoring_open_lot")?;
+        } else {
+            conn.execute(
+                "UPDATE wallet_scoring_open_lots
+                 SET qty = ?2, cost_sol = ?3
+                 WHERE buy_signature = ?1",
+                params![&lot.buy_signature, remaining_qty, remaining_cost],
+            )
+            .context("failed updating partially consumed wallet_scoring_open_lot")?;
+        }
+
+        qty_remaining -= take_qty;
+    }
+
+    if qty_remaining > 1e-12 {
+        let carryover_sell = SwapEvent {
+            amount_in: qty_remaining,
+            ..swap.clone()
+        };
+        apply_wallet_scoring_carryover_sell_lot_only_on_conn(conn, &carryover_sell)?;
     }
 
     Ok(())
@@ -1140,6 +1250,20 @@ fn apply_discovery_scoring_swaps_on_conn(
     Ok(())
 }
 
+fn apply_discovery_scoring_boundary_lot_swaps_on_conn(
+    conn: &Connection,
+    swaps: &[SwapEvent],
+) -> Result<()> {
+    for swap in swaps {
+        if is_sol_buy(swap) {
+            insert_wallet_scoring_open_lot_on_conn(conn, swap)?;
+        } else if is_sol_sell(swap) {
+            apply_wallet_scoring_sell_lot_only_on_conn(conn, swap)?;
+        }
+    }
+    Ok(())
+}
+
 fn apply_discovery_scoring_swaps_and_checkpoint_on_conn(
     conn: &Connection,
     prepared_swaps: &[PreparedScoringSwap],
@@ -1148,6 +1272,31 @@ fn apply_discovery_scoring_swaps_and_checkpoint_on_conn(
 ) -> Result<(u64, u64)> {
     let apply_started_at = Instant::now();
     apply_discovery_scoring_swaps_on_conn(conn, prepared_swaps)?;
+    let apply_ms = apply_started_at.elapsed().as_millis() as u64;
+
+    maybe_fail_after_materialization_before_checkpoint()?;
+
+    let progress_started_at = Instant::now();
+    let updated_at = Utc::now().to_rfc3339();
+    upsert_discovery_scoring_backfill_progress_on_conn(
+        conn,
+        progress_start_ts,
+        progress_cursor,
+        &updated_at,
+    )?;
+    let progress_update_ms = progress_started_at.elapsed().as_millis() as u64;
+
+    Ok((apply_ms, progress_update_ms))
+}
+
+fn apply_discovery_scoring_boundary_lot_swaps_and_checkpoint_on_conn(
+    conn: &Connection,
+    swaps: &[SwapEvent],
+    progress_start_ts: DateTime<Utc>,
+    progress_cursor: &DiscoveryRuntimeCursor,
+) -> Result<(u64, u64)> {
+    let apply_started_at = Instant::now();
+    apply_discovery_scoring_boundary_lot_swaps_on_conn(conn, swaps)?;
     let apply_ms = apply_started_at.elapsed().as_millis() as u64;
 
     maybe_fail_after_materialization_before_checkpoint()?;
@@ -1260,6 +1409,31 @@ impl SqliteStore {
 
         Ok(super::DiscoveryScoringCheckpointedBatchTimings {
             prepare_ms,
+            apply_ms,
+            progress_update_ms,
+        })
+    }
+
+    pub fn apply_discovery_scoring_boundary_lot_batch_and_checkpoint_with_timings(
+        &self,
+        swaps: &[SwapEvent],
+        progress_start_ts: DateTime<Utc>,
+        progress_cursor: &DiscoveryRuntimeCursor,
+    ) -> Result<super::DiscoveryScoringCheckpointedBatchTimings> {
+        let (apply_ms, progress_update_ms) = self.with_immediate_transaction_retry(
+            "discovery scoring boundary lot sql batch with checkpoint",
+            |conn| {
+                apply_discovery_scoring_boundary_lot_swaps_and_checkpoint_on_conn(
+                    conn,
+                    swaps,
+                    progress_start_ts,
+                    progress_cursor,
+                )
+            },
+        )?;
+
+        Ok(super::DiscoveryScoringCheckpointedBatchTimings {
+            prepare_ms: 0,
             apply_ms,
             progress_update_ms,
         })
