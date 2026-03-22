@@ -137,6 +137,7 @@ struct BatchStageTimings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReplayEngineSelection {
     Auto,
+    AllowBoundedBuilder,
     ForceBoundaryLotSql,
 }
 
@@ -495,6 +496,17 @@ fn bounded_run_scan_deadline(
 
 fn replay_builder_enabled(config: &Config) -> bool {
     config.max_runtime_seconds.is_none()
+}
+
+fn should_attempt_replay_builder(
+    config: &Config,
+    replay_engine_selection: ReplayEngineSelection,
+) -> bool {
+    match replay_engine_selection {
+        ReplayEngineSelection::Auto => replay_builder_enabled(config),
+        ReplayEngineSelection::AllowBoundedBuilder => true,
+        ReplayEngineSelection::ForceBoundaryLotSql => false,
+    }
 }
 
 fn run_outcome(stop_reason: RunStopReason, coverage_marked: bool) -> &'static str {
@@ -1166,7 +1178,7 @@ fn run_seeded_boundary_install_and_replay(
         run_started_at,
         boundary_build.replay.total_rows,
         boundary_build.replay.batches,
-        ReplayEngineSelection::Auto,
+        ReplayEngineSelection::AllowBoundedBuilder,
     )?))
 }
 
@@ -1220,7 +1232,7 @@ fn run_replay_phase(
     let mut stage_totals = BatchStageTimings::default();
     let mut replay_builder: Option<DiscoveryScoringReplayBuilder> = None;
     match replay_engine_selection {
-        ReplayEngineSelection::Auto if replay_builder_enabled(config) => {
+        selection if should_attempt_replay_builder(config, selection) => {
             let builder_bootstrap_started_at = Instant::now();
             match store.begin_discovery_scoring_replay_builder(
                 cursor.ts,
@@ -1256,6 +1268,9 @@ fn run_replay_phase(
                 "event=builder_replay_disabled phase={} reason={}",
                 phase_label, "runtime_budget_bounded"
             );
+        }
+        ReplayEngineSelection::AllowBoundedBuilder => {
+            unreachable!("bounded builder replay selection should always attempt builder bootstrap")
         }
     }
 
@@ -1668,7 +1683,7 @@ fn run_with_store_inner(
                         run_started_at,
                         0,
                         0,
-                        ReplayEngineSelection::Auto,
+                        ReplayEngineSelection::AllowBoundedBuilder,
                     )?;
                 }
             } else if persisted_progress_start_ts == config.start_ts {
@@ -2022,8 +2037,9 @@ mod tests {
     use super::{
         abort_if_control_requested_at, bounded_run_scan_deadline, replay_builder_enabled,
         run_boundary_build_phase, run_outcome, run_with_cleanup, run_with_store,
-        run_with_store_stop_reason, set_backfill_test_failpoint, BackfillTestFailpoint, Config,
-        Cursor, RunStopReason, RuntimePressureMonitor, DEFAULT_RUNTIME_PRESSURE_FETCH_INTERVAL_MS,
+        run_with_store_stop_reason, set_backfill_test_failpoint, should_attempt_replay_builder,
+        BackfillTestFailpoint, Config, Cursor, ReplayEngineSelection, RunStopReason,
+        RuntimePressureMonitor, DEFAULT_RUNTIME_PRESSURE_FETCH_INTERVAL_MS,
         DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO, DEFAULT_RUNTIME_PRESSURE_SERVICE,
         RUNTIME_INFRA_CLEARED_EVENT_TYPE, RUNTIME_INFRA_STOP_EVENT_TYPE,
     };
@@ -4936,6 +4952,14 @@ mod tests {
         let mut bounded = base.clone();
         bounded.max_runtime_seconds = Some(1);
         assert!(!replay_builder_enabled(&bounded));
+        assert!(should_attempt_replay_builder(
+            &bounded,
+            ReplayEngineSelection::AllowBoundedBuilder
+        ));
+        assert!(!should_attempt_replay_builder(
+            &bounded,
+            ReplayEngineSelection::Auto
+        ));
     }
 
     #[test]

@@ -108,6 +108,18 @@ It replaces the old mixed roadmap and removes aggregate/backfill recovery from t
    - `backfill_discovery_scoring` now uses the same startup-safe SQLite bootstrap contract as app/runtime instead of raw `run_migrations(...)`
    - pending optional `0039_observed_swaps_sol_leg_ts_index.sql` is explicitly deferred during offline backfill validation instead of stalling before the first boundary log
    - the tool now emits early startup telemetry (`backfill_tool_start`, `sqlite_startup_progress`, `backfill_sqlite_bootstrap_complete`) so an "empty log" no longer hides where execution stopped
+15. Later stopped-host validation on the existing offline clone proved the checkpointable boundary SQL path on real data:
+   - `8fdffd9` first emitted durable `event=checkpoint_persisted`, `event=batch_committed phase=boundary_build`, and `summary outcome=stopped_due_to_batch_budget`
+   - `7b6ab59` then moved the same path to explicit `boundary_lot_sql`, drove `prepare_ms` down to `0` during pre-seed bounded slices, and advanced the persisted cursor on every server-validated resume slice
+   - the bounded near-boundary chain reached the exact boundary-adjacent persisted cursor `2026-03-08T22:15:51.242661287Z | 405123180 | 3AbrgKcriCUKPrdpztgnm1jj2BxfRPkP6xA6sjeReL1AtSBKghNKkZjTvzLdMtVWHxpzgWX5m7HLChDcXpwia5nL`
+16. Commit `edf90a7caa4e455ca0f3e46d8bdeb3148d8fee02` then validated seeded install end-to-end on the real clone:
+   - `event=seed_boundary_exported`, `event=seed_boundary_installed`, and `event=seed_boundary_stop_requested` were all observed on `--stop-after-seed-install`
+   - the durable install marker was written with `seed_lot_count = 2011931`
+   - the follow-up normal seeded resume emitted `event=seed_boundary_resume_from_persisted_progress` and advanced post-seed replay to `2026-03-08T22:17:02.935800892Z | 405123360 | 5G2cGVUFuDDDPXCuqpaUaeVfUQXxNWE6xxeoX1NCEwgzfycTTYaJDiUYNW5UuL3zqD2j2qWuk3FUVMG1AkbsUC3x`
+17. Current working tree now targets the next narrowed blocker:
+   - bounded `replay_after_seed` no longer has to fall back to the heavy SQL prepare path by policy
+   - seeded post-install replay now explicitly attempts the replay builder even under runtime-bounded runs
+   - the purpose is to cut the real post-seed bottleneck observed on the server: `prepare_ms = 213313` and `apply_ms = 24336` for the first bounded `10000`-row replay-after-seed slice
 
 ### 2.4 Current verdict (updated 2026-03-22)
 
@@ -132,7 +144,9 @@ Aggregate/backfill recovery is therefore back to being the main engineering bloc
 2. same-host cold clone with the service intentionally stopped is operationally safe
 3. the original aggregate blocker really was the seeded boundary / backfill path before the first durable checkpoint, but that specific correctness gap is now closed in code by `8e748dc`
 4. the first post-fix server validation attempt was still misleading because the offline tool itself could stall before boundary replay on pending optional migration `0039_observed_swaps_sol_leg_ts_index.sql`; that confounder is now removed by `777a1c8`
-5. repeated server-side runs on the existing offline clone now prove that pre-seed boundary replay enters and durably advances `backfill_progress`; the remaining blocker is no longer "zero durable checkpoint", but very slow pre-seed throughput plus poor end-of-slice observability
+5. repeated server-side runs on the existing offline clone now prove that pre-seed boundary replay enters and durably advances `backfill_progress`; the old "zero durable checkpoint" blocker is gone
+6. later server-side validation on `edf90a7caa4e455ca0f3e46d8bdeb3148d8fee02` also proved durable `seed_boundary_install_*` and post-seed resume on the same clone
+7. the current aggregate blocker is now narrower again: runtime-bounded `replay_after_seed` still falls into an extremely expensive prepare stage on the SQL replay path, even after seed install is committed
 
 Three separate offline aggregate attempts on the old tool path really did fail to land that first durable checkpoint:
 
@@ -146,11 +160,18 @@ That diagnosis is now advanced. After `8e748dc` + `777a1c8`, the existing offlin
 - durable `backfill_progress` now advances across repeated resume slices on the same existing clone
 - source of truth for progress is the persisted SQLite state, not the missing tail log lines
 
-The current aggregate blocker is therefore no longer "before the first durable checkpoint". It is now the next narrower pre-seed blocker: extremely low throughput / budget efficiency toward `seed_boundary_install_*`, combined with missing `event=batch_committed phase=boundary_build` / `summary outcome=` logs under the observed outer wrappers.
+That blocker then narrowed again across the next stopped-host validation sequence:
+
+- `8fdffd9` surfaced the first clean `checkpoint_persisted / batch_committed / summary` boundary slice on the clone
+- `61719f1` proved that an in-memory boundary lot builder bootstrap over real `wallet_scoring_open_lots` was not viable on that clone
+- `7b6ab59` moved the real clone onto `boundary_lot_sql`, which removed the pre-seed `prepare_ms` problem and reached the exact near-boundary cursor
+- `edf90a7caa4e455ca0f3e46d8bdeb3148d8fee02` then completed `seed_boundary_exported`, `seed_boundary_installed`, and a real post-seed resume on that same clone
+
+The current aggregate blocker is therefore no longer "before the first durable checkpoint" and no longer "before committed seed install". It is now the next narrower post-seed blocker: runtime-bounded `replay_after_seed` can still spend almost the entire budget in SQL prepare (`prepare_ms = 213313`, `apply_ms = 24336` on the first `10000`-row Step 2 run).
 
 Do not re-enable aggregate reads or writes on the production host until bounded historical backfill reaches either durable `seed_boundary_install_*` or full readiness (`effective_reads_ready = true`).
 
-Recommended operational posture until that blocker is fixed: keep the bot stopped if it is still fail-closed and non-publishing, so it stops burning Yellowstone / gRPC tokens without producing trusted selection. Keep `scoring_window_days` reverted back to `5`. Continue validation only on the existing offline clone with small bounded resume slices, and treat `discovery_scoring_state` as the source of truth for progress.
+Recommended operational posture until that blocker is fixed: keep the bot stopped if it is still fail-closed and non-publishing, so it stops burning Yellowstone / gRPC tokens without producing trusted selection. Keep `scoring_window_days` reverted back to `5`. Do not spend more stopped-host time on additional validation runs until the new post-seed replay patch is deployed. When stopped-host validation resumes, continue using only the existing offline clone and treat `discovery_scoring_state` as the source of truth for progress.
 
 Do not start Stage 2 yet.
 
@@ -158,7 +179,7 @@ Do not start Stage 2 yet.
 
 - Deployed binary commit: `70e959df677f35347fd25b2a1ed91481b6d90769` (unchanged)
 - Production runtime repo / last old offline tooling commit before the latest investigation: `02f887a3a37ad57cf09578c9105d1f11d08744d8`
-- Current server repo / offline tooling checkout used for the latest stopped-host investigation: `777a1c84262fdfcc3107d12505855cb8ad8ff08d`
+- Current server repo / offline tooling checkout used for the latest stopped-host investigation: `edf90a7caa4e455ca0f3e46d8bdeb3148d8fee02`
 - Current stabilized host config after stopping the failed raw bridge:
   - `scoring_window_days = 5`
   - `metric_snapshot_interval_seconds = 3600`
@@ -232,12 +253,19 @@ Do not start Stage 2 yet.
     - clone path used for the offline runs:
       - `/var/www/solana-copy-bot/state/live_copybot.aggregate_clone_offline_20260321.db`
     - the original three offline aggregate attempts on the old tool path failed before the first durable seeded-boundary checkpoint
-    - the follow-up validation on the same clone after `8e748dc` + `777a1c8` materially changed the state:
+    - the follow-up validation sequence on the same clone after `8e748dc` + `777a1c8` materially changed the state:
       - `0039` was confirmed pending and then correctly deferred by the new offline-tool startup-safe path
-      - `event=builder_replay_disabled phase=boundary_build reason=forced_sql_replay` appeared on every bounded validation run
-      - persisted `backfill_progress` moved durably across five consecutive resume validations on the same clone
-      - SQLite state, not tail log lines, is now the trustworthy progress surface for this path
-      - the remaining blocker is narrowed to throughput / budget efficiency toward `seed_boundary_install_*`, not zero checkpoint correctness
+      - `8fdffd9` surfaced the first clean `checkpoint_persisted / batch_committed / summary` boundary slice
+      - `61719f1` was a useful dead end: server validation showed the in-memory boundary lot builder stalled before the first boundary event, and read-only inspection measured `wallet_scoring_open_lots = 1,710,424` rows with `717,988` distinct wallet-token buckets
+      - `7b6ab59` then validated the real fix for pre-seed replay on the clone: `boundary_lot_sql_ready`, `checkpoint_persisted`, `batch_committed`, and `summary` all appeared with `prepare_ms = 0`, and the persisted cursor was advanced through repeated bounded resume slices up to the exact near-boundary cursor `2026-03-08T22:15:51.242661287Z | 405123180 | 3AbrgKcriCUKPrdpztgnm1jj2BxfRPkP6xA6sjeReL1AtSBKghNKkZjTvzLdMtVWHxpzgWX5m7HLChDcXpwia5nL`
+      - `edf90a7caa4e455ca0f3e46d8bdeb3148d8fee02` then validated the next closure step on the same clone:
+        - `event=seed_boundary_exported` and `event=seed_boundary_installed` were observed with `seed_lot_count = 2011931`
+        - `event=seed_boundary_stop_requested` and `summary outcome=stopped_after_seed_install` proved a clean durable stop immediately after committed seed install
+        - the follow-up normal resume emitted `event=seed_boundary_resume_from_persisted_progress` and advanced replay-after-seed to `2026-03-08T22:17:02.935800892Z | 405123360 | 5G2cGVUFuDDDPXCuqpaUaeVfUQXxNWE6xxeoX1NCEwgzfycTTYaJDiUYNW5UuL3zqD2j2qWuk3FUVMG1AkbsUC3x`
+      - the remaining blocker is now post-seed, not pre-seed:
+        - bounded `replay_after_seed` on that Step 2 run still used `replay_engine=sql`
+        - it spent `prepare_ms = 213313` and `apply_ms = 24336` on the first bounded `10000`-row batch
+        - that SQL prepare geometry is the current throughput bottleneck
   - raw-bridge experiment sequence is now complete:
     - initial `scoring_window_days = 3` restart stayed pinned behind stale persisted rebuild state from the old `5`-day window
     - clearing only `discovery_persisted_rebuild_state` correctly restarted a fresh 3-day rebuild
