@@ -14,6 +14,7 @@ use signal_hook::consts::signal::SIGTERM;
 use signal_hook::flag;
 use std::env;
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(test)]
@@ -529,6 +530,11 @@ fn log_run_summary(
         stage_totals.rug_finalize_ms,
         stage_totals.progress_update_ms,
     );
+    flush_stdout();
+}
+
+fn flush_stdout() {
+    let _ = io::stdout().flush();
 }
 
 fn log_runtime_pressure_abort_event(config: &Config, sample: &RuntimePressureSample, reason: &str) {
@@ -1373,6 +1379,7 @@ fn run_replay_phase(
         )?;
         refresh_backfill_source_protection(store, progress_start_ts)?;
 
+        let batch_rows = page.len();
         let (storage_timings, replay_engine): (_, &str) = if let Some(builder) = builder.as_mut() {
             (
                 store.apply_discovery_scoring_builder_batch_and_checkpoint_with_timings(
@@ -1403,15 +1410,45 @@ fn run_replay_phase(
                 "sql",
             )
         };
+        println!(
+            "event=checkpoint_persisted phase={} replay_engine={} rows={} next_total_rows={} next_batches={} cursor_ts={} cursor_slot={} cursor_signature={} scan_ms={} prepare_ms={} apply_ms={} progress_update_ms={} durable=true",
+            phase_label,
+            replay_engine,
+            batch_rows,
+            total_rows.saturating_add(batch_rows),
+            batches.saturating_add(1),
+            next_cursor.ts.to_rfc3339(),
+            next_cursor.slot,
+            next_cursor.signature,
+            scan_ms,
+            storage_timings.prepare_ms,
+            storage_timings.apply_ms,
+            storage_timings.progress_update_ms,
+        );
+        flush_stdout();
         let rug_finalize_ms = if builder.is_some() {
+            println!(
+                "event=rug_finalize_skipped phase={} replay_engine={} reason=builder_path",
+                phase_label, replay_engine
+            );
+            flush_stdout();
             0
         } else {
-            store.finalize_discovery_scoring_rug_facts_with_timing(last_swap.ts_utc)?
+            let rug_finalize_ms =
+                store.finalize_discovery_scoring_rug_facts_with_timing(last_swap.ts_utc)?;
+            println!(
+                "event=rug_finalize_completed phase={} replay_engine={} watermark_ts={} rug_finalize_ms={}",
+                phase_label,
+                replay_engine,
+                last_swap.ts_utc.to_rfc3339(),
+                rug_finalize_ms,
+            );
+            flush_stdout();
+            rug_finalize_ms
         };
 
         cursor = next_cursor;
 
-        let batch_rows = page.len();
         total_rows = total_rows.saturating_add(batch_rows);
         batches = batches.saturating_add(1);
         let timings = BatchStageTimings {
@@ -1446,6 +1483,7 @@ fn run_replay_phase(
             timings.rug_finalize_ms,
             timings.progress_update_ms,
         );
+        flush_stdout();
 
         abort_if_control_requested(
             store,
