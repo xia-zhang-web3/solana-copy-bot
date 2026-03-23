@@ -50,12 +50,12 @@ use crate::execution_pause_helpers::resolve_buy_submit_pause_reason;
 use crate::execution_runtime_helpers::log_execution_batch_report;
 use crate::history_retention::HistoryRetentionRunner;
 use crate::observed_swap_writer::{
-    run_observed_swap_retention_maintenance_once, ObservedSwapRetentionConfig,
-    ObservedSwapRetentionMaintenanceSummary, ObservedSwapRetentionRuntimeHealthHandle,
-    ObservedSwapWriter, ObservedSwapWriterSnapshot, OBSERVED_SWAP_RETENTION_PARTIAL_RETRY_INTERVAL,
-    OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL, OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL,
-    OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT, OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT,
-    OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT,
+    run_observed_swap_retention_maintenance_once, ObservedSwapRecentRawJournalConfig,
+    ObservedSwapRetentionConfig, ObservedSwapRetentionMaintenanceSummary,
+    ObservedSwapRetentionRuntimeHealthHandle, ObservedSwapWriter, ObservedSwapWriterSnapshot,
+    OBSERVED_SWAP_RETENTION_PARTIAL_RETRY_INTERVAL, OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL,
+    OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL, OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT,
+    OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT, OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT,
 };
 use crate::secrets::resolve_execution_adapter_secrets;
 use crate::shadow_runtime_helpers::{
@@ -503,6 +503,7 @@ async fn main() -> Result<()> {
         config.sqlite.path.clone(),
         config.system.heartbeat_seconds,
         config.history_retention.clone(),
+        config.recent_raw_journal.clone(),
         config.discovery.fetch_refresh_seconds,
         config.discovery.refresh_seconds,
         config.discovery.observed_swaps_retention_days,
@@ -654,6 +655,13 @@ fn sqlite_maintenance_block_reason(
         ));
     }
 
+    if observed_swap_writer_snapshot.journal_queue_depth_batches > 0 {
+        return Some(format!(
+            "journal_queue_depth_batches={}",
+            observed_swap_writer_snapshot.journal_queue_depth_batches
+        ));
+    }
+
     let sqlite_write_retry_delta = sqlite_contention_current
         .write_retry_total
         .saturating_sub(sqlite_contention_previous.write_retry_total);
@@ -692,6 +700,8 @@ fn sqlite_maintenance_block_reason_key(reason: &str) -> &'static str {
         "writer_pending_requests"
     } else if reason.starts_with("aggregate_queue_depth_batches=") {
         "aggregate_queue_depth_batches"
+    } else if reason.starts_with("journal_queue_depth_batches=") {
+        "journal_queue_depth_batches"
     } else if reason.starts_with("sqlite_contention_delta ") {
         "sqlite_contention_delta"
     } else if reason.starts_with("yellowstone_output_queue_fill_ratio=") {
@@ -2956,6 +2966,7 @@ async fn run_app_loop(
     sqlite_path: String,
     heartbeat_seconds: u64,
     history_retention_config: copybot_config::HistoryRetentionConfig,
+    recent_raw_journal_config: copybot_config::RecentRawJournalConfig,
     discovery_fetch_refresh_seconds: u64,
     discovery_refresh_seconds: u64,
     observed_swaps_retention_days: u32,
@@ -3036,10 +3047,22 @@ async fn run_app_loop(
     let mut discovery_catch_up_pending = false;
     let mut shadow_scheduler = ShadowScheduler::new();
     let mut execution_handle: Option<JoinHandle<Result<ExecutionBatchReport>>> = None;
-    let observed_swap_writer = ObservedSwapWriter::start(
+    let recent_raw_journal_writer_config = ObservedSwapRecentRawJournalConfig {
+        sqlite_path: recent_raw_journal_config.path.clone(),
+        retention_days: observed_swaps_retention_days.max(1).saturating_add(
+            recent_raw_journal_config
+                .retention_safety_buffer_days
+                .max(1),
+        ),
+        writer_queue_capacity_batches: recent_raw_journal_config
+            .writer_queue_capacity_batches
+            .max(1),
+    };
+    let observed_swap_writer = ObservedSwapWriter::start_with_recent_raw_journal(
         sqlite_path.clone(),
         discovery_scoring_writes_enabled,
         discovery_aggregate_write_config,
+        Some(recent_raw_journal_writer_config),
     )
     .context("failed to start observed swap writer")?;
     let latest_ingestion_runtime_snapshot = Arc::new(Mutex::new(ingestion.runtime_snapshot()));
@@ -3233,6 +3256,8 @@ async fn run_app_loop(
                                     DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD,
                                 writer_aggregate_queue_depth_batches =
                                     observed_swap_writer_snapshot.aggregate_queue_depth_batches,
+                                writer_journal_queue_depth_batches =
+                                    observed_swap_writer_snapshot.journal_queue_depth_batches,
                                 yellowstone_output_queue_fill_ratio =
                                     ingestion_snapshot
                                         .as_ref()
@@ -3250,6 +3275,8 @@ async fn run_app_loop(
                                     DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD,
                                 writer_aggregate_queue_depth_batches =
                                     observed_swap_writer_snapshot.aggregate_queue_depth_batches,
+                                writer_journal_queue_depth_batches =
+                                    observed_swap_writer_snapshot.journal_queue_depth_batches,
                                 yellowstone_output_queue_fill_ratio =
                                     ingestion_snapshot
                                         .as_ref()
@@ -3412,6 +3439,8 @@ async fn run_app_loop(
                                 maintenance_gate_writer_snapshot.pending_requests,
                             observed_swap_writer_aggregate_queue_depth_batches =
                                 maintenance_gate_writer_snapshot.aggregate_queue_depth_batches,
+                            observed_swap_writer_journal_queue_depth_batches =
+                                maintenance_gate_writer_snapshot.journal_queue_depth_batches,
                             yellowstone_output_queue_depth = maintenance_gate_ingestion_snapshot
                                 .map(|snapshot| snapshot.yellowstone_output_queue_depth)
                                 .unwrap_or(0),
@@ -3504,6 +3533,8 @@ async fn run_app_loop(
                                 maintenance_gate_writer_snapshot.pending_requests,
                             observed_swap_writer_aggregate_queue_depth_batches =
                                 maintenance_gate_writer_snapshot.aggregate_queue_depth_batches,
+                            observed_swap_writer_journal_queue_depth_batches =
+                                maintenance_gate_writer_snapshot.journal_queue_depth_batches,
                             yellowstone_output_queue_depth = maintenance_gate_ingestion_snapshot
                                 .map(|snapshot| snapshot.yellowstone_output_queue_depth)
                                 .unwrap_or(0),
@@ -3550,12 +3581,24 @@ async fn run_app_loop(
                         observed_swap_writer_snapshot.wallet_activity_days_ms_p95,
                     observed_swap_writer_discovery_scoring_ms_p95 =
                         observed_swap_writer_snapshot.discovery_scoring_ms_p95,
+                    observed_swap_writer_journal_enqueue_wait_ms_p95 =
+                        observed_swap_writer_snapshot.journal_enqueue_wait_ms_p95,
+                    observed_swap_writer_journal_batch_write_ms_p95 =
+                        observed_swap_writer_snapshot.journal_batch_write_ms_p95,
                     observed_swap_writer_worker_busy_ms_p95 =
                         observed_swap_writer_snapshot.worker_busy_ms_p95,
                     observed_swap_writer_aggregate_queue_depth_batches =
                         observed_swap_writer_snapshot.aggregate_queue_depth_batches,
                     observed_swap_writer_aggregate_queue_capacity_batches =
                         observed_swap_writer_snapshot.aggregate_queue_capacity_batches,
+                    observed_swap_writer_journal_queue_depth_batches =
+                        observed_swap_writer_snapshot.journal_queue_depth_batches,
+                    observed_swap_writer_journal_queue_capacity_batches =
+                        observed_swap_writer_snapshot.journal_queue_capacity_batches,
+                    observed_swap_writer_journal_sqlite_write_retry_total =
+                        observed_swap_writer_snapshot.journal_sqlite_write_retry_total,
+                    observed_swap_writer_journal_sqlite_busy_error_total =
+                        observed_swap_writer_snapshot.journal_sqlite_busy_error_total,
                     "observed swap writer telemetry"
                 );
                 info!(
@@ -4316,6 +4359,7 @@ fn should_schedule_discovery_catch_up(
     if observed_swap_writer_snapshot.pending_requests
         >= DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD
         || observed_swap_writer_snapshot.aggregate_queue_depth_batches > 0
+        || observed_swap_writer_snapshot.journal_queue_depth_batches > 0
     {
         return false;
     }
@@ -4431,9 +4475,15 @@ mod app_tests {
             observed_swaps_insert_ms_p95: 0,
             wallet_activity_days_ms_p95: 0,
             discovery_scoring_ms_p95: 0,
+            journal_enqueue_wait_ms_p95: 0,
+            journal_batch_write_ms_p95: 0,
             worker_busy_ms_p95: 0,
             aggregate_queue_depth_batches: 0,
             aggregate_queue_capacity_batches: 32,
+            journal_queue_depth_batches: 0,
+            journal_queue_capacity_batches: 32,
+            journal_sqlite_write_retry_total: 0,
+            journal_sqlite_busy_error_total: 0,
         }
     }
 
@@ -4562,6 +4612,16 @@ mod app_tests {
 
         writer_snapshot.pending_requests = 0;
         writer_snapshot.aggregate_queue_depth_batches = 1;
+
+        assert!(!should_schedule_discovery_catch_up(
+            &discovery_output,
+            false,
+            &writer_snapshot,
+            Some(&maintenance_test_ingestion_snapshot(0.0)),
+        ));
+
+        writer_snapshot.aggregate_queue_depth_batches = 0;
+        writer_snapshot.journal_queue_depth_batches = 1;
 
         assert!(!should_schedule_discovery_catch_up(
             &discovery_output,
@@ -10368,6 +10428,25 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
         )
         .expect("aggregate backlog should block sqlite maintenance");
         assert_eq!(reason, "aggregate_queue_depth_batches=2");
+    }
+
+    #[test]
+    fn sqlite_maintenance_block_reason_blocks_on_recent_raw_journal_backlog() {
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.journal_queue_depth_batches = 2;
+        let reason = sqlite_maintenance_block_reason(
+            SqliteMaintenanceTask::ObservedSwapRetention,
+            StdInstant::now()
+                - OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL
+                - std::time::Duration::from_secs(1),
+            StdInstant::now(),
+            &writer_snapshot,
+            SqliteContentionSnapshot::default(),
+            SqliteContentionSnapshot::default(),
+            None,
+        )
+        .expect("recent raw journal backlog should block sqlite maintenance");
+        assert_eq!(reason, "journal_queue_depth_batches=2");
     }
 
     #[test]

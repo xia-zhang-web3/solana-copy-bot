@@ -187,6 +187,51 @@ fn render_human(config_path: &Path, db_path: &Path, status: &DiscoveryOperatorSt
                 .and_then(|rebuild| rebuild.cursor.as_deref())
                 .unwrap_or("null")
         ),
+        format!(
+            "recent_raw_journal_available={}",
+            status.recent_raw_restore.journal_available
+        ),
+        format!(
+            "recent_raw_journal_replayed={}",
+            status.recent_raw_restore.journal_replayed
+        ),
+        format!(
+            "recent_raw_raw_coverage_satisfied={}",
+            status.recent_raw_restore.raw_coverage_satisfied
+        ),
+        format!(
+            "recent_raw_journal_covers_artifact_cursor={}",
+            status.recent_raw_restore.journal_covers_artifact_cursor
+        ),
+        format!(
+            "recent_raw_required_window_start={}",
+            format_optional_ts(status.recent_raw_restore.required_window_start.as_ref())
+        ),
+        format!(
+            "recent_raw_journal_covered_since={}",
+            format_optional_ts(status.recent_raw_restore.journal_covered_since.as_ref())
+        ),
+        format!(
+            "recent_raw_journal_covered_through_cursor={}",
+            format_optional_cursor(
+                status
+                    .recent_raw_restore
+                    .journal_covered_through_cursor
+                    .as_ref()
+            )
+        ),
+        format!(
+            "recent_raw_artifact_runtime_cursor={}",
+            format_optional_cursor(status.recent_raw_restore.artifact_runtime_cursor.as_ref())
+        ),
+        format!(
+            "recent_raw_replayed_rows={}",
+            status.recent_raw_restore.replayed_rows
+        ),
+        format!(
+            "recent_raw_reason={}",
+            format_optional_str(status.recent_raw_restore.reason.as_deref())
+        ),
         format!("offline_recovery_state={}", status.offline_recovery.state),
         format!(
             "offline_recovery_cursor={}",
@@ -422,6 +467,63 @@ mod tests {
                 .pointer("/publication/recent_publication_truth_available")
                 .and_then(Value::as_bool),
             Some(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_json_surfaces_recent_raw_restore_state() -> Result<()> {
+        let fixture = make_fixture("discovery-status-recent-raw-restore")?;
+        let now = parse_ts("2026-03-23T12:00:00Z")?;
+        fixture.store.set_discovery_recent_raw_restore_state(
+            &copybot_storage::DiscoveryRecentRawRestoreStateUpdate {
+                journal_available: true,
+                journal_replayed: true,
+                required_window_start: Some(now - Duration::days(7)),
+                journal_covered_since: Some(now - Duration::days(7)),
+                journal_covered_through_cursor: Some(copybot_storage::DiscoveryRuntimeCursor {
+                    ts_utc: now - Duration::minutes(1),
+                    slot: 77,
+                    signature: "recent-raw-covered".to_string(),
+                }),
+                artifact_runtime_cursor: Some(copybot_storage::DiscoveryRuntimeCursor {
+                    ts_utc: now - Duration::minutes(2),
+                    slot: 76,
+                    signature: "recent-raw-artifact".to_string(),
+                }),
+                journal_covers_artifact_cursor: true,
+                raw_coverage_satisfied: true,
+                replayed_rows: 42,
+                reason: Some("recent_raw_journal_replay_completed".to_string()),
+                replay_started_at: Some(now - Duration::minutes(1)),
+                replay_completed_at: Some(now),
+            },
+        )?;
+
+        let output = run(Config {
+            config_path: fixture.config_path.clone(),
+            db_path: None,
+            json: true,
+            now,
+        })?;
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(
+            parsed
+                .pointer("/recent_raw_restore/journal_available")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/recent_raw_restore/raw_coverage_satisfied")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/recent_raw_restore/replayed_rows")
+                .and_then(Value::as_u64),
+            Some(42)
         );
         Ok(())
     }

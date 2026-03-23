@@ -19,6 +19,10 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 6. `executor.env.example`
 7. `adapter.env.example`
 8. `app.env.example`
+9. `copybot-discovery-runtime-export.service`
+10. `copybot-discovery-runtime-export.timer`
+11. `copybot-discovery-recent-raw-snapshot.service`
+12. `copybot-discovery-recent-raw-snapshot.timer`
 
 ## Server target paths
 
@@ -30,6 +34,10 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 6. `/etc/solana-copy-bot/executor.env`
 7. `/etc/solana-copy-bot/adapter.env`
 8. `/etc/solana-copy-bot/app.env`
+9. `/etc/systemd/system/copybot-discovery-runtime-export.service`
+10. `/etc/systemd/system/copybot-discovery-runtime-export.timer`
+11. `/etc/systemd/system/copybot-discovery-recent-raw-snapshot.service`
+12. `/etc/systemd/system/copybot-discovery-recent-raw-snapshot.timer`
 
 ## Apply sequence
 
@@ -41,4 +49,7 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    2. `copybot-executor.service`
    3. `copybot-adapter.service`
    4. `solana-copy-bot.service`
+   5. `copybot-discovery-runtime-export.timer`
+   6. `copybot-discovery-recent-raw-snapshot.timer`
 5. Run preflight sequence from `ROAD_TO_PRODUCTION.md` section `6.1`.
+6. Keep `ops/discovery_runtime_restore_runbook.md` on hand for the restore path and drill procedure.

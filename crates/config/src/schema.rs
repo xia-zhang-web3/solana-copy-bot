@@ -7,6 +7,8 @@ use std::fmt;
 pub struct AppConfig {
     pub system: SystemConfig,
     pub sqlite: SqliteConfig,
+    pub recent_raw_journal: RecentRawJournalConfig,
+    pub runtime_restore_ops: RuntimeRestoreOpsConfig,
     pub history_retention: HistoryRetentionConfig,
     pub ingestion: IngestionConfig,
     pub discovery: DiscoveryConfig,
@@ -303,6 +305,52 @@ impl Default for SqliteConfig {
     fn default() -> Self {
         Self {
             path: "state/copybot.db".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct RecentRawJournalConfig {
+    pub path: String,
+    pub retention_safety_buffer_days: u32,
+    pub writer_queue_capacity_batches: usize,
+    pub replay_batch_size: usize,
+}
+
+impl Default for RecentRawJournalConfig {
+    fn default() -> Self {
+        Self {
+            path: "state/discovery_recent_raw.db".to_string(),
+            retention_safety_buffer_days: 2,
+            writer_queue_capacity_batches: 64,
+            replay_batch_size: 1_024,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct RuntimeRestoreOpsConfig {
+    pub artifact_dir: String,
+    pub artifact_retention: usize,
+    pub artifact_cadence_minutes: u64,
+    pub journal_snapshot_dir: String,
+    pub journal_snapshot_retention: usize,
+    pub journal_snapshot_cadence_minutes: u64,
+    pub drill_workspace_dir: String,
+}
+
+impl Default for RuntimeRestoreOpsConfig {
+    fn default() -> Self {
+        Self {
+            artifact_dir: "state/discovery_restore/artifacts".to_string(),
+            artifact_retention: 288,
+            artifact_cadence_minutes: 10,
+            journal_snapshot_dir: "state/discovery_restore/recent_raw".to_string(),
+            journal_snapshot_retention: 144,
+            journal_snapshot_cadence_minutes: 10,
+            drill_workspace_dir: "state/discovery_restore/drills".to_string(),
         }
     }
 }

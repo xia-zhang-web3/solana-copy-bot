@@ -5,8 +5,8 @@ use crate::{
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_storage::{
-    DiscoveryBootstrapDegradedStateRow, DiscoveryPersistedRebuildStateRow, DiscoveryRuntimeCursor,
-    DiscoveryRuntimeMode, SqliteStore,
+    DiscoveryBootstrapDegradedStateRow, DiscoveryPersistedRebuildStateRow,
+    DiscoveryRecentRawRestoreStateRow, DiscoveryRuntimeCursor, DiscoveryRuntimeMode, SqliteStore,
 };
 use serde::Serialize;
 
@@ -77,6 +77,23 @@ pub struct DiscoveryOperatorOfflineRecoveryStatus {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct DiscoveryOperatorRecentRawRestoreStatus {
+    pub journal_available: bool,
+    pub journal_replayed: bool,
+    pub required_window_start: Option<DateTime<Utc>>,
+    pub journal_covered_since: Option<DateTime<Utc>>,
+    pub journal_covered_through_cursor: Option<DiscoveryOperatorCursor>,
+    pub artifact_runtime_cursor: Option<DiscoveryOperatorCursor>,
+    pub journal_covers_artifact_cursor: bool,
+    pub raw_coverage_satisfied: bool,
+    pub replayed_rows: usize,
+    pub reason: Option<String>,
+    pub replay_started_at: Option<DateTime<Utc>>,
+    pub replay_completed_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct DiscoveryOperatorStatus {
     pub now: DateTime<Utc>,
     pub window_start: DateTime<Utc>,
@@ -88,6 +105,7 @@ pub struct DiscoveryOperatorStatus {
     pub raw_window_state: String,
     pub publication: DiscoveryOperatorPublicationStatus,
     pub persisted_rebuild: Option<DiscoveryOperatorPersistedRebuildStatus>,
+    pub recent_raw_restore: DiscoveryOperatorRecentRawRestoreStatus,
     pub offline_recovery: DiscoveryOperatorOfflineRecoveryStatus,
 }
 
@@ -148,6 +166,7 @@ impl DiscoveryService {
             .load_discovery_persisted_rebuild_state_read_only()?
             .map(|row| self.operator_persisted_rebuild_status(row))
             .transpose()?;
+        let recent_raw_restore = store.discovery_recent_raw_restore_state_read_only()?;
         let aggregate_status = self.aggregate_readiness_status(store, now)?;
         let active_follow_wallets = store.list_active_follow_wallets()?.len();
 
@@ -193,6 +212,7 @@ impl DiscoveryService {
                 now,
             ),
             persisted_rebuild,
+            recent_raw_restore: operator_recent_raw_restore_status(&recent_raw_restore),
             offline_recovery: operator_offline_recovery_status(&aggregate_status),
         })
     }
@@ -339,6 +359,29 @@ fn operator_offline_recovery_status(
             .map(operator_cursor),
         covered_since: aggregate_status.covered_since,
         protected_since: aggregate_status.backfill_protected_since,
+    }
+}
+
+fn operator_recent_raw_restore_status(
+    row: &DiscoveryRecentRawRestoreStateRow,
+) -> DiscoveryOperatorRecentRawRestoreStatus {
+    DiscoveryOperatorRecentRawRestoreStatus {
+        journal_available: row.journal_available,
+        journal_replayed: row.journal_replayed,
+        required_window_start: row.required_window_start,
+        journal_covered_since: row.journal_covered_since,
+        journal_covered_through_cursor: row
+            .journal_covered_through_cursor
+            .as_ref()
+            .map(operator_cursor),
+        artifact_runtime_cursor: row.artifact_runtime_cursor.as_ref().map(operator_cursor),
+        journal_covers_artifact_cursor: row.journal_covers_artifact_cursor,
+        raw_coverage_satisfied: row.raw_coverage_satisfied,
+        replayed_rows: row.replayed_rows,
+        reason: row.reason.clone(),
+        replay_started_at: row.replay_started_at,
+        replay_completed_at: row.replay_completed_at,
+        updated_at: row.updated_at,
     }
 }
 

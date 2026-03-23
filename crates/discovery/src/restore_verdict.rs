@@ -52,6 +52,11 @@ pub struct DiscoveryRuntimeRestoreVerdict {
     pub recent_publication_truth_available: bool,
     pub bootstrap_degraded_active: bool,
     pub bootstrap_degraded_publication_truth_available: bool,
+    pub journal_available: bool,
+    pub journal_replayed: bool,
+    pub journal_covers_artifact_cursor: bool,
+    pub raw_coverage_satisfied: bool,
+    pub journal_replayed_rows: usize,
     pub active_follow_wallets: usize,
 }
 
@@ -119,6 +124,10 @@ pub fn runtime_restore_verdict_from_status(
         && status.scoring_source == "raw_window"
         && status.publication.recent_publication_truth_available
         && runtime_cursor_restored
+        && status.recent_raw_restore.journal_available
+        && status.recent_raw_restore.journal_replayed
+        && status.recent_raw_restore.journal_covers_artifact_cursor
+        && status.recent_raw_restore.raw_coverage_satisfied
         && status.active_follow_wallets > 0
     {
         DiscoveryRuntimeRestoreVerdictKind::TradingReady
@@ -144,6 +153,11 @@ pub fn runtime_restore_verdict_from_status(
         bootstrap_degraded_publication_truth_available: status
             .publication
             .bootstrap_degraded_publication_truth_available,
+        journal_available: status.recent_raw_restore.journal_available,
+        journal_replayed: status.recent_raw_restore.journal_replayed,
+        journal_covers_artifact_cursor: status.recent_raw_restore.journal_covers_artifact_cursor,
+        raw_coverage_satisfied: status.recent_raw_restore.raw_coverage_satisfied,
+        journal_replayed_rows: status.recent_raw_restore.replayed_rows,
         active_follow_wallets: status.active_follow_wallets,
     }
 }

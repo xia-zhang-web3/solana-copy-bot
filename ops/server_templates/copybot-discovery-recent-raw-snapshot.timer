@@ -1,0 +1,13 @@
+[Unit]
+Description=Copybot Discovery Recent Raw Journal Snapshot Timer
+
+[Timer]
+OnBootSec=7m
+OnUnitActiveSec=5m
+RandomizedDelaySec=30s
+Persistent=true
+Unit=copybot-discovery-recent-raw-snapshot.service
+
+[Install]
+WantedBy=timers.target
+

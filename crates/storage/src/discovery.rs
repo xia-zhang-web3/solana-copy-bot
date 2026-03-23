@@ -1,7 +1,9 @@
 use super::{
     DiscoveryBootstrapDegradedStateRow, DiscoveryPublicationFreshnessGate,
-    DiscoveryPublicationStateRow, DiscoveryPublicationStateUpdate, DiscoveryRuntimeArtifact,
-    DiscoveryRuntimeMode, DiscoveryTrustedSelectionStateRow, DiscoveryTrustedSelectionStateUpdate,
+    DiscoveryPublicationStateRow, DiscoveryPublicationStateUpdate,
+    DiscoveryRecentRawRestoreStateRow, DiscoveryRecentRawRestoreStateUpdate,
+    DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
+    DiscoveryTrustedSelectionStateRow, DiscoveryTrustedSelectionStateUpdate,
     FollowlistUpdateResult, PersistedWalletMetricSnapshotRow, SqliteStore,
     StartupTrustedSelectionGateStatus, TrustedSelectionState, TrustedSnapshotSourceKind,
     TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite, WalletActivityDayRow,
@@ -131,6 +133,7 @@ fn runtime_artifact_restore_table_category(table: &str) -> &'static str {
         | "observed_swaps"
         | "discovery_strategy_state"
         | "discovery_runtime_state"
+        | "discovery_recent_raw_restore_state"
         | "discovery_persisted_rebuild_state"
         | "trusted_wallet_metrics_snapshots"
         | "wallet_activity_days" => "discovery runtime",
@@ -232,6 +235,140 @@ fn discovery_bootstrap_degraded_state_query(
         armed_at: parse_optional_rfc3339_utc(
             armed_at_raw,
             "discovery_strategy_state.bootstrap_degraded_armed_at",
+        )?,
+    })
+}
+
+fn parse_optional_runtime_cursor(
+    ts_raw: Option<String>,
+    slot_raw: Option<i64>,
+    signature: Option<String>,
+    field_prefix: &str,
+) -> Result<Option<DiscoveryRuntimeCursor>> {
+    match (ts_raw, slot_raw, signature) {
+        (None, None, None) => Ok(None),
+        (Some(ts_raw), Some(slot_raw), Some(signature)) => Ok(Some(DiscoveryRuntimeCursor {
+            ts_utc: parse_rfc3339_utc(&ts_raw, &format!("{field_prefix}_ts"))?,
+            slot: slot_raw.max(0) as u64,
+            signature,
+        })),
+        _ => Err(anyhow::anyhow!(
+            "incomplete discovery runtime cursor payload for {field_prefix}"
+        )),
+    }
+}
+
+fn discovery_recent_raw_restore_state_query(
+    conn: &Connection,
+) -> Result<DiscoveryRecentRawRestoreStateRow> {
+    let row = conn
+        .query_row(
+            "SELECT
+                journal_available,
+                journal_replayed,
+                required_window_start,
+                journal_covered_since,
+                journal_covered_through_cursor_ts,
+                journal_covered_through_cursor_slot,
+                journal_covered_through_cursor_signature,
+                artifact_runtime_cursor_ts,
+                artifact_runtime_cursor_slot,
+                artifact_runtime_cursor_signature,
+                journal_covers_artifact_cursor,
+                raw_coverage_satisfied,
+                replayed_rows,
+                reason,
+                replay_started_at,
+                replay_completed_at,
+                updated_at
+             FROM discovery_recent_raw_restore_state
+             WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<i64>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(11)?,
+                    row.get::<_, i64>(12)?,
+                    row.get::<_, Option<String>>(13)?,
+                    row.get::<_, Option<String>>(14)?,
+                    row.get::<_, Option<String>>(15)?,
+                    row.get::<_, Option<String>>(16)?,
+                ))
+            },
+        )
+        .optional()
+        .context("failed reading discovery recent raw restore state")?;
+    let Some((
+        journal_available,
+        journal_replayed,
+        required_window_start_raw,
+        journal_covered_since_raw,
+        journal_covered_through_cursor_ts_raw,
+        journal_covered_through_cursor_slot_raw,
+        journal_covered_through_cursor_signature,
+        artifact_runtime_cursor_ts_raw,
+        artifact_runtime_cursor_slot_raw,
+        artifact_runtime_cursor_signature,
+        journal_covers_artifact_cursor,
+        raw_coverage_satisfied,
+        replayed_rows,
+        reason,
+        replay_started_at_raw,
+        replay_completed_at_raw,
+        updated_at_raw,
+    )) = row
+    else {
+        return Ok(DiscoveryRecentRawRestoreStateRow::default());
+    };
+
+    Ok(DiscoveryRecentRawRestoreStateRow {
+        journal_available: journal_available != 0,
+        journal_replayed: journal_replayed != 0,
+        required_window_start: parse_optional_rfc3339_utc(
+            required_window_start_raw,
+            "discovery_recent_raw_restore_state.required_window_start",
+        )?,
+        journal_covered_since: parse_optional_rfc3339_utc(
+            journal_covered_since_raw,
+            "discovery_recent_raw_restore_state.journal_covered_since",
+        )?,
+        journal_covered_through_cursor: parse_optional_runtime_cursor(
+            journal_covered_through_cursor_ts_raw,
+            journal_covered_through_cursor_slot_raw,
+            journal_covered_through_cursor_signature,
+            "discovery_recent_raw_restore_state.journal_covered_through_cursor",
+        )?,
+        artifact_runtime_cursor: parse_optional_runtime_cursor(
+            artifact_runtime_cursor_ts_raw,
+            artifact_runtime_cursor_slot_raw,
+            artifact_runtime_cursor_signature,
+            "discovery_recent_raw_restore_state.artifact_runtime_cursor",
+        )?,
+        journal_covers_artifact_cursor: journal_covers_artifact_cursor != 0,
+        raw_coverage_satisfied: raw_coverage_satisfied != 0,
+        replayed_rows: replayed_rows.max(0) as usize,
+        reason,
+        replay_started_at: parse_optional_rfc3339_utc(
+            replay_started_at_raw,
+            "discovery_recent_raw_restore_state.replay_started_at",
+        )?,
+        replay_completed_at: parse_optional_rfc3339_utc(
+            replay_completed_at_raw,
+            "discovery_recent_raw_restore_state.replay_completed_at",
+        )?,
+        updated_at: parse_optional_rfc3339_utc(
+            updated_at_raw,
+            "discovery_recent_raw_restore_state.updated_at",
         )?,
     })
 }
@@ -525,6 +662,20 @@ impl SqliteStore {
         discovery_bootstrap_degraded_state_query(&self.conn)
     }
 
+    pub fn discovery_recent_raw_restore_state(&self) -> Result<DiscoveryRecentRawRestoreStateRow> {
+        self.ensure_discovery_recent_raw_restore_state_table()?;
+        discovery_recent_raw_restore_state_query(&self.conn)
+    }
+
+    pub fn discovery_recent_raw_restore_state_read_only(
+        &self,
+    ) -> Result<DiscoveryRecentRawRestoreStateRow> {
+        if !self.sqlite_table_exists("discovery_recent_raw_restore_state")? {
+            return Ok(DiscoveryRecentRawRestoreStateRow::default());
+        }
+        discovery_recent_raw_restore_state_query(&self.conn)
+    }
+
     pub(crate) fn discovery_runtime_restore_dirty_tables(
         &self,
     ) -> Result<Vec<RuntimeArtifactRestoreDirtyTable>> {
@@ -561,6 +712,105 @@ impl SqliteStore {
             )
         })
         .context("failed updating discovery bootstrap-degraded state")?;
+        Ok(())
+    }
+
+    pub fn set_discovery_recent_raw_restore_state(
+        &self,
+        update: &DiscoveryRecentRawRestoreStateUpdate,
+    ) -> Result<()> {
+        self.ensure_discovery_recent_raw_restore_state_table()?;
+        self.execute_with_retry(|conn| {
+            conn.execute(
+                "INSERT INTO discovery_recent_raw_restore_state(
+                    id,
+                    journal_available,
+                    journal_replayed,
+                    required_window_start,
+                    journal_covered_since,
+                    journal_covered_through_cursor_ts,
+                    journal_covered_through_cursor_slot,
+                    journal_covered_through_cursor_signature,
+                    artifact_runtime_cursor_ts,
+                    artifact_runtime_cursor_slot,
+                    artifact_runtime_cursor_signature,
+                    journal_covers_artifact_cursor,
+                    raw_coverage_satisfied,
+                    replayed_rows,
+                    reason,
+                    replay_started_at,
+                    replay_completed_at,
+                    updated_at
+                 ) VALUES (
+                    1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
+                 )
+                 ON CONFLICT(id) DO UPDATE SET
+                    journal_available = excluded.journal_available,
+                    journal_replayed = excluded.journal_replayed,
+                    required_window_start = excluded.required_window_start,
+                    journal_covered_since = excluded.journal_covered_since,
+                    journal_covered_through_cursor_ts =
+                        excluded.journal_covered_through_cursor_ts,
+                    journal_covered_through_cursor_slot =
+                        excluded.journal_covered_through_cursor_slot,
+                    journal_covered_through_cursor_signature =
+                        excluded.journal_covered_through_cursor_signature,
+                    artifact_runtime_cursor_ts = excluded.artifact_runtime_cursor_ts,
+                    artifact_runtime_cursor_slot = excluded.artifact_runtime_cursor_slot,
+                    artifact_runtime_cursor_signature =
+                        excluded.artifact_runtime_cursor_signature,
+                    journal_covers_artifact_cursor =
+                        excluded.journal_covers_artifact_cursor,
+                    raw_coverage_satisfied = excluded.raw_coverage_satisfied,
+                    replayed_rows = excluded.replayed_rows,
+                    reason = excluded.reason,
+                    replay_started_at = excluded.replay_started_at,
+                    replay_completed_at = excluded.replay_completed_at,
+                    updated_at = excluded.updated_at",
+                params![
+                    if update.journal_available { 1 } else { 0 },
+                    if update.journal_replayed { 1 } else { 0 },
+                    update.required_window_start.map(|ts| ts.to_rfc3339()),
+                    update.journal_covered_since.map(|ts| ts.to_rfc3339()),
+                    update
+                        .journal_covered_through_cursor
+                        .as_ref()
+                        .map(|cursor| cursor.ts_utc.to_rfc3339()),
+                    update
+                        .journal_covered_through_cursor
+                        .as_ref()
+                        .map(|cursor| cursor.slot as i64),
+                    update
+                        .journal_covered_through_cursor
+                        .as_ref()
+                        .map(|cursor| cursor.signature.as_str()),
+                    update
+                        .artifact_runtime_cursor
+                        .as_ref()
+                        .map(|cursor| cursor.ts_utc.to_rfc3339()),
+                    update
+                        .artifact_runtime_cursor
+                        .as_ref()
+                        .map(|cursor| cursor.slot as i64),
+                    update
+                        .artifact_runtime_cursor
+                        .as_ref()
+                        .map(|cursor| cursor.signature.as_str()),
+                    if update.journal_covers_artifact_cursor {
+                        1
+                    } else {
+                        0
+                    },
+                    if update.raw_coverage_satisfied { 1 } else { 0 },
+                    update.replayed_rows as i64,
+                    update.reason.as_deref(),
+                    update.replay_started_at.map(|ts| ts.to_rfc3339()),
+                    update.replay_completed_at.map(|ts| ts.to_rfc3339()),
+                    Utc::now().to_rfc3339(),
+                ],
+            )
+        })
+        .context("failed updating discovery recent raw restore state")?;
         Ok(())
     }
 
@@ -1233,6 +1483,7 @@ impl SqliteStore {
         validate_runtime_artifact_snapshot_shape(artifact)?;
         self.ensure_discovery_strategy_state_table()?;
         self.ensure_trusted_wallet_metrics_snapshots_table()?;
+        self.ensure_discovery_recent_raw_restore_state_table()?;
         let dirty_tables = self.discovery_runtime_restore_dirty_tables()?;
         if !dirty_tables.is_empty() {
             let detail = format_runtime_artifact_restore_dirty_tables(&dirty_tables);
@@ -1265,6 +1516,26 @@ impl SqliteStore {
                     chunks_completed INTEGER NOT NULL DEFAULT 0,
                     state_json TEXT NOT NULL,
                     started_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS discovery_recent_raw_restore_state (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    journal_available INTEGER NOT NULL DEFAULT 0,
+                    journal_replayed INTEGER NOT NULL DEFAULT 0,
+                    required_window_start TEXT,
+                    journal_covered_since TEXT,
+                    journal_covered_through_cursor_ts TEXT,
+                    journal_covered_through_cursor_slot INTEGER,
+                    journal_covered_through_cursor_signature TEXT,
+                    artifact_runtime_cursor_ts TEXT,
+                    artifact_runtime_cursor_slot INTEGER,
+                    artifact_runtime_cursor_signature TEXT,
+                    journal_covers_artifact_cursor INTEGER NOT NULL DEFAULT 0,
+                    raw_coverage_satisfied INTEGER NOT NULL DEFAULT 0,
+                    replayed_rows INTEGER NOT NULL DEFAULT 0,
+                    reason TEXT,
+                    replay_started_at TEXT,
+                    replay_completed_at TEXT,
                     updated_at TEXT NOT NULL
                 );",
             )
@@ -1482,6 +1753,38 @@ impl SqliteStore {
                 ],
             )
             .context("failed restoring discovery publication state from artifact")?;
+            conn.execute(
+                "INSERT INTO discovery_recent_raw_restore_state(
+                    id,
+                    journal_available,
+                    journal_replayed,
+                    required_window_start,
+                    journal_covered_since,
+                    journal_covered_through_cursor_ts,
+                    journal_covered_through_cursor_slot,
+                    journal_covered_through_cursor_signature,
+                    artifact_runtime_cursor_ts,
+                    artifact_runtime_cursor_slot,
+                    artifact_runtime_cursor_signature,
+                    journal_covers_artifact_cursor,
+                    raw_coverage_satisfied,
+                    replayed_rows,
+                    reason,
+                    replay_started_at,
+                    replay_completed_at,
+                    updated_at
+                 ) VALUES (
+                    1, 0, 0, NULL, NULL, NULL, NULL, NULL, ?1, ?2, ?3, 0, 0, 0, ?4, NULL, NULL, ?5
+                 )",
+                params![
+                    artifact.runtime_cursor.ts_utc.to_rfc3339(),
+                    artifact.runtime_cursor.slot as i64,
+                    artifact.runtime_cursor.signature.as_str(),
+                    "journal_replay_pending",
+                    restored_at.to_rfc3339(),
+                ],
+            )
+            .context("failed initializing discovery recent raw restore state from artifact")?;
             Ok(())
         })
     }
@@ -1955,6 +2258,34 @@ impl SqliteStore {
                 ON trusted_wallet_metrics_snapshots(created_at DESC);",
             )
             .context("failed to ensure trusted wallet_metrics snapshots table exists")?;
+        Ok(())
+    }
+
+    fn ensure_discovery_recent_raw_restore_state_table(&self) -> Result<()> {
+        self.conn
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS discovery_recent_raw_restore_state (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    journal_available INTEGER NOT NULL DEFAULT 0,
+                    journal_replayed INTEGER NOT NULL DEFAULT 0,
+                    required_window_start TEXT,
+                    journal_covered_since TEXT,
+                    journal_covered_through_cursor_ts TEXT,
+                    journal_covered_through_cursor_slot INTEGER,
+                    journal_covered_through_cursor_signature TEXT,
+                    artifact_runtime_cursor_ts TEXT,
+                    artifact_runtime_cursor_slot INTEGER,
+                    artifact_runtime_cursor_signature TEXT,
+                    journal_covers_artifact_cursor INTEGER NOT NULL DEFAULT 0,
+                    raw_coverage_satisfied INTEGER NOT NULL DEFAULT 0,
+                    replayed_rows INTEGER NOT NULL DEFAULT 0,
+                    reason TEXT,
+                    replay_started_at TEXT,
+                    replay_completed_at TEXT,
+                    updated_at TEXT NOT NULL
+                )",
+            )
+            .context("failed to ensure discovery_recent_raw_restore_state table exists")?;
         Ok(())
     }
 

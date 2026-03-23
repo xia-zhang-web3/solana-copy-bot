@@ -1,22 +1,28 @@
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::load_from_path;
+#[cfg(test)]
+use copybot_core_types::SwapEvent;
 use copybot_discovery::operator_status::DiscoveryOperatorStatus;
 use copybot_discovery::restore_verdict::{
     DiscoveryRuntimeArtifactFreshnessAssessment, DiscoveryRuntimeRestoreVerdict,
 };
 use copybot_discovery::DiscoveryService;
+#[cfg(test)]
+use copybot_storage::{DiscoveryPublicationStateUpdate, WalletMetricRow, WalletUpsertRow};
 use copybot_storage::{
-    DiscoveryPublicationStateUpdate, DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor, SqliteStore,
-    WalletMetricRow, WalletUpsertRow,
+    DiscoveryRecentRawRestoreStateUpdate, DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor,
+    RecentRawJournalReplaySummary, SqliteStore,
 };
 use serde::Serialize;
+#[cfg(test)]
 use serde_json::Value;
 use std::env;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use tempfile::tempdir;
 
-const USAGE: &str = "usage: discovery_runtime_restore --config <path> --artifact <path> [--db-path <path>] [--bootstrap-degraded] [--json] [--now <rfc3339>]";
+const USAGE: &str = "usage: discovery_runtime_restore --config <path> --artifact <path> [--db-path <path>] [--journal-db-path <path>] [--bootstrap-degraded] [--json] [--now <rfc3339>]";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -32,6 +38,7 @@ struct Config {
     config_path: PathBuf,
     artifact_path: PathBuf,
     db_path: Option<PathBuf>,
+    journal_db_path: Option<PathBuf>,
     bootstrap_degraded: bool,
     json: bool,
     now: DateTime<Utc>,
@@ -40,7 +47,9 @@ struct Config {
 #[derive(Debug, Clone, Serialize)]
 struct RestoreOutput {
     db_path: String,
+    journal_db_path: String,
     freshness: DiscoveryRuntimeArtifactFreshnessAssessment,
+    replay: RecentRawJournalReplaySummary,
     verdict: DiscoveryRuntimeRestoreVerdict,
     operator_status: DiscoveryOperatorStatus,
 }
@@ -57,6 +66,7 @@ where
     let mut config_path: Option<PathBuf> = None;
     let mut artifact_path: Option<PathBuf> = None;
     let mut db_path: Option<PathBuf> = None;
+    let mut journal_db_path: Option<PathBuf> = None;
     let mut bootstrap_degraded = false;
     let mut json = false;
     let mut now: Option<DateTime<Utc>> = None;
@@ -72,6 +82,12 @@ where
             "--db-path" => {
                 db_path = Some(PathBuf::from(parse_string_arg("--db-path", args.next())?))
             }
+            "--journal-db-path" => {
+                journal_db_path = Some(PathBuf::from(parse_string_arg(
+                    "--journal-db-path",
+                    args.next(),
+                )?))
+            }
             "--bootstrap-degraded" => bootstrap_degraded = true,
             "--json" => json = true,
             "--now" => now = Some(parse_ts_arg("--now", args.next())?),
@@ -84,6 +100,7 @@ where
         config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
         artifact_path: artifact_path.ok_or_else(|| anyhow!("missing required --artifact"))?,
         db_path,
+        journal_db_path,
         bootstrap_degraded,
         json,
         now: now.unwrap_or_else(Utc::now),
@@ -156,6 +173,11 @@ fn run(config: Config) -> Result<String> {
         config.db_path.as_deref(),
         &loaded_config.sqlite.path,
     );
+    let journal_db_path = resolve_db_path(
+        &config.config_path,
+        config.journal_db_path.as_deref(),
+        &loaded_config.recent_raw_journal.path,
+    );
     let migrations_dir =
         resolve_migrations_dir(&config.config_path, &loaded_config.system.migrations_dir);
     let artifact: DiscoveryRuntimeArtifact = serde_json::from_slice(
@@ -193,12 +215,22 @@ fn run(config: Config) -> Result<String> {
         )
     })?;
     store.restore_discovery_runtime_artifact(&artifact, config.now, config.bootstrap_degraded)?;
+    let replay = replay_recent_raw_journal(
+        &store,
+        &journal_db_path,
+        config.now,
+        i64::from(loaded_config.discovery.scoring_window_days.max(1)),
+        loaded_config.recent_raw_journal.replay_batch_size.max(1),
+        &artifact.runtime_cursor,
+    )?;
 
     let operator_status = discovery.operator_status(&store, config.now)?;
     let verdict = discovery.runtime_restore_verdict(&store, config.now)?;
     let output = RestoreOutput {
         db_path: db_path.display().to_string(),
+        journal_db_path: journal_db_path.display().to_string(),
         freshness,
+        replay,
         verdict,
         operator_status,
     };
@@ -208,17 +240,24 @@ fn run(config: Config) -> Result<String> {
         Ok(render_human(
             &config.config_path,
             &config.artifact_path,
+            &journal_db_path,
             &output,
         ))
     }
 }
 
-fn render_human(config_path: &Path, artifact_path: &Path, output: &RestoreOutput) -> String {
+fn render_human(
+    config_path: &Path,
+    artifact_path: &Path,
+    journal_db_path: &Path,
+    output: &RestoreOutput,
+) -> String {
     [
         "event=discovery_runtime_restore".to_string(),
         format!("config_path={}", config_path.display()),
         format!("artifact_path={}", artifact_path.display()),
         format!("db_path={}", output.db_path),
+        format!("journal_db_path={}", journal_db_path.display()),
         format!("verdict={}", output.verdict.verdict),
         format!(
             "fresh_under_export_gate={}",
@@ -235,6 +274,20 @@ fn render_human(config_path: &Path, artifact_path: &Path, output: &RestoreOutput
             "runtime_cursor_restored={}",
             output.verdict.runtime_cursor_restored
         ),
+        format!("journal_available={}", output.verdict.journal_available),
+        format!("journal_replayed={}", output.verdict.journal_replayed),
+        format!(
+            "journal_covers_artifact_cursor={}",
+            output.verdict.journal_covers_artifact_cursor
+        ),
+        format!(
+            "raw_coverage_satisfied={}",
+            output.verdict.raw_coverage_satisfied
+        ),
+        format!(
+            "journal_replayed_rows={}",
+            output.verdict.journal_replayed_rows
+        ),
         format!(
             "bootstrap_degraded_active={}",
             output.verdict.bootstrap_degraded_active
@@ -243,10 +296,101 @@ fn render_human(config_path: &Path, artifact_path: &Path, output: &RestoreOutput
     .join("\n")
 }
 
+fn replay_recent_raw_journal(
+    runtime_store: &SqliteStore,
+    journal_db_path: &Path,
+    now: DateTime<Utc>,
+    scoring_window_days: i64,
+    replay_batch_size: usize,
+    artifact_runtime_cursor: &DiscoveryRuntimeCursor,
+) -> Result<RecentRawJournalReplaySummary> {
+    let required_window_start = now - Duration::days(scoring_window_days.max(1));
+    runtime_store.set_discovery_recent_raw_restore_state(
+        &DiscoveryRecentRawRestoreStateUpdate {
+            journal_available: false,
+            journal_replayed: false,
+            required_window_start: Some(required_window_start),
+            journal_covered_since: None,
+            journal_covered_through_cursor: None,
+            artifact_runtime_cursor: Some(artifact_runtime_cursor.clone()),
+            journal_covers_artifact_cursor: false,
+            raw_coverage_satisfied: false,
+            replayed_rows: 0,
+            reason: Some("journal_replay_started".to_string()),
+            replay_started_at: Some(now),
+            replay_completed_at: None,
+        },
+    )?;
+
+    let replay = if journal_db_path.exists() {
+        let journal_store = SqliteStore::open_read_only(journal_db_path).with_context(|| {
+            format!(
+                "failed opening recent raw journal db {}",
+                journal_db_path.display()
+            )
+        })?;
+        journal_store.replay_recent_raw_journal_into_runtime_store(
+            runtime_store,
+            required_window_start,
+            artifact_runtime_cursor,
+            replay_batch_size.max(1),
+        )?
+    } else {
+        RecentRawJournalReplaySummary {
+            required_window_start,
+            artifact_runtime_cursor: artifact_runtime_cursor.clone(),
+            journal_available: false,
+            journal_covered_since: None,
+            journal_covered_through_cursor: None,
+            journal_covers_artifact_cursor: false,
+            replayed_rows: 0,
+            raw_coverage_satisfied: false,
+        }
+    };
+
+    runtime_store.set_discovery_recent_raw_restore_state(
+        &DiscoveryRecentRawRestoreStateUpdate {
+            journal_available: replay.journal_available,
+            journal_replayed: replay.replayed_rows > 0 || replay.journal_available,
+            required_window_start: Some(replay.required_window_start),
+            journal_covered_since: replay.journal_covered_since,
+            journal_covered_through_cursor: replay.journal_covered_through_cursor.clone(),
+            artifact_runtime_cursor: Some(replay.artifact_runtime_cursor.clone()),
+            journal_covers_artifact_cursor: replay.journal_covers_artifact_cursor,
+            raw_coverage_satisfied: replay.raw_coverage_satisfied,
+            replayed_rows: replay.replayed_rows,
+            reason: Some(recent_raw_journal_restore_reason(&replay, journal_db_path)),
+            replay_started_at: Some(now),
+            replay_completed_at: Some(now),
+        },
+    )?;
+    Ok(replay)
+}
+
+fn recent_raw_journal_restore_reason(
+    replay: &RecentRawJournalReplaySummary,
+    journal_db_path: &Path,
+) -> String {
+    if !replay.journal_available {
+        return format!(
+            "recent_raw_journal_unavailable:{}",
+            journal_db_path.display()
+        );
+    }
+    if !replay.journal_covers_artifact_cursor {
+        return "recent_raw_journal_missing_artifact_cursor_lineage".to_string();
+    }
+    if !replay.raw_coverage_satisfied {
+        return "recent_raw_journal_raw_coverage_unsatisfied".to_string();
+    }
+    "recent_raw_journal_replay_completed".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        export_artifact, make_fixture, parse_ts, seed_runtime_artifact_source, SqliteStore, Value,
+        export_artifact, make_fixture, make_swap, parse_ts, seed_recent_raw_journal,
+        seed_runtime_artifact_source, SqliteStore, Value,
     };
     use super::{parse_args_from, run, Config};
     use anyhow::Result;
@@ -275,6 +419,7 @@ mod tests {
             PathBuf::from("artifacts/runtime.json")
         );
         assert_eq!(parsed.db_path, Some(PathBuf::from("state/live.db")));
+        assert_eq!(parsed.journal_db_path, None);
         assert!(parsed.bootstrap_degraded);
         assert!(parsed.json);
         assert_eq!(parsed.now.to_rfc3339(), "2026-03-23T12:00:00+00:00");
@@ -294,6 +439,7 @@ mod tests {
             config_path: fixture.config_path.clone(),
             artifact_path: artifact_path.clone(),
             db_path: Some(restored_db_path.clone()),
+            journal_db_path: None,
             bootstrap_degraded: false,
             json: false,
             now,
@@ -342,6 +488,7 @@ mod tests {
             config_path: fixture.config_path.clone(),
             artifact_path: artifact_path.clone(),
             db_path: Some(fixture.temp.path().join("restored-stale.db")),
+            journal_db_path: None,
             bootstrap_degraded: false,
             json: false,
             now,
@@ -368,6 +515,7 @@ mod tests {
             config_path: fixture.config_path.clone(),
             artifact_path: artifact_path.clone(),
             db_path: Some(restored_db_path.clone()),
+            journal_db_path: None,
             bootstrap_degraded: true,
             json: true,
             now,
@@ -393,14 +541,188 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn run_restore_verdict_stays_fail_closed_without_required_raw_coverage() -> Result<()> {
+        let fixture = make_fixture("runtime-restore-short-journal")?;
+        let now = parse_ts("2026-03-23T12:00:00Z")?;
+        let artifact_now = now - Duration::minutes(30);
+        seed_runtime_artifact_source(&fixture.source_store, artifact_now)?;
+        let artifact = export_artifact(&fixture.source_store, &fixture.config_path, now)?;
+        let artifact_path = fixture.temp.path().join("artifact-short-journal.json");
+        std::fs::write(&artifact_path, serde_json::to_vec_pretty(&artifact)?)?;
+        let restored_db_path = fixture.temp.path().join("restored-short-journal.db");
+        let journal_db_path = fixture.temp.path().join("recent-short-journal.db");
+        seed_recent_raw_journal(
+            &journal_db_path,
+            &[make_swap(
+                "journal-short-only",
+                artifact_now + Duration::minutes(10),
+                50,
+            )],
+            now,
+        )?;
+
+        let output = run(Config {
+            config_path: fixture.config_path.clone(),
+            artifact_path,
+            db_path: Some(restored_db_path),
+            journal_db_path: Some(journal_db_path),
+            bootstrap_degraded: false,
+            json: true,
+            now,
+        })?;
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(
+            parsed.pointer("/verdict/verdict").and_then(Value::as_str),
+            Some("fail_closed")
+        );
+        assert_eq!(
+            parsed
+                .pointer("/verdict/raw_coverage_satisfied")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/operator_status/recent_raw_restore/journal_available")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/operator_status/recent_raw_restore/raw_coverage_satisfied")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_replays_recent_raw_journal_into_fresh_runtime_db_and_becomes_trading_ready() -> Result<()>
+    {
+        let fixture = make_fixture("runtime-restore-trading-ready")?;
+        let now = parse_ts("2026-03-23T12:00:00Z")?;
+        let artifact_now = now - Duration::minutes(30);
+        seed_runtime_artifact_source(&fixture.source_store, artifact_now)?;
+        let artifact = export_artifact(&fixture.source_store, &fixture.config_path, now)?;
+        let artifact_path = fixture.temp.path().join("artifact-trading-ready.json");
+        std::fs::write(&artifact_path, serde_json::to_vec_pretty(&artifact)?)?;
+        let restored_db_path = fixture.temp.path().join("restored-trading-ready.db");
+        let journal_db_path = fixture.temp.path().join("recent-trading-ready.db");
+        seed_recent_raw_journal(
+            &journal_db_path,
+            &[
+                make_swap("journal-too-old", now - Duration::days(9), 10),
+                make_swap("journal-window-start", now - Duration::days(7), 11),
+                make_swap("journal-recent", now - Duration::minutes(5), 12),
+            ],
+            now,
+        )?;
+
+        let output = run(Config {
+            config_path: fixture.config_path.clone(),
+            artifact_path: artifact_path.clone(),
+            db_path: Some(restored_db_path.clone()),
+            journal_db_path: Some(journal_db_path),
+            bootstrap_degraded: false,
+            json: true,
+            now,
+        })?;
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(
+            parsed.pointer("/verdict/verdict").and_then(Value::as_str),
+            Some("trading_ready")
+        );
+        assert_eq!(
+            parsed
+                .pointer("/verdict/journal_available")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/verdict/raw_coverage_satisfied")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/replay/replayed_rows")
+                .and_then(Value::as_u64),
+            Some(2)
+        );
+        let restored = SqliteStore::open(Path::new(&restored_db_path))?;
+        let restored_signatures = restored
+            .load_observed_swaps_since(now - Duration::days(30))?
+            .into_iter()
+            .map(|swap| swap.signature)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            restored_signatures,
+            vec![
+                "journal-window-start".to_string(),
+                "journal-recent".to_string()
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_keeps_bootstrap_degraded_verdict_even_when_journal_replay_restores_raw_window(
+    ) -> Result<()> {
+        let fixture = make_fixture("runtime-restore-bootstrap-journal")?;
+        let now = parse_ts("2026-03-23T12:00:00Z")?;
+        let artifact_now = now - Duration::hours(3);
+        seed_runtime_artifact_source(&fixture.source_store, artifact_now)?;
+        let artifact = export_artifact(&fixture.source_store, &fixture.config_path, now)?;
+        let artifact_path = fixture.temp.path().join("artifact-bootstrap-journal.json");
+        std::fs::write(&artifact_path, serde_json::to_vec_pretty(&artifact)?)?;
+        let restored_db_path = fixture.temp.path().join("restored-bootstrap-journal.db");
+        let journal_db_path = fixture.temp.path().join("recent-bootstrap-journal.db");
+        seed_recent_raw_journal(
+            &journal_db_path,
+            &[
+                make_swap("journal-bootstrap-window", now - Duration::days(7), 21),
+                make_swap("journal-bootstrap-recent", now - Duration::minutes(5), 22),
+            ],
+            now,
+        )?;
+
+        let output = run(Config {
+            config_path: fixture.config_path.clone(),
+            artifact_path,
+            db_path: Some(restored_db_path.clone()),
+            journal_db_path: Some(journal_db_path),
+            bootstrap_degraded: true,
+            json: true,
+            now,
+        })?;
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(
+            parsed.pointer("/verdict/verdict").and_then(Value::as_str),
+            Some("bootstrap_degraded")
+        );
+        assert_eq!(
+            parsed
+                .pointer("/operator_status/recent_raw_restore/raw_coverage_satisfied")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        let restored = SqliteStore::open(Path::new(&restored_db_path))?;
+        assert!(restored.discovery_bootstrap_degraded_state()?.active);
+        Ok(())
+    }
 }
 
+#[cfg(test)]
 struct Fixture {
     source_store: SqliteStore,
     config_path: PathBuf,
     temp: tempfile::TempDir,
 }
 
+#[cfg(test)]
 fn make_fixture(name: &str) -> Result<Fixture> {
     let temp = tempdir().context("failed creating tempdir")?;
     let db_path = temp.path().join(format!("{name}.db"));
@@ -423,6 +745,7 @@ fn make_fixture(name: &str) -> Result<Fixture> {
     })
 }
 
+#[cfg(test)]
 fn export_artifact(
     store: &SqliteStore,
     config_path: &Path,
@@ -433,6 +756,7 @@ fn export_artifact(
     store.export_discovery_runtime_artifact(now, discovery.publication_freshness_gate())
 }
 
+#[cfg(test)]
 fn seed_runtime_artifact_source(store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
     let published_window_start = now - Duration::days(7);
     store.persist_discovery_cycle(
@@ -477,6 +801,34 @@ fn seed_runtime_artifact_source(store: &SqliteStore, now: DateTime<Utc>) -> Resu
     Ok(())
 }
 
+#[cfg(test)]
+fn make_swap(signature: &str, ts_utc: DateTime<Utc>, slot: u64) -> SwapEvent {
+    SwapEvent {
+        wallet: "wallet-restore".to_string(),
+        dex: "raydium".to_string(),
+        token_in: "So11111111111111111111111111111111111111112".to_string(),
+        token_out: format!("token-{signature}"),
+        amount_in: 1.0,
+        amount_out: 10.0,
+        signature: signature.to_string(),
+        slot,
+        ts_utc,
+        exact_amounts: None,
+    }
+}
+
+#[cfg(test)]
+fn seed_recent_raw_journal(
+    journal_db_path: &Path,
+    swaps: &[SwapEvent],
+    completed_at: DateTime<Utc>,
+) -> Result<()> {
+    let journal_store = SqliteStore::open(journal_db_path)?;
+    journal_store.insert_recent_raw_journal_batch(swaps, completed_at)?;
+    Ok(())
+}
+
+#[cfg(test)]
 fn parse_ts(raw: &str) -> Result<DateTime<Utc>> {
     Ok(DateTime::parse_from_rfc3339(raw)?.with_timezone(&Utc))
 }

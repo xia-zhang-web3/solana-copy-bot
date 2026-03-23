@@ -29,6 +29,8 @@ const OBSERVED_SWAP_RETENTION_MAX_RAW_DELETE_BATCHES_PER_RUN: usize = 8;
 const OBSERVED_SWAP_RETENTION_MAX_SCORING_DELETE_BATCHES_PER_RUN: usize = 4;
 const OBSERVED_SWAP_RETENTION_MAX_DURATION_PER_RUN: StdDuration = StdDuration::from_secs(2);
 const OBSERVED_SWAP_RETENTION_INTER_BATCH_PAUSE: StdDuration = StdDuration::from_millis(50);
+const RECENT_RAW_JOURNAL_RETENTION_DELETE_BATCH_SIZE: usize = 500;
+const RECENT_RAW_JOURNAL_RETENTION_MAX_DELETE_BATCHES_PER_RUN: usize = 8;
 const OBSERVED_SWAP_WRITER_RETRYABLE_LOCK_BACKOFF: StdDuration = StdDuration::from_millis(250);
 const OBSERVED_SWAP_WRITER_RETRYABLE_LOCK_LOG_INTERVAL: StdDuration = StdDuration::from_secs(5);
 pub(crate) const OBSERVED_SWAP_RETENTION_PARTIAL_RETRY_INTERVAL: StdDuration =
@@ -47,18 +49,28 @@ struct ObservedSwapWriterConfig {
     batch_max_size: usize,
     aggregate_writes_enabled: bool,
     aggregate_write_config: DiscoveryAggregateWriteConfig,
+    recent_raw_journal: Option<ObservedSwapRecentRawJournalConfig>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ObservedSwapRecentRawJournalConfig {
+    pub sqlite_path: String,
+    pub retention_days: u32,
+    pub writer_queue_capacity_batches: usize,
 }
 
 impl ObservedSwapWriterConfig {
     fn production(
         aggregate_writes_enabled: bool,
         aggregate_write_config: DiscoveryAggregateWriteConfig,
+        recent_raw_journal: Option<ObservedSwapRecentRawJournalConfig>,
     ) -> Self {
         Self {
             channel_capacity: OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
             batch_max_size: OBSERVED_SWAP_BATCH_MAX_SIZE,
             aggregate_writes_enabled,
             aggregate_write_config,
+            recent_raw_journal,
         }
     }
 }
@@ -158,6 +170,10 @@ struct DiscoveryAggregateWriteRequest {
     batch_started: Instant,
 }
 
+struct RecentRawJournalWriteRequest {
+    inserted_swaps: Vec<SwapEvent>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ObservedSwapWriterSnapshot {
     pub pending_requests: usize,
@@ -166,9 +182,15 @@ pub(crate) struct ObservedSwapWriterSnapshot {
     pub observed_swaps_insert_ms_p95: u64,
     pub wallet_activity_days_ms_p95: u64,
     pub discovery_scoring_ms_p95: u64,
+    pub journal_enqueue_wait_ms_p95: u64,
+    pub journal_batch_write_ms_p95: u64,
     pub worker_busy_ms_p95: u64,
     pub aggregate_queue_depth_batches: usize,
     pub aggregate_queue_capacity_batches: usize,
+    pub journal_queue_depth_batches: usize,
+    pub journal_queue_capacity_batches: usize,
+    pub journal_sqlite_write_retry_total: u64,
+    pub journal_sqlite_busy_error_total: u64,
 }
 
 #[derive(Debug, Default)]
@@ -179,14 +201,22 @@ struct ObservedSwapWriterTelemetry {
     last_observed_swaps_insert_ms_p95: AtomicU64,
     last_wallet_activity_days_ms_p95: AtomicU64,
     last_discovery_scoring_ms_p95: AtomicU64,
+    last_journal_enqueue_wait_ms_p95: AtomicU64,
+    last_journal_batch_write_ms_p95: AtomicU64,
     last_worker_busy_ms_p95: AtomicU64,
     aggregate_queue_depth_batches: AtomicUsize,
     aggregate_queue_capacity_batches: AtomicUsize,
+    journal_queue_depth_batches: AtomicUsize,
+    journal_queue_capacity_batches: AtomicUsize,
+    journal_sqlite_write_retry_total: AtomicU64,
+    journal_sqlite_busy_error_total: AtomicU64,
     write_latency_ms_samples: Mutex<VecDeque<u64>>,
     raw_batch_write_ms_samples: Mutex<VecDeque<u64>>,
     observed_swaps_insert_ms_samples: Mutex<VecDeque<u64>>,
     wallet_activity_days_ms_samples: Mutex<VecDeque<u64>>,
     discovery_scoring_ms_samples: Mutex<VecDeque<u64>>,
+    journal_enqueue_wait_ms_samples: Mutex<VecDeque<u64>>,
+    journal_batch_write_ms_samples: Mutex<VecDeque<u64>>,
     worker_busy_ms_samples: Mutex<VecDeque<u64>>,
 }
 
@@ -237,6 +267,22 @@ impl ObservedSwapWriterTelemetry {
         );
     }
 
+    fn note_journal_enqueue_wait_completed(&self, duration_ms: u64) {
+        self.note_phase_sample(
+            &self.journal_enqueue_wait_ms_samples,
+            &self.last_journal_enqueue_wait_ms_p95,
+            duration_ms,
+        );
+    }
+
+    fn note_journal_batch_write_completed(&self, duration_ms: u64) {
+        self.note_phase_sample(
+            &self.journal_batch_write_ms_samples,
+            &self.last_journal_batch_write_ms_p95,
+            duration_ms,
+        );
+    }
+
     fn note_observed_swaps_insert_completed(&self, duration_ms: u64) {
         self.note_phase_sample(
             &self.observed_swaps_insert_ms_samples,
@@ -271,6 +317,38 @@ impl ObservedSwapWriterTelemetry {
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some(current.saturating_sub(1)),
+        );
+    }
+
+    fn note_journal_queue_enqueued(&self) {
+        self.journal_queue_depth_batches
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn note_journal_queue_dequeued(&self) {
+        let _ = self.journal_queue_depth_batches.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_sub(1)),
+        );
+    }
+
+    fn note_journal_sqlite_contention_delta(
+        &self,
+        before: SqliteContentionSnapshot,
+        after: SqliteContentionSnapshot,
+    ) {
+        self.journal_sqlite_write_retry_total.fetch_add(
+            after
+                .write_retry_total
+                .saturating_sub(before.write_retry_total),
+            Ordering::Relaxed,
+        );
+        self.journal_sqlite_busy_error_total.fetch_add(
+            after
+                .busy_error_total
+                .saturating_sub(before.busy_error_total),
+            Ordering::Relaxed,
         );
     }
 
@@ -326,6 +404,21 @@ impl ObservedSwapWriterTelemetry {
             .ok()
             .map(|samples| percentile_from_deque(&samples, 0.95))
             .unwrap_or_else(|| self.last_discovery_scoring_ms_p95.load(Ordering::Relaxed));
+        let journal_enqueue_wait_ms_p95 = self
+            .journal_enqueue_wait_ms_samples
+            .lock()
+            .ok()
+            .map(|samples| percentile_from_deque(&samples, 0.95))
+            .unwrap_or_else(|| {
+                self.last_journal_enqueue_wait_ms_p95
+                    .load(Ordering::Relaxed)
+            });
+        let journal_batch_write_ms_p95 = self
+            .journal_batch_write_ms_samples
+            .lock()
+            .ok()
+            .map(|samples| percentile_from_deque(&samples, 0.95))
+            .unwrap_or_else(|| self.last_journal_batch_write_ms_p95.load(Ordering::Relaxed));
         let worker_busy_ms_p95 = self
             .worker_busy_ms_samples
             .lock()
@@ -339,12 +432,24 @@ impl ObservedSwapWriterTelemetry {
             observed_swaps_insert_ms_p95,
             wallet_activity_days_ms_p95,
             discovery_scoring_ms_p95,
+            journal_enqueue_wait_ms_p95,
+            journal_batch_write_ms_p95,
             worker_busy_ms_p95,
             aggregate_queue_depth_batches: self
                 .aggregate_queue_depth_batches
                 .load(Ordering::Relaxed),
             aggregate_queue_capacity_batches: self
                 .aggregate_queue_capacity_batches
+                .load(Ordering::Relaxed),
+            journal_queue_depth_batches: self.journal_queue_depth_batches.load(Ordering::Relaxed),
+            journal_queue_capacity_batches: self
+                .journal_queue_capacity_batches
+                .load(Ordering::Relaxed),
+            journal_sqlite_write_retry_total: self
+                .journal_sqlite_write_retry_total
+                .load(Ordering::Relaxed),
+            journal_sqlite_busy_error_total: self
+                .journal_sqlite_busy_error_total
                 .load(Ordering::Relaxed),
         }
     }
@@ -354,6 +459,7 @@ pub(crate) struct ObservedSwapWriter {
     sender: mpsc::Sender<ObservedSwapWriteRequest>,
     raw_worker: Option<thread::JoinHandle<Result<()>>>,
     aggregate_worker: Option<thread::JoinHandle<Result<()>>>,
+    journal_worker: Option<thread::JoinHandle<Result<()>>>,
     telemetry: Arc<ObservedSwapWriterTelemetry>,
     terminal_failure_message: Arc<Mutex<Option<String>>>,
 }
@@ -391,9 +497,27 @@ impl ObservedSwapWriter {
         aggregate_writes_enabled: bool,
         aggregate_write_config: DiscoveryAggregateWriteConfig,
     ) -> Result<Self> {
+        Self::start_with_recent_raw_journal(
+            sqlite_path,
+            aggregate_writes_enabled,
+            aggregate_write_config,
+            None,
+        )
+    }
+
+    pub(crate) fn start_with_recent_raw_journal(
+        sqlite_path: String,
+        aggregate_writes_enabled: bool,
+        aggregate_write_config: DiscoveryAggregateWriteConfig,
+        recent_raw_journal: Option<ObservedSwapRecentRawJournalConfig>,
+    ) -> Result<Self> {
         Self::start_with_config(
             sqlite_path,
-            ObservedSwapWriterConfig::production(aggregate_writes_enabled, aggregate_write_config),
+            ObservedSwapWriterConfig::production(
+                aggregate_writes_enabled,
+                aggregate_write_config,
+                recent_raw_journal,
+            ),
         )
     }
 
@@ -406,6 +530,14 @@ impl ObservedSwapWriter {
         telemetry
             .aggregate_queue_capacity_batches
             .store(aggregate_queue_capacity_batches, Ordering::Relaxed);
+        let journal_queue_capacity_batches = config
+            .recent_raw_journal
+            .as_ref()
+            .map(|journal| journal.writer_queue_capacity_batches.max(1))
+            .unwrap_or(0);
+        telemetry
+            .journal_queue_capacity_batches
+            .store(journal_queue_capacity_batches, Ordering::Relaxed);
         let aggregate_channel = config.aggregate_writes_enabled.then(|| {
             std_mpsc::sync_channel::<DiscoveryAggregateWriteRequest>(
                 aggregate_queue_capacity_batches,
@@ -420,6 +552,21 @@ impl ObservedSwapWriter {
             .as_ref()
             .map(|(sender, _)| sender.clone());
         let aggregate_startup_receiver = aggregate_startup_channel.map(|(_, receiver)| receiver);
+        let journal_channel = config.recent_raw_journal.as_ref().map(|journal| {
+            std_mpsc::sync_channel::<RecentRawJournalWriteRequest>(
+                journal.writer_queue_capacity_batches.max(1),
+            )
+        });
+        let journal_sender = journal_channel.as_ref().map(|(sender, _)| sender.clone());
+        let journal_receiver = journal_channel.map(|(_, receiver)| receiver);
+        let journal_startup_channel = config
+            .recent_raw_journal
+            .as_ref()
+            .map(|_| std_mpsc::channel::<std::result::Result<(), String>>());
+        let journal_startup_sender = journal_startup_channel
+            .as_ref()
+            .map(|(sender, _)| sender.clone());
+        let journal_startup_receiver = journal_startup_channel.map(|(_, receiver)| receiver);
         let raw_worker_config = config.clone();
         let raw_worker_sqlite_path = sqlite_path.clone();
 
@@ -433,6 +580,8 @@ impl ObservedSwapWriter {
                     receiver,
                     aggregate_sender,
                     aggregate_startup_receiver,
+                    journal_sender,
+                    journal_startup_receiver,
                     raw_worker_config,
                     raw_worker_telemetry,
                     Arc::clone(&raw_worker_terminal_failure_message),
@@ -451,7 +600,7 @@ impl ObservedSwapWriter {
             let aggregate_worker_telemetry = Arc::clone(&telemetry);
             let aggregate_worker_terminal_failure_message = Arc::clone(&terminal_failure_message);
             let aggregate_sqlite_path = sqlite_path.clone();
-            let aggregate_worker_config = config;
+            let aggregate_worker_config = config.clone();
             let startup_sender = aggregate_startup_sender
                 .ok_or_else(|| anyhow!("missing discovery aggregate startup sender"))?;
             Some(
@@ -479,10 +628,44 @@ impl ObservedSwapWriter {
             None
         };
 
+        let journal_worker = if let Some(receiver) = journal_receiver {
+            let journal_worker_telemetry = Arc::clone(&telemetry);
+            let journal_worker_terminal_failure_message = Arc::clone(&terminal_failure_message);
+            let journal_config = config
+                .recent_raw_journal
+                .clone()
+                .ok_or_else(|| anyhow!("missing recent raw journal config"))?;
+            let startup_sender = journal_startup_sender
+                .ok_or_else(|| anyhow!("missing recent raw journal startup sender"))?;
+            Some(
+                thread::Builder::new()
+                    .name("copybot-recent-raw-journal-writer".to_string())
+                    .spawn(move || {
+                        let result = recent_raw_journal_writer_loop(
+                            receiver,
+                            startup_sender,
+                            journal_config,
+                            journal_worker_telemetry,
+                        );
+                        if let Err(error) = &result {
+                            set_terminal_failure_message(
+                                &journal_worker_terminal_failure_message,
+                                format!("{error:#}"),
+                            );
+                        }
+                        result
+                    })
+                    .context("failed to spawn recent raw journal writer thread")?,
+            )
+        } else {
+            None
+        };
+
         Ok(Self {
             sender,
             raw_worker: Some(raw_worker),
             aggregate_worker,
+            journal_worker,
             telemetry,
             terminal_failure_message,
         })
@@ -503,6 +686,7 @@ impl ObservedSwapWriter {
                 batch_max_size,
                 aggregate_writes_enabled,
                 aggregate_write_config,
+                recent_raw_journal: None,
             },
         )
     }
@@ -583,11 +767,24 @@ impl ObservedSwapWriter {
         } else {
             None
         };
+        let journal_result = if let Some(journal_worker) = self.journal_worker.take() {
+            Some(
+                journal_worker
+                    .join()
+                    .map_err(|payload| anyhow!(panic_payload_to_string(payload.as_ref())))
+                    .context("recent raw journal writer thread panicked")?,
+            )
+        } else {
+            None
+        };
         if let Some(result) = raw_result {
             result.context("observed swap writer thread failed")?;
         }
         if let Some(result) = aggregate_result {
             result.context("discovery aggregate writer thread failed")?;
+        }
+        if let Some(result) = journal_result {
+            result.context("recent raw journal writer thread failed")?;
         }
         Ok(())
     }
@@ -598,6 +795,8 @@ fn observed_swap_writer_loop(
     mut receiver: mpsc::Receiver<ObservedSwapWriteRequest>,
     aggregate_sender: Option<std_mpsc::SyncSender<DiscoveryAggregateWriteRequest>>,
     aggregate_startup_receiver: Option<std_mpsc::Receiver<std::result::Result<(), String>>>,
+    journal_sender: Option<std_mpsc::SyncSender<RecentRawJournalWriteRequest>>,
+    journal_startup_receiver: Option<std_mpsc::Receiver<std::result::Result<(), String>>>,
     config: ObservedSwapWriterConfig,
     telemetry: Arc<ObservedSwapWriterTelemetry>,
     terminal_failure_message: Arc<Mutex<Option<String>>>,
@@ -620,6 +819,24 @@ fn observed_swap_writer_loop(
                 ))
                 .context(
                     "observed swap writer stopping after aggregate startup replay channel closed",
+                );
+            }
+        }
+    }
+    if let Some(journal_startup_receiver) = journal_startup_receiver {
+        match journal_startup_receiver.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => {
+                return Err(anyhow!(message)).context(
+                    "observed swap writer stopping after recent raw journal startup failure",
+                );
+            }
+            Err(error) => {
+                return Err(anyhow!(
+                    "recent raw journal writer startup channel closed: {error}"
+                ))
+                .context(
+                    "observed swap writer stopping after recent raw journal startup channel closed",
                 );
             }
         }
@@ -699,16 +916,16 @@ fn observed_swap_writer_loop(
                         }
                     }
                     telemetry.note_batch_completed(&queued_at);
+                    let inserted_swaps: Vec<SwapEvent> = swaps
+                        .iter()
+                        .zip(results.iter())
+                        .filter_map(|(swap, inserted)| inserted.then_some(swap.clone()))
+                        .collect();
                     if let Some(aggregate_sender) = aggregate_sender.as_ref() {
-                        let inserted_swaps: Vec<SwapEvent> = swaps
-                            .iter()
-                            .zip(results.iter())
-                            .filter_map(|(swap, inserted)| inserted.then_some(swap.clone()))
-                            .collect();
                         if !inserted_swaps.is_empty() {
                             if let Err(error) =
                                 aggregate_sender.send(DiscoveryAggregateWriteRequest {
-                                    inserted_swaps,
+                                    inserted_swaps: inserted_swaps.clone(),
                                     batch_started,
                                 })
                             {
@@ -724,15 +941,35 @@ fn observed_swap_writer_loop(
                                 );
                             }
                             telemetry.note_aggregate_queue_enqueued();
-                        } else {
-                            telemetry.note_worker_busy_completed(elapsed_ms_ceil(
-                                batch_started.elapsed(),
-                            ));
                         }
-                    } else {
-                        telemetry
-                            .note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
                     }
+                    if let Some(journal_sender) = journal_sender.as_ref() {
+                        if !inserted_swaps.is_empty() {
+                            let journal_enqueue_started = Instant::now();
+                            if let Err(error) =
+                                journal_sender.send(RecentRawJournalWriteRequest { inserted_swaps })
+                            {
+                                telemetry.note_journal_enqueue_wait_completed(elapsed_ms_ceil(
+                                    journal_enqueue_started.elapsed(),
+                                ));
+                                telemetry.note_worker_busy_completed(elapsed_ms_ceil(
+                                    batch_started.elapsed(),
+                                ));
+                                return Err(anyhow!(
+                                    "recent raw journal writer channel closed: {}",
+                                    error
+                                ))
+                                .context(
+                                    "observed swap writer stopping after recent raw journal writer channel closed",
+                                );
+                            }
+                            telemetry.note_journal_enqueue_wait_completed(elapsed_ms_ceil(
+                                journal_enqueue_started.elapsed(),
+                            ));
+                            telemetry.note_journal_queue_enqueued();
+                        }
+                    }
+                    telemetry.note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
                     break;
                 }
                 Err(error) => {
@@ -821,6 +1058,79 @@ fn discovery_aggregate_writer_loop(
     }
 
     Ok(())
+}
+
+fn recent_raw_journal_writer_loop(
+    receiver: std_mpsc::Receiver<RecentRawJournalWriteRequest>,
+    startup_sender: std_mpsc::Sender<std::result::Result<(), String>>,
+    config: ObservedSwapRecentRawJournalConfig,
+    telemetry: Arc<ObservedSwapWriterTelemetry>,
+) -> Result<()> {
+    let journal_path = Path::new(&config.sqlite_path);
+    if let Some(parent) = journal_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed creating recent raw journal parent directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    let store = SqliteStore::open(journal_path).with_context(|| {
+        format!(
+            "failed to open sqlite db for recent raw journal writer: {}",
+            journal_path.display()
+        )
+    })?;
+    match store.ensure_recent_raw_journal_tables() {
+        Ok(()) => {
+            prune_recent_raw_journal_with_budget(&store, config.retention_days, Utc::now())?;
+            let _ = startup_sender.send(Ok(()));
+        }
+        Err(error) => {
+            let _ = startup_sender.send(Err(format!("{error:#}")));
+            return Err(error);
+        }
+    }
+
+    while let Ok(request) = receiver.recv() {
+        telemetry.note_journal_queue_dequeued();
+        let journal_batch_started = Instant::now();
+        let contention_before = sqlite_contention_snapshot();
+        let completed_at = Utc::now();
+        store.insert_recent_raw_journal_batch(&request.inserted_swaps, completed_at)?;
+        prune_recent_raw_journal_with_budget(&store, config.retention_days, completed_at)?;
+        let contention_after = sqlite_contention_snapshot();
+        telemetry.note_journal_sqlite_contention_delta(contention_before, contention_after);
+        telemetry
+            .note_journal_batch_write_completed(elapsed_ms_ceil(journal_batch_started.elapsed()));
+    }
+
+    Ok(())
+}
+
+fn prune_recent_raw_journal_with_budget(
+    store: &SqliteStore,
+    retention_days: u32,
+    now: DateTime<Utc>,
+) -> Result<SqliteBatchedDeleteSummary> {
+    let cutoff = now - ChronoDuration::days(retention_days.max(1) as i64);
+    let mut summary = SqliteBatchedDeleteSummary::default();
+    loop {
+        if summary.batches >= RECENT_RAW_JOURNAL_RETENTION_MAX_DELETE_BATCHES_PER_RUN {
+            break;
+        }
+        let deleted = store.prune_recent_raw_journal_before_batch(
+            cutoff,
+            RECENT_RAW_JOURNAL_RETENTION_DELETE_BATCH_SIZE,
+            now,
+        )?;
+        if deleted == 0 {
+            break;
+        }
+        summary.deleted_rows = summary.deleted_rows.saturating_add(deleted);
+        summary.batches = summary.batches.saturating_add(1);
+    }
+    Ok(summary)
 }
 
 fn process_discovery_aggregate_write_request(
@@ -1100,6 +1410,9 @@ fn observed_swap_retention_should_stop(
         return Some("runtime_pressure");
     }
     if writer_snapshot.aggregate_queue_depth_batches > 0 {
+        return Some("runtime_pressure");
+    }
+    if writer_snapshot.journal_queue_depth_batches > 0 {
         return Some("runtime_pressure");
     }
     let sqlite_contention_current = sqlite_contention_snapshot();
@@ -1398,7 +1711,10 @@ fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ObservedSwapWriter, ObservedSwapWriterConfig, ObservedSwapWriterTelemetry};
+    use super::{
+        ObservedSwapRecentRawJournalConfig, ObservedSwapWriter, ObservedSwapWriterConfig,
+        ObservedSwapWriterTelemetry,
+    };
     use anyhow::{anyhow, Context, Result};
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use copybot_core_types::SwapEvent;
@@ -1729,6 +2045,7 @@ mod tests {
                 batch_max_size: 1,
                 aggregate_writes_enabled: true,
                 aggregate_write_config: aggregate_write_config(),
+                recent_raw_journal: None,
             },
         )?;
 
@@ -1905,6 +2222,7 @@ mod tests {
                     batch_max_size: 8,
                     aggregate_writes_enabled: false,
                     aggregate_write_config: aggregate_write_config(),
+                    recent_raw_journal: None,
                 },
             )
         })?;
@@ -1998,6 +2316,7 @@ mod tests {
                     batch_max_size: 8,
                     aggregate_writes_enabled: true,
                     aggregate_write_config: aggregate_write_config(),
+                    recent_raw_journal: None,
                 },
             )
         })?;
@@ -2100,6 +2419,7 @@ mod tests {
                     batch_max_size: 8,
                     aggregate_writes_enabled: true,
                     aggregate_write_config: aggregate_write_config(),
+                    recent_raw_journal: None,
                 },
             )
         })?;
@@ -2186,6 +2506,7 @@ mod tests {
                     batch_max_size: 8,
                     aggregate_writes_enabled: true,
                     aggregate_write_config: aggregate_write_config(),
+                    recent_raw_journal: None,
                 },
             )?;
 
@@ -2299,6 +2620,7 @@ mod tests {
                     batch_max_size: 8,
                     aggregate_writes_enabled: true,
                     aggregate_write_config: aggregate_write_config(),
+                    recent_raw_journal: None,
                 },
             )
         })?;
@@ -2405,6 +2727,7 @@ mod tests {
                     batch_max_size: 8,
                     aggregate_writes_enabled: true,
                     aggregate_write_config: aggregate_write_config(),
+                    recent_raw_journal: None,
                 },
             )
         })?;
@@ -2501,6 +2824,7 @@ mod tests {
                     batch_max_size: 8,
                     aggregate_writes_enabled: true,
                     aggregate_write_config: aggregate_write_config(),
+                    recent_raw_journal: None,
                 },
             )
         })?;
@@ -2587,6 +2911,7 @@ mod tests {
                     batch_max_size: 8,
                     aggregate_writes_enabled: true,
                     aggregate_write_config: aggregate_write_config(),
+                    recent_raw_journal: None,
                 },
             )?;
 
@@ -2844,6 +3169,7 @@ mod tests {
                 batch_max_size: 8,
                 aggregate_writes_enabled: true,
                 aggregate_write_config: aggregate_write_config(),
+                recent_raw_journal: None,
             }),
             2
         );
@@ -2853,6 +3179,7 @@ mod tests {
                 batch_max_size: 8,
                 aggregate_writes_enabled: false,
                 aggregate_write_config: aggregate_write_config(),
+                recent_raw_journal: None,
             }),
             0
         );
@@ -3014,6 +3341,7 @@ mod tests {
                     batch_max_size: 8,
                     aggregate_writes_enabled: true,
                     aggregate_write_config: aggregate_write_config(),
+                    recent_raw_journal: None,
                 },
             )?;
 
@@ -3053,6 +3381,7 @@ mod tests {
                     batch_max_size: 8,
                     aggregate_writes_enabled: true,
                     aggregate_write_config: aggregate_write_config(),
+                    recent_raw_journal: None,
                 },
             )?;
 
@@ -3182,6 +3511,7 @@ mod tests {
                 batch_max_size: 8,
                 aggregate_writes_enabled: true,
                 aggregate_write_config: aggregate_write_config(),
+                recent_raw_journal: None,
             },
         )?;
         std::thread::sleep(StdDuration::from_millis(50));
@@ -3290,6 +3620,7 @@ mod tests {
                 batch_max_size: 8,
                 aggregate_writes_enabled: true,
                 aggregate_write_config: aggregate_write_config(),
+                recent_raw_journal: None,
             },
         )?;
         writer.shutdown()?;
@@ -3345,6 +3676,7 @@ mod tests {
                     batch_max_size: 8,
                     aggregate_writes_enabled: true,
                     aggregate_write_config: aggregate_write_config(),
+                    recent_raw_journal: None,
                 },
             )?;
 
@@ -3402,6 +3734,171 @@ mod tests {
         );
         let _ = std::fs::remove_file(db_path);
 
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_writer_persists_inserted_observed_swaps_and_reports_telemetry(
+    ) -> Result<()> {
+        let unique = format!(
+            "copybot-app-recent-raw-journal-writer-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let runtime_db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let journal_db_path = std::env::temp_dir().join(format!("{unique}-recent-raw.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut seed_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        runtime.block_on(async {
+            let writer = ObservedSwapWriter::start_with_config(
+                runtime_db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                ObservedSwapWriterConfig {
+                    channel_capacity: 16,
+                    batch_max_size: 8,
+                    aggregate_writes_enabled: false,
+                    aggregate_write_config: aggregate_write_config(),
+                    recent_raw_journal: Some(ObservedSwapRecentRawJournalConfig {
+                        sqlite_path: journal_db_path
+                            .to_str()
+                            .context("journal sqlite path must be valid utf-8")?
+                            .to_string(),
+                        retention_days: 9,
+                        writer_queue_capacity_batches: 8,
+                    }),
+                },
+            )?;
+            let swap = SwapEvent {
+                wallet: "wallet-journal".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-journal".to_string(),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                signature: "sig-recent-raw-journal".to_string(),
+                slot: 500,
+                ts_utc: DateTime::parse_from_rfc3339("2026-03-23T11:55:00Z")
+                    .expect("timestamp")
+                    .with_timezone(&Utc),
+                exact_amounts: None,
+            };
+
+            writer.write(&swap).await?;
+            std::thread::sleep(StdDuration::from_millis(50));
+            let snapshot = writer.snapshot();
+            assert_eq!(snapshot.journal_queue_capacity_batches, 8);
+            assert_eq!(snapshot.journal_queue_depth_batches, 0);
+            writer.shutdown()?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+        let journal_rows = journal_store.load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-23T00:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )?;
+        assert_eq!(journal_rows.len(), 1);
+        assert_eq!(journal_rows[0].signature, "sig-recent-raw-journal");
+        let journal_state = journal_store.recent_raw_journal_state()?;
+        assert_eq!(journal_state.row_count, 1);
+        assert_eq!(journal_state.last_batch_rows, 1);
+        let _ = std::fs::remove_file(runtime_db_path);
+        let _ = std::fs::remove_file(journal_db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_writer_prunes_rows_older_than_retention_horizon() -> Result<()> {
+        let unique = format!(
+            "copybot-app-recent-raw-journal-prune-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let runtime_db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let journal_db_path = std::env::temp_dir().join(format!("{unique}-recent-raw.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut seed_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+
+        let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+        let journal_now = DateTime::parse_from_rfc3339("2026-03-24T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        journal_store.insert_recent_raw_journal_batch(
+            &[SwapEvent {
+                wallet: "wallet-journal-old".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-journal-old".to_string(),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                signature: "sig-recent-raw-journal-old".to_string(),
+                slot: 400,
+                ts_utc: journal_now - ChronoDuration::days(10),
+                exact_amounts: None,
+            }],
+            journal_now - ChronoDuration::days(10),
+        )?;
+
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        runtime.block_on(async {
+            let writer = ObservedSwapWriter::start_with_config(
+                runtime_db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                ObservedSwapWriterConfig {
+                    channel_capacity: 16,
+                    batch_max_size: 8,
+                    aggregate_writes_enabled: false,
+                    aggregate_write_config: aggregate_write_config(),
+                    recent_raw_journal: Some(ObservedSwapRecentRawJournalConfig {
+                        sqlite_path: journal_db_path
+                            .to_str()
+                            .context("journal sqlite path must be valid utf-8")?
+                            .to_string(),
+                        retention_days: 8,
+                        writer_queue_capacity_batches: 8,
+                    }),
+                },
+            )?;
+            let fresh_swap = SwapEvent {
+                wallet: "wallet-journal-fresh".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-journal-fresh".to_string(),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                signature: "sig-recent-raw-journal-fresh".to_string(),
+                slot: 401,
+                ts_utc: journal_now - ChronoDuration::days(1),
+                exact_amounts: None,
+            };
+
+            writer.write(&fresh_swap).await?;
+            writer.shutdown()?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        let journal_rows =
+            journal_store.load_observed_swaps_since(journal_now - ChronoDuration::days(30))?;
+        assert_eq!(journal_rows.len(), 1);
+        assert_eq!(journal_rows[0].signature, "sig-recent-raw-journal-fresh");
+        let journal_state = journal_store.recent_raw_journal_state()?;
+        assert_eq!(journal_state.row_count, 1);
+        assert!(journal_state.last_pruned_at.is_some());
+        let _ = std::fs::remove_file(runtime_db_path);
+        let _ = std::fs::remove_file(journal_db_path);
         Ok(())
     }
 }

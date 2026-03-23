@@ -9,6 +9,21 @@ pause_new_trades_on_outage = true
 [sqlite]
 path = "state/paper_copybot.db"
 
+[recent_raw_journal]
+path = "state/discovery_recent_raw.db"
+retention_safety_buffer_days = 2
+writer_queue_capacity_batches = 64
+replay_batch_size = 1024
+
+[runtime_restore_ops]
+artifact_dir = "state/discovery_restore/artifacts"
+artifact_retention = 288
+artifact_cadence_minutes = 10
+journal_snapshot_dir = "state/discovery_restore/recent_raw"
+journal_snapshot_retention = 144
+journal_snapshot_cadence_minutes = 10
+drill_workspace_dir = "state/discovery_restore/drills"
+
 [history_retention]
 enabled = true
 sweep_seconds = 3600

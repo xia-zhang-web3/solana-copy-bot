@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
+use rusqlite::backup::Backup;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -525,6 +526,40 @@ pub struct ObservedSwapBatchWriteMetrics {
     pub wallet_activity_days_upsert_ms: u64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentRawJournalStateRow {
+    pub covered_since: Option<DateTime<Utc>>,
+    pub covered_through_cursor: Option<DiscoveryRuntimeCursor>,
+    pub row_count: usize,
+    pub last_batch_rows: usize,
+    pub last_batch_completed_at: Option<DateTime<Utc>>,
+    pub last_pruned_rows: usize,
+    pub last_pruned_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecentRawJournalWriteSummary {
+    pub batch_rows: usize,
+    pub inserted_rows: usize,
+    pub covered_since: Option<DateTime<Utc>>,
+    pub covered_through_cursor: Option<DiscoveryRuntimeCursor>,
+    pub row_count: usize,
+    pub last_batch_completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RecentRawJournalReplaySummary {
+    pub required_window_start: DateTime<Utc>,
+    pub artifact_runtime_cursor: DiscoveryRuntimeCursor,
+    pub journal_available: bool,
+    pub journal_covered_since: Option<DateTime<Utc>>,
+    pub journal_covered_through_cursor: Option<DiscoveryRuntimeCursor>,
+    pub journal_covers_artifact_cursor: bool,
+    pub replayed_rows: usize,
+    pub raw_coverage_satisfied: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PersistedWalletMetricSnapshotRow {
     pub wallet_id: String,
@@ -753,6 +788,39 @@ pub struct DiscoveryBootstrapDegradedStateRow {
     pub active: bool,
     pub reason: Option<String>,
     pub armed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DiscoveryRecentRawRestoreStateRow {
+    pub journal_available: bool,
+    pub journal_replayed: bool,
+    pub required_window_start: Option<DateTime<Utc>>,
+    pub journal_covered_since: Option<DateTime<Utc>>,
+    pub journal_covered_through_cursor: Option<DiscoveryRuntimeCursor>,
+    pub artifact_runtime_cursor: Option<DiscoveryRuntimeCursor>,
+    pub journal_covers_artifact_cursor: bool,
+    pub raw_coverage_satisfied: bool,
+    pub replayed_rows: usize,
+    pub reason: Option<String>,
+    pub replay_started_at: Option<DateTime<Utc>>,
+    pub replay_completed_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoveryRecentRawRestoreStateUpdate {
+    pub journal_available: bool,
+    pub journal_replayed: bool,
+    pub required_window_start: Option<DateTime<Utc>>,
+    pub journal_covered_since: Option<DateTime<Utc>>,
+    pub journal_covered_through_cursor: Option<DiscoveryRuntimeCursor>,
+    pub artifact_runtime_cursor: Option<DiscoveryRuntimeCursor>,
+    pub journal_covers_artifact_cursor: bool,
+    pub raw_coverage_satisfied: bool,
+    pub replayed_rows: usize,
+    pub reason: Option<String>,
+    pub replay_started_at: Option<DateTime<Utc>>,
+    pub replay_completed_at: Option<DateTime<Utc>>,
 }
 
 pub const DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION: u32 = 1;
@@ -1352,6 +1420,37 @@ impl SqliteStore {
         conn.pragma_update(None, "foreign_keys", "ON")
             .context("failed to enable sqlite foreign keys")?;
         Ok(Self { conn })
+    }
+
+    pub fn snapshot_into_path(&self, destination_path: &Path) -> Result<()> {
+        if let Some(parent) = destination_path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create sqlite snapshot parent dir: {}",
+                    parent.display()
+                )
+            })?;
+        }
+        let mut destination = Connection::open(destination_path).with_context(|| {
+            format!(
+                "failed to open destination sqlite snapshot db: {}",
+                destination_path.display()
+            )
+        })?;
+        destination
+            .busy_timeout(StdDuration::from_secs(5))
+            .context("failed to set sqlite snapshot busy_timeout")?;
+        let backup = Backup::new(&self.conn, &mut destination)
+            .context("failed to initialize sqlite online backup")?;
+        backup
+            .run_to_completion(16, StdDuration::from_millis(25), None)
+            .context("failed to complete sqlite online backup")?;
+        Ok(())
+    }
+
+    pub fn snapshot_database(source_path: &Path, destination_path: &Path) -> Result<()> {
+        let source = Self::open_read_only(source_path)?;
+        source.snapshot_into_path(destination_path)
     }
 
     pub(crate) fn sqlite_table_exists(&self, table_name: &str) -> Result<bool> {
@@ -11832,5 +11931,199 @@ mod runtime_artifact_tests {
             .expect_err("restore must reject dirty db with risk_events");
         assert!(error.to_string().contains("risk_events (risk gating)"));
         Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_batch_persists_rows_and_updates_state() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let journal_db_path = temp.path().join("recent-raw-journal.db");
+        let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+        let now = DateTime::parse_from_rfc3339("2026-03-24T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let swaps = vec![
+            recent_raw_journal_swap(
+                "journal-sig-a",
+                "wallet-a",
+                "So11111111111111111111111111111111111111112",
+                "token-a",
+                1.0,
+                10.0,
+                100,
+                now - Duration::hours(3),
+            ),
+            recent_raw_journal_swap(
+                "journal-sig-b",
+                "wallet-b",
+                "So11111111111111111111111111111111111111112",
+                "token-b",
+                1.2,
+                12.0,
+                101,
+                now - Duration::hours(1),
+            ),
+        ];
+
+        let summary = journal_store.insert_recent_raw_journal_batch(&swaps, now)?;
+        assert_eq!(summary.batch_rows, 2);
+        assert_eq!(summary.inserted_rows, 2);
+        assert_eq!(summary.row_count, 2);
+        assert_eq!(summary.last_batch_completed_at, Some(now));
+        let state = journal_store.recent_raw_journal_state()?;
+        assert_eq!(state.row_count, 2);
+        assert_eq!(state.last_batch_rows, 2);
+        assert_eq!(state.last_batch_completed_at, Some(now));
+        let persisted = journal_store.load_observed_swaps_since(now - Duration::days(1))?;
+        assert_eq!(persisted.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_retention_prunes_old_rows_but_keeps_required_horizon() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let journal_db_path = temp.path().join("recent-raw-journal-prune.db");
+        let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+        let now = DateTime::parse_from_rfc3339("2026-03-24T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let old_swap = recent_raw_journal_swap(
+            "journal-old-sig",
+            "wallet-old",
+            "So11111111111111111111111111111111111111112",
+            "token-old",
+            1.0,
+            9.0,
+            90,
+            now - Duration::days(10),
+        );
+        let fresh_swap = recent_raw_journal_swap(
+            "journal-fresh-sig",
+            "wallet-fresh",
+            "So11111111111111111111111111111111111111112",
+            "token-fresh",
+            1.0,
+            11.0,
+            91,
+            now - Duration::days(6),
+        );
+        journal_store.insert_recent_raw_journal_batch(&[old_swap, fresh_swap], now)?;
+
+        let deleted = journal_store.prune_recent_raw_journal_before_batch(
+            now - Duration::days(7),
+            100,
+            now,
+        )?;
+        assert_eq!(deleted, 1);
+
+        let state = journal_store.recent_raw_journal_state()?;
+        assert_eq!(state.row_count, 1);
+        assert_eq!(state.last_pruned_rows, 1);
+        assert_eq!(state.last_pruned_at, Some(now));
+        let persisted = journal_store.load_observed_swaps_since(now - Duration::days(30))?;
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].signature, "journal-fresh-sig");
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_replay_restores_required_window_without_full_history_reread() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let journal_db_path = temp.path().join("recent-raw-journal-replay.db");
+        let runtime_db_path = temp.path().join("recent-raw-runtime.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        runtime_store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-03-24T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let required_window_start = now - Duration::days(7);
+        let artifact_runtime_cursor = DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::hours(2),
+            slot: 120,
+            signature: "artifact-runtime-cursor".to_string(),
+        };
+        journal_store.insert_recent_raw_journal_batch(
+            &[
+                recent_raw_journal_swap(
+                    "journal-replay-too-old",
+                    "wallet-old",
+                    "So11111111111111111111111111111111111111112",
+                    "token-old",
+                    1.0,
+                    8.0,
+                    110,
+                    now - Duration::days(9),
+                ),
+                recent_raw_journal_swap(
+                    "journal-replay-window-start",
+                    "wallet-window",
+                    "So11111111111111111111111111111111111111112",
+                    "token-window",
+                    1.0,
+                    9.0,
+                    111,
+                    required_window_start,
+                ),
+                recent_raw_journal_swap(
+                    "journal-replay-recent",
+                    "wallet-recent",
+                    "So11111111111111111111111111111111111111112",
+                    "token-recent",
+                    1.0,
+                    10.0,
+                    121,
+                    now - Duration::hours(1),
+                ),
+            ],
+            now,
+        )?;
+
+        let replay = journal_store.replay_recent_raw_journal_into_runtime_store(
+            &runtime_store,
+            required_window_start,
+            &artifact_runtime_cursor,
+            2,
+        )?;
+        assert!(replay.journal_available);
+        assert!(replay.journal_covers_artifact_cursor);
+        assert!(replay.raw_coverage_satisfied);
+        assert_eq!(replay.replayed_rows, 2);
+
+        let restored = runtime_store.load_observed_swaps_since(now - Duration::days(30))?;
+        let restored_signatures = restored
+            .iter()
+            .map(|swap| swap.signature.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            restored_signatures,
+            vec!["journal-replay-window-start", "journal-replay-recent"]
+        );
+        Ok(())
+    }
+
+    fn recent_raw_journal_swap(
+        signature: &str,
+        wallet: &str,
+        token_in: &str,
+        token_out: &str,
+        amount_in: f64,
+        amount_out: f64,
+        slot: u64,
+        ts_utc: DateTime<Utc>,
+    ) -> copybot_core_types::SwapEvent {
+        copybot_core_types::SwapEvent {
+            signature: signature.to_string(),
+            wallet: wallet.to_string(),
+            dex: "raydium".to_string(),
+            token_in: token_in.to_string(),
+            token_out: token_out.to_string(),
+            amount_in,
+            amount_out,
+            exact_amounts: None,
+            slot,
+            ts_utc,
+        }
     }
 }

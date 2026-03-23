@@ -785,6 +785,8 @@ fn validate_loaded_config(config: &AppConfig) -> Result<()> {
     validate_shadow_universe_config(config)?;
     validate_shadow_quality_thresholds(config)?;
     validate_discovery_storage_mitigation_config(config)?;
+    validate_recent_raw_journal_config(config)?;
+    validate_runtime_restore_ops_config(config)?;
     validate_discovery_aggregate_activation_config(config)?;
     validate_execution_exact_sizing_config(config)?;
     validate_history_retention_config(config)?;
@@ -854,6 +856,91 @@ fn validate_discovery_storage_mitigation_config(config: &AppConfig) -> Result<()
         return Err(anyhow!(
             "discovery.fetch_time_budget_ms ({}) must be >= 1",
             config.discovery.fetch_time_budget_ms
+        ));
+    }
+    Ok(())
+}
+
+fn validate_recent_raw_journal_config(config: &AppConfig) -> Result<()> {
+    let journal = &config.recent_raw_journal;
+    if journal.path.trim().is_empty() {
+        return Err(anyhow!("recent_raw_journal.path cannot be empty"));
+    }
+    if journal.retention_safety_buffer_days == 0 {
+        return Err(anyhow!(
+            "recent_raw_journal.retention_safety_buffer_days ({}) must be >= 1",
+            journal.retention_safety_buffer_days
+        ));
+    }
+    if journal.writer_queue_capacity_batches == 0 {
+        return Err(anyhow!(
+            "recent_raw_journal.writer_queue_capacity_batches ({}) must be >= 1",
+            journal.writer_queue_capacity_batches
+        ));
+    }
+    if journal.replay_batch_size == 0 {
+        return Err(anyhow!(
+            "recent_raw_journal.replay_batch_size ({}) must be >= 1",
+            journal.replay_batch_size
+        ));
+    }
+    Ok(())
+}
+
+fn validate_runtime_restore_ops_config(config: &AppConfig) -> Result<()> {
+    let ops = &config.runtime_restore_ops;
+    if ops.artifact_dir.trim().is_empty() {
+        return Err(anyhow!("runtime_restore_ops.artifact_dir cannot be empty"));
+    }
+    if ops.artifact_retention == 0 {
+        return Err(anyhow!(
+            "runtime_restore_ops.artifact_retention ({}) must be >= 1",
+            ops.artifact_retention
+        ));
+    }
+    if ops.artifact_cadence_minutes == 0 {
+        return Err(anyhow!(
+            "runtime_restore_ops.artifact_cadence_minutes ({}) must be >= 1",
+            ops.artifact_cadence_minutes
+        ));
+    }
+    if ops.journal_snapshot_dir.trim().is_empty() {
+        return Err(anyhow!(
+            "runtime_restore_ops.journal_snapshot_dir cannot be empty"
+        ));
+    }
+    if ops.journal_snapshot_retention == 0 {
+        return Err(anyhow!(
+            "runtime_restore_ops.journal_snapshot_retention ({}) must be >= 1",
+            ops.journal_snapshot_retention
+        ));
+    }
+    if ops.journal_snapshot_cadence_minutes == 0 {
+        return Err(anyhow!(
+            "runtime_restore_ops.journal_snapshot_cadence_minutes ({}) must be >= 1",
+            ops.journal_snapshot_cadence_minutes
+        ));
+    }
+    if ops.drill_workspace_dir.trim().is_empty() {
+        return Err(anyhow!(
+            "runtime_restore_ops.drill_workspace_dir cannot be empty"
+        ));
+    }
+    let freshness_gate_minutes = config
+        .discovery
+        .metric_snapshot_interval_seconds
+        .max(60)
+        .div_ceil(60);
+    if ops.artifact_cadence_minutes >= freshness_gate_minutes {
+        return Err(anyhow!(
+            "runtime_restore_ops.artifact_cadence_minutes ({}) must be < freshness gate bucket minutes ({freshness_gate_minutes})",
+            ops.artifact_cadence_minutes
+        ));
+    }
+    if ops.journal_snapshot_cadence_minutes > freshness_gate_minutes {
+        return Err(anyhow!(
+            "runtime_restore_ops.journal_snapshot_cadence_minutes ({}) must be <= freshness gate bucket minutes ({freshness_gate_minutes})",
+            ops.journal_snapshot_cadence_minutes
         ));
     }
     Ok(())

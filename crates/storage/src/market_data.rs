@@ -1,6 +1,7 @@
 use crate::{
     discovery::upsert_wallet_activity_days_on_conn, DiscoveryPersistedRebuildPhase,
     DiscoveryPersistedRebuildStateRow, DiscoveryRuntimeCursor, ObservedSwapBatchWriteMetrics,
+    RecentRawJournalReplaySummary, RecentRawJournalStateRow, RecentRawJournalWriteSummary,
     SqliteBatchedDeleteSummary, SqliteStore, TokenMarketStats, TokenQualityCacheRow,
     TokenQualityRpcRow, WalletActivityDayRow,
 };
@@ -10,6 +11,7 @@ use copybot_core_types::{ExactSwapAmounts, SwapEvent};
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use serde_json::{json, Value};
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration as StdDuration, Instant};
 
@@ -153,7 +155,429 @@ fn parse_rfc3339_utc(raw: &str, field_name: &str) -> Result<DateTime<Utc>> {
         .with_context(|| format!("invalid {field_name} timestamp value: {raw}"))
 }
 
+fn parse_optional_rfc3339_utc(
+    raw: Option<String>,
+    field_name: &str,
+) -> Result<Option<DateTime<Utc>>> {
+    raw.map(|raw| parse_rfc3339_utc(&raw, field_name))
+        .transpose()
+}
+
+fn discovery_runtime_cursor_cmp(
+    left: &DiscoveryRuntimeCursor,
+    right: &DiscoveryRuntimeCursor,
+) -> Ordering {
+    left.ts_utc
+        .cmp(&right.ts_utc)
+        .then_with(|| left.slot.cmp(&right.slot))
+        .then_with(|| left.signature.cmp(&right.signature))
+}
+
+fn ensure_recent_raw_journal_tables_on_conn(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS observed_swaps (
+            signature TEXT PRIMARY KEY,
+            wallet_id TEXT NOT NULL,
+            dex TEXT NOT NULL,
+            token_in TEXT NOT NULL,
+            token_out TEXT NOT NULL,
+            qty_in REAL NOT NULL,
+            qty_out REAL NOT NULL,
+            qty_in_raw TEXT,
+            qty_in_decimals INTEGER,
+            qty_out_raw TEXT,
+            qty_out_decimals INTEGER,
+            slot INTEGER NOT NULL,
+            ts TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_observed_swaps_ts_slot_signature
+            ON observed_swaps(ts, slot, signature);
+        CREATE TABLE IF NOT EXISTS recent_raw_journal_state (
+            id INTEGER PRIMARY KEY CHECK(id = 1),
+            covered_since_ts TEXT,
+            covered_through_cursor_ts TEXT,
+            covered_through_cursor_slot INTEGER,
+            covered_through_cursor_signature TEXT,
+            row_count INTEGER NOT NULL DEFAULT 0,
+            last_batch_rows INTEGER NOT NULL DEFAULT 0,
+            last_batch_completed_at TEXT,
+            last_pruned_rows INTEGER NOT NULL DEFAULT 0,
+            last_pruned_at TEXT,
+            updated_at TEXT NOT NULL
+        );",
+    )
+    .context("failed ensuring recent raw journal tables exist")
+}
+
+fn recent_raw_journal_coverage_snapshot_on_conn(
+    conn: &Connection,
+) -> Result<(usize, Option<DateTime<Utc>>, Option<DiscoveryRuntimeCursor>)> {
+    let row_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM observed_swaps", [], |row| row.get(0))
+        .context("failed counting recent raw journal observed_swaps rows")?;
+    let covered_since_raw: Option<String> = conn
+        .query_row("SELECT MIN(ts) FROM observed_swaps", [], |row| row.get(0))
+        .optional()
+        .context("failed loading recent raw journal covered_since timestamp")?
+        .flatten();
+    let covered_since = parse_optional_rfc3339_utc(
+        covered_since_raw,
+        "recent_raw_journal_state.covered_since_ts",
+    )?;
+    let covered_through_cursor_raw = conn
+        .query_row(
+            "SELECT ts, slot, signature
+             FROM observed_swaps
+             ORDER BY ts DESC, slot DESC, signature DESC
+             LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get(2)?)),
+        )
+        .optional()
+        .context("failed loading recent raw journal covered_through cursor")?;
+    let covered_through_cursor = covered_through_cursor_raw
+        .map(
+            |(ts_raw, slot_raw, signature)| -> Result<DiscoveryRuntimeCursor> {
+                Ok(DiscoveryRuntimeCursor {
+                    ts_utc: parse_rfc3339_utc(&ts_raw, "observed_swaps.ts")?,
+                    slot: slot_raw.max(0) as u64,
+                    signature,
+                })
+            },
+        )
+        .transpose()?;
+    Ok((
+        row_count.max(0) as usize,
+        covered_since,
+        covered_through_cursor,
+    ))
+}
+
+fn recent_raw_journal_state_query(conn: &Connection) -> Result<RecentRawJournalStateRow> {
+    let (row_count, covered_since, covered_through_cursor) =
+        recent_raw_journal_coverage_snapshot_on_conn(conn)?;
+    let row = conn
+        .query_row(
+            "SELECT
+                last_batch_rows,
+                last_batch_completed_at,
+                last_pruned_rows,
+                last_pruned_at,
+                updated_at
+             FROM recent_raw_journal_state
+             WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .context("failed reading recent raw journal state")?;
+    let Some((
+        last_batch_rows,
+        last_batch_completed_at_raw,
+        last_pruned_rows,
+        last_pruned_at_raw,
+        updated_at_raw,
+    )) = row
+    else {
+        return Ok(RecentRawJournalStateRow {
+            covered_since,
+            covered_through_cursor,
+            row_count,
+            ..RecentRawJournalStateRow::default()
+        });
+    };
+    Ok(RecentRawJournalStateRow {
+        covered_since,
+        covered_through_cursor,
+        row_count,
+        last_batch_rows: last_batch_rows.max(0) as usize,
+        last_batch_completed_at: parse_optional_rfc3339_utc(
+            last_batch_completed_at_raw,
+            "recent_raw_journal_state.last_batch_completed_at",
+        )?,
+        last_pruned_rows: last_pruned_rows.max(0) as usize,
+        last_pruned_at: parse_optional_rfc3339_utc(
+            last_pruned_at_raw,
+            "recent_raw_journal_state.last_pruned_at",
+        )?,
+        updated_at: parse_optional_rfc3339_utc(
+            updated_at_raw,
+            "recent_raw_journal_state.updated_at",
+        )?,
+    })
+}
+
+fn upsert_recent_raw_journal_state_on_conn(
+    conn: &Connection,
+    state: &RecentRawJournalStateRow,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO recent_raw_journal_state(
+            id,
+            covered_since_ts,
+            covered_through_cursor_ts,
+            covered_through_cursor_slot,
+            covered_through_cursor_signature,
+            row_count,
+            last_batch_rows,
+            last_batch_completed_at,
+            last_pruned_rows,
+            last_pruned_at,
+            updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT(id) DO UPDATE SET
+            covered_since_ts = excluded.covered_since_ts,
+            covered_through_cursor_ts = excluded.covered_through_cursor_ts,
+            covered_through_cursor_slot = excluded.covered_through_cursor_slot,
+            covered_through_cursor_signature = excluded.covered_through_cursor_signature,
+            row_count = excluded.row_count,
+            last_batch_rows = excluded.last_batch_rows,
+            last_batch_completed_at = excluded.last_batch_completed_at,
+            last_pruned_rows = excluded.last_pruned_rows,
+            last_pruned_at = excluded.last_pruned_at,
+            updated_at = excluded.updated_at",
+        params![
+            1_i64,
+            state.covered_since.map(|ts| ts.to_rfc3339()),
+            state
+                .covered_through_cursor
+                .as_ref()
+                .map(|cursor| cursor.ts_utc.to_rfc3339()),
+            state
+                .covered_through_cursor
+                .as_ref()
+                .map(|cursor| cursor.slot as i64),
+            state
+                .covered_through_cursor
+                .as_ref()
+                .map(|cursor| cursor.signature.as_str()),
+            state.row_count as i64,
+            state.last_batch_rows as i64,
+            state.last_batch_completed_at.map(|ts| ts.to_rfc3339()),
+            state.last_pruned_rows as i64,
+            state.last_pruned_at.map(|ts| ts.to_rfc3339()),
+            state.updated_at.map(|ts| ts.to_rfc3339()),
+        ],
+    )
+    .context("failed upserting recent raw journal state")?;
+    Ok(())
+}
+
 impl SqliteStore {
+    pub fn ensure_recent_raw_journal_tables(&self) -> Result<()> {
+        ensure_recent_raw_journal_tables_on_conn(&self.conn)
+    }
+
+    pub fn recent_raw_journal_state(&self) -> Result<RecentRawJournalStateRow> {
+        self.ensure_recent_raw_journal_tables()?;
+        recent_raw_journal_state_query(&self.conn)
+    }
+
+    pub fn recent_raw_journal_state_read_only(&self) -> Result<RecentRawJournalStateRow> {
+        if !self.sqlite_table_exists("observed_swaps")?
+            || !self.sqlite_table_exists("recent_raw_journal_state")?
+        {
+            return Ok(RecentRawJournalStateRow::default());
+        }
+        recent_raw_journal_state_query(&self.conn)
+    }
+
+    pub fn insert_recent_raw_journal_batch(
+        &self,
+        swaps: &[SwapEvent],
+        completed_at: DateTime<Utc>,
+    ) -> Result<RecentRawJournalWriteSummary> {
+        self.ensure_recent_raw_journal_tables()?;
+        if swaps.is_empty() {
+            let state = self.recent_raw_journal_state()?;
+            return Ok(RecentRawJournalWriteSummary {
+                batch_rows: 0,
+                inserted_rows: 0,
+                covered_since: state.covered_since,
+                covered_through_cursor: state.covered_through_cursor,
+                row_count: state.row_count,
+                last_batch_completed_at: state.last_batch_completed_at,
+            });
+        }
+
+        self.with_immediate_transaction_retry("recent raw journal batch write", |conn| {
+            ensure_recent_raw_journal_tables_on_conn(conn)?;
+            let mut stmt = conn
+                .prepare_cached(
+                    "INSERT OR IGNORE INTO observed_swaps(
+                        signature,
+                        wallet_id,
+                        dex,
+                        token_in,
+                        token_out,
+                        qty_in,
+                        qty_out,
+                        qty_in_raw,
+                        qty_in_decimals,
+                        qty_out_raw,
+                        qty_out_decimals,
+                        slot,
+                        ts
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                )
+                .context("failed to prepare recent raw journal batch insert statement")?;
+
+            let mut inserted_rows = 0usize;
+            for swap in swaps {
+                let changed = stmt
+                    .execute(params![
+                        &swap.signature,
+                        &swap.wallet,
+                        &swap.dex,
+                        &swap.token_in,
+                        &swap.token_out,
+                        swap.amount_in,
+                        swap.amount_out,
+                        swap.exact_amounts
+                            .as_ref()
+                            .map(|value| value.amount_in_raw.as_str()),
+                        swap.exact_amounts
+                            .as_ref()
+                            .map(|value| i64::from(value.amount_in_decimals)),
+                        swap.exact_amounts
+                            .as_ref()
+                            .map(|value| value.amount_out_raw.as_str()),
+                        swap.exact_amounts
+                            .as_ref()
+                            .map(|value| i64::from(value.amount_out_decimals)),
+                        swap.slot as i64,
+                        swap.ts_utc.to_rfc3339(),
+                    ])
+                    .context("failed to insert observed swap into recent raw journal batch")?;
+                if changed > 0 {
+                    inserted_rows = inserted_rows.saturating_add(1);
+                }
+            }
+
+            let mut state = recent_raw_journal_state_query(conn)?;
+            state.last_batch_rows = inserted_rows;
+            state.last_batch_completed_at = Some(completed_at);
+            state.updated_at = Some(completed_at);
+            upsert_recent_raw_journal_state_on_conn(conn, &state)?;
+            Ok(RecentRawJournalWriteSummary {
+                batch_rows: swaps.len(),
+                inserted_rows,
+                covered_since: state.covered_since,
+                covered_through_cursor: state.covered_through_cursor,
+                row_count: state.row_count,
+                last_batch_completed_at: state.last_batch_completed_at,
+            })
+        })
+    }
+
+    pub fn prune_recent_raw_journal_before_batch(
+        &self,
+        cutoff: DateTime<Utc>,
+        batch_size: usize,
+        pruned_at: DateTime<Utc>,
+    ) -> Result<usize> {
+        self.ensure_recent_raw_journal_tables()?;
+        let cutoff_ts = cutoff.to_rfc3339();
+        let batch_limit = batch_size.max(1).min(i64::MAX as usize) as i64;
+        self.with_immediate_transaction_retry("recent raw journal retention prune", |conn| {
+            ensure_recent_raw_journal_tables_on_conn(conn)?;
+            let deleted = conn
+                .execute(
+                    "DELETE FROM observed_swaps
+                     WHERE rowid IN (
+                        SELECT rowid
+                        FROM observed_swaps
+                        WHERE ts < ?1
+                        ORDER BY ts ASC, slot ASC, signature ASC
+                        LIMIT ?2
+                     )",
+                    params![&cutoff_ts, batch_limit],
+                )
+                .context("failed deleting recent raw journal retention slice")?;
+            let mut state = recent_raw_journal_state_query(conn)?;
+            state.last_pruned_rows = deleted.max(0) as usize;
+            state.last_pruned_at = Some(pruned_at);
+            state.updated_at = Some(pruned_at);
+            upsert_recent_raw_journal_state_on_conn(conn, &state)?;
+            Ok(deleted.max(0) as usize)
+        })
+    }
+
+    pub fn replay_recent_raw_journal_into_runtime_store(
+        &self,
+        runtime_store: &SqliteStore,
+        required_window_start: DateTime<Utc>,
+        artifact_runtime_cursor: &DiscoveryRuntimeCursor,
+        replay_batch_size: usize,
+    ) -> Result<RecentRawJournalReplaySummary> {
+        let journal_state = self.recent_raw_journal_state_read_only()?;
+        let journal_available = journal_state.row_count > 0;
+        let journal_covers_artifact_cursor = journal_state
+            .covered_through_cursor
+            .as_ref()
+            .is_some_and(|cursor| {
+                discovery_runtime_cursor_cmp(cursor, artifact_runtime_cursor) != Ordering::Less
+            });
+
+        let mut replayed_rows = 0usize;
+        if journal_available {
+            let mut batch = Vec::with_capacity(replay_batch_size.max(1));
+            self.for_each_observed_swap_since(required_window_start, |swap| {
+                batch.push(swap);
+                if batch.len() >= replay_batch_size.max(1) {
+                    replayed_rows = replayed_rows.saturating_add(
+                        runtime_store
+                            .insert_observed_swaps_batch_with_activity_days(&batch)?
+                            .into_iter()
+                            .filter(|inserted| *inserted)
+                            .count(),
+                    );
+                    batch.clear();
+                }
+                Ok(())
+            })?;
+            if !batch.is_empty() {
+                replayed_rows = replayed_rows.saturating_add(
+                    runtime_store
+                        .insert_observed_swaps_batch_with_activity_days(&batch)?
+                        .into_iter()
+                        .filter(|inserted| *inserted)
+                        .count(),
+                );
+            }
+        }
+
+        let runtime_window_has_rows = !runtime_store
+            .load_recent_observed_swaps_since(required_window_start, 1)?
+            .0
+            .is_empty();
+        let raw_coverage_satisfied = journal_available
+            && journal_state
+                .covered_since
+                .is_some_and(|covered_since| covered_since <= required_window_start)
+            && journal_covers_artifact_cursor
+            && runtime_window_has_rows;
+
+        Ok(RecentRawJournalReplaySummary {
+            required_window_start,
+            artifact_runtime_cursor: artifact_runtime_cursor.clone(),
+            journal_available,
+            journal_covered_since: journal_state.covered_since,
+            journal_covered_through_cursor: journal_state.covered_through_cursor,
+            journal_covers_artifact_cursor,
+            replayed_rows,
+            raw_coverage_satisfied,
+        })
+    }
+
     pub fn insert_observed_swap(&self, swap: &SwapEvent) -> Result<bool> {
         let written = self
             .execute_with_retry(|conn| {

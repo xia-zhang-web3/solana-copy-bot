@@ -1,0 +1,13 @@
+[Unit]
+Description=Copybot Discovery Runtime Artifact Export Timer
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=5m
+RandomizedDelaySec=30s
+Persistent=true
+Unit=copybot-discovery-runtime-export.service
+
+[Install]
+WantedBy=timers.target
+

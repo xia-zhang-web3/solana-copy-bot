@@ -769,3 +769,179 @@ Final Batch 1 acceptance update on `2026-03-23`:
 > - fresh runtime DB можно поднять через artifact + journal replay
 > - restore verdict различает artifact-only bootstrap и реальный raw-backed restore
 > - код и тесты доказывают, что это production-meaningful V1 restore path
+
+Final Batch 2 acceptance update on `2026-03-24`:
+
+- Batch 2 **принят**
+- recent raw journal sidecar, bounded async writer, retention/pruning,
+  replay/import path в fresh runtime DB, persisted recent-raw restore state и
+  restore verdict считаются закрытыми
+- bootstrap-degraded semantics из Batch 1 сохранены
+- повторно подтверждены целевые тесты:
+  - `cargo test -p copybot-storage --lib recent_raw_journal`
+  - `cargo test -p copybot-app recent_raw_journal`
+  - `cargo test -p copybot-discovery --bin discovery_status`
+  - `cargo test -p copybot-discovery --bin discovery_runtime_restore`
+  - `cargo test -p copybot-discovery --lib -- --skip quality_cache::tests::resolve_token_quality_for_mints_returns_error_on_fatal_cache_write_failure`
+
+Residual note after audit:
+
+- текущий `raw_coverage_satisfied` для journal replay опирается на bounded window
+  extents и cursor coverage, а не на отдельный gap-lineage proof
+- это не блокирует acceptance текущего Batch 2, потому что соответствует
+  текущей runtime semantics, но если позже понадобится stronger continuity
+  guarantee, это уже отдельный tightening batch, а не незавершенность Batch 2
+
+### Batch 3. Scheduled exports + restore drill
+
+Цель батча:
+
+- перевести restore architecture из “код существует” в operational contract
+- обеспечить, что свежий runtime artifact и recent raw journal реально доступны
+  во время следующего инцидента
+- провести one-button restore drill и зафиксировать реальный RTO/RPO
+
+Что должно быть завершено в этом батче:
+
+1. Scheduled runtime artifact export.
+2. Scheduled recent raw journal snapshot/export strategy.
+3. Operator runbook для restore.
+4. Restore drill на чистую DB.
+5. Документированный RTO/RPO и failure modes.
+
+Что не считается завершением батча:
+
+- ручной запуск export-команд “когда-нибудь”
+- наличие bin-файлов без deploy wiring
+- отсутствие проверенного restore drill
+- слова про RTO/RPO без реального измерения
+
+Готовый промт для кодера:
+
+> Реализуй **завершенный Batch 3** из `DISCOVERY_RUNTIME_RESTORE_PLAN_2026-03-23.md`: `scheduled exports + restore drill`. Это **не docs-only задача** и **не просто timer-файлы**. Работа должна быть доведена **до завершенного operational состояния в коде, deploy wiring, runbook и проверке restore drill**, чтобы следующий инцидент не зависел от ручной импровизации.
+>
+> Что нужно сделать:
+>
+> 1. Реализовать scheduled export runtime artifact.
+>    Production requirement:
+>    - регулярный export cadence заметно меньше freshness gate
+>    - для live-конфига ориентир порядка 5-15 минут, не часы
+>    - артефакт должен писаться в predictable operator-visible location
+>    - должна быть rotation/retention политика, чтобы не копить мусор бесконечно
+>
+> 2. Реализовать scheduled strategy для recent raw journal.
+>    Явно выбери и доведи до конца production path:
+>    - либо регулярные snapshot/export копии journal sidecar
+>    - либо другой эквивалентный backup/rotation contract
+>    Нельзя оставлять journal только как локальный runtime sidecar без
+>    operational story для следующего инцидента.
+>
+> 3. Добавить deploy wiring.
+>    Минимально допустимо:
+>    - systemd service + systemd timer для artifact export
+>    - systemd service/timer или эквивалентный production-safe path для journal snapshot/export
+>    - конфигурируемые пути, retention и cadence
+>    Если в репозитории уже есть deploy conventions, следуй им.
+>
+> 4. Подготовить restore runbook.
+>    Нужен operator-facing документ с четким flow:
+>    - stop service
+>    - archive broken runtime DB
+>    - create fresh runtime DB
+>    - restore artifact
+>    - replay/import recent raw journal
+>    - inspect restore verdict
+>    - enable service / keep fail-closed depending on verdict
+>    Runbook должен ссылаться на реальные команды и реальные output fields.
+>
+> 5. Реализовать restore drill.
+>    Это ключевая часть батча.
+>    Нужен воспроизводимый scripted path, который:
+>    - создает fresh target
+>    - поднимает runtime через artifact + journal replay
+>    - собирает итоговый verdict/status
+>    - фиксирует elapsed time и итоговый state
+>    Если для этого нужен отдельный script/tool, добавь его.
+>
+> 6. Зафиксировать measured RTO/RPO.
+>    Нужны не абстрактные слова, а operator-visible значения:
+>    - какой RTO получился на drill
+>    - какой RPO гарантируется текущим export/snapshot cadence
+>    - какие failure modes остаются
+>
+> 7. Добавить regression/integration coverage там, где это уместно.
+>    Минимум:
+>    - config/loader tests для новых export/snapshot settings
+>    - tests на path resolution / retention wiring
+>    - если добавлен script/tool, smoke path должен быть проверяемым
+>
+> Жесткие требования:
+>
+> - не ломай принятые Batch 1 и Batch 2 contracts
+> - не подменяй drill ручным checklist без исполняемого path
+> - не оставляй scheduling “на потом”
+> - не считай задачу завершенной без measured restore drill outcome
+>
+> Ожидаемый результат батча:
+>
+> - artifact export и journal backup/snapshot запускаются по расписанию
+> - у оператора есть реальный runbook, а не теория
+> - restore drill воспроизводим и измерен
+> - RTO/RPO зафиксированы в репозитории на основе фактического прогона
+
+Batch 3 completion note (`2026-03-24`):
+
+- добавлен явный config contract `runtime_restore_ops` с cadence/retention/path
+  для artifact export, journal snapshot и drill workspace
+- `discovery_runtime_export` получил scheduled mode с `latest.json`,
+  archive rotation и cadence-aware skip
+- добавлен `discovery_recent_raw_snapshot` с отдельным snapshot contract для
+  `recent_raw_journal`, metadata manifest, rotation и cadence-aware skip
+- добавлены systemd templates:
+  - `ops/server_templates/copybot-discovery-runtime-export.service`
+  - `ops/server_templates/copybot-discovery-runtime-export.timer`
+  - `ops/server_templates/copybot-discovery-recent-raw-snapshot.service`
+  - `ops/server_templates/copybot-discovery-recent-raw-snapshot.timer`
+- добавлен operator runbook:
+  - `ops/discovery_runtime_restore_runbook.md`
+- добавлен scripted drill path:
+  - `tools/discovery_restore_drill.sh`
+  - `tools/discovery_restore_drill_smoke_test.sh`
+  - `crates/discovery/src/bin/discovery_restore_demo_fixture.rs`
+- measured local release drill outcome зафиксирован:
+  - `measured_rto_ms = 690`
+  - `guaranteed_rpo_minutes = 10`
+  - final verdict = `trading_ready`
+- residual failure modes остаются прозрачными и documentированы:
+  - RPO ограничен более медленным из artifact export cadence и journal snapshot cadence
+  - restore остается fail-closed без cursor/raw coverage
+  - bootstrap-degraded остается non-trading-ready до нормального fresh raw recovery path
+
+Final Batch 3 acceptance update on `2026-03-24`:
+
+- Batch 3 **принят**
+- scheduled export/snapshot contract, deploy wiring, operator runbook,
+  scripted restore drill и measured `RTO/RPO` считаются закрытыми
+- закрыт operational blocker по `discovery_recent_raw_snapshot --scheduled`:
+  healthy skip теперь допустим только при целой latest surface
+  (`latest.json` + `latest.sqlite`)
+- scheduled journal snapshot path теперь self-heal'ит broken latest surface:
+  - missing `latest.sqlite` -> восстановление из archive snapshot
+  - missing `latest.json` -> перепись metadata из archive или current latest
+    snapshot
+  - если latest surface broken и archive self-heal невозможен, path уходит в
+    fresh snapshot write, а не в ложный green skip
+- output contract расширен явными operator-visible полями:
+  - `latest_surface_status`
+  - `latest_surface_action`
+- повторно подтверждены целевые прогоны:
+  - `cargo test -p copybot-discovery --bin discovery_recent_raw_snapshot`
+  - `cargo test -p copybot-discovery --bin discovery_runtime_export`
+  - `cargo test -p copybot-discovery --bin discovery_runtime_restore`
+  - `tools/discovery_restore_drill_smoke_test.sh`
+- дополнительно вручную воспроизведен бывший blocker path:
+  1. scheduled snapshot создает `latest.sqlite` и `latest.json`
+  2. `latest.sqlite` удаляется
+  3. следующий scheduled run в пределах cadence возвращает
+     `self_healed_latest_surface`
+  4. `latest.sqlite` восстанавливается из archive snapshot

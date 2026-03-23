@@ -27,6 +27,7 @@ pub mod operator_status;
 pub mod perf_harness;
 mod quality_cache;
 pub mod restore_verdict;
+pub mod runtime_restore_ops;
 mod scoring;
 mod windows;
 use self::followlist::{desired_wallets, rank_follow_candidates, top_wallet_labels};

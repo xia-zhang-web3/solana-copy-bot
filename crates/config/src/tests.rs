@@ -43,6 +43,30 @@ fn discovery_defaults_use_storage_mitigation_limits() {
 }
 
 #[test]
+fn recent_raw_journal_defaults_are_explicit_and_bounded() {
+    let journal = RecentRawJournalConfig::default();
+    assert_eq!(journal.path, "state/discovery_recent_raw.db");
+    assert_eq!(journal.retention_safety_buffer_days, 2);
+    assert_eq!(journal.writer_queue_capacity_batches, 64);
+    assert_eq!(journal.replay_batch_size, 1_024);
+}
+
+#[test]
+fn runtime_restore_ops_defaults_are_explicit_and_operational() {
+    let ops = RuntimeRestoreOpsConfig::default();
+    assert_eq!(ops.artifact_dir, "state/discovery_restore/artifacts");
+    assert_eq!(ops.artifact_retention, 288);
+    assert_eq!(ops.artifact_cadence_minutes, 10);
+    assert_eq!(
+        ops.journal_snapshot_dir,
+        "state/discovery_restore/recent_raw"
+    );
+    assert_eq!(ops.journal_snapshot_retention, 144);
+    assert_eq!(ops.journal_snapshot_cadence_minutes, 10);
+    assert_eq!(ops.drill_workspace_dir, "state/discovery_restore/drills");
+}
+
+#[test]
 fn history_retention_defaults_are_explicit_and_safe() {
     let retention = HistoryRetentionConfig::default();
     assert!(!retention.enabled);
@@ -61,6 +85,66 @@ fn parse_from_path_uses_disabled_history_retention_for_legacy_config_without_blo
         let config = load_from_path(config_path).expect("legacy config without block must parse");
         assert!(!config.history_retention.enabled);
     });
+}
+
+#[test]
+fn parse_from_path_reads_runtime_restore_ops_block() {
+    with_temp_config_file(
+        r#"
+[runtime_restore_ops]
+artifact_dir = "restore/artifacts"
+artifact_retention = 32
+artifact_cadence_minutes = 5
+journal_snapshot_dir = "restore/journal"
+journal_snapshot_retention = 24
+journal_snapshot_cadence_minutes = 10
+drill_workspace_dir = "restore/drills"
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let config = load_from_path(config_path).expect("config must parse");
+            assert_eq!(config.runtime_restore_ops.artifact_dir, "restore/artifacts");
+            assert_eq!(config.runtime_restore_ops.artifact_retention, 32);
+            assert_eq!(config.runtime_restore_ops.artifact_cadence_minutes, 5);
+            assert_eq!(
+                config.runtime_restore_ops.journal_snapshot_dir,
+                "restore/journal"
+            );
+            assert_eq!(config.runtime_restore_ops.journal_snapshot_retention, 24);
+            assert_eq!(
+                config.runtime_restore_ops.journal_snapshot_cadence_minutes,
+                10
+            );
+            assert_eq!(
+                config.runtime_restore_ops.drill_workspace_dir,
+                "restore/drills"
+            );
+        },
+    );
+}
+
+#[test]
+fn load_from_path_rejects_runtime_restore_ops_with_cadence_slower_than_freshness_gate() {
+    with_temp_config_file(
+        r#"
+[runtime_restore_ops]
+artifact_cadence_minutes = 30
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("artifact cadence at freshness gate boundary must fail")
+                .to_string();
+            assert!(
+                err.contains("runtime_restore_ops.artifact_cadence_minutes (30) must be < freshness gate bucket minutes (30)"),
+                "unexpected error: {err}"
+            );
+        },
+    );
 }
 
 #[test]
