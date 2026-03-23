@@ -132,10 +132,14 @@ It replaces the old mixed roadmap and removes aggregate/backfill recovery from t
    - bounded builder replay after seed now explicitly defers `final_rug_finalize` at `run_complete`
    - the defer is limited to incomplete bounded `replay_after_seed` builder runs, so full completion and non-builder paths keep the old finalize contract
    - stopped-host validation emitted `event=final_rug_finalize_skipped phase=run_complete reason=bounded_post_seed_builder_path`, emitted no final rug-finalize event, and advanced the persisted cursor again to `2026-03-08T23:00:45.980276955Z | 405129982 | 24yuNmrtkJ8JNPhxC2FoGT4QfA2SzWX2TyzukE5MqQske7ABNZqF289ua36A8DiQyRpaNtbwGevviyvJQ1tnevGz`
-21. Current working tree now targets the remaining operator gap rather than another replay semantic gap:
+21. Commit `ae688b7fb84cead93185f6f5bbd50ac32f59f452` then operationalized that confirmed path into one bounded seeded loop:
+   - `tools/discovery_aggregate_backfill_loop.sh` now preserves `seeded-reset` across chained bounded runs and can enforce an outer timeout per slice
+   - the first stopped-host wrapper validation on the same clone ran `24` bounded slices with `mode = seeded-reset`, ended at `summary verdict = max_runs_exhausted`, and advanced the persisted cursor from `2026-03-08T23:00:45.980276955Z | 405129982 | 24yuNmrtkJ8JNPhxC2FoGT4QfA2SzWX2TyzukE5MqQske7ABNZqF289ua36A8DiQyRpaNtbwGevviyvJQ1tnevGz` to `2026-03-09T00:30:25.487279814Z | 405143661 | sAKJBVmLgfR5g9dMwTViWTSFqc4u5or33rhZwJBYHiiZ8v7jGBfZMZNWY5aQeVXNnf4g93pyPTVTRHKWYWD1yP6`
+   - every wrapper slice emitted `event=seed_boundary_resume_from_persisted_progress`, `event=builder_replay_ready`, durable builder `checkpoint_persisted` / `batch_committed`, `event=final_rug_finalize_skipped phase=run_complete reason=bounded_post_seed_builder_path`, and `summary outcome=stopped_due_to_runtime_budget`
+22. Current working tree now targets the remaining operator gap rather than another replay semantic gap:
    - the bounded seeded path is now code-proven through boundary install, post-seed builder replay, and deferred final finalize
    - the remaining risk is manual operator orchestration, not the replay contract itself
-   - `tools/discovery_aggregate_backfill_loop.sh` now preserves `seeded-reset` across chained bounded runs and can enforce an outer timeout per slice, so the persisted SQLite cursor remains the single source of truth without manual cursor handoff
+   - the loop wrapper keeps the persisted SQLite cursor as the single source of truth without manual cursor handoff
 
 ### 2.4 Current verdict (updated 2026-03-23)
 
@@ -200,7 +204,7 @@ Do not start Stage 2 yet.
 
 - Deployed binary commit: `70e959df677f35347fd25b2a1ed91481b6d90769` (unchanged)
 - Production runtime repo / last old offline tooling commit before the latest investigation: `02f887a3a37ad57cf09578c9105d1f11d08744d8`
-- Current server repo / offline tooling checkout used for the latest stopped-host investigation: `90ada0d0fe4f8603d1f708bd570a12be662633ba`
+- Current server repo / offline tooling checkout used for the latest stopped-host investigation: `ae688b7fb84cead93185f6f5bbd50ac32f59f452`
 - Current stabilized host config after stopping the failed raw bridge:
   - `scoring_window_days = 5`
   - `metric_snapshot_interval_seconds = 3600`
@@ -291,14 +295,54 @@ Do not start Stage 2 yet.
         - one initial bounded run emitted `event=builder_replay_ready`, three durable builder checkpoints, and builder `batch_committed` lines with no outer timeout
         - a later 5-run chain repeated the same builder events on every run and advanced the cursor to `2026-03-08T22:38:03.568827634Z | 405126550 | 2biGRk8Yozn3vor5rMKscdWZf6EdurhirSyRYYtchAy4ovTERdvNUUM36pTeK83y4CrZwRnQUanfxvkzLfSqDwyy`
         - the step-up chain with `max-batches-per-run = 10` then advanced further to `2026-03-08T22:56:27.923141336Z | 405129333 | 3o16UWsam85kXYhsj594snQNaKSqpPWoHFb8bdMCuFHkDfnPnTi1gbCaKHvmMae36QBkZDoxo8jVx4cqE1MuBaGf`
-      - the remaining blocker is now post-seed, not pre-seed:
-        - bounded `replay_after_seed` on the original Step 2 run still used `replay_engine=sql`
-        - it spent `prepare_ms = 213313` and `apply_ms = 24336` on the first bounded `10000`-row batch
-        - the first eager-builder escape hatch also timed out before first replay output
-        - the lazy-builder fix then removed those two blockers, but exposed the next one:
-          - later step-up runs now stop on `runtime_budget`, not `batch_budget`
-          - `final_rug_finalize` dominates the tail (`rug_finalize_ms = 29995`, then `144187`, then `146688`) after durable builder checkpoints have already been written
-        - that leaves one active candidate in the current working tree: defer `final_rug_finalize` for incomplete bounded post-seed builder runs so the runtime budget is spent on replay progress instead of the expensive finalize tail
+      - `90ada0d0fe4f8603d1f708bd570a12be662633ba` then removed the next tail blocker on the same clone:
+        - bounded post-seed builder replay emitted `event=final_rug_finalize_skipped phase=run_complete reason=bounded_post_seed_builder_path`
+        - no `event=final_rug_finalize phase=run_complete` was emitted on that validation run
+        - the persisted cursor advanced again to `2026-03-08T23:00:45.980276955Z | 405129982 | 24yuNmrtkJ8JNPhxC2FoGT4QfA2SzWX2TyzukE5MqQske7ABNZqF289ua36A8DiQyRpaNtbwGevviyvJQ1tnevGz`
+      - `ae688b7fb84cead93185f6f5bbd50ac32f59f452` then operationalized the confirmed seeded path into one wrapper-driven recovery flow:
+        - the first wrapper validation used `mode = seeded-reset`, `max_runs = 24`, `outer_timeout_seconds = 420`, `max_runtime_seconds = 180`, `max_batches_per_run = 10`, `batch_size = 10000`
+        - `summary.txt` ended with `verdict = max_runs_exhausted`, which is expected until `coverage_marked` is reached
+        - `next_resume.env` stayed on `MODE = seeded-reset`, so committed seed-marker restart semantics remained intact across runs
+        - the first wrapper run advanced the persisted cursor further to `2026-03-09T00:30:25.487279814Z | 405143661 | sAKJBVmLgfR5g9dMwTViWTSFqc4u5or33rhZwJBYHiiZ8v7jGBfZMZNWY5aQeVXNnf4g93pyPTVTRHKWYWD1yP6`
+      - current stopped-host operation as of the latest snapshot is an ongoing larger wrapper chain on the same clone and same commit:
+        - service remained intentionally stopped: `systemctl is-active solana-copy-bot.service -> inactive`
+        - current ongoing report directory: `/tmp/aggregate-seeded-loop-20260323T121242Z`
+        - current ongoing wrapper parameters:
+          - `mode = seeded-reset`
+          - `start_ts = 2026-03-08T22:15:51.246588877Z`
+          - `max_runs = 96`
+          - `outer_timeout_seconds = 420`
+          - `max_runtime_seconds = 180`
+          - `max_batches_per_run = 10`
+          - `batch_size = 10000`
+        - at the latest handoff snapshot, `summary.txt` was still absent because the wrapper was still running
+        - latest completed readiness artifact at that handoff:
+          - `/tmp/aggregate-seeded-loop-20260323T121242Z/028_post_run_aggregate_readiness_status.json`
+          - persisted cursor there: `2026-03-09T02:09:44.171793256Z | 405158817 | 2PCSxMzw9LSMLzEWgAtVusRa7UcN4K46cXvwLg28Jh4oj5Cv5qsqoz2MJThHUKYS5vWCrTZWeDN8ZQznQuZ8WJKX`
+        - latest `next_resume.env` at that handoff:
+          - `MODE = seeded-reset`
+          - `START_TS = 2026-03-08T22:15:51.246588877Z`
+          - `RESUME_TS = 2026-03-09T02:09:44.171793256Z`
+          - `RESUME_SLOT = 405158817`
+          - `RESUME_SIGNATURE = 2PCSxMzw9LSMLzEWgAtVusRa7UcN4K46cXvwLg28Jh4oj5Cv5qsqoz2MJThHUKYS5vWCrTZWeDN8ZQznQuZ8WJKX`
+        - live SQLite had already advanced beyond that readiness snapshot during the same ongoing run:
+          - `backfill_progress_cursor_ts = 2026-03-09T02:13:32.850265286+00:00`
+          - `backfill_progress_cursor_slot = 405159400`
+          - `backfill_progress_cursor_signature = 4sbiHQJNczQxXwbj65TKghYFjqqAeTqwdvGDeCfbN6m6E7q3cYoX8XMLn8t4ua9xEh41jr59o3g4ojUFNgySx8f7`
+        - handoff rule for any new operator/agent:
+          - first inspect `/tmp/aggregate-seeded-loop-20260323T121242Z/summary.txt`
+          - if it is still absent, treat that wrapper as still active and do not invent a final verdict
+          - source of truth remains `summary.txt`, `next_resume.env`, the latest `*_aggregate_readiness_status.json`, and `discovery_scoring_state`
+      - the remaining blocker is now operational completion, not a newly discovered replay semantic gap:
+        - pre-seed checkpointability is already proven on the clone
+        - committed `seed_boundary_install_*` is already proven on the clone
+        - post-seed builder replay and deferred final-finalize are already proven on the clone
+        - the wrapper loop now chains `seeded-reset` progress correctly without manual cursor handoff
+        - what is still missing is simply end-to-end completion to:
+          - `coverage_marked`
+          - `backfill_resume_required = false`
+          - `effective_reads_ready = true`
+          - `effective_writes_ready = true`
   - raw-bridge experiment sequence is now complete:
     - initial `scoring_window_days = 3` restart stayed pinned behind stale persisted rebuild state from the old `5`-day window
     - clearing only `discovery_persisted_rebuild_state` correctly restarted a fresh 3-day rebuild
