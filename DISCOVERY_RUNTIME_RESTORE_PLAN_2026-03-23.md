@@ -420,3 +420,352 @@ One-button restore не означает:
 - giant replay с multi-day ETA не считается restore
 - старый recovery path можно остановить без сожалений
 - future restore contract должен делать минуты, а не дни
+
+## 13. Auditor execution batches
+
+### Batch 1. Runtime artifact + bootstrap-degraded runtime contract
+
+Цель батча:
+
+- довести до завершенного состояния первый production-usable кусок restore
+  контракта
+- не делать косметический CLI без runtime semantics
+- закрыть gap, где stale artifact импортируется, но `copybot-app` сам же убивает
+  его на старте
+
+Что должно быть завершено в этом батче:
+
+1. Runtime artifact export/import CLI.
+2. Полный storage contract для artifact.
+3. Явный runtime contract для `bootstrap-degraded`, который переживает startup
+   `copybot-app`.
+4. Restore verdict, который не плодит отдельную ложную логику freshness.
+5. Regression coverage на весь новый контракт.
+
+Что не считается завершением батча:
+
+- только новые bin-файлы без изменения runtime semantics
+- только JSON export/import без интеграции в startup/runtime contract
+- только happy-path тесты без stale / bootstrap-degraded сценариев
+- любые “TODO later” в критических местах bootstrap-degraded logic
+
+Границы батча:
+
+- recent raw journal sidecar storage сюда не входит
+- giant replay / aggregate recovery сюда не возвращаем
+- этот батч должен оставить кодовую базу в состоянии, где artifact restore уже
+  реален как bounded degraded path even before journal lands
+
+Готовый промт для кодера:
+
+> Реализуй **завершенный Batch 1** из `DISCOVERY_RUNTIME_RESTORE_PLAN_2026-03-23.md`: `runtime artifact export/import + bootstrap-degraded runtime contract`. Это **не косметический фикс** и **не частичный CLI prototype**. Работа должна быть доведена **до завершенного состояния в коде, storage contract и тестах**, чтобы этот батч можно было принять как production-meaningful piece of the restore architecture.
+>
+> Что нужно сделать:
+>
+> 1. Добавить полноценные утилиты:
+>    - `crates/discovery/src/bin/discovery_runtime_export.rs`
+>    - `crates/discovery/src/bin/discovery_runtime_restore.rs`
+>
+> 2. Добавить storage/model contract для runtime artifact.
+>    Artifact обязан включать один **консистентный snapshot**:
+>    - exact publication truth
+>    - publication metadata
+>    - discovery runtime cursor
+>    - latest published wallet metrics snapshot
+>    - gate metadata, нужные для freshness validation
+>    Нельзя делать artifact, собранный из несогласованных кусков state.
+>
+> 3. Реализовать restore semantics:
+>    - normal restore валидирует freshness artifact против runtime gate
+>    - normal restore не переписывает `last_published_at` на `now`
+>    - normal restore не переписывает `last_published_window_start` на текущий bucket
+>    - stale artifact в normal restore не должен становиться trading-ready path
+>
+> 4. Реализовать **полный runtime contract** для `bootstrap-degraded`.
+>    Это ключевая часть батча.
+>    В текущем коде простой импорт stale artifact не выживает, потому что startup/runtime считает stale publication truth unusable.
+>    Значит нужен **не только CLI flag**, а persisted runtime semantics, которые переживают запуск `copybot-app`.
+>    Минимально допустимо:
+>    - добавить отдельный runtime state (`BootstrapDegraded`) в `DiscoveryRuntimeMode` или эквивалентный явный persisted marker
+>    - научить startup/runtime отличать explicit bootstrap-degraded state от просто stale publication truth
+>    - пока runtime в bootstrap-degraded:
+>      - trading remains disabled
+>      - state не считается healthy/trading-ready
+>      - imported artifact не стирается мгновенно только из-за stale age
+>    - выход из bootstrap-degraded происходит только после реального восстановления fresh raw truth по нормальному runtime path
+>
+> 5. Restore verdict:
+>    - не делать отдельную “параллельную правду”
+>    - переиспользовать ту же freshness/runtime logic, что использует основной discovery runtime
+>    - `runtime cursor restored` сам по себе недостаточен
+>    - verdict должен отличать:
+>      - normal trading-ready restore
+>      - explicit bootstrap-degraded restore
+>      - fail-closed restore
+>
+> 6. Добавить regression coverage.
+>    Нужны тесты минимум на:
+>    - export/import roundtrip консистентного artifact
+>    - stale artifact rejects normal restore
+>    - stale artifact in `--bootstrap-degraded` restores explicit bootstrap-degraded state
+>    - startup `copybot-app` не убивает bootstrap-degraded artifact мгновенно
+>    - normal stale publication truth по-прежнему отвергается как recent truth
+>    - runtime can later leave bootstrap-degraded only through fresh raw recovery semantics
+>
+> 7. Обновить существующие operator/status/readiness surfaces, если нужно, чтобы новый runtime state был наблюдаем и недвусмысленен.
+>
+> Жесткие требования:
+>
+> - Не оставляй критический behavior на “later”.
+> - Не делай половинчатую реализацию, где CLI есть, а runtime contract отсутствует.
+> - Не возвращай giant replay / aggregate path в boot path.
+> - Не ломай действующий Stage 1 contract для `healthy / degraded / fail_closed`.
+> - Если потребуется изменить enum, storage parsing/serialization, startup logic, discovery runtime logic, status commands и тесты, делай это в этом же батче.
+>
+> Ожидаемый результат батча:
+>
+> - artifact export/import существует и работает
+> - bootstrap-degraded restore существует как реальный persisted runtime state, а не фиктивный CLI режим
+> - `copybot-app` может стартовать после такого restore, не уничтожая imported state в первую же секунду
+> - код и тесты доказывают, что это завершенный кусок restore architecture, а не черновик
+
+Аудит статуса на `2026-03-23`:
+
+- `partial pass`, но **Batch 1 пока не принят**
+- storage artifact contract, export/import CLI, persisted `bootstrap-degraded`
+  semantics, startup survival и целевые тесты реализованы
+- найден один **blocker**, который не дает считать батч завершенным
+
+Blocker:
+
+- restore path заявляет `fresh runtime db`, но фактически проверяет только
+  discovery-таблицы (`wallets`, `wallet_metrics`, `followlist`,
+  `observed_swaps`, `discovery_strategy_state`, `discovery_runtime_state`,
+  `trusted_wallet_metrics_snapshots`, `discovery_persisted_rebuild_state`)
+- при этом startup `copybot-app` после restore читает и другой durable runtime
+  state, в частности:
+  - `shadow_lots` через `list_shadow_open_pairs()`
+  - `risk_events` через `restore_pause_from_store()`
+- значит restore сейчас можно применить к частично грязной runtime DB и
+  получить phantom shadow positions / stale risk pause state, хотя код уже
+  сообщил оператору, что DB “fresh”
+
+Что должно быть исправлено до acceptance:
+
+1. Restore обязан либо работать **только** в brand-new DB, либо явно и
+   исчерпывающе валидировать пустоту всех runtime-bearing таблиц, которые
+   могут повлиять на startup/runtime behavior.
+2. Проверка fresh DB не должна ограничиваться discovery-only subset.
+3. Нужен regression test, который доказывает, что restore отвергает dirty DB
+   хотя бы при наличии:
+   - `shadow_lots`
+   - `risk_events`
+   - и любого другого runtime-bearing state, который вы решите включить в
+     strict preflight contract
+4. Только после этого Batch 1 можно считать закрытым.
+
+Follow-up промт для кодера:
+
+> Закрой blocker из Batch 1 в `DISCOVERY_RUNTIME_RESTORE_PLAN_2026-03-23.md`.
+> Batch 1 **не принят**, потому что `discovery_runtime_restore` и
+> `restore_discovery_runtime_artifact()` пока не гарантируют настоящий
+> `fresh runtime db` contract.
+>
+> Проблема:
+>
+> - restore сейчас проверяет только discovery-таблицы
+> - но startup/runtime после restore читает и другой durable state, минимум:
+>   - `shadow_lots` через `list_shadow_open_pairs()`
+>   - `risk_events` через `restore_pause_from_store()`
+> - в результате restore можно влить в частично грязную DB и получить stale
+>   runtime side effects, хотя tool пишет, что это “fresh runtime db”
+>
+> Что нужно сделать:
+>
+> 1. Довести `fresh runtime db` contract до завершенного состояния.
+>    Выбери и реализуй один из двух production-grade вариантов:
+>    - либо restore разрешен только в brand-new / empty DB и это строго
+>      проверяется
+>    - либо restore разрешен в migrated DB, но preflight исчерпывающе
+>      проверяет пустоту всех runtime-bearing tables, которые могут повлиять на
+>      startup/runtime behavior
+>
+> 2. Если выбираешь второй вариант, проверь не только discovery tables, но и
+>    весь relevant durable runtime state. Минимум включить:
+>    - `shadow_lots`
+>    - `risk_events`
+>    - другие runtime-bearing таблицы/sidecars, которые могут изменить startup,
+>      execution gating, risk gating или shadow accounting
+>
+> 3. Обнови error contract так, чтобы оператору было понятно, какая именно
+>    таблица/категория state делает DB грязной.
+>
+> 4. Добавь regression coverage:
+>    - restore rejects DB with existing `shadow_lots`
+>    - restore rejects DB with existing `risk_events`
+>    - restore still succeeds on genuinely fresh DB
+>    - если есть grouped preflight helper, тесты должны покрывать его contract
+>
+> 5. Не оставляй это как cosmetic guard. Работа должна быть завершена так,
+>    чтобы после acceptance действительно существовал честный `fresh runtime db`
+>    restore contract.
+>
+> Жесткие требования:
+>
+> - не ослабляй уже реализованный Batch 1 contract
+> - не убирай bootstrap-degraded semantics
+> - не переводи проблему в docs-only warning
+> - не считай задачу завершенной без тестов на dirty DB rejection
+
+Resolution update on `2026-03-23`:
+
+- blocker закрыт в коде через **strict empty runtime DB contract**
+- выбран production path: restore разрешен только в runtime DB, где после
+  migrations нет durable rows ни в одной user table, кроме
+  `schema_migrations`
+- preflight теперь не ограничивается discovery-only subset; он инвентаризирует
+  все runtime-bearing user tables и отвергает restore при любом dirty state,
+  включая минимум:
+  - `shadow_lots`
+  - `risk_events`
+  - а также любые другие непустые durable runtime tables
+- operator-facing error contract теперь явно показывает `table + category`
+  dirty state
+- regression coverage добавлена на:
+  - dirty-table inventory helper contract
+  - reject restore with existing `shadow_lots`
+  - reject restore with existing `risk_events`
+  - success path on genuinely fresh DB
+
+Final Batch 1 acceptance update on `2026-03-23`:
+
+- Batch 1 **принят**
+- artifact export/import, persisted `bootstrap-degraded` runtime contract,
+  restore verdict и strict empty runtime DB contract считаются закрытыми
+- дополнительный cleanup после acceptance тоже завершен:
+  - удалены мертвые helper-методы trusted-selection legacy path
+  - удален мертвый test helper
+  - `copybot-discovery` больше не оставляет `dead_code` warning по этому batch
+- повторно подтверждены целевые тесты:
+  - `cargo test -p copybot-discovery --bin discovery_runtime_restore`
+  - `cargo test -p copybot-discovery --lib -- --skip quality_cache::tests::resolve_token_quality_for_mints_returns_error_on_fatal_cache_write_failure`
+
+### Batch 2. Recent raw journal sidecar + replay path
+
+Цель батча:
+
+- довести restore architecture от artifact-only bootstrap до реального path,
+  который может вернуть runtime к fresh raw truth без giant replay
+- внедрить production V1 recent raw journal как отдельный durable sidecar
+- закрыть gap между `runtime cursor restored` и фактической raw coverage
+
+Что должно быть завершено в этом батче:
+
+1. Отдельный durable `recent raw journal` store.
+2. Отдельный bounded writer path в journal на ingest path.
+3. Retention / rotation contract для journal.
+4. Replay/import path от saved cursor в fresh runtime DB.
+5. Restore verdict, который учитывает raw coverage после journal replay.
+6. Regression coverage и telemetry для sidecar path.
+
+Что не считается завершением батча:
+
+- “просто экспорт observed_swaps в файл”
+- синхронная двойная запись в ту же write critical section без budget и
+  telemetry
+- journal без replay path
+- replay path без raw coverage validation
+- docs-only описание без работающего end-to-end restore flow
+
+Готовый промт для кодера:
+
+> Реализуй **завершенный Batch 2** из `DISCOVERY_RUNTIME_RESTORE_PLAN_2026-03-23.md`: `recent raw journal sidecar + replay path`. Это **не косметический фикс** и **не partial prototype**. Работа должна быть доведена **до завершенного состояния в коде, storage contract, replay path, observability и тестах**, чтобы это был production-usable V1 restore path, а не заготовка.
+>
+> Что нужно сделать:
+>
+> 1. Добавить отдельный durable V1 `recent raw journal`.
+>    Минимально допустимый production contract:
+>    - отдельная SQLite DB, например `state/discovery_recent_raw.db`
+>    - не reuse основной runtime DB
+>    - bounded recent `observed_swaps` horizon
+>    - retention = `scoring_window_days` + safety buffer
+>    - journal независим от aggregate/backfill tables
+>
+> 2. Реализовать отдельный writer path на ingest path.
+>    Это ключевая часть батча.
+>    Нельзя просто делать синхронный второй insert рядом с primary raw write в
+>    ту же critical section.
+>    Нужен production-grade путь, например:
+>    - отдельный async sidecar writer / bounded queue
+>    - либо другой явно bounded fan-out path после primary raw commit
+>    Обязательно сохранить устойчивость ingest path под нагрузкой.
+>
+> 3. Реализовать journal retention / pruning contract.
+>    Нужно гарантировать:
+>    - bounded growth
+>    - сохранение достаточного raw horizon для restore
+>    - отсутствие giant unbounded history accumulation
+>
+> 4. Реализовать replay/import path из journal в fresh runtime DB от
+>    сохраненного discovery runtime cursor.
+>    Явно выбери и доведи до конца один путь:
+>    - либо journal replay импортирует recent raw data в `observed_swaps`
+>      основной runtime DB, и discovery дальше работает как сейчас
+>    - либо discovery учится читать journal напрямую
+>    Полумеры не подходят. В конце батча должен существовать работающий
+>    end-to-end restore path.
+>
+> 5. Обновить restore command / tooling.
+>    После Batch 2 оператор должен иметь реальный flow:
+>    - fresh runtime DB
+>    - runtime artifact restore
+>    - recent raw journal replay from cursor
+>    - restore verdict
+>    Если для этого нужен новый bin/tooling или расширение существующего
+>    `discovery_runtime_restore`, сделай это в этом же батче.
+>
+> 6. Расширить restore verdict и observability.
+>    Verdict больше не должен опираться только на artifact freshness и cursor.
+>    Нужны явные сигналы:
+>    - journal available / replayed
+>    - raw coverage satisfied for runtime horizon или нет
+>    - restore result distinguishes:
+>      - trading-ready after journal replay
+>      - bootstrap-degraded artifact-only restore
+>      - fail-closed restore
+>    Не плодить отдельную ложную правду; использовать existing runtime
+>    readiness/freshness semantics там, где это возможно.
+>
+> 7. Добавить telemetry.
+>    Минимум измерять:
+>    - journal writer queue backlog
+>    - journal batch latency
+>    - primary raw writer latency impact
+>    - sqlite busy / retry pressure для journal path
+>    - replay progress / replay rows
+>
+> 8. Добавить regression coverage.
+>    Нужны тесты минимум на:
+>    - journal writer persists bounded recent observed_swaps
+>    - retention prunes old rows but keeps required restore horizon
+>    - replay from runtime cursor restores raw window into fresh runtime DB
+>    - replay path не требует giant full-history reread
+>    - restore verdict stays non-trading-ready без raw coverage
+>    - restore verdict can become trading-ready after valid artifact + journal replay
+>    - journal path не ломает existing bootstrap-degraded semantics
+>
+> Жесткие требования:
+>
+> - не ломай принятый Batch 1 contract
+> - не возвращай giant replay / aggregate path в boot path
+> - не делай journal как implicit side effect без explicit restore contract
+> - не оставляй double-write risk без bounded queue / telemetry
+> - не считай задачу завершенной без end-to-end restore path и тестов
+>
+> Ожидаемый результат батча:
+>
+> - в системе существует отдельный recent raw journal sidecar
+> - ingest path умеет наполнять его без деградации primary runtime contract
+> - fresh runtime DB можно поднять через artifact + journal replay
+> - restore verdict различает artifact-only bootstrap и реальный raw-backed restore
+> - код и тесты доказывают, что это production-meaningful V1 restore path

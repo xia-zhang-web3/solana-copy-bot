@@ -1,8 +1,12 @@
-use crate::{AggregateReadinessStatus, DiscoveryService, RuntimePublishedUniverseTruth};
+use crate::{
+    AggregateReadinessStatus, DiscoveryService, RuntimePublicationTruthResolution,
+    RuntimePublishedUniverseTruth,
+};
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_storage::{
-    DiscoveryPersistedRebuildStateRow, DiscoveryRuntimeCursor, DiscoveryRuntimeMode, SqliteStore,
+    DiscoveryBootstrapDegradedStateRow, DiscoveryPersistedRebuildStateRow, DiscoveryRuntimeCursor,
+    DiscoveryRuntimeMode, SqliteStore,
 };
 use serde::Serialize;
 
@@ -10,6 +14,7 @@ use serde::Serialize;
 pub enum DiscoveryOperatorRuntimeState {
     HealthyRuntimeTruth,
     DegradedRecentPublicationTruth,
+    BootstrapDegradedPublicationTruth,
     FailClosedRebuildInProgress,
     FailClosedNoRecentPublishedUniverse,
 }
@@ -19,6 +24,7 @@ impl DiscoveryOperatorRuntimeState {
         match self {
             Self::HealthyRuntimeTruth => "healthy_runtime_truth",
             Self::DegradedRecentPublicationTruth => "degraded_recent_publication_truth",
+            Self::BootstrapDegradedPublicationTruth => "bootstrap_degraded_publication_truth",
             Self::FailClosedRebuildInProgress => "fail_closed_rebuild_in_progress",
             Self::FailClosedNoRecentPublishedUniverse => "fail_closed_no_recent_published_universe",
         }
@@ -41,6 +47,10 @@ pub struct DiscoveryOperatorPublicationStatus {
     pub latest_publication_window_start: Option<DateTime<Utc>>,
     pub published_scoring_source: Option<String>,
     pub recent_publication_truth_available: bool,
+    pub bootstrap_degraded_publication_truth_available: bool,
+    pub bootstrap_degraded_active: bool,
+    pub bootstrap_degraded_reason: Option<String>,
+    pub bootstrap_degraded_armed_at: Option<DateTime<Utc>>,
     pub published_wallet_count: usize,
 }
 
@@ -124,7 +134,16 @@ impl DiscoveryService {
         };
 
         let publication_state = store.discovery_publication_state_read_only()?;
-        let recent_publication_truth = self.recent_runtime_publication_truth(store, now)?;
+        let bootstrap_degraded_state = store.discovery_bootstrap_degraded_state_read_only()?;
+        let publication_truth_resolution = self.runtime_publication_truth_resolution(store, now)?;
+        let recent_publication_truth = match publication_truth_resolution.as_ref() {
+            Some(RuntimePublicationTruthResolution::Recent(truth)) => Some(truth),
+            Some(RuntimePublicationTruthResolution::BootstrapDegraded(_)) | None => None,
+        };
+        let bootstrap_degraded_publication_truth = match publication_truth_resolution.as_ref() {
+            Some(RuntimePublicationTruthResolution::BootstrapDegraded(truth)) => Some(truth),
+            Some(RuntimePublicationTruthResolution::Recent(_)) | None => None,
+        };
         let persisted_rebuild = store
             .load_discovery_persisted_rebuild_state_read_only()?
             .map(|row| self.operator_persisted_rebuild_status(row))
@@ -134,13 +153,17 @@ impl DiscoveryService {
 
         let runtime_state = classify_runtime_state(
             raw_window_state,
-            recent_publication_truth.as_ref(),
+            recent_publication_truth,
+            bootstrap_degraded_publication_truth,
             persisted_rebuild.as_ref(),
         );
         let runtime_mode = match runtime_state {
             DiscoveryOperatorRuntimeState::HealthyRuntimeTruth => DiscoveryRuntimeMode::Healthy,
             DiscoveryOperatorRuntimeState::DegradedRecentPublicationTruth => {
                 DiscoveryRuntimeMode::Degraded
+            }
+            DiscoveryOperatorRuntimeState::BootstrapDegradedPublicationTruth => {
+                DiscoveryRuntimeMode::BootstrapDegraded
             }
             DiscoveryOperatorRuntimeState::FailClosedRebuildInProgress
             | DiscoveryOperatorRuntimeState::FailClosedNoRecentPublishedUniverse => {
@@ -156,6 +179,7 @@ impl DiscoveryService {
             scoring_source: inferred_scoring_source(
                 raw_window_state,
                 recent_publication_truth.is_some(),
+                bootstrap_degraded_publication_truth.is_some(),
             )
             .to_string(),
             active_follow_wallets,
@@ -163,7 +187,9 @@ impl DiscoveryService {
             raw_window_state: raw_window_state.as_str().to_string(),
             publication: operator_publication_status(
                 publication_state.as_ref(),
-                recent_publication_truth.as_ref(),
+                recent_publication_truth,
+                bootstrap_degraded_publication_truth,
+                &bootstrap_degraded_state,
                 now,
             ),
             persisted_rebuild,
@@ -193,8 +219,12 @@ impl DiscoveryService {
 fn classify_runtime_state(
     raw_window_state: RawWindowState,
     recent_publication_truth: Option<&RuntimePublishedUniverseTruth>,
+    bootstrap_degraded_publication_truth: Option<&RuntimePublishedUniverseTruth>,
     persisted_rebuild: Option<&DiscoveryOperatorPersistedRebuildStatus>,
 ) -> DiscoveryOperatorRuntimeState {
+    if bootstrap_degraded_publication_truth.is_some() {
+        return DiscoveryOperatorRuntimeState::BootstrapDegradedPublicationTruth;
+    }
     if persisted_rebuild.is_some() {
         return if recent_publication_truth.is_some() {
             DiscoveryOperatorRuntimeState::DegradedRecentPublicationTruth
@@ -215,23 +245,49 @@ fn classify_runtime_state(
 fn inferred_scoring_source(
     raw_window_state: RawWindowState,
     recent_publication_truth_available: bool,
+    bootstrap_degraded_publication_truth_available: bool,
 ) -> &'static str {
-    match (raw_window_state, recent_publication_truth_available) {
-        (RawWindowState::Healthy, _) => "raw_window",
-        (RawWindowState::Unavailable, true) => "published_universe_raw_window_unavailable",
-        (RawWindowState::Unavailable, false) => "raw_window_unusable_no_recent_published_universe",
-        (RawWindowState::Incomplete, true) => "published_universe_raw_window_degraded",
-        (RawWindowState::Incomplete, false) => "raw_window_incomplete_no_recent_published_universe",
-        (RawWindowState::ShortRetention, true) => "published_universe_short_retention_degraded",
-        (RawWindowState::ShortRetention, false) => {
+    match (
+        raw_window_state,
+        recent_publication_truth_available,
+        bootstrap_degraded_publication_truth_available,
+    ) {
+        (RawWindowState::Healthy, _, false) => "raw_window",
+        (RawWindowState::Healthy, false, true) => {
+            "bootstrap_degraded_publication_truth_raw_window_recovered_pending_healthy_refresh"
+        }
+        (RawWindowState::Unavailable, true, false) => "published_universe_raw_window_unavailable",
+        (RawWindowState::Unavailable, false, true) => {
+            "bootstrap_degraded_publication_truth_raw_window_unavailable"
+        }
+        (RawWindowState::Unavailable, false, false) => {
+            "raw_window_unusable_no_recent_published_universe"
+        }
+        (RawWindowState::Incomplete, true, false) => "published_universe_raw_window_degraded",
+        (RawWindowState::Incomplete, false, true) => {
+            "bootstrap_degraded_publication_truth_raw_window_degraded"
+        }
+        (RawWindowState::Incomplete, false, false) => {
+            "raw_window_incomplete_no_recent_published_universe"
+        }
+        (RawWindowState::ShortRetention, true, false) => {
+            "published_universe_short_retention_degraded"
+        }
+        (RawWindowState::ShortRetention, false, true) => {
+            "bootstrap_degraded_publication_truth_short_retention_degraded"
+        }
+        (RawWindowState::ShortRetention, false, false) => {
             "raw_window_short_retention_no_recent_published_universe"
         }
+        (_, true, true) => "raw_window",
     }
 }
 
 fn operator_publication_status(
     publication_state: Option<&copybot_storage::DiscoveryPublicationStateRow>,
     recent_publication_truth: Option<&RuntimePublishedUniverseTruth>,
+    bootstrap_degraded_publication_truth: Option<&RuntimePublishedUniverseTruth>,
+    bootstrap_degraded_state: &DiscoveryBootstrapDegradedStateRow,
     now: DateTime<Utc>,
 ) -> DiscoveryOperatorPublicationStatus {
     let latest_publication_ts = publication_state.and_then(|state| state.last_published_at);
@@ -247,6 +303,11 @@ fn operator_publication_status(
         published_scoring_source: publication_state
             .and_then(|state| state.published_scoring_source.clone()),
         recent_publication_truth_available: recent_publication_truth.is_some(),
+        bootstrap_degraded_publication_truth_available: bootstrap_degraded_publication_truth
+            .is_some(),
+        bootstrap_degraded_active: bootstrap_degraded_state.active,
+        bootstrap_degraded_reason: bootstrap_degraded_state.reason.clone(),
+        bootstrap_degraded_armed_at: bootstrap_degraded_state.armed_at,
         published_wallet_count: publication_state
             .and_then(|state| state.published_wallet_ids.as_ref().map(Vec::len))
             .unwrap_or(0),

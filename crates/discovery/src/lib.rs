@@ -4,7 +4,8 @@ use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
 use copybot_storage::{
     is_fatal_sqlite_anyhow_error, DiscoveryPersistedRebuildPhase,
-    DiscoveryPersistedRebuildStateRow, DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor,
+    DiscoveryPersistedRebuildStateRow, DiscoveryPublicationFreshnessGate,
+    DiscoveryPublicationStateRow, DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor,
     DiscoveryRuntimeMode, DiscoveryTrustedSelectionStateUpdate, ObservedSolLegCursorAccessPath,
     ObservedWalletActivityDayCountSource, ObservedWalletActivityRow,
     PersistedWalletMetricSnapshotRow, SqliteStore, StartupTrustedSelectionGateStatus,
@@ -25,6 +26,7 @@ mod followlist;
 pub mod operator_status;
 pub mod perf_harness;
 mod quality_cache;
+pub mod restore_verdict;
 mod scoring;
 mod windows;
 use self::followlist::{desired_wallets, rank_follow_candidates, top_wallet_labels};
@@ -383,7 +385,10 @@ fn snapshot_age_seconds_since_publish(
 impl DiscoverySummary {
     fn with_runtime_mode(mut self, runtime_mode: DiscoveryRuntimeMode) -> Self {
         self.runtime_mode = runtime_mode;
-        self.trusted_selection_fail_closed = runtime_mode == DiscoveryRuntimeMode::FailClosed;
+        self.trusted_selection_fail_closed = matches!(
+            runtime_mode,
+            DiscoveryRuntimeMode::FailClosed | DiscoveryRuntimeMode::BootstrapDegraded
+        );
         self
     }
 
@@ -425,6 +430,12 @@ impl RuntimePublishedUniverseTruth {
     pub fn active_wallets(&self) -> HashSet<String> {
         self.published_wallet_ids.iter().cloned().collect()
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum RuntimePublicationTruthResolution {
+    Recent(RuntimePublishedUniverseTruth),
+    BootstrapDegraded(RuntimePublishedUniverseTruth),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -504,6 +515,10 @@ enum PreparedCycleState {
         active_wallets: HashSet<String>,
         scoring_source: &'static str,
     },
+    BootstrapDegraded {
+        active_wallets: HashSet<String>,
+        scoring_source: &'static str,
+    },
     Unusable {
         publish_due: bool,
         scoring_source: &'static str,
@@ -512,6 +527,7 @@ enum PreparedCycleState {
         publish_due: bool,
         scoring_source: &'static str,
         empty_window_degraded_scoring_source: &'static str,
+        empty_window_bootstrap_degraded_scoring_source: &'static str,
         empty_window_unusable_scoring_source: &'static str,
     },
     Recompute {
@@ -994,16 +1010,20 @@ impl DiscoveryService {
     }
 
     pub fn published_universe_max_age(&self) -> Duration {
-        Duration::seconds(
-            self.config
-                .metric_snapshot_interval_seconds
-                .max(self.config.refresh_seconds.max(1))
-                .saturating_mul(2) as i64,
-        )
+        self.publication_freshness_gate()
+            .published_universe_max_age()
     }
 
     pub fn runtime_published_universe_max_age(&self) -> Duration {
         self.published_universe_max_age()
+    }
+
+    pub fn publication_freshness_gate(&self) -> DiscoveryPublicationFreshnessGate {
+        DiscoveryPublicationFreshnessGate {
+            scoring_window_days: self.runtime_scoring_window_days(),
+            metric_snapshot_interval_seconds: self.runtime_metric_snapshot_interval_seconds(),
+            refresh_seconds: self.config.refresh_seconds,
+        }
     }
 
     pub fn runtime_scoring_window_days(&self) -> i64 {
@@ -1014,49 +1034,76 @@ impl DiscoveryService {
         self.config.metric_snapshot_interval_seconds
     }
 
-    pub fn recent_runtime_publication_truth(
+    fn runtime_publication_truth_from_state(
+        publication_state: DiscoveryPublicationStateRow,
+    ) -> Option<RuntimePublishedUniverseTruth> {
+        Some(RuntimePublishedUniverseTruth {
+            runtime_mode: publication_state.runtime_mode,
+            reason: publication_state.reason,
+            last_published_at: publication_state.last_published_at?,
+            last_published_window_start: publication_state.last_published_window_start?,
+            published_scoring_source: publication_state.published_scoring_source,
+            published_wallet_ids: publication_state
+                .published_wallet_ids
+                .filter(|wallet_ids| !wallet_ids.is_empty())?,
+        })
+    }
+
+    pub fn runtime_publication_truth_resolution(
         &self,
         store: &SqliteStore,
         now: DateTime<Utc>,
-    ) -> Result<Option<RuntimePublishedUniverseTruth>> {
+    ) -> Result<Option<RuntimePublicationTruthResolution>> {
         let Some(publication_state) = store.discovery_publication_state_read_only()? else {
             return Ok(None);
         };
         if publication_state.runtime_mode == DiscoveryRuntimeMode::FailClosed {
             return Ok(None);
         }
-        let Some(last_published_at) = publication_state.last_published_at else {
-            return Ok(None);
-        };
-        if now.signed_duration_since(last_published_at) > self.published_universe_max_age() {
-            return Ok(None);
-        }
-        if !publication_state.has_valid_recent_published_universe(
-            now,
-            self.runtime_scoring_window_days(),
-            self.runtime_metric_snapshot_interval_seconds(),
-        ) {
-            return Ok(None);
-        }
-        let Some(last_published_window_start) = publication_state.last_published_window_start
+        let Some(runtime_truth) =
+            Self::runtime_publication_truth_from_state(publication_state.clone())
         else {
             return Ok(None);
         };
-        let Some(published_wallet_ids) = publication_state
-            .published_wallet_ids
-            .clone()
-            .filter(|wallet_ids| !wallet_ids.is_empty())
-        else {
-            return Ok(None);
-        };
-        Ok(Some(RuntimePublishedUniverseTruth {
-            runtime_mode: publication_state.runtime_mode,
-            reason: publication_state.reason,
-            last_published_at,
-            last_published_window_start,
-            published_scoring_source: publication_state.published_scoring_source,
-            published_wallet_ids,
-        }))
+        if publication_state.is_fresh_under_gate(self.publication_freshness_gate(), now) {
+            return Ok(Some(RuntimePublicationTruthResolution::Recent(
+                runtime_truth,
+            )));
+        }
+        if store.discovery_bootstrap_degraded_state_read_only()?.active {
+            let mut bootstrap_runtime_truth = runtime_truth;
+            bootstrap_runtime_truth.runtime_mode = DiscoveryRuntimeMode::BootstrapDegraded;
+            return Ok(Some(RuntimePublicationTruthResolution::BootstrapDegraded(
+                bootstrap_runtime_truth,
+            )));
+        }
+        Ok(None)
+    }
+
+    pub fn recent_runtime_publication_truth(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+    ) -> Result<Option<RuntimePublishedUniverseTruth>> {
+        Ok(
+            match self.runtime_publication_truth_resolution(store, now)? {
+                Some(RuntimePublicationTruthResolution::Recent(truth)) => Some(truth),
+                Some(RuntimePublicationTruthResolution::BootstrapDegraded(_)) | None => None,
+            },
+        )
+    }
+
+    pub fn bootstrap_degraded_runtime_publication_truth(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+    ) -> Result<Option<RuntimePublishedUniverseTruth>> {
+        Ok(
+            match self.runtime_publication_truth_resolution(store, now)? {
+                Some(RuntimePublicationTruthResolution::BootstrapDegraded(truth)) => Some(truth),
+                Some(RuntimePublicationTruthResolution::Recent(_)) | None => None,
+            },
+        )
     }
 
     pub fn recent_published_follow_universe_wallets(
@@ -1148,6 +1195,48 @@ impl DiscoveryService {
             now,
         )?;
         Ok(summary)
+    }
+
+    fn bootstrap_degraded_summary_from_published_universe(
+        &self,
+        store: &SqliteStore,
+        window_start: DateTime<Utc>,
+        active_wallets: HashSet<String>,
+        cap_truncation_telemetry: &CapTruncationTelemetrySnapshot,
+        scoring_source: &'static str,
+        reason: &str,
+        now: DateTime<Utc>,
+    ) -> Result<DiscoverySummary> {
+        let bootstrap_state = store.discovery_bootstrap_degraded_state_read_only()?;
+        let mut desired_wallets: Vec<String> = active_wallets.iter().cloned().collect();
+        desired_wallets.sort();
+        let follow_delta =
+            store.persist_discovery_cycle(&[], &[], &desired_wallets, true, true, now, reason)?;
+        store.set_discovery_bootstrap_degraded_state(
+            true,
+            Some(reason),
+            bootstrap_state.armed_at.or(Some(now)),
+        )?;
+        let (wallets_seen, eligible_wallets) =
+            self.published_universe_telemetry(store, now, &active_wallets)?;
+        let mut top_wallets = desired_wallets.clone();
+        top_wallets.truncate(5);
+        let active_follow_wallets = store.list_active_follow_wallets()?.len();
+        Ok(DiscoverySummary {
+            window_start,
+            wallets_seen,
+            eligible_wallets,
+            metrics_written: 0,
+            follow_promoted: follow_delta.activated,
+            follow_demoted: follow_delta.deactivated,
+            active_follow_wallets,
+            top_wallets,
+            published: false,
+            ..DiscoverySummary::default()
+        }
+        .with_runtime_mode(DiscoveryRuntimeMode::BootstrapDegraded)
+        .with_scoring_source(scoring_source)
+        .with_cap_truncation_telemetry(cap_truncation_telemetry))
     }
 
     fn published_universe_telemetry(
@@ -3927,10 +4016,19 @@ impl DiscoveryService {
         let fetch_time_budget = StdDuration::from_millis(self.config.fetch_time_budget_ms.max(1));
         let retention_days = self.config.observed_swaps_retention_days.max(1);
         let short_retention_window = retention_days < window_days;
-        let recent_runtime_publication_truth = self.recent_runtime_publication_truth(store, now)?;
-        let recent_published_follow_wallets = recent_runtime_publication_truth
-            .as_ref()
-            .map(RuntimePublishedUniverseTruth::active_wallets);
+        let runtime_publication_truth_resolution =
+            self.runtime_publication_truth_resolution(store, now)?;
+        let recent_published_follow_wallets = match runtime_publication_truth_resolution.as_ref() {
+            Some(RuntimePublicationTruthResolution::Recent(truth)) => Some(truth.active_wallets()),
+            Some(RuntimePublicationTruthResolution::BootstrapDegraded(_)) | None => None,
+        };
+        let bootstrap_degraded_follow_wallets = match runtime_publication_truth_resolution.as_ref()
+        {
+            Some(RuntimePublicationTruthResolution::BootstrapDegraded(truth)) => {
+                Some(truth.active_wallets())
+            }
+            Some(RuntimePublicationTruthResolution::Recent(_)) | None => None,
+        };
         let (swaps_window, fetch_progress, cap_truncation_telemetry, prepared_cycle) = {
             let mut state = match self.window_state.lock() {
                 Ok(guard) => guard,
@@ -4154,6 +4252,8 @@ impl DiscoveryService {
                             scoring_source: "raw_window_persisted_stream",
                             empty_window_degraded_scoring_source:
                                 "published_universe_raw_window_unavailable",
+                            empty_window_bootstrap_degraded_scoring_source:
+                                "bootstrap_degraded_publication_truth_raw_window_unavailable",
                             empty_window_unusable_scoring_source:
                                 "raw_window_unusable_no_recent_published_universe",
                         },
@@ -4167,6 +4267,17 @@ impl DiscoveryService {
                             publish_due,
                             active_wallets,
                             scoring_source: "published_universe_raw_window_unavailable",
+                        },
+                    )
+                } else if let Some(active_wallets) = bootstrap_degraded_follow_wallets.clone() {
+                    (
+                        swaps_window,
+                        fetch_progress,
+                        cap_truncation_telemetry,
+                        PreparedCycleState::BootstrapDegraded {
+                            active_wallets,
+                            scoring_source:
+                                "bootstrap_degraded_publication_truth_raw_window_unavailable",
                         },
                     )
                 } else {
@@ -4213,6 +4324,12 @@ impl DiscoveryService {
                             } else {
                                 "published_universe_short_retention_degraded"
                             },
+                            empty_window_bootstrap_degraded_scoring_source:
+                                if raw_window_history_incomplete {
+                                    "bootstrap_degraded_publication_truth_raw_window_degraded"
+                                } else {
+                                    "bootstrap_degraded_publication_truth_short_retention_degraded"
+                                },
                             empty_window_unusable_scoring_source: if raw_window_history_incomplete {
                                 "raw_window_incomplete_no_recent_published_universe"
                             } else {
@@ -4232,6 +4349,20 @@ impl DiscoveryService {
                                 "published_universe_raw_window_degraded"
                             } else {
                                 "published_universe_short_retention_degraded"
+                            },
+                        },
+                    )
+                } else if let Some(active_wallets) = bootstrap_degraded_follow_wallets.clone() {
+                    (
+                        swaps_window,
+                        fetch_progress,
+                        cap_truncation_telemetry,
+                        PreparedCycleState::BootstrapDegraded {
+                            active_wallets,
+                            scoring_source: if raw_window_history_incomplete {
+                                "bootstrap_degraded_publication_truth_raw_window_degraded"
+                            } else {
+                                "bootstrap_degraded_publication_truth_short_retention_degraded"
                             },
                         },
                     )
@@ -4294,6 +4425,60 @@ impl DiscoveryService {
                 )?;
                 store.clear_discovery_persisted_rebuild_state()?;
                 let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                info!(
+                    window_start = %summary.window_start,
+                    wallets_seen = summary.wallets_seen,
+                    eligible_wallets = summary.eligible_wallets,
+                    metrics_written = summary.metrics_written,
+                    follow_promoted = summary.follow_promoted,
+                    follow_demoted = summary.follow_demoted,
+                    active_follow_wallets = summary.active_follow_wallets,
+                    swaps_window,
+                    swaps_query_rows = fetch_progress.query_rows,
+                    swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
+                    swaps_delta_fetched = delta_fetched,
+                    swaps_warm_loaded,
+                    swaps_evicted_due_cap,
+                    swaps_fetch_limit = fetch_limit,
+                    swaps_fetch_pages = fetch_progress.pages,
+                    swaps_fetch_page_limit = fetch_page_limit,
+                    swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                    swaps_fetch_limit_reached = fetch_progress.saturated,
+                    swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                    swaps_fetch_time_budget_exhausted = fetch_progress.time_budget_exhausted,
+                    metrics_window_start = %metrics_window_start,
+                    scoring_source = summary.scoring_source,
+                    discovery_runtime_mode = summary.runtime_mode.as_str(),
+                    metrics_persisted = false,
+                    snapshot_recomputed = false,
+                    discovery_published = summary.published,
+                    discovery_cycle_duration_ms = elapsed_ms,
+                    top_wallets = ?summary.top_wallets,
+                    "discovery cycle completed"
+                );
+                return Ok(summary);
+            }
+            PreparedCycleState::BootstrapDegraded {
+                active_wallets,
+                scoring_source,
+            } => {
+                let summary = self.bootstrap_degraded_summary_from_published_universe(
+                    store,
+                    window_start,
+                    active_wallets,
+                    &cap_truncation_telemetry,
+                    scoring_source,
+                    scoring_source,
+                    now,
+                )?;
+                store.clear_discovery_persisted_rebuild_state()?;
+                let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                warn!(
+                    metrics_window_start = %metrics_window_start,
+                    scoring_source = summary.scoring_source,
+                    bootstrap_degraded_active = true,
+                    "discovery runtime remains in explicit bootstrap-degraded mode while fresh raw truth is unavailable"
+                );
                 info!(
                     window_start = %summary.window_start,
                     wallets_seen = summary.wallets_seen,
@@ -4406,19 +4591,21 @@ impl DiscoveryService {
                 .with_runtime_mode(previous_summary.runtime_mode)
                 .with_scoring_source(previous_summary.scoring_source)
                 .with_cap_truncation_telemetry(&cap_truncation_telemetry);
-                if publish_due {
+                if publish_due && summary.runtime_mode != DiscoveryRuntimeMode::BootstrapDegraded {
                     self.record_live_publish(now);
                 }
-                self.persist_publication_state(
-                    store,
-                    summary.runtime_mode,
-                    publish_due,
-                    metrics_window_start,
-                    None,
-                    summary.scoring_source,
-                    summary.scoring_source,
-                    now,
-                )?;
+                if summary.runtime_mode != DiscoveryRuntimeMode::BootstrapDegraded {
+                    self.persist_publication_state(
+                        store,
+                        summary.runtime_mode,
+                        publish_due,
+                        metrics_window_start,
+                        None,
+                        summary.scoring_source,
+                        summary.scoring_source,
+                        now,
+                    )?;
+                }
                 store.clear_discovery_persisted_rebuild_state()?;
                 info!(
                     window_start = %summary.window_start,
@@ -4487,6 +4674,7 @@ impl DiscoveryService {
                 publish_due,
                 scoring_source,
                 empty_window_degraded_scoring_source,
+                empty_window_bootstrap_degraded_scoring_source,
                 empty_window_unusable_scoring_source,
             } => {
                 match self.advance_persisted_stream_rebuild(
@@ -4511,6 +4699,7 @@ impl DiscoveryService {
                                 "persisted observed_swaps runtime fallback completed with zero rows in the frozen scoring horizon; treating persisted raw truth as unavailable"
                             );
                             if let Some(active_wallets) = recent_published_follow_wallets.clone() {
+                                store.clear_discovery_persisted_rebuild_state()?;
                                 let summary = self.degraded_summary_from_published_universe(
                                     store,
                                     window_start,
@@ -4556,6 +4745,60 @@ impl DiscoveryService {
                                 );
                                 return Ok(summary);
                             }
+                            if let Some(active_wallets) = bootstrap_degraded_follow_wallets.clone()
+                            {
+                                store.clear_discovery_persisted_rebuild_state()?;
+                                let summary = self
+                                    .bootstrap_degraded_summary_from_published_universe(
+                                        store,
+                                        window_start,
+                                        active_wallets,
+                                        &cap_truncation_telemetry,
+                                        empty_window_bootstrap_degraded_scoring_source,
+                                        empty_window_bootstrap_degraded_scoring_source,
+                                        now,
+                                    )?;
+                                let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                                warn!(
+                                    metrics_window_start = %metrics_window_start,
+                                    scoring_source = summary.scoring_source,
+                                    bootstrap_degraded_active = true,
+                                    "discovery runtime completed persisted fallback with zero rows and remains in explicit bootstrap-degraded mode"
+                                );
+                                info!(
+                                    window_start = %summary.window_start,
+                                    wallets_seen = summary.wallets_seen,
+                                    eligible_wallets = summary.eligible_wallets,
+                                    metrics_written = summary.metrics_written,
+                                    follow_promoted = summary.follow_promoted,
+                                    follow_demoted = summary.follow_demoted,
+                                    active_follow_wallets = summary.active_follow_wallets,
+                                    swaps_window,
+                                    swaps_query_rows = fetch_progress.query_rows,
+                                    swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
+                                    swaps_delta_fetched = delta_fetched,
+                                    swaps_warm_loaded,
+                                    swaps_evicted_due_cap,
+                                    swaps_fetch_limit = fetch_limit,
+                                    swaps_fetch_pages = fetch_progress.pages,
+                                    swaps_fetch_page_limit = fetch_page_limit,
+                                    swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                                    swaps_fetch_limit_reached = fetch_progress.saturated,
+                                    swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                                    swaps_fetch_time_budget_exhausted =
+                                        fetch_progress.time_budget_exhausted,
+                                    metrics_window_start = %metrics_window_start,
+                                    scoring_source = summary.scoring_source,
+                                    discovery_runtime_mode = summary.runtime_mode.as_str(),
+                                    metrics_persisted = false,
+                                    snapshot_recomputed = false,
+                                    discovery_published = summary.published,
+                                    discovery_cycle_duration_ms = elapsed_ms,
+                                    "discovery cycle completed"
+                                );
+                                return Ok(summary);
+                            }
+                            store.clear_discovery_persisted_rebuild_state()?;
                             let summary = self.fail_close_without_recent_universe(
                                 store,
                                 window_start,
@@ -4635,6 +4878,70 @@ impl DiscoveryService {
                                 )?
                                 .with_persisted_stream_catch_up_requested(false);
                             let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                            info!(
+                                window_start = %summary.window_start,
+                                wallets_seen = summary.wallets_seen,
+                                eligible_wallets = summary.eligible_wallets,
+                                metrics_written = summary.metrics_written,
+                                follow_promoted = summary.follow_promoted,
+                                follow_demoted = summary.follow_demoted,
+                                active_follow_wallets = summary.active_follow_wallets,
+                                swaps_window,
+                                swaps_query_rows = fetch_progress.query_rows,
+                                swaps_query_rows_last_page = fetch_progress.query_rows_last_page,
+                                swaps_delta_fetched = delta_fetched,
+                                swaps_warm_loaded,
+                                swaps_evicted_due_cap,
+                                swaps_fetch_limit = fetch_limit,
+                                swaps_fetch_pages = fetch_progress.pages,
+                                swaps_fetch_page_limit = fetch_page_limit,
+                                swaps_fetch_time_budget_ms = self.config.fetch_time_budget_ms,
+                                swaps_fetch_limit_reached = fetch_progress.saturated,
+                                swaps_fetch_page_budget_exhausted = fetch_progress.page_budget_exhausted,
+                                swaps_fetch_time_budget_exhausted =
+                                    fetch_progress.time_budget_exhausted,
+                                metrics_window_start = %metrics_window_start,
+                                scoring_source = summary.scoring_source,
+                                discovery_runtime_mode = summary.runtime_mode.as_str(),
+                                metrics_persisted = false,
+                                snapshot_recomputed = false,
+                                discovery_published = summary.published,
+                                discovery_cycle_duration_ms = elapsed_ms,
+                                rebuild_phase = telemetry.phase.as_str(),
+                                rebuild_horizon_end = %telemetry.horizon_end,
+                                discovery_persisted_stream_catch_up_requested =
+                                    summary.persisted_stream_catch_up_requested,
+                                rebuild_budget_exhausted_reason = telemetry
+                                    .budget_exhausted_reason
+                                    .map(PersistedStreamBudgetExhaustedReason::as_str),
+                                "discovery cycle completed"
+                            );
+                            return Ok(summary);
+                        }
+                        if let Some(active_wallets) = bootstrap_degraded_follow_wallets.clone() {
+                            let summary = self
+                                .bootstrap_degraded_summary_from_published_universe(
+                                    store,
+                                    window_start,
+                                    active_wallets,
+                                    &cap_truncation_telemetry,
+                                    empty_window_bootstrap_degraded_scoring_source,
+                                    empty_window_bootstrap_degraded_scoring_source,
+                                    now,
+                                )?
+                                .with_persisted_stream_catch_up_requested(catch_up_requested);
+                            let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                            warn!(
+                                metrics_window_start = %metrics_window_start,
+                                scoring_source = summary.scoring_source,
+                                bootstrap_degraded_active = true,
+                                rebuild_phase = telemetry.phase.as_str(),
+                                rebuild_horizon_end = %telemetry.horizon_end,
+                                rebuild_budget_exhausted_reason = telemetry
+                                    .budget_exhausted_reason
+                                    .map(PersistedStreamBudgetExhaustedReason::as_str),
+                                "discovery runtime remains in explicit bootstrap-degraded mode while bounded persisted rebuild continues"
+                            );
                             info!(
                                 window_start = %summary.window_start,
                                 wallets_seen = summary.wallets_seen,
@@ -4880,6 +5187,7 @@ impl DiscoveryService {
                 now,
             )?;
         }
+        store.set_discovery_bootstrap_degraded_state(false, None, None)?;
         if scoring_source == "raw_window_persisted_stream" {
             store.clear_discovery_persisted_rebuild_state()?;
         }
@@ -5619,40 +5927,6 @@ impl DiscoveryService {
         }
     }
 
-    fn build_wallet_snapshots_from_latest_metrics(
-        &self,
-        store: &SqliteStore,
-        now: DateTime<Utc>,
-        expected_window_start: DateTime<Utc>,
-    ) -> Result<Option<Vec<WalletSnapshot>>> {
-        let snapshots = store.load_latest_wallet_metric_snapshots()?;
-        let Some(latest_window_start) = snapshots.first().map(|row| row.window_start) else {
-            return Ok(None);
-        };
-        let max_lag = Duration::seconds(self.config.metric_snapshot_interval_seconds.max(1) as i64);
-        if latest_window_start + max_lag < expected_window_start {
-            return Ok(None);
-        }
-        if let Some(metadata) =
-            store.trusted_wallet_metrics_snapshot_metadata_for_window(latest_window_start)?
-        {
-            if matches!(
-                self.effective_trusted_snapshot_state(&metadata, now),
-                TrustedSelectionState::TrustedBridgedStale | TrustedSelectionState::Invalid
-            ) {
-                return Ok(None);
-            }
-        }
-        // Missing metadata is an intentional legacy-grace path for pre-lineage snapshots.
-        // Until they are rewritten by a metadata-aware refresh or recovery tool, they still
-        // rely on the existing latest-window freshness guard above rather than fail-closing
-        // purely because trusted snapshot metadata does not exist yet.
-
-        Ok(Some(self.wallet_snapshots_from_persisted_metric_rows(
-            now, snapshots,
-        )))
-    }
-
     fn wallet_rows_from_snapshots(&self, snapshots: &[WalletSnapshot]) -> Vec<WalletUpsertRow> {
         snapshots
             .iter()
@@ -5667,78 +5941,6 @@ impl DiscoveryService {
                 },
             })
             .collect()
-    }
-
-    fn persist_trusted_selection_from_snapshots(
-        &self,
-        store: &SqliteStore,
-        window_start: DateTime<Utc>,
-        snapshots: &[WalletSnapshot],
-        publish_due: bool,
-        cap_truncation_telemetry: &CapTruncationTelemetrySnapshot,
-        scoring_source: &'static str,
-        now: DateTime<Utc>,
-        reason: &str,
-    ) -> Result<DiscoverySummary> {
-        let wallet_rows = self.wallet_rows_from_snapshots(snapshots);
-        let ranked = rank_follow_candidates(snapshots, self.config.min_score);
-        let desired_wallets = desired_wallets(&ranked, self.config.follow_top_n);
-        let follow_delta = store.persist_discovery_cycle(
-            &wallet_rows,
-            &[],
-            &desired_wallets,
-            true,
-            true,
-            now,
-            reason,
-        )?;
-        let active_follow_wallets = store.list_active_follow_wallets()?.len();
-        store
-            .set_discovery_trusted_selection_bootstrap_required(
-                false,
-                "trusted_selection_bootstrap_satisfied",
-            )
-            .context("failed clearing discovery trusted bootstrap requirement")?;
-        if let Some(metadata) =
-            store.trusted_wallet_metrics_snapshot_metadata_for_window(window_start)?
-        {
-            self.persist_trusted_selection_state(
-                store,
-                self.effective_trusted_snapshot_state(&metadata, now),
-                Some(metadata.snapshot_id),
-                Some(metadata.effective_window_start),
-                Some(metadata.source_kind),
-                false,
-                "trusted_selection_bootstrap_satisfied",
-                now,
-            )?;
-        } else {
-            self.persist_trusted_selection_state(
-                store,
-                TrustedSelectionState::TrustedCurrent,
-                None,
-                Some(window_start),
-                Some(TrustedSnapshotSourceKind::Legacy),
-                false,
-                "trusted_selection_bootstrap_satisfied_legacy",
-                now,
-            )?;
-        }
-
-        Ok(DiscoverySummary {
-            window_start,
-            wallets_seen: snapshots.len(),
-            eligible_wallets: ranked.len(),
-            metrics_written: 0,
-            follow_promoted: follow_delta.activated,
-            follow_demoted: follow_delta.deactivated,
-            active_follow_wallets,
-            top_wallets: top_wallet_labels(&ranked, 5),
-            published: publish_due,
-            ..DiscoverySummary::default()
-        }
-        .with_scoring_source(scoring_source)
-        .with_cap_truncation_telemetry(cap_truncation_telemetry))
     }
 
     fn snapshot_from_components(
@@ -6633,37 +6835,6 @@ mod tests {
         }
 
         Ok((window_start, ordered))
-    }
-
-    fn seed_profitable_wallet_window(
-        store: &SqliteStore,
-        wallet_id: &str,
-        token: &str,
-        now: DateTime<Utc>,
-    ) -> Result<()> {
-        for idx in 0..4 {
-            let buy_ts = now - Duration::hours(20) + Duration::hours((idx * 2) as i64);
-            let sell_ts = buy_ts + Duration::minutes(15);
-            store.insert_observed_swap(&swap(
-                wallet_id,
-                &format!("{wallet_id}-buy-{idx}"),
-                buy_ts,
-                SOL_MINT,
-                token,
-                1.0,
-                100.0,
-            ))?;
-            store.insert_observed_swap(&swap(
-                wallet_id,
-                &format!("{wallet_id}-sell-{idx}"),
-                sell_ts,
-                token,
-                SOL_MINT,
-                100.0,
-                1.35,
-            ))?;
-        }
-        Ok(())
     }
 
     fn aggregate_readiness_config() -> DiscoveryConfig {
@@ -11177,6 +11348,190 @@ mod tests {
                 .is_none(),
             "stale publication truth must be rejected even when an exact published wallet set is stored"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn bootstrap_degraded_runtime_publication_truth_accepts_explicit_stale_artifact() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("runtime-publication-truth-bootstrap-degraded.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-23T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = stage1_runtime_config();
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let published_wallets =
+            seed_published_wallet_metrics_snapshot(&store, metrics_window_start, 4, 2)?;
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            reason: "stale_imported_runtime_artifact".to_string(),
+            last_published_at: Some(
+                now - discovery.runtime_published_universe_max_age() - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(metrics_window_start),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(published_wallets.iter().cloned().collect()),
+        })?;
+        store.set_discovery_bootstrap_degraded_state(
+            true,
+            Some("runtime_artifact_restore_bootstrap_degraded"),
+            Some(now - Duration::minutes(5)),
+        )?;
+
+        assert!(
+            discovery
+                .recent_runtime_publication_truth(&store, now)?
+                .is_none(),
+            "stale publication truth must still be rejected as recent truth"
+        );
+        let bootstrap_truth = discovery
+            .bootstrap_degraded_runtime_publication_truth(&store, now)?
+            .expect(
+                "explicit bootstrap-degraded marker should keep imported publication truth usable",
+            );
+        assert_eq!(
+            bootstrap_truth.active_wallets(),
+            published_wallets,
+            "bootstrap-degraded runtime truth must preserve the exact imported published wallet set"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cold_start_unavailable_raw_window_with_bootstrap_degraded_publication_truth_enters_bootstrap_degraded_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("stage1-cold-start-bootstrap-degraded.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-23T12:05:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = stage1_runtime_config();
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let expected_active_wallets =
+            seed_published_wallet_metrics_snapshot(&store, metrics_window_start, 6, 3)?;
+        let stale_published_at =
+            now - discovery.runtime_published_universe_max_age() - Duration::seconds(1);
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            reason: "stale_imported_runtime_artifact".to_string(),
+            last_published_at: Some(stale_published_at),
+            last_published_window_start: Some(metrics_window_start),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(expected_active_wallets.iter().cloned().collect()),
+        })?;
+        store.set_discovery_bootstrap_degraded_state(
+            true,
+            Some("runtime_artifact_restore_bootstrap_degraded"),
+            Some(now - Duration::minutes(5)),
+        )?;
+
+        let summary = discovery.run_cycle(&store, now)?;
+
+        assert_eq!(
+            summary.runtime_mode,
+            DiscoveryRuntimeMode::BootstrapDegraded
+        );
+        assert_eq!(
+            summary.scoring_source,
+            "bootstrap_degraded_publication_truth_raw_window_unavailable"
+        );
+        assert_eq!(summary.active_follow_wallets, expected_active_wallets.len());
+        assert_eq!(store.list_active_follow_wallets()?, expected_active_wallets);
+        assert!(store.discovery_bootstrap_degraded_state()?.active);
+        let publication_state = store
+            .discovery_publication_state()?
+            .expect("publication state should persist");
+        assert_eq!(
+            publication_state.last_published_at,
+            Some(stale_published_at)
+        );
+        assert_eq!(
+            publication_state.last_published_window_start,
+            Some(metrics_window_start)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn bootstrap_degraded_runtime_leaves_only_through_fresh_raw_recovery_semantics() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-bootstrap-degraded-fresh-recovery.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let bootstrap_now = DateTime::parse_from_rfc3339("2026-03-23T12:05:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let recovery_now = bootstrap_now + Duration::minutes(2);
+        let config = stage1_runtime_config();
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let metrics_window_start = metrics_window_start_for_test(&config, bootstrap_now);
+        let expected_active_wallets =
+            seed_published_wallet_metrics_snapshot(&store, metrics_window_start, 6, 1)?;
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            reason: "stale_imported_runtime_artifact".to_string(),
+            last_published_at: Some(
+                bootstrap_now
+                    - discovery.runtime_published_universe_max_age()
+                    - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(metrics_window_start),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(expected_active_wallets.iter().cloned().collect()),
+        })?;
+        store.set_discovery_bootstrap_degraded_state(
+            true,
+            Some("runtime_artifact_restore_bootstrap_degraded"),
+            Some(bootstrap_now - Duration::minutes(5)),
+        )?;
+
+        let bootstrap_summary = discovery.run_cycle(&store, bootstrap_now)?;
+        assert_eq!(
+            bootstrap_summary.runtime_mode,
+            DiscoveryRuntimeMode::BootstrapDegraded
+        );
+        assert!(store.discovery_bootstrap_degraded_state()?.active);
+
+        seed_runtime_aggregate_ready_wallet(
+            &store,
+            &config,
+            "wallet_raw_truth",
+            "TokenBootstrapRecovery111111111111111111111",
+            recovery_now,
+        )?;
+
+        let recovery_summary = discovery.run_cycle(&store, recovery_now)?;
+        assert_eq!(recovery_summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert_eq!(recovery_summary.scoring_source, "raw_window");
+        assert!(
+            !store.discovery_bootstrap_degraded_state()?.active,
+            "bootstrap-degraded marker must clear only after a real healthy raw recovery cycle succeeds"
+        );
+        let publication_state = store
+            .discovery_publication_state()?
+            .expect("publication state should exist after recovery");
+        assert_eq!(
+            publication_state.runtime_mode,
+            DiscoveryRuntimeMode::Healthy
+        );
+        assert_eq!(publication_state.last_published_at, Some(recovery_now));
         Ok(())
     }
 

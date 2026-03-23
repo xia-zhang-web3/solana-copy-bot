@@ -7,6 +7,35 @@ use rusqlite::{Connection, ErrorCode};
 use std::time::Duration as StdDuration;
 
 impl SqliteStore {
+    pub(crate) fn with_deferred_transaction<T, F>(
+        &self,
+        transaction_name: &str,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        self.conn
+            .execute_batch("BEGIN TRANSACTION")
+            .with_context(|| format!("failed to open {transaction_name} transaction"))?;
+        let tx_result = operation(&self.conn);
+        match tx_result {
+            Ok(result) => {
+                if let Err(error) = self.conn.execute_batch("COMMIT") {
+                    let error = anyhow!(error)
+                        .context(format!("failed to commit {transaction_name} transaction"));
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(error).with_context(|| format!("failed to run {transaction_name}"));
+                }
+                Ok(result)
+            }
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(error).with_context(|| format!("failed to run {transaction_name}"))
+            }
+        }
+    }
+
     pub(crate) fn execute_with_retry<F>(&self, mut operation: F) -> rusqlite::Result<usize>
     where
         F: FnMut(&Connection) -> rusqlite::Result<usize>,

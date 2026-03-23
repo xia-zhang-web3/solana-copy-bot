@@ -6,7 +6,7 @@ use copybot_config::{
 use copybot_core_types::SwapEvent;
 #[cfg(test)]
 use copybot_core_types::TokenQuantity;
-use copybot_discovery::DiscoveryService;
+use copybot_discovery::{DiscoveryService, RuntimePublicationTruthResolution};
 use copybot_execution::{ExecutionBatchReport, ExecutionRuntime};
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
 use copybot_shadow::{FollowSnapshot, ShadowService};
@@ -2998,16 +2998,14 @@ async fn run_app_loop(
         .list_active_follow_wallets()
         .context("failed to load active follow wallets")?;
     let startup_gate_now = Utc::now();
-    let recent_published_universe_truth = discovery
-        .recent_runtime_publication_truth(&store, startup_gate_now)
-        .context("failed to load recent published follow universe")?;
-    let recent_published_active_wallets = recent_published_universe_truth
-        .as_ref()
-        .map(|truth| truth.active_wallets());
+    validate_bootstrap_degraded_execution_contract(&store, &execution_runtime)?;
+    let runtime_publication_truth =
+        startup_runtime_publication_truth(&discovery, &store, startup_gate_now)
+            .context("failed to load startup published follow universe")?;
     let (initial_follow_snapshot, recovered_active_wallets, mut shadow_strategy_fail_closed) =
         startup_follow_snapshot_from_publication_truth(
             initial_active_wallets,
-            recent_published_active_wallets.clone(),
+            runtime_publication_truth.as_ref(),
         );
     let mut follow_snapshot = Arc::new(initial_follow_snapshot);
     let follow_event_retention =
@@ -3089,10 +3087,19 @@ async fn run_app_loop(
         info!("execution runtime disabled");
     }
 
-    if let Some(active_wallets) = recent_published_active_wallets.as_ref() {
+    if let Some(RuntimePublicationTruthResolution::Recent(truth)) =
+        runtime_publication_truth.as_ref()
+    {
         info!(
-            active_follow_wallets = active_wallets.len(),
+            active_follow_wallets = truth.published_wallet_ids.len(),
             "recent published follow universe loaded for startup runtime"
+        );
+    } else if let Some(RuntimePublicationTruthResolution::BootstrapDegraded(truth)) =
+        runtime_publication_truth.as_ref()
+    {
+        info!(
+            bootstrap_degraded_active_follow_wallets = truth.published_wallet_ids.len(),
+            "startup loaded explicit bootstrap-degraded publication truth; shadow and live execution remain fail-closed until fresh raw truth publishes"
         );
     } else if recovered_active_wallets > 0 {
         info!(
@@ -3174,7 +3181,11 @@ async fn run_app_loop(
                 match discovery_result.expect("guard ensures discovery task exists") {
                     Ok(Ok(discovery_output)) => {
                         if discovery_output.published {
-                            if discovery_output.runtime_mode == DiscoveryRuntimeMode::FailClosed {
+                            if matches!(
+                                discovery_output.runtime_mode,
+                                DiscoveryRuntimeMode::FailClosed
+                                    | DiscoveryRuntimeMode::BootstrapDegraded
+                            ) {
                                 shadow_strategy_fail_closed = true;
                                 follow_snapshot = Arc::new(FollowSnapshot::default());
                                 open_shadow_lots.clear();
@@ -4237,13 +4248,23 @@ fn follow_event_retention_duration(
 
 fn startup_follow_snapshot_from_publication_truth(
     initial_active_wallets: HashSet<String>,
-    recent_published_active_wallets: Option<HashSet<String>>,
+    runtime_publication_truth: Option<&RuntimePublicationTruthResolution>,
 ) -> (FollowSnapshot, usize, bool) {
-    if let Some(active_wallets) = recent_published_active_wallets {
+    if let Some(RuntimePublicationTruthResolution::Recent(truth)) = runtime_publication_truth {
         return (
-            FollowSnapshot::from_active_wallets(active_wallets),
+            FollowSnapshot::from_active_wallets(truth.active_wallets()),
             0,
             false,
+        );
+    }
+    if matches!(
+        runtime_publication_truth,
+        Some(RuntimePublicationTruthResolution::BootstrapDegraded(_))
+    ) {
+        return (
+            FollowSnapshot::default(),
+            initial_active_wallets.len(),
+            true,
         );
     }
     let recovered_active_wallets = initial_active_wallets.len();
@@ -4253,6 +4274,34 @@ fn startup_follow_snapshot_from_publication_truth(
     } else {
         (FollowSnapshot::default(), recovered_active_wallets, true)
     }
+}
+
+fn startup_runtime_publication_truth(
+    discovery: &DiscoveryService,
+    store: &SqliteStore,
+    now: DateTime<Utc>,
+) -> Result<Option<RuntimePublicationTruthResolution>> {
+    discovery.runtime_publication_truth_resolution(store, now)
+}
+
+fn validate_bootstrap_degraded_execution_contract(
+    store: &SqliteStore,
+    execution_runtime: &ExecutionRuntime,
+) -> Result<()> {
+    let bootstrap_degraded = store.discovery_bootstrap_degraded_state_read_only()?;
+    if !bootstrap_degraded.active || !execution_runtime.is_enabled() {
+        return Ok(());
+    }
+    let armed_at = bootstrap_degraded
+        .armed_at
+        .map(|ts| ts.to_rfc3339())
+        .unwrap_or_else(|| "unknown".to_string());
+    let reason = bootstrap_degraded
+        .reason
+        .unwrap_or_else(|| "unspecified".to_string());
+    Err(anyhow!(
+        "execution.enabled=true is not allowed while discovery bootstrap-degraded runtime state is active (reason={reason}, armed_at={armed_at})"
+    ))
 }
 
 fn should_schedule_discovery_catch_up(
@@ -9610,10 +9659,20 @@ mod app_tests {
     #[test]
     fn startup_follow_snapshot_uses_recent_published_universe() {
         let recent_active_wallets = HashSet::from(["wallet-a".to_string(), "wallet-b".to_string()]);
+        let recent_truth = RuntimePublicationTruthResolution::Recent(
+            copybot_discovery::RuntimePublishedUniverseTruth {
+                runtime_mode: DiscoveryRuntimeMode::Healthy,
+                reason: "recent_publication".to_string(),
+                last_published_at: Utc::now(),
+                last_published_window_start: Utc::now(),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: recent_active_wallets.iter().cloned().collect(),
+            },
+        );
         let (snapshot, recovered_active_wallets, shadow_strategy_fail_closed) =
             startup_follow_snapshot_from_publication_truth(
                 HashSet::from(["wallet-stale".to_string()]),
-                Some(recent_active_wallets.clone()),
+                Some(&recent_truth),
             );
 
         assert_eq!(recovered_active_wallets, 0);
@@ -9678,15 +9737,13 @@ mod app_tests {
         })?;
 
         let discovery = DiscoveryService::new(config, permissive_shadow_quality());
-        let recent_published_active_wallets = discovery
-            .recent_runtime_publication_truth(&store, now)?
-            .expect("recent published universe should be available from publication truth")
-            .active_wallets();
+        let startup_published_truth = startup_runtime_publication_truth(&discovery, &store, now)?
+            .expect("startup published universe should be available from publication truth");
         let initial_active_wallets = store.list_active_follow_wallets()?;
         let (snapshot, recovered_active_wallets, shadow_strategy_fail_closed) =
             startup_follow_snapshot_from_publication_truth(
                 initial_active_wallets,
-                Some(recent_published_active_wallets),
+                Some(&startup_published_truth),
             );
 
         assert_eq!(recovered_active_wallets, 0);
@@ -9698,6 +9755,102 @@ mod app_tests {
                 "wallet_published_second".to_string(),
             ]),
             "startup runtime snapshot must come from the exact published universe control plane, not from stale followlist residue or current ranking output"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_bootstrap_degraded_publication_truth_keeps_runtime_fail_closed() -> Result<()> {
+        let (store, db_path) =
+            make_test_store("startup-bootstrap-degraded-ignores-stale-followlist")?;
+        let now = DateTime::parse_from_rfc3339("2026-03-23T12:10:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let mut config = copybot_config::DiscoveryConfig::default();
+        config.scoring_window_days = 5;
+        config.refresh_seconds = 600;
+        config.metric_snapshot_interval_seconds = 30 * 60;
+        config.follow_top_n = 1;
+        config.min_score = 0.1;
+
+        let interval_seconds = config.metric_snapshot_interval_seconds.max(1) as i64;
+        let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
+        let bucketed_now = DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(now);
+        let metrics_window_start =
+            bucketed_now - chrono::Duration::days(config.scoring_window_days.max(1) as i64);
+
+        store.activate_follow_wallet(
+            "wallet_stale_residue",
+            now - chrono::Duration::minutes(20),
+            "legacy_bootstrap_residue",
+        )?;
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            reason: "stale_imported_runtime_artifact".to_string(),
+            last_published_at: Some(now - chrono::Duration::minutes(61)),
+            last_published_window_start: Some(metrics_window_start),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(vec![
+                "wallet_bootstrap_exact".to_string(),
+                "wallet_bootstrap_second".to_string(),
+            ]),
+        })?;
+        store.set_discovery_bootstrap_degraded_state(
+            true,
+            Some("runtime_artifact_restore_bootstrap_degraded"),
+            Some(now - chrono::Duration::minutes(5)),
+        )?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let startup_published_truth = startup_runtime_publication_truth(&discovery, &store, now)?
+            .expect("bootstrap-degraded publication truth should survive startup");
+        assert!(matches!(
+            startup_published_truth,
+            RuntimePublicationTruthResolution::BootstrapDegraded(_)
+        ));
+        let initial_active_wallets = store.list_active_follow_wallets()?;
+        let (snapshot, recovered_active_wallets, shadow_strategy_fail_closed) =
+            startup_follow_snapshot_from_publication_truth(
+                initial_active_wallets,
+                Some(&startup_published_truth),
+            );
+
+        assert_eq!(recovered_active_wallets, 1);
+        assert!(shadow_strategy_fail_closed);
+        assert_eq!(
+            snapshot.active,
+            HashSet::new(),
+            "explicit bootstrap-degraded startup must stay fail-closed instead of promoting stale imported publication truth into the runtime follow snapshot"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn validate_bootstrap_degraded_execution_contract_rejects_enabled_execution() -> Result<()> {
+        let (store, db_path) = make_test_store("startup-bootstrap-degraded-execution-guard")?;
+        let armed_at = DateTime::parse_from_rfc3339("2026-03-23T12:10:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        store.set_discovery_bootstrap_degraded_state(
+            true,
+            Some("runtime_artifact_restore_bootstrap_degraded"),
+            Some(armed_at),
+        )?;
+
+        let mut execution = ExecutionConfig::default();
+        execution.enabled = true;
+        let runtime = ExecutionRuntime::from_config(execution, RiskConfig::default());
+        let error = validate_bootstrap_degraded_execution_contract(&store, &runtime)
+            .expect_err("bootstrap-degraded startup must reject execution-enabled runtime");
+
+        assert!(
+            error
+                .to_string()
+                .contains("execution.enabled=true is not allowed while discovery bootstrap-degraded runtime state is active")
         );
 
         let _ = std::fs::remove_file(db_path);

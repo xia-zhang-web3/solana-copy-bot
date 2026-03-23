@@ -1,7 +1,7 @@
 # ROAD TO PRODUCTION v2
 
 Date: 2026-03-17
-Status: Active
+Status: Active historical roadmap with 2026-03-23 runtime-restore addendum
 
 ## 0. Why v2 exists
 
@@ -19,9 +19,32 @@ Status: Active
 
 ## 1. Purpose
 
-This is the only production roadmap that should be used from now on.
+This remains the primary historical roadmap for Stage 1 runtime findings,
+server investigations, and code-validation history.
 
-It replaces the old mixed roadmap and removes aggregate/backfill recovery from the critical path.
+As of 2026-03-23, it is no longer the standalone runtime-restore plan.
+
+For the current runtime-restore contract and incident-response direction, use
+[`DISCOVERY_RUNTIME_RESTORE_PLAN_2026-03-23.md`](/Users/blacktower/Documents/solana-copy-bot/DISCOVERY_RUNTIME_RESTORE_PLAN_2026-03-23.md).
+
+What remains valid in this document:
+
+- the Stage 1 runtime contract findings and code-level conclusions
+- the startup / SQLite / persisted-stream investigation history
+- the operational safety findings about host pressure and clone strategy
+- the proof that aggregate/backfill must not sit in the production boot path
+
+What is no longer valid as the current runtime-recovery plan:
+
+- reading this file as an instruction to keep pushing long-running aggregate /
+  backfill replay until runtime comes back
+- treating multi-hour replay with multi-day ETA as an acceptable restore path
+- treating the bounded seeded replay loop as the chosen closure path for the
+  current runtime incident
+
+This addendum exists because the old wording in section `2.4 Current verdict`
+can otherwise mislead a reader into thinking the historical aggregate replay
+investigation is still the active restore plan, which it is not.
 
 ## 2. Current factual state
 
@@ -147,58 +170,55 @@ The project is not blocked by ingestion.
 
 The startup SQLite silent-hang blocker is no longer the current blocker.
 
-Stage 1 is still `partial`. The emergency raw-bridge track is no longer "in progress"; it has now failed as a durable closure path.
+Stage 1 is still `partial`.
 
-Current working diagnosis: raw-path micro-fixes are exhausted. The series of deploys from `492c7e3` through `70e959d` proved the old blocker is gone: time-first SQL access paths work, catch-up scheduler changes work, grouped wallet-stats SQL works, and the corrected `wallet_activity_days` fast path works on live with sustained `100%` fast-path utilization and `0%` fallback. But none of those fixes produced the missing end-to-end outcome: `Replay wallet-stats` still did not complete durably before rollover, `SOL-leg` never started, and publication never reached `raw_window_persisted_stream`.
+The emergency raw-bridge track is no longer "in progress"; it has failed as a
+durable closure path.
 
-The config-only raw bridge also failed. Reducing `scoring_window_days` from `5` to `3` did lower the scoring horizon, but the first attempt stayed frozen behind stale persisted rebuild state from the old 5-day window. Clearing only `discovery_persisted_rebuild_state` was the correct operational fix: after that cleanup the service restarted fresh, completed `CollectBuyMints`, completed bounded token-quality resolution, and re-entered `Replay`. But the bridge still did not survive the next decisive bucket. `Replay wallet-stats` started once, then the runtime rolled back into `collect_buy_mints / reconcile_*`, stale-window warnings returned, and the success signals still never appeared:
+The historical aggregate / backfill investigation below remains useful as
+evidence and postmortem material, but it is no longer the chosen runtime
+restore path for the current incident.
 
-- no `completed bounded replay wallet-stats prepass; switching to SOL-leg replay`
-- no `rebuild_replay_sol_leg_access_path`
-- no `scoring_source = raw_window_persisted_stream`
-- no `active_follow_wallets > 0`
+The current conclusions are:
 
-Aggregate/backfill recovery is therefore back to being the main engineering blocker. The safe operational findings are now clearer and narrower now:
+1. raw-path micro-fixes did prove the old blocker is gone, but they still did
+   not land the missing end-to-end result:
+   - no `scoring_source = raw_window_persisted_stream`
+   - no `active_follow_wallets > 0`
+2. the config-only raw bridge also failed as a durable closure path
+3. giant replay is not an acceptable restore path:
+   - if a recovery path has already spent roughly `9.5` hours and still
+     projects remaining time on the order of `14` days, that path is dead for
+     runtime restore
+   - it may still contain useful tooling evidence, but it is not an incident
+     recovery plan
+4. the valid runtime-restore direction now lives in
+   [`DISCOVERY_RUNTIME_RESTORE_PLAN_2026-03-23.md`](/Users/blacktower/Documents/solana-copy-bot/DISCOVERY_RUNTIME_RESTORE_PLAN_2026-03-23.md):
+   - broken runtime DB is disposable
+   - restore truth is external to runtime DB
+   - restore must come from `runtime artifact` + `recent raw journal`
+   - stale publication truth must not silently turn into trading-ready truth
+5. what remains valid from the aggregate investigation in this file:
+   - same-host hot clone under live load is unsafe
+   - stopped-host / offline investigation is operationally safe
+   - the seeded-boundary and startup-tooling fixes are real code findings
+   - the aggregate tooling notes below remain valid as historical debug context
+6. what is no longer valid as current runtime plan:
+   - continuing the bounded seeded replay loop until readiness as the chosen
+     runtime restore path
+   - treating manual cursor-by-cursor replay orchestration as acceptable
+     incident closure
+   - treating multi-hour / multi-day replay as “good enough for now” restore
 
-1. same-host hot clone while the production service is running is unsafe because it materially increases live SQLite / writer pressure
-2. same-host cold clone with the service intentionally stopped is operationally safe
-3. the original aggregate blocker really was the seeded boundary / backfill path before the first durable checkpoint, but that specific correctness gap is now closed in code by `8e748dc`
-4. the first post-fix server validation attempt was still misleading because the offline tool itself could stall before boundary replay on pending optional migration `0039_observed_swaps_sol_leg_ts_index.sql`; that confounder is now removed by `777a1c8`
-5. repeated server-side runs on the existing offline clone now prove that pre-seed boundary replay enters and durably advances `backfill_progress`; the old "zero durable checkpoint" blocker is gone
-6. later server-side validation on `edf90a7caa4e455ca0f3e46d8bdeb3148d8fee02` also proved durable `seed_boundary_install_*` and post-seed resume on the same clone
-7. the current aggregate blocker is now narrower again: runtime-bounded `replay_after_seed` still falls into an extremely expensive prepare stage on the SQL replay path, even after seed install is committed
-8. the first direct attempt to escape that SQL prepare cost (`87a7052`) was not operationally viable on the real clone because eager builder bootstrap timed out before the first replay-after-seed batch
-9. the second attempt (`c3e057f`) fixed that bootstrap problem, but the next runtime-budget bottleneck appeared immediately afterward: bounded post-seed runs now spend too much time in `final_rug_finalize` after durable builder checkpoints have already been written
-10. commit `90ada0d0fe4f8603d1f708bd570a12be662633ba` then removed that finalize-tail blocker on the real clone: bounded post-seed builder replay emitted `final_rug_finalize_skipped`, `rug_finalize_ms = 0`, and still advanced the durable cursor to `2026-03-08T23:00:45.980276955Z | 405129982 | 24yuNmrtkJ8JNPhxC2FoGT4QfA2SzWX2TyzukE5MqQske7ABNZqF289ua36A8DiQyRpaNtbwGevviyvJQ1tnevGz`
-11. the next remaining work is operational rather than semantic: continue the bounded seeded replay loop until coverage markers are written and `backfill_resume_required = false`
-12. to avoid another manual prompt-driven chain, the operator loop must preserve `seeded-reset` restart semantics across runs and keep the persisted SQLite cursor as the only source of truth for progress
+Recommended operational posture now:
 
-Three separate offline aggregate attempts on the old tool path really did fail to land that first durable checkpoint:
-
-1. coarse bounded wrapper run on `a25c1e5`
-2. budget-aware bounded retry on `02f887a`
-3. direct unbounded phase-1 `seeded-reset --stop-after-seed-install` run on a fresh cold clone
-
-That diagnosis is now advanced. After `8e748dc` + `777a1c8`, the existing offline clone no longer stays at a zero checkpoint:
-
-- boundary replay is entered on every bounded validation run (`event=builder_replay_disabled phase=boundary_build reason=forced_sql_replay`)
-- durable `backfill_progress` now advances across repeated resume slices on the same existing clone
-- source of truth for progress is the persisted SQLite state, not the missing tail log lines
-
-That blocker then narrowed again across the next stopped-host validation sequence:
-
-- `8fdffd9` surfaced the first clean `checkpoint_persisted / batch_committed / summary` boundary slice on the clone
-- `61719f1` proved that an in-memory boundary lot builder bootstrap over real `wallet_scoring_open_lots` was not viable on that clone
-- `7b6ab59` moved the real clone onto `boundary_lot_sql`, which removed the pre-seed `prepare_ms` problem and reached the exact near-boundary cursor
-- `edf90a7caa4e455ca0f3e46d8bdeb3148d8fee02` then completed `seed_boundary_exported`, `seed_boundary_installed`, and a real post-seed resume on that same clone
-
-The current aggregate blocker is therefore no longer "before the first durable checkpoint", no longer "before committed seed install", and no longer the post-seed final rug-finalize tail. Those three narrower blockers have now been closed in sequence on the real clone. The remaining work is to operationalize the now-confirmed seeded replay path so it can run as one bounded loop to full readiness instead of another manual cursor-by-cursor prompt chain.
-
-Do not re-enable aggregate reads or writes on the production host until bounded historical backfill reaches either durable `seed_boundary_install_*` or full readiness (`effective_reads_ready = true`).
-
-Recommended operational posture now: keep the bot stopped if it is still fail-closed and non-publishing, so it stops burning Yellowstone / gRPC tokens without producing trusted selection. Keep `scoring_window_days` reverted back to `5`. Continue using only the existing offline clone, treat `discovery_scoring_state` as the source of truth for progress, and drive the remaining replay through one bounded seeded loop wrapper instead of another manual handoff chain.
-
-Do not start Stage 2 yet.
+1. keep the bot stopped while discovery remains fail-closed and non-publishing
+2. keep `execution.enabled = false`
+3. do not resume the old long-running replay as the runtime restore path
+4. do not start Stage 2 yet
+5. use this file for Stage 1 findings and investigation history
+6. use `DISCOVERY_RUNTIME_RESTORE_PLAN_2026-03-23.md` for the current runtime
+   restore contract and incident-response actions
 
 ### 2.5 Server state (updated 2026-03-23)
 

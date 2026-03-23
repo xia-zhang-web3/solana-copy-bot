@@ -485,6 +485,7 @@ pub struct FollowlistUpdateResult {
 pub enum DiscoveryRuntimeMode {
     Healthy,
     Degraded,
+    BootstrapDegraded,
     #[default]
     FailClosed,
 }
@@ -494,6 +495,7 @@ impl DiscoveryRuntimeMode {
         match self {
             Self::Healthy => "healthy",
             Self::Degraded => "degraded",
+            Self::BootstrapDegraded => "bootstrap_degraded",
             Self::FailClosed => "fail_closed",
         }
     }
@@ -502,6 +504,7 @@ impl DiscoveryRuntimeMode {
         match raw {
             "healthy" => Ok(Self::Healthy),
             "degraded" => Ok(Self::Degraded),
+            "bootstrap_degraded" => Ok(Self::BootstrapDegraded),
             "fail_closed" => Ok(Self::FailClosed),
             _ => Err(anyhow!("invalid discovery runtime mode: {raw}")),
         }
@@ -522,7 +525,7 @@ pub struct ObservedSwapBatchWriteMetrics {
     pub wallet_activity_days_upsert_ms: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PersistedWalletMetricSnapshotRow {
     pub wallet_id: String,
     pub window_start: DateTime<Utc>,
@@ -537,6 +540,30 @@ pub struct PersistedWalletMetricSnapshotRow {
     pub buy_total: u32,
     pub tradable_ratio: f64,
     pub rug_ratio: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveryPublicationFreshnessGate {
+    pub scoring_window_days: i64,
+    pub metric_snapshot_interval_seconds: u64,
+    pub refresh_seconds: u64,
+}
+
+impl DiscoveryPublicationFreshnessGate {
+    pub fn published_universe_max_age(self) -> Duration {
+        Duration::seconds(
+            self.metric_snapshot_interval_seconds
+                .max(self.refresh_seconds.max(1))
+                .saturating_mul(2) as i64,
+        )
+    }
+
+    fn expected_metrics_window_start(self, now: DateTime<Utc>) -> DateTime<Utc> {
+        let interval_seconds = self.metric_snapshot_interval_seconds.max(1) as i64;
+        let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
+        let bucketed_now = DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(now);
+        bucketed_now - Duration::days(self.scoring_window_days.max(1))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -654,7 +681,7 @@ pub struct DiscoveryTrustedSelectionStateRow {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryPublicationStateRow {
     pub runtime_mode: DiscoveryRuntimeMode,
     pub reason: String,
@@ -666,15 +693,13 @@ pub struct DiscoveryPublicationStateRow {
 }
 
 impl DiscoveryPublicationStateRow {
-    fn expected_metrics_window_start(
-        now: DateTime<Utc>,
-        scoring_window_days: i64,
-        metric_snapshot_interval_seconds: u64,
-    ) -> DateTime<Utc> {
-        let interval_seconds = metric_snapshot_interval_seconds.max(1) as i64;
-        let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
-        let bucketed_now = DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(now);
-        bucketed_now - Duration::days(scoring_window_days.max(1))
+    pub fn has_complete_publication_truth(&self) -> bool {
+        self.last_published_at.is_some()
+            && self.last_published_window_start.is_some()
+            && self
+                .published_wallet_ids
+                .as_ref()
+                .is_some_and(|wallet_ids| !wallet_ids.is_empty())
     }
 
     pub fn has_valid_recent_published_universe(
@@ -686,14 +711,60 @@ impl DiscoveryPublicationStateRow {
         let Some(last_published_window_start) = self.last_published_window_start else {
             return false;
         };
-        let expected_metrics_window_start = Self::expected_metrics_window_start(
-            now,
+        let expected_metrics_window_start = DiscoveryPublicationFreshnessGate {
             scoring_window_days,
             metric_snapshot_interval_seconds,
-        );
+            refresh_seconds: metric_snapshot_interval_seconds,
+        }
+        .expected_metrics_window_start(now);
         let max_lag = Duration::seconds(metric_snapshot_interval_seconds.max(1) as i64);
         last_published_window_start + max_lag >= expected_metrics_window_start
     }
+
+    pub fn has_valid_published_window_under_gate(
+        &self,
+        gate: DiscoveryPublicationFreshnessGate,
+        now: DateTime<Utc>,
+    ) -> bool {
+        let Some(last_published_window_start) = self.last_published_window_start else {
+            return false;
+        };
+        let expected_metrics_window_start = gate.expected_metrics_window_start(now);
+        let max_lag = Duration::seconds(gate.metric_snapshot_interval_seconds.max(1) as i64);
+        last_published_window_start + max_lag >= expected_metrics_window_start
+    }
+
+    pub fn is_fresh_under_gate(
+        &self,
+        gate: DiscoveryPublicationFreshnessGate,
+        now: DateTime<Utc>,
+    ) -> bool {
+        let Some(last_published_at) = self.last_published_at else {
+            return false;
+        };
+        self.has_complete_publication_truth()
+            && now.signed_duration_since(last_published_at) <= gate.published_universe_max_age()
+            && self.has_valid_published_window_under_gate(gate, now)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DiscoveryBootstrapDegradedStateRow {
+    pub active: bool,
+    pub reason: Option<String>,
+    pub armed_at: Option<DateTime<Utc>>,
+}
+
+pub const DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveryRuntimeArtifact {
+    pub format_version: u32,
+    pub exported_at: DateTime<Utc>,
+    pub export_gate: DiscoveryPublicationFreshnessGate,
+    pub publication_state: DiscoveryPublicationStateRow,
+    pub runtime_cursor: DiscoveryRuntimeCursor,
+    pub published_wallet_metrics_snapshot: Vec<PersistedWalletMetricSnapshotRow>,
 }
 
 #[derive(Debug, Clone)]
@@ -2121,6 +2192,7 @@ mod tests {
     use super::*;
     use chrono::Duration;
     use copybot_core_types::SwapEvent;
+    use std::collections::HashSet;
     use tempfile::tempdir;
 
     fn copy_migrations_through(dest: &Path, max_version: &str) -> Result<()> {
@@ -10977,6 +11049,110 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn discovery_runtime_artifact_roundtrip_restores_consistent_snapshot() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let source_db_path = temp.path().join("runtime-artifact-source.db");
+        let restored_db_path = temp.path().join("runtime-artifact-restored.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let now = DateTime::parse_from_rfc3339("2026-03-23T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let metrics_window_start = now - Duration::days(7);
+        let mut source_store = SqliteStore::open(Path::new(&source_db_path))?;
+        source_store.run_migrations(&migration_dir)?;
+        for (idx, wallet_id) in ["wallet_roundtrip_a", "wallet_roundtrip_b"]
+            .iter()
+            .enumerate()
+        {
+            source_store.upsert_wallet(
+                wallet_id,
+                now - Duration::days(8),
+                now - Duration::minutes(idx as i64),
+                "candidate",
+            )?;
+            source_store.insert_wallet_metric(&WalletMetricRow {
+                wallet_id: (*wallet_id).to_string(),
+                window_start: metrics_window_start,
+                pnl: 2.0 + idx as f64,
+                win_rate: 0.8,
+                trades: 6,
+                closed_trades: 6,
+                hold_median_seconds: 120,
+                score: 1.0 - idx as f64 * 0.1,
+                buy_total: 6,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            })?;
+        }
+        source_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            reason: "runtime_artifact_roundtrip".to_string(),
+            last_published_at: Some(now - Duration::minutes(10)),
+            last_published_window_start: Some(metrics_window_start),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(vec![
+                "wallet_roundtrip_a".to_string(),
+                "wallet_roundtrip_b".to_string(),
+            ]),
+        })?;
+        source_store.upsert_discovery_runtime_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::minutes(1),
+            slot: 4242,
+            signature: "runtime-artifact-roundtrip-cursor".to_string(),
+        })?;
+        let export_gate = DiscoveryPublicationFreshnessGate {
+            scoring_window_days: 7,
+            metric_snapshot_interval_seconds: 1800,
+            refresh_seconds: 600,
+        };
+        let artifact = source_store.export_discovery_runtime_artifact(now, export_gate)?;
+
+        let mut restored_store = SqliteStore::open(Path::new(&restored_db_path))?;
+        restored_store.run_migrations(&migration_dir)?;
+        restored_store.restore_discovery_runtime_artifact(&artifact, now, false)?;
+
+        let restored_publication_state = restored_store
+            .discovery_publication_state()?
+            .expect("restored publication state must exist");
+        assert_eq!(
+            serde_json::to_value(&restored_publication_state)?,
+            serde_json::to_value(&artifact.publication_state)?,
+            "publication truth must roundtrip exactly through runtime artifact restore"
+        );
+        let restored_cursor = restored_store
+            .load_discovery_runtime_cursor()?
+            .expect("restored runtime cursor must exist");
+        assert_eq!(restored_cursor.ts_utc, artifact.runtime_cursor.ts_utc);
+        assert_eq!(restored_cursor.slot, artifact.runtime_cursor.slot);
+        assert_eq!(restored_cursor.signature, artifact.runtime_cursor.signature);
+        let restored_metrics = restored_store.load_wallet_metric_snapshots_for_window(
+            artifact
+                .publication_state
+                .last_published_window_start
+                .expect("artifact publication window start must exist"),
+        )?;
+        assert_eq!(
+            serde_json::to_value(&restored_metrics)?,
+            serde_json::to_value(&artifact.published_wallet_metrics_snapshot)?,
+            "wallet_metrics snapshot must roundtrip exactly through runtime artifact restore"
+        );
+        assert_eq!(
+            restored_store.list_active_follow_wallets()?,
+            HashSet::from([
+                "wallet_roundtrip_a".to_string(),
+                "wallet_roundtrip_b".to_string(),
+            ]),
+            "restore must recreate the exact published follow universe"
+        );
+        assert!(
+            !restored_store.discovery_bootstrap_degraded_state()?.active,
+            "normal runtime artifact restore must not arm bootstrap-degraded state"
+        );
+        Ok(())
+    }
 }
 
 fn u64_to_sql_i64(field: &str, value: u64) -> Result<i64> {
@@ -11387,4 +11563,274 @@ fn signed_lamports_to_sql_i64(field: &str, value: SignedLamports) -> Result<i64>
             value.as_i128()
         )
     })
+}
+
+#[cfg(test)]
+mod runtime_artifact_tests {
+    use super::*;
+    use chrono::Duration;
+    use std::collections::HashSet;
+    use tempfile::tempdir;
+
+    fn metrics_window_start_for_gate(
+        gate: DiscoveryPublicationFreshnessGate,
+        now: DateTime<Utc>,
+    ) -> DateTime<Utc> {
+        let interval_seconds = gate.metric_snapshot_interval_seconds.max(1) as i64;
+        let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
+        let bucketed_now = DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(now);
+        bucketed_now - Duration::days(gate.scoring_window_days.max(1))
+    }
+
+    fn sorted_snapshot_rows(
+        mut rows: Vec<PersistedWalletMetricSnapshotRow>,
+    ) -> Vec<PersistedWalletMetricSnapshotRow> {
+        rows.sort_by(|left, right| left.wallet_id.cmp(&right.wallet_id));
+        rows
+    }
+
+    fn seed_runtime_artifact_source_store(
+        source_store: &SqliteStore,
+        now: DateTime<Utc>,
+        export_gate: DiscoveryPublicationFreshnessGate,
+    ) -> Result<DiscoveryRuntimeArtifact> {
+        let metrics_window_start = metrics_window_start_for_gate(export_gate, now);
+        let published_at = now - Duration::minutes(5);
+        let published_wallet_ids = vec!["wallet-alpha".to_string()];
+
+        source_store.persist_discovery_cycle(
+            &[
+                WalletUpsertRow {
+                    wallet_id: "wallet-alpha".to_string(),
+                    first_seen: now - Duration::days(3),
+                    last_seen: now - Duration::minutes(2),
+                    status: "candidate".to_string(),
+                },
+                WalletUpsertRow {
+                    wallet_id: "wallet-beta".to_string(),
+                    first_seen: now - Duration::days(2),
+                    last_seen: now - Duration::minutes(1),
+                    status: "observed".to_string(),
+                },
+            ],
+            &[
+                WalletMetricRow {
+                    wallet_id: "wallet-alpha".to_string(),
+                    window_start: metrics_window_start,
+                    pnl: 3.4,
+                    win_rate: 0.88,
+                    trades: 8,
+                    closed_trades: 8,
+                    hold_median_seconds: 120,
+                    score: 1.4,
+                    buy_total: 8,
+                    tradable_ratio: 1.0,
+                    rug_ratio: 0.0,
+                },
+                WalletMetricRow {
+                    wallet_id: "wallet-beta".to_string(),
+                    window_start: metrics_window_start,
+                    pnl: 0.4,
+                    win_rate: 0.5,
+                    trades: 4,
+                    closed_trades: 4,
+                    hold_median_seconds: 240,
+                    score: 0.2,
+                    buy_total: 4,
+                    tradable_ratio: 0.5,
+                    rug_ratio: 0.25,
+                },
+            ],
+            &published_wallet_ids,
+            true,
+            true,
+            published_at,
+            "seed_runtime_artifact_roundtrip",
+        )?;
+        source_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            reason: "seed_runtime_artifact_roundtrip".to_string(),
+            last_published_at: Some(published_at),
+            last_published_window_start: Some(metrics_window_start),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(published_wallet_ids.clone()),
+        })?;
+        let runtime_cursor = DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::minutes(1),
+            slot: 77,
+            signature: "runtime-artifact-cursor".to_string(),
+        };
+        source_store.upsert_discovery_runtime_cursor(&runtime_cursor)?;
+        source_store.export_discovery_runtime_artifact(now, export_gate)
+    }
+
+    #[test]
+    fn discovery_runtime_artifact_export_restore_roundtrip_preserves_consistent_snapshot(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let source_db_path = temp.path().join("runtime-artifact-source.db");
+        let restore_db_path = temp.path().join("runtime-artifact-restore.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut source_store = SqliteStore::open(Path::new(&source_db_path))?;
+        source_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-23T12:10:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let export_gate = DiscoveryPublicationFreshnessGate {
+            scoring_window_days: 7,
+            metric_snapshot_interval_seconds: 1_800,
+            refresh_seconds: 600,
+        };
+        let metrics_window_start = metrics_window_start_for_gate(export_gate, now);
+        let artifact = seed_runtime_artifact_source_store(&source_store, now, export_gate)?;
+
+        let mut restore_store = SqliteStore::open(Path::new(&restore_db_path))?;
+        restore_store.run_migrations(&migration_dir)?;
+        restore_store.restore_discovery_runtime_artifact(&artifact, now, false)?;
+
+        let restored_publication_state = restore_store
+            .discovery_publication_state()?
+            .expect("publication state should be restored");
+        assert_eq!(
+            restored_publication_state.runtime_mode,
+            artifact.publication_state.runtime_mode
+        );
+        assert_eq!(
+            restored_publication_state.reason,
+            artifact.publication_state.reason
+        );
+        assert_eq!(
+            restored_publication_state.last_published_at,
+            artifact.publication_state.last_published_at
+        );
+        assert_eq!(
+            restored_publication_state.last_published_window_start,
+            artifact.publication_state.last_published_window_start
+        );
+        assert_eq!(
+            restored_publication_state.published_scoring_source,
+            artifact.publication_state.published_scoring_source
+        );
+        assert_eq!(
+            restored_publication_state.published_wallet_ids,
+            artifact.publication_state.published_wallet_ids
+        );
+        assert_eq!(
+            restore_store.load_discovery_runtime_cursor()?,
+            Some(artifact.runtime_cursor.clone())
+        );
+        assert_eq!(
+            restore_store.discovery_bootstrap_degraded_state()?.active,
+            false
+        );
+        assert_eq!(
+            restore_store.list_active_follow_wallets()?,
+            HashSet::from(["wallet-alpha".to_string()])
+        );
+        assert_eq!(
+            sorted_snapshot_rows(
+                restore_store.load_wallet_metric_snapshots_for_window(metrics_window_start)?,
+            ),
+            sorted_snapshot_rows(artifact.published_wallet_metrics_snapshot.clone())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_runtime_restore_dirty_table_inventory_reports_runtime_bearing_tables() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("runtime-artifact-dirty-inventory.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-03-23T12:10:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        store.insert_shadow_lot("wallet-shadow", "token-shadow", 1.0, 0.3, now)?;
+        store.insert_risk_event(
+            "shadow_risk_pause",
+            "warn",
+            now,
+            Some("{\"pause_type\":\"exposure_soft_cap\"}"),
+        )?;
+
+        let dirty_tables = store.discovery_runtime_restore_dirty_tables()?;
+        assert!(dirty_tables.iter().any(|entry| {
+            entry.table == "shadow_lots" && entry.category == "shadow accounting"
+        }));
+        assert!(dirty_tables
+            .iter()
+            .any(|entry| { entry.table == "risk_events" && entry.category == "risk gating" }));
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_runtime_artifact_restore_rejects_existing_shadow_lots() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let source_db_path = temp.path().join("runtime-artifact-source-shadow.db");
+        let restore_db_path = temp.path().join("runtime-artifact-restore-shadow.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let now = DateTime::parse_from_rfc3339("2026-03-23T12:10:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let export_gate = DiscoveryPublicationFreshnessGate {
+            scoring_window_days: 7,
+            metric_snapshot_interval_seconds: 1_800,
+            refresh_seconds: 600,
+        };
+
+        let mut source_store = SqliteStore::open(Path::new(&source_db_path))?;
+        source_store.run_migrations(&migration_dir)?;
+        let artifact = seed_runtime_artifact_source_store(&source_store, now, export_gate)?;
+
+        let mut restore_store = SqliteStore::open(Path::new(&restore_db_path))?;
+        restore_store.run_migrations(&migration_dir)?;
+        restore_store.insert_shadow_lot("wallet-shadow", "token-shadow", 1.0, 0.3, now)?;
+
+        let error = restore_store
+            .restore_discovery_runtime_artifact(&artifact, now, false)
+            .expect_err("restore must reject dirty db with shadow_lots");
+        assert!(error
+            .to_string()
+            .contains("shadow_lots (shadow accounting)"));
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_runtime_artifact_restore_rejects_existing_risk_events() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let source_db_path = temp.path().join("runtime-artifact-source-risk.db");
+        let restore_db_path = temp.path().join("runtime-artifact-restore-risk.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let now = DateTime::parse_from_rfc3339("2026-03-23T12:10:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let export_gate = DiscoveryPublicationFreshnessGate {
+            scoring_window_days: 7,
+            metric_snapshot_interval_seconds: 1_800,
+            refresh_seconds: 600,
+        };
+
+        let mut source_store = SqliteStore::open(Path::new(&source_db_path))?;
+        source_store.run_migrations(&migration_dir)?;
+        let artifact = seed_runtime_artifact_source_store(&source_store, now, export_gate)?;
+
+        let mut restore_store = SqliteStore::open(Path::new(&restore_db_path))?;
+        restore_store.run_migrations(&migration_dir)?;
+        restore_store.insert_risk_event(
+            "shadow_risk_pause",
+            "warn",
+            now,
+            Some("{\"pause_type\":\"exposure_soft_cap\"}"),
+        )?;
+
+        let error = restore_store
+            .restore_discovery_runtime_artifact(&artifact, now, false)
+            .expect_err("restore must reject dirty db with risk_events");
+        assert!(error.to_string().contains("risk_events (risk gating)"));
+        Ok(())
+    }
 }

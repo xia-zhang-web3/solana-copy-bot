@@ -1,10 +1,12 @@
 use super::{
-    DiscoveryPublicationStateRow, DiscoveryPublicationStateUpdate, DiscoveryRuntimeMode,
-    DiscoveryTrustedSelectionStateRow, DiscoveryTrustedSelectionStateUpdate,
+    DiscoveryBootstrapDegradedStateRow, DiscoveryPublicationFreshnessGate,
+    DiscoveryPublicationStateRow, DiscoveryPublicationStateUpdate, DiscoveryRuntimeArtifact,
+    DiscoveryRuntimeMode, DiscoveryTrustedSelectionStateRow, DiscoveryTrustedSelectionStateUpdate,
     FollowlistUpdateResult, PersistedWalletMetricSnapshotRow, SqliteStore,
     StartupTrustedSelectionGateStatus, TrustedSelectionState, TrustedSnapshotSourceKind,
     TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite, WalletActivityDayRow,
-    WalletMetricRow, WalletUpsertRow, DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS,
+    WalletMetricRow, WalletUpsertRow, DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
+    DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -59,6 +61,179 @@ fn parse_optional_wallet_ids_json(
         Ok(canonicalize_wallet_ids(&wallet_ids))
     })
     .transpose()
+}
+
+fn validate_runtime_artifact_snapshot_shape(artifact: &DiscoveryRuntimeArtifact) -> Result<()> {
+    if artifact.format_version != DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION {
+        return Err(anyhow::anyhow!(
+            "unsupported discovery runtime artifact format_version={} expected={}",
+            artifact.format_version,
+            DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION
+        ));
+    }
+    if !artifact.publication_state.has_complete_publication_truth() {
+        return Err(anyhow::anyhow!(
+            "discovery runtime artifact publication truth is incomplete"
+        ));
+    }
+    let published_window_start = artifact
+        .publication_state
+        .last_published_window_start
+        .expect("validated complete publication truth above");
+    if artifact.published_wallet_metrics_snapshot.is_empty() {
+        return Err(anyhow::anyhow!(
+            "discovery runtime artifact is missing published wallet_metrics snapshot rows"
+        ));
+    }
+    if artifact
+        .published_wallet_metrics_snapshot
+        .iter()
+        .any(|row| row.window_start != published_window_start)
+    {
+        return Err(anyhow::anyhow!(
+            "discovery runtime artifact wallet_metrics snapshot rows do not match publication window_start={}",
+            published_window_start.to_rfc3339()
+        ));
+    }
+    let snapshot_wallet_ids: HashSet<String> = artifact
+        .published_wallet_metrics_snapshot
+        .iter()
+        .map(|row| row.wallet_id.clone())
+        .collect();
+    let published_wallet_ids = artifact
+        .publication_state
+        .published_wallet_ids
+        .as_ref()
+        .expect("validated complete publication truth above");
+    if published_wallet_ids
+        .iter()
+        .any(|wallet_id| !snapshot_wallet_ids.contains(wallet_id))
+    {
+        return Err(anyhow::anyhow!(
+            "discovery runtime artifact publication wallet ids are not fully covered by the published wallet_metrics snapshot"
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeArtifactRestoreDirtyTable {
+    pub table: String,
+    pub category: &'static str,
+}
+
+fn runtime_artifact_restore_table_category(table: &str) -> &'static str {
+    match table {
+        "risk_events" => "risk gating",
+        "wallets"
+        | "wallet_metrics"
+        | "followlist"
+        | "observed_swaps"
+        | "discovery_strategy_state"
+        | "discovery_runtime_state"
+        | "discovery_persisted_rebuild_state"
+        | "trusted_wallet_metrics_snapshots"
+        | "wallet_activity_days" => "discovery runtime",
+        "positions" | "trades" | "execution_orders" | "copy_signals" => "execution runtime",
+        "system_heartbeat" | "alert_delivery_state" => "runtime sidecar",
+        _ if table.starts_with("shadow_") => "shadow accounting",
+        _ => "durable runtime state",
+    }
+}
+
+fn quote_sql_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+fn discovery_runtime_restore_dirty_tables_on_conn(
+    conn: &Connection,
+) -> Result<Vec<RuntimeArtifactRestoreDirtyTable>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT name
+             FROM sqlite_master
+             WHERE type = 'table'
+               AND name NOT LIKE 'sqlite_%'
+               AND name <> 'schema_migrations'
+             ORDER BY name ASC",
+        )
+        .context("failed to prepare runtime artifact restore table inventory query")?;
+    let table_names = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .context("failed to query runtime artifact restore table inventory")?;
+
+    let mut dirty_tables = Vec::new();
+    for table_name in table_names {
+        let table_name = table_name
+            .context("failed reading sqlite_master.name during runtime restore preflight")?;
+        let has_rows: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {} LIMIT 1)",
+                    quote_sql_identifier(&table_name)
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .with_context(|| {
+                format!(
+                    "failed checking table {table_name} during runtime artifact restore preflight"
+                )
+            })?;
+        if has_rows != 0 {
+            dirty_tables.push(RuntimeArtifactRestoreDirtyTable {
+                table: table_name.clone(),
+                category: runtime_artifact_restore_table_category(&table_name),
+            });
+        }
+    }
+
+    Ok(dirty_tables)
+}
+
+fn format_runtime_artifact_restore_dirty_tables(
+    dirty_tables: &[RuntimeArtifactRestoreDirtyTable],
+) -> String {
+    dirty_tables
+        .iter()
+        .map(|entry| format!("{} ({})", entry.table, entry.category))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn discovery_bootstrap_degraded_state_query(
+    conn: &Connection,
+) -> Result<DiscoveryBootstrapDegradedStateRow> {
+    let row = conn
+        .query_row(
+            "SELECT
+                bootstrap_degraded_active,
+                bootstrap_degraded_reason,
+                bootstrap_degraded_armed_at
+             FROM discovery_strategy_state
+             WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .context("failed reading discovery bootstrap-degraded state")?;
+    let Some((active, reason, armed_at_raw)) = row else {
+        return Ok(DiscoveryBootstrapDegradedStateRow::default());
+    };
+    Ok(DiscoveryBootstrapDegradedStateRow {
+        active: active != 0,
+        reason,
+        armed_at: parse_optional_rfc3339_utc(
+            armed_at_raw,
+            "discovery_strategy_state.bootstrap_degraded_armed_at",
+        )?,
+    })
 }
 
 fn insert_trusted_wallet_metrics_snapshot_on_conn(
@@ -333,6 +508,59 @@ impl SqliteStore {
             )
         })
         .context("failed updating discovery publication state")?;
+        Ok(())
+    }
+
+    pub fn discovery_bootstrap_degraded_state(&self) -> Result<DiscoveryBootstrapDegradedStateRow> {
+        self.ensure_discovery_strategy_state_table()?;
+        discovery_bootstrap_degraded_state_query(&self.conn)
+    }
+
+    pub fn discovery_bootstrap_degraded_state_read_only(
+        &self,
+    ) -> Result<DiscoveryBootstrapDegradedStateRow> {
+        if !self.sqlite_table_exists("discovery_strategy_state")? {
+            return Ok(DiscoveryBootstrapDegradedStateRow::default());
+        }
+        discovery_bootstrap_degraded_state_query(&self.conn)
+    }
+
+    pub(crate) fn discovery_runtime_restore_dirty_tables(
+        &self,
+    ) -> Result<Vec<RuntimeArtifactRestoreDirtyTable>> {
+        discovery_runtime_restore_dirty_tables_on_conn(&self.conn)
+    }
+
+    pub fn set_discovery_bootstrap_degraded_state(
+        &self,
+        active: bool,
+        reason: Option<&str>,
+        armed_at: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        self.ensure_discovery_strategy_state_table()?;
+        self.execute_with_retry(|conn| {
+            conn.execute(
+                "INSERT INTO discovery_strategy_state(
+                    id,
+                    bootstrap_degraded_active,
+                    bootstrap_degraded_reason,
+                    bootstrap_degraded_armed_at,
+                    updated_at
+                 ) VALUES (1, ?1, ?2, ?3, ?4)
+                 ON CONFLICT(id) DO UPDATE SET
+                    bootstrap_degraded_active = excluded.bootstrap_degraded_active,
+                    bootstrap_degraded_reason = excluded.bootstrap_degraded_reason,
+                    bootstrap_degraded_armed_at = excluded.bootstrap_degraded_armed_at,
+                    updated_at = excluded.updated_at",
+                params![
+                    if active { 1 } else { 0 },
+                    reason,
+                    armed_at.map(|ts| ts.to_rfc3339()),
+                    Utc::now().to_rfc3339(),
+                ],
+            )
+        })
+        .context("failed updating discovery bootstrap-degraded state")?;
         Ok(())
     }
 
@@ -936,6 +1164,328 @@ impl SqliteStore {
         Ok(count.max(0) as usize)
     }
 
+    pub fn export_discovery_runtime_artifact(
+        &self,
+        exported_at: DateTime<Utc>,
+        export_gate: DiscoveryPublicationFreshnessGate,
+    ) -> Result<DiscoveryRuntimeArtifact> {
+        self.with_deferred_transaction("discovery runtime artifact export", |_conn| {
+            let publication_state = self
+                .discovery_publication_state_read_only()?
+                .ok_or_else(|| anyhow::anyhow!("discovery runtime artifact export requires persisted publication truth"))?;
+            if publication_state.runtime_mode == DiscoveryRuntimeMode::FailClosed {
+                return Err(anyhow::anyhow!(
+                    "discovery runtime artifact export requires non-fail-closed publication truth"
+                ));
+            }
+            if !publication_state.has_complete_publication_truth() {
+                return Err(anyhow::anyhow!(
+                    "discovery runtime artifact export requires complete publication truth"
+                ));
+            }
+            let runtime_cursor: Option<(String, i64, String)> = self
+                .conn
+                .query_row(
+                    "SELECT cursor_ts, cursor_slot, cursor_signature
+                     FROM discovery_runtime_state
+                     WHERE id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .context("failed reading discovery runtime cursor for artifact export")?;
+            let Some((cursor_ts_raw, cursor_slot_raw, cursor_signature)) = runtime_cursor else {
+                return Err(anyhow::anyhow!(
+                    "discovery runtime artifact export requires a persisted discovery runtime cursor"
+                ));
+            };
+            let runtime_cursor = super::DiscoveryRuntimeCursor {
+                ts_utc: parse_rfc3339_utc(
+                    &cursor_ts_raw,
+                    "discovery_runtime_state.cursor_ts",
+                )?,
+                slot: cursor_slot_raw.max(0) as u64,
+                signature: cursor_signature,
+            };
+            let published_window_start = publication_state
+                .last_published_window_start
+                .expect("validated complete publication truth above");
+            let artifact = DiscoveryRuntimeArtifact {
+                format_version: DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
+                exported_at,
+                export_gate,
+                publication_state,
+                runtime_cursor,
+                published_wallet_metrics_snapshot: self
+                    .load_wallet_metric_snapshots_for_window(published_window_start)?,
+            };
+            validate_runtime_artifact_snapshot_shape(&artifact)?;
+            Ok(artifact)
+        })
+    }
+
+    pub fn restore_discovery_runtime_artifact(
+        &self,
+        artifact: &DiscoveryRuntimeArtifact,
+        restored_at: DateTime<Utc>,
+        bootstrap_degraded: bool,
+    ) -> Result<()> {
+        validate_runtime_artifact_snapshot_shape(artifact)?;
+        self.ensure_discovery_strategy_state_table()?;
+        self.ensure_trusted_wallet_metrics_snapshots_table()?;
+        let dirty_tables = self.discovery_runtime_restore_dirty_tables()?;
+        if !dirty_tables.is_empty() {
+            let detail = format_runtime_artifact_restore_dirty_tables(&dirty_tables);
+            return Err(anyhow::anyhow!(
+                "discovery runtime artifact restore requires an empty runtime db; found durable rows in {detail}"
+            ));
+        }
+        self.with_immediate_transaction_retry("discovery runtime artifact restore", |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS discovery_runtime_state (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    cursor_ts TEXT NOT NULL,
+                    cursor_slot INTEGER NOT NULL,
+                    cursor_signature TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS discovery_persisted_rebuild_state (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    phase TEXT NOT NULL,
+                    window_start TEXT NOT NULL,
+                    horizon_end TEXT NOT NULL,
+                    metrics_window_start TEXT NOT NULL,
+                    phase_cursor_ts TEXT,
+                    phase_cursor_slot INTEGER,
+                    phase_cursor_signature TEXT,
+                    prepass_rows_processed INTEGER NOT NULL DEFAULT 0,
+                    prepass_pages_processed INTEGER NOT NULL DEFAULT 0,
+                    replay_rows_processed INTEGER NOT NULL DEFAULT 0,
+                    replay_pages_processed INTEGER NOT NULL DEFAULT 0,
+                    chunks_completed INTEGER NOT NULL DEFAULT 0,
+                    state_json TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );",
+            )
+            .context("failed ensuring discovery runtime restore tables exist")?;
+
+            let dirty_tables = discovery_runtime_restore_dirty_tables_on_conn(conn)?;
+            if !dirty_tables.is_empty() {
+                let detail = format_runtime_artifact_restore_dirty_tables(&dirty_tables);
+                return Err(anyhow::anyhow!(
+                    "discovery runtime artifact restore requires an empty runtime db; found durable rows in {detail}"
+                ));
+            }
+
+            {
+                let mut wallet_stmt = conn
+                    .prepare_cached(
+                        "INSERT INTO wallets(wallet_id, first_seen, last_seen, status)
+                         VALUES (?1, ?2, ?3, ?4)",
+                    )
+                    .context("failed to prepare runtime artifact wallet restore statement")?;
+                for row in &artifact.published_wallet_metrics_snapshot {
+                    let status = if artifact
+                        .publication_state
+                        .published_wallet_ids
+                        .as_ref()
+                        .is_some_and(|wallet_ids| wallet_ids.contains(&row.wallet_id))
+                    {
+                        "candidate"
+                    } else {
+                        "observed"
+                    };
+                    wallet_stmt
+                        .execute(params![
+                            &row.wallet_id,
+                            row.first_seen.to_rfc3339(),
+                            row.last_seen.to_rfc3339(),
+                            status,
+                        ])
+                        .context("failed inserting runtime artifact wallet row")?;
+                }
+            }
+
+            {
+                let mut metric_stmt = conn
+                    .prepare_cached(
+                        "INSERT INTO wallet_metrics(
+                            wallet_id,
+                            window_start,
+                            pnl,
+                            win_rate,
+                            trades,
+                            closed_trades,
+                            hold_median_seconds,
+                            score,
+                            buy_total,
+                            tradable_ratio,
+                            rug_ratio
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    )
+                    .context("failed to prepare runtime artifact wallet_metrics restore statement")?;
+                for row in &artifact.published_wallet_metrics_snapshot {
+                    metric_stmt
+                        .execute(params![
+                            &row.wallet_id,
+                            canonical_wallet_metrics_window_start(row.window_start),
+                            row.pnl,
+                            row.win_rate,
+                            row.trades as i64,
+                            row.closed_trades as i64,
+                            row.hold_median_seconds,
+                            row.score,
+                            row.buy_total as i64,
+                            row.tradable_ratio,
+                            row.rug_ratio,
+                        ])
+                        .context("failed inserting runtime artifact wallet_metrics row")?;
+                }
+            }
+
+            {
+                let mut follow_stmt = conn
+                    .prepare_cached(
+                        "INSERT INTO followlist(wallet_id, added_at, reason, active)
+                         VALUES (?1, ?2, ?3, 1)",
+                    )
+                    .context("failed to prepare runtime artifact followlist restore statement")?;
+                for wallet_id in artifact
+                    .publication_state
+                    .published_wallet_ids
+                    .as_ref()
+                    .expect("validated complete publication truth above")
+                {
+                    follow_stmt
+                        .execute(params![
+                            wallet_id,
+                            restored_at.to_rfc3339(),
+                            "runtime_artifact_restore",
+                        ])
+                        .context("failed inserting runtime artifact followlist row")?;
+                }
+            }
+
+            conn.execute(
+                "INSERT INTO discovery_runtime_state(
+                    id,
+                    cursor_ts,
+                    cursor_slot,
+                    cursor_signature,
+                    updated_at
+                 ) VALUES (1, ?1, ?2, ?3, ?4)",
+                params![
+                    artifact.runtime_cursor.ts_utc.to_rfc3339(),
+                    artifact.runtime_cursor.slot as i64,
+                    artifact.runtime_cursor.signature.as_str(),
+                    restored_at.to_rfc3339(),
+                ],
+            )
+            .context("failed restoring discovery runtime cursor from artifact")?;
+
+            let published_wallet_ids_json = serde_json::to_string(
+                artifact
+                    .publication_state
+                    .published_wallet_ids
+                    .as_ref()
+                    .expect("validated complete publication truth above"),
+            )
+            .context("failed serializing runtime artifact published wallet ids")?;
+            let published_window_start = artifact
+                .publication_state
+                .last_published_window_start
+                .expect("validated complete publication truth above");
+            let active_snapshot = TrustedWalletMetricsSnapshotWrite {
+                snapshot_id: format!(
+                    "wallet_metrics:{}:{}",
+                    TrustedSnapshotSourceKind::DiscoveryRefresh.as_str(),
+                    published_window_start.to_rfc3339()
+                ),
+                source_snapshot_id: None,
+                source_window_start: Some(published_window_start),
+                effective_window_start: published_window_start,
+                created_at: artifact
+                    .publication_state
+                    .last_published_at
+                    .unwrap_or(artifact.publication_state.updated_at),
+                source_kind: TrustedSnapshotSourceKind::DiscoveryRefresh,
+                row_count: artifact.published_wallet_metrics_snapshot.len(),
+                trust_state: TrustedSelectionState::TrustedCurrent,
+            };
+            insert_trusted_wallet_metrics_snapshot_on_conn(conn, &active_snapshot)?;
+            conn.execute(
+                "INSERT INTO discovery_strategy_state(
+                    id,
+                    trusted_selection_bootstrap_required,
+                    trusted_selection_reason,
+                    trusted_selection_state,
+                    active_trusted_snapshot_id,
+                    active_trusted_snapshot_window_start,
+                    last_trusted_bootstrap_source_kind,
+                    last_trusted_bootstrap_at,
+                    bootstrap_degraded_active,
+                    bootstrap_degraded_reason,
+                    bootstrap_degraded_armed_at,
+                    publication_runtime_mode,
+                    publication_reason,
+                    publication_last_published_at,
+                    publication_last_published_window_start,
+                    publication_scoring_source,
+                    publication_wallet_ids_json,
+                    updated_at
+                 ) VALUES (
+                    ?1,
+                    ?2,
+                    ?3,
+                    ?4,
+                    ?5,
+                    ?6,
+                    ?7,
+                    ?8,
+                    ?9,
+                    ?10,
+                    ?11,
+                    ?12,
+                    ?13,
+                    ?14,
+                    ?15,
+                    ?16,
+                    ?17,
+                    ?18
+                 )",
+                params![
+                    1_i64,
+                    0_i64,
+                    "runtime_artifact_restore",
+                    TrustedSelectionState::TrustedCurrent.as_str(),
+                    active_snapshot.snapshot_id.as_str(),
+                    canonical_wallet_metrics_window_start(active_snapshot.effective_window_start),
+                    TrustedSnapshotSourceKind::DiscoveryRefresh.as_str(),
+                    restored_at.to_rfc3339(),
+                    if bootstrap_degraded { 1 } else { 0 },
+                    bootstrap_degraded.then_some("runtime_artifact_restore_bootstrap_degraded"),
+                    bootstrap_degraded.then_some(restored_at.to_rfc3339()),
+                    artifact.publication_state.runtime_mode.as_str(),
+                    &artifact.publication_state.reason,
+                    artifact
+                        .publication_state
+                        .last_published_at
+                        .map(|ts| ts.to_rfc3339()),
+                    artifact
+                        .publication_state
+                        .last_published_window_start
+                        .map(canonical_wallet_metrics_window_start),
+                    artifact.publication_state.published_scoring_source.as_deref(),
+                    published_wallet_ids_json.as_str(),
+                    artifact.publication_state.updated_at.to_rfc3339(),
+                ],
+            )
+            .context("failed restoring discovery publication state from artifact")?;
+            Ok(())
+        })
+    }
+
     pub fn clone_wallet_metrics_window(
         &self,
         source_window_start: DateTime<Utc>,
@@ -1420,6 +1970,9 @@ impl SqliteStore {
                     active_trusted_snapshot_window_start TEXT,
                     last_trusted_bootstrap_source_kind TEXT,
                     last_trusted_bootstrap_at TEXT,
+                    bootstrap_degraded_active INTEGER NOT NULL DEFAULT 0,
+                    bootstrap_degraded_reason TEXT,
+                    bootstrap_degraded_armed_at TEXT,
                     publication_runtime_mode TEXT NOT NULL DEFAULT 'fail_closed',
                     publication_reason TEXT NOT NULL DEFAULT '',
                     publication_last_published_at TEXT,
@@ -1490,6 +2043,33 @@ impl SqliteStore {
                     [],
                 )
                 .context("failed adding discovery_strategy_state.last_trusted_bootstrap_at")?;
+        }
+        if !columns.contains("bootstrap_degraded_active") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN bootstrap_degraded_active INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )
+                .context("failed adding discovery_strategy_state.bootstrap_degraded_active")?;
+        }
+        if !columns.contains("bootstrap_degraded_reason") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN bootstrap_degraded_reason TEXT",
+                    [],
+                )
+                .context("failed adding discovery_strategy_state.bootstrap_degraded_reason")?;
+        }
+        if !columns.contains("bootstrap_degraded_armed_at") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN bootstrap_degraded_armed_at TEXT",
+                    [],
+                )
+                .context("failed adding discovery_strategy_state.bootstrap_degraded_armed_at")?;
         }
         if !columns.contains("publication_runtime_mode") {
             self.conn

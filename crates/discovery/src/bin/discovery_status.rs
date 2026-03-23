@@ -154,6 +154,24 @@ fn render_human(config_path: &Path, db_path: &Path, status: &DiscoveryOperatorSt
             status.publication.recent_publication_truth_available
         ),
         format!(
+            "bootstrap_degraded_publication_truth_available={}",
+            status
+                .publication
+                .bootstrap_degraded_publication_truth_available
+        ),
+        format!(
+            "bootstrap_degraded_active={}",
+            status.publication.bootstrap_degraded_active
+        ),
+        format!(
+            "bootstrap_degraded_reason={}",
+            format_optional_str(status.publication.bootstrap_degraded_reason.as_deref())
+        ),
+        format!(
+            "bootstrap_degraded_armed_at={}",
+            format_optional_ts(status.publication.bootstrap_degraded_armed_at.as_ref())
+        ),
+        format!(
             "persisted_rebuild_phase={}",
             status
                 .persisted_rebuild
@@ -339,6 +357,71 @@ mod tests {
         assert_eq!(
             parsed.get("scoring_source").and_then(Value::as_str),
             Some("published_universe_raw_window_unavailable")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_json_classifies_bootstrap_degraded_publication_truth() -> Result<()> {
+        let fixture = make_fixture("discovery-status-bootstrap-degraded")?;
+        let now = parse_ts("2026-03-23T12:00:00Z")?;
+        seed_active_follow_wallet(
+            &fixture.store,
+            "wallet_bootstrap",
+            now - Duration::minutes(30),
+        )?;
+        fixture
+            .store
+            .set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+                runtime_mode: copybot_storage::DiscoveryRuntimeMode::Healthy,
+                reason: "stale_imported_artifact".to_string(),
+                last_published_at: Some(now - Duration::minutes(61)),
+                last_published_window_start: Some(now - Duration::days(7)),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(vec!["wallet_bootstrap".to_string()]),
+            })?;
+        fixture.store.set_discovery_bootstrap_degraded_state(
+            true,
+            Some("runtime_artifact_restore_bootstrap_degraded"),
+            Some(now - Duration::minutes(5)),
+        )?;
+
+        let output = run(Config {
+            config_path: fixture.config_path.clone(),
+            db_path: None,
+            json: true,
+            now,
+        })?;
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(
+            parsed.get("runtime_state").and_then(Value::as_str),
+            Some("bootstrap_degraded_publication_truth")
+        );
+        assert_eq!(
+            parsed.get("runtime_mode").and_then(Value::as_str),
+            Some("bootstrap_degraded")
+        );
+        assert_eq!(
+            parsed.get("scoring_source").and_then(Value::as_str),
+            Some("bootstrap_degraded_publication_truth_raw_window_unavailable")
+        );
+        assert_eq!(
+            parsed
+                .pointer("/publication/bootstrap_degraded_active")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/publication/bootstrap_degraded_publication_truth_available")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/publication/recent_publication_truth_available")
+                .and_then(Value::as_bool),
+            Some(false)
         );
         Ok(())
     }
