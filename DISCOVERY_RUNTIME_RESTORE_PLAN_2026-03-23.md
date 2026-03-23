@@ -43,6 +43,15 @@ Status: Canonical
 - `followlist` только derived cache
 - если `followlist` расходится с publication truth, побеждает publication truth
 
+Правило свежести артефакта:
+
+- normal restore не должен “легализовать” stale artifact простым переписыванием
+  `last_published_at = now`
+- если артефакт stale по текущему runtime gate, normal restore должен либо
+  отказать, либо входить только в явный bootstrap-degraded режим
+- bootstrap-degraded режим не должен притворяться recent publication truth
+- bootstrap-degraded режим должен запускаться только с `execution.enabled = false`
+
 ## 3. Что такое recent raw journal
 
 Это отдельное durable хранилище свежих `observed_swaps`, независимое от
@@ -58,6 +67,15 @@ runtime DB.
 - restore почти всегда придет только в `degraded`
 - если fresh rebuild снова не сойдется, инцидент не закрыт
 
+V1 storage contract:
+
+- не внешний сервис
+- не “какой-нибудь файл”
+- отдельная SQLite journal DB, например `state/discovery_recent_raw.db`
+- хранит bounded recent `observed_swaps` window
+- retention: `scoring_window_days` + небольшой safety buffer
+- runtime DB и raw journal DB живут отдельно и могут восстанавливаться независимо
+
 ## 4. Жесткие правила
 
 1. Старые кошельки нельзя использовать как runtime truth.
@@ -69,6 +87,15 @@ runtime DB.
 ## 5. P0: что делать сейчас
 
 Считать, что текущей runtime truth у тебя нет.
+
+Нужно честно признать:
+
+- если prebuilt `recent raw journal` не существовал до инцидента,
+  one-button healthy restore для этого первого инцидента еще невозможен
+- тогда первый подъем до healthy неизбежно имеет one-time bootstrap cost:
+  либо recent raw backfill, либо live ingestion до достаточного fresh raw window
+- это допустимо только как разовый переходный шаг
+- после внедрения `recent raw journal` такой сценарий повторяться уже не должен
 
 Действия:
 
@@ -103,6 +130,24 @@ runtime DB.
 
 - [`crates/storage/src/discovery.rs`](/Users/blacktower/Documents/solana-copy-bot/crates/storage/src/discovery.rs)
 
+Обязательный контракт Task 1:
+
+1. export должен писать `exported_at`
+2. restore должен валидировать freshness артефакта против текущего runtime gate
+3. normal restore не должен переписывать `last_published_at` на `now`
+4. если артефакт stale:
+   - normal restore должен отказать как trading-ready path
+   - допускается только явный `--bootstrap-degraded` режим
+5. `--bootstrap-degraded`:
+   - не маркирует stale artifact как recent truth
+   - не должен открывать торговлю
+   - должен существовать только как incident tool, а не нормальный steady-state path
+
+Предпочтительный путь для future steady-state restore:
+
+- артефакт должен быть свежим сам по себе, потому что он регулярно экспортируется
+- при наличии свежего `recent raw journal` никакой rewrite timestamps не нужен
+
 ### Task 2. Recent raw journal
 
 Добавить отдельный durable путь для recent `observed_swaps`.
@@ -114,6 +159,16 @@ runtime DB.
 Лучший вариант:
 
 - отдельный sidecar/secondary store для recent raw journal
+
+Фиксируем V1:
+
+- V1 recent raw journal = отдельная SQLite DB
+- не reuse основной runtime DB
+- не зависеть от aggregate tables
+- хранить только bounded recent raw data, нужные для fast restore
+
+Если позже появится лучший storage, его можно заменить.
+Но V1 контракт должен быть конкретным уже сейчас.
 
 ### Task 3. Restore command
 
@@ -135,6 +190,13 @@ runtime DB.
 - active follow wallets не пусты или runtime честно в bounded degraded
 - aggregate readiness не участвует в verdict
 
+Для normal trading-ready restore verdict должен дополнительно требовать:
+
+- свежий artifact
+- доступный recent raw journal
+- отсутствие полного reread истории
+- путь к `healthy`, а не permanent degraded
+
 ## 7. P2: что должно появиться после этого
 
 1. Регулярный export runtime artifact по расписанию.
@@ -146,6 +208,16 @@ runtime DB.
 
 - RTO: минуты, не дни
 - RPO: ограничен интервалом artifact export
+
+Scheduling contract:
+
+- без регулярного export этот план не работает
+- V1 production scheduling: `systemd` service + `systemd` timer
+- artifact export cadence должен быть заметно меньше freshness gate
+- для live-конфига сейчас freshness gate около 2 часов, значит export cadence
+  должен быть порядка 5-15 минут, не часов
+- если `systemd` timer недоступен, временно допустим cron, но это fallback
+- scheduling должен входить в deploy scope, а не оставаться “на потом”
 
 ## 8. Как должен выглядеть следующий инцидент
 
@@ -200,6 +272,14 @@ One-button restore означает ровно следующее:
 3. доигрывается `recent raw journal` от сохраненного cursor
 4. сервис стартует
 5. `discovery` возвращается в рабочее состояние без полного reread истории
+
+One-button restore обещает immediate healthy только если:
+
+1. до инцидента уже существовали свежий `runtime artifact`
+2. до инцидента уже существовал свежий `recent raw journal`
+
+Для текущего первого инцидента без prebuilt raw journal это обещание еще не
+выполнено. Там возможен только one-time bootstrap cost.
 
 One-button restore не означает:
 
