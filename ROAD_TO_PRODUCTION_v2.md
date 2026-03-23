@@ -128,12 +128,16 @@ It replaces the old mixed roadmap and removes aggregate/backfill recovery from t
    - bounded `replay_after_seed` repeatedly emitted `event=builder_replay_ready`, `event=checkpoint_persisted`, and builder `event=batch_committed`
    - repeated bounded chains advanced the persisted cursor from `2026-03-08T22:17:02.935800892Z | 405123360 | 5G2cGVUFuDDDPXCuqpaUaeVfUQXxNWE6xxeoX1NCEwgzfycTTYaJDiUYNW5UuL3zqD2j2qWuk3FUVMG1AkbsUC3x` to `2026-03-08T22:56:27.923141336Z | 405129333 | 3o16UWsam85kXYhsj594snQNaKSqpPWoHFb8bdMCuFHkDfnPnTi1gbCaKHvmMae36QBkZDoxo8jVx4cqE1MuBaGf`
    - the remaining dominant cost is no longer builder bootstrap or SQL prepare; it is the expensive final rug-finalize tail on bounded post-seed runs
-20. Current working tree now targets that newest narrowed blocker:
+20. Commit `90ada0d0fe4f8603d1f708bd570a12be662633ba` then validated that newest narrowed blocker on the real clone:
    - bounded builder replay after seed now explicitly defers `final_rug_finalize` at `run_complete`
    - the defer is limited to incomplete bounded `replay_after_seed` builder runs, so full completion and non-builder paths keep the old finalize contract
-   - the goal is to turn runtime budget back into checkpointable replay work instead of spending most of it in the final rug-finalize pass
+   - stopped-host validation emitted `event=final_rug_finalize_skipped phase=run_complete reason=bounded_post_seed_builder_path`, emitted no final rug-finalize event, and advanced the persisted cursor again to `2026-03-08T23:00:45.980276955Z | 405129982 | 24yuNmrtkJ8JNPhxC2FoGT4QfA2SzWX2TyzukE5MqQske7ABNZqF289ua36A8DiQyRpaNtbwGevviyvJQ1tnevGz`
+21. Current working tree now targets the remaining operator gap rather than another replay semantic gap:
+   - the bounded seeded path is now code-proven through boundary install, post-seed builder replay, and deferred final finalize
+   - the remaining risk is manual operator orchestration, not the replay contract itself
+   - `tools/discovery_aggregate_backfill_loop.sh` now preserves `seeded-reset` across chained bounded runs and can enforce an outer timeout per slice, so the persisted SQLite cursor remains the single source of truth without manual cursor handoff
 
-### 2.4 Current verdict (updated 2026-03-22)
+### 2.4 Current verdict (updated 2026-03-23)
 
 The project is not blocked by ingestion.
 
@@ -161,6 +165,9 @@ Aggregate/backfill recovery is therefore back to being the main engineering bloc
 7. the current aggregate blocker is now narrower again: runtime-bounded `replay_after_seed` still falls into an extremely expensive prepare stage on the SQL replay path, even after seed install is committed
 8. the first direct attempt to escape that SQL prepare cost (`87a7052`) was not operationally viable on the real clone because eager builder bootstrap timed out before the first replay-after-seed batch
 9. the second attempt (`c3e057f`) fixed that bootstrap problem, but the next runtime-budget bottleneck appeared immediately afterward: bounded post-seed runs now spend too much time in `final_rug_finalize` after durable builder checkpoints have already been written
+10. commit `90ada0d0fe4f8603d1f708bd570a12be662633ba` then removed that finalize-tail blocker on the real clone: bounded post-seed builder replay emitted `final_rug_finalize_skipped`, `rug_finalize_ms = 0`, and still advanced the durable cursor to `2026-03-08T23:00:45.980276955Z | 405129982 | 24yuNmrtkJ8JNPhxC2FoGT4QfA2SzWX2TyzukE5MqQske7ABNZqF289ua36A8DiQyRpaNtbwGevviyvJQ1tnevGz`
+11. the next remaining work is operational rather than semantic: continue the bounded seeded replay loop until coverage markers are written and `backfill_resume_required = false`
+12. to avoid another manual prompt-driven chain, the operator loop must preserve `seeded-reset` restart semantics across runs and keep the persisted SQLite cursor as the only source of truth for progress
 
 Three separate offline aggregate attempts on the old tool path really did fail to land that first durable checkpoint:
 
@@ -181,19 +188,19 @@ That blocker then narrowed again across the next stopped-host validation sequenc
 - `7b6ab59` moved the real clone onto `boundary_lot_sql`, which removed the pre-seed `prepare_ms` problem and reached the exact near-boundary cursor
 - `edf90a7caa4e455ca0f3e46d8bdeb3148d8fee02` then completed `seed_boundary_exported`, `seed_boundary_installed`, and a real post-seed resume on that same clone
 
-The current aggregate blocker is therefore no longer "before the first durable checkpoint" and no longer "before committed seed install". It is now the next narrower post-seed blocker: runtime-bounded `replay_after_seed` first spent almost the entire budget in SQL prepare (`prepare_ms = 213313`, `apply_ms = 24336` on the first `10000`-row Step 2 run), then the eager-builder follow-up (`87a7052`) proved that full open-lot bootstrap was too expensive, and finally the lazy-builder follow-up (`c3e057f`) showed that the next dominant tail is `final_rug_finalize` after builder checkpoints have already been durably persisted.
+The current aggregate blocker is therefore no longer "before the first durable checkpoint", no longer "before committed seed install", and no longer the post-seed final rug-finalize tail. Those three narrower blockers have now been closed in sequence on the real clone. The remaining work is to operationalize the now-confirmed seeded replay path so it can run as one bounded loop to full readiness instead of another manual cursor-by-cursor prompt chain.
 
 Do not re-enable aggregate reads or writes on the production host until bounded historical backfill reaches either durable `seed_boundary_install_*` or full readiness (`effective_reads_ready = true`).
 
-Recommended operational posture until that blocker is fixed: keep the bot stopped if it is still fail-closed and non-publishing, so it stops burning Yellowstone / gRPC tokens without producing trusted selection. Keep `scoring_window_days` reverted back to `5`. Do not spend more stopped-host time on additional validation runs until the new deferred-finalize post-seed replay patch is deployed. When stopped-host validation resumes, continue using only the existing offline clone and treat `discovery_scoring_state` as the source of truth for progress.
+Recommended operational posture now: keep the bot stopped if it is still fail-closed and non-publishing, so it stops burning Yellowstone / gRPC tokens without producing trusted selection. Keep `scoring_window_days` reverted back to `5`. Continue using only the existing offline clone, treat `discovery_scoring_state` as the source of truth for progress, and drive the remaining replay through one bounded seeded loop wrapper instead of another manual handoff chain.
 
 Do not start Stage 2 yet.
 
-### 2.5 Server state (updated 2026-03-22)
+### 2.5 Server state (updated 2026-03-23)
 
 - Deployed binary commit: `70e959df677f35347fd25b2a1ed91481b6d90769` (unchanged)
 - Production runtime repo / last old offline tooling commit before the latest investigation: `02f887a3a37ad57cf09578c9105d1f11d08744d8`
-- Current server repo / offline tooling checkout used for the latest stopped-host investigation: `c3e057fc504e1941e385ed25c872fa8f0722ac44`
+- Current server repo / offline tooling checkout used for the latest stopped-host investigation: `90ada0d0fe4f8603d1f708bd570a12be662633ba`
 - Current stabilized host config after stopping the failed raw bridge:
   - `scoring_window_days = 5`
   - `metric_snapshot_interval_seconds = 3600`

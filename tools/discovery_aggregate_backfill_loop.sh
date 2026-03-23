@@ -16,6 +16,7 @@ usage: discovery_aggregate_backfill_loop.sh \
   --mode <resume|seeded-reset|reset> \
   [--resume-ts <rfc3339> --resume-slot <slot> --resume-signature <sig>] \
   [--max-runs <n>] \
+  [--outer-timeout-seconds <n>] \
   [--max-runtime-seconds <n>] \
   [--max-batches-per-run <n>] \
   [--batch-size <n>] \
@@ -29,6 +30,12 @@ This operator wrapper repeatedly runs backfill_discovery_scoring in bounded slic
 captures aggregate_readiness_status after each slice, and chains the exact persisted
 resume cursor into the next iteration.
 
+Mode chaining semantics:
+  - reset: first run uses --reset, later runs switch to --resume
+  - resume: every run uses --resume
+  - seeded-reset: every run preserves --seeded-reset so committed seed markers
+    continue to govern restart semantics across the whole bounded loop
+
 Success condition:
   - covered_since != null
   - covered_through_cursor != null
@@ -37,6 +44,7 @@ Success condition:
 
 Failure conditions:
   - backfill_discovery_scoring exits non-zero
+  - outer timeout fires for a bounded slice
   - materialization_gap_cursor becomes non-null
   - persisted backfill cursor stops advancing
   - max runs exhausted without coverage_marked
@@ -128,6 +136,7 @@ RESUME_TS=""
 RESUME_SLOT=""
 RESUME_SIGNATURE=""
 MAX_RUNS="${MAX_RUNS:-24}"
+OUTER_TIMEOUT_SECONDS="${OUTER_TIMEOUT_SECONDS:-}"
 MAX_RUNTIME_SECONDS="${MAX_RUNTIME_SECONDS:-1800}"
 MAX_BATCHES_PER_RUN=""
 BATCH_SIZE="${BATCH_SIZE:-10000}"
@@ -171,6 +180,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --max-runs)
       MAX_RUNS="$2"
+      shift 2
+      ;;
+    --outer-timeout-seconds)
+      OUTER_TIMEOUT_SECONDS="$2"
       shift 2
       ;;
     --max-runtime-seconds)
@@ -249,6 +262,12 @@ if ! MAX_RUNS="$(parse_positive_u64_token_strict "$MAX_RUNS")"; then
   echo "--max-runs must be >= 1" >&2
   exit 1
 fi
+if [[ -n "$OUTER_TIMEOUT_SECONDS" ]]; then
+  if ! OUTER_TIMEOUT_SECONDS="$(parse_positive_u64_token_strict "$OUTER_TIMEOUT_SECONDS")"; then
+    echo "--outer-timeout-seconds must be >= 1" >&2
+    exit 1
+  fi
+fi
 if ! MAX_RUNTIME_SECONDS="$(parse_positive_u64_token_strict "$MAX_RUNTIME_SECONDS")"; then
   echo "--max-runtime-seconds must be >= 1" >&2
   exit 1
@@ -269,6 +288,9 @@ if [[ -n "$MAX_BATCHES_PER_RUN" ]]; then
 fi
 
 require_command jq
+if [[ -n "$OUTER_TIMEOUT_SECONDS" ]]; then
+  require_command timeout
+fi
 
 CONFIG_PATH="$(cd "$(dirname "$CONFIG_PATH")" && pwd)/$(basename "$CONFIG_PATH")"
 if [[ -z "$DB_PATH" ]]; then
@@ -292,6 +314,10 @@ current_resume_slot="$RESUME_SLOT"
 current_resume_signature="$RESUME_SIGNATURE"
 previous_progress_cursor_key=""
 final_verdict="max_runs_exhausted"
+next_mode_after_progress="resume"
+if [[ "$MODE" == "seeded-reset" ]]; then
+  next_mode_after_progress="seeded-reset"
+fi
 
 initial_readiness_json="$(write_readiness_snapshot "initial" 0)"
 write_resume_env \
@@ -357,7 +383,11 @@ for ((run_index = 1; run_index <= MAX_RUNS; run_index++)); do
 
   echo "[aggregate-backfill-loop] run=$run_index mode=$current_mode start_ts=$START_TS log=$run_log"
   set +e
-  "${cmd[@]}" >"$run_log" 2>&1
+  if [[ -n "$OUTER_TIMEOUT_SECONDS" ]]; then
+    timeout --signal=TERM --kill-after=30 "$OUTER_TIMEOUT_SECONDS" "${cmd[@]}" >"$run_log" 2>&1
+  else
+    "${cmd[@]}" >"$run_log" 2>&1
+  fi
   run_exit_code=$?
   set -e
 
@@ -379,6 +409,19 @@ for ((run_index = 1; run_index <= MAX_RUNS; run_index++)); do
   effective_reads_ready="$(jq -r '.effective_reads_ready' "$readiness_json")"
 
   echo "[aggregate-backfill-loop] run=$run_index exit_code=$run_exit_code covered_since=${covered_since:-null} covered_through_ts=${covered_through_ts:-null} resume_required=$backfill_resume_required writes_ready=$effective_writes_ready reads_ready=$effective_reads_ready"
+
+  if [[ "$run_exit_code" == "124" ]]; then
+    final_verdict="outer_timeout"
+    write_resume_env \
+      "$REPORT_DIR/next_resume.env" \
+      "$current_mode" \
+      "$START_TS" \
+      "${current_resume_ts:-}" \
+      "${current_resume_slot:-}" \
+      "${current_resume_signature:-}"
+    echo "[aggregate-backfill-loop] FAILURE bounded run hit outer timeout; inspect $run_log" >&2
+    break
+  fi
 
   if [[ -n "$gap_cursor_ts" ]]; then
     final_verdict="gap_latched"
@@ -423,7 +466,7 @@ for ((run_index = 1; run_index <= MAX_RUNS; run_index++)); do
     final_verdict="progress_stalled"
     write_resume_env \
       "$REPORT_DIR/next_resume.env" \
-      "resume" \
+      "$next_mode_after_progress" \
       "$START_TS" \
       "$backfill_progress_cursor_ts" \
       "$backfill_progress_cursor_slot" \
@@ -432,7 +475,7 @@ for ((run_index = 1; run_index <= MAX_RUNS; run_index++)); do
     break
   fi
   previous_progress_cursor_key="$progress_cursor_key"
-  current_mode="resume"
+  current_mode="$next_mode_after_progress"
   current_resume_ts="$backfill_progress_cursor_ts"
   current_resume_slot="$backfill_progress_cursor_slot"
   current_resume_signature="$backfill_progress_cursor_signature"
@@ -453,12 +496,14 @@ db_path=$DB_PATH
 start_ts=$START_TS
 mode=$MODE
 max_runs=$MAX_RUNS
+outer_timeout_seconds=${OUTER_TIMEOUT_SECONDS:-}
 max_runtime_seconds=$MAX_RUNTIME_SECONDS
 max_batches_per_run=${MAX_BATCHES_PER_RUN:-}
 batch_size=$BATCH_SIZE
 sleep_ms=$SLEEP_MS
 backfill_bin=$BACKFILL_BIN
 readiness_bin=$READINESS_BIN
+next_mode_after_progress=$next_mode_after_progress
 next_resume_env=$REPORT_DIR/next_resume.env
 EOF
 
