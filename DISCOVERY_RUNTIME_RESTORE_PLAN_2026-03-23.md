@@ -14,6 +14,17 @@ Status: Canonical
 - runtime DB должна стать disposable
 - source of truth для восстановления должен быть вне нее
 
+Контекст текущего инцидента на 2026-03-23:
+
+- путь, где bounded replay / aggregate recovery уже крутится часами и показывает
+  остаток порядка многих дней, считать мертвым
+- если recovery отработал примерно `9.5` часа и оценка остатка порядка `14`
+  дней, это не restore, а giant replay
+- такой путь не продолжать как runtime recovery
+- его state, cursor и логи можно сохранить только для postmortem
+- этот план фиксирует новый контракт именно для runtime restore, а не для
+  доведения старого giant replay до конца
+
 ## 1. Что считать истиной
 
 Не истина:
@@ -88,6 +99,9 @@ V1 storage contract:
 
 Считать, что текущей runtime truth у тебя нет.
 
+Считать также, что текущий long-running replay/backfill path для runtime уже
+дисквалифицирован.
+
 Нужно честно признать:
 
 - если prebuilt `recent raw journal` не существовал до инцидента,
@@ -99,14 +113,16 @@ V1 storage contract:
 
 Действия:
 
-1. Старую DB убрать из active runtime path.
-2. Не брать из нее кошельки.
-3. Поднять fresh runtime DB.
-4. `execution.enabled = false`.
-5. Наполнить новую DB только свежими `observed_swaps`.
-6. Ждать только fresh runtime truth.
+1. Если старый long-running replay/backfill еще идет, остановить его.
+2. Его state и логи сохранить только для postmortem.
+3. Старую DB убрать из active runtime path.
+4. Не брать из нее кошельки.
+5. Поднять fresh runtime DB.
+6. `execution.enabled = false`.
+7. Наполнить новую DB только свежими `observed_swaps`.
+8. Ждать только fresh runtime truth.
 
-Источник для пункта 5 только такой:
+Источник для пункта 7 только такой:
 
 1. либо recent raw backfill за актуальный lookback
 2. либо live ingestion с накоплением свежего raw window
@@ -116,6 +132,7 @@ V1 storage contract:
 1. не bootstrap старых кошельков для торговли
 2. не считать clone от 2026-03-09 свежим truth source
 3. не пытаться “долечить” старую DB как production runtime
+4. не продолжать giant replay с multi-day ETA как будто это restore
 
 ## 6. P1: что кодить в ближайшие 2 дня
 
@@ -133,15 +150,52 @@ V1 storage contract:
 Обязательный контракт Task 1:
 
 1. export должен писать `exported_at`
-2. restore должен валидировать freshness артефакта против текущего runtime gate
-3. normal restore не должен переписывать `last_published_at` на `now`
-4. если артефакт stale:
+2. export должен брать один консистентный snapshot, а не собирать artifact из
+   разных publish-state в разное время
+3. artifact должен нести gate metadata, по которой потом валидируется freshness:
+   минимум `exported_at`, `last_published_at`, `last_published_window_start`,
+   текущие `scoring_window_days`, `metric_snapshot_interval_seconds`
+4. restore должен валидировать freshness артефакта против текущего runtime gate
+   и импортированных gate metadata
+5. import должен быть all-or-nothing:
+   - publication truth
+   - publication metadata
+   - runtime cursor
+   - latest published wallet metrics snapshot
+   должны относиться к одному согласованному snapshot
+6. normal restore не должен переписывать `last_published_at` на `now`
+7. normal restore не должен переписывать `last_published_window_start` на
+   текущий bucket
+8. если артефакт stale:
    - normal restore должен отказать как trading-ready path
    - допускается только явный `--bootstrap-degraded` режим
-5. `--bootstrap-degraded`:
+9. `--bootstrap-degraded`:
    - не маркирует stale artifact как recent truth
    - не должен открывать торговлю
    - должен существовать только как incident tool, а не нормальный steady-state path
+
+Критический implementation risk для `--bootstrap-degraded`:
+
+- в текущем коде stale publication truth не переживает runtime gate сама по себе
+- если restore просто импортирует старый artifact и запустит `copybot-app`, рантайм
+  на старте и в discovery cycle увидит, что publication truth stale, и перестанет
+  считать ее usable recent truth
+- значит `--bootstrap-degraded` нельзя оставлять только как CLI-флаг restore tool
+- нужен отдельный runtime contract, который переживает запуск `copybot-app`
+
+Минимально допустимый путь:
+
+1. добавить отдельный runtime state, например `BootstrapDegraded`, в
+   `DiscoveryRuntimeMode` или эквивалентный ему явный persisted marker
+2. научить startup/runtime отличать:
+   - stale recent truth, которую нужно отвергать
+   - явный incident bootstrap-degraded state, который разрешен временно
+3. пока runtime находится в этом состоянии:
+   - не открывать торговлю
+   - не считать state trading-ready
+   - не стирать artifact только потому, что его `last_published_at` старый
+4. выход из этого состояния должен происходить только после того, как runtime
+   реально догонит свежее raw window и сможет перейти в `healthy`
 
 Предпочтительный путь для future steady-state restore:
 
@@ -166,9 +220,49 @@ V1 storage contract:
 - не reuse основной runtime DB
 - не зависеть от aggregate tables
 - хранить только bounded recent raw data, нужные для fast restore
+- не считать V1 “просто экспортом в файл”; нужен явный runtime contract
 
 Если позже появится лучший storage, его можно заменить.
 Но V1 контракт должен быть конкретным уже сейчас.
+
+Обязательные implementation notes для V1:
+
+1. отдельно определить writer path в journal на ingest path
+2. отдельно определить restore reader/replay path
+3. отдельно определить retention / rotation
+4. явно выбрать одно из двух:
+   - либо restore сначала импортирует journal в fresh runtime DB, и discovery
+     дальше работает как сейчас
+   - либо discovery учится читать recent raw journal напрямую
+5. не оставлять это implicit, потому что текущий runtime warm-load, raw coverage
+   checks и cursor-based catch-up сейчас читают `observed_swaps` из основной
+   runtime SQLite
+
+Критический performance / lock risk для V1:
+
+- в текущей архитектуре ingestion уже идет через `ObservedSwapWriter` с bounded
+  channel и отдельным raw writer thread
+- поэтому проблема не в том, что gRPC callback начнет делать два синхронных
+  `INSERT` напрямую
+- проблема в другом: если journal write добавить синхронно внутрь существующего
+  raw writer critical section, это увеличит latency writer-а, backlog по
+  `pending_requests`, риск sqlite lock pressure и общий runtime backpressure
+
+Следствие:
+
+1. двойную запись нельзя просто “вкрутить рядом” в тот же write step без budget
+   и telemetry
+2. предпочтительный V1 путь:
+   - либо отдельный async sidecar writer / queue для journal
+   - либо другой явно bounded fan-out path после primary raw commit
+3. не считать `ATTACH DATABASE` автоматическим решением:
+   - он усиливает coupling между write path двух БД
+   - он не отменяет lock / latency risk сам по себе
+4. для V1 обязательно мерить:
+   - writer queue backlog
+   - raw batch latency
+   - journal batch latency
+   - sqlite busy / retry pressure
 
 ### Task 3. Restore command
 
@@ -187,8 +281,17 @@ V1 storage contract:
 
 - recent publication truth loaded
 - runtime cursor restored
+- raw coverage подтверждена для runtime horizon или restore честно остается
+  только в bounded degraded / fail_closed
 - active follow wallets не пусты или runtime честно в bounded degraded
 - aggregate readiness не участвует в verdict
+
+Важно:
+
+- `runtime cursor restored` сам по себе недостаточен
+- cursor без raw coverage не считается usable runtime truth
+- restore verdict должен переиспользовать ту же freshness-логику publication
+  truth, что и normal runtime path, чтобы не плодить drift между restore и runtime
 
 Для normal trading-ready restore verdict должен дополнительно требовать:
 
@@ -311,3 +414,9 @@ One-button restore не означает:
 - recent raw journal is external
 - restore = artifact + recent raw replay
 - trading allowed only after healthy restore
+
+На языке текущего инцидента это означает еще и следующее:
+
+- giant replay с multi-day ETA не считается restore
+- старый recovery path можно остановить без сожалений
+- future restore contract должен делать минуты, а не дни
