@@ -4550,8 +4550,7 @@ mod app_tests {
     fn discovery_catch_up_scheduler_skips_when_writer_crosses_threshold() {
         let discovery_output = discovery_output_for_catch_up_tests(true);
         let mut writer_snapshot = maintenance_test_writer_snapshot();
-        writer_snapshot.pending_requests =
-            DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD;
+        writer_snapshot.pending_requests = DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD;
 
         assert!(!should_schedule_discovery_catch_up(
             &discovery_output,
