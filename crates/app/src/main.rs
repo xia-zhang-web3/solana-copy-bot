@@ -2997,32 +2997,17 @@ async fn run_app_loop(
     let initial_active_wallets = store
         .list_active_follow_wallets()
         .context("failed to load active follow wallets")?;
-    let trusted_selection_startup_status = store
-        .startup_trusted_selection_gate_status()
-        .context("failed to load discovery trusted selection startup gate status")?;
     let startup_gate_now = Utc::now();
-    let trusted_selection_startup_state = discovery.effective_startup_trusted_selection_state(
-        &trusted_selection_startup_status,
-        startup_gate_now,
-    );
-    let trusted_selection_startup_fail_closed = discovery
-        .effective_startup_trusted_selection_fail_closed(
-            &trusted_selection_startup_status,
-            startup_gate_now,
-        );
-    let recent_published_active_wallets = store
-        .recent_published_follow_wallets(
-            startup_gate_now,
-            discovery.runtime_published_universe_max_age(),
-            discovery.runtime_scoring_window_days(),
-            discovery.runtime_metric_snapshot_interval_seconds(),
-        )
+    let recent_published_universe_truth = discovery
+        .recent_runtime_publication_truth(&store, startup_gate_now)
         .context("failed to load recent published follow universe")?;
+    let recent_published_active_wallets = recent_published_universe_truth
+        .as_ref()
+        .map(|truth| truth.active_wallets());
     let (initial_follow_snapshot, recovered_active_wallets, mut shadow_strategy_fail_closed) =
-        bootstrap_follow_snapshot(
+        startup_follow_snapshot_from_publication_truth(
             initial_active_wallets,
             recent_published_active_wallets.clone(),
-            trusted_selection_startup_fail_closed,
         );
     let mut follow_snapshot = Arc::new(initial_follow_snapshot);
     let follow_event_retention =
@@ -3107,49 +3092,16 @@ async fn run_app_loop(
     if let Some(active_wallets) = recent_published_active_wallets.as_ref() {
         info!(
             active_follow_wallets = active_wallets.len(),
-            trusted_selection_bootstrap_required = trusted_selection_startup_status.bootstrap_required,
-            trusted_selection_startup_fail_closed = trusted_selection_startup_fail_closed,
-            trusted_selection_state = ?trusted_selection_startup_state,
-            trusted_selection_reason = ?trusted_selection_startup_status.reason,
-            trusted_selection_active_snapshot_id = ?trusted_selection_startup_status.active_snapshot_id,
-            trusted_selection_active_snapshot_window_start =
-                ?trusted_selection_startup_status.active_snapshot_window_start,
-            trusted_selection_last_bootstrap_source_kind =
-                ?trusted_selection_startup_status.last_bootstrap_source_kind,
-            trusted_selection_legacy_bool_fallback_used =
-                trusted_selection_startup_status.legacy_bool_fallback_used,
             "recent published follow universe loaded for startup runtime"
         );
-    } else if recovered_active_wallets > 0 || trusted_selection_startup_fail_closed {
+    } else if recovered_active_wallets > 0 {
         info!(
             recovered_active_follow_wallets = recovered_active_wallets,
-            trusted_selection_bootstrap_required = trusted_selection_startup_status.bootstrap_required,
-            trusted_selection_startup_fail_closed = trusted_selection_startup_fail_closed,
-            trusted_selection_state = ?trusted_selection_startup_state,
-            trusted_selection_reason = ?trusted_selection_startup_status.reason,
-            trusted_selection_active_snapshot_id = ?trusted_selection_startup_status.active_snapshot_id,
-            trusted_selection_active_snapshot_window_start =
-                ?trusted_selection_startup_status.active_snapshot_window_start,
-            trusted_selection_last_bootstrap_source_kind =
-                ?trusted_selection_startup_status.last_bootstrap_source_kind,
-            trusted_selection_legacy_bool_fallback_used =
-                trusted_selection_startup_status.legacy_bool_fallback_used,
             "startup has no recent published follow universe; recovered historical wallets stay out of runtime until discovery publishes fresh or degraded runtime truth"
         );
     } else if !follow_snapshot.active.is_empty() {
         info!(
             active_follow_wallets = follow_snapshot.active.len(),
-            trusted_selection_bootstrap_required = trusted_selection_startup_status.bootstrap_required,
-            trusted_selection_startup_fail_closed = trusted_selection_startup_fail_closed,
-            trusted_selection_state = ?trusted_selection_startup_state,
-            trusted_selection_reason = ?trusted_selection_startup_status.reason,
-            trusted_selection_active_snapshot_id = ?trusted_selection_startup_status.active_snapshot_id,
-            trusted_selection_active_snapshot_window_start =
-                ?trusted_selection_startup_status.active_snapshot_window_start,
-            trusted_selection_last_bootstrap_source_kind =
-                ?trusted_selection_startup_status.last_bootstrap_source_kind,
-            trusted_selection_legacy_bool_fallback_used =
-                trusted_selection_startup_status.legacy_bool_fallback_used,
             "active follow wallets loaded"
         );
     }
@@ -4055,7 +4007,7 @@ async fn run_app_loop(
                 if shadow_strategy_fail_closed {
                     app_consumer_loop_telemetry
                         .note_processing_started_at(swap_processing_started_at);
-                    let reason = "trusted_selection_unavailable";
+                    let reason = "runtime_follow_universe_unavailable";
                     *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
                     *shadow_drop_stage_counts.entry("selection").or_insert(0) += 1;
                     debug!(
@@ -4283,10 +4235,9 @@ fn follow_event_retention_duration(
     )
 }
 
-fn bootstrap_follow_snapshot(
+fn startup_follow_snapshot_from_publication_truth(
     initial_active_wallets: HashSet<String>,
     recent_published_active_wallets: Option<HashSet<String>>,
-    _startup_fail_closed: bool,
 ) -> (FollowSnapshot, usize, bool) {
     if let Some(active_wallets) = recent_published_active_wallets {
         return (
@@ -4349,8 +4300,9 @@ struct DiscoveryTaskOutput {
 mod app_tests {
     use super::*;
     use copybot_storage::{
-        DiscoveryTrustedSelectionStateUpdate, StartupTrustedSelectionGateStatus,
-        TrustedSelectionState, TrustedSnapshotSourceKind,
+        DiscoveryPublicationStateUpdate, DiscoveryRuntimeMode,
+        DiscoveryTrustedSelectionStateUpdate, TrustedSelectionState, TrustedSnapshotSourceKind,
+        WalletMetricRow,
     };
     use std::collections::BTreeMap;
     use std::io::Write;
@@ -9627,44 +9579,41 @@ mod app_tests {
     }
 
     #[test]
-    fn bootstrap_follow_snapshot_defers_recovered_active_wallets_until_discovery_publish() {
+    fn startup_follow_snapshot_defers_recovered_active_wallets_until_discovery_publish() {
         let (snapshot, recovered_active_wallets, shadow_strategy_fail_closed) =
-            bootstrap_follow_snapshot(
+            startup_follow_snapshot_from_publication_truth(
                 HashSet::from(["wallet-a".to_string(), "wallet-b".to_string()]),
                 None,
-                false,
             );
 
         assert_eq!(recovered_active_wallets, 2);
         assert!(shadow_strategy_fail_closed);
         assert!(
             snapshot.active.is_empty(),
-            "recovered historical followlist must not become runtime truth before discovery publishes a trusted selection state"
+            "recovered historical followlist must not become runtime truth before discovery publishes fresh or degraded runtime truth"
         );
     }
 
     #[test]
-    fn bootstrap_follow_snapshot_ignores_legacy_startup_fail_closed_without_recent_publication() {
+    fn startup_follow_snapshot_keeps_runtime_open_without_recent_publication_or_residue() {
         let (snapshot, recovered_active_wallets, shadow_strategy_fail_closed) =
-            bootstrap_follow_snapshot(HashSet::new(), None, true);
+            startup_follow_snapshot_from_publication_truth(HashSet::new(), None);
 
         assert_eq!(recovered_active_wallets, 0);
         assert!(!shadow_strategy_fail_closed);
         assert!(
             snapshot.active.is_empty(),
-            "legacy trusted-bootstrap fail-close must not block raw-window runtime startup when there is no recovered published universe to defer"
+            "startup should stay open when there is no recent published universe and no recovered followlist residue"
         );
     }
 
     #[test]
-    fn bootstrap_follow_snapshot_uses_recent_published_universe_even_when_legacy_startup_is_fail_closed(
-    ) {
+    fn startup_follow_snapshot_uses_recent_published_universe() {
         let recent_active_wallets = HashSet::from(["wallet-a".to_string(), "wallet-b".to_string()]);
         let (snapshot, recovered_active_wallets, shadow_strategy_fail_closed) =
-            bootstrap_follow_snapshot(
+            startup_follow_snapshot_from_publication_truth(
                 HashSet::from(["wallet-stale".to_string()]),
                 Some(recent_active_wallets.clone()),
-                true,
             );
 
         assert_eq!(recovered_active_wallets, 0);
@@ -9672,99 +9621,87 @@ mod app_tests {
         assert_eq!(snapshot.active, recent_active_wallets);
     }
 
-    fn test_startup_status(
-        bootstrap_required: bool,
-        selection_state: Option<TrustedSelectionState>,
-        startup_fail_closed: bool,
-    ) -> StartupTrustedSelectionGateStatus {
-        StartupTrustedSelectionGateStatus {
-            bootstrap_required,
-            selection_state,
-            startup_fail_closed,
-            reason: Some("test_status".to_string()),
-            active_snapshot_id: Some("snapshot-001".to_string()),
-            active_snapshot_window_start: Some(
-                DateTime::parse_from_rfc3339("2026-03-16T12:00:00Z")
-                    .expect("timestamp")
-                    .with_timezone(&Utc),
-            ),
-            last_bootstrap_source_kind: Some(TrustedSnapshotSourceKind::CloneLatestBridge),
-            source_snapshot_window_start: None,
-            legacy_bool_fallback_used: false,
-        }
-    }
-
     #[test]
-    fn bootstrap_follow_snapshot_fail_closes_for_invalid_typed_startup_status() {
-        let status = test_startup_status(false, Some(TrustedSelectionState::Invalid), true);
-        let (snapshot, recovered_active_wallets, shadow_strategy_fail_closed) =
-            bootstrap_follow_snapshot(HashSet::new(), None, status.startup_fail_closed);
-
-        assert_eq!(recovered_active_wallets, 0);
-        assert!(!shadow_strategy_fail_closed);
-        assert!(snapshot.active.is_empty());
-    }
-
-    #[test]
-    fn bootstrap_follow_snapshot_fail_closes_for_trusted_bridged_stale_startup_status() {
-        let status = test_startup_status(
-            false,
-            Some(TrustedSelectionState::TrustedBridgedStale),
-            true,
-        );
-        let (snapshot, recovered_active_wallets, shadow_strategy_fail_closed) =
-            bootstrap_follow_snapshot(HashSet::new(), None, status.startup_fail_closed);
-
-        assert_eq!(recovered_active_wallets, 0);
-        assert!(!shadow_strategy_fail_closed);
-        assert!(snapshot.active.is_empty());
-    }
-
-    #[test]
-    fn bootstrap_follow_snapshot_fail_closes_for_aged_trusted_bridged_startup_status() {
-        let now = DateTime::parse_from_rfc3339("2026-03-16T12:00:00Z")
+    fn startup_recent_published_universe_ignores_stale_followlist_residue() -> Result<()> {
+        let (store, db_path) =
+            make_test_store("startup-published-universe-ignores-stale-followlist")?;
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:10:00Z")
             .expect("timestamp")
             .with_timezone(&Utc);
-        let mut status =
-            test_startup_status(false, Some(TrustedSelectionState::TrustedBridged), false);
-        status.source_snapshot_window_start =
-            Some(now - chrono::Duration::days(5) - chrono::Duration::hours(2));
         let mut config = copybot_config::DiscoveryConfig::default();
         config.scoring_window_days = 5;
-        config.max_bootstrap_snapshot_age_seconds = 60 * 60;
+        config.metric_snapshot_interval_seconds = 30 * 60;
+        config.follow_top_n = 1;
+        config.min_score = 0.1;
+
+        let interval_seconds = config.metric_snapshot_interval_seconds.max(1) as i64;
+        let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
+        let bucketed_now = DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(now);
+        let metrics_window_start =
+            bucketed_now - chrono::Duration::days(config.scoring_window_days.max(1) as i64);
+
+        store.upsert_wallet(
+            "wallet_ranked_now",
+            now - chrono::Duration::days(2),
+            now - chrono::Duration::minutes(1),
+            "candidate",
+        )?;
+        store.insert_wallet_metric(&WalletMetricRow {
+            wallet_id: "wallet_ranked_now".to_string(),
+            window_start: metrics_window_start,
+            pnl: 2.4,
+            win_rate: 0.8,
+            trades: 6,
+            closed_trades: 6,
+            hold_median_seconds: 120,
+            score: 0.9,
+            buy_total: 6,
+            tradable_ratio: 1.0,
+            rug_ratio: 0.0,
+        })?;
+        store.activate_follow_wallet(
+            "wallet_stale_residue",
+            now - chrono::Duration::minutes(20),
+            "legacy_bootstrap_residue",
+        )?;
+        let expected_published_wallets = vec![
+            "wallet_published_exact".to_string(),
+            "wallet_published_second".to_string(),
+        ];
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            reason: "startup_recent_published_universe".to_string(),
+            last_published_at: Some(now - chrono::Duration::minutes(10)),
+            last_published_window_start: Some(metrics_window_start),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(expected_published_wallets.clone()),
+        })?;
+
         let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let recent_published_active_wallets = discovery
+            .recent_runtime_publication_truth(&store, now)?
+            .expect("recent published universe should be available from publication truth")
+            .active_wallets();
+        let initial_active_wallets = store.list_active_follow_wallets()?;
         let (snapshot, recovered_active_wallets, shadow_strategy_fail_closed) =
-            bootstrap_follow_snapshot(
-                HashSet::new(),
-                None,
-                discovery.effective_startup_trusted_selection_fail_closed(&status, now),
+            startup_follow_snapshot_from_publication_truth(
+                initial_active_wallets,
+                Some(recent_published_active_wallets),
             );
 
         assert_eq!(recovered_active_wallets, 0);
         assert!(!shadow_strategy_fail_closed);
-        assert!(snapshot.active.is_empty());
-    }
+        assert_eq!(
+            snapshot.active,
+            HashSet::from([
+                "wallet_published_exact".to_string(),
+                "wallet_published_second".to_string(),
+            ]),
+            "startup runtime snapshot must come from the exact published universe control plane, not from stale followlist residue or current ranking output"
+        );
 
-    #[test]
-    fn bootstrap_follow_snapshot_allows_trusted_current_startup_status() {
-        let status = test_startup_status(false, Some(TrustedSelectionState::TrustedCurrent), false);
-        let (snapshot, recovered_active_wallets, shadow_strategy_fail_closed) =
-            bootstrap_follow_snapshot(HashSet::new(), None, status.startup_fail_closed);
-
-        assert_eq!(recovered_active_wallets, 0);
-        assert!(!shadow_strategy_fail_closed);
-        assert!(snapshot.active.is_empty());
-    }
-
-    #[test]
-    fn bootstrap_follow_snapshot_allows_trusted_bridged_startup_status() {
-        let status = test_startup_status(false, Some(TrustedSelectionState::TrustedBridged), false);
-        let (snapshot, recovered_active_wallets, shadow_strategy_fail_closed) =
-            bootstrap_follow_snapshot(HashSet::new(), None, status.startup_fail_closed);
-
-        assert_eq!(recovered_active_wallets, 0);
-        assert!(!shadow_strategy_fail_closed);
-        assert!(snapshot.active.is_empty());
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
     }
 
     #[test]
@@ -9802,15 +9739,8 @@ mod app_tests {
         })?;
 
         let initial_active_wallets = store.list_active_follow_wallets()?;
-        let trusted_selection_startup_status = store.startup_trusted_selection_gate_status()?;
-        assert!(trusted_selection_startup_status.startup_fail_closed);
-        assert!(!trusted_selection_startup_status.legacy_bool_fallback_used);
         let (follow_snapshot, _recovered_active_wallets, shadow_strategy_fail_closed) =
-            bootstrap_follow_snapshot(
-                initial_active_wallets,
-                None,
-                trusted_selection_startup_status.startup_fail_closed,
-            );
+            startup_follow_snapshot_from_publication_truth(initial_active_wallets, None);
         let open_shadow_lots = if shadow_strategy_fail_closed {
             HashSet::new()
         } else {
@@ -9825,7 +9755,7 @@ mod app_tests {
         assert!(!shadow_strategy_fail_closed);
         assert!(
             !open_shadow_lots.is_empty(),
-            "legacy trusted-bootstrap startup state must not clear historical open shadow lots before discovery decides the runtime contract"
+            "legacy trusted-selection recovery bookkeeping must not clear historical open shadow lots before discovery decides the runtime contract"
         );
         assert_eq!(
             classify_observed_swap_shadow_relevance(

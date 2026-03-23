@@ -1911,6 +1911,21 @@ impl SqliteStore {
         &self,
     ) -> Result<Option<DiscoveryPersistedRebuildStateRow>> {
         self.ensure_discovery_persisted_rebuild_state_table()?;
+        self.load_discovery_persisted_rebuild_state_query()
+    }
+
+    pub fn load_discovery_persisted_rebuild_state_read_only(
+        &self,
+    ) -> Result<Option<DiscoveryPersistedRebuildStateRow>> {
+        if !self.sqlite_table_exists("discovery_persisted_rebuild_state")? {
+            return Ok(None);
+        }
+        self.load_discovery_persisted_rebuild_state_query()
+    }
+
+    fn load_discovery_persisted_rebuild_state_query(
+        &self,
+    ) -> Result<Option<DiscoveryPersistedRebuildStateRow>> {
         let raw = self
             .conn
             .query_row(

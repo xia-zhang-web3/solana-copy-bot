@@ -42,6 +42,25 @@ fn parse_optional_rfc3339_utc(
         .transpose()
 }
 
+fn canonicalize_wallet_ids(wallet_ids: &[String]) -> Vec<String> {
+    let mut canonical = wallet_ids.to_vec();
+    canonical.sort();
+    canonical.dedup();
+    canonical
+}
+
+fn parse_optional_wallet_ids_json(
+    raw: Option<String>,
+    field_name: &str,
+) -> Result<Option<Vec<String>>> {
+    raw.map(|raw| {
+        let wallet_ids = serde_json::from_str::<Vec<String>>(&raw)
+            .with_context(|| format!("invalid {field_name} JSON payload: {raw}"))?;
+        Ok(canonicalize_wallet_ids(&wallet_ids))
+    })
+    .transpose()
+}
+
 fn insert_trusted_wallet_metrics_snapshot_on_conn(
     conn: &Connection,
     snapshot_write: &TrustedWalletMetricsSnapshotWrite,
@@ -180,6 +199,19 @@ impl SqliteStore {
 
     pub fn discovery_publication_state(&self) -> Result<Option<DiscoveryPublicationStateRow>> {
         self.ensure_discovery_strategy_state_table()?;
+        self.discovery_publication_state_query()
+    }
+
+    pub fn discovery_publication_state_read_only(
+        &self,
+    ) -> Result<Option<DiscoveryPublicationStateRow>> {
+        if !self.sqlite_table_exists("discovery_strategy_state")? {
+            return Ok(None);
+        }
+        self.discovery_publication_state_query()
+    }
+
+    fn discovery_publication_state_query(&self) -> Result<Option<DiscoveryPublicationStateRow>> {
         let raw = self
             .conn
             .query_row(
@@ -189,6 +221,7 @@ impl SqliteStore {
                     publication_last_published_at,
                     publication_last_published_window_start,
                     publication_scoring_source,
+                    publication_wallet_ids_json,
                     updated_at
                  FROM discovery_strategy_state
                  WHERE id = 1",
@@ -200,7 +233,8 @@ impl SqliteStore {
                         row.get::<_, Option<String>>(2)?,
                         row.get::<_, Option<String>>(3)?,
                         row.get::<_, Option<String>>(4)?,
-                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
                     ))
                 },
             )
@@ -213,6 +247,7 @@ impl SqliteStore {
                 last_published_at_raw,
                 last_published_window_start_raw,
                 published_scoring_source,
+                published_wallet_ids_raw,
                 updated_at_raw,
             )| {
                 Ok(DiscoveryPublicationStateRow {
@@ -227,6 +262,10 @@ impl SqliteStore {
                         "discovery_strategy_state.publication_last_published_window_start",
                     )?,
                     published_scoring_source,
+                    published_wallet_ids: parse_optional_wallet_ids_json(
+                        published_wallet_ids_raw,
+                        "discovery_strategy_state.publication_wallet_ids_json",
+                    )?,
                     updated_at: parse_rfc3339_utc(
                         &updated_at_raw,
                         "discovery_strategy_state.updated_at",
@@ -242,6 +281,15 @@ impl SqliteStore {
         update: &DiscoveryPublicationStateUpdate,
     ) -> Result<()> {
         self.ensure_discovery_strategy_state_table()?;
+        let published_wallet_ids_json = update
+            .published_wallet_ids
+            .as_deref()
+            .map(canonicalize_wallet_ids)
+            .map(|wallet_ids| {
+                serde_json::to_string(&wallet_ids)
+                    .context("failed serializing discovery published wallet ids")
+            })
+            .transpose()?;
         self.execute_with_retry(|conn| {
             conn.execute(
                 "INSERT INTO discovery_strategy_state(
@@ -251,8 +299,9 @@ impl SqliteStore {
                     publication_last_published_at,
                     publication_last_published_window_start,
                     publication_scoring_source,
+                    publication_wallet_ids_json,
                     updated_at
-                 ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)
+                 ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT(id) DO UPDATE SET
                     publication_runtime_mode = excluded.publication_runtime_mode,
                     publication_reason = excluded.publication_reason,
@@ -265,6 +314,10 @@ impl SqliteStore {
                         discovery_strategy_state.publication_last_published_window_start
                     ),
                     publication_scoring_source = excluded.publication_scoring_source,
+                    publication_wallet_ids_json = COALESCE(
+                        excluded.publication_wallet_ids_json,
+                        discovery_strategy_state.publication_wallet_ids_json
+                    ),
                     updated_at = excluded.updated_at",
                 params![
                     update.runtime_mode.as_str(),
@@ -274,45 +327,13 @@ impl SqliteStore {
                         .last_published_window_start
                         .map(canonical_wallet_metrics_window_start),
                     update.published_scoring_source.as_deref(),
+                    published_wallet_ids_json.as_deref(),
                     Utc::now().to_rfc3339(),
                 ],
             )
         })
         .context("failed updating discovery publication state")?;
         Ok(())
-    }
-
-    pub fn recent_published_follow_wallets(
-        &self,
-        now: DateTime<Utc>,
-        max_age: chrono::Duration,
-        scoring_window_days: i64,
-        metric_snapshot_interval_seconds: u64,
-    ) -> Result<Option<HashSet<String>>> {
-        let Some(state) = self.discovery_publication_state()? else {
-            return Ok(None);
-        };
-        if state.runtime_mode == DiscoveryRuntimeMode::FailClosed {
-            return Ok(None);
-        }
-        let Some(last_published_at) = state.last_published_at else {
-            return Ok(None);
-        };
-        if now.signed_duration_since(last_published_at) > max_age {
-            return Ok(None);
-        }
-        if !state.has_valid_recent_published_universe(
-            now,
-            scoring_window_days,
-            metric_snapshot_interval_seconds,
-        ) {
-            return Ok(None);
-        }
-        let active_wallets = self.list_active_follow_wallets()?;
-        if active_wallets.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(active_wallets))
     }
 
     pub fn discovery_trusted_selection_state(
@@ -1404,6 +1425,7 @@ impl SqliteStore {
                     publication_last_published_at TEXT,
                     publication_last_published_window_start TEXT,
                     publication_scoring_source TEXT,
+                    publication_wallet_ids_json TEXT,
                     updated_at TEXT NOT NULL
                 )",
             )
@@ -1515,6 +1537,15 @@ impl SqliteStore {
                     [],
                 )
                 .context("failed adding discovery_strategy_state.publication_scoring_source")?;
+        }
+        if !columns.contains("publication_wallet_ids_json") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN publication_wallet_ids_json TEXT",
+                    [],
+                )
+                .context("failed adding discovery_strategy_state.publication_wallet_ids_json")?;
         }
         Ok(())
     }

@@ -304,10 +304,10 @@ Do not start Stage 2 yet.
         - `summary.txt` ended with `verdict = max_runs_exhausted`, which is expected until `coverage_marked` is reached
         - `next_resume.env` stayed on `MODE = seeded-reset`, so committed seed-marker restart semantics remained intact across runs
         - the first wrapper run advanced the persisted cursor further to `2026-03-09T00:30:25.487279814Z | 405143661 | sAKJBVmLgfR5g9dMwTViWTSFqc4u5or33rhZwJBYHiiZ8v7jGBfZMZNWY5aQeVXNnf4g93pyPTVTRHKWYWD1yP6`
-      - current stopped-host operation as of the latest snapshot is an ongoing larger wrapper chain on the same clone and same commit:
-        - service remained intentionally stopped: `systemctl is-active solana-copy-bot.service -> inactive`
-        - current ongoing report directory: `/tmp/aggregate-seeded-loop-20260323T121242Z`
-        - current ongoing wrapper parameters:
+      - latest stopped-host wrapper chain on the same clone and same commit is now complete as a bounded partial-progress chain, not as a recovery success:
+        - service remained intentionally stopped throughout and is still inactive: `systemctl is-active solana-copy-bot.service -> inactive`
+        - report directory: `/tmp/aggregate-seeded-loop-20260323T121242Z`
+        - wrapper parameters were:
           - `mode = seeded-reset`
           - `start_ts = 2026-03-08T22:15:51.246588877Z`
           - `max_runs = 96`
@@ -315,29 +315,40 @@ Do not start Stage 2 yet.
           - `max_runtime_seconds = 180`
           - `max_batches_per_run = 10`
           - `batch_size = 10000`
-        - at the latest handoff snapshot, `summary.txt` was still absent because the wrapper was still running
-        - latest completed readiness artifact at that handoff:
-          - `/tmp/aggregate-seeded-loop-20260323T121242Z/028_post_run_aggregate_readiness_status.json`
-          - persisted cursor there: `2026-03-09T02:09:44.171793256Z | 405158817 | 2PCSxMzw9LSMLzEWgAtVusRa7UcN4K46cXvwLg28Jh4oj5Cv5qsqoz2MJThHUKYS5vWCrTZWeDN8ZQznQuZ8WJKX`
-        - latest `next_resume.env` at that handoff:
+        - wrapper completion artifact now exists:
+          - `summary.txt` ended with `verdict = max_runs_exhausted`
+          - no active `aggregate-seeded-loop` or `backfill_discovery_scoring` process remained at the verification snapshot
+        - latest completed readiness artifact:
+          - `/tmp/aggregate-seeded-loop-20260323T121242Z/096_post_run_aggregate_readiness_status.json`
+          - `covered_since = null`
+          - `covered_through_cursor = null`
+          - `backfill_resume_required = true`
+          - `effective_reads_ready = false`
+          - `effective_writes_ready = false`
+        - latest persisted resume lineage exported by the wrapper:
           - `MODE = seeded-reset`
           - `START_TS = 2026-03-08T22:15:51.246588877Z`
-          - `RESUME_TS = 2026-03-09T02:09:44.171793256Z`
-          - `RESUME_SLOT = 405158817`
-          - `RESUME_SIGNATURE = 2PCSxMzw9LSMLzEWgAtVusRa7UcN4K46cXvwLg28Jh4oj5Cv5qsqoz2MJThHUKYS5vWCrTZWeDN8ZQznQuZ8WJKX`
-        - live SQLite had already advanced beyond that readiness snapshot during the same ongoing run:
-          - `backfill_progress_cursor_ts = 2026-03-09T02:13:32.850265286+00:00`
-          - `backfill_progress_cursor_slot = 405159400`
-          - `backfill_progress_cursor_signature = 4sbiHQJNczQxXwbj65TKghYFjqqAeTqwdvGDeCfbN6m6E7q3cYoX8XMLn8t4ua9xEh41jr59o3g4ojUFNgySx8f7`
-        - handoff rule for any new operator/agent:
-          - first inspect `/tmp/aggregate-seeded-loop-20260323T121242Z/summary.txt`
-          - if it is still absent, treat that wrapper as still active and do not invent a final verdict
-          - source of truth remains `summary.txt`, `next_resume.env`, the latest `*_aggregate_readiness_status.json`, and `discovery_scoring_state`
+          - `RESUME_TS = 2026-03-09T10:00:27.660051087Z`
+          - `RESUME_SLOT = 405230735`
+          - `RESUME_SIGNATURE = 3o4fybEub2fugAF4yRX74ouW4gvKfvWNghHkRrjPv5iobpbJCoLiZbWeHAPP7fidGnu4ANofJN76CtMFwBahnYcR`
+        - direct SQLite inspection on the clone matched that exact partial-progress state:
+          - `backfill_progress_start_ts = 2026-03-08T22:15:51.246588877+00:00`
+          - `backfill_progress_cursor_ts = 2026-03-09T10:00:27.660051087+00:00`
+          - `backfill_progress_cursor_slot = 405230735`
+          - `backfill_progress_cursor_signature = 3o4fybEub2fugAF4yRX74ouW4gvKfvWNghHkRrjPv5iobpbJCoLiZbWeHAPP7fidGnu4ANofJN76CtMFwBahnYcR`
+        - the last bounded run itself still showed real forward progress rather than semantic failure:
+          - `096_backfill.log` emitted `event=builder_replay_ready`
+          - six durable `checkpoint_persisted` / `batch_committed` slices were written in `phase=replay_after_seed`
+          - last run advanced the cursor from `2026-03-09T09:54:33.626020485Z | 405229838 | 5wrDgPUfmhXQU3tBoQu964m9Szt7SJHc1wDsj283rFUGP84nPgnDwz53A27n7XN4SrfeF5C2sHM5misTkYpf93xC`
+            to `2026-03-09T10:00:27.660051087Z | 405230735 | 3o4fybEub2fugAF4yRX74ouW4gvKfvWNghHkRrjPv5iobpbJCoLiZbWeHAPP7fidGnu4ANofJN76CtMFwBahnYcR`
+          - run-level stop reason remained bounded-runtime exhaustion, not a new semantic crash:
+            - `summary outcome=stopped_due_to_runtime_budget`
+            - `coverage_marked=false`
       - the remaining blocker is now operational completion, not a newly discovered replay semantic gap:
         - pre-seed checkpointability is already proven on the clone
         - committed `seed_boundary_install_*` is already proven on the clone
         - post-seed builder replay and deferred final-finalize are already proven on the clone
-        - the wrapper loop now chains `seeded-reset` progress correctly without manual cursor handoff
+        - the wrapper loop chains `seeded-reset` progress correctly without manual cursor handoff, but still does not finish within the current bounded run budget
         - what is still missing is simply end-to-end completion to:
           - `coverage_marked`
           - `backfill_resume_required = false`
@@ -471,6 +482,8 @@ Behavior:
 This section is the code-first work order.
 
 No new roadmap documents are needed before Stage 1 lands in code.
+
+The stopped-host seeded aggregate recovery loop is background operational work, not a reason to pause coding. Engineering work must continue in parallel and must not reintroduce recovery into the runtime critical path.
 
 ### Stage 1. Remove aggregate recovery from runtime discovery
 
@@ -633,6 +646,195 @@ roll out a follow-up fix for overall stale `CollectBuyMints` time-to-`Replay` an
 9. there is still no false `healthy` and no empty published universe
 
 See section 2.5 for observed server state and section 2.6 for live data scale.
+
+### Parallel workstream while stopped-host seeded recovery runs (added 2026-03-23)
+
+Status: **active**
+
+Why this exists:
+
+1. The current stopped-host seeded loop is making real forward progress on the offline clone, but it has already consumed too much calendar time to justify freezing development behind it.
+2. Even a successful aggregate recovery would restore an operational baseline; it would not by itself fix the bad discovery architecture if normal runtime truth still depends on historical recovery semantics.
+3. Coding work must therefore proceed now, in parallel, under the assumption that aggregate recovery is a background ops track and not the long-term runtime model.
+
+Rules for this workstream:
+
+1. Do not block coding on the stopped-host loop finishing.
+2. Do not make `seeded-reset`, aggregate readiness, `covered_since`, `covered_through_cursor`, or offline recovery state a normal runtime dependency again.
+3. Do not require production-host validation as the only proof that a code change is correct.
+4. Do not add startup-critical migrations, large new indexes, or heavyweight startup scans just to make recovery or runtime behavior look simpler.
+5. Keep `execution.enabled = false` and keep aggregate reads/writes disabled while this workstream is landing.
+
+Work packages to hand to the coder:
+
+1. Package A. Quarantine remaining recovery-state coupling from runtime discovery
+   - audit `copybot-app`, `copybot-discovery`, and runtime-facing `copybot-storage` reads for any remaining decision that still depends on offline recovery semantics instead of current raw truth or recent publication truth
+   - rename or split ambiguous state reads where publication truth and recovery truth are still mixed together conceptually
+   - remove or quarantine legacy bootstrap / trusted-selection wording that no longer matches the current runtime contract
+   - required evidence:
+     - changed files are limited to runtime/discovery/storage code, not server-only scripts
+     - targeted tests prove the same `healthy / degraded / fail_closed` outcomes still hold after restart
+   - accepted first sub-slice on `2026-03-23`:
+     - startup/runtime publication fallback now reads recent publication truth through discovery/runtime helpers instead of treating current followlist residue as runtime truth
+     - degraded restart path now restores the last published universe instead of preserving stale followlist residue across restart
+     - runtime aggregate-read path is removed as a runtime source-of-truth decision; restart stays on `raw_window`, recent publication truth, or `fail_closed`
+     - aggregate-ready state no longer overrides restart outcomes that should remain `healthy`, `degraded`, or `fail_closed` under the Stage 1 runtime contract
+   - accepted verification for that sub-slice:
+     - `cargo test -p copybot-discovery --lib aggregate_ready_state_ -- --nocapture`
+     - `cargo test -p copybot-discovery restart_with_recent_published_universe_replaces_stale_followlist_residue_stage1`
+     - `cargo test -p copybot-app startup_recent_published_universe_ignores_stale_followlist_residue`
+     - `cargo test -p copybot-discovery`
+   - package status after accepted sub-slice:
+     - accepted for the current Package A scope
+     - aggregate-ready state is no longer allowed to override runtime restart truth
+     - remaining cleanup on legacy helpers is non-blocking and does not reopen Package A
+
+2. Package B. Make publication truth the only restart-safe runtime control plane
+   - create one explicit runtime-facing read path for:
+     - latest published universe metadata
+     - freshness / age of that publication
+     - last known runtime mode
+   - runtime restart decisions must read that publication truth directly rather than inferring truth from recovery state tables
+   - required evidence:
+     - one clear code path owns publication-state reads
+     - tests cover restart with:
+       - fresh valid published universe
+       - stale published universe
+       - no published universe
+   - next package to assign:
+     - make the exact published wallet set a first-class control-plane object instead of reconstructing it from published `wallet_metrics` under current ranking/config
+     - make restart/publication helpers read that object directly
+     - preserve the accepted Package A invariant that aggregate/recovery state is not runtime truth
+   - reason this is Package B and not Package A:
+     - the remaining work is no longer about removing aggregate/recovery runtime coupling
+     - it is about making publication truth itself exact, restart-safe, and directly readable as a control-plane object
+   - accepted on `2026-03-23`:
+     - exact published wallet membership is now persisted in publication state as a first-class control-plane object
+     - startup/restart/degraded runtime paths now read exact recent publication truth directly instead of reconstructing the universe from published `wallet_metrics` plus current ranking/config
+     - healthy publish writes the exact published wallet set into publication state
+     - degraded/fail-closed publication-state updates preserve the last exact published set instead of replacing it with a reconstructed runtime view
+   - accepted verification for Package B:
+     - `cargo test -p copybot-discovery recent_runtime_publication_truth_rejects_stale_exact_published_universe`
+     - `cargo test -p copybot-discovery restart_with_recent_published_universe_uses_exact_wallet_set_when_current_ranking_drifted_stage1`
+     - `cargo test -p copybot-discovery restart_with_recent_published_universe_replaces_stale_followlist_residue_stage1`
+     - `cargo test -p copybot-discovery --lib aggregate_ready_state_ -- --nocapture`
+     - `cargo test -p copybot-app startup_recent_published_universe_ignores_stale_followlist_residue`
+     - `cargo test -p copybot-discovery`
+   - package status after acceptance:
+     - accepted for the current Package B scope
+     - Package A remains closed
+     - remaining telemetry cleanup does not reopen Package B
+   - next package to assign:
+     - Package C
+     - build a deterministic local perf harness for stale `CollectBuyMints`, bounded `Replay`, and other currently expensive discovery phases so throughput work stops depending on the production clone as the primary debugger
+
+3. Package C. Add a reproducible local perf harness for the current discovery bottlenecks
+   - add a deterministic fixture, integration test, or bench command for the current slow paths:
+     - stale `CollectBuyMints` convergence
+     - bounded `Replay`
+     - post-seed builder replay, where applicable outside server-only tooling
+   - the goal is to measure cursor advance, rows processed, and phase timings without using the production clone as the primary debugger
+   - required evidence:
+     - one documented command runs locally against fixture data
+     - output includes enough timing / progress detail to compare before vs after changes
+   - immediate assignment focus:
+     - prefer one narrow first slice that produces a single documented local command and deterministic output for the current stale `CollectBuyMints` / bounded `Replay` bottlenecks
+   - accepted on `2026-03-23`:
+     - one standard local harness command now exists for the current narrow bottlenecks:
+       - stale `CollectBuyMints` convergence on an exact carry-forward checkpoint
+       - bounded `Replay` on a deterministic local noise fixture
+     - the harness lives in `copybot-discovery` as a library module plus a small binary wrapper
+     - the harness prints a stable JSON report with scenario metadata, phase, rows/pages processed, chunk count, cursor/progress markers, and timing fields
+     - the harness runs entirely on local deterministic fixture data and does not depend on the production clone
+   - accepted verification for Package C:
+     - `cargo test -p copybot-discovery standard_harness_reports_both_discovery_bottleneck_scenarios -- --nocapture`
+     - `cargo test -p copybot-discovery stale_collect_buy_mints_harness_exposes_new_tail_progress_markers -- --nocapture`
+     - `cargo test -p copybot-discovery bounded_replay_harness_exposes_wallet_stats_or_phase_cursor_progress -- --nocapture`
+     - `RUSTFLAGS='-Awarnings' cargo run -p copybot-discovery --quiet --bin discovery_perf_harness`
+     - `cargo test -p copybot-discovery`
+   - package status after acceptance:
+     - accepted for the current Package C scope
+     - Package A remains closed
+     - Package B remains closed
+   - next package to assign:
+     - Package D
+     - add one compact operator-visible discovery status surface so the current runtime / restart / rebuild state can be understood without reading logs by hand
+
+4. Package D. Improve operator-visible discovery status without opening logs by hand
+   - add one script or binary mode that summarizes the current discovery runtime state from SQLite/runtime state into a compact operator view
+   - minimum required fields:
+     - runtime mode
+     - scoring source
+     - `active_follow_wallets`
+     - latest publication timestamp / age
+     - persisted rebuild phase if present
+     - bounded rebuild or recovery cursor if present
+   - required evidence:
+     - output clearly distinguishes:
+       - healthy runtime truth
+       - degraded fallback truth
+       - fail-closed with rebuild in progress
+       - offline aggregate recovery progress
+   - accepted on `2026-03-23`:
+     - one compact operator-visible discovery status surface now exists as a dedicated `copybot-discovery` binary backed by a small library classifier
+     - the command reads persisted/runtime state directly from SQLite and does not depend on log scraping
+     - output exposes current runtime truth, publication truth, persisted bounded rebuild state, and offline aggregate recovery state in one operator view
+     - the output distinguishes healthy runtime truth, degraded recent-publication fallback, fail-closed with rebuild in progress, and separate offline aggregate recovery progress
+   - accepted verification for Package D:
+     - `cargo test -p copybot-discovery --bin discovery_status -- --nocapture`
+     - `cargo test -p copybot-discovery`
+     - `git diff --check`
+   - package status after acceptance:
+     - accepted for the current Package D scope
+     - Package A remains closed
+     - Package B remains closed
+     - Package C remains closed
+   - follow-up package landed:
+     - Package E
+     - post-recovery cutover checks are now exposed directly without wiring aggregate coverage back into runtime selection
+
+5. Package E. Prepare the post-recovery cutover without making recovery the architecture
+   - codify the exact checks that must pass before any future re-enable step:
+     - healthy publication from runtime discovery
+     - `active_follow_wallets > 0`
+     - no false `healthy`
+     - clear separation between runtime publication truth and offline recovery state
+   - this package may add helper checks, assertions, or status surfaces, but must not wire aggregate readiness back into runtime selection
+   - required evidence:
+     - code or scripts expose those checks directly
+     - no new runtime branch depends on aggregate coverage markers
+   - accepted on `2026-03-23`:
+     - one dedicated read-only cutover readiness surface now exists as a `copybot-discovery` binary backed by a small classifier
+     - the command returns one explicit verdict, `ready` or `not_ready`, plus blocker reasons and separated fact sections for `runtime_truth`, `publication_truth`, and `offline_recovery`
+     - offline aggregate recovery is used only as an operator readiness signal and is not wired back into runtime truth or runtime selection
+     - the cutover view makes it explicit that “offline recovery progress” is not the same thing as “healthy runtime truth”
+   - accepted verification for Package E:
+     - `cargo test -p copybot-discovery --bin discovery_cutover_readiness -- --nocapture`
+     - `cargo test -p copybot-discovery`
+     - `RUSTFLAGS='-Awarnings' cargo run -p copybot-discovery --quiet --bin discovery_cutover_readiness -- --config <temp-fixture> --now 2026-03-23T12:00:00Z`
+     - `git diff --check`
+   - package status after acceptance:
+     - accepted for the current Package E scope
+     - Package A remains closed
+     - Package B remains closed
+     - Package C remains closed
+     - Package D remains closed
+     - the current A-E parallel workstream is complete for its planned package set
+
+Review contract for every slice in this workstream:
+
+1. The coder must state which package the slice belongs to.
+2. Every slice must include targeted tests or a deterministic local verification command.
+3. I will reject any slice that:
+   - reintroduces aggregate recovery as runtime truth
+   - relies on prod-only validation to prove semantics
+   - adds heavy startup work to paper over unclear state ownership
+   - mixes unrelated ops cleanup with runtime behavior changes
+4. Preferred slice size is one package or one narrow sub-slice at a time.
+5. Each accepted slice must close with:
+   - files changed
+   - tests/commands run
+   - which review-contract bullets it satisfies
 
 ### Stage 2. Stabilize wallet publication contract
 

@@ -639,6 +639,7 @@ pub struct DiscoveryPublicationStateUpdate {
     pub last_published_at: Option<DateTime<Utc>>,
     pub last_published_window_start: Option<DateTime<Utc>>,
     pub published_scoring_source: Option<String>,
+    pub published_wallet_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -660,6 +661,7 @@ pub struct DiscoveryPublicationStateRow {
     pub last_published_at: Option<DateTime<Utc>>,
     pub last_published_window_start: Option<DateTime<Utc>>,
     pub published_scoring_source: Option<String>,
+    pub published_wallet_ids: Option<Vec<String>>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -1279,6 +1281,23 @@ impl SqliteStore {
         conn.pragma_update(None, "foreign_keys", "ON")
             .context("failed to enable sqlite foreign keys")?;
         Ok(Self { conn })
+    }
+
+    pub(crate) fn sqlite_table_exists(&self, table_name: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1
+                 FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name = ?1
+                 LIMIT 1",
+                params![table_name],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .with_context(|| format!("failed checking sqlite table presence for {table_name}"))?
+            .is_some())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6469,41 +6488,6 @@ mod tests {
             Some(TrustedSelectionState::Invalid)
         );
         assert!(status.effective_startup_fail_closed(now, 5, 30 * 60, 60 * 60));
-        Ok(())
-    }
-
-    #[test]
-    fn recent_published_follow_wallets_rejects_bucket_stale_published_universe() -> Result<()> {
-        let temp = tempdir().context("failed to create tempdir")?;
-        let db_path = temp
-            .path()
-            .join("recent-published-follow-wallets-bucket-stale.db");
-        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
-        let mut store = SqliteStore::open(Path::new(&db_path))?;
-        store.run_migrations(&migration_dir)?;
-
-        let now = DateTime::parse_from_rfc3339("2026-03-17T12:00:00+00:00")
-            .expect("timestamp")
-            .with_timezone(&Utc);
-        store.activate_follow_wallet(
-            "wallet-published-stale",
-            now - Duration::minutes(50),
-            "seed-published-followlist",
-        )?;
-        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
-            runtime_mode: DiscoveryRuntimeMode::Healthy,
-            reason: "bucket_stale_recent_publish".to_string(),
-            last_published_at: Some(now - Duration::minutes(45)),
-            last_published_window_start: Some(now - Duration::days(5) - Duration::hours(1)),
-            published_scoring_source: Some("raw_window".to_string()),
-        })?;
-
-        let recent_wallets =
-            store.recent_published_follow_wallets(now, Duration::hours(1), 5, 30 * 60)?;
-        assert!(
-            recent_wallets.is_none(),
-            "bucket-stale published universe must not be treated as runtime fallback even when last_published_at is still within max_age"
-        );
         Ok(())
     }
 

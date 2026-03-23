@@ -58,10 +58,8 @@ pub(super) struct DiscoveryWindowState {
     pub(super) trusted_selection_bootstrap_pending: bool,
     pub(super) bootstrap_from_persisted_metrics: bool,
     pub(super) truncated_warm_restore_bootstrap: bool,
-    pub(super) aggregate_transition_cycles_remaining: u32,
     pub(super) last_snapshot_bucket: Option<DateTime<Utc>>,
     pub(super) last_summary: Option<DiscoverySummary>,
-    pub(super) last_summary_from_aggregates: bool,
     pub(super) last_publish_at: Option<DateTime<Utc>>,
 }
 
@@ -168,26 +166,6 @@ impl DiscoveryWindowState {
             return true;
         }
         false
-    }
-
-    pub(super) fn arm_aggregate_transition_guard(&mut self, cycles: u32) {
-        if self.aggregate_transition_cycles_remaining == 0 {
-            self.aggregate_transition_cycles_remaining = cycles.max(1);
-        }
-    }
-
-    pub(super) fn aggregate_transition_suppressed(&self) -> bool {
-        self.aggregate_transition_cycles_remaining > 0
-    }
-
-    pub(super) fn note_scoring_source(&mut self, from_aggregates: bool) {
-        self.last_summary_from_aggregates = from_aggregates;
-        if from_aggregates {
-            self.aggregate_transition_cycles_remaining =
-                self.aggregate_transition_cycles_remaining.saturating_sub(1);
-        } else {
-            self.aggregate_transition_cycles_remaining = 0;
-        }
     }
 }
 
