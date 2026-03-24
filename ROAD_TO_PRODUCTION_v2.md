@@ -191,7 +191,7 @@ The current conclusions are:
    - restore must come from `runtime artifact` + `recent raw journal`
    - stale publication truth must not silently turn into trading-ready truth
 3. that new restore stack is now actually deployed on the live server:
-   - runtime repo / live build is now on commit `f19360f`
+   - runtime repo / live build is now on commit `4148969`
    - `solana-copy-bot.service` is running again
    - live discovery is no longer stuck at `active_follow_wallets = 0`
 4. the live server is still not healthy:
@@ -211,9 +211,6 @@ The current conclusions are:
 6. what remains open right now:
    - runtime has not yet exited from `bootstrap_degraded` to `healthy`
    - raw coverage is still insufficient for a real trading-ready restore
-   - the scheduled recent-raw snapshot timer is still disabled because the new
-     live rerun now exits honestly as bounded `deferred`, but still does not
-     complete a fresh large-journal snapshot on the server
    - address-scoped bounded gap-fill has now been tested against both the
      current QuickNode path and a separate Helius-specific path and still did
      not close the missing recent-raw window
@@ -244,7 +241,7 @@ Recommended operational posture now:
 
 ### 2.5 Server state (updated 2026-03-24)
 
-- Live runtime repo / deployed build: `f19360f`
+- Live runtime repo / deployed build: `4148969`
 - Historical stopped-host investigation checkout preserved below:
   - old offline tooling checkpoint before the last investigation:
     `02f887a3a37ad57cf09578c9105d1f11d08744d8`
@@ -281,13 +278,15 @@ Recommended operational posture now:
     `/var/www/solana-copy-bot/state/discovery_recent_raw.db`
   - recent raw snapshot baseline exists at
     `/var/www/solana-copy-bot/state/discovery_restore/recent_raw/latest.sqlite`
+  - latest successful recent-raw snapshot on the server is now:
+    - `/var/www/solana-copy-bot/state/discovery_restore/recent_raw/discovery_recent_raw_20260324T200613Z.sqlite`
+    - `/var/www/solana-copy-bot/state/discovery_restore/recent_raw/discovery_recent_raw_20260324T200613Z.json`
 - Current timer state:
   - `copybot-discovery-runtime-export.timer -> active/enabled`
-  - `copybot-discovery-recent-raw-snapshot.timer -> inactive/disabled`
+  - `copybot-discovery-recent-raw-snapshot.timer -> active/enabled`
   - runtime artifact export is already running on cadence
-  - recent raw snapshot timer is still disabled after the new live rerun
-    because the bounded large-journal path now exits honestly, but only as
-    transient `deferred`, not as a completed fresh snapshot
+  - recent raw snapshot timer was returned to `enabled` after the next rollout
+    completed a full fresh large-journal snapshot successfully
 - Current provider posture:
   - QuickNode remains the active production path in live config
   - `[recent_raw_gap_fill]` in `/etc/solana-copy-bot/live.server.toml` still
@@ -341,24 +340,24 @@ Recommended operational posture now:
     QuickNode block-history validation path is still operationally expensive on
     the live incident window
 - Current recent-raw snapshot rerun finding on the real server after throughput
-  hardening:
-  - `discovery_recent_raw_snapshot --scheduled --json` now exits with an
-    explicit bounded terminal outcome instead of a many-minute ambiguous run
+  hardening and practical-completion rollout:
+  - the earlier rerun on `f19360f` exited honestly as bounded `deferred`
+  - the follow-up rollout on `4148969` then completed a full live snapshot
   - observed live result:
-    - `state = deferred`
+    - `state = written`
     - `latest_surface_status = healthy`
-    - `latest_surface_action = deferred_due_to_attempt_budget`
-    - `terminal_reason = attempt_duration_budget_exhausted`
-    - `source_total_bytes = 1789535936`
+    - `latest_surface_action = refreshed_from_source`
+    - `terminal_reason = written`
+    - `source_total_bytes = 1917220544`
     - `snapshot_pages_per_step = 1024`
     - `snapshot_max_attempt_duration_ms = 120000`
-    - `attempt_duration_ms = 120005`
-    - `backup_step_count = 14000`
-    - `backup_copied_page_count = 2048`
-    - `backup_total_page_count = 320813`
-  - current conclusion: the snapshot path is now operationally honest and
-    bounded, but it still did not finish a fresh large-journal snapshot on the
-    live server
+    - `attempt_duration_ms = 7927`
+    - `backup_step_count = 343`
+    - `backup_copied_page_count = 350752`
+    - `backup_total_page_count = 350752`
+    - `snapshot_bytes = 1436680192`
+  - current conclusion: the recent-raw snapshot path is now operationally
+    closed on the live server and the timer is back in service
 - Business meaning of the current server state:
   - the dead multi-day replay path is no longer the active plan
   - discovery is alive on a new fresh runtime DB and holding `15` wallets instead of zero
