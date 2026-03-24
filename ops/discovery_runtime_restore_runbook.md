@@ -32,6 +32,7 @@ Live config defaults in `ops/server_templates/live.server.toml.example`:
    - live QuickNode contract currently throttles this path at `125 req/s`; keep the configured limiter below that ceiling
    - default Phase A budget knobs: `program_history_validation.phase_a_max_slots_to_scan`, `program_history_validation.phase_a_sampling_segments`, `program_history_validation.phase_a_max_blocks_per_window`
    - default Phase B parse budget: `program_history_validation.max_slots_to_scan` and `program_history_validation.sampling_segments`
+   - default Phase B cost budget knobs: `program_history_validation.phase_b_max_blocks_to_fetch`, `program_history_validation.phase_b_max_candidate_transactions_to_parse`, `program_history_validation.phase_b_parseable_rows_target`
    - Phase A positive means only `viable_enough_for_phase_b`; it is not final source proof and it is not restore-ready proof
    - this is validation-only; it does not restore coverage or enable trading by itself
 
@@ -372,11 +373,17 @@ Fields to inspect:
 7. `final_source_proof_completed`
 8. `scan_budget_slots`
 9. `budget_exhausted`
-10. `requested_window_start`
-11. `requested_window_end`
-12. `candidate_program_transactions`
-13. `parsed_candidate_swap_rows`
-14. `missing_segments`
+10. `phase_b_cost_budget_exhausted`
+11. `phase_b_max_blocks_to_fetch`
+12. `phase_b_max_candidate_transactions_to_parse`
+13. `phase_b_parseable_rows_target`
+14. `requested_window_start`
+15. `requested_window_end`
+16. `candidate_program_transactions`
+17. `parsed_candidate_transactions`
+18. `parsed_candidate_swap_rows`
+19. `early_stop_reason`
+20. `missing_segments`
 
 Verdict semantics:
 
@@ -392,12 +399,16 @@ Verdict semantics:
    - the current local scan budget was too small for the bounded slot span
    - in Phase A this means the cheap presence probe did not prove viability yet
    - in Phase B this means practical parseability/usefulness was not proven yet
-4. `not_proven_due_to_sparse_program_history`:
+4. `not_proven_due_to_phase_b_cost_budget`:
+   - Phase B hit its own bounded block-fetch or candidate-parse cost budget
+   - this is the terminal “QuickNode expensive proof is still too costly here” outcome
+   - it is not a hard provider rejection and it is not a fake positive
+5. `not_proven_due_to_sparse_program_history`:
    - the scanned window completed, but it did not yield enough target-program raw to prove the next step
-5. `not_proven_due_to_provider_throttling`:
+6. `not_proven_due_to_provider_throttling`:
    - the tool respected its local limiter, retried 429s, and still exhausted provider throttling retries
    - this is not a hard provider rejection; lower `max_requests_per_second`, raise `retry_429_backoff_ms`, or rerun later
-6. `non_viable_source_contract`:
+7. `non_viable_source_contract`:
    - the source contract itself failed to provide usable block-history coverage for the scan path
 
 If Phase A returns `viable_enough_for_phase_b`, escalate explicitly into Phase B:
@@ -410,6 +421,14 @@ If Phase A returns `viable_enough_for_phase_b`, escalate explicitly into Phase B
   --http-url "${PROGRAM_HISTORY_VALIDATION_URL}" \
   --json | tee /tmp/discovery_program_history_phase_b.json
 ```
+
+Phase B now has its own bounded internal terminal contract:
+
+1. it narrows to target-program candidate transactions before attempting swap parse
+2. it only parses candidates that still have swap-like balance evidence
+3. it stops early on the first sufficient parseable signal
+4. if that signal does not arrive before the configured Phase B cost budget,
+   the tool returns terminal JSON with `not_proven_due_to_phase_b_cost_budget`
 
 If Phase A or Phase B returns `not_proven_due_to_budget`, you can rerun with a
 larger explicit budget. For Phase A, raise `--max-slots-to-scan` and, if
@@ -434,6 +453,15 @@ PY
   --max-blocks-per-window 24 \
   --json | tee /tmp/discovery_program_history_phase_a_expanded.json
 ```
+
+If Phase B returns `not_proven_due_to_phase_b_cost_budget`, treat that as the
+bounded “this expensive QuickNode proof is still too costly” signal. Tune only
+if you still want to invest in this path:
+
+1. raise `program_history_validation.phase_b_max_blocks_to_fetch`
+2. raise `program_history_validation.phase_b_max_candidate_transactions_to_parse`
+3. keep `program_history_validation.phase_b_parseable_rows_target = 1` unless you intentionally want a stricter proof threshold
+4. if repeated reruns still end in the same verdict, stop investing in this QuickNode expensive path for the incident and record it as operationally impractical
 
 If the verdict is `not_proven_due_to_provider_throttling`, tune the config in
 `/etc/solana-copy-bot/live.server.toml` before rerunning:

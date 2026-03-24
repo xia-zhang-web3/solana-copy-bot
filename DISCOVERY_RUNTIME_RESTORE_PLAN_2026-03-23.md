@@ -1568,6 +1568,39 @@ program-history ветке:
 - новый operator contract больше не смешивает cheap source-presence proof с
   final parseability/usefulness proof
 
+### 18.6 Audit sync: bounded terminal contract for expensive Phase B (`2026-03-24`)
+
+Следующий узкий шаг после split тоже зафиксирован в коде:
+
+- `phase_b` теперь не должен зависеть от внешнего `timeout 900`, чтобы
+  завершиться
+- у него появился отдельный internal cost budget:
+  - `phase_b_max_blocks_to_fetch`
+  - `phase_b_max_candidate_transactions_to_parse`
+  - `phase_b_parseable_rows_target`
+- добавлен terminal outcome:
+  - `not_proven_due_to_phase_b_cost_budget`
+
+Что это значит practically:
+
+- если expensive QuickNode Phase B быстро находит достаточный parseable signal,
+  он завершает run рано и дает terminal verdict
+- если signal не найден до internal cost budget, run тоже завершается рано,
+  но уже честным bounded `not_proven` outcome
+- `non_viable_source_contract` больше не должен случайно использоваться для
+  этой operational cost problem
+
+Это по-прежнему не делает QuickNode expensive path automatically viable для
+инцидента. Но теперь этот path дает уже meaningful bounded decision, а не
+просто hanging run, который убивает внешний timeout.
+
+Статус аудита:
+
+- принят
+- expensive `phase_b` теперь имеет собственный bounded terminal contract
+- `not_proven_due_to_phase_b_cost_budget` честно отделяет operational cost
+  problem от hard source-contract failure
+
 - что другой source уже доказан
 
 Честный текущий вывод:

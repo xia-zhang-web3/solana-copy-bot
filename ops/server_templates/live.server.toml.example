@@ -52,6 +52,8 @@ source = "quicknode_blocks_rpc"
 # Phase A is the cheap default: it proves target-program presence only and can
 # return `viable_enough_for_phase_b` without claiming final parseability/usefulness.
 # Phase B is the expensive escalation: it uses the larger parse budget below.
+# Phase B also has its own internal cost budget so the tool returns terminal
+# JSON instead of hanging until an external timeout kills the process.
 http_url = "https://YOUR_QUICKNODE_HOST.solana-mainnet.quiknode.pro/REPLACE_ON_SERVER/"
 request_timeout_ms = 20000
 max_requests_per_second = 100
@@ -61,6 +63,9 @@ block_batch_size = 512
 phase_a_max_slots_to_scan = 4096
 phase_a_sampling_segments = 8
 phase_a_max_blocks_per_window = 12
+phase_b_max_blocks_to_fetch = 1024
+phase_b_max_candidate_transactions_to_parse = 2048
+phase_b_parseable_rows_target = 1
 max_slots_to_scan = 20000
 sampling_segments = 8
 block_time_probe_slots = 128

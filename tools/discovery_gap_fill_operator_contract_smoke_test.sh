@@ -72,6 +72,18 @@ cfg_value() {
   echo "template program_history_validation.phase_a_max_blocks_per_window must be 12" >&2
   exit 1
 }
+[[ "$(cfg_value "$TEMPLATE_PATH" program_history_validation phase_b_max_blocks_to_fetch)" == "1024" ]] || {
+  echo "template program_history_validation.phase_b_max_blocks_to_fetch must be 1024" >&2
+  exit 1
+}
+[[ "$(cfg_value "$TEMPLATE_PATH" program_history_validation phase_b_max_candidate_transactions_to_parse)" == "2048" ]] || {
+  echo "template program_history_validation.phase_b_max_candidate_transactions_to_parse must be 2048" >&2
+  exit 1
+}
+[[ "$(cfg_value "$TEMPLATE_PATH" program_history_validation phase_b_parseable_rows_target)" == "1" ]] || {
+  echo "template program_history_validation.phase_b_parseable_rows_target must be 1" >&2
+  exit 1
+}
 [[ "$(cfg_value "$TEMPLATE_PATH" program_history_validation max_requests_per_second)" == "100" ]] || {
   echo "template program_history_validation.max_requests_per_second must be 100" >&2
   exit 1
@@ -104,12 +116,17 @@ assert "--phase phase_b" in runbook, "runbook must document Phase B invocation"
 assert "viable_enough_for_phase_b" in runbook, "runbook must explain Phase A positive semantics"
 assert "Phase A" in runbook and "Phase B" in runbook, "runbook must explain both validation phases"
 assert "not_proven_due_to_budget" in runbook, "runbook must explain budget-exhausted validation outcome"
+assert "not_proven_due_to_phase_b_cost_budget" in runbook, "runbook must explain Phase B cost-budget outcome"
 assert "not_proven_due_to_provider_throttling" in runbook, "runbook must explain provider throttling outcome"
 assert "non_viable_source_contract" in runbook, "runbook must distinguish source-contract failure"
 assert "--max-slots-to-scan" in runbook, "runbook must show the explicit budget-tuning path"
 assert "--max-blocks-per-window" in runbook, "runbook must show Phase A block-sampling tuning"
 assert "coverage_method" in runbook, "runbook must document coverage method output"
 assert "final_source_proof_completed" in runbook, "runbook must document final source proof semantics"
+assert "phase_b_max_blocks_to_fetch" in runbook, "runbook must document Phase B block cost budget"
+assert "phase_b_max_candidate_transactions_to_parse" in runbook, "runbook must document Phase B candidate parse budget"
+assert "phase_b_parseable_rows_target" in runbook, "runbook must document Phase B parseable-row target"
+assert "early_stop_reason" in runbook, "runbook must document Phase B early-stop output"
 assert "max_requests_per_second" in runbook, "runbook must document QuickNode rate limiter knobs"
 assert "retry_429_backoff_ms" in runbook, "runbook must document 429 retry backoff tuning"
 assert "125 req/s" in runbook, "runbook must document the QuickNode throttling contract"

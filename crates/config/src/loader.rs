@@ -1036,6 +1036,33 @@ fn validate_program_history_validation_config(config: &AppConfig) -> Result<()> 
             validation.phase_a_max_blocks_per_window
         ));
     }
+    if validation.phase_b_max_blocks_to_fetch == 0 {
+        return Err(anyhow!(
+            "program_history_validation.phase_b_max_blocks_to_fetch ({}) must be >= 1",
+            validation.phase_b_max_blocks_to_fetch
+        ));
+    }
+    if validation.phase_b_max_candidate_transactions_to_parse == 0 {
+        return Err(anyhow!(
+            "program_history_validation.phase_b_max_candidate_transactions_to_parse ({}) must be >= 1",
+            validation.phase_b_max_candidate_transactions_to_parse
+        ));
+    }
+    if validation.phase_b_parseable_rows_target == 0 {
+        return Err(anyhow!(
+            "program_history_validation.phase_b_parseable_rows_target ({}) must be >= 1",
+            validation.phase_b_parseable_rows_target
+        ));
+    }
+    if validation.phase_b_parseable_rows_target
+        > validation.phase_b_max_candidate_transactions_to_parse
+    {
+        return Err(anyhow!(
+            "program_history_validation.phase_b_parseable_rows_target ({}) must be <= program_history_validation.phase_b_max_candidate_transactions_to_parse ({})",
+            validation.phase_b_parseable_rows_target,
+            validation.phase_b_max_candidate_transactions_to_parse
+        ));
+    }
     if validation.max_slots_to_scan == 0 {
         return Err(anyhow!(
             "program_history_validation.max_slots_to_scan ({}) must be >= 1",

@@ -93,6 +93,12 @@ fn program_history_validation_defaults_are_quicknode_first_and_bounded() {
     assert_eq!(validation.phase_a_max_slots_to_scan, 4_096);
     assert_eq!(validation.phase_a_sampling_segments, 8);
     assert_eq!(validation.phase_a_max_blocks_per_window, 12);
+    assert_eq!(validation.phase_b_max_blocks_to_fetch, 1_024);
+    assert_eq!(
+        validation.phase_b_max_candidate_transactions_to_parse,
+        2_048
+    );
+    assert_eq!(validation.phase_b_parseable_rows_target, 1);
     assert_eq!(validation.max_slots_to_scan, 20_000);
     assert_eq!(validation.sampling_segments, 8);
     assert_eq!(validation.block_time_probe_slots, 128);
@@ -166,6 +172,9 @@ block_batch_size = 400
 phase_a_max_slots_to_scan = 2048
 phase_a_sampling_segments = 4
 phase_a_max_blocks_per_window = 10
+phase_b_max_blocks_to_fetch = 700
+phase_b_max_candidate_transactions_to_parse = 1500
+phase_b_parseable_rows_target = 2
 max_slots_to_scan = 12000
 sampling_segments = 6
 block_time_probe_slots = 64
@@ -235,6 +244,24 @@ metric_snapshot_interval_seconds = 1800
                     .program_history_validation
                     .phase_a_max_blocks_per_window,
                 10
+            );
+            assert_eq!(
+                config
+                    .program_history_validation
+                    .phase_b_max_blocks_to_fetch,
+                700
+            );
+            assert_eq!(
+                config
+                    .program_history_validation
+                    .phase_b_max_candidate_transactions_to_parse,
+                1_500
+            );
+            assert_eq!(
+                config
+                    .program_history_validation
+                    .phase_b_parseable_rows_target,
+                2
             );
             assert_eq!(config.program_history_validation.max_slots_to_scan, 12_000);
             assert_eq!(config.program_history_validation.sampling_segments, 6);
@@ -320,6 +347,24 @@ fn live_server_template_exposes_recent_raw_gap_fill_contract() {
             .program_history_validation
             .phase_a_max_blocks_per_window,
         12
+    );
+    assert_eq!(
+        config
+            .program_history_validation
+            .phase_b_max_blocks_to_fetch,
+        1_024
+    );
+    assert_eq!(
+        config
+            .program_history_validation
+            .phase_b_max_candidate_transactions_to_parse,
+        2_048
+    );
+    assert_eq!(
+        config
+            .program_history_validation
+            .phase_b_parseable_rows_target,
+        1
     );
     assert_eq!(config.program_history_validation.sampling_segments, 8);
 }
@@ -532,6 +577,54 @@ metric_snapshot_interval_seconds = 1800
             assert!(
                 err.contains(
                     "program_history_validation.phase_a_max_blocks_per_window (0) must be >= 1"
+                ),
+                "unexpected error: {err}"
+            );
+        },
+    );
+}
+
+#[test]
+fn load_from_path_rejects_program_history_validation_invalid_phase_b_bounds() {
+    with_temp_config_file(
+        r#"
+[program_history_validation]
+http_url = "https://quicknode.example/?api-key=test"
+phase_b_max_blocks_to_fetch = 0
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("phase_b block budget must fail when zero")
+                .to_string();
+            assert!(
+                err.contains(
+                    "program_history_validation.phase_b_max_blocks_to_fetch (0) must be >= 1"
+                ),
+                "unexpected error: {err}"
+            );
+        },
+    );
+
+    with_temp_config_file(
+        r#"
+[program_history_validation]
+http_url = "https://quicknode.example/?api-key=test"
+phase_b_max_candidate_transactions_to_parse = 3
+phase_b_parseable_rows_target = 4
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("phase_b parse target above parse budget must fail")
+                .to_string();
+            assert!(
+                err.contains(
+                    "program_history_validation.phase_b_parseable_rows_target (4) must be <= program_history_validation.phase_b_max_candidate_transactions_to_parse (3)"
                 ),
                 "unexpected error: {err}"
             );
