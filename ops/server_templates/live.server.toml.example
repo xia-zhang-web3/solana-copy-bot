@@ -49,15 +49,18 @@ source = "quicknode_blocks_rpc"
 # file or via an explicit CLI override.
 # QuickNode currently throttles this validation path at 125 req/s. Keep the
 # local limiter below that ceiling so the tool does not self-inflict 429 storms.
-# `max_slots_to_scan` is the local validation budget, not a provider verdict.
-# If the bounded window is larger, the tool switches to staged slot sampling and
-# returns `not_proven_due_to_budget` unless you intentionally raise the budget.
+# Phase A is the cheap default: it proves target-program presence only and can
+# return `viable_enough_for_phase_b` without claiming final parseability/usefulness.
+# Phase B is the expensive escalation: it uses the larger parse budget below.
 http_url = "https://YOUR_QUICKNODE_HOST.solana-mainnet.quiknode.pro/REPLACE_ON_SERVER/"
 request_timeout_ms = 20000
 max_requests_per_second = 100
 retry_429_max_attempts = 4
 retry_429_backoff_ms = 250
 block_batch_size = 512
+phase_a_max_slots_to_scan = 4096
+phase_a_sampling_segments = 8
+phase_a_max_blocks_per_window = 12
 max_slots_to_scan = 20000
 sampling_segments = 8
 block_time_probe_slots = 128

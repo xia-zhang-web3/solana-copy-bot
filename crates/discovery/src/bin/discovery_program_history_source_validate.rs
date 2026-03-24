@@ -22,7 +22,7 @@ use std::time::{Duration as StdDuration, Instant};
 #[cfg(test)]
 use tempfile::tempdir;
 
-const USAGE: &str = "usage: discovery_program_history_source_validate --config <path> [--db-path <path>] [--window-start <rfc3339> --window-end <rfc3339>] [--http-url <url>] [--max-slots-to-scan <n>] [--sampling-segments <n>] [--report-path <path>] [--json]";
+const USAGE: &str = "usage: discovery_program_history_source_validate --config <path> [--db-path <path>] [--phase <phase_a|phase_b>] [--window-start <rfc3339> --window-end <rfc3339>] [--http-url <url>] [--max-slots-to-scan <n>] [--sampling-segments <n>] [--max-blocks-per-window <n>] [--report-path <path>] [--json]";
 const AVG_SLOT_MS: f64 = 400.0;
 
 fn main() -> Result<()> {
@@ -38,17 +38,20 @@ fn main() -> Result<()> {
 struct Config {
     config_path: PathBuf,
     db_path: Option<PathBuf>,
+    phase: ValidationPhase,
     window_start: Option<DateTime<Utc>>,
     window_end: Option<DateTime<Utc>>,
     http_url: Option<String>,
     max_slots_to_scan_override: Option<usize>,
     sampling_segments_override: Option<usize>,
+    max_blocks_per_window_override: Option<usize>,
     report_path: Option<PathBuf>,
     json: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ValidationReport {
+    phase: String,
     provider_name: String,
     source_kind: String,
     rpc_methods: Vec<String>,
@@ -63,15 +66,21 @@ struct ValidationReport {
     resolved_end_slot: Option<u64>,
     slot_span: Option<u64>,
     coverage_method: String,
+    next_step: String,
+    phase_b_required_for_final_source_proof: bool,
+    final_source_proof_completed: bool,
+    expensive_parse_executed: bool,
     scan_budget_slots: usize,
     budget_exhausted: bool,
     sampling_segments: usize,
     sampling_window_slots: usize,
+    max_blocks_per_window: usize,
     max_requests_per_second: usize,
     retry_429_max_attempts: usize,
     retry_429_backoff_ms: u64,
     scanned_batches: usize,
     scanned_slots: usize,
+    listed_block_slots: usize,
     scanned_blocks: usize,
     scanned_transactions: usize,
     candidate_program_transactions: usize,
@@ -87,6 +96,7 @@ struct ValidationReport {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValidationVerdict {
+    ViableEnoughForPhaseB,
     Viable,
     NotProvenDueToBudget,
     NotProvenDueToProviderThrottling,
@@ -97,12 +107,54 @@ enum ValidationVerdict {
 impl ValidationVerdict {
     fn as_str(self) -> &'static str {
         match self {
+            Self::ViableEnoughForPhaseB => "viable_enough_for_phase_b",
             Self::Viable => "viable",
             Self::NotProvenDueToBudget => "not_proven_due_to_budget",
             Self::NotProvenDueToProviderThrottling => "not_proven_due_to_provider_throttling",
             Self::NotProvenDueToSparseProgramHistory => "not_proven_due_to_sparse_program_history",
             Self::NonViableSourceContract => "non_viable_source_contract",
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValidationPhase {
+    PhaseA,
+    PhaseB,
+}
+
+impl ValidationPhase {
+    fn parse(raw: &str) -> Result<Self> {
+        match raw.trim() {
+            "phase_a" => Ok(Self::PhaseA),
+            "phase_b" => Ok(Self::PhaseB),
+            other => bail!("--phase must be phase_a or phase_b, got {other}"),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PhaseA => "phase_a",
+            Self::PhaseB => "phase_b",
+        }
+    }
+
+    fn scan_mode(self) -> ValidationScanMode {
+        match self {
+            Self::PhaseA => ValidationScanMode::PresenceOnly,
+            Self::PhaseB => ValidationScanMode::ParseableSwaps,
+        }
+    }
+
+    fn next_step_for_positive_verdict(self) -> &'static str {
+        match self {
+            Self::PhaseA => "phase_b_escalation",
+            Self::PhaseB => "program_scoped_gap_fill_batch",
+        }
+    }
+
+    fn final_source_proof_completed(self, verdict: ValidationVerdict) -> bool {
+        matches!(self, Self::PhaseB) && matches!(verdict, ValidationVerdict::Viable)
     }
 }
 
@@ -127,6 +179,12 @@ struct SlotScanWindow {
     end_slot: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValidationScanMode {
+    PresenceOnly,
+    ParseableSwaps,
+}
+
 #[derive(Debug, Clone)]
 struct ValidationScanPlan {
     coverage_method: &'static str,
@@ -134,6 +192,7 @@ struct ValidationScanPlan {
     budget_exhausted: bool,
     sampling_segments: usize,
     sampling_window_slots: usize,
+    max_blocks_per_window: usize,
     windows: Vec<SlotScanWindow>,
 }
 
@@ -141,6 +200,7 @@ struct ValidationScanPlan {
 struct ValidationScanSummary {
     scanned_batches: usize,
     scanned_slots: usize,
+    listed_block_slots: usize,
     scanned_blocks: usize,
     scanned_transactions: usize,
     candidate_program_transactions: usize,
@@ -379,11 +439,13 @@ where
     let mut args = args.into_iter();
     let mut config_path: Option<PathBuf> = None;
     let mut db_path: Option<PathBuf> = None;
+    let mut phase = ValidationPhase::PhaseA;
     let mut window_start: Option<DateTime<Utc>> = None;
     let mut window_end: Option<DateTime<Utc>> = None;
     let mut http_url: Option<String> = None;
     let mut max_slots_to_scan_override: Option<usize> = None;
     let mut sampling_segments_override: Option<usize> = None;
+    let mut max_blocks_per_window_override: Option<usize> = None;
     let mut report_path: Option<PathBuf> = None;
     let mut json = false;
 
@@ -395,6 +457,9 @@ where
             "--db-path" => {
                 db_path = Some(PathBuf::from(parse_string_arg("--db-path", args.next())?))
             }
+            "--phase" => {
+                phase = ValidationPhase::parse(&parse_string_arg("--phase", args.next())?)?
+            }
             "--window-start" => window_start = Some(parse_ts_arg("--window-start", args.next())?),
             "--window-end" => window_end = Some(parse_ts_arg("--window-end", args.next())?),
             "--http-url" => http_url = Some(parse_string_arg("--http-url", args.next())?),
@@ -405,6 +470,10 @@ where
             "--sampling-segments" => {
                 sampling_segments_override =
                     Some(parse_usize_arg("--sampling-segments", args.next())?)
+            }
+            "--max-blocks-per-window" => {
+                max_blocks_per_window_override =
+                    Some(parse_usize_arg("--max-blocks-per-window", args.next())?)
             }
             "--report-path" => {
                 report_path = Some(PathBuf::from(parse_string_arg(
@@ -424,11 +493,13 @@ where
     Ok(Some(Config {
         config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
         db_path,
+        phase,
         window_start,
         window_end,
         http_url,
         max_slots_to_scan_override,
         sampling_segments_override,
+        max_blocks_per_window_override,
         report_path,
         json,
     }))
@@ -510,6 +581,7 @@ fn run_with_source<S: ProgramHistorySource>(
     let target_program_ids = sorted_program_ids(&program_ids);
 
     let base_report = ValidationReport {
+        phase: config.phase.as_str().to_string(),
         provider_name: source.provider_name().to_string(),
         source_kind: source.source_kind().to_string(),
         rpc_methods: source.rpc_methods(),
@@ -524,10 +596,15 @@ fn run_with_source<S: ProgramHistorySource>(
         resolved_end_slot: None,
         slot_span: None,
         coverage_method: "unresolved".to_string(),
+        next_step: "operator_review".to_string(),
+        phase_b_required_for_final_source_proof: matches!(config.phase, ValidationPhase::PhaseA),
+        final_source_proof_completed: false,
+        expensive_parse_executed: matches!(config.phase, ValidationPhase::PhaseB),
         scan_budget_slots: 0,
         budget_exhausted: false,
         sampling_segments: 0,
         sampling_window_slots: 0,
+        max_blocks_per_window: 0,
         max_requests_per_second: loaded_config
             .program_history_validation
             .max_requests_per_second,
@@ -539,6 +616,7 @@ fn run_with_source<S: ProgramHistorySource>(
             .retry_429_backoff_ms,
         scanned_batches: 0,
         scanned_slots: 0,
+        listed_block_slots: 0,
         scanned_blocks: 0,
         scanned_transactions: 0,
         candidate_program_transactions: 0,
@@ -587,18 +665,14 @@ fn run_with_source<S: ProgramHistorySource>(
     report.resolved_end_slot = Some(bounds.end_slot);
     report.slot_span = Some(slot_span);
 
-    let scan_limit = config
-        .max_slots_to_scan_override
-        .unwrap_or(loaded_config.program_history_validation.max_slots_to_scan);
-    let sampling_segments = config
-        .sampling_segments_override
-        .unwrap_or(loaded_config.program_history_validation.sampling_segments);
-    let scan_plan = build_scan_plan(bounds.clone(), scan_limit, sampling_segments);
+    let scan_settings = resolve_phase_scan_settings(&config, loaded_config)?;
+    let scan_plan = build_scan_plan(bounds.clone(), config.phase, scan_settings);
     report.coverage_method = scan_plan.coverage_method.to_string();
     report.scan_budget_slots = scan_plan.scan_budget_slots;
     report.budget_exhausted = scan_plan.budget_exhausted;
     report.sampling_segments = scan_plan.sampling_segments;
     report.sampling_window_slots = scan_plan.sampling_window_slots;
+    report.max_blocks_per_window = scan_plan.max_blocks_per_window;
     if scan_plan.budget_exhausted {
         report.missing_segments.push(GapFillMissingSegment {
             start: plan.requested_window_start,
@@ -609,11 +683,13 @@ fn run_with_source<S: ProgramHistorySource>(
 
     let summary = match scan_slot_windows(
         source,
+        config.phase.scan_mode(),
         &program_ids,
         plan.requested_window_start,
         plan.requested_window_end,
         &scan_plan.windows,
         loaded_config.program_history_validation.block_batch_size,
+        scan_plan.max_blocks_per_window,
     ) {
         Ok(summary) => summary,
         Err(error) => {
@@ -626,6 +702,7 @@ fn run_with_source<S: ProgramHistorySource>(
 
     report.scanned_batches = summary.scanned_batches;
     report.scanned_slots = summary.scanned_slots;
+    report.listed_block_slots = summary.listed_block_slots;
     report.scanned_blocks = summary.scanned_blocks;
     report.scanned_transactions = summary.scanned_transactions;
     report.candidate_program_transactions = summary.candidate_program_transactions;
@@ -634,7 +711,8 @@ fn run_with_source<S: ProgramHistorySource>(
     report.latest_seen = summary.latest_seen;
     report.missing_segments.extend(summary.missing_segments);
 
-    let (verdict, reason, sufficient) = classify_validation_outcome(
+    let (verdict, reason, sufficient, next_step) = classify_validation_outcome(
+        config.phase,
         &report,
         plan.requested_window_start,
         plan.requested_window_end,
@@ -642,6 +720,10 @@ fn run_with_source<S: ProgramHistorySource>(
     report.verdict = verdict.as_str().to_string();
     report.reason = reason;
     report.sufficient_for_next_step = sufficient;
+    report.next_step = next_step.to_string();
+    report.phase_b_required_for_final_source_proof =
+        matches!(config.phase, ValidationPhase::PhaseA);
+    report.final_source_proof_completed = config.phase.final_source_proof_completed(verdict);
     if config.json {
         // no-op; final rendering will serialize the struct
     }
@@ -702,6 +784,52 @@ fn sorted_program_ids(program_ids: &ProgramIdConfig) -> Vec<String> {
     ids
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PhaseScanSettings {
+    max_slots_to_scan: usize,
+    sampling_segments: usize,
+    max_blocks_per_window: usize,
+}
+
+fn resolve_phase_scan_settings(
+    config: &Config,
+    loaded_config: &copybot_config::AppConfig,
+) -> Result<PhaseScanSettings> {
+    match config.phase {
+        ValidationPhase::PhaseA => Ok(PhaseScanSettings {
+            max_slots_to_scan: config.max_slots_to_scan_override.unwrap_or(
+                loaded_config
+                    .program_history_validation
+                    .phase_a_max_slots_to_scan,
+            ),
+            sampling_segments: config.sampling_segments_override.unwrap_or(
+                loaded_config
+                    .program_history_validation
+                    .phase_a_sampling_segments,
+            ),
+            max_blocks_per_window: config.max_blocks_per_window_override.unwrap_or(
+                loaded_config
+                    .program_history_validation
+                    .phase_a_max_blocks_per_window,
+            ),
+        }),
+        ValidationPhase::PhaseB => {
+            if config.max_blocks_per_window_override.is_some() {
+                bail!("--max-blocks-per-window applies only to --phase phase_a");
+            }
+            Ok(PhaseScanSettings {
+                max_slots_to_scan: config
+                    .max_slots_to_scan_override
+                    .unwrap_or(loaded_config.program_history_validation.max_slots_to_scan),
+                sampling_segments: config
+                    .sampling_segments_override
+                    .unwrap_or(loaded_config.program_history_validation.sampling_segments),
+                max_blocks_per_window: 0,
+            })
+        }
+    }
+}
+
 fn classify_source_error(context: &str, error: &anyhow::Error) -> (ValidationVerdict, String) {
     match source_error_kind(error) {
         Some(SourceErrorKind::ProviderThrottled) => (
@@ -725,21 +853,25 @@ fn source_error_kind(error: &anyhow::Error) -> Option<SourceErrorKind> {
 
 fn build_scan_plan(
     bounds: ResolvedSlotBounds,
-    max_slots_to_scan: usize,
-    sampling_segments: usize,
+    phase: ValidationPhase,
+    settings: PhaseScanSettings,
 ) -> ValidationScanPlan {
-    let scan_budget_slots = max_slots_to_scan.max(1);
+    let scan_budget_slots = settings.max_slots_to_scan.max(1);
     let slot_span = bounds
         .end_slot
         .saturating_sub(bounds.start_slot)
         .saturating_add(1);
     if slot_span <= scan_budget_slots as u64 {
         return ValidationScanPlan {
-            coverage_method: "full_slot_scan",
+            coverage_method: match phase {
+                ValidationPhase::PhaseA => "phase_a_block_sampling_full_window",
+                ValidationPhase::PhaseB => "phase_b_full_slot_scan",
+            },
             scan_budget_slots,
             budget_exhausted: false,
             sampling_segments: 0,
             sampling_window_slots: 0,
+            max_blocks_per_window: settings.max_blocks_per_window,
             windows: vec![SlotScanWindow {
                 start_slot: bounds.start_slot,
                 end_slot: bounds.end_slot,
@@ -747,7 +879,7 @@ fn build_scan_plan(
         };
     }
 
-    let segment_count = sampling_segments.max(1).min(scan_budget_slots);
+    let segment_count = settings.sampling_segments.max(1).min(scan_budget_slots);
     let window_slots = (scan_budget_slots / segment_count).max(1) as u64;
     let max_start_offset = slot_span.saturating_sub(window_slots);
     let mut windows = Vec::with_capacity(segment_count);
@@ -773,11 +905,15 @@ fn build_scan_plan(
     }
 
     ValidationScanPlan {
-        coverage_method: "staged_slot_sampling",
+        coverage_method: match phase {
+            ValidationPhase::PhaseA => "phase_a_staged_block_sampling",
+            ValidationPhase::PhaseB => "phase_b_staged_slot_sampling",
+        },
         scan_budget_slots,
         budget_exhausted: true,
         sampling_segments: windows.len(),
         sampling_window_slots: window_slots as usize,
+        max_blocks_per_window: settings.max_blocks_per_window,
         windows,
     }
 }
@@ -892,27 +1028,34 @@ fn nearest_slot_with_time<S: ProgramHistorySource>(
 
 fn scan_slot_windows<S: ProgramHistorySource>(
     source: &S,
+    scan_mode: ValidationScanMode,
     program_ids: &ProgramIdConfig,
     requested_window_start: DateTime<Utc>,
     requested_window_end: DateTime<Utc>,
     windows: &[SlotScanWindow],
     block_batch_size: usize,
+    max_blocks_per_window: usize,
 ) -> Result<ValidationScanSummary> {
     let mut combined = ValidationScanSummary::default();
     for window in windows {
         let summary = scan_slot_range(
             source,
+            scan_mode,
             program_ids,
             requested_window_start,
             requested_window_end,
             window.start_slot,
             window.end_slot,
             block_batch_size,
+            max_blocks_per_window,
         )?;
         combined.scanned_batches = combined
             .scanned_batches
             .saturating_add(summary.scanned_batches);
         combined.scanned_slots = combined.scanned_slots.saturating_add(summary.scanned_slots);
+        combined.listed_block_slots = combined
+            .listed_block_slots
+            .saturating_add(summary.listed_block_slots);
         combined.scanned_blocks = combined
             .scanned_blocks
             .saturating_add(summary.scanned_blocks);
@@ -936,18 +1079,25 @@ fn scan_slot_windows<S: ProgramHistorySource>(
             (current, None) => current,
         };
         combined.missing_segments.extend(summary.missing_segments);
+        if matches!(scan_mode, ValidationScanMode::PresenceOnly)
+            && combined.candidate_program_transactions > 0
+        {
+            break;
+        }
     }
     Ok(combined)
 }
 
 fn scan_slot_range<S: ProgramHistorySource>(
     source: &S,
+    scan_mode: ValidationScanMode,
     program_ids: &ProgramIdConfig,
     requested_window_start: DateTime<Utc>,
     requested_window_end: DateTime<Utc>,
     start_slot: u64,
     end_slot: u64,
     block_batch_size: usize,
+    max_blocks_per_window: usize,
 ) -> Result<ValidationScanSummary> {
     let mut summary = ValidationScanSummary::default();
     if end_slot < start_slot {
@@ -961,9 +1111,18 @@ fn scan_slot_range<S: ProgramHistorySource>(
         summary.scanned_slots = summary
             .scanned_slots
             .saturating_add(batch_end.saturating_sub(batch_start).saturating_add(1) as usize);
-        let block_slots = source.list_blocks(batch_start, batch_end)?;
-        summary.scanned_blocks = summary.scanned_blocks.saturating_add(block_slots.len());
+        let available_block_slots = source.list_blocks(batch_start, batch_end)?;
+        summary.listed_block_slots = summary
+            .listed_block_slots
+            .saturating_add(available_block_slots.len());
+        let block_slots = match scan_mode {
+            ValidationScanMode::PresenceOnly => {
+                sample_block_slots(&available_block_slots, max_blocks_per_window)
+            }
+            ValidationScanMode::ParseableSwaps => available_block_slots,
+        };
         for slot in block_slots {
+            summary.scanned_blocks = summary.scanned_blocks.saturating_add(1);
             let Some(block) = source.get_block(slot)? else {
                 continue;
             };
@@ -974,10 +1133,8 @@ fn scan_slot_range<S: ProgramHistorySource>(
             let Some(transactions) = block.get("transactions").and_then(Value::as_array) else {
                 continue;
             };
-            summary.scanned_transactions = summary
-                .scanned_transactions
-                .saturating_add(transactions.len());
             for transaction in transactions {
+                summary.scanned_transactions = summary.scanned_transactions.saturating_add(1);
                 let tx = with_block_context(transaction, slot, block_time);
                 let tx_time = tx
                     .get("blockTime")
@@ -1002,9 +1159,14 @@ fn scan_slot_range<S: ProgramHistorySource>(
                     Some(current) => Some(current.max(tx_time)),
                     None => Some(tx_time),
                 };
-                if parse_program_scoped_transaction_to_swap(&tx, program_ids)?.is_some() {
-                    summary.parsed_candidate_swap_rows =
-                        summary.parsed_candidate_swap_rows.saturating_add(1);
+                if matches!(scan_mode, ValidationScanMode::ParseableSwaps) {
+                    if parse_program_scoped_transaction_to_swap(&tx, program_ids)?.is_some() {
+                        summary.parsed_candidate_swap_rows =
+                            summary.parsed_candidate_swap_rows.saturating_add(1);
+                    }
+                }
+                if matches!(scan_mode, ValidationScanMode::PresenceOnly) {
+                    return Ok(summary);
                 }
             }
         }
@@ -1014,6 +1176,31 @@ fn scan_slot_range<S: ProgramHistorySource>(
         }
     }
     Ok(summary)
+}
+
+fn sample_block_slots(block_slots: &[u64], max_blocks_per_window: usize) -> Vec<u64> {
+    let limit = max_blocks_per_window.max(1);
+    if block_slots.len() <= limit {
+        return block_slots.to_vec();
+    }
+
+    let last_index = block_slots.len().saturating_sub(1);
+    let mut sampled_indexes = Vec::with_capacity(limit);
+    for sample_index in 0..limit {
+        let index = if limit == 1 {
+            0
+        } else {
+            last_index.saturating_mul(sample_index) / (limit.saturating_sub(1))
+        };
+        if sampled_indexes.last().copied() == Some(index) {
+            continue;
+        }
+        sampled_indexes.push(index);
+    }
+    sampled_indexes
+        .into_iter()
+        .map(|index| block_slots[index])
+        .collect()
 }
 
 fn with_block_context(transaction: &Value, slot: u64, block_time: Option<DateTime<Utc>>) -> Value {
@@ -1030,15 +1217,17 @@ fn with_block_context(transaction: &Value, slot: u64, block_time: Option<DateTim
 }
 
 fn classify_validation_outcome(
+    phase: ValidationPhase,
     report: &ValidationReport,
     requested_window_start: DateTime<Utc>,
     requested_window_end: DateTime<Utc>,
-) -> (ValidationVerdict, String, bool) {
+) -> (ValidationVerdict, String, bool, &'static str) {
     if report.slot_span.is_some_and(|span| span == 0) {
         return (
             ValidationVerdict::NonViableSourceContract,
             "resolved_slot_span_is_zero".to_string(),
             false,
+            "operator_review",
         );
     }
     if report.scanned_blocks == 0 {
@@ -1049,15 +1238,82 @@ fn classify_validation_outcome(
                 report.coverage_method
             ),
             false,
+            "operator_review",
+        );
+    }
+    match phase {
+        ValidationPhase::PhaseA => {
+            classify_phase_a_outcome(report, requested_window_start, requested_window_end)
+        }
+        ValidationPhase::PhaseB => {
+            classify_phase_b_outcome(report, requested_window_start, requested_window_end)
+        }
+    }
+}
+
+fn classify_phase_a_outcome(
+    report: &ValidationReport,
+    requested_window_start: DateTime<Utc>,
+    requested_window_end: DateTime<Utc>,
+) -> (ValidationVerdict, String, bool, &'static str) {
+    if report.candidate_program_transactions > 0 {
+        let detail = if report.budget_exhausted {
+            "phase_a_budget_exhausted_after_program_history_presence_proof"
+        } else {
+            "phase_a_program_history_presence_proved"
+        };
+        return (
+            ValidationVerdict::ViableEnoughForPhaseB,
+            format!(
+                "{detail}:coverage_method={} candidate_program_transactions={} listed_block_slots={} scanned_blocks={}",
+                report.coverage_method,
+                report.candidate_program_transactions,
+                report.listed_block_slots,
+                report.scanned_blocks
+            ),
+            true,
+            ValidationPhase::PhaseA.next_step_for_positive_verdict(),
         );
     }
     if report.budget_exhausted {
+        return (
+            ValidationVerdict::NotProvenDueToBudget,
+            format!(
+                "phase_a_budget_exhausted_before_program_history_presence_proof:slot_span={} scan_budget_slots={} sampling_segments={} sampling_window_slots={} max_blocks_per_window={}",
+                report.slot_span.unwrap_or(0),
+                report.scan_budget_slots,
+                report.sampling_segments,
+                report.sampling_window_slots,
+                report.max_blocks_per_window
+            ),
+            false,
+            "operator_review",
+        );
+    }
+    (
+        ValidationVerdict::NotProvenDueToSparseProgramHistory,
+        format!(
+            "phase_a_no_target_program_transactions_seen_in_window:{}..{}",
+            requested_window_start.to_rfc3339(),
+            requested_window_end.to_rfc3339()
+        ),
+        false,
+        "operator_review",
+    )
+}
+
+fn classify_phase_b_outcome(
+    report: &ValidationReport,
+    requested_window_start: DateTime<Utc>,
+    requested_window_end: DateTime<Utc>,
+) -> (ValidationVerdict, String, bool, &'static str) {
+    if report.budget_exhausted {
         let detail = if report.parsed_candidate_swap_rows > 0 {
-            "budget_exhausted_after_parseable_program_history_seen"
+            "phase_b_budget_exhausted_after_parseable_program_history_seen"
         } else if report.candidate_program_transactions > 0 {
-            "budget_exhausted_after_target_program_transactions_without_parseable_rows"
+            "phase_b_budget_exhausted_after_target_program_transactions_without_parseable_rows"
         } else {
-            "budget_exhausted_before_program_history_proof"
+            "phase_b_budget_exhausted_before_program_history_proof"
         };
         return (
             ValidationVerdict::NotProvenDueToBudget,
@@ -1069,36 +1325,41 @@ fn classify_validation_outcome(
                 report.sampling_window_slots
             ),
             false,
+            "operator_review",
         );
     }
     if report.candidate_program_transactions == 0 {
         return (
             ValidationVerdict::NotProvenDueToSparseProgramHistory,
             format!(
-                "no_target_program_transactions_seen_in_window:{}..{}",
+                "phase_b_no_target_program_transactions_seen_in_window:{}..{}",
                 requested_window_start.to_rfc3339(),
                 requested_window_end.to_rfc3339()
             ),
             false,
+            "operator_review",
         );
     }
     if report.parsed_candidate_swap_rows == 0 {
         return (
             ValidationVerdict::NotProvenDueToSparseProgramHistory,
-            "target_program_transactions_seen_but_no_parseable_swap_rows".to_string(),
+            "phase_b_target_program_transactions_seen_but_no_parseable_swap_rows".to_string(),
             false,
+            "operator_review",
         );
     }
     (
         ValidationVerdict::Viable,
-        "program_scoped_historical_raw_observed_and_parseable".to_string(),
+        "phase_b_program_scoped_historical_raw_observed_and_parseable".to_string(),
         true,
+        ValidationPhase::PhaseB.next_step_for_positive_verdict(),
     )
 }
 
 fn render_human(report: &ValidationReport) -> String {
     [
         "event=discovery_program_history_source_validate".to_string(),
+        format!("phase={}", report.phase),
         format!("provider_name={}", report.provider_name),
         format!("source_kind={}", report.source_kind),
         format!("target_programs={}", report.target_programs.join(",")),
@@ -1133,15 +1394,30 @@ fn render_human(report: &ValidationReport) -> String {
                 .unwrap_or_else(|| "null".to_string())
         ),
         format!("coverage_method={}", report.coverage_method),
+        format!("next_step={}", report.next_step),
+        format!(
+            "phase_b_required_for_final_source_proof={}",
+            report.phase_b_required_for_final_source_proof
+        ),
+        format!(
+            "final_source_proof_completed={}",
+            report.final_source_proof_completed
+        ),
+        format!(
+            "expensive_parse_executed={}",
+            report.expensive_parse_executed
+        ),
         format!("scan_budget_slots={}", report.scan_budget_slots),
         format!("budget_exhausted={}", report.budget_exhausted),
         format!("sampling_segments={}", report.sampling_segments),
         format!("sampling_window_slots={}", report.sampling_window_slots),
+        format!("max_blocks_per_window={}", report.max_blocks_per_window),
         format!("max_requests_per_second={}", report.max_requests_per_second),
         format!("retry_429_max_attempts={}", report.retry_429_max_attempts),
         format!("retry_429_backoff_ms={}", report.retry_429_backoff_ms),
         format!("scanned_batches={}", report.scanned_batches),
         format!("scanned_slots={}", report.scanned_slots),
+        format!("listed_block_slots={}", report.listed_block_slots),
         format!("scanned_blocks={}", report.scanned_blocks),
         format!("scanned_transactions={}", report.scanned_transactions),
         format!(
@@ -1528,17 +1804,7 @@ mod tests {
         )?;
         let source = dense_source(now);
         let report = run_report_with_source(
-            Config {
-                config_path: fixture.config_path.clone(),
-                db_path: Some(fixture.runtime_db_path.clone()),
-                window_start: None,
-                window_end: None,
-                http_url: Some("https://quicknode.example/?api-key=test".to_string()),
-                max_slots_to_scan_override: None,
-                sampling_segments_override: None,
-                report_path: None,
-                json: true,
-            },
+            validation_config(&fixture, ValidationPhase::PhaseA, None, None),
             &source,
         )?;
         assert_eq!(
@@ -1596,17 +1862,12 @@ mod tests {
                 ),
             );
         let report = run_report_with_source(
-            Config {
-                config_path: fixture.config_path.clone(),
-                db_path: Some(fixture.runtime_db_path.clone()),
-                window_start: Some(window_start),
-                window_end: Some(window_end),
-                http_url: Some("https://quicknode.example/?api-key=test".to_string()),
-                max_slots_to_scan_override: None,
-                sampling_segments_override: None,
-                report_path: None,
-                json: true,
-            },
+            validation_config(
+                &fixture,
+                ValidationPhase::PhaseB,
+                Some(window_start),
+                Some(window_end),
+            ),
             &source,
         )?;
         assert_eq!(report.candidate_program_transactions, 2);
@@ -1654,17 +1915,12 @@ mod tests {
             )
             .with_block(102, block_with_transactions(102, window_end, vec![]));
         let report = run_report_with_source(
-            Config {
-                config_path: fixture.config_path.clone(),
-                db_path: Some(fixture.runtime_db_path.clone()),
-                window_start: Some(window_start),
-                window_end: Some(window_end),
-                http_url: Some("https://quicknode.example/?api-key=test".to_string()),
-                max_slots_to_scan_override: None,
-                sampling_segments_override: None,
-                report_path: None,
-                json: true,
-            },
+            validation_config(
+                &fixture,
+                ValidationPhase::PhaseB,
+                Some(window_start),
+                Some(window_end),
+            ),
             &source,
         )?;
         assert_eq!(report.candidate_program_transactions, 1);
@@ -1708,21 +1964,19 @@ mod tests {
             )
             .with_block(102, block_with_transactions(102, window_end, vec![]));
         let viable = run_report_with_source(
-            Config {
-                config_path: fixture.config_path.clone(),
-                db_path: Some(fixture.runtime_db_path.clone()),
-                window_start: Some(window_start),
-                window_end: Some(window_end),
-                http_url: Some("https://quicknode.example/?api-key=test".to_string()),
-                max_slots_to_scan_override: None,
-                sampling_segments_override: None,
-                report_path: None,
-                json: true,
-            },
+            validation_config(
+                &fixture,
+                ValidationPhase::PhaseB,
+                Some(window_start),
+                Some(window_end),
+            ),
             &viable_source,
         )?;
         assert_eq!(viable.verdict, "viable");
         assert!(viable.sufficient_for_next_step);
+        assert_eq!(viable.next_step, "program_scoped_gap_fill_batch");
+        assert!(!viable.phase_b_required_for_final_source_proof);
+        assert!(viable.final_source_proof_completed);
 
         let budget_exhausted_source = FakeProgramHistorySource::default()
             .with_latest_slot(40_201)
@@ -1738,24 +1992,224 @@ mod tests {
                 ),
             );
         let budget_exhausted = run_report_with_source(
-            Config {
-                config_path: fixture.config_path.clone(),
-                db_path: Some(fixture.runtime_db_path.clone()),
-                window_start: Some(window_start),
-                window_end: Some(window_end),
-                http_url: Some("https://quicknode.example/?api-key=test".to_string()),
-                max_slots_to_scan_override: None,
-                sampling_segments_override: None,
-                report_path: None,
-                json: true,
-            },
+            validation_config(
+                &fixture,
+                ValidationPhase::PhaseB,
+                Some(window_start),
+                Some(window_end),
+            ),
             &budget_exhausted_source,
         )?;
         assert_eq!(budget_exhausted.verdict, "not_proven_due_to_budget");
         assert!(!budget_exhausted.sufficient_for_next_step);
         assert!(budget_exhausted.budget_exhausted);
-        assert_eq!(budget_exhausted.coverage_method, "staged_slot_sampling");
+        assert_eq!(
+            budget_exhausted.coverage_method,
+            "phase_b_staged_slot_sampling"
+        );
         assert!(budget_exhausted.reason.contains("budget_exhausted"));
+        Ok(())
+    }
+
+    #[test]
+    fn phase_a_positive_is_not_final_source_proof() -> Result<()> {
+        let fixture = make_fixture("program-history-phase-a-positive")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - chrono::Duration::days(7);
+        let window_end = now - chrono::Duration::days(2);
+        seed_restored_runtime_with_short_journal(
+            &fixture.runtime_db_path,
+            &fixture.config_path,
+            now,
+            now - chrono::Duration::days(2),
+        )?;
+        let source = FakeProgramHistorySource::default()
+            .with_latest_slot(102)
+            .with_block_time(100, window_start)
+            .with_block_time(101, window_end - chrono::Duration::minutes(1))
+            .with_block_time(102, window_end)
+            .with_block_range(100, 102, vec![100, 101, 102])
+            .with_block(
+                100,
+                block_with_transactions(
+                    100,
+                    window_start,
+                    vec![presence_only_tx(
+                        "ray-presence",
+                        "wallet-gap",
+                        100,
+                        "raydium-program",
+                    )],
+                ),
+            )
+            .with_block(
+                101,
+                block_with_transactions(
+                    101,
+                    window_end - chrono::Duration::minutes(1),
+                    vec![swap_tx(
+                        "ray-parseable",
+                        "wallet-gap",
+                        101,
+                        "raydium-program",
+                    )],
+                ),
+            );
+        let report = run_report_with_source(
+            validation_config(
+                &fixture,
+                ValidationPhase::PhaseA,
+                Some(window_start),
+                Some(window_end),
+            ),
+            &source,
+        )?;
+        assert_eq!(report.phase, "phase_a");
+        assert_eq!(report.verdict, "viable_enough_for_phase_b");
+        assert!(report.sufficient_for_next_step);
+        assert_eq!(report.next_step, "phase_b_escalation");
+        assert!(report.phase_b_required_for_final_source_proof);
+        assert!(!report.final_source_proof_completed);
+        assert!(!report.expensive_parse_executed);
+        assert_eq!(report.listed_block_slots, 3);
+        assert_eq!(report.scanned_blocks, 1);
+        assert_eq!(report.parsed_candidate_swap_rows, 0);
+        assert!(report.candidate_program_transactions >= 1);
+        Ok(())
+    }
+
+    #[test]
+    fn phase_b_still_requires_parseability_and_usefulness() -> Result<()> {
+        let fixture = make_fixture("program-history-phase-b-parseability")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - chrono::Duration::days(7);
+        let window_end = now - chrono::Duration::days(2);
+        seed_restored_runtime_with_short_journal(
+            &fixture.runtime_db_path,
+            &fixture.config_path,
+            now,
+            now - chrono::Duration::days(2),
+        )?;
+        let source = FakeProgramHistorySource::default()
+            .with_latest_slot(101)
+            .with_block_time(100, window_start)
+            .with_block_time(101, window_end)
+            .with_block_range(100, 101, vec![100, 101])
+            .with_block(
+                100,
+                block_with_transactions(
+                    100,
+                    window_start,
+                    vec![presence_only_tx(
+                        "ray-presence",
+                        "wallet-gap",
+                        100,
+                        "raydium-program",
+                    )],
+                ),
+            )
+            .with_block(101, block_with_transactions(101, window_end, vec![]));
+        let report = run_report_with_source(
+            validation_config(
+                &fixture,
+                ValidationPhase::PhaseB,
+                Some(window_start),
+                Some(window_end),
+            ),
+            &source,
+        )?;
+        assert_eq!(report.phase, "phase_b");
+        assert_eq!(report.verdict, "not_proven_due_to_sparse_program_history");
+        assert!(!report.sufficient_for_next_step);
+        assert_eq!(report.next_step, "operator_review");
+        assert!(!report.phase_b_required_for_final_source_proof);
+        assert!(!report.final_source_proof_completed);
+        assert!(report.expensive_parse_executed);
+        assert_eq!(report.candidate_program_transactions, 1);
+        assert_eq!(report.parsed_candidate_swap_rows, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn phase_a_budget_exhaustion_with_presence_signal_is_not_final_proof() -> Result<()> {
+        let fixture = make_fixture("program-history-phase-a-budget-positive")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - chrono::Duration::days(7);
+        let window_end = now - chrono::Duration::days(2);
+        seed_restored_runtime_with_short_journal(
+            &fixture.runtime_db_path,
+            &fixture.config_path,
+            now,
+            now - chrono::Duration::days(2),
+        )?;
+        let source = FakeProgramHistorySource::default()
+            .with_latest_slot(40_201)
+            .with_block_time(100, window_start)
+            .with_block_time(40_200, window_end - chrono::Duration::minutes(1))
+            .with_block_time(40_201, window_end)
+            .with_block(
+                100,
+                block_with_transactions(
+                    100,
+                    window_start,
+                    vec![presence_only_tx(
+                        "ray-budget-presence",
+                        "wallet-gap",
+                        100,
+                        "raydium-program",
+                    )],
+                ),
+            );
+        let report = run_report_with_source(
+            validation_config(
+                &fixture,
+                ValidationPhase::PhaseA,
+                Some(window_start),
+                Some(window_end),
+            ),
+            &source,
+        )?;
+        assert_eq!(report.verdict, "viable_enough_for_phase_b");
+        assert!(report.budget_exhausted);
+        assert_eq!(report.coverage_method, "phase_a_staged_block_sampling");
+        assert!(report.reason.contains("presence_proof"));
+        assert!(report.phase_b_required_for_final_source_proof);
+        Ok(())
+    }
+
+    #[test]
+    fn live_sized_phase_a_budget_exhaustion_stays_not_proven_not_non_viable() -> Result<()> {
+        let fixture = make_fixture("program-history-phase-a-budget-not-proven")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - chrono::Duration::days(7);
+        let window_end = now - chrono::Duration::days(2);
+        seed_restored_runtime_with_short_journal(
+            &fixture.runtime_db_path,
+            &fixture.config_path,
+            now,
+            now - chrono::Duration::days(2),
+        )?;
+        let source = FakeProgramHistorySource::default()
+            .with_latest_slot(40_201)
+            .with_block_time(100, window_start)
+            .with_block_time(40_200, window_end - chrono::Duration::minutes(1))
+            .with_block_time(40_201, window_end);
+        let report = run_report_with_source(
+            validation_config(
+                &fixture,
+                ValidationPhase::PhaseA,
+                Some(window_start),
+                Some(window_end),
+            ),
+            &source,
+        )?;
+        assert_eq!(report.verdict, "not_proven_due_to_budget");
+        assert!(report.budget_exhausted);
+        assert_eq!(report.coverage_method, "phase_a_staged_block_sampling");
+        assert_eq!(report.next_step, "operator_review");
+        assert!(report.phase_b_required_for_final_source_proof);
+        assert!(!report.final_source_proof_completed);
+        assert!(!report.expensive_parse_executed);
         Ok(())
     }
 
@@ -1775,17 +2229,12 @@ mod tests {
             .with_latest_slot(102)
             .with_block_time(100, window_start);
         let report = run_report_with_source(
-            Config {
-                config_path: fixture.config_path.clone(),
-                db_path: Some(fixture.runtime_db_path.clone()),
-                window_start: Some(window_start),
-                window_end: Some(window_end),
-                http_url: Some("https://quicknode.example/?api-key=test".to_string()),
-                max_slots_to_scan_override: None,
-                sampling_segments_override: None,
-                report_path: None,
-                json: true,
-            },
+            validation_config(
+                &fixture,
+                ValidationPhase::PhaseA,
+                Some(window_start),
+                Some(window_end),
+            ),
             &failing_source,
         )?;
         assert_eq!(report.verdict, "non_viable_source_contract");
@@ -1807,17 +2256,12 @@ mod tests {
             now - chrono::Duration::days(2),
         )?;
         let report = run_report_with_source(
-            Config {
-                config_path: fixture.config_path.clone(),
-                db_path: Some(fixture.runtime_db_path.clone()),
-                window_start: Some(window_start),
-                window_end: Some(window_end),
-                http_url: Some("https://quicknode.example/?api-key=test".to_string()),
-                max_slots_to_scan_override: None,
-                sampling_segments_override: None,
-                report_path: None,
-                json: true,
-            },
+            validation_config(
+                &fixture,
+                ValidationPhase::PhaseA,
+                Some(window_start),
+                Some(window_end),
+            ),
             &ThrottledProgramHistorySource,
         )?;
         assert_eq!(report.verdict, "not_proven_due_to_provider_throttling");
@@ -1836,7 +2280,36 @@ mod tests {
             "quicknode_blocks_rpc"
         );
         assert!(!config.program_history_validation.http_url.trim().is_empty());
+        assert!(config.program_history_validation.phase_a_max_slots_to_scan > 0);
+        assert!(config.program_history_validation.phase_a_sampling_segments > 0);
+        assert!(
+            config
+                .program_history_validation
+                .phase_a_max_blocks_per_window
+                > 0
+        );
         Ok(())
+    }
+
+    fn validation_config(
+        fixture: &Fixture,
+        phase: ValidationPhase,
+        window_start: Option<DateTime<Utc>>,
+        window_end: Option<DateTime<Utc>>,
+    ) -> Config {
+        Config {
+            config_path: fixture.config_path.clone(),
+            db_path: Some(fixture.runtime_db_path.clone()),
+            phase,
+            window_start,
+            window_end,
+            http_url: Some("https://quicknode.example/?api-key=test".to_string()),
+            max_slots_to_scan_override: None,
+            sampling_segments_override: None,
+            max_blocks_per_window_override: None,
+            report_path: None,
+            json: true,
+        }
     }
 
     fn run_report_with_source<S: ProgramHistorySource>(
@@ -2020,6 +2493,32 @@ mod tests {
                         }
                     }
                 ],
+                "logMessages": [format!("Program {program_id} invoke [1]")]
+            }
+        })
+    }
+
+    fn presence_only_tx(signature: &str, wallet: &str, slot: u64, program_id: &str) -> Value {
+        json!({
+            "slot": slot,
+            "transaction": {
+                "signatures": [signature],
+                "message": {
+                    "accountKeys": [
+                        { "pubkey": wallet, "signer": true },
+                        { "pubkey": program_id, "signer": false }
+                    ],
+                    "instructions": [
+                        { "programId": program_id }
+                    ]
+                }
+            },
+            "meta": {
+                "err": Value::Null,
+                "preBalances": [1_500_000_000u64],
+                "postBalances": [1_499_990_000u64],
+                "preTokenBalances": [],
+                "postTokenBalances": [],
                 "logMessages": [format!("Program {program_id} invoke [1]")]
             }
         })

@@ -27,10 +27,12 @@ Live config defaults in `ops/server_templates/live.server.toml.example`:
    - required field: `program_history_validation.http_url`
    - candidate QuickNode-first source contract: `getSlot`, `getBlockTime`, `getBlocks`, `getBlock`
    - runnable tool: `discovery_program_history_source_validate`
+   - explicit modes: `--phase phase_a` for cheap source-presence proof, `--phase phase_b` for expensive parseability/usefulness proof
    - built-in QuickNode pacing knobs: `program_history_validation.max_requests_per_second`, `program_history_validation.retry_429_max_attempts`, `program_history_validation.retry_429_backoff_ms`
    - live QuickNode contract currently throttles this path at `125 req/s`; keep the configured limiter below that ceiling
-   - default local scan budget: `program_history_validation.max_slots_to_scan`
-   - large bounded windows switch to staged slot sampling and return `not_proven_due_to_budget`, not a hard provider rejection
+   - default Phase A budget knobs: `program_history_validation.phase_a_max_slots_to_scan`, `program_history_validation.phase_a_sampling_segments`, `program_history_validation.phase_a_max_blocks_per_window`
+   - default Phase B parse budget: `program_history_validation.max_slots_to_scan` and `program_history_validation.sampling_segments`
+   - Phase A positive means only `viable_enough_for_phase_b`; it is not final source proof and it is not restore-ready proof
    - this is validation-only; it does not restore coverage or enable trading by itself
 
 Systemd wiring:
@@ -305,10 +307,24 @@ in `${TARGET_DB}` unless you pass `--window-start/--window-end` explicitly. It
 does not replay data into the runtime DB and it does not change restore
 readiness by itself.
 
-On live-sized windows the default config may not full-scan the entire slot span.
-That is expected. If the tool returns `not_proven_due_to_budget`, it means the
-current local validation budget did not prove or disprove the provider. It is
-not the same as `non_viable_source_contract`.
+Operator contract:
+
+1. Run cheap `--phase phase_a` first.
+2. Only if Phase A returns `viable_enough_for_phase_b`, escalate into
+   `--phase phase_b`.
+3. Do not treat a Phase A positive as final source proof.
+
+Phase A is deliberately cheaper on live-sized windows:
+
+1. it uses `phase_a_max_slots_to_scan`, `phase_a_sampling_segments`, and
+   `phase_a_max_blocks_per_window`
+2. it samples blocks inside each staged slot window instead of doing a full
+   parse pass
+3. it stops early once it proves target-program presence
+
+If Phase A returns `not_proven_due_to_budget`, the current local validation
+budget did not prove or disprove the provider. That is not the same as
+`non_viable_source_contract`.
 
 The QuickNode path now paces all `getSlot/getBlockTime/getBlocks/getBlock`
 requests through one local limiter and retries transient `429 Too Many
@@ -340,8 +356,9 @@ fi
 /var/www/solana-copy-bot/target/release/discovery_program_history_source_validate \
   --config "${CONFIG_PATH}" \
   --db-path "${TARGET_DB}" \
+  --phase phase_a \
   --http-url "${PROGRAM_HISTORY_VALIDATION_URL}" \
-  --json | tee /tmp/discovery_program_history_source_validate.json
+  --json | tee /tmp/discovery_program_history_phase_a.json
 ```
 
 Fields to inspect:
@@ -350,50 +367,72 @@ Fields to inspect:
 2. `reason`
 3. `sufficient_for_next_step`
 4. `coverage_method`
-5. `scan_budget_slots`
-6. `budget_exhausted`
-7. `requested_window_start`
-8. `requested_window_end`
-9. `candidate_program_transactions`
-10. `parsed_candidate_swap_rows`
-11. `missing_segments`
+5. `next_step`
+6. `phase_b_required_for_final_source_proof`
+7. `final_source_proof_completed`
+8. `scan_budget_slots`
+9. `budget_exhausted`
+10. `requested_window_start`
+11. `requested_window_end`
+12. `candidate_program_transactions`
+13. `parsed_candidate_swap_rows`
+14. `missing_segments`
 
 Verdict semantics:
 
-1. `viable`:
-   - bounded validation completed without budget exhaustion
+1. `viable_enough_for_phase_b`:
+   - Phase A saw target-program historical data inside the bounded window
+   - this only means there is reason to pay for Phase B
+   - it does not prove parseability/usefulness yet
+2. `viable`:
+   - Phase B completed without budget exhaustion
    - program-scoped historical raw was observed and parsed into the current swap contract
-   - this is the strongest source-proof outcome this tool can give
-2. `not_proven_due_to_budget`:
+   - this is the strongest source-proof outcome this tool can give today
+3. `not_proven_due_to_budget`:
    - the current local scan budget was too small for the bounded slot span
-   - staged sampling may still show positive signals, but it is not a final provider verdict
-3. `not_proven_due_to_sparse_program_history`:
+   - in Phase A this means the cheap presence probe did not prove viability yet
+   - in Phase B this means practical parseability/usefulness was not proven yet
+4. `not_proven_due_to_sparse_program_history`:
    - the scanned window completed, but it did not yield enough target-program raw to prove the next step
-4. `not_proven_due_to_provider_throttling`:
+5. `not_proven_due_to_provider_throttling`:
    - the tool respected its local limiter, retried 429s, and still exhausted provider throttling retries
    - this is not a hard provider rejection; lower `max_requests_per_second`, raise `retry_429_backoff_ms`, or rerun later
-5. `non_viable_source_contract`:
+6. `non_viable_source_contract`:
    - the source contract itself failed to provide usable block-history coverage for the scan path
 
-If the first run returns `not_proven_due_to_budget`, you can rerun with a larger
-explicit budget. The strongest full-scan path is to raise
-`--max-slots-to-scan` to at least the reported `slot_span`.
+If Phase A returns `viable_enough_for_phase_b`, escalate explicitly into Phase B:
+
+```bash
+/var/www/solana-copy-bot/target/release/discovery_program_history_source_validate \
+  --config "${CONFIG_PATH}" \
+  --db-path "${TARGET_DB}" \
+  --phase phase_b \
+  --http-url "${PROGRAM_HISTORY_VALIDATION_URL}" \
+  --json | tee /tmp/discovery_program_history_phase_b.json
+```
+
+If Phase A or Phase B returns `not_proven_due_to_budget`, you can rerun with a
+larger explicit budget. For Phase A, raise `--max-slots-to-scan` and, if
+needed, `--max-blocks-per-window`. For Phase B, raise `--max-slots-to-scan` to
+at least the reported `slot_span`.
 
 ```bash
 SLOT_SPAN="$(python3 - <<'PY'
 import json
 from pathlib import Path
 
-payload = json.loads(Path("/tmp/discovery_program_history_source_validate.json").read_text())
+payload = json.loads(Path("/tmp/discovery_program_history_phase_a.json").read_text())
 print(payload.get("slot_span") or 0)
 PY
 )"
 /var/www/solana-copy-bot/target/release/discovery_program_history_source_validate \
   --config "${CONFIG_PATH}" \
   --db-path "${TARGET_DB}" \
+  --phase phase_a \
   --http-url "${PROGRAM_HISTORY_VALIDATION_URL}" \
   --max-slots-to-scan "${SLOT_SPAN}" \
-  --json | tee /tmp/discovery_program_history_source_validate_full_scan.json
+  --max-blocks-per-window 24 \
+  --json | tee /tmp/discovery_program_history_phase_a_expanded.json
 ```
 
 If the verdict is `not_proven_due_to_provider_throttling`, tune the config in

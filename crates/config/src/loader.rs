@@ -1011,6 +1011,31 @@ fn validate_program_history_validation_config(config: &AppConfig) -> Result<()> 
             validation.block_batch_size
         ));
     }
+    if validation.phase_a_max_slots_to_scan == 0 {
+        return Err(anyhow!(
+            "program_history_validation.phase_a_max_slots_to_scan ({}) must be >= 1",
+            validation.phase_a_max_slots_to_scan
+        ));
+    }
+    if validation.phase_a_sampling_segments == 0 {
+        return Err(anyhow!(
+            "program_history_validation.phase_a_sampling_segments ({}) must be >= 1",
+            validation.phase_a_sampling_segments
+        ));
+    }
+    if validation.phase_a_sampling_segments > validation.phase_a_max_slots_to_scan {
+        return Err(anyhow!(
+            "program_history_validation.phase_a_sampling_segments ({}) must be <= program_history_validation.phase_a_max_slots_to_scan ({})",
+            validation.phase_a_sampling_segments,
+            validation.phase_a_max_slots_to_scan
+        ));
+    }
+    if validation.phase_a_max_blocks_per_window == 0 {
+        return Err(anyhow!(
+            "program_history_validation.phase_a_max_blocks_per_window ({}) must be >= 1",
+            validation.phase_a_max_blocks_per_window
+        ));
+    }
     if validation.max_slots_to_scan == 0 {
         return Err(anyhow!(
             "program_history_validation.max_slots_to_scan ({}) must be >= 1",

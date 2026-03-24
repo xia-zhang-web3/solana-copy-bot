@@ -1533,6 +1533,41 @@ program-history ветке:
 Чего этот документ пока не утверждает:
 
 - что QuickNode path definitively dead
+
+### 18.5 Audit sync: Phase A / Phase B validation split (`2026-03-24`)
+
+В репозитории этот split теперь реализован как explicit operator contract в
+`discovery_program_history_source_validate`:
+
+- `--phase phase_a`:
+  - cheap bounded viability proof
+  - smaller `phase_a_*` budget
+  - block sampling inside staged windows
+  - early stop after target-program presence proof
+  - positive verdict = `viable_enough_for_phase_b`
+- `--phase phase_b`:
+  - expensive parseability / usefulness proof
+  - uses the larger parse budget
+  - only здесь `viable` означает, что source дал parseable/useful enough raw
+    signal for the next program-gap-fill batch
+
+Явно зафиксировано и в output contract:
+
+- `phase_b_required_for_final_source_proof = true` только в Phase A
+- `final_source_proof_completed = true` только при positive Phase B
+
+Это не закрывает deterministic healthy exit само по себе, но дает более
+дешевый и более честный decision point по QuickNode path, чем прежний
+однофазный validation run.
+
+Статус аудита:
+
+- принят
+- заявленный split Phase A / Phase B подтвержден кодом, config/template
+  contract и целевыми тестами
+- новый operator contract больше не смешивает cheap source-presence proof с
+  final parseability/usefulness proof
+
 - что другой source уже доказан
 
 Честный текущий вывод:

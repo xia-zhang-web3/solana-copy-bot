@@ -90,6 +90,9 @@ fn program_history_validation_defaults_are_quicknode_first_and_bounded() {
     assert_eq!(validation.retry_429_max_attempts, 4);
     assert_eq!(validation.retry_429_backoff_ms, 250);
     assert_eq!(validation.block_batch_size, 512);
+    assert_eq!(validation.phase_a_max_slots_to_scan, 4_096);
+    assert_eq!(validation.phase_a_sampling_segments, 8);
+    assert_eq!(validation.phase_a_max_blocks_per_window, 12);
     assert_eq!(validation.max_slots_to_scan, 20_000);
     assert_eq!(validation.sampling_segments, 8);
     assert_eq!(validation.block_time_probe_slots, 128);
@@ -160,6 +163,9 @@ max_requests_per_second = 90
 retry_429_max_attempts = 6
 retry_429_backoff_ms = 400
 block_batch_size = 400
+phase_a_max_slots_to_scan = 2048
+phase_a_sampling_segments = 4
+phase_a_max_blocks_per_window = 10
 max_slots_to_scan = 12000
 sampling_segments = 6
 block_time_probe_slots = 64
@@ -216,6 +222,20 @@ metric_snapshot_interval_seconds = 1800
             assert_eq!(config.program_history_validation.retry_429_max_attempts, 6);
             assert_eq!(config.program_history_validation.retry_429_backoff_ms, 400);
             assert_eq!(config.program_history_validation.block_batch_size, 400);
+            assert_eq!(
+                config.program_history_validation.phase_a_max_slots_to_scan,
+                2_048
+            );
+            assert_eq!(
+                config.program_history_validation.phase_a_sampling_segments,
+                4
+            );
+            assert_eq!(
+                config
+                    .program_history_validation
+                    .phase_a_max_blocks_per_window,
+                10
+            );
             assert_eq!(config.program_history_validation.max_slots_to_scan, 12_000);
             assert_eq!(config.program_history_validation.sampling_segments, 6);
             assert_eq!(config.program_history_validation.block_time_probe_slots, 64);
@@ -287,6 +307,20 @@ fn live_server_template_exposes_recent_raw_gap_fill_contract() {
     );
     assert_eq!(config.program_history_validation.retry_429_max_attempts, 4);
     assert_eq!(config.program_history_validation.retry_429_backoff_ms, 250);
+    assert_eq!(
+        config.program_history_validation.phase_a_max_slots_to_scan,
+        4_096
+    );
+    assert_eq!(
+        config.program_history_validation.phase_a_sampling_segments,
+        8
+    );
+    assert_eq!(
+        config
+            .program_history_validation
+            .phase_a_max_blocks_per_window,
+        12
+    );
     assert_eq!(config.program_history_validation.sampling_segments, 8);
 }
 
@@ -450,6 +484,54 @@ metric_snapshot_interval_seconds = 1800
             assert!(
                 err.contains(
                     "program_history_validation.sampling_segments (8) must be <= program_history_validation.max_slots_to_scan (4)"
+                ),
+                "unexpected error: {err}"
+            );
+        },
+    );
+}
+
+#[test]
+fn load_from_path_rejects_program_history_validation_invalid_phase_a_bounds() {
+    with_temp_config_file(
+        r#"
+[program_history_validation]
+http_url = "https://quicknode.example/?api-key=test"
+phase_a_sampling_segments = 9
+phase_a_max_slots_to_scan = 8
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("phase_a sampling segments above budget must fail")
+                .to_string();
+            assert!(
+                err.contains(
+                    "program_history_validation.phase_a_sampling_segments (9) must be <= program_history_validation.phase_a_max_slots_to_scan (8)"
+                ),
+                "unexpected error: {err}"
+            );
+        },
+    );
+
+    with_temp_config_file(
+        r#"
+[program_history_validation]
+http_url = "https://quicknode.example/?api-key=test"
+phase_a_max_blocks_per_window = 0
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("phase_a max blocks per window must fail when zero")
+                .to_string();
+            assert!(
+                err.contains(
+                    "program_history_validation.phase_a_max_blocks_per_window (0) must be >= 1"
                 ),
                 "unexpected error: {err}"
             );
