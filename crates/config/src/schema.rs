@@ -10,6 +10,7 @@ pub struct AppConfig {
     pub recent_raw_journal: RecentRawJournalConfig,
     pub recent_raw_gap_fill: RecentRawGapFillConfig,
     pub recent_raw_gap_fill_helius: RecentRawGapFillHeliusConfig,
+    pub program_history_validation: ProgramHistoryValidationConfig,
     pub runtime_restore_ops: RuntimeRestoreOpsConfig,
     pub history_retention: HistoryRetentionConfig,
     pub ingestion: IngestionConfig,
@@ -377,6 +378,40 @@ impl Default for RecentRawGapFillHeliusConfig {
             request_timeout_ms: 20_000,
             page_size: 100,
             max_pages_per_wallet: 64,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ProgramHistoryValidationConfig {
+    pub source: String,
+    pub http_url: String,
+    pub request_timeout_ms: u64,
+    pub block_batch_size: usize,
+    pub max_slots_to_scan: usize,
+    pub sampling_segments: usize,
+    pub block_time_probe_slots: u64,
+    pub raydium_program_ids: Vec<String>,
+    pub pumpswap_program_ids: Vec<String>,
+}
+
+impl Default for ProgramHistoryValidationConfig {
+    fn default() -> Self {
+        Self {
+            source: "quicknode_blocks_rpc".to_string(),
+            http_url: "https://YOUR_QUICKNODE_HOST.solana-mainnet.quiknode.pro/REPLACE_ON_SERVER/"
+                .to_string(),
+            request_timeout_ms: 20_000,
+            block_batch_size: 512,
+            max_slots_to_scan: 20_000,
+            sampling_segments: 8,
+            block_time_probe_slots: 128,
+            raydium_program_ids: vec![
+                "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string(),
+                "CPMMoo8L3F4NbTegBCKVN6DKuQh8fYfY4yR4j3uP9s5".to_string(),
+            ],
+            pumpswap_program_ids: vec!["pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".to_string()],
         }
     }
 }

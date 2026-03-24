@@ -22,6 +22,14 @@ Live config defaults in `ops/server_templates/live.server.toml.example`:
    - live server contract: populate them in `/etc/solana-copy-bot/live.server.toml` or pass `--helius-http-url` explicitly during the incident run
    - default gap-fill output: `/var/www/solana-copy-bot/state/discovery_restore/gap_fill/latest.sqlite`
    - default Helius-specific output: `/var/www/solana-copy-bot/state/discovery_restore/gap_fill_helius/latest.sqlite`
+4. Program-scoped historical source validation:
+   - config block: `program_history_validation`
+   - required field: `program_history_validation.http_url`
+   - candidate QuickNode-first source contract: `getSlot`, `getBlockTime`, `getBlocks`, `getBlock`
+   - runnable tool: `discovery_program_history_source_validate`
+   - default local scan budget: `program_history_validation.max_slots_to_scan`
+   - large bounded windows switch to staged slot sampling and return `not_proven_due_to_budget`, not a hard provider rejection
+   - this is validation-only; it does not restore coverage or enable trading by itself
 
 Systemd wiring:
 
@@ -29,12 +37,54 @@ Systemd wiring:
 2. `copybot-discovery-runtime-export.timer`
 3. `copybot-discovery-recent-raw-snapshot.service`
 4. `copybot-discovery-recent-raw-snapshot.timer`
+5. `copybot-discovery-recent-raw-snapshot.service` treats exit code `75` as an
+   expected transient outcome for snapshot contention; inspect the emitted JSON
+   `state`, not just the systemd success bit
 
 Check timers:
 
 ```bash
 sudo systemctl list-timers 'copybot-discovery-*'
 ```
+
+Check the latest snapshot outcome:
+
+```bash
+journalctl -u copybot-discovery-recent-raw-snapshot.service -n 20 -o cat
+```
+
+Snapshot outcome contract:
+
+1. `written`:
+   - new archive created
+   - latest snapshot surface updated
+   - normal healthy timer outcome
+2. `self_healed_latest_surface`:
+   - latest snapshot or metadata was repaired from archive/latest sqlite
+   - acceptable non-fatal outcome
+3. `skipped_not_due`:
+   - latest snapshot surface is healthy and cadence has not elapsed yet
+   - normal healthy timer outcome
+4. `deferred`:
+   - snapshot hit bounded retryable SQLite contention
+   - latest healthy snapshot surface was retained
+   - timer may remain enabled and retry on the next run
+5. `retryable_busy`:
+   - snapshot hit bounded retryable SQLite contention
+   - there was no healthy latest surface to defer onto, or the run was forced
+   - rerun soon or investigate contention before calling the snapshot surface healthy
+6. `hard_failure`:
+   - non-retryable failure or publish/update failure after the attempt
+   - investigate before treating the snapshot timer as healthy
+
+Healthy timer interpretation:
+
+1. `written`, `self_healed_latest_surface`, and `skipped_not_due` are healthy.
+2. `deferred` is acceptable as a transient state if it is occasional and the
+   latest snapshot surface remains usable.
+3. repeated `retryable_busy` means the timer is not closing the steady-state
+   snapshot contract and needs operator follow-up.
+4. any `hard_failure` is abnormal.
 
 ## Incident restore flow
 
@@ -236,6 +286,100 @@ Minimum fields to inspect:
 6. `recent_raw_restore.journal_covers_artifact_cursor`
 7. `recent_raw_restore.raw_coverage_satisfied`
 8. `publication.bootstrap_degraded_active`
+
+### Optional: QuickNode program-history source validation (validation only)
+
+Run this only if the address-scoped gap-fill paths stay sparse and you need an
+explicit verdict on whether the next step should be a program-scoped historical
+raw batch.
+
+This command derives the bounded missing window from the current restore state
+in `${TARGET_DB}` unless you pass `--window-start/--window-end` explicitly. It
+does not replay data into the runtime DB and it does not change restore
+readiness by itself.
+
+On live-sized windows the default config may not full-scan the entire slot span.
+That is expected. If the tool returns `not_proven_due_to_budget`, it means the
+current local validation budget did not prove or disprove the provider. It is
+not the same as `non_viable_source_contract`.
+
+```bash
+PROGRAM_HISTORY_VALIDATION_URL="$(awk -F'=' '
+  /^\s*\[/ {
+    in_section = ($0 == "[program_history_validation]")
+  }
+  in_section {
+    left = $1
+    gsub(/[[:space:]]/, "", left)
+    if (left == "http_url") {
+      value = substr($0, index($0, "=") + 1)
+      sub(/[[:space:]]*#.*/, "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      gsub(/^"|"$/, "", value)
+      print value
+      exit
+    }
+  }
+' "${CONFIG_PATH}")"
+if [ -z "${PROGRAM_HISTORY_VALIDATION_URL}" ]; then
+  echo "program_history_validation.http_url is empty in ${CONFIG_PATH}; populate it or pass --http-url explicitly" >&2
+  exit 1
+fi
+/var/www/solana-copy-bot/target/release/discovery_program_history_source_validate \
+  --config "${CONFIG_PATH}" \
+  --db-path "${TARGET_DB}" \
+  --http-url "${PROGRAM_HISTORY_VALIDATION_URL}" \
+  --json | tee /tmp/discovery_program_history_source_validate.json
+```
+
+Fields to inspect:
+
+1. `verdict`
+2. `reason`
+3. `sufficient_for_next_step`
+4. `coverage_method`
+5. `scan_budget_slots`
+6. `budget_exhausted`
+7. `requested_window_start`
+8. `requested_window_end`
+9. `candidate_program_transactions`
+10. `parsed_candidate_swap_rows`
+11. `missing_segments`
+
+Verdict semantics:
+
+1. `viable`:
+   - bounded validation completed without budget exhaustion
+   - program-scoped historical raw was observed and parsed into the current swap contract
+   - this is the strongest source-proof outcome this tool can give
+2. `not_proven_due_to_budget`:
+   - the current local scan budget was too small for the bounded slot span
+   - staged sampling may still show positive signals, but it is not a final provider verdict
+3. `not_proven_due_to_sparse_program_history`:
+   - the scanned window completed, but it did not yield enough target-program raw to prove the next step
+4. `non_viable_source_contract`:
+   - the source contract itself failed to provide usable block-history coverage for the scan path
+
+If the first run returns `not_proven_due_to_budget`, you can rerun with a larger
+explicit budget. The strongest full-scan path is to raise
+`--max-slots-to-scan` to at least the reported `slot_span`.
+
+```bash
+SLOT_SPAN="$(python3 - <<'PY'
+import json
+from pathlib import Path
+
+payload = json.loads(Path("/tmp/discovery_program_history_source_validate.json").read_text())
+print(payload.get("slot_span") or 0)
+PY
+)"
+/var/www/solana-copy-bot/target/release/discovery_program_history_source_validate \
+  --config "${CONFIG_PATH}" \
+  --db-path "${TARGET_DB}" \
+  --http-url "${PROGRAM_HISTORY_VALIDATION_URL}" \
+  --max-slots-to-scan "${SLOT_SPAN}" \
+  --json | tee /tmp/discovery_program_history_source_validate_full_scan.json
+```
 
 ### 5. Decide service posture
 

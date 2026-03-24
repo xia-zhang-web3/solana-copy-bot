@@ -114,6 +114,49 @@ pub fn parse_transaction_to_swap(
     expected_wallet: &str,
     program_ids: &ProgramIdConfig,
 ) -> Result<Option<SwapEvent>> {
+    parse_transaction_to_swap_for_signer(result, expected_wallet, program_ids)
+}
+
+pub fn parse_program_scoped_transaction_to_swap(
+    result: &Value,
+    program_ids: &ProgramIdConfig,
+) -> Result<Option<SwapEvent>> {
+    let Some(signer) = extract_primary_signer(result) else {
+        return Ok(None);
+    };
+    parse_transaction_to_swap_for_signer(result, &signer, program_ids)
+}
+
+pub fn transaction_mentions_target_programs(result: &Value, program_ids: &ProgramIdConfig) -> bool {
+    let Some(meta) = result.get("meta").filter(|value| !value.is_null()) else {
+        return false;
+    };
+    let normalized_program_ids = extract_program_ids(result, meta);
+    !normalized_program_ids.is_empty()
+        && normalized_program_ids
+            .iter()
+            .any(|program| program_ids.interested_program_ids.contains(program))
+}
+
+pub fn extract_primary_signer(result: &Value) -> Option<String> {
+    let account_keys = extract_account_keys(result);
+    if account_keys.is_empty() {
+        return None;
+    }
+    let signer_index = account_keys
+        .iter()
+        .position(|(_, is_signer)| *is_signer)
+        .unwrap_or(0);
+    account_keys
+        .get(signer_index)
+        .map(|(pubkey, _)| pubkey.clone())
+}
+
+fn parse_transaction_to_swap_for_signer(
+    result: &Value,
+    expected_wallet: &str,
+    program_ids: &ProgramIdConfig,
+) -> Result<Option<SwapEvent>> {
     let meta = match result.get("meta") {
         Some(value) if !value.is_null() => value,
         _ => return Ok(None),

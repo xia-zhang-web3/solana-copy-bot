@@ -3,6 +3,10 @@ Description=Copybot Discovery Recent Raw Journal Snapshot Timer
 
 [Timer]
 OnBootSec=7m
+# The snapshot service enforces its own cadence and can now exit with a
+# transient success (`75`) for `deferred` / `retryable_busy`, so keeping the
+# timer tighter than the steady-state snapshot cadence gives bounded retries
+# without operator intervention.
 OnUnitActiveSec=5m
 RandomizedDelaySec=30s
 Persistent=true
@@ -10,4 +14,3 @@ Unit=copybot-discovery-recent-raw-snapshot.service
 
 [Install]
 WantedBy=timers.target
-

@@ -8,8 +8,9 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 1. `live.server.toml.example` contains placeholder-only RPC values; populate real credentials only in the server-local copy or via env overrides.
 2. `live.server.toml.example` also contains a placeholder-only `recent_raw_gap_fill.helius_http_url`; restore operators must replace it with the historical raw source URL used for bounded gap-fill.
 3. `live.server.toml.example` also contains a placeholder-only `recent_raw_gap_fill_helius.helius_http_url`; this must point at a Helius endpoint that supports `getTransactionsForAddress`.
-4. bootstrap signer values are for non-live contour testing only.
-5. rotate endpoint/token/signer before any tiny-live or production stage.
+4. `live.server.toml.example` also contains a placeholder-only `program_history_validation.http_url`; this must point at the QuickNode RPC endpoint that will be used for bounded program-history validation through `getSlot`, `getBlockTime`, `getBlocks`, and `getBlock`.
+5. bootstrap signer values are for non-live contour testing only.
+6. rotate endpoint/token/signer before any tiny-live or production stage.
 
 ## Files
 
@@ -25,6 +26,26 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 10. `copybot-discovery-runtime-export.timer`
 11. `copybot-discovery-recent-raw-snapshot.service`
 12. `copybot-discovery-recent-raw-snapshot.timer`
+
+## Recent Raw Snapshot Timer Contract
+
+1. `copybot-discovery-recent-raw-snapshot.service` now treats exit code `75` as
+   an expected transient outcome for snapshot contention.
+2. Operators must inspect the JSON `state` emitted by
+   `discovery_recent_raw_snapshot`, not just the systemd success/failure bit.
+3. Expected non-fatal states:
+   - `written`
+   - `self_healed_latest_surface`
+   - `skipped_not_due`
+   - `deferred`
+   - `retryable_busy`
+4. `deferred` means the service hit retryable SQLite contention but retained a
+   healthy latest snapshot surface, so the timer can retry on the next run.
+5. `retryable_busy` means retryable contention happened without a healthy latest
+   surface to defer onto; rerun or investigate before calling the snapshot
+   surface healthy again.
+6. `hard_failure` remains a real failure and should leave the service in the
+   normal non-zero failed state.
 
 ## Server target paths
 

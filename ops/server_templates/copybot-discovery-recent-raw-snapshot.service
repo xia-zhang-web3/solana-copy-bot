@@ -7,5 +7,11 @@ Type=oneshot
 User=copybot
 WorkingDirectory=/var/www/solana-copy-bot
 EnvironmentFile=/etc/solana-copy-bot/app.env
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+SuccessExitStatus=75
+SyslogIdentifier=discovery_recent_raw_snapshot
+StandardOutput=journal
+StandardError=journal
 ExecStart=/var/www/solana-copy-bot/target/release/discovery_recent_raw_snapshot --config /etc/solana-copy-bot/live.server.toml --scheduled --json
-

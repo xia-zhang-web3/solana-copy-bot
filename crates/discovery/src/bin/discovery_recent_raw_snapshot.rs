@@ -7,11 +7,16 @@ use copybot_discovery::runtime_restore_ops::{
     prune_rotated_archives, resolve_db_path, resolve_relative_to_config, write_json_atomic,
     JOURNAL_SNAPSHOT_ARCHIVE_PREFIX, JOURNAL_SNAPSHOT_ARCHIVE_SUFFIX,
 };
-use copybot_storage::{DiscoveryRuntimeCursor, RecentRawJournalStateRow, SqliteStore};
+use copybot_storage::{
+    DiscoveryRuntimeCursor, RecentRawJournalStateRow, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
+    SqliteSnapshotSummary, SqliteStore,
+};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const USAGE: &str = "usage: discovery_recent_raw_snapshot --config <path> [--journal-db-path <path>] (--output <path> | --scheduled) [--force] [--json] [--now <rfc3339>]";
 
@@ -20,7 +25,11 @@ fn main() -> Result<()> {
         println!("{USAGE}");
         return Ok(());
     };
-    println!("{}", run(config)?);
+    let execution = run(config)?;
+    println!("{}", execution.rendered_output);
+    if execution.exit_code != 0 {
+        process::exit(execution.exit_code);
+    }
     Ok(())
 }
 
@@ -62,16 +71,25 @@ struct SnapshotOutput {
     cadence_minutes: Option<u64>,
     retention: Option<usize>,
     pruned_snapshot_paths: Vec<String>,
-    created_at: DateTime<Utc>,
-    row_count: usize,
+    attempt_duration_ms: u64,
+    backup_step_count: usize,
+    backup_retry_count: usize,
+    busy_retry_count: usize,
+    locked_retry_count: usize,
+    retryable_reason: Option<String>,
+    deferred_reason: Option<String>,
+    hard_failure_reason: Option<String>,
+    created_at: Option<DateTime<Utc>>,
+    row_count: Option<usize>,
     covered_since: Option<DateTime<Utc>>,
     covered_through_cursor: Option<DiscoveryRuntimeCursor>,
     last_batch_completed_at: Option<DateTime<Utc>>,
-    snapshot_bytes: u64,
+    snapshot_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LatestSurfaceStatus {
+    NotApplicable,
     Healthy,
     MissingLatestSnapshot,
     MissingLatestMetadata,
@@ -82,6 +100,7 @@ enum LatestSurfaceStatus {
 impl LatestSurfaceStatus {
     fn as_str(self) -> &'static str {
         match self {
+            Self::NotApplicable => "not_applicable",
             Self::Healthy => "healthy",
             Self::MissingLatestSnapshot => "missing_latest_snapshot",
             Self::MissingLatestMetadata => "missing_latest_metadata",
@@ -93,17 +112,22 @@ impl LatestSurfaceStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LatestSurfaceAction {
+    ExplicitOutput,
     HealthySkip,
     RefreshedFromSource,
     RecreatedLatestSnapshotFromArchive,
     RewroteLatestMetadataFromArchive,
     RewroteLatestMetadataFromLatestSqlite,
     RecreatedLatestSurfaceFromSource,
+    DeferredDueToRetryableBusy,
+    UnchangedDueToRetryableBusy,
+    UnchangedDueToHardFailure,
 }
 
 impl LatestSurfaceAction {
     fn as_str(self) -> &'static str {
         match self {
+            Self::ExplicitOutput => "explicit_output",
             Self::HealthySkip => "healthy_skip",
             Self::RefreshedFromSource => "refreshed_from_source",
             Self::RecreatedLatestSnapshotFromArchive => "recreated_latest_snapshot_from_archive",
@@ -112,6 +136,40 @@ impl LatestSurfaceAction {
                 "rewrote_latest_metadata_from_latest_sqlite"
             }
             Self::RecreatedLatestSurfaceFromSource => "recreated_latest_surface_from_source",
+            Self::DeferredDueToRetryableBusy => "deferred_due_to_retryable_busy",
+            Self::UnchangedDueToRetryableBusy => "unchanged_due_to_retryable_busy",
+            Self::UnchangedDueToHardFailure => "unchanged_due_to_hard_failure",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotState {
+    Written,
+    SkippedNotDue,
+    SelfHealedLatestSurface,
+    RetryableBusy,
+    Deferred,
+    HardFailure,
+}
+
+impl SnapshotState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Written => "written",
+            Self::SkippedNotDue => "skipped_not_due",
+            Self::SelfHealedLatestSurface => "self_healed_latest_surface",
+            Self::RetryableBusy => "retryable_busy",
+            Self::Deferred => "deferred",
+            Self::HardFailure => "hard_failure",
+        }
+    }
+
+    fn exit_code(self) -> i32 {
+        match self {
+            Self::Written | Self::SkippedNotDue | Self::SelfHealedLatestSurface => 0,
+            Self::RetryableBusy | Self::Deferred => 75,
+            Self::HardFailure => 1,
         }
     }
 }
@@ -120,6 +178,65 @@ impl LatestSurfaceAction {
 struct LatestSurfaceAssessment {
     status: LatestSurfaceStatus,
     manifest: Option<RecentRawJournalSnapshotManifest>,
+}
+
+#[derive(Debug, Clone)]
+struct SnapshotExecution {
+    rendered_output: String,
+    exit_code: i32,
+}
+
+#[derive(Debug, Clone)]
+enum SnapshotWriteError {
+    RetryableBusy {
+        summary: SqliteSnapshotSummary,
+    },
+    HardFailure {
+        summary: Option<SqliteSnapshotSummary>,
+        reason: String,
+    },
+}
+
+fn summary_reason(summary: &SqliteSnapshotSummary) -> String {
+    summary
+        .retry_exhausted_reason
+        .map(|reason| reason.as_str().to_string())
+        .unwrap_or_else(|| "busy".to_string())
+}
+
+fn state_exit_code(output: &SnapshotOutput) -> i32 {
+    match output.state.as_str() {
+        "written" => SnapshotState::Written.exit_code(),
+        "skipped_not_due" => SnapshotState::SkippedNotDue.exit_code(),
+        "self_healed_latest_surface" => SnapshotState::SelfHealedLatestSurface.exit_code(),
+        "retryable_busy" => SnapshotState::RetryableBusy.exit_code(),
+        "deferred" => SnapshotState::Deferred.exit_code(),
+        "hard_failure" => SnapshotState::HardFailure.exit_code(),
+        _ => 1,
+    }
+}
+
+fn scheduled_contention_contract(
+    latest_surface_status: LatestSurfaceStatus,
+    force: bool,
+    reason: &str,
+) -> (SnapshotState, LatestSurfaceAction, Option<String>) {
+    if !force && latest_surface_status == LatestSurfaceStatus::Healthy {
+        (
+            SnapshotState::Deferred,
+            LatestSurfaceAction::DeferredDueToRetryableBusy,
+            Some(format!(
+                "healthy_latest_surface_retained_after_retryable_{}",
+                reason
+            )),
+        )
+    } else {
+        (
+            SnapshotState::RetryableBusy,
+            LatestSurfaceAction::UnchangedDueToRetryableBusy,
+            None,
+        )
+    }
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -193,7 +310,7 @@ fn parse_string_arg(flag: &str, value: Option<String>) -> Result<String> {
     Ok(trimmed)
 }
 
-fn run(config: Config) -> Result<String> {
+fn run(config: Config) -> Result<SnapshotExecution> {
     let loaded_config = load_from_path(&config.config_path)
         .with_context(|| format!("failed loading config {}", config.config_path.display()))?;
     let source_db_path = resolve_db_path(
@@ -213,6 +330,7 @@ fn run(config: Config) -> Result<String> {
             source_db_path.display()
         )
     })?;
+    let snapshot_policy = SqliteSnapshotPolicy::default();
 
     let output = if config.scheduled {
         run_scheduled(
@@ -224,6 +342,7 @@ fn run(config: Config) -> Result<String> {
                 .runtime_restore_ops
                 .journal_snapshot_cadence_minutes,
             loaded_config.runtime_restore_ops.journal_snapshot_retention,
+            &snapshot_policy,
         )?
     } else {
         let snapshot_path = resolve_relative_to_config(
@@ -234,30 +353,103 @@ fn run(config: Config) -> Result<String> {
                 .expect("validated explicit output path"),
         );
         let metadata_path = journal_snapshot_metadata_path(&snapshot_path);
-        let manifest = write_snapshot(&source_db_path, &source_store, &snapshot_path, config.now)?;
-        write_json_atomic(&metadata_path, &manifest)
-            .with_context(|| format!("failed writing {}", metadata_path.display()))?;
-        render_output(
-            "written",
-            LatestSurfaceStatus::Healthy,
-            LatestSurfaceAction::RefreshedFromSource,
-            &config.config_path,
+        match write_snapshot_with_policy(
             &source_db_path,
+            &source_store,
             &snapshot_path,
-            &metadata_path,
-            None,
-            None,
-            None,
-            &[],
-            &manifest,
-        )
+            config.now,
+            &snapshot_policy,
+        ) {
+            Ok((manifest, summary)) => {
+                match write_json_atomic(&metadata_path, &manifest)
+                    .with_context(|| format!("failed writing {}", metadata_path.display()))
+                {
+                    Ok(()) => render_output(
+                        SnapshotState::Written,
+                        LatestSurfaceStatus::NotApplicable,
+                        LatestSurfaceAction::ExplicitOutput,
+                        &config.config_path,
+                        &source_db_path,
+                        &snapshot_path,
+                        &metadata_path,
+                        None,
+                        None,
+                        None,
+                        &[],
+                        Some(&manifest),
+                        Some(&summary),
+                        None,
+                        None,
+                        None,
+                    ),
+                    Err(error) => render_output(
+                        SnapshotState::HardFailure,
+                        LatestSurfaceStatus::NotApplicable,
+                        LatestSurfaceAction::UnchangedDueToHardFailure,
+                        &config.config_path,
+                        &source_db_path,
+                        &snapshot_path,
+                        &metadata_path,
+                        None,
+                        None,
+                        None,
+                        &[],
+                        Some(&manifest),
+                        Some(&summary),
+                        None,
+                        None,
+                        Some(error.to_string()),
+                    ),
+                }
+            }
+            Err(SnapshotWriteError::RetryableBusy { summary }) => render_output(
+                SnapshotState::RetryableBusy,
+                LatestSurfaceStatus::NotApplicable,
+                LatestSurfaceAction::UnchangedDueToRetryableBusy,
+                &config.config_path,
+                &source_db_path,
+                &snapshot_path,
+                &metadata_path,
+                None,
+                None,
+                None,
+                &[],
+                None,
+                Some(&summary),
+                Some(summary_reason(&summary)),
+                None,
+                None,
+            ),
+            Err(SnapshotWriteError::HardFailure { summary, reason }) => render_output(
+                SnapshotState::HardFailure,
+                LatestSurfaceStatus::NotApplicable,
+                LatestSurfaceAction::UnchangedDueToHardFailure,
+                &config.config_path,
+                &source_db_path,
+                &snapshot_path,
+                &metadata_path,
+                None,
+                None,
+                None,
+                &[],
+                None,
+                summary.as_ref(),
+                None,
+                None,
+                Some(reason),
+            ),
+        }
     };
 
-    if config.json {
-        serde_json::to_string_pretty(&output).context("failed serializing journal snapshot json")
+    let rendered_output = if config.json {
+        serde_json::to_string_pretty(&output).context("failed serializing journal snapshot json")?
     } else {
-        Ok(render_human(&output))
-    }
+        render_human(&output)
+    };
+    Ok(SnapshotExecution {
+        rendered_output,
+        exit_code: state_exit_code(&output),
+    })
 }
 
 fn run_scheduled(
@@ -267,6 +459,7 @@ fn run_scheduled(
     configured_snapshot_dir: &str,
     cadence_minutes: u64,
     retention: usize,
+    snapshot_policy: &SqliteSnapshotPolicy,
 ) -> Result<SnapshotOutput> {
     let snapshot_dir =
         resolve_relative_to_config(&config.config_path, Path::new(configured_snapshot_dir));
@@ -297,7 +490,7 @@ fn run_scheduled(
             .as_ref()
             .expect("healthy latest surface includes manifest");
         return Ok(render_output(
-            "skipped_not_due",
+            SnapshotState::SkippedNotDue,
             latest_surface.status,
             LatestSurfaceAction::HealthySkip,
             &config.config_path,
@@ -308,7 +501,11 @@ fn run_scheduled(
             Some(cadence_minutes),
             Some(retention),
             &[],
-            manifest,
+            Some(manifest),
+            None,
+            None,
+            None,
+            None,
         ));
     }
 
@@ -321,7 +518,7 @@ fn run_scheduled(
             latest_surface.clone(),
         )? {
             return Ok(render_output(
-                "self_healed_latest_surface",
+                SnapshotState::SelfHealedLatestSurface,
                 latest_surface.status,
                 action,
                 &config.config_path,
@@ -332,7 +529,11 @@ fn run_scheduled(
                 Some(cadence_minutes),
                 Some(retention),
                 &[],
-                &manifest,
+                Some(&manifest),
+                None,
+                None,
+                None,
+                None,
             ));
         }
     }
@@ -354,6 +555,9 @@ fn run_scheduled(
         latest_surface.status,
         action,
         &snapshot_dir,
+        snapshot_policy,
+        latest_surface.manifest.as_ref(),
+        config.force,
     )
 }
 
@@ -405,6 +609,7 @@ fn try_self_heal_latest_surface(
     latest_surface: LatestSurfaceAssessment,
 ) -> Result<Option<(RecentRawJournalSnapshotManifest, LatestSurfaceAction)>> {
     match latest_surface.status {
+        LatestSurfaceStatus::NotApplicable => Ok(None),
         LatestSurfaceStatus::MissingLatestSnapshot => {
             if let Some(archive_path) =
                 archive_candidate(snapshot_dir, latest_surface.manifest.as_ref())
@@ -462,6 +667,7 @@ fn reference_manifest_for_cadence(
     latest_surface: &LatestSurfaceAssessment,
 ) -> Result<Option<RecentRawJournalSnapshotManifest>> {
     match latest_surface.status {
+        LatestSurfaceStatus::NotApplicable => Ok(None),
         LatestSurfaceStatus::Healthy | LatestSurfaceStatus::MissingLatestSnapshot => {
             Ok(latest_surface.manifest.clone())
         }
@@ -492,33 +698,189 @@ fn write_fresh_scheduled_snapshot(
     latest_surface_status: LatestSurfaceStatus,
     action: LatestSurfaceAction,
     snapshot_dir: &Path,
+    snapshot_policy: &SqliteSnapshotPolicy,
+    latest_manifest: Option<&RecentRawJournalSnapshotManifest>,
+    force: bool,
 ) -> Result<SnapshotOutput> {
     let archive_path = journal_snapshot_archive_path(snapshot_dir, now);
     let archive_metadata_path = journal_snapshot_metadata_path(&archive_path);
-    let manifest = write_snapshot(source_db_path, source_store, &archive_path, now)?;
-    write_json_atomic(&archive_metadata_path, &manifest)
-        .with_context(|| format!("failed writing {}", archive_metadata_path.display()))?;
-    copy_atomic(&archive_path, latest_snapshot_path)
-        .with_context(|| format!("failed updating {}", latest_snapshot_path.display()))?;
-    write_json_atomic(latest_metadata_path, &manifest)
-        .with_context(|| format!("failed writing {}", latest_metadata_path.display()))?;
+    let (manifest, summary) = match write_snapshot_with_policy(
+        source_db_path,
+        source_store,
+        &archive_path,
+        now,
+        snapshot_policy,
+    ) {
+        Ok(result) => result,
+        Err(SnapshotWriteError::RetryableBusy { summary }) => {
+            let reason = summary_reason(&summary);
+            let (state, latest_action, deferred_reason) =
+                scheduled_contention_contract(latest_surface_status, force, &reason);
+            return Ok(render_output(
+                state,
+                latest_surface_status,
+                latest_action,
+                config_path,
+                source_db_path,
+                latest_snapshot_path,
+                latest_metadata_path,
+                None,
+                Some(cadence_minutes),
+                Some(retention),
+                &[],
+                latest_manifest,
+                Some(&summary),
+                Some(reason),
+                deferred_reason,
+                None,
+            ));
+        }
+        Err(SnapshotWriteError::HardFailure { summary, reason }) => {
+            return Ok(render_output(
+                SnapshotState::HardFailure,
+                latest_surface_status,
+                LatestSurfaceAction::UnchangedDueToHardFailure,
+                config_path,
+                source_db_path,
+                latest_snapshot_path,
+                latest_metadata_path,
+                None,
+                Some(cadence_minutes),
+                Some(retention),
+                &[],
+                latest_manifest,
+                summary.as_ref(),
+                None,
+                None,
+                Some(reason),
+            ));
+        }
+    };
+    if let Err(error) = write_json_atomic(&archive_metadata_path, &manifest)
+        .with_context(|| format!("failed writing {}", archive_metadata_path.display()))
+    {
+        return Ok(render_output(
+            SnapshotState::HardFailure,
+            latest_surface_status,
+            LatestSurfaceAction::UnchangedDueToHardFailure,
+            config_path,
+            source_db_path,
+            latest_snapshot_path,
+            latest_metadata_path,
+            Some(&archive_path),
+            Some(cadence_minutes),
+            Some(retention),
+            &[],
+            Some(&manifest),
+            Some(&summary),
+            None,
+            None,
+            Some(error.to_string()),
+        ));
+    }
+    if let Err(error) = copy_atomic(&archive_path, latest_snapshot_path)
+        .with_context(|| format!("failed updating {}", latest_snapshot_path.display()))
+    {
+        return Ok(render_output(
+            SnapshotState::HardFailure,
+            latest_surface_status,
+            LatestSurfaceAction::UnchangedDueToHardFailure,
+            config_path,
+            source_db_path,
+            latest_snapshot_path,
+            latest_metadata_path,
+            Some(&archive_path),
+            Some(cadence_minutes),
+            Some(retention),
+            &[],
+            Some(&manifest),
+            Some(&summary),
+            None,
+            None,
+            Some(error.to_string()),
+        ));
+    }
+    if let Err(error) = write_json_atomic(latest_metadata_path, &manifest)
+        .with_context(|| format!("failed writing {}", latest_metadata_path.display()))
+    {
+        return Ok(render_output(
+            SnapshotState::HardFailure,
+            latest_surface_status,
+            LatestSurfaceAction::UnchangedDueToHardFailure,
+            config_path,
+            source_db_path,
+            latest_snapshot_path,
+            latest_metadata_path,
+            Some(&archive_path),
+            Some(cadence_minutes),
+            Some(retention),
+            &[],
+            Some(&manifest),
+            Some(&summary),
+            None,
+            None,
+            Some(error.to_string()),
+        ));
+    }
 
-    let pruned = prune_rotated_archives(
+    let pruned = match prune_rotated_archives(
         snapshot_dir,
         JOURNAL_SNAPSHOT_ARCHIVE_PREFIX,
         JOURNAL_SNAPSHOT_ARCHIVE_SUFFIX,
         retention,
-    )?;
+    ) {
+        Ok(pruned) => pruned,
+        Err(error) => {
+            return Ok(render_output(
+                SnapshotState::HardFailure,
+                latest_surface_status,
+                LatestSurfaceAction::UnchangedDueToHardFailure,
+                config_path,
+                source_db_path,
+                latest_snapshot_path,
+                latest_metadata_path,
+                Some(&archive_path),
+                Some(cadence_minutes),
+                Some(retention),
+                &[],
+                Some(&manifest),
+                Some(&summary),
+                None,
+                None,
+                Some(error.to_string()),
+            ));
+        }
+    };
     for snapshot_path in &pruned {
         let metadata_path = journal_snapshot_metadata_path(snapshot_path);
         if metadata_path.exists() {
-            fs::remove_file(&metadata_path)
-                .with_context(|| format!("failed removing {}", metadata_path.display()))?;
+            if let Err(error) = fs::remove_file(&metadata_path)
+                .with_context(|| format!("failed removing {}", metadata_path.display()))
+            {
+                return Ok(render_output(
+                    SnapshotState::HardFailure,
+                    latest_surface_status,
+                    LatestSurfaceAction::UnchangedDueToHardFailure,
+                    config_path,
+                    source_db_path,
+                    latest_snapshot_path,
+                    latest_metadata_path,
+                    Some(&archive_path),
+                    Some(cadence_minutes),
+                    Some(retention),
+                    &[],
+                    Some(&manifest),
+                    Some(&summary),
+                    None,
+                    None,
+                    Some(error.to_string()),
+                ));
+            }
         }
     }
 
     Ok(render_output(
-        "written",
+        SnapshotState::Written,
         latest_surface_status,
         action,
         config_path,
@@ -529,7 +891,11 @@ fn write_fresh_scheduled_snapshot(
         Some(cadence_minutes),
         Some(retention),
         &pruned,
-        &manifest,
+        Some(&manifest),
+        Some(&summary),
+        None,
+        None,
+        None,
     ))
 }
 
@@ -570,9 +936,25 @@ fn manifest_for_existing_snapshot(
     source_db_path: &Path,
     snapshot_path: &Path,
 ) -> Result<RecentRawJournalSnapshotManifest> {
+    let created_at = infer_created_at(snapshot_path)?;
+    manifest_for_snapshot(source_db_path, snapshot_path, created_at)
+}
+
+fn infer_created_at(path: &Path) -> Result<DateTime<Utc>> {
+    let modified = fs::metadata(path)
+        .with_context(|| format!("failed stat {}", path.display()))?
+        .modified()
+        .with_context(|| format!("failed reading modified time for {}", path.display()))?;
+    Ok(DateTime::<Utc>::from(modified))
+}
+
+fn manifest_for_snapshot(
+    source_db_path: &Path,
+    snapshot_path: &Path,
+    created_at: DateTime<Utc>,
+) -> Result<RecentRawJournalSnapshotManifest> {
     let snapshot_store = SqliteStore::open_read_only(snapshot_path)
         .with_context(|| format!("failed opening {}", snapshot_path.display()))?;
-    let created_at = infer_created_at(snapshot_path)?;
     let state = snapshot_store.recent_raw_journal_state_read_only()?;
     let snapshot_bytes = fs::metadata(snapshot_path)
         .with_context(|| format!("failed stat {}", snapshot_path.display()))?
@@ -586,34 +968,134 @@ fn manifest_for_existing_snapshot(
     ))
 }
 
-fn infer_created_at(path: &Path) -> Result<DateTime<Utc>> {
-    let modified = fs::metadata(path)
-        .with_context(|| format!("failed stat {}", path.display()))?
-        .modified()
-        .with_context(|| format!("failed reading modified time for {}", path.display()))?;
-    Ok(DateTime::<Utc>::from(modified))
+#[cfg(test)]
+thread_local! {
+    static POST_SNAPSHOT_PUBLISH_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&Path) -> Result<()>>>> =
+        std::cell::RefCell::new(None);
 }
 
-fn write_snapshot(
+#[cfg(test)]
+struct SnapshotPublishHookGuard;
+
+#[cfg(test)]
+impl Drop for SnapshotPublishHookGuard {
+    fn drop(&mut self) {
+        POST_SNAPSHOT_PUBLISH_HOOK.with(|slot| {
+            slot.borrow_mut().take();
+        });
+    }
+}
+
+#[cfg(test)]
+fn install_post_snapshot_publish_hook<F>(hook: F) -> SnapshotPublishHookGuard
+where
+    F: FnMut(&Path) -> Result<()> + 'static,
+{
+    POST_SNAPSHOT_PUBLISH_HOOK.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        assert!(slot.is_none(), "snapshot publish hook already installed");
+        *slot = Some(Box::new(hook));
+    });
+    SnapshotPublishHookGuard
+}
+
+#[cfg(test)]
+fn invoke_post_snapshot_publish_hook(snapshot_path: &Path) -> Result<()> {
+    let hook = POST_SNAPSHOT_PUBLISH_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(mut hook) = hook {
+        hook(snapshot_path)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn invoke_post_snapshot_publish_hook(_snapshot_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn write_snapshot_with_policy(
     source_db_path: &Path,
     source_store: &SqliteStore,
     snapshot_path: &Path,
     now: DateTime<Utc>,
-) -> Result<RecentRawJournalSnapshotManifest> {
-    source_store
-        .snapshot_into_path(snapshot_path)
-        .with_context(|| format!("failed writing {}", snapshot_path.display()))?;
-    let state = source_store.recent_raw_journal_state_read_only()?;
-    let snapshot_bytes = fs::metadata(snapshot_path)
-        .with_context(|| format!("failed stat {}", snapshot_path.display()))?
-        .len();
-    Ok(snapshot_manifest(
-        now,
-        source_db_path,
-        snapshot_path,
-        &state,
-        snapshot_bytes,
+    snapshot_policy: &SqliteSnapshotPolicy,
+) -> Result<(RecentRawJournalSnapshotManifest, SqliteSnapshotSummary), SnapshotWriteError> {
+    if let Some(parent) = snapshot_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| SnapshotWriteError::HardFailure {
+            summary: None,
+            reason: format!(
+                "failed creating snapshot parent dir {}: {error}",
+                parent.display()
+            ),
+        })?;
+    }
+    let temp_snapshot_path = snapshot_temp_path(snapshot_path);
+    cleanup_snapshot_temp(&temp_snapshot_path);
+    let snapshot_outcome = source_store
+        .snapshot_into_path_with_policy(&temp_snapshot_path, snapshot_policy)
+        .map_err(|error| {
+            cleanup_snapshot_temp(&temp_snapshot_path);
+            SnapshotWriteError::HardFailure {
+                summary: None,
+                reason: format!("failed writing {}: {error}", snapshot_path.display()),
+            }
+        })?;
+    let summary = match snapshot_outcome {
+        SqliteSnapshotOutcome::Written(summary) => summary,
+        SqliteSnapshotOutcome::RetryableBusy(summary) => {
+            cleanup_snapshot_temp(&temp_snapshot_path);
+            return Err(SnapshotWriteError::RetryableBusy { summary });
+        }
+    };
+    fs::rename(&temp_snapshot_path, snapshot_path).map_err(|error| {
+        cleanup_snapshot_temp(&temp_snapshot_path);
+        SnapshotWriteError::HardFailure {
+            summary: Some(summary.clone()),
+            reason: format!(
+                "failed renaming {} to {}: {error}",
+                temp_snapshot_path.display(),
+                snapshot_path.display()
+            ),
+        }
+    })?;
+    invoke_post_snapshot_publish_hook(snapshot_path).map_err(|error| {
+        SnapshotWriteError::HardFailure {
+            summary: Some(summary.clone()),
+            reason: format!(
+                "failed running post-snapshot publish hook for {}: {error}",
+                snapshot_path.display()
+            ),
+        }
+    })?;
+    let manifest = manifest_for_snapshot(source_db_path, snapshot_path, now).map_err(|error| {
+        SnapshotWriteError::HardFailure {
+            summary: Some(summary.clone()),
+            reason: format!(
+                "failed building manifest from snapshot {}: {error}",
+                snapshot_path.display()
+            ),
+        }
+    })?;
+    Ok((manifest, summary))
+}
+
+fn snapshot_temp_path(snapshot_path: &Path) -> PathBuf {
+    let file_name = snapshot_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("snapshot.sqlite");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    snapshot_path.with_file_name(format!(
+        ".{file_name}.snapshot-tmp-{}-{nonce}",
+        process::id()
     ))
+}
+
+fn cleanup_snapshot_temp(path: &Path) {
+    let _ = fs::remove_file(path);
 }
 
 fn snapshot_manifest(
@@ -637,7 +1119,7 @@ fn snapshot_manifest(
 }
 
 fn render_output(
-    state: &str,
+    state: SnapshotState,
     latest_surface_status: LatestSurfaceStatus,
     latest_surface_action: LatestSurfaceAction,
     config_path: &Path,
@@ -648,11 +1130,15 @@ fn render_output(
     cadence_minutes: Option<u64>,
     retention: Option<usize>,
     pruned_snapshot_paths: &[PathBuf],
-    manifest: &RecentRawJournalSnapshotManifest,
+    manifest: Option<&RecentRawJournalSnapshotManifest>,
+    snapshot_summary: Option<&SqliteSnapshotSummary>,
+    retryable_reason: Option<String>,
+    deferred_reason: Option<String>,
+    hard_failure_reason: Option<String>,
 ) -> SnapshotOutput {
     SnapshotOutput {
         event: "discovery_recent_raw_snapshot".to_string(),
-        state: state.to_string(),
+        state: state.as_str().to_string(),
         latest_surface_status: latest_surface_status.as_str().to_string(),
         latest_surface_action: latest_surface_action.as_str().to_string(),
         config_path: config_path.display().to_string(),
@@ -666,12 +1152,31 @@ fn render_output(
             .iter()
             .map(|path| path.display().to_string())
             .collect(),
-        created_at: manifest.created_at,
-        row_count: manifest.row_count,
-        covered_since: manifest.covered_since,
-        covered_through_cursor: manifest.covered_through_cursor.clone(),
-        last_batch_completed_at: manifest.last_batch_completed_at,
-        snapshot_bytes: manifest.snapshot_bytes,
+        attempt_duration_ms: snapshot_summary
+            .map(|summary| summary.duration_ms)
+            .unwrap_or(0),
+        backup_step_count: snapshot_summary
+            .map(|summary| summary.backup_step_count)
+            .unwrap_or(0),
+        backup_retry_count: snapshot_summary
+            .map(|summary| summary.backup_retry_count)
+            .unwrap_or(0),
+        busy_retry_count: snapshot_summary
+            .map(|summary| summary.busy_retry_count)
+            .unwrap_or(0),
+        locked_retry_count: snapshot_summary
+            .map(|summary| summary.locked_retry_count)
+            .unwrap_or(0),
+        retryable_reason,
+        deferred_reason,
+        hard_failure_reason,
+        created_at: manifest.map(|manifest| manifest.created_at),
+        row_count: manifest.map(|manifest| manifest.row_count),
+        covered_since: manifest.and_then(|manifest| manifest.covered_since),
+        covered_through_cursor: manifest
+            .and_then(|manifest| manifest.covered_through_cursor.clone()),
+        last_batch_completed_at: manifest.and_then(|manifest| manifest.last_batch_completed_at),
+        snapshot_bytes: manifest.map(|manifest| manifest.snapshot_bytes),
     }
 }
 
@@ -704,8 +1209,37 @@ fn render_human(output: &SnapshotOutput) -> String {
                 .unwrap_or_else(|| "null".to_string())
         ),
         format!("pruned_snapshots={}", output.pruned_snapshot_paths.len()),
-        format!("created_at={}", output.created_at.to_rfc3339()),
-        format!("row_count={}", output.row_count),
+        format!("attempt_duration_ms={}", output.attempt_duration_ms),
+        format!("backup_step_count={}", output.backup_step_count),
+        format!("backup_retry_count={}", output.backup_retry_count),
+        format!("busy_retry_count={}", output.busy_retry_count),
+        format!("locked_retry_count={}", output.locked_retry_count),
+        format!(
+            "retryable_reason={}",
+            output.retryable_reason.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "deferred_reason={}",
+            output.deferred_reason.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "hard_failure_reason={}",
+            output.hard_failure_reason.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "created_at={}",
+            output
+                .created_at
+                .map(|value| value.to_rfc3339())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "row_count={}",
+            output
+                .row_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
         format!(
             "covered_since={}",
             output
@@ -733,7 +1267,13 @@ fn render_human(output: &SnapshotOutput) -> String {
                 .map(|value| value.to_rfc3339())
                 .unwrap_or_else(|| "null".to_string())
         ),
-        format!("snapshot_bytes={}", output.snapshot_bytes),
+        format!(
+            "snapshot_bytes={}",
+            output
+                .snapshot_bytes
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
     ]
     .join("\n")
 }
@@ -745,6 +1285,7 @@ mod tests {
     use chrono::{DateTime, Duration, Utc};
     use copybot_core_types::SwapEvent;
     use copybot_discovery::runtime_restore_ops::load_json;
+    use copybot_storage::RecentRawJournalStateRow;
     use serde_json::Value;
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -770,6 +1311,46 @@ mod tests {
         );
         assert!(parsed.scheduled);
         assert!(parsed.json);
+    }
+
+    #[test]
+    fn scheduled_contention_contract_defers_when_latest_surface_is_healthy() {
+        let (state, action, deferred_reason) = super::scheduled_contention_contract(
+            super::LatestSurfaceStatus::Healthy,
+            false,
+            "busy",
+        );
+        assert_eq!(state, super::SnapshotState::Deferred);
+        assert_eq!(
+            action,
+            super::LatestSurfaceAction::DeferredDueToRetryableBusy
+        );
+        assert_eq!(
+            deferred_reason.as_deref(),
+            Some("healthy_latest_surface_retained_after_retryable_busy")
+        );
+    }
+
+    #[test]
+    fn scheduled_contention_contract_returns_retryable_busy_without_healthy_latest_surface() {
+        let (state, action, deferred_reason) = super::scheduled_contention_contract(
+            super::LatestSurfaceStatus::MissingBoth,
+            false,
+            "locked",
+        );
+        assert_eq!(state, super::SnapshotState::RetryableBusy);
+        assert_eq!(
+            action,
+            super::LatestSurfaceAction::UnchangedDueToRetryableBusy
+        );
+        assert!(deferred_reason.is_none());
+    }
+
+    #[test]
+    fn snapshot_state_exit_codes_keep_transient_contention_distinct_from_hard_failure() {
+        assert_eq!(super::SnapshotState::Deferred.exit_code(), 75);
+        assert_eq!(super::SnapshotState::RetryableBusy.exit_code(), 75);
+        assert_eq!(super::SnapshotState::HardFailure.exit_code(), 1);
     }
 
     #[test]
@@ -842,7 +1423,8 @@ mod tests {
             json: true,
             now: now + Duration::minutes(2),
         })?;
-        let output: Value = serde_json::from_str(&skipped)?;
+        assert_eq!(skipped.exit_code, 0);
+        let output: Value = serde_json::from_str(&skipped.rendered_output)?;
         assert_eq!(output["state"], "skipped_not_due");
         assert_eq!(output["latest_surface_status"], "healthy");
         assert_eq!(output["latest_surface_action"], "healthy_skip");
@@ -878,7 +1460,8 @@ mod tests {
             json: true,
             now: now + Duration::minutes(2),
         })?;
-        let output: Value = serde_json::from_str(&healed)?;
+        assert_eq!(healed.exit_code, 0);
+        let output: Value = serde_json::from_str(&healed.rendered_output)?;
         assert_eq!(output["state"], "self_healed_latest_surface");
         assert_eq!(output["latest_surface_status"], "missing_latest_snapshot");
         assert_eq!(
@@ -919,7 +1502,8 @@ mod tests {
             json: true,
             now: now + Duration::minutes(2),
         })?;
-        let output: Value = serde_json::from_str(&healed)?;
+        assert_eq!(healed.exit_code, 0);
+        let output: Value = serde_json::from_str(&healed.rendered_output)?;
         assert_eq!(output["state"], "self_healed_latest_surface");
         assert_eq!(output["latest_surface_status"], "missing_latest_metadata");
         assert_eq!(
@@ -969,7 +1553,8 @@ mod tests {
             json: true,
             now: second_now + Duration::minutes(2),
         })?;
-        let healed_output: Value = serde_json::from_str(&healed)?;
+        assert_eq!(healed.exit_code, 0);
+        let healed_output: Value = serde_json::from_str(&healed.rendered_output)?;
         assert_eq!(healed_output["state"], "self_healed_latest_surface");
 
         run(Config {
@@ -1014,6 +1599,93 @@ mod tests {
         let snapshot_store = SqliteStore::open_read_only(&snapshot_path)?;
         let state = snapshot_store.recent_raw_journal_state_read_only()?;
         assert_eq!(state.row_count, 2);
+        assert_eq!(manifest.covered_since, state.covered_since);
+        assert_eq!(
+            manifest.covered_through_cursor,
+            state.covered_through_cursor
+        );
+        assert_eq!(
+            manifest.last_batch_completed_at,
+            state.last_batch_completed_at
+        );
+        assert_eq!(
+            manifest.snapshot_bytes,
+            std::fs::metadata(&snapshot_path)?.len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scheduled_run_manifest_metadata_matches_snapshot_files_even_if_source_advances_after_publish(
+    ) -> Result<()> {
+        let fixture = make_fixture("recent-raw-snapshot-drift")?;
+        let now = parse_ts("2026-03-23T12:00:00Z")?;
+        seed_recent_raw_journal(&fixture.journal_store, now)?;
+        let live_journal_db_path = fixture.journal_db_path.clone();
+        let live_advance_at = now + Duration::minutes(1);
+        let _guard = super::install_post_snapshot_publish_hook(move |_| {
+            let live_writer = SqliteStore::open(&live_journal_db_path)?;
+            live_writer.insert_recent_raw_journal_batch(
+                &[make_swap("sig-c", live_advance_at, 12)],
+                live_advance_at,
+            )?;
+            Ok(())
+        });
+
+        let written = run(Config {
+            config_path: fixture.config_path.clone(),
+            journal_db_path: Some(fixture.journal_db_path.clone()),
+            output_path: None,
+            scheduled: true,
+            force: true,
+            json: true,
+            now,
+        })?;
+        assert_eq!(written.exit_code, 0);
+        let output: Value = serde_json::from_str(&written.rendered_output)?;
+        assert_eq!(output["state"], "written");
+
+        let latest_snapshot_path = fixture.snapshot_dir().join("latest.sqlite");
+        let latest_metadata_path = fixture.snapshot_dir().join("latest.json");
+        let latest_manifest: RecentRawJournalSnapshotManifest = load_json(&latest_metadata_path)?;
+        let latest_state = load_snapshot_state(&latest_snapshot_path)?;
+        assert_snapshot_manifest_matches_state(
+            &latest_manifest,
+            &latest_state,
+            &latest_snapshot_path,
+        )?;
+
+        let archive_path = PathBuf::from(
+            output["archive_path"]
+                .as_str()
+                .context("archive path must be present for written scheduled snapshot")?,
+        );
+        let archive_manifest_path = archive_path.with_extension("json");
+        let archive_manifest: RecentRawJournalSnapshotManifest = load_json(&archive_manifest_path)?;
+        let archive_state = load_snapshot_state(&archive_path)?;
+        assert_snapshot_manifest_matches_state(&archive_manifest, &archive_state, &archive_path)?;
+
+        let source_state = SqliteStore::open_read_only(&fixture.journal_db_path)?
+            .recent_raw_journal_state_read_only()?;
+        assert_eq!(latest_manifest.row_count, 2);
+        assert_eq!(archive_manifest.row_count, 2);
+        assert_eq!(
+            latest_manifest.covered_through_cursor,
+            latest_state.covered_through_cursor
+        );
+        assert_eq!(
+            archive_manifest.covered_through_cursor,
+            archive_state.covered_through_cursor
+        );
+        assert!(source_state.row_count > latest_manifest.row_count);
+        assert_ne!(
+            source_state.covered_through_cursor,
+            latest_manifest.covered_through_cursor
+        );
+        assert_ne!(
+            source_state.last_batch_completed_at,
+            latest_manifest.last_batch_completed_at
+        );
         Ok(())
     }
 
@@ -1032,8 +1704,8 @@ mod tests {
         std::fs::write(
             &config_path,
             format!(
-                "[recent_raw_journal]\npath = \"{}\"\n\n[runtime_restore_ops]\njournal_snapshot_retention = 2\njournal_snapshot_cadence_minutes = 10\n",
-                journal_db_path.display()
+                "[recent_raw_journal]\npath = \"{}\"\n\n[program_history_validation]\nsource = \"quicknode_blocks_rpc\"\nhttp_url = \"https://example.invalid/blocks\"\nraydium_program_ids = [\"675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8\"]\npumpswap_program_ids = [\"pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA\"]\n\n[runtime_restore_ops]\njournal_snapshot_retention = 2\njournal_snapshot_cadence_minutes = 10\n",
+                journal_db_path.display(),
             ),
         )
         .context("failed writing config")?;
@@ -1062,6 +1734,34 @@ mod tests {
             ],
             now,
         )?;
+        Ok(())
+    }
+
+    fn load_snapshot_state(snapshot_path: &std::path::Path) -> Result<RecentRawJournalStateRow> {
+        let snapshot_store = SqliteStore::open_read_only(snapshot_path)?;
+        snapshot_store.recent_raw_journal_state_read_only()
+    }
+
+    fn assert_snapshot_manifest_matches_state(
+        manifest: &RecentRawJournalSnapshotManifest,
+        state: &RecentRawJournalStateRow,
+        snapshot_path: &std::path::Path,
+    ) -> Result<()> {
+        assert_eq!(manifest.row_count, state.row_count);
+        assert_eq!(manifest.covered_since, state.covered_since);
+        assert_eq!(
+            manifest.covered_through_cursor,
+            state.covered_through_cursor
+        );
+        assert_eq!(
+            manifest.last_batch_completed_at,
+            state.last_batch_completed_at
+        );
+        assert_eq!(manifest.updated_at, state.updated_at);
+        assert_eq!(
+            manifest.snapshot_bytes,
+            std::fs::metadata(snapshot_path)?.len()
+        );
         Ok(())
     }
 

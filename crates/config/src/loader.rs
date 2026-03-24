@@ -788,6 +788,7 @@ fn validate_loaded_config(config: &AppConfig) -> Result<()> {
     validate_recent_raw_journal_config(config)?;
     validate_recent_raw_gap_fill_config(config)?;
     validate_recent_raw_gap_fill_helius_config(config)?;
+    validate_program_history_validation_config(config)?;
     validate_runtime_restore_ops_config(config)?;
     validate_discovery_aggregate_activation_config(config)?;
     validate_execution_exact_sizing_config(config)?;
@@ -959,6 +960,72 @@ fn validate_recent_raw_gap_fill_helius_config(config: &AppConfig) -> Result<()> 
         return Err(anyhow!(
             "recent_raw_gap_fill_helius.max_pages_per_wallet ({}) must be >= 1",
             gap_fill.max_pages_per_wallet
+        ));
+    }
+    Ok(())
+}
+
+fn validate_program_history_validation_config(config: &AppConfig) -> Result<()> {
+    let validation = &config.program_history_validation;
+    let source = validation.source.trim();
+    if source.is_empty() {
+        return Err(anyhow!("program_history_validation.source cannot be empty"));
+    }
+    if source != "quicknode_blocks_rpc" {
+        return Err(anyhow!(
+            "program_history_validation.source ({source}) must be quicknode_blocks_rpc"
+        ));
+    }
+    if validation.http_url.trim().is_empty() {
+        return Err(anyhow!(
+            "program_history_validation.http_url cannot be empty"
+        ));
+    }
+    if validation.request_timeout_ms == 0 {
+        return Err(anyhow!(
+            "program_history_validation.request_timeout_ms ({}) must be >= 1",
+            validation.request_timeout_ms
+        ));
+    }
+    if validation.block_batch_size == 0 || validation.block_batch_size > 1_005 {
+        return Err(anyhow!(
+            "program_history_validation.block_batch_size ({}) must be between 1 and 1005",
+            validation.block_batch_size
+        ));
+    }
+    if validation.max_slots_to_scan == 0 {
+        return Err(anyhow!(
+            "program_history_validation.max_slots_to_scan ({}) must be >= 1",
+            validation.max_slots_to_scan
+        ));
+    }
+    if validation.sampling_segments == 0 {
+        return Err(anyhow!(
+            "program_history_validation.sampling_segments ({}) must be >= 1",
+            validation.sampling_segments
+        ));
+    }
+    if validation.sampling_segments > validation.max_slots_to_scan {
+        return Err(anyhow!(
+            "program_history_validation.sampling_segments ({}) must be <= program_history_validation.max_slots_to_scan ({})",
+            validation.sampling_segments,
+            validation.max_slots_to_scan
+        ));
+    }
+    if validation.block_time_probe_slots == 0 {
+        return Err(anyhow!(
+            "program_history_validation.block_time_probe_slots ({}) must be >= 1",
+            validation.block_time_probe_slots
+        ));
+    }
+    if validation.raydium_program_ids.is_empty() {
+        return Err(anyhow!(
+            "program_history_validation.raydium_program_ids must contain at least one program id"
+        ));
+    }
+    if validation.pumpswap_program_ids.is_empty() {
+        return Err(anyhow!(
+            "program_history_validation.pumpswap_program_ids must contain at least one program id"
         ));
     }
     Ok(())

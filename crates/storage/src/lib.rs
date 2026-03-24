@@ -1,13 +1,13 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use rusqlite::backup::Backup;
+use rusqlite::backup::{Backup, StepResult};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 use std::{fmt, thread};
 
 pub use copybot_core_types::{
@@ -20,6 +20,9 @@ pub use copybot_core_types::{
 
 const SQLITE_WRITE_MAX_RETRIES: usize = 3;
 const SQLITE_WRITE_RETRY_BACKOFF_MS: [u64; SQLITE_WRITE_MAX_RETRIES] = [100, 300, 700];
+const SQLITE_SNAPSHOT_PAGES_PER_STEP: i32 = 16;
+const SQLITE_SNAPSHOT_PAUSE_BETWEEN_STEPS_MS: u64 = 25;
+const SQLITE_SNAPSHOT_BUSY_TIMEOUT_MS: u64 = 250;
 const DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS: i64 = 3;
 pub const STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES: i64 = 30;
 pub const STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL: f64 = 0.05;
@@ -70,6 +73,115 @@ pub use system_events::RiskEventRow;
 
 pub struct SqliteStore {
     conn: Connection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqliteSnapshotRetryReason {
+    Busy,
+    Locked,
+    BusyAndLocked,
+}
+
+impl SqliteSnapshotRetryReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Busy => "busy",
+            Self::Locked => "locked",
+            Self::BusyAndLocked => "busy_and_locked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqliteSnapshotSummary {
+    pub duration_ms: u64,
+    pub backup_step_count: usize,
+    pub backup_retry_count: usize,
+    pub busy_retry_count: usize,
+    pub locked_retry_count: usize,
+    pub retry_exhausted_reason: Option<SqliteSnapshotRetryReason>,
+}
+
+impl Default for SqliteSnapshotSummary {
+    fn default() -> Self {
+        Self {
+            duration_ms: 0,
+            backup_step_count: 0,
+            backup_retry_count: 0,
+            busy_retry_count: 0,
+            locked_retry_count: 0,
+            retry_exhausted_reason: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SqliteSnapshotOutcome {
+    Written(SqliteSnapshotSummary),
+    RetryableBusy(SqliteSnapshotSummary),
+}
+
+#[derive(Debug, Clone)]
+pub struct SqliteSnapshotPolicy {
+    pub busy_timeout: StdDuration,
+    pub pages_per_step: i32,
+    pub pause_between_steps: StdDuration,
+    pub retry_backoff_ms: Vec<u64>,
+}
+
+impl Default for SqliteSnapshotPolicy {
+    fn default() -> Self {
+        Self {
+            busy_timeout: StdDuration::from_millis(SQLITE_SNAPSHOT_BUSY_TIMEOUT_MS),
+            pages_per_step: SQLITE_SNAPSHOT_PAGES_PER_STEP,
+            pause_between_steps: StdDuration::from_millis(SQLITE_SNAPSHOT_PAUSE_BETWEEN_STEPS_MS),
+            retry_backoff_ms: SQLITE_WRITE_RETRY_BACKOFF_MS.to_vec(),
+        }
+    }
+}
+
+fn retry_reason_from_summary(summary: &SqliteSnapshotSummary) -> SqliteSnapshotRetryReason {
+    match (summary.busy_retry_count > 0, summary.locked_retry_count > 0) {
+        (true, true) => SqliteSnapshotRetryReason::BusyAndLocked,
+        (true, false) => SqliteSnapshotRetryReason::Busy,
+        (false, true) => SqliteSnapshotRetryReason::Locked,
+        (false, false) => SqliteSnapshotRetryReason::Busy,
+    }
+}
+
+fn retry_reason_from_sqlite_error(error: &anyhow::Error) -> Option<SqliteSnapshotRetryReason> {
+    let mut saw_busy = false;
+    let mut saw_locked = false;
+    for cause in error.chain() {
+        let lowered = cause.to_string().to_ascii_lowercase();
+        if lowered.contains("database is busy") {
+            saw_busy = true;
+        }
+        if lowered.contains("database is locked") || lowered.contains("database table is locked") {
+            saw_locked = true;
+        }
+    }
+    match (saw_busy, saw_locked) {
+        (true, true) => Some(SqliteSnapshotRetryReason::BusyAndLocked),
+        (true, false) => Some(SqliteSnapshotRetryReason::Busy),
+        (false, true) => Some(SqliteSnapshotRetryReason::Locked),
+        (false, false) => None,
+    }
+}
+
+fn record_snapshot_retry(summary: &mut SqliteSnapshotSummary, reason: SqliteSnapshotRetryReason) {
+    match reason {
+        SqliteSnapshotRetryReason::Busy => {
+            summary.busy_retry_count = summary.busy_retry_count.saturating_add(1);
+        }
+        SqliteSnapshotRetryReason::Locked => {
+            summary.locked_retry_count = summary.locked_retry_count.saturating_add(1);
+        }
+        SqliteSnapshotRetryReason::BusyAndLocked => {
+            summary.busy_retry_count = summary.busy_retry_count.saturating_add(1);
+            summary.locked_retry_count = summary.locked_retry_count.saturating_add(1);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1435,6 +1547,28 @@ impl SqliteStore {
     }
 
     pub fn snapshot_into_path(&self, destination_path: &Path) -> Result<()> {
+        match self
+            .snapshot_into_path_with_policy(destination_path, &SqliteSnapshotPolicy::default())?
+        {
+            SqliteSnapshotOutcome::Written(_) => Ok(()),
+            SqliteSnapshotOutcome::RetryableBusy(summary) => {
+                anyhow::bail!(
+                    "sqlite snapshot exhausted retryable backup contention retries (reason={}, retries={})",
+                    summary
+                        .retry_exhausted_reason
+                        .map(|reason| reason.as_str())
+                        .unwrap_or("unknown"),
+                    summary.backup_retry_count
+                );
+            }
+        }
+    }
+
+    pub fn snapshot_into_path_with_policy(
+        &self,
+        destination_path: &Path,
+        policy: &SqliteSnapshotPolicy,
+    ) -> Result<SqliteSnapshotOutcome> {
         if let Some(parent) = destination_path.parent() {
             fs::create_dir_all(parent).with_context(|| {
                 format!(
@@ -1443,6 +1577,8 @@ impl SqliteStore {
                 )
             })?;
         }
+        let started = Instant::now();
+        let mut summary = SqliteSnapshotSummary::default();
         let mut destination = Connection::open(destination_path).with_context(|| {
             format!(
                 "failed to open destination sqlite snapshot db: {}",
@@ -1450,14 +1586,89 @@ impl SqliteStore {
             )
         })?;
         destination
-            .busy_timeout(StdDuration::from_secs(5))
+            .busy_timeout(policy.busy_timeout)
             .context("failed to set sqlite snapshot busy_timeout")?;
-        let backup = Backup::new(&self.conn, &mut destination)
-            .context("failed to initialize sqlite online backup")?;
-        backup
-            .run_to_completion(16, StdDuration::from_millis(25), None)
-            .context("failed to complete sqlite online backup")?;
-        Ok(())
+        let backup = loop {
+            match Backup::new(&self.conn, &mut destination) {
+                Ok(backup) => break backup,
+                Err(error) => {
+                    let error = anyhow!(error).context("failed to initialize sqlite online backup");
+                    if let Some(reason) = retry_reason_from_sqlite_error(&error) {
+                        record_snapshot_retry(&mut summary, reason);
+                        note_sqlite_busy_error();
+                        if let Some(backoff_ms) =
+                            policy.retry_backoff_ms.get(summary.backup_retry_count)
+                        {
+                            summary.backup_retry_count =
+                                summary.backup_retry_count.saturating_add(1);
+                            note_sqlite_write_retry();
+                            thread::sleep(StdDuration::from_millis(*backoff_ms));
+                            continue;
+                        }
+                        summary.duration_ms =
+                            started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                        summary.retry_exhausted_reason = Some(retry_reason_from_summary(&summary));
+                        return Ok(SqliteSnapshotOutcome::RetryableBusy(summary));
+                    }
+                    return Err(error);
+                }
+            }
+        };
+
+        loop {
+            summary.backup_step_count = summary.backup_step_count.saturating_add(1);
+            match backup
+                .step(policy.pages_per_step)
+                .context("failed to complete sqlite online backup step")?
+            {
+                StepResult::Done => {
+                    summary.duration_ms =
+                        started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                    return Ok(SqliteSnapshotOutcome::Written(summary));
+                }
+                StepResult::More => {
+                    thread::sleep(policy.pause_between_steps);
+                }
+                StepResult::Busy => {
+                    record_snapshot_retry(&mut summary, SqliteSnapshotRetryReason::Busy);
+                    note_sqlite_busy_error();
+                    if let Some(backoff_ms) =
+                        policy.retry_backoff_ms.get(summary.backup_retry_count)
+                    {
+                        summary.backup_retry_count = summary.backup_retry_count.saturating_add(1);
+                        note_sqlite_write_retry();
+                        thread::sleep(StdDuration::from_millis(*backoff_ms));
+                        continue;
+                    }
+                    summary.duration_ms =
+                        started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                    summary.retry_exhausted_reason = Some(retry_reason_from_summary(&summary));
+                    return Ok(SqliteSnapshotOutcome::RetryableBusy(summary));
+                }
+                StepResult::Locked => {
+                    record_snapshot_retry(&mut summary, SqliteSnapshotRetryReason::Locked);
+                    note_sqlite_busy_error();
+                    if let Some(backoff_ms) =
+                        policy.retry_backoff_ms.get(summary.backup_retry_count)
+                    {
+                        summary.backup_retry_count = summary.backup_retry_count.saturating_add(1);
+                        note_sqlite_write_retry();
+                        thread::sleep(StdDuration::from_millis(*backoff_ms));
+                        continue;
+                    }
+                    summary.duration_ms =
+                        started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                    summary.retry_exhausted_reason = Some(retry_reason_from_summary(&summary));
+                    return Ok(SqliteSnapshotOutcome::RetryableBusy(summary));
+                }
+                other => {
+                    return Err(anyhow!(
+                        "unsupported sqlite online backup step result: {:?}",
+                        other
+                    ));
+                }
+            }
+        }
     }
 
     pub fn snapshot_database(source_path: &Path, destination_path: &Path) -> Result<()> {
@@ -9864,6 +10075,59 @@ mod tests {
         )?;
         assert_eq!(swaps.len(), 1);
         assert_eq!(swaps[0].signature, "sig-observed-swap-retry");
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_into_path_with_policy_returns_retryable_busy_after_bounded_destination_lock(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let source_path = temp.path().join("snapshot-source.db");
+        let destination_path = temp.path().join("snapshot-destination.db");
+
+        let source_store = SqliteStore::open(Path::new(&source_path))?;
+        source_store
+            .conn
+            .execute_batch("CREATE TABLE snapshot_source(id INTEGER PRIMARY KEY, value TEXT);")
+            .context("failed creating snapshot source table")?;
+        source_store
+            .conn
+            .execute(
+                "INSERT INTO snapshot_source(id, value) VALUES (1, 'value')",
+                [],
+            )
+            .context("failed seeding snapshot source table")?;
+
+        let blocker = SqliteStore::open(Path::new(&destination_path))?;
+        blocker
+            .conn
+            .busy_timeout(StdDuration::from_millis(1))
+            .context("failed to shorten destination blocker busy timeout")?;
+        blocker.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let outcome = source_store.snapshot_into_path_with_policy(
+            &destination_path,
+            &SqliteSnapshotPolicy {
+                busy_timeout: StdDuration::from_millis(1),
+                pages_per_step: 1,
+                pause_between_steps: StdDuration::from_millis(1),
+                retry_backoff_ms: vec![1, 1],
+            },
+        )?;
+        blocker.conn.execute_batch("ROLLBACK")?;
+
+        let SqliteSnapshotOutcome::RetryableBusy(summary) = outcome else {
+            anyhow::bail!("expected retryable busy snapshot outcome");
+        };
+        assert_eq!(summary.backup_retry_count, 2);
+        assert!(
+            summary.busy_retry_count + summary.locked_retry_count >= 2,
+            "expected bounded retry counters to record contention"
+        );
+        assert!(
+            summary.retry_exhausted_reason.is_some(),
+            "retryable busy snapshot outcome must expose exhausted reason"
+        );
         Ok(())
     }
 

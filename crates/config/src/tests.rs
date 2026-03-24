@@ -78,6 +78,23 @@ fn recent_raw_gap_fill_helius_defaults_are_explicit_and_bounded() {
 }
 
 #[test]
+fn program_history_validation_defaults_are_quicknode_first_and_bounded() {
+    let validation = ProgramHistoryValidationConfig::default();
+    assert_eq!(validation.source, "quicknode_blocks_rpc");
+    assert_eq!(
+        validation.http_url,
+        "https://YOUR_QUICKNODE_HOST.solana-mainnet.quiknode.pro/REPLACE_ON_SERVER/"
+    );
+    assert_eq!(validation.request_timeout_ms, 20_000);
+    assert_eq!(validation.block_batch_size, 512);
+    assert_eq!(validation.max_slots_to_scan, 20_000);
+    assert_eq!(validation.sampling_segments, 8);
+    assert_eq!(validation.block_time_probe_slots, 128);
+    assert_eq!(validation.raydium_program_ids.len(), 2);
+    assert_eq!(validation.pumpswap_program_ids.len(), 1);
+}
+
+#[test]
 fn runtime_restore_ops_defaults_are_explicit_and_operational() {
     let ops = RuntimeRestoreOpsConfig::default();
     assert_eq!(ops.artifact_dir, "state/discovery_restore/artifacts");
@@ -133,6 +150,16 @@ request_timeout_ms = 12000
 page_size = 80
 max_pages_per_wallet = 10
 
+[program_history_validation]
+http_url = "https://quicknode.example/?api-key=test"
+request_timeout_ms = 11000
+block_batch_size = 400
+max_slots_to_scan = 12000
+sampling_segments = 6
+block_time_probe_slots = 64
+raydium_program_ids = ["raydium-a", "raydium-b"]
+pumpswap_program_ids = ["pump-a"]
+
 [runtime_restore_ops]
 artifact_dir = "restore/artifacts"
 artifact_retention = 32
@@ -171,6 +198,23 @@ metric_snapshot_interval_seconds = 1800
             assert_eq!(config.recent_raw_gap_fill_helius.request_timeout_ms, 12_000);
             assert_eq!(config.recent_raw_gap_fill_helius.page_size, 80);
             assert_eq!(config.recent_raw_gap_fill_helius.max_pages_per_wallet, 10);
+            assert_eq!(
+                config.program_history_validation.http_url,
+                "https://quicknode.example/?api-key=test"
+            );
+            assert_eq!(config.program_history_validation.request_timeout_ms, 11_000);
+            assert_eq!(config.program_history_validation.block_batch_size, 400);
+            assert_eq!(config.program_history_validation.max_slots_to_scan, 12_000);
+            assert_eq!(config.program_history_validation.sampling_segments, 6);
+            assert_eq!(config.program_history_validation.block_time_probe_slots, 64);
+            assert_eq!(
+                config.program_history_validation.raydium_program_ids,
+                vec!["raydium-a".to_string(), "raydium-b".to_string()]
+            );
+            assert_eq!(
+                config.program_history_validation.pumpswap_program_ids,
+                vec!["pump-a".to_string()]
+            );
             assert_eq!(config.runtime_restore_ops.artifact_dir, "restore/artifacts");
             assert_eq!(config.runtime_restore_ops.artifact_retention, 32);
             assert_eq!(config.runtime_restore_ops.artifact_cadence_minutes, 5);
@@ -217,6 +261,15 @@ fn live_server_template_exposes_recent_raw_gap_fill_contract() {
         config.recent_raw_gap_fill_helius.output_dir,
         "state/discovery_restore/gap_fill_helius"
     );
+    assert_eq!(
+        config.program_history_validation.source,
+        "quicknode_blocks_rpc"
+    );
+    assert!(
+        !config.program_history_validation.http_url.trim().is_empty(),
+        "template must expose a non-empty program_history_validation.http_url placeholder"
+    );
+    assert_eq!(config.program_history_validation.sampling_segments, 8);
 }
 
 #[test]
@@ -260,6 +313,57 @@ metric_snapshot_interval_seconds = 1800
             assert!(
                 err.contains(
                     "recent_raw_gap_fill_helius.page_size (101) must be between 1 and 100"
+                ),
+                "unexpected error: {err}"
+            );
+        },
+    );
+}
+
+#[test]
+fn load_from_path_rejects_invalid_program_history_validation_bounds() {
+    with_temp_config_file(
+        r#"
+[program_history_validation]
+http_url = "https://quicknode.example/?api-key=test"
+block_batch_size = 1006
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("oversized block batch size must fail")
+                .to_string();
+            assert!(
+                err.contains(
+                    "program_history_validation.block_batch_size (1006) must be between 1 and 1005"
+                ),
+                "unexpected error: {err}"
+            );
+        },
+    );
+}
+
+#[test]
+fn load_from_path_rejects_program_history_validation_sampling_segments_above_budget() {
+    with_temp_config_file(
+        r#"
+[program_history_validation]
+http_url = "https://quicknode.example/?api-key=test"
+max_slots_to_scan = 4
+sampling_segments = 8
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("sampling segments above budget must fail")
+                .to_string();
+            assert!(
+                err.contains(
+                    "program_history_validation.sampling_segments (8) must be <= program_history_validation.max_slots_to_scan (4)"
                 ),
                 "unexpected error: {err}"
             );

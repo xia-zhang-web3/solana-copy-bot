@@ -48,6 +48,18 @@ cfg_value() {
   echo "template recent_raw_gap_fill_helius.output_dir must be explicit" >&2
   exit 1
 }
+[[ "$(cfg_value "$TEMPLATE_PATH" program_history_validation source)" == "quicknode_blocks_rpc" ]] || {
+  echo "template program_history_validation.source must be quicknode_blocks_rpc" >&2
+  exit 1
+}
+[[ -n "$(cfg_value "$TEMPLATE_PATH" program_history_validation http_url)" ]] || {
+  echo "template program_history_validation.http_url must be explicit" >&2
+  exit 1
+}
+[[ "$(cfg_value "$TEMPLATE_PATH" program_history_validation sampling_segments)" == "8" ]] || {
+  echo "template program_history_validation.sampling_segments must be 8" >&2
+  exit 1
+}
 echo "template recent_raw_gap_fill contract: ok"
 
 python3 - "$RUNBOOK_PATH" <<'PY'
@@ -60,6 +72,13 @@ assert "sqlite.path" in runbook, "runbook must archive configured sqlite.path"
 assert "recent_raw_gap_fill.helius_http_url" in runbook, "runbook must document gap-fill source contract"
 assert "recent_raw_gap_fill_helius.helius_http_url" in runbook, "runbook must document Helius-specific gap-fill source contract"
 assert "--helius-http-url" in runbook, "runbook must show explicit gap-fill source usage"
+assert "program_history_validation.http_url" in runbook, "runbook must document program-history validation source contract"
+assert "discovery_program_history_source_validate" in runbook, "runbook must document the validation bin"
+assert "validation-only" in runbook, "runbook must frame program-history validation as validation-only"
+assert "not_proven_due_to_budget" in runbook, "runbook must explain budget-exhausted validation outcome"
+assert "non_viable_source_contract" in runbook, "runbook must distinguish source-contract failure"
+assert "--max-slots-to-scan" in runbook, "runbook must show the explicit budget-tuning path"
+assert "coverage_method" in runbook, "runbook must document coverage method output"
 assert "TARGET_DB" in runbook, "runbook must document fresh target creation"
 assert "--gap-fill-db-path" in runbook, "runbook must document bounded gap-fill replay"
 assert "discovery_raw_gap_fill_helius" in runbook, "runbook must document the Helius-specific bin"
