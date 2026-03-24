@@ -26,6 +26,7 @@ mod followlist;
 pub mod operator_status;
 pub mod perf_harness;
 mod quality_cache;
+pub mod raw_gap_fill_support;
 pub mod restore_verdict;
 pub mod runtime_restore_ops;
 mod scoring;

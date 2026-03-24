@@ -16,10 +16,12 @@ Live config defaults in `ops/server_templates/live.server.toml.example`:
    - latest metadata: `/var/www/solana-copy-bot/state/discovery_restore/recent_raw/latest.json`
    - cadence: `runtime_restore_ops.journal_snapshot_cadence_minutes`
 3. Bounded gap-fill source:
-   - config block: `recent_raw_gap_fill`
-   - required field: `recent_raw_gap_fill.helius_http_url`
-   - live server contract: populate it in `/etc/solana-copy-bot/live.server.toml` or pass `--helius-http-url` explicitly during the incident run
+   - generic fallback block: `recent_raw_gap_fill`
+   - Helius-specific block: `recent_raw_gap_fill_helius`
+   - required fields: `recent_raw_gap_fill.helius_http_url` for the generic fallback, `recent_raw_gap_fill_helius.helius_http_url` for the Helius-exclusive `getTransactionsForAddress` path
+   - live server contract: populate them in `/etc/solana-copy-bot/live.server.toml` or pass `--helius-http-url` explicitly during the incident run
    - default gap-fill output: `/var/www/solana-copy-bot/state/discovery_restore/gap_fill/latest.sqlite`
+   - default Helius-specific output: `/var/www/solana-copy-bot/state/discovery_restore/gap_fill_helius/latest.sqlite`
 
 Systemd wiring:
 
@@ -103,28 +105,28 @@ APP_ROOT=/var/www/solana-copy-bot
   --json | tee /tmp/discovery_runtime_restore.json
 ```
 
-If `raw_coverage_satisfied=false` but `journal_covers_artifact_cursor=true`, run bounded gap-fill:
+If `raw_coverage_satisfied=false` but `journal_covers_artifact_cursor=true`, choose one bounded gap-fill option.
+
+Option A, generic fallback. This uses `getSignaturesForAddress + getTransaction` and stays the conservative baseline path:
 
 ```bash
-GAP_FILL_SOURCE_URL="$(python3 - "$CONFIG_PATH" <<'PY'
-  awk -F'=' '
-    /^\s*\[/ {
-      in_section = ($0 == "[recent_raw_gap_fill]")
+GAP_FILL_SOURCE_URL="$(awk -F'=' '
+  /^\s*\[/ {
+    in_section = ($0 == "[recent_raw_gap_fill]")
+  }
+  in_section {
+    left = $1
+    gsub(/[[:space:]]/, "", left)
+    if (left == "helius_http_url") {
+      value = substr($0, index($0, "=") + 1)
+      sub(/[[:space:]]*#.*/, "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      gsub(/^"|"$/, "", value)
+      print value
+      exit
     }
-    in_section {
-      left = $1
-      gsub(/[[:space:]]/, "", left)
-      if (left == "helius_http_url") {
-        value = substr($0, index($0, "=") + 1)
-        sub(/[[:space:]]*#.*/, "", value)
-        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-        gsub(/^"|"$/, "", value)
-        print value
-        exit
-      }
-    }
-  ' "${CONFIG_PATH}"
-)"
+  }
+' "${CONFIG_PATH}")"
 if [ -z "${GAP_FILL_SOURCE_URL}" ]; then
   echo "recent_raw_gap_fill.helius_http_url is empty in ${CONFIG_PATH}; populate it or pass --helius-http-url explicitly" >&2
   exit 1
@@ -136,7 +138,7 @@ fi
   --json | tee /tmp/discovery_raw_gap_fill.json
 ```
 
-Then rerun restore into a new fresh target with the produced gap-fill journal:
+Then rerun restore into a new fresh target with the produced generic gap-fill journal:
 
 ```bash
 TARGET_DB_FILLED="${APP_ROOT}/state/live_runtime_${ts}_gapfill.db"
@@ -148,6 +150,52 @@ TARGET_DB_FILLED="${APP_ROOT}/state/live_runtime_${ts}_gapfill.db"
   --gap-fill-db-path "${APP_ROOT}/state/discovery_restore/gap_fill/latest.sqlite" \
   --json | tee /tmp/discovery_runtime_restore.json
 TARGET_DB="${TARGET_DB_FILLED}"
+```
+
+Option B, Helius-specific historical path. Use this when the generic fallback stays sparse, especially when you need associated token account coverage on the bounded recent window. This path uses Helius `getTransactionsForAddress` directly:
+
+```bash
+HELIUS_GAP_FILL_SOURCE_URL="$(awk -F'=' '
+  /^\s*\[/ {
+    in_section = ($0 == "[recent_raw_gap_fill_helius]")
+  }
+  in_section {
+    left = $1
+    gsub(/[[:space:]]/, "", left)
+    if (left == "helius_http_url") {
+      value = substr($0, index($0, "=") + 1)
+      sub(/[[:space:]]*#.*/, "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      gsub(/^"|"$/, "", value)
+      print value
+      exit
+    }
+  }
+' "${CONFIG_PATH}")"
+if [ -z "${HELIUS_GAP_FILL_SOURCE_URL}" ]; then
+  echo "recent_raw_gap_fill_helius.helius_http_url is empty in ${CONFIG_PATH}; populate it or pass --helius-http-url explicitly" >&2
+  exit 1
+fi
+/var/www/solana-copy-bot/target/release/discovery_raw_gap_fill_helius \
+  --config "${CONFIG_PATH}" \
+  --db-path "${TARGET_DB}" \
+  --helius-http-url "${HELIUS_GAP_FILL_SOURCE_URL}" \
+  --json | tee /tmp/discovery_raw_gap_fill_helius.json
+```
+
+Then rerun restore into a new fresh target with the produced Helius-specific gap-fill journal:
+
+```bash
+TARGET_DB_HELIUS_FILLED="${APP_ROOT}/state/live_runtime_${ts}_gapfill_helius.db"
+/var/www/solana-copy-bot/target/release/discovery_runtime_restore \
+  --config "${CONFIG_PATH}" \
+  --artifact "${APP_ROOT}/state/discovery_restore/artifacts/latest.json" \
+  --db-path "${TARGET_DB_HELIUS_FILLED}" \
+  --journal-db-path "${APP_ROOT}/state/discovery_restore/recent_raw/latest.sqlite" \
+  --gap-fill-db-path "${APP_ROOT}/state/discovery_restore/gap_fill_helius/latest.sqlite" \
+  --json | tee /tmp/discovery_runtime_restore_helius.json
+TARGET_DB="${TARGET_DB_HELIUS_FILLED}"
+cp /tmp/discovery_runtime_restore_helius.json /tmp/discovery_runtime_restore.json
 ```
 
 Inspect the restore verdict:

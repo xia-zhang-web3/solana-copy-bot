@@ -64,6 +64,20 @@ fn recent_raw_gap_fill_defaults_are_explicit_and_bounded() {
 }
 
 #[test]
+fn recent_raw_gap_fill_helius_defaults_are_explicit_and_bounded() {
+    let gap_fill = RecentRawGapFillHeliusConfig::default();
+    assert_eq!(gap_fill.helius_http_url, "");
+    assert_eq!(
+        gap_fill.output_dir,
+        "state/discovery_restore/gap_fill_helius"
+    );
+    assert_eq!(gap_fill.output_retention, 16);
+    assert_eq!(gap_fill.request_timeout_ms, 20_000);
+    assert_eq!(gap_fill.page_size, 100);
+    assert_eq!(gap_fill.max_pages_per_wallet, 64);
+}
+
+#[test]
 fn runtime_restore_ops_defaults_are_explicit_and_operational() {
     let ops = RuntimeRestoreOpsConfig::default();
     assert_eq!(ops.artifact_dir, "state/discovery_restore/artifacts");
@@ -111,6 +125,14 @@ request_timeout_ms = 15000
 signature_page_size = 500
 max_signature_pages_per_wallet = 12
 
+[recent_raw_gap_fill_helius]
+helius_http_url = "https://gap-fill-helius.example/?api-key=test"
+output_dir = "restore/gap-fill-helius"
+output_retention = 6
+request_timeout_ms = 12000
+page_size = 80
+max_pages_per_wallet = 10
+
 [runtime_restore_ops]
 artifact_dir = "restore/artifacts"
 artifact_retention = 32
@@ -137,6 +159,18 @@ metric_snapshot_interval_seconds = 1800
                 config.recent_raw_gap_fill.max_signature_pages_per_wallet,
                 12
             );
+            assert_eq!(
+                config.recent_raw_gap_fill_helius.helius_http_url,
+                "https://gap-fill-helius.example/?api-key=test"
+            );
+            assert_eq!(
+                config.recent_raw_gap_fill_helius.output_dir,
+                "restore/gap-fill-helius"
+            );
+            assert_eq!(config.recent_raw_gap_fill_helius.output_retention, 6);
+            assert_eq!(config.recent_raw_gap_fill_helius.request_timeout_ms, 12_000);
+            assert_eq!(config.recent_raw_gap_fill_helius.page_size, 80);
+            assert_eq!(config.recent_raw_gap_fill_helius.max_pages_per_wallet, 10);
             assert_eq!(config.runtime_restore_ops.artifact_dir, "restore/artifacts");
             assert_eq!(config.runtime_restore_ops.artifact_retention, 32);
             assert_eq!(config.runtime_restore_ops.artifact_cadence_minutes, 5);
@@ -171,6 +205,18 @@ fn live_server_template_exposes_recent_raw_gap_fill_contract() {
         config.recent_raw_gap_fill.output_dir,
         "state/discovery_restore/gap_fill"
     );
+    assert!(
+        !config
+            .recent_raw_gap_fill_helius
+            .helius_http_url
+            .trim()
+            .is_empty(),
+        "template must expose a non-empty recent_raw_gap_fill_helius.helius_http_url placeholder"
+    );
+    assert_eq!(
+        config.recent_raw_gap_fill_helius.output_dir,
+        "state/discovery_restore/gap_fill_helius"
+    );
 }
 
 #[test]
@@ -190,6 +236,30 @@ metric_snapshot_interval_seconds = 1800
             assert!(
                 err.contains(
                     "recent_raw_gap_fill.signature_page_size (1001) must be between 1 and 1000"
+                ),
+                "unexpected error: {err}"
+            );
+        },
+    );
+}
+
+#[test]
+fn load_from_path_rejects_invalid_recent_raw_gap_fill_helius_bounds() {
+    with_temp_config_file(
+        r#"
+[recent_raw_gap_fill_helius]
+page_size = 101
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("oversized helius page size must fail")
+                .to_string();
+            assert!(
+                err.contains(
+                    "recent_raw_gap_fill_helius.page_size (101) must be between 1 and 100"
                 ),
                 "unexpected error: {err}"
             );

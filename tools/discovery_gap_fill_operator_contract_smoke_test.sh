@@ -40,6 +40,14 @@ cfg_value() {
   echo "template recent_raw_gap_fill.output_dir must be explicit" >&2
   exit 1
 }
+[[ -n "$(cfg_value "$TEMPLATE_PATH" recent_raw_gap_fill_helius helius_http_url)" ]] || {
+  echo "template recent_raw_gap_fill_helius.helius_http_url must be explicit" >&2
+  exit 1
+}
+[[ -n "$(cfg_value "$TEMPLATE_PATH" recent_raw_gap_fill_helius output_dir)" ]] || {
+  echo "template recent_raw_gap_fill_helius.output_dir must be explicit" >&2
+  exit 1
+}
 echo "template recent_raw_gap_fill contract: ok"
 
 python3 - "$RUNBOOK_PATH" <<'PY'
@@ -50,9 +58,11 @@ runbook = pathlib.Path(sys.argv[1]).read_text()
 assert "live_runtime_current.db" not in runbook, "runbook still references phantom symlink"
 assert "sqlite.path" in runbook, "runbook must archive configured sqlite.path"
 assert "recent_raw_gap_fill.helius_http_url" in runbook, "runbook must document gap-fill source contract"
+assert "recent_raw_gap_fill_helius.helius_http_url" in runbook, "runbook must document Helius-specific gap-fill source contract"
 assert "--helius-http-url" in runbook, "runbook must show explicit gap-fill source usage"
 assert "TARGET_DB" in runbook, "runbook must document fresh target creation"
 assert "--gap-fill-db-path" in runbook, "runbook must document bounded gap-fill replay"
+assert "discovery_raw_gap_fill_helius" in runbook, "runbook must document the Helius-specific bin"
 print("runbook operator contract: ok")
 PY
 

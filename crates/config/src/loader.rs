@@ -787,6 +787,7 @@ fn validate_loaded_config(config: &AppConfig) -> Result<()> {
     validate_discovery_storage_mitigation_config(config)?;
     validate_recent_raw_journal_config(config)?;
     validate_recent_raw_gap_fill_config(config)?;
+    validate_recent_raw_gap_fill_helius_config(config)?;
     validate_runtime_restore_ops_config(config)?;
     validate_discovery_aggregate_activation_config(config)?;
     validate_execution_exact_sizing_config(config)?;
@@ -924,6 +925,40 @@ fn validate_recent_raw_gap_fill_config(config: &AppConfig) -> Result<()> {
         return Err(anyhow!(
             "recent_raw_gap_fill.max_signature_pages_per_wallet ({}) must be >= 1",
             gap_fill.max_signature_pages_per_wallet
+        ));
+    }
+    Ok(())
+}
+
+fn validate_recent_raw_gap_fill_helius_config(config: &AppConfig) -> Result<()> {
+    let gap_fill = &config.recent_raw_gap_fill_helius;
+    if gap_fill.output_dir.trim().is_empty() {
+        return Err(anyhow!(
+            "recent_raw_gap_fill_helius.output_dir cannot be empty"
+        ));
+    }
+    if gap_fill.output_retention == 0 {
+        return Err(anyhow!(
+            "recent_raw_gap_fill_helius.output_retention ({}) must be >= 1",
+            gap_fill.output_retention
+        ));
+    }
+    if gap_fill.request_timeout_ms == 0 {
+        return Err(anyhow!(
+            "recent_raw_gap_fill_helius.request_timeout_ms ({}) must be >= 1",
+            gap_fill.request_timeout_ms
+        ));
+    }
+    if gap_fill.page_size == 0 || gap_fill.page_size > 100 {
+        return Err(anyhow!(
+            "recent_raw_gap_fill_helius.page_size ({}) must be between 1 and 100",
+            gap_fill.page_size
+        ));
+    }
+    if gap_fill.max_pages_per_wallet == 0 {
+        return Err(anyhow!(
+            "recent_raw_gap_fill_helius.max_pages_per_wallet ({}) must be >= 1",
+            gap_fill.max_pages_per_wallet
         ));
     }
     Ok(())

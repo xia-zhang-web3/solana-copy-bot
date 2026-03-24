@@ -7,8 +7,9 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 
 1. `live.server.toml.example` contains placeholder-only RPC values; populate real credentials only in the server-local copy or via env overrides.
 2. `live.server.toml.example` also contains a placeholder-only `recent_raw_gap_fill.helius_http_url`; restore operators must replace it with the historical raw source URL used for bounded gap-fill.
-3. bootstrap signer values are for non-live contour testing only.
-4. rotate endpoint/token/signer before any tiny-live or production stage.
+3. `live.server.toml.example` also contains a placeholder-only `recent_raw_gap_fill_helius.helius_http_url`; this must point at a Helius endpoint that supports `getTransactionsForAddress`.
+4. bootstrap signer values are for non-live contour testing only.
+5. rotate endpoint/token/signer before any tiny-live or production stage.
 
 ## Files
 
