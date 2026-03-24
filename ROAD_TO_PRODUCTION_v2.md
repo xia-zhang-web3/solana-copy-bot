@@ -191,7 +191,7 @@ The current conclusions are:
    - restore must come from `runtime artifact` + `recent raw journal`
    - stale publication truth must not silently turn into trading-ready truth
 3. that new restore stack is now actually deployed on the live server:
-   - runtime repo / live build is on commit `40fff47`
+   - runtime repo / live build is now on commit `9661844`
    - `solana-copy-bot.service` is running again
    - live discovery is no longer stuck at `active_follow_wallets = 0`
 4. the live server is still not healthy:
@@ -213,6 +213,9 @@ The current conclusions are:
    - raw coverage is still insufficient for a real trading-ready restore
    - the scheduled recent-raw snapshot timer is disabled because snapshotting
      under live writes is not yet operationally safe
+   - address-scoped bounded gap-fill has now been tested against both the
+     current QuickNode path and a separate Helius-specific path and still did
+     not close the missing recent-raw window
 7. what remains valid from the aggregate investigation in this file:
    - same-host hot clone under live load is unsafe
    - stopped-host / offline investigation is operationally safe
@@ -237,7 +240,7 @@ Recommended operational posture now:
 
 ### 2.5 Server state (updated 2026-03-24)
 
-- Live runtime repo / deployed build: `40fff47`
+- Live runtime repo / deployed build: `9661844`
 - Historical stopped-host investigation checkout preserved below:
   - old offline tooling checkpoint before the last investigation:
     `02f887a3a37ad57cf09578c9105d1f11d08744d8`
@@ -279,6 +282,13 @@ Recommended operational posture now:
   - `copybot-discovery-recent-raw-snapshot.timer -> inactive/disabled`
   - runtime artifact export is already running on cadence
   - recent raw snapshot timer was disabled after a live-write contention issue
+- Current provider posture:
+  - QuickNode remains the active production path in live config
+  - `[recent_raw_gap_fill]` in `/etc/solana-copy-bot/live.server.toml` still
+    points at the existing QuickNode HTTP endpoint
+  - no Helius endpoint was left active in live config
+  - Helius was tested only via explicit CLI override / separate bin runs and
+    was not adopted as the active server contract
 - Current server-side restore drill result:
   - fresh DB restore from live artifact + live recent raw snapshot succeeds
   - `journal_available = true`
@@ -287,10 +297,35 @@ Recommended operational posture now:
   - the later live cutover replayed `534244` rows into the fresh runtime DB
   - `raw_coverage_satisfied = false`
   - final verdict = `bootstrap_degraded`
+- Current bounded gap-fill findings on the real server:
+  - required missing window remained:
+    `2026-03-19T13:43:40.230377748Z -> 2026-03-24T12:07:11.775090344Z`
+  - generic address-scoped gap-fill on the live QuickNode path produced:
+    - `scanned_signatures = 63000`
+    - `fetched_rows = 95`
+    - `inserted_rows = 95`
+    - `gap_fill_covered_since = 2026-03-19T13:43:51Z`
+    - `gap_fill_covered_through_cursor = 2026-03-21T09:01:20Z`
+    - `sufficient_for_healthy_restore = false`
+  - separate Helius-specific gap-fill using
+    `discovery_raw_gap_fill_helius` and `getTransactionsForAddress`
+    produced:
+    - `scanned_items = 46071`
+    - `scanned_pages = 485`
+    - `fetched_rows = 95`
+    - `inserted_rows = 95`
+    - the same `gap_fill_covered_since` and
+      `gap_fill_covered_through_cursor`
+    - `sufficient_for_healthy_restore = false`
+  - conclusion: provider swap / address-history fetch strategy did not improve
+    coverage on the real incident window
 - Business meaning of the current server state:
   - the dead multi-day replay path is no longer the active plan
   - discovery is alive on a new fresh runtime DB and holding `15` wallets instead of zero
   - the old `live_copybot.db` has been fully removed and is no longer a dependency
+  - the old offline aggregate clone
+    `/var/www/solana-copy-bot/state/live_copybot.aggregate_clone_offline_20260321.db`
+    has now also been removed from disk
   - copy trading / shadow trading are still not opening positions
   - the server is stabilized, but the incident is not yet closed in the
     trading-ready sense
