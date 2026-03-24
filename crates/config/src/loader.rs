@@ -987,6 +987,24 @@ fn validate_program_history_validation_config(config: &AppConfig) -> Result<()> 
             validation.request_timeout_ms
         ));
     }
+    if validation.max_requests_per_second == 0 || validation.max_requests_per_second > 125 {
+        return Err(anyhow!(
+            "program_history_validation.max_requests_per_second ({}) must be between 1 and 125",
+            validation.max_requests_per_second
+        ));
+    }
+    if validation.retry_429_max_attempts == 0 {
+        return Err(anyhow!(
+            "program_history_validation.retry_429_max_attempts ({}) must be >= 1",
+            validation.retry_429_max_attempts
+        ));
+    }
+    if validation.retry_429_backoff_ms == 0 {
+        return Err(anyhow!(
+            "program_history_validation.retry_429_backoff_ms ({}) must be >= 1",
+            validation.retry_429_backoff_ms
+        ));
+    }
     if validation.block_batch_size == 0 || validation.block_batch_size > 1_005 {
         return Err(anyhow!(
             "program_history_validation.block_batch_size ({}) must be between 1 and 1005",

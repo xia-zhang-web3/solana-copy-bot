@@ -9,16 +9,32 @@ use copybot_discovery::runtime_restore_ops::{
 };
 use copybot_storage::{
     DiscoveryRuntimeCursor, RecentRawJournalStateRow, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
-    SqliteSnapshotSummary, SqliteStore,
+    SqliteSnapshotSourceMetrics, SqliteSnapshotSummary, SqliteStore,
 };
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 
 const USAGE: &str = "usage: discovery_recent_raw_snapshot --config <path> [--journal-db-path <path>] (--output <path> | --scheduled) [--force] [--json] [--now <rfc3339>]";
+const SNAPSHOT_SMALL_SOURCE_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
+const SNAPSHOT_LARGE_SOURCE_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
+const SNAPSHOT_HUGE_SOURCE_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
+const SNAPSHOT_SMALL_TARGET_STEPS: usize = 512;
+const SNAPSHOT_MEDIUM_TARGET_STEPS: usize = 384;
+const SNAPSHOT_LARGE_TARGET_STEPS: usize = 320;
+const SNAPSHOT_HUGE_TARGET_STEPS: usize = 256;
+const SNAPSHOT_MIN_PAGES_PER_STEP: usize = 64;
+const SNAPSHOT_MAX_PAGES_PER_STEP: usize = 1024;
+const SNAPSHOT_SMALL_PAUSE_BETWEEN_STEPS_MS: u64 = 5;
+const SNAPSHOT_MEDIUM_PAUSE_BETWEEN_STEPS_MS: u64 = 2;
+const SNAPSHOT_LARGE_PAUSE_BETWEEN_STEPS_MS: u64 = 1;
+const SNAPSHOT_SMALL_MAX_ATTEMPT_DURATION_MS: u64 = 45_000;
+const SNAPSHOT_MEDIUM_MAX_ATTEMPT_DURATION_MS: u64 = 60_000;
+const SNAPSHOT_LARGE_MAX_ATTEMPT_DURATION_MS: u64 = 90_000;
+const SNAPSHOT_HUGE_MAX_ATTEMPT_DURATION_MS: u64 = 120_000;
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -71,11 +87,23 @@ struct SnapshotOutput {
     cadence_minutes: Option<u64>,
     retention: Option<usize>,
     pruned_snapshot_paths: Vec<String>,
+    source_db_bytes: u64,
+    source_wal_bytes: u64,
+    source_total_bytes: u64,
+    source_page_size_bytes: usize,
+    source_page_count: usize,
+    snapshot_pages_per_step: i32,
+    snapshot_pause_between_steps_ms: u64,
+    snapshot_max_attempt_duration_ms: Option<u64>,
     attempt_duration_ms: u64,
     backup_step_count: usize,
     backup_retry_count: usize,
     busy_retry_count: usize,
     locked_retry_count: usize,
+    backup_total_page_count: Option<usize>,
+    backup_remaining_page_count: Option<usize>,
+    backup_copied_page_count: Option<usize>,
+    terminal_reason: Option<String>,
     retryable_reason: Option<String>,
     deferred_reason: Option<String>,
     hard_failure_reason: Option<String>,
@@ -113,6 +141,7 @@ impl LatestSurfaceStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LatestSurfaceAction {
     ExplicitOutput,
+    ExplicitOutputDeferred,
     HealthySkip,
     RefreshedFromSource,
     RecreatedLatestSnapshotFromArchive,
@@ -120,7 +149,9 @@ enum LatestSurfaceAction {
     RewroteLatestMetadataFromLatestSqlite,
     RecreatedLatestSurfaceFromSource,
     DeferredDueToRetryableBusy,
+    DeferredDueToAttemptBudget,
     UnchangedDueToRetryableBusy,
+    UnchangedDueToAttemptBudget,
     UnchangedDueToHardFailure,
 }
 
@@ -128,6 +159,7 @@ impl LatestSurfaceAction {
     fn as_str(self) -> &'static str {
         match self {
             Self::ExplicitOutput => "explicit_output",
+            Self::ExplicitOutputDeferred => "explicit_output_deferred",
             Self::HealthySkip => "healthy_skip",
             Self::RefreshedFromSource => "refreshed_from_source",
             Self::RecreatedLatestSnapshotFromArchive => "recreated_latest_snapshot_from_archive",
@@ -137,7 +169,9 @@ impl LatestSurfaceAction {
             }
             Self::RecreatedLatestSurfaceFromSource => "recreated_latest_surface_from_source",
             Self::DeferredDueToRetryableBusy => "deferred_due_to_retryable_busy",
+            Self::DeferredDueToAttemptBudget => "deferred_due_to_attempt_budget",
             Self::UnchangedDueToRetryableBusy => "unchanged_due_to_retryable_busy",
+            Self::UnchangedDueToAttemptBudget => "unchanged_due_to_attempt_budget",
             Self::UnchangedDueToHardFailure => "unchanged_due_to_hard_failure",
         }
     }
@@ -181,6 +215,26 @@ struct LatestSurfaceAssessment {
 }
 
 #[derive(Debug, Clone)]
+struct SnapshotSourceStats {
+    source_db_bytes: u64,
+    source_wal_bytes: u64,
+    source_page_size_bytes: usize,
+    source_page_count: usize,
+}
+
+impl SnapshotSourceStats {
+    fn source_total_bytes(&self) -> u64 {
+        self.source_db_bytes.saturating_add(self.source_wal_bytes)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SnapshotContext {
+    source_stats: SnapshotSourceStats,
+    policy: SqliteSnapshotPolicy,
+}
+
+#[derive(Debug, Clone)]
 struct SnapshotExecution {
     rendered_output: String,
     exit_code: i32,
@@ -189,6 +243,9 @@ struct SnapshotExecution {
 #[derive(Debug, Clone)]
 enum SnapshotWriteError {
     RetryableBusy {
+        summary: SqliteSnapshotSummary,
+    },
+    Deferred {
         summary: SqliteSnapshotSummary,
     },
     HardFailure {
@@ -202,6 +259,40 @@ fn summary_reason(summary: &SqliteSnapshotSummary) -> String {
         .retry_exhausted_reason
         .map(|reason| reason.as_str().to_string())
         .unwrap_or_else(|| "busy".to_string())
+}
+
+fn deferred_summary_reason(summary: &SqliteSnapshotSummary) -> String {
+    summary
+        .deferred_reason
+        .map(|reason| reason.as_str().to_string())
+        .unwrap_or_else(|| "deferred".to_string())
+}
+
+fn snapshot_terminal_reason(
+    state: SnapshotState,
+    summary: Option<&SqliteSnapshotSummary>,
+) -> Option<String> {
+    match summary {
+        Some(summary) => {
+            if let Some(reason) = summary.deferred_reason {
+                Some(reason.as_str().to_string())
+            } else if let Some(reason) = summary.retry_exhausted_reason {
+                Some(reason.as_str().to_string())
+            } else if state == SnapshotState::Written {
+                Some("written".to_string())
+            } else {
+                None
+            }
+        }
+        None if state == SnapshotState::Written => Some("written".to_string()),
+        _ => None,
+    }
+}
+
+fn snapshot_policy_max_attempt_duration_ms(policy: &SqliteSnapshotPolicy) -> Option<u64> {
+    policy
+        .max_attempt_duration
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
 }
 
 fn state_exit_code(output: &SnapshotOutput) -> i32 {
@@ -237,6 +328,104 @@ fn scheduled_contention_contract(
             None,
         )
     }
+}
+
+fn scheduled_duration_budget_contract(
+    latest_surface_status: LatestSurfaceStatus,
+    reason: &str,
+) -> (LatestSurfaceAction, Option<String>) {
+    if latest_surface_status == LatestSurfaceStatus::Healthy {
+        (
+            LatestSurfaceAction::DeferredDueToAttemptBudget,
+            Some(format!("healthy_latest_surface_retained_after_{reason}")),
+        )
+    } else {
+        (
+            LatestSurfaceAction::UnchangedDueToAttemptBudget,
+            Some(reason.to_string()),
+        )
+    }
+}
+
+fn snapshot_source_wal_path(source_db_path: &Path) -> PathBuf {
+    let mut wal_path = source_db_path.as_os_str().to_os_string();
+    wal_path.push("-wal");
+    PathBuf::from(wal_path)
+}
+
+fn snapshot_source_stats(
+    source_db_path: &Path,
+    source_store: &SqliteStore,
+) -> Result<SnapshotSourceStats> {
+    let source_metrics: SqliteSnapshotSourceMetrics = source_store.snapshot_source_metrics()?;
+    let source_db_bytes = fs::metadata(source_db_path)
+        .with_context(|| format!("failed stat {}", source_db_path.display()))?
+        .len();
+    let wal_path = snapshot_source_wal_path(source_db_path);
+    let source_wal_bytes = match fs::metadata(&wal_path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed stat {}", wal_path.display()));
+        }
+    };
+    Ok(SnapshotSourceStats {
+        source_db_bytes,
+        source_wal_bytes,
+        source_page_size_bytes: source_metrics.page_size_bytes,
+        source_page_count: source_metrics.page_count,
+    })
+}
+
+fn adaptive_snapshot_policy(source_stats: &SnapshotSourceStats) -> SqliteSnapshotPolicy {
+    let mut policy = SqliteSnapshotPolicy::default();
+    let total_bytes = source_stats.source_total_bytes().max(
+        (source_stats.source_page_size_bytes as u64)
+            .saturating_mul(source_stats.source_page_count as u64),
+    );
+    let (target_steps, pause_ms, max_attempt_duration_ms) =
+        if total_bytes >= SNAPSHOT_HUGE_SOURCE_TOTAL_BYTES {
+            (
+                SNAPSHOT_HUGE_TARGET_STEPS,
+                SNAPSHOT_LARGE_PAUSE_BETWEEN_STEPS_MS,
+                SNAPSHOT_HUGE_MAX_ATTEMPT_DURATION_MS,
+            )
+        } else if total_bytes >= SNAPSHOT_LARGE_SOURCE_TOTAL_BYTES {
+            (
+                SNAPSHOT_LARGE_TARGET_STEPS,
+                SNAPSHOT_LARGE_PAUSE_BETWEEN_STEPS_MS,
+                SNAPSHOT_LARGE_MAX_ATTEMPT_DURATION_MS,
+            )
+        } else if total_bytes >= SNAPSHOT_SMALL_SOURCE_TOTAL_BYTES {
+            (
+                SNAPSHOT_MEDIUM_TARGET_STEPS,
+                SNAPSHOT_MEDIUM_PAUSE_BETWEEN_STEPS_MS,
+                SNAPSHOT_MEDIUM_MAX_ATTEMPT_DURATION_MS,
+            )
+        } else {
+            (
+                SNAPSHOT_SMALL_TARGET_STEPS,
+                SNAPSHOT_SMALL_PAUSE_BETWEEN_STEPS_MS,
+                SNAPSHOT_SMALL_MAX_ATTEMPT_DURATION_MS,
+            )
+        };
+    let page_count = source_stats.source_page_count.max(1);
+    let pages_per_step = page_count
+        .div_ceil(target_steps)
+        .clamp(SNAPSHOT_MIN_PAGES_PER_STEP, SNAPSHOT_MAX_PAGES_PER_STEP)
+        as i32;
+    policy.pages_per_step = pages_per_step;
+    policy.pause_between_steps = StdDuration::from_millis(pause_ms);
+    policy.max_attempt_duration = Some(StdDuration::from_millis(max_attempt_duration_ms));
+    policy
+}
+
+fn snapshot_context(source_db_path: &Path, source_store: &SqliteStore) -> Result<SnapshotContext> {
+    let source_stats = snapshot_source_stats(source_db_path, source_store)?;
+    Ok(SnapshotContext {
+        policy: adaptive_snapshot_policy(&source_stats),
+        source_stats,
+    })
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -311,6 +500,13 @@ fn parse_string_arg(flag: &str, value: Option<String>) -> Result<String> {
 }
 
 fn run(config: Config) -> Result<SnapshotExecution> {
+    run_with_snapshot_policy_override(config, None)
+}
+
+fn run_with_snapshot_policy_override(
+    config: Config,
+    snapshot_policy_override: Option<SqliteSnapshotPolicy>,
+) -> Result<SnapshotExecution> {
     let loaded_config = load_from_path(&config.config_path)
         .with_context(|| format!("failed loading config {}", config.config_path.display()))?;
     let source_db_path = resolve_db_path(
@@ -330,7 +526,10 @@ fn run(config: Config) -> Result<SnapshotExecution> {
             source_db_path.display()
         )
     })?;
-    let snapshot_policy = SqliteSnapshotPolicy::default();
+    let mut snapshot_context = snapshot_context(&source_db_path, &source_store)?;
+    if let Some(snapshot_policy_override) = snapshot_policy_override {
+        snapshot_context.policy = snapshot_policy_override;
+    }
 
     let output = if config.scheduled {
         run_scheduled(
@@ -342,7 +541,7 @@ fn run(config: Config) -> Result<SnapshotExecution> {
                 .runtime_restore_ops
                 .journal_snapshot_cadence_minutes,
             loaded_config.runtime_restore_ops.journal_snapshot_retention,
-            &snapshot_policy,
+            &snapshot_context,
         )?
     } else {
         let snapshot_path = resolve_relative_to_config(
@@ -358,7 +557,7 @@ fn run(config: Config) -> Result<SnapshotExecution> {
             &source_store,
             &snapshot_path,
             config.now,
-            &snapshot_policy,
+            &snapshot_context.policy,
         ) {
             Ok((manifest, summary)) => {
                 match write_json_atomic(&metadata_path, &manifest)
@@ -368,6 +567,7 @@ fn run(config: Config) -> Result<SnapshotExecution> {
                         SnapshotState::Written,
                         LatestSurfaceStatus::NotApplicable,
                         LatestSurfaceAction::ExplicitOutput,
+                        &snapshot_context,
                         &config.config_path,
                         &source_db_path,
                         &snapshot_path,
@@ -386,6 +586,7 @@ fn run(config: Config) -> Result<SnapshotExecution> {
                         SnapshotState::HardFailure,
                         LatestSurfaceStatus::NotApplicable,
                         LatestSurfaceAction::UnchangedDueToHardFailure,
+                        &snapshot_context,
                         &config.config_path,
                         &source_db_path,
                         &snapshot_path,
@@ -406,6 +607,7 @@ fn run(config: Config) -> Result<SnapshotExecution> {
                 SnapshotState::RetryableBusy,
                 LatestSurfaceStatus::NotApplicable,
                 LatestSurfaceAction::UnchangedDueToRetryableBusy,
+                &snapshot_context,
                 &config.config_path,
                 &source_db_path,
                 &snapshot_path,
@@ -420,10 +622,30 @@ fn run(config: Config) -> Result<SnapshotExecution> {
                 None,
                 None,
             ),
+            Err(SnapshotWriteError::Deferred { summary }) => render_output(
+                SnapshotState::Deferred,
+                LatestSurfaceStatus::NotApplicable,
+                LatestSurfaceAction::ExplicitOutputDeferred,
+                &snapshot_context,
+                &config.config_path,
+                &source_db_path,
+                &snapshot_path,
+                &metadata_path,
+                None,
+                None,
+                None,
+                &[],
+                None,
+                Some(&summary),
+                None,
+                Some(deferred_summary_reason(&summary)),
+                None,
+            ),
             Err(SnapshotWriteError::HardFailure { summary, reason }) => render_output(
                 SnapshotState::HardFailure,
                 LatestSurfaceStatus::NotApplicable,
                 LatestSurfaceAction::UnchangedDueToHardFailure,
+                &snapshot_context,
                 &config.config_path,
                 &source_db_path,
                 &snapshot_path,
@@ -459,7 +681,7 @@ fn run_scheduled(
     configured_snapshot_dir: &str,
     cadence_minutes: u64,
     retention: usize,
-    snapshot_policy: &SqliteSnapshotPolicy,
+    snapshot_context: &SnapshotContext,
 ) -> Result<SnapshotOutput> {
     let snapshot_dir =
         resolve_relative_to_config(&config.config_path, Path::new(configured_snapshot_dir));
@@ -493,6 +715,7 @@ fn run_scheduled(
             SnapshotState::SkippedNotDue,
             latest_surface.status,
             LatestSurfaceAction::HealthySkip,
+            snapshot_context,
             &config.config_path,
             source_db_path,
             &latest_snapshot_path,
@@ -521,6 +744,7 @@ fn run_scheduled(
                 SnapshotState::SelfHealedLatestSurface,
                 latest_surface.status,
                 action,
+                snapshot_context,
                 &config.config_path,
                 source_db_path,
                 &latest_snapshot_path,
@@ -555,7 +779,7 @@ fn run_scheduled(
         latest_surface.status,
         action,
         &snapshot_dir,
-        snapshot_policy,
+        snapshot_context,
         latest_surface.manifest.as_ref(),
         config.force,
     )
@@ -698,7 +922,7 @@ fn write_fresh_scheduled_snapshot(
     latest_surface_status: LatestSurfaceStatus,
     action: LatestSurfaceAction,
     snapshot_dir: &Path,
-    snapshot_policy: &SqliteSnapshotPolicy,
+    snapshot_context: &SnapshotContext,
     latest_manifest: Option<&RecentRawJournalSnapshotManifest>,
     force: bool,
 ) -> Result<SnapshotOutput> {
@@ -709,7 +933,7 @@ fn write_fresh_scheduled_snapshot(
         source_store,
         &archive_path,
         now,
-        snapshot_policy,
+        &snapshot_context.policy,
     ) {
         Ok(result) => result,
         Err(SnapshotWriteError::RetryableBusy { summary }) => {
@@ -720,6 +944,7 @@ fn write_fresh_scheduled_snapshot(
                 state,
                 latest_surface_status,
                 latest_action,
+                snapshot_context,
                 config_path,
                 source_db_path,
                 latest_snapshot_path,
@@ -735,11 +960,36 @@ fn write_fresh_scheduled_snapshot(
                 None,
             ));
         }
+        Err(SnapshotWriteError::Deferred { summary }) => {
+            let reason = deferred_summary_reason(&summary);
+            let (latest_action, deferred_reason) =
+                scheduled_duration_budget_contract(latest_surface_status, &reason);
+            return Ok(render_output(
+                SnapshotState::Deferred,
+                latest_surface_status,
+                latest_action,
+                snapshot_context,
+                config_path,
+                source_db_path,
+                latest_snapshot_path,
+                latest_metadata_path,
+                None,
+                Some(cadence_minutes),
+                Some(retention),
+                &[],
+                latest_manifest,
+                Some(&summary),
+                None,
+                deferred_reason,
+                None,
+            ));
+        }
         Err(SnapshotWriteError::HardFailure { summary, reason }) => {
             return Ok(render_output(
                 SnapshotState::HardFailure,
                 latest_surface_status,
                 LatestSurfaceAction::UnchangedDueToHardFailure,
+                snapshot_context,
                 config_path,
                 source_db_path,
                 latest_snapshot_path,
@@ -763,6 +1013,7 @@ fn write_fresh_scheduled_snapshot(
             SnapshotState::HardFailure,
             latest_surface_status,
             LatestSurfaceAction::UnchangedDueToHardFailure,
+            snapshot_context,
             config_path,
             source_db_path,
             latest_snapshot_path,
@@ -785,6 +1036,7 @@ fn write_fresh_scheduled_snapshot(
             SnapshotState::HardFailure,
             latest_surface_status,
             LatestSurfaceAction::UnchangedDueToHardFailure,
+            snapshot_context,
             config_path,
             source_db_path,
             latest_snapshot_path,
@@ -807,6 +1059,7 @@ fn write_fresh_scheduled_snapshot(
             SnapshotState::HardFailure,
             latest_surface_status,
             LatestSurfaceAction::UnchangedDueToHardFailure,
+            snapshot_context,
             config_path,
             source_db_path,
             latest_snapshot_path,
@@ -835,6 +1088,7 @@ fn write_fresh_scheduled_snapshot(
                 SnapshotState::HardFailure,
                 latest_surface_status,
                 LatestSurfaceAction::UnchangedDueToHardFailure,
+                snapshot_context,
                 config_path,
                 source_db_path,
                 latest_snapshot_path,
@@ -861,6 +1115,7 @@ fn write_fresh_scheduled_snapshot(
                     SnapshotState::HardFailure,
                     latest_surface_status,
                     LatestSurfaceAction::UnchangedDueToHardFailure,
+                    snapshot_context,
                     config_path,
                     source_db_path,
                     latest_snapshot_path,
@@ -883,6 +1138,7 @@ fn write_fresh_scheduled_snapshot(
         SnapshotState::Written,
         latest_surface_status,
         action,
+        snapshot_context,
         config_path,
         source_db_path,
         latest_snapshot_path,
@@ -1046,6 +1302,10 @@ fn write_snapshot_with_policy(
             cleanup_snapshot_temp(&temp_snapshot_path);
             return Err(SnapshotWriteError::RetryableBusy { summary });
         }
+        SqliteSnapshotOutcome::Deferred(summary) => {
+            cleanup_snapshot_temp(&temp_snapshot_path);
+            return Err(SnapshotWriteError::Deferred { summary });
+        }
     };
     fs::rename(&temp_snapshot_path, snapshot_path).map_err(|error| {
         cleanup_snapshot_temp(&temp_snapshot_path);
@@ -1122,6 +1382,7 @@ fn render_output(
     state: SnapshotState,
     latest_surface_status: LatestSurfaceStatus,
     latest_surface_action: LatestSurfaceAction,
+    snapshot_context: &SnapshotContext,
     config_path: &Path,
     source_db_path: &Path,
     snapshot_path: &Path,
@@ -1152,6 +1413,20 @@ fn render_output(
             .iter()
             .map(|path| path.display().to_string())
             .collect(),
+        source_db_bytes: snapshot_context.source_stats.source_db_bytes,
+        source_wal_bytes: snapshot_context.source_stats.source_wal_bytes,
+        source_total_bytes: snapshot_context.source_stats.source_total_bytes(),
+        source_page_size_bytes: snapshot_context.source_stats.source_page_size_bytes,
+        source_page_count: snapshot_context.source_stats.source_page_count,
+        snapshot_pages_per_step: snapshot_context.policy.pages_per_step,
+        snapshot_pause_between_steps_ms: snapshot_context
+            .policy
+            .pause_between_steps
+            .as_millis()
+            .min(u64::MAX as u128) as u64,
+        snapshot_max_attempt_duration_ms: snapshot_policy_max_attempt_duration_ms(
+            &snapshot_context.policy,
+        ),
         attempt_duration_ms: snapshot_summary
             .map(|summary| summary.duration_ms)
             .unwrap_or(0),
@@ -1167,6 +1442,10 @@ fn render_output(
         locked_retry_count: snapshot_summary
             .map(|summary| summary.locked_retry_count)
             .unwrap_or(0),
+        backup_total_page_count: snapshot_summary.map(|summary| summary.total_page_count),
+        backup_remaining_page_count: snapshot_summary.map(|summary| summary.remaining_page_count),
+        backup_copied_page_count: snapshot_summary.map(|summary| summary.copied_page_count),
+        terminal_reason: snapshot_terminal_reason(state, snapshot_summary),
         retryable_reason,
         deferred_reason,
         hard_failure_reason,
@@ -1209,11 +1488,53 @@ fn render_human(output: &SnapshotOutput) -> String {
                 .unwrap_or_else(|| "null".to_string())
         ),
         format!("pruned_snapshots={}", output.pruned_snapshot_paths.len()),
+        format!("source_db_bytes={}", output.source_db_bytes),
+        format!("source_wal_bytes={}", output.source_wal_bytes),
+        format!("source_total_bytes={}", output.source_total_bytes),
+        format!("source_page_size_bytes={}", output.source_page_size_bytes),
+        format!("source_page_count={}", output.source_page_count),
+        format!("snapshot_pages_per_step={}", output.snapshot_pages_per_step),
+        format!(
+            "snapshot_pause_between_steps_ms={}",
+            output.snapshot_pause_between_steps_ms
+        ),
+        format!(
+            "snapshot_max_attempt_duration_ms={}",
+            output
+                .snapshot_max_attempt_duration_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
         format!("attempt_duration_ms={}", output.attempt_duration_ms),
         format!("backup_step_count={}", output.backup_step_count),
         format!("backup_retry_count={}", output.backup_retry_count),
         format!("busy_retry_count={}", output.busy_retry_count),
         format!("locked_retry_count={}", output.locked_retry_count),
+        format!(
+            "backup_total_page_count={}",
+            output
+                .backup_total_page_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "backup_remaining_page_count={}",
+            output
+                .backup_remaining_page_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "backup_copied_page_count={}",
+            output
+                .backup_copied_page_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "terminal_reason={}",
+            output.terminal_reason.as_deref().unwrap_or("null")
+        ),
         format!(
             "retryable_reason={}",
             output.retryable_reason.as_deref().unwrap_or("null")
@@ -1280,14 +1601,18 @@ fn render_human(output: &SnapshotOutput) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_args_from, run, Config, RecentRawJournalSnapshotManifest, SqliteStore};
+    use super::{
+        adaptive_snapshot_policy, parse_args_from, run, run_with_snapshot_policy_override, Config,
+        RecentRawJournalSnapshotManifest, SnapshotSourceStats, SqliteStore,
+    };
     use anyhow::{Context, Result};
     use chrono::{DateTime, Duration, Utc};
     use copybot_core_types::SwapEvent;
     use copybot_discovery::runtime_restore_ops::load_json;
     use copybot_storage::RecentRawJournalStateRow;
     use serde_json::Value;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+    use std::time::Duration as StdDuration;
     use tempfile::tempdir;
 
     #[test]
@@ -1351,6 +1676,106 @@ mod tests {
         assert_eq!(super::SnapshotState::Deferred.exit_code(), 75);
         assert_eq!(super::SnapshotState::RetryableBusy.exit_code(), 75);
         assert_eq!(super::SnapshotState::HardFailure.exit_code(), 1);
+    }
+
+    #[test]
+    fn adaptive_snapshot_policy_scales_for_large_sources() {
+        let policy = adaptive_snapshot_policy(&SnapshotSourceStats {
+            source_db_bytes: 1_200 * 1024 * 1024,
+            source_wal_bytes: 459 * 1024 * 1024,
+            source_page_size_bytes: 4096,
+            source_page_count: 310_000,
+        });
+        assert!(
+            policy.pages_per_step > 16,
+            "large sources must use larger backup steps than the tiny default"
+        );
+        assert_eq!(
+            policy.pause_between_steps,
+            StdDuration::from_millis(super::SNAPSHOT_LARGE_PAUSE_BETWEEN_STEPS_MS)
+        );
+        assert_eq!(
+            policy.max_attempt_duration,
+            Some(StdDuration::from_millis(
+                super::SNAPSHOT_HUGE_MAX_ATTEMPT_DURATION_MS,
+            ))
+        );
+    }
+
+    #[test]
+    fn scheduled_run_returns_bounded_deferred_outcome_when_attempt_budget_is_exhausted(
+    ) -> Result<()> {
+        let fixture = make_fixture("recent-raw-snapshot-budget")?;
+        let now = parse_ts("2026-03-23T12:00:00Z")?;
+        seed_recent_raw_journal_many(&fixture.journal_store, now, 256)?;
+
+        let deferred = run_with_snapshot_policy_override(
+            Config {
+                config_path: fixture.config_path.clone(),
+                journal_db_path: Some(fixture.journal_db_path.clone()),
+                output_path: None,
+                scheduled: true,
+                force: true,
+                json: true,
+                now,
+            },
+            Some(copybot_storage::SqliteSnapshotPolicy {
+                busy_timeout: StdDuration::from_millis(1),
+                pages_per_step: 1,
+                pause_between_steps: StdDuration::from_millis(0),
+                retry_backoff_ms: vec![1, 1],
+                max_attempt_duration: Some(StdDuration::ZERO),
+            }),
+        )?;
+        assert_eq!(deferred.exit_code, 75);
+        let output: Value = serde_json::from_str(&deferred.rendered_output)?;
+        assert_eq!(output["state"], "deferred");
+        assert_eq!(
+            output["terminal_reason"],
+            "attempt_duration_budget_exhausted"
+        );
+        assert_eq!(
+            output["latest_surface_action"],
+            "unchanged_due_to_attempt_budget"
+        );
+        assert_eq!(output["snapshot_pages_per_step"], 1);
+        assert_eq!(output["snapshot_max_attempt_duration_ms"], 0);
+        assert!(
+            output["backup_total_page_count"]
+                .as_u64()
+                .unwrap_or_default()
+                > output["backup_copied_page_count"]
+                    .as_u64()
+                    .unwrap_or_default(),
+            "bounded deferred outcome must expose unfinished backup progress"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_service_and_timer_templates_match_bounded_attempt_contract() -> Result<()> {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let service = std::fs::read_to_string(
+            repo_root.join("ops/server_templates/copybot-discovery-recent-raw-snapshot.service"),
+        )
+        .context("failed reading snapshot service template")?;
+        let timer = std::fs::read_to_string(
+            repo_root.join("ops/server_templates/copybot-discovery-recent-raw-snapshot.timer"),
+        )
+        .context("failed reading snapshot timer template")?;
+        assert!(
+            service.contains("SuccessExitStatus=75"),
+            "snapshot service must keep transient deferred outcomes non-fatal for systemd"
+        );
+        assert!(
+            service.contains("TimeoutStartSec="),
+            "snapshot service must bound startup/runtime from the service layer too"
+        );
+        assert!(
+            timer.contains("OnUnitActiveSec=5m"),
+            "snapshot timer should keep periodic retries enabled for bounded deferred runs"
+        );
+        Ok(())
     }
 
     #[test]
@@ -1734,6 +2159,24 @@ mod tests {
             ],
             now,
         )?;
+        Ok(())
+    }
+
+    fn seed_recent_raw_journal_many(
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        count: usize,
+    ) -> Result<()> {
+        let mut swaps = Vec::with_capacity(count);
+        for idx in 0..count {
+            let ts = now - Duration::seconds((count.saturating_sub(idx)) as i64);
+            swaps.push(make_swap(
+                &format!("sig-many-{idx:04}"),
+                ts,
+                10 + idx as u64,
+            ));
+        }
+        store.insert_recent_raw_journal_batch(&swaps, now)?;
         Ok(())
     }
 

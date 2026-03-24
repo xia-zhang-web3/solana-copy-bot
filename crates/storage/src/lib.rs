@@ -23,6 +23,7 @@ const SQLITE_WRITE_RETRY_BACKOFF_MS: [u64; SQLITE_WRITE_MAX_RETRIES] = [100, 300
 const SQLITE_SNAPSHOT_PAGES_PER_STEP: i32 = 16;
 const SQLITE_SNAPSHOT_PAUSE_BETWEEN_STEPS_MS: u64 = 25;
 const SQLITE_SNAPSHOT_BUSY_TIMEOUT_MS: u64 = 250;
+const SQLITE_SNAPSHOT_DEFAULT_MAX_ATTEMPT_DURATION_MS: u64 = 90_000;
 const DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS: i64 = 3;
 pub const STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES: i64 = 30;
 pub const STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL: f64 = 0.05;
@@ -92,6 +93,19 @@ impl SqliteSnapshotRetryReason {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqliteSnapshotDeferredReason {
+    AttemptDurationBudgetExceeded,
+}
+
+impl SqliteSnapshotDeferredReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AttemptDurationBudgetExceeded => "attempt_duration_budget_exhausted",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SqliteSnapshotSummary {
     pub duration_ms: u64,
@@ -100,6 +114,10 @@ pub struct SqliteSnapshotSummary {
     pub busy_retry_count: usize,
     pub locked_retry_count: usize,
     pub retry_exhausted_reason: Option<SqliteSnapshotRetryReason>,
+    pub deferred_reason: Option<SqliteSnapshotDeferredReason>,
+    pub total_page_count: usize,
+    pub remaining_page_count: usize,
+    pub copied_page_count: usize,
 }
 
 impl Default for SqliteSnapshotSummary {
@@ -111,6 +129,10 @@ impl Default for SqliteSnapshotSummary {
             busy_retry_count: 0,
             locked_retry_count: 0,
             retry_exhausted_reason: None,
+            deferred_reason: None,
+            total_page_count: 0,
+            remaining_page_count: 0,
+            copied_page_count: 0,
         }
     }
 }
@@ -119,6 +141,7 @@ impl Default for SqliteSnapshotSummary {
 pub enum SqliteSnapshotOutcome {
     Written(SqliteSnapshotSummary),
     RetryableBusy(SqliteSnapshotSummary),
+    Deferred(SqliteSnapshotSummary),
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +150,7 @@ pub struct SqliteSnapshotPolicy {
     pub pages_per_step: i32,
     pub pause_between_steps: StdDuration,
     pub retry_backoff_ms: Vec<u64>,
+    pub max_attempt_duration: Option<StdDuration>,
 }
 
 impl Default for SqliteSnapshotPolicy {
@@ -136,8 +160,17 @@ impl Default for SqliteSnapshotPolicy {
             pages_per_step: SQLITE_SNAPSHOT_PAGES_PER_STEP,
             pause_between_steps: StdDuration::from_millis(SQLITE_SNAPSHOT_PAUSE_BETWEEN_STEPS_MS),
             retry_backoff_ms: SQLITE_WRITE_RETRY_BACKOFF_MS.to_vec(),
+            max_attempt_duration: Some(StdDuration::from_millis(
+                SQLITE_SNAPSHOT_DEFAULT_MAX_ATTEMPT_DURATION_MS,
+            )),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SqliteSnapshotSourceMetrics {
+    pub page_size_bytes: usize,
+    pub page_count: usize,
 }
 
 fn retry_reason_from_summary(summary: &SqliteSnapshotSummary) -> SqliteSnapshotRetryReason {
@@ -182,6 +215,17 @@ fn record_snapshot_retry(summary: &mut SqliteSnapshotSummary, reason: SqliteSnap
             summary.locked_retry_count = summary.locked_retry_count.saturating_add(1);
         }
     }
+}
+
+fn set_snapshot_progress(
+    summary: &mut SqliteSnapshotSummary,
+    progress: rusqlite::backup::Progress,
+) {
+    let total_page_count = progress.pagecount.max(0) as usize;
+    let remaining_page_count = progress.remaining.max(0) as usize;
+    summary.total_page_count = total_page_count;
+    summary.remaining_page_count = remaining_page_count.min(total_page_count);
+    summary.copied_page_count = total_page_count.saturating_sub(summary.remaining_page_count);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1561,7 +1605,34 @@ impl SqliteStore {
                     summary.backup_retry_count
                 );
             }
+            SqliteSnapshotOutcome::Deferred(summary) => {
+                anyhow::bail!(
+                    "sqlite snapshot deferred after bounded attempt budget (reason={}, duration_ms={}, copied_pages={}, total_pages={})",
+                    summary
+                        .deferred_reason
+                        .map(|reason| reason.as_str())
+                        .unwrap_or("unknown"),
+                    summary.duration_ms,
+                    summary.copied_page_count,
+                    summary.total_page_count
+                );
+            }
         }
+    }
+
+    pub fn snapshot_source_metrics(&self) -> Result<SqliteSnapshotSourceMetrics> {
+        let page_size: i64 = self
+            .conn
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .context("failed to read sqlite snapshot source page_size")?;
+        let page_count: i64 = self
+            .conn
+            .query_row("PRAGMA page_count", [], |row| row.get(0))
+            .context("failed to read sqlite snapshot source page_count")?;
+        Ok(SqliteSnapshotSourceMetrics {
+            page_size_bytes: page_size.max(0) as usize,
+            page_count: page_count.max(0) as usize,
+        })
     }
 
     pub fn snapshot_into_path_with_policy(
@@ -1617,17 +1688,30 @@ impl SqliteStore {
 
         loop {
             summary.backup_step_count = summary.backup_step_count.saturating_add(1);
-            match backup
+            let step_result = backup
                 .step(policy.pages_per_step)
-                .context("failed to complete sqlite online backup step")?
-            {
+                .context("failed to complete sqlite online backup step")?;
+            set_snapshot_progress(&mut summary, backup.progress());
+            match step_result {
                 StepResult::Done => {
                     summary.duration_ms =
                         started.elapsed().as_millis().min(u64::MAX as u128) as u64;
                     return Ok(SqliteSnapshotOutcome::Written(summary));
                 }
                 StepResult::More => {
-                    thread::sleep(policy.pause_between_steps);
+                    let elapsed = started.elapsed();
+                    summary.duration_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
+                    if policy
+                        .max_attempt_duration
+                        .is_some_and(|budget| elapsed >= budget)
+                    {
+                        summary.deferred_reason =
+                            Some(SqliteSnapshotDeferredReason::AttemptDurationBudgetExceeded);
+                        return Ok(SqliteSnapshotOutcome::Deferred(summary));
+                    }
+                    if !policy.pause_between_steps.is_zero() {
+                        thread::sleep(policy.pause_between_steps);
+                    }
                 }
                 StepResult::Busy => {
                     record_snapshot_retry(&mut summary, SqliteSnapshotRetryReason::Busy);
@@ -10112,6 +10196,7 @@ mod tests {
                 pages_per_step: 1,
                 pause_between_steps: StdDuration::from_millis(1),
                 retry_backoff_ms: vec![1, 1],
+                max_attempt_duration: Some(StdDuration::from_millis(1)),
             },
         )?;
         blocker.conn.execute_batch("ROLLBACK")?;
@@ -10127,6 +10212,71 @@ mod tests {
         assert!(
             summary.retry_exhausted_reason.is_some(),
             "retryable busy snapshot outcome must expose exhausted reason"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_into_path_with_policy_returns_deferred_after_bounded_attempt_budget() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let source_path = temp.path().join("snapshot-source-large.db");
+        let destination_path = temp.path().join("snapshot-destination-large.db");
+
+        let source_store = SqliteStore::open(Path::new(&source_path))?;
+        source_store
+            .conn
+            .execute_batch("CREATE TABLE snapshot_source(id INTEGER PRIMARY KEY, value TEXT);")
+            .context("failed creating snapshot source table")?;
+        let large_value = "x".repeat(2048);
+        for idx in 0..256 {
+            source_store
+                .conn
+                .execute(
+                    "INSERT INTO snapshot_source(id, value) VALUES (?1, ?2)",
+                    params![idx, large_value],
+                )
+                .context("failed seeding large snapshot source table")?;
+        }
+        let source_metrics = source_store.snapshot_source_metrics()?;
+        assert!(
+            source_metrics.page_count > 1,
+            "large snapshot source must span multiple pages for duration budget test"
+        );
+
+        let outcome = source_store.snapshot_into_path_with_policy(
+            &destination_path,
+            &SqliteSnapshotPolicy {
+                busy_timeout: StdDuration::from_millis(1),
+                pages_per_step: 1,
+                pause_between_steps: StdDuration::from_millis(0),
+                retry_backoff_ms: vec![1, 1],
+                max_attempt_duration: Some(StdDuration::ZERO),
+            },
+        )?;
+
+        let SqliteSnapshotOutcome::Deferred(summary) = outcome else {
+            anyhow::bail!("expected deferred snapshot outcome");
+        };
+        assert_eq!(
+            summary.deferred_reason,
+            Some(SqliteSnapshotDeferredReason::AttemptDurationBudgetExceeded)
+        );
+        assert!(
+            summary.backup_step_count >= 1,
+            "deferred outcome must report at least one attempted backup step"
+        );
+        assert!(
+            summary.total_page_count >= source_metrics.page_count,
+            "deferred outcome must report total page count progress"
+        );
+        assert!(
+            summary.remaining_page_count > 0,
+            "deferred outcome must preserve unfinished page count"
+        );
+        assert!(
+            summary.copied_page_count < summary.total_page_count,
+            "deferred outcome must not claim full completion"
         );
         Ok(())
     }

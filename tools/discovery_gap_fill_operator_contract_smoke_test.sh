@@ -60,6 +60,18 @@ cfg_value() {
   echo "template program_history_validation.sampling_segments must be 8" >&2
   exit 1
 }
+[[ "$(cfg_value "$TEMPLATE_PATH" program_history_validation max_requests_per_second)" == "100" ]] || {
+  echo "template program_history_validation.max_requests_per_second must be 100" >&2
+  exit 1
+}
+[[ "$(cfg_value "$TEMPLATE_PATH" program_history_validation retry_429_max_attempts)" == "4" ]] || {
+  echo "template program_history_validation.retry_429_max_attempts must be 4" >&2
+  exit 1
+}
+[[ "$(cfg_value "$TEMPLATE_PATH" program_history_validation retry_429_backoff_ms)" == "250" ]] || {
+  echo "template program_history_validation.retry_429_backoff_ms must be 250" >&2
+  exit 1
+}
 echo "template recent_raw_gap_fill contract: ok"
 
 python3 - "$RUNBOOK_PATH" <<'PY'
@@ -76,9 +88,13 @@ assert "program_history_validation.http_url" in runbook, "runbook must document 
 assert "discovery_program_history_source_validate" in runbook, "runbook must document the validation bin"
 assert "validation-only" in runbook, "runbook must frame program-history validation as validation-only"
 assert "not_proven_due_to_budget" in runbook, "runbook must explain budget-exhausted validation outcome"
+assert "not_proven_due_to_provider_throttling" in runbook, "runbook must explain provider throttling outcome"
 assert "non_viable_source_contract" in runbook, "runbook must distinguish source-contract failure"
 assert "--max-slots-to-scan" in runbook, "runbook must show the explicit budget-tuning path"
 assert "coverage_method" in runbook, "runbook must document coverage method output"
+assert "max_requests_per_second" in runbook, "runbook must document QuickNode rate limiter knobs"
+assert "retry_429_backoff_ms" in runbook, "runbook must document 429 retry backoff tuning"
+assert "125 req/s" in runbook, "runbook must document the QuickNode throttling contract"
 assert "TARGET_DB" in runbook, "runbook must document fresh target creation"
 assert "--gap-fill-db-path" in runbook, "runbook must document bounded gap-fill replay"
 assert "discovery_raw_gap_fill_helius" in runbook, "runbook must document the Helius-specific bin"

@@ -27,6 +27,8 @@ Live config defaults in `ops/server_templates/live.server.toml.example`:
    - required field: `program_history_validation.http_url`
    - candidate QuickNode-first source contract: `getSlot`, `getBlockTime`, `getBlocks`, `getBlock`
    - runnable tool: `discovery_program_history_source_validate`
+   - built-in QuickNode pacing knobs: `program_history_validation.max_requests_per_second`, `program_history_validation.retry_429_max_attempts`, `program_history_validation.retry_429_backoff_ms`
+   - live QuickNode contract currently throttles this path at `125 req/s`; keep the configured limiter below that ceiling
    - default local scan budget: `program_history_validation.max_slots_to_scan`
    - large bounded windows switch to staged slot sampling and return `not_proven_due_to_budget`, not a hard provider rejection
    - this is validation-only; it does not restore coverage or enable trading by itself
@@ -303,6 +305,11 @@ That is expected. If the tool returns `not_proven_due_to_budget`, it means the
 current local validation budget did not prove or disprove the provider. It is
 not the same as `non_viable_source_contract`.
 
+The QuickNode path now paces all `getSlot/getBlockTime/getBlocks/getBlock`
+requests through one local limiter and retries transient `429 Too Many
+Requests` responses. If retries still exhaust, the tool returns
+`not_proven_due_to_provider_throttling`, not `non_viable_source_contract`.
+
 ```bash
 PROGRAM_HISTORY_VALIDATION_URL="$(awk -F'=' '
   /^\s*\[/ {
@@ -357,7 +364,10 @@ Verdict semantics:
    - staged sampling may still show positive signals, but it is not a final provider verdict
 3. `not_proven_due_to_sparse_program_history`:
    - the scanned window completed, but it did not yield enough target-program raw to prove the next step
-4. `non_viable_source_contract`:
+4. `not_proven_due_to_provider_throttling`:
+   - the tool respected its local limiter, retried 429s, and still exhausted provider throttling retries
+   - this is not a hard provider rejection; lower `max_requests_per_second`, raise `retry_429_backoff_ms`, or rerun later
+5. `non_viable_source_contract`:
    - the source contract itself failed to provide usable block-history coverage for the scan path
 
 If the first run returns `not_proven_due_to_budget`, you can rerun with a larger
@@ -380,6 +390,13 @@ PY
   --max-slots-to-scan "${SLOT_SPAN}" \
   --json | tee /tmp/discovery_program_history_source_validate_full_scan.json
 ```
+
+If the verdict is `not_proven_due_to_provider_throttling`, tune the config in
+`/etc/solana-copy-bot/live.server.toml` before rerunning:
+
+1. lower `program_history_validation.max_requests_per_second`
+2. raise `program_history_validation.retry_429_backoff_ms`
+3. keep `program_history_validation.max_requests_per_second <= 125`
 
 ### 5. Decide service posture
 

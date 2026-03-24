@@ -6,7 +6,8 @@ OnBootSec=7m
 # The snapshot service enforces its own cadence and can now exit with a
 # transient success (`75`) for `deferred` / `retryable_busy`, so keeping the
 # timer tighter than the steady-state snapshot cadence gives bounded retries
-# without operator intervention.
+# without operator intervention once the service has exited via its own
+# attempt-duration budget or contention contract.
 OnUnitActiveSec=5m
 RandomizedDelaySec=30s
 Persistent=true

@@ -86,6 +86,9 @@ fn program_history_validation_defaults_are_quicknode_first_and_bounded() {
         "https://YOUR_QUICKNODE_HOST.solana-mainnet.quiknode.pro/REPLACE_ON_SERVER/"
     );
     assert_eq!(validation.request_timeout_ms, 20_000);
+    assert_eq!(validation.max_requests_per_second, 100);
+    assert_eq!(validation.retry_429_max_attempts, 4);
+    assert_eq!(validation.retry_429_backoff_ms, 250);
     assert_eq!(validation.block_batch_size, 512);
     assert_eq!(validation.max_slots_to_scan, 20_000);
     assert_eq!(validation.sampling_segments, 8);
@@ -153,6 +156,9 @@ max_pages_per_wallet = 10
 [program_history_validation]
 http_url = "https://quicknode.example/?api-key=test"
 request_timeout_ms = 11000
+max_requests_per_second = 90
+retry_429_max_attempts = 6
+retry_429_backoff_ms = 400
 block_batch_size = 400
 max_slots_to_scan = 12000
 sampling_segments = 6
@@ -203,6 +209,12 @@ metric_snapshot_interval_seconds = 1800
                 "https://quicknode.example/?api-key=test"
             );
             assert_eq!(config.program_history_validation.request_timeout_ms, 11_000);
+            assert_eq!(
+                config.program_history_validation.max_requests_per_second,
+                90
+            );
+            assert_eq!(config.program_history_validation.retry_429_max_attempts, 6);
+            assert_eq!(config.program_history_validation.retry_429_backoff_ms, 400);
             assert_eq!(config.program_history_validation.block_batch_size, 400);
             assert_eq!(config.program_history_validation.max_slots_to_scan, 12_000);
             assert_eq!(config.program_history_validation.sampling_segments, 6);
@@ -269,6 +281,12 @@ fn live_server_template_exposes_recent_raw_gap_fill_contract() {
         !config.program_history_validation.http_url.trim().is_empty(),
         "template must expose a non-empty program_history_validation.http_url placeholder"
     );
+    assert_eq!(
+        config.program_history_validation.max_requests_per_second,
+        100
+    );
+    assert_eq!(config.program_history_validation.retry_429_max_attempts, 4);
+    assert_eq!(config.program_history_validation.retry_429_backoff_ms, 250);
     assert_eq!(config.program_history_validation.sampling_segments, 8);
 }
 
@@ -339,6 +357,74 @@ metric_snapshot_interval_seconds = 1800
                 err.contains(
                     "program_history_validation.block_batch_size (1006) must be between 1 and 1005"
                 ),
+                "unexpected error: {err}"
+            );
+        },
+    );
+}
+
+#[test]
+fn load_from_path_rejects_program_history_validation_rate_limit_above_quicknode_contract() {
+    with_temp_config_file(
+        r#"
+[program_history_validation]
+http_url = "https://quicknode.example/?api-key=test"
+max_requests_per_second = 126
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("max requests per second above 125 must fail")
+                .to_string();
+            assert!(
+                err.contains(
+                    "program_history_validation.max_requests_per_second (126) must be between 1 and 125"
+                ),
+                "unexpected error: {err}"
+            );
+        },
+    );
+}
+
+#[test]
+fn load_from_path_rejects_program_history_validation_zero_retry_knobs() {
+    with_temp_config_file(
+        r#"
+[program_history_validation]
+http_url = "https://quicknode.example/?api-key=test"
+retry_429_max_attempts = 0
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("zero retry attempts must fail")
+                .to_string();
+            assert!(
+                err.contains("program_history_validation.retry_429_max_attempts (0) must be >= 1"),
+                "unexpected error: {err}"
+            );
+        },
+    );
+
+    with_temp_config_file(
+        r#"
+[program_history_validation]
+http_url = "https://quicknode.example/?api-key=test"
+retry_429_backoff_ms = 0
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("zero retry backoff must fail")
+                .to_string();
+            assert!(
+                err.contains("program_history_validation.retry_429_backoff_ms (0) must be >= 1"),
                 "unexpected error: {err}"
             );
         },

@@ -13,8 +13,12 @@ use serde_json::{json, Value};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::env;
+use std::error::Error as StdError;
+use std::fmt;
 use std::path::{Path, PathBuf};
-use std::time::Duration as StdDuration;
+use std::sync::Mutex;
+use std::thread::sleep;
+use std::time::{Duration as StdDuration, Instant};
 #[cfg(test)]
 use tempfile::tempdir;
 
@@ -63,6 +67,9 @@ struct ValidationReport {
     budget_exhausted: bool,
     sampling_segments: usize,
     sampling_window_slots: usize,
+    max_requests_per_second: usize,
+    retry_429_max_attempts: usize,
+    retry_429_backoff_ms: u64,
     scanned_batches: usize,
     scanned_slots: usize,
     scanned_blocks: usize,
@@ -82,6 +89,7 @@ struct ValidationReport {
 enum ValidationVerdict {
     Viable,
     NotProvenDueToBudget,
+    NotProvenDueToProviderThrottling,
     NotProvenDueToSparseProgramHistory,
     NonViableSourceContract,
 }
@@ -91,6 +99,7 @@ impl ValidationVerdict {
         match self {
             Self::Viable => "viable",
             Self::NotProvenDueToBudget => "not_proven_due_to_budget",
+            Self::NotProvenDueToProviderThrottling => "not_proven_due_to_provider_throttling",
             Self::NotProvenDueToSparseProgramHistory => "not_proven_due_to_sparse_program_history",
             Self::NonViableSourceContract => "non_viable_source_contract",
         }
@@ -141,6 +150,84 @@ struct ValidationScanSummary {
     missing_segments: Vec<GapFillMissingSegment>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceErrorKind {
+    ProviderThrottled,
+    SourceContractFailure,
+}
+
+#[derive(Debug)]
+struct SourceError {
+    kind: SourceErrorKind,
+    message: String,
+}
+
+impl SourceError {
+    fn provider_throttled(message: impl Into<String>) -> Self {
+        Self {
+            kind: SourceErrorKind::ProviderThrottled,
+            message: message.into(),
+        }
+    }
+
+    fn source_contract_failure(message: impl Into<String>) -> Self {
+        Self {
+            kind: SourceErrorKind::SourceContractFailure,
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for SourceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl StdError for SourceError {}
+
+#[derive(Debug, Clone)]
+struct QuickNodeRequestPolicy {
+    max_requests_per_second: usize,
+    retry_429_max_attempts: usize,
+    retry_429_backoff_ms: u64,
+}
+
+#[derive(Debug)]
+struct RequestPacer {
+    min_interval: StdDuration,
+    next_allowed_at: Option<Instant>,
+}
+
+impl RequestPacer {
+    fn new(max_requests_per_second: usize) -> Self {
+        Self {
+            min_interval: StdDuration::from_secs_f64(1.0 / max_requests_per_second.max(1) as f64),
+            next_allowed_at: None,
+        }
+    }
+
+    fn claim_delay(&mut self, now: Instant) -> StdDuration {
+        match self.next_allowed_at {
+            Some(next_allowed_at) if next_allowed_at > now => {
+                let delay = next_allowed_at.duration_since(now);
+                self.next_allowed_at = Some(next_allowed_at + self.min_interval);
+                delay
+            }
+            _ => {
+                self.next_allowed_at = Some(now + self.min_interval);
+                StdDuration::ZERO
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct HttpRpcResponse {
+    status_code: u16,
+    body: String,
+}
+
 trait ProgramHistorySource {
     fn provider_name(&self) -> &'static str;
     fn source_kind(&self) -> &'static str;
@@ -154,15 +241,34 @@ trait ProgramHistorySource {
 struct QuickNodeBlocksRpcSource {
     client: Client,
     http_url: String,
+    request_policy: QuickNodeRequestPolicy,
+    request_pacer: Mutex<RequestPacer>,
+    block_time_cache: Mutex<HashMap<u64, Option<DateTime<Utc>>>>,
 }
 
 impl QuickNodeBlocksRpcSource {
-    fn new(http_url: String, request_timeout_ms: u64) -> Result<Self> {
+    fn new(
+        http_url: String,
+        request_timeout_ms: u64,
+        max_requests_per_second: usize,
+        retry_429_max_attempts: usize,
+        retry_429_backoff_ms: u64,
+    ) -> Result<Self> {
         let client = Client::builder()
             .timeout(StdDuration::from_millis(request_timeout_ms.max(1)))
             .build()
             .context("failed building program history validation http client")?;
-        Ok(Self { client, http_url })
+        Ok(Self {
+            client,
+            http_url,
+            request_policy: QuickNodeRequestPolicy {
+                max_requests_per_second,
+                retry_429_max_attempts,
+                retry_429_backoff_ms,
+            },
+            request_pacer: Mutex::new(RequestPacer::new(max_requests_per_second)),
+            block_time_cache: Mutex::new(HashMap::new()),
+        })
     }
 }
 
@@ -191,23 +297,37 @@ impl ProgramHistorySource for QuickNodeBlocksRpcSource {
             "method": "getSlot",
             "params": [{ "commitment": "finalized" }],
         });
-        let response = post_json_rpc(&self.client, &self.http_url, &payload)?;
+        let response = post_json_rpc(self, &payload)?;
         rpc_result(&response)
             .as_u64()
             .ok_or_else(|| anyhow!("missing getSlot result"))
     }
 
     fn block_time(&self, slot: u64) -> Result<Option<DateTime<Utc>>> {
+        if let Some(cached) = self
+            .block_time_cache
+            .lock()
+            .expect("block_time_cache poisoned")
+            .get(&slot)
+            .cloned()
+        {
+            return Ok(cached);
+        }
         let payload = json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "getBlockTime",
             "params": [slot],
         });
-        let response = post_json_rpc(&self.client, &self.http_url, &payload)?;
-        Ok(rpc_result(&response)
+        let response = post_json_rpc(self, &payload)?;
+        let block_time = rpc_result(&response)
             .as_i64()
-            .and_then(|value| DateTime::<Utc>::from_timestamp(value, 0)))
+            .and_then(|value| DateTime::<Utc>::from_timestamp(value, 0));
+        self.block_time_cache
+            .lock()
+            .expect("block_time_cache poisoned")
+            .insert(slot, block_time);
+        Ok(block_time)
     }
 
     fn list_blocks(&self, start_slot: u64, end_slot: u64) -> Result<Vec<u64>> {
@@ -217,7 +337,7 @@ impl ProgramHistorySource for QuickNodeBlocksRpcSource {
             "method": "getBlocks",
             "params": [start_slot, end_slot, { "commitment": "finalized" }],
         });
-        let response = post_json_rpc(&self.client, &self.http_url, &payload)?;
+        let response = post_json_rpc(self, &payload)?;
         rpc_result(&response)
             .as_array()
             .ok_or_else(|| anyhow!("missing getBlocks result array"))
@@ -240,7 +360,7 @@ impl ProgramHistorySource for QuickNodeBlocksRpcSource {
                 }
             ],
         });
-        let response = post_json_rpc(&self.client, &self.http_url, &payload)?;
+        let response = post_json_rpc(self, &payload)?;
         match response.get("result") {
             Some(value) if !value.is_null() => Ok(Some(value.clone())),
             _ => Ok(None),
@@ -332,8 +452,13 @@ fn parse_string_arg(flag: &str, value: Option<String>) -> Result<String> {
 
 fn parse_usize_arg(flag: &str, value: Option<String>) -> Result<usize> {
     let raw = parse_string_arg(flag, value)?;
-    raw.parse::<usize>()
-        .with_context(|| format!("invalid {flag} integer: {raw}"))
+    let parsed = raw
+        .parse::<usize>()
+        .with_context(|| format!("invalid {flag} integer: {raw}"))?;
+    if parsed == 0 {
+        bail!("{flag} must be >= 1");
+    }
+    Ok(parsed)
 }
 
 fn run(config: Config) -> Result<String> {
@@ -347,6 +472,15 @@ fn run(config: Config) -> Result<String> {
     let source = QuickNodeBlocksRpcSource::new(
         http_url,
         loaded_config.program_history_validation.request_timeout_ms,
+        loaded_config
+            .program_history_validation
+            .max_requests_per_second,
+        loaded_config
+            .program_history_validation
+            .retry_429_max_attempts,
+        loaded_config
+            .program_history_validation
+            .retry_429_backoff_ms,
     )?;
     let report = run_with_source(config, &loaded_config, &source)?;
     if let Some(path) = report.report_path.as_ref() {
@@ -394,6 +528,15 @@ fn run_with_source<S: ProgramHistorySource>(
         budget_exhausted: false,
         sampling_segments: 0,
         sampling_window_slots: 0,
+        max_requests_per_second: loaded_config
+            .program_history_validation
+            .max_requests_per_second,
+        retry_429_max_attempts: loaded_config
+            .program_history_validation
+            .retry_429_max_attempts,
+        retry_429_backoff_ms: loaded_config
+            .program_history_validation
+            .retry_429_backoff_ms,
         scanned_batches: 0,
         scanned_slots: 0,
         scanned_blocks: 0,
@@ -428,10 +571,9 @@ fn run_with_source<S: ProgramHistorySource>(
                 end: plan.requested_window_end,
                 reason: "slot_bounds_unresolved".to_string(),
             });
-            report.verdict = ValidationVerdict::NonViableSourceContract
-                .as_str()
-                .to_string();
-            report.reason = format!("slot_bounds_unresolved:{error}");
+            let (verdict, reason) = classify_source_error("slot_bounds_unresolved", &error);
+            report.verdict = verdict.as_str().to_string();
+            report.reason = reason;
             return Ok(report);
         }
     };
@@ -465,14 +607,22 @@ fn run_with_source<S: ProgramHistorySource>(
         });
     }
 
-    let summary = scan_slot_windows(
+    let summary = match scan_slot_windows(
         source,
         &program_ids,
         plan.requested_window_start,
         plan.requested_window_end,
         &scan_plan.windows,
         loaded_config.program_history_validation.block_batch_size,
-    )?;
+    ) {
+        Ok(summary) => summary,
+        Err(error) => {
+            let (verdict, reason) = classify_source_error("scan_failed", &error);
+            report.verdict = verdict.as_str().to_string();
+            report.reason = reason;
+            return Ok(report);
+        }
+    };
 
     report.scanned_batches = summary.scanned_batches;
     report.scanned_slots = summary.scanned_slots;
@@ -550,6 +700,27 @@ fn sorted_program_ids(program_ids: &ProgramIdConfig) -> Vec<String> {
         .collect::<Vec<_>>();
     ids.sort();
     ids
+}
+
+fn classify_source_error(context: &str, error: &anyhow::Error) -> (ValidationVerdict, String) {
+    match source_error_kind(error) {
+        Some(SourceErrorKind::ProviderThrottled) => (
+            ValidationVerdict::NotProvenDueToProviderThrottling,
+            format!("{context}:{error}"),
+        ),
+        _ => (
+            ValidationVerdict::NonViableSourceContract,
+            format!("{context}:{error}"),
+        ),
+    }
+}
+
+fn source_error_kind(error: &anyhow::Error) -> Option<SourceErrorKind> {
+    error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<SourceError>()
+            .map(|source| source.kind)
+    })
 }
 
 fn build_scan_plan(
@@ -966,6 +1137,9 @@ fn render_human(report: &ValidationReport) -> String {
         format!("budget_exhausted={}", report.budget_exhausted),
         format!("sampling_segments={}", report.sampling_segments),
         format!("sampling_window_slots={}", report.sampling_window_slots),
+        format!("max_requests_per_second={}", report.max_requests_per_second),
+        format!("retry_429_max_attempts={}", report.retry_429_max_attempts),
+        format!("retry_429_backoff_ms={}", report.retry_429_backoff_ms),
         format!("scanned_batches={}", report.scanned_batches),
         format!("scanned_slots={}", report.scanned_slots),
         format!("scanned_blocks={}", report.scanned_blocks),
@@ -1010,24 +1184,133 @@ fn render_human(report: &ValidationReport) -> String {
     .join("\n")
 }
 
-fn post_json_rpc(client: &Client, http_url: &str, payload: &Value) -> Result<Value> {
-    let response = client
-        .post(http_url)
-        .json(payload)
-        .send()
-        .with_context(|| format!("failed rpc request to {http_url}"))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .context("failed reading rpc response body")?;
-    let parsed: Value = serde_json::from_str(&body).context("failed parsing rpc response json")?;
-    if !status.is_success() {
-        return Err(anyhow!("rpc returned http status {status}: {body}"));
+fn throttle_backoff_for_attempt(base_backoff_ms: u64, attempt_index: usize) -> StdDuration {
+    StdDuration::from_millis(base_backoff_ms.saturating_mul(attempt_index as u64))
+}
+
+fn throttle_response_message(status_code: u16, body: &str) -> Option<String> {
+    if status_code == 429 {
+        return Some(format!(
+            "rpc returned http status 429 Too Many Requests: {body}"
+        ));
     }
-    if let Some(error) = parsed.get("error") {
-        return Err(anyhow!("rpc returned error: {error}"));
+    let lowered = body.to_ascii_lowercase();
+    if lowered.contains("too many requests") || lowered.contains("rate limit") {
+        return Some(format!("rpc provider throttled request: {body}"));
     }
-    Ok(parsed)
+    None
+}
+
+fn maybe_sleep_with_pacer<F>(pacer: &Mutex<RequestPacer>, mut sleep_fn: F)
+where
+    F: FnMut(StdDuration),
+{
+    let delay = {
+        pacer
+            .lock()
+            .expect("request_pacer poisoned")
+            .claim_delay(Instant::now())
+    };
+    if !delay.is_zero() {
+        sleep_fn(delay);
+    }
+}
+
+fn execute_json_rpc_with_policy<F, G>(
+    pacer: &Mutex<RequestPacer>,
+    request_policy: &QuickNodeRequestPolicy,
+    mut send: F,
+    mut sleep_fn: G,
+) -> Result<Value>
+where
+    F: FnMut() -> Result<HttpRpcResponse>,
+    G: FnMut(StdDuration),
+{
+    for attempt in 0..=request_policy.retry_429_max_attempts {
+        maybe_sleep_with_pacer(pacer, |duration| sleep_fn(duration));
+        let response = send()?;
+        if let Some(message) = throttle_response_message(response.status_code, &response.body) {
+            if attempt < request_policy.retry_429_max_attempts {
+                sleep_fn(throttle_backoff_for_attempt(
+                    request_policy.retry_429_backoff_ms,
+                    attempt + 1,
+                ));
+                continue;
+            }
+            return Err(SourceError::provider_throttled(format!(
+                "{message}; max_requests_per_second={} retry_429_max_attempts={} retry_429_backoff_ms={}",
+                request_policy.max_requests_per_second,
+                request_policy.retry_429_max_attempts,
+                request_policy.retry_429_backoff_ms
+            ))
+            .into());
+        }
+
+        if response.status_code < 200 || response.status_code >= 300 {
+            return Err(SourceError::source_contract_failure(format!(
+                "rpc returned http status {}: {}",
+                response.status_code, response.body
+            ))
+            .into());
+        }
+
+        let parsed: Value = serde_json::from_str(&response.body).map_err(|error| {
+            anyhow!(SourceError::source_contract_failure(format!(
+                "failed parsing rpc response json: {error}"
+            )))
+        })?;
+        if let Some(error) = parsed.get("error") {
+            let error_message = error.to_string();
+            if let Some(message) = throttle_response_message(response.status_code, &error_message) {
+                if attempt < request_policy.retry_429_max_attempts {
+                    sleep_fn(throttle_backoff_for_attempt(
+                        request_policy.retry_429_backoff_ms,
+                        attempt + 1,
+                    ));
+                    continue;
+                }
+                return Err(SourceError::provider_throttled(message).into());
+            }
+            return Err(SourceError::source_contract_failure(format!(
+                "rpc returned error: {error}"
+            ))
+            .into());
+        }
+        return Ok(parsed);
+    }
+
+    Err(
+        SourceError::provider_throttled("rpc provider throttled request and retries exhausted")
+            .into(),
+    )
+}
+
+fn post_json_rpc(source: &QuickNodeBlocksRpcSource, payload: &Value) -> Result<Value> {
+    execute_json_rpc_with_policy(
+        &source.request_pacer,
+        &source.request_policy,
+        || {
+            let response = source
+                .client
+                .post(&source.http_url)
+                .json(payload)
+                .send()
+                .map_err(|error| {
+                    anyhow!(SourceError::source_contract_failure(format!(
+                        "failed rpc request to {}: {error}",
+                        source.http_url
+                    )))
+                })?;
+            let status_code = response.status().as_u16();
+            let body = response.text().map_err(|error| {
+                anyhow!(SourceError::source_contract_failure(format!(
+                    "failed reading rpc response body: {error}"
+                )))
+            })?;
+            Ok(HttpRpcResponse { status_code, body })
+        },
+        sleep,
+    )
 }
 
 fn rpc_result(response: &Value) -> &Value {
@@ -1128,6 +1411,46 @@ mod tests {
         }
     }
 
+    struct ThrottledProgramHistorySource;
+
+    impl ProgramHistorySource for ThrottledProgramHistorySource {
+        fn provider_name(&self) -> &'static str {
+            "quicknode"
+        }
+
+        fn source_kind(&self) -> &'static str {
+            "quicknode_blocks_rpc"
+        }
+
+        fn rpc_methods(&self) -> Vec<String> {
+            vec![
+                "getSlot".to_string(),
+                "getBlockTime".to_string(),
+                "getBlocks".to_string(),
+                "getBlock".to_string(),
+            ]
+        }
+
+        fn latest_finalized_slot(&self) -> Result<u64> {
+            Err(SourceError::provider_throttled(
+                "rpc returned http status 429 Too Many Requests: 125/second request limit reached",
+            )
+            .into())
+        }
+
+        fn block_time(&self, _slot: u64) -> Result<Option<DateTime<Utc>>> {
+            unreachable!("latest_finalized_slot should fail first")
+        }
+
+        fn list_blocks(&self, _start_slot: u64, _end_slot: u64) -> Result<Vec<u64>> {
+            unreachable!("latest_finalized_slot should fail first")
+        }
+
+        fn get_block(&self, _slot: u64) -> Result<Option<Value>> {
+            unreachable!("latest_finalized_slot should fail first")
+        }
+    }
+
     struct Fixture {
         _temp: tempfile::TempDir,
         config_path: PathBuf,
@@ -1146,6 +1469,51 @@ mod tests {
         assert!(error
             .to_string()
             .contains("unknown argument: --legacy-db-path"));
+    }
+
+    #[test]
+    fn request_pacer_claim_delay_enforces_spacing_contract() {
+        let mut pacer = RequestPacer::new(100);
+        let now = Instant::now();
+        assert_eq!(pacer.claim_delay(now), StdDuration::ZERO);
+        let second_delay = pacer.claim_delay(now);
+        assert!(second_delay >= StdDuration::from_millis(9));
+    }
+
+    #[test]
+    fn execute_json_rpc_with_policy_retries_provider_throttling() -> Result<()> {
+        let pacer = Mutex::new(RequestPacer::new(125));
+        let policy = QuickNodeRequestPolicy {
+            max_requests_per_second: 100,
+            retry_429_max_attempts: 2,
+            retry_429_backoff_ms: 7,
+        };
+        let mut attempts = 0usize;
+        let mut sleep_calls = Vec::new();
+        let response = execute_json_rpc_with_policy(
+            &pacer,
+            &policy,
+            || {
+                attempts = attempts.saturating_add(1);
+                if attempts < 3 {
+                    return Ok(HttpRpcResponse {
+                        status_code: 429,
+                        body: "125/second request limit reached".to_string(),
+                    });
+                }
+                Ok(HttpRpcResponse {
+                    status_code: 200,
+                    body: r#"{"jsonrpc":"2.0","result":123}"#.to_string(),
+                })
+            },
+            |duration| sleep_calls.push(duration),
+        )?;
+        assert_eq!(attempts, 3);
+        assert_eq!(rpc_result(&response).as_i64(), Some(123));
+        assert!(sleep_calls
+            .iter()
+            .any(|duration| *duration >= StdDuration::from_millis(7)));
+        Ok(())
     }
 
     #[test]
@@ -1421,6 +1789,38 @@ mod tests {
             &failing_source,
         )?;
         assert_eq!(report.verdict, "non_viable_source_contract");
+        assert!(!report.sufficient_for_next_step);
+        assert!(report.reason.contains("slot_bounds_unresolved"));
+        Ok(())
+    }
+
+    #[test]
+    fn provider_throttling_is_not_reported_as_non_viable_source_contract() -> Result<()> {
+        let fixture = make_fixture("program-history-provider-throttle")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - chrono::Duration::days(7);
+        let window_end = now - chrono::Duration::days(2);
+        seed_restored_runtime_with_short_journal(
+            &fixture.runtime_db_path,
+            &fixture.config_path,
+            now,
+            now - chrono::Duration::days(2),
+        )?;
+        let report = run_report_with_source(
+            Config {
+                config_path: fixture.config_path.clone(),
+                db_path: Some(fixture.runtime_db_path.clone()),
+                window_start: Some(window_start),
+                window_end: Some(window_end),
+                http_url: Some("https://quicknode.example/?api-key=test".to_string()),
+                max_slots_to_scan_override: None,
+                sampling_segments_override: None,
+                report_path: None,
+                json: true,
+            },
+            &ThrottledProgramHistorySource,
+        )?;
+        assert_eq!(report.verdict, "not_proven_due_to_provider_throttling");
         assert!(!report.sufficient_for_next_step);
         assert!(report.reason.contains("slot_bounds_unresolved"));
         Ok(())

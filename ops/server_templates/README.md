@@ -33,18 +33,24 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    an expected transient outcome for snapshot contention.
 2. Operators must inspect the JSON `state` emitted by
    `discovery_recent_raw_snapshot`, not just the systemd success/failure bit.
-3. Expected non-fatal states:
+3. The service template also sets `TimeoutStartSec=3min` so systemd has an
+   outer bound if the process ever stops honoring its own attempt budget.
+4. Operators should inspect `terminal_reason`, `attempt_duration_ms`,
+   `backup_total_page_count`, `backup_copied_page_count`, `source_db_bytes`, and
+   `source_wal_bytes` before deciding the timer is healthy on a large journal.
+5. Expected non-fatal states:
    - `written`
    - `self_healed_latest_surface`
    - `skipped_not_due`
    - `deferred`
    - `retryable_busy`
-4. `deferred` means the service hit retryable SQLite contention but retained a
-   healthy latest snapshot surface, so the timer can retry on the next run.
-5. `retryable_busy` means retryable contention happened without a healthy latest
+6. `deferred` means the service exited cleanly with a transient non-success
+   reason such as bounded attempt-duration exhaustion or, if a healthy latest
+   surface existed, retained that surface after the failed attempt.
+7. `retryable_busy` means retryable contention happened without a healthy latest
    surface to defer onto; rerun or investigate before calling the snapshot
    surface healthy again.
-6. `hard_failure` remains a real failure and should leave the service in the
+8. `hard_failure` remains a real failure and should leave the service in the
    normal non-zero failed state.
 
 ## Server target paths

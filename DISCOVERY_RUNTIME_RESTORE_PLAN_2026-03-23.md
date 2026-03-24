@@ -1360,6 +1360,7 @@ Validation contract для этого шага:
 - output должен давать явный verdict:
   - `viable`
   - `not_proven_due_to_budget`
+  - `not_proven_due_to_provider_throttling`
   - `not_proven_due_to_sparse_program_history`
   - `non_viable_source_contract`
 
@@ -1372,6 +1373,9 @@ Validation contract для этого шага:
   следующий batch на program-scoped gap-fill
 - exhaustion local scan budget не должен маркироваться как provider failure;
   это отдельный `not_proven_due_to_budget` outcome
+- QuickNode `429 Too Many Requests` path тоже не должен маркироваться как
+  provider failure; сначала local pacing + retry/backoff, потом только честный
+  `not_proven_due_to_provider_throttling`, если throttling не ушел
 
 ### 18.1 Auditor review of the validation batch (`2026-03-24`)
 
@@ -1409,6 +1413,45 @@ Validation contract для этого шага:
 - это все еще validation-only step, а не готовый program-gap-fill restore path
 - следующий decision point должен опираться уже на реальный server-side run
   этого validation tool, а не на еще одно blind coding усилие
+
+### 18.2 Auditor follow-up on QuickNode throttling adaptation (`2026-03-24`)
+
+Статус аудита:
+
+- follow-up batch **принят**
+- QuickNode-first validation path больше не должен сам загонять себя в `429`
+  storm на provider limit `125 req/s`
+- throttling outcome теперь разведен честно:
+  - `not_proven_due_to_provider_throttling`
+  - `non_viable_source_contract`
+- hard-negative `non_viable_source_contract` больше не должен появляться
+  только из-за того, что local tool превысил provider ceiling
+
+Что именно было исправлено:
+
+- добавлен per-process pacing contract для `getSlot` / `getBlockTime` /
+  `getBlocks` / `getBlock`
+- добавлены bounded `429` retry/backoff semantics
+- добавлены explicit config knobs:
+  - `program_history_validation.max_requests_per_second`
+  - `program_history_validation.retry_429_max_attempts`
+  - `program_history_validation.retry_429_backoff_ms`
+- runbook/template/operator contract синхронизированы с QuickNode-first
+  throttling semantics
+
+Повторно подтверждены проверки:
+
+- `cargo test -p copybot-config --lib`
+- `cargo test -p copybot-discovery --bin discovery_program_history_source_validate`
+- `cargo test -p copybot-discovery --bin discovery_runtime_restore`
+- `bash tools/discovery_gap_fill_operator_contract_smoke_test.sh`
+
+Вывод аудита:
+
+- validation path теперь честнее ведет себя на live QuickNode contract
+- следующий meaningful шаг уже server-side rerun с новым pacing/retry behavior
+- если throttling останется и после этого, это будет уже честный provider /
+  quota blocker, а не self-inflicted tool behavior
 
 ## 19. Auditor review of live-safe recent raw snapshot batch (`2026-03-24`)
 
@@ -1462,3 +1505,24 @@ Closure update (`2026-03-24`):
   - `cargo test -p copybot-discovery --bin discovery_recent_raw_snapshot -- --nocapture`
   - `cargo test -p copybot-storage --lib snapshot_into_path_with_policy_returns_retryable_busy_after_bounded_destination_lock -- --nocapture`
   - `bash tools/discovery_restore_drill_smoke_test.sh`
+
+Throughput hardening update (`2026-03-24`):
+
+- follow-up batch **принят**
+- snapshot path получил adaptive size-aware pacing:
+  - larger `pages_per_step` для large journals
+  - reduced pause between backup steps
+  - bounded attempt-duration budget вместо many-minute ambiguous run
+- large journal attempt теперь должен либо:
+  - завершиться `written`
+  - либо выйти в явный transient terminal outcome с причиной
+    `attempt_duration_budget_exhausted` / retryable contention
+- systemd template получил `TimeoutStartSec=3min` как внешний guard поверх
+  process-level bounded attempt contract
+- повторно подтверждены проверки:
+  - `cargo test -p copybot-discovery --bin discovery_recent_raw_snapshot -- --nocapture`
+  - `cargo test -p copybot-storage --lib snapshot_into_path_with_policy_returns_retryable_busy_after_bounded_destination_lock -- --nocapture`
+  - `cargo test -p copybot-storage --lib snapshot_into_path_with_policy_returns_deferred_after_bounded_attempt_budget -- --nocapture`
+  - `bash tools/discovery_restore_drill_smoke_test.sh`
+- следующий meaningful шаг уже server-side rerun на live journal после rollout,
+  чтобы проверить не correctness, а фактический throughput / bounded completion
