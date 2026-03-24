@@ -75,6 +75,43 @@ raydium_program_ids = [
 ]
 pumpswap_program_ids = ["pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"]
 
+[program_history_gap_fill]
+source = "quicknode_blocks_rpc"
+# Production program-scoped gap-fill path. This uses the same proven QuickNode
+# block-history contract as validation, but it writes a standalone recent-raw
+# sqlite output for restore replay. It never writes into the active runtime DB.
+# Keep this source on the same QuickNode HTTP RPC family; do not silently swap
+# to wallet-history or another provider here.
+http_url = "https://YOUR_QUICKNODE_HOST.solana-mainnet.quiknode.pro/REPLACE_ON_SERVER/"
+request_timeout_ms = 20000
+# Keep the local limiter below QuickNode's observed 125 req/s ceiling. This
+# path is heavier than validation, so the repo default stays conservative.
+max_requests_per_second = 60
+retry_429_max_attempts = 6
+retry_429_backoff_ms = 500
+# `getBlocks` supports up to 1005 slots per request. Use the max to reduce
+# list-call pressure on live-sized bounded windows.
+block_batch_size = 1005
+block_time_probe_slots = 128
+# This budget is intentionally sized above the current live missing window so
+# the default operator path can attempt a full bounded scan instead of staged
+# sampling. If the incident window grows beyond this, the tool returns a bounded
+# `not_proven_due_to_scan_budget` outcome and withholds replayable rows.
+max_slots_to_scan = 1200000
+sampling_segments = 8
+# These are explicit internal cost ceilings for the expensive parse/write pass.
+# If they exhaust, the tool returns a terminal bounded not-proven outcome instead
+# of hanging until an external timeout kills the process.
+max_blocks_to_fetch = 120000
+max_candidate_transactions_to_parse = 240000
+output_dir = "state/discovery_restore/gap_fill_program_history"
+output_retention = 16
+raydium_program_ids = [
+  "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
+  "CPMMoo8L3F4NbTegBCKVN6DKuQh8fYfY4yR4j3uP9s5",
+]
+pumpswap_program_ids = ["pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"]
+
 [runtime_restore_ops]
 artifact_dir = "state/discovery_restore/artifacts"
 artifact_retention = 288

@@ -1774,3 +1774,60 @@ Practical completion update (`2026-03-24`):
 - snapshot path больше не является active blocker для incident closure
 - remaining open problem теперь уже не в snapshot, а в source/path ветке и
   выходе из `bootstrap_degraded`
+
+## 20. Program-scoped gap-fill batch (`2026-03-24`)
+
+Реализован новый production path:
+
+- добавлен отдельный bounded bin:
+  - `crates/discovery/src/bin/discovery_raw_gap_fill_program_history.rs`
+- source contract:
+  - только `QuickNode` / `quicknode_blocks_rpc`
+  - тот же program-scoped block-history path, который уже был доказан
+    validation-веткой
+  - hidden fallback на wallet-history / Helius не добавлялся
+- config contract:
+  - новый отдельный block `program_history_gap_fill`
+  - отдельные knobs для `request_timeout_ms`,
+    `max_requests_per_second`, `retry_429_*`,
+    `max_slots_to_scan`, `sampling_segments`,
+    `max_blocks_to_fetch`,
+    `max_candidate_transactions_to_parse`,
+    `output_dir`, `output_retention`
+- output contract:
+  - standalone recent-raw sqlite output
+  - latest + archive surface:
+    `state/discovery_restore/gap_fill_program_history`
+  - tool не пишет в active runtime DB
+- terminal semantics:
+  - `complete_sufficient_for_healthy_restore`
+  - `complete_but_insufficient_for_healthy_restore`
+  - `not_proven_due_to_scan_budget`
+  - `not_proven_due_to_cost_budget`
+  - `not_proven_due_to_provider_throttling`
+  - `non_viable_source_contract`
+  - incomplete outcomes intentionally withhold replayable rows, so partial
+    sampled output cannot fake `healthy/trading_ready`
+
+Regression / operator proof:
+
+- `cargo test -p copybot-config --lib`
+- `cargo test -p copybot-discovery --bin discovery_program_history_source_validate`
+- `cargo test -p copybot-discovery --bin discovery_raw_gap_fill_program_history`
+- `cargo test -p copybot-discovery --bin discovery_runtime_restore`
+- `bash tools/discovery_gap_fill_operator_contract_smoke_test.sh`
+
+Synthetic restore proof closed:
+
+- valid program-gap-fill output replayed together with recent journal can produce:
+  - `raw_coverage_satisfied = true`
+  - `runtime_mode = healthy`
+  - `verdict = trading_ready`
+- partial / budget-limited program-gap-fill remains non-trading-ready
+
+Статус аудита:
+
+- принят
+- новый program-scoped gap-fill path действительно отделен от active runtime DB
+- partial / bounded incomplete outcomes не materialize replayable rows
+- restore integration и operator contract подтверждены целевыми тестами

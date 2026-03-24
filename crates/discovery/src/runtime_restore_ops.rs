@@ -21,6 +21,10 @@ pub const GAP_FILL_HELIUS_ARCHIVE_PREFIX: &str = "discovery_raw_gap_fill_helius_
 pub const GAP_FILL_HELIUS_ARCHIVE_SUFFIX: &str = ".sqlite";
 pub const GAP_FILL_HELIUS_LATEST_DB_NAME: &str = "latest.sqlite";
 pub const GAP_FILL_HELIUS_LATEST_METADATA_NAME: &str = "latest.json";
+pub const PROGRAM_HISTORY_GAP_FILL_ARCHIVE_PREFIX: &str = "discovery_raw_gap_fill_program_history_";
+pub const PROGRAM_HISTORY_GAP_FILL_ARCHIVE_SUFFIX: &str = ".sqlite";
+pub const PROGRAM_HISTORY_GAP_FILL_LATEST_DB_NAME: &str = "latest.sqlite";
+pub const PROGRAM_HISTORY_GAP_FILL_LATEST_METADATA_NAME: &str = "latest.json";
 
 pub fn resolve_relative_to_config(config_path: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
@@ -131,6 +135,21 @@ pub fn gap_fill_helius_latest_metadata_path(dir: &Path) -> PathBuf {
     dir.join(GAP_FILL_HELIUS_LATEST_METADATA_NAME)
 }
 
+pub fn program_history_gap_fill_archive_path(dir: &Path, now: DateTime<Utc>) -> PathBuf {
+    dir.join(format!(
+        "{PROGRAM_HISTORY_GAP_FILL_ARCHIVE_PREFIX}{}{PROGRAM_HISTORY_GAP_FILL_ARCHIVE_SUFFIX}",
+        timestamp_slug(now)
+    ))
+}
+
+pub fn program_history_gap_fill_latest_path(dir: &Path) -> PathBuf {
+    dir.join(PROGRAM_HISTORY_GAP_FILL_LATEST_DB_NAME)
+}
+
+pub fn program_history_gap_fill_latest_metadata_path(dir: &Path) -> PathBuf {
+    dir.join(PROGRAM_HISTORY_GAP_FILL_LATEST_METADATA_NAME)
+}
+
 pub fn ensure_parent_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -235,8 +254,8 @@ fn temp_path(path: &Path) -> PathBuf {
 mod tests {
     use super::{
         artifact_archive_path, copy_atomic, gap_fill_archive_path, gap_fill_helius_archive_path,
-        journal_snapshot_archive_path, load_json, prune_rotated_archives,
-        resolve_relative_to_config, timestamp_slug, write_json_atomic,
+        journal_snapshot_archive_path, load_json, program_history_gap_fill_archive_path,
+        prune_rotated_archives, resolve_relative_to_config, timestamp_slug, write_json_atomic,
     };
     use anyhow::Result;
     use chrono::{DateTime, Utc};
@@ -278,6 +297,10 @@ mod tests {
         assert_eq!(
             gap_fill_helius_archive_path(Path::new("/tmp"), now),
             Path::new("/tmp/discovery_raw_gap_fill_helius_20260324T133000Z.sqlite")
+        );
+        assert_eq!(
+            program_history_gap_fill_archive_path(Path::new("/tmp"), now),
+            Path::new("/tmp/discovery_raw_gap_fill_program_history_20260324T133000Z.sqlite")
         );
         Ok(())
     }

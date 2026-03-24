@@ -35,6 +35,14 @@ Live config defaults in `ops/server_templates/live.server.toml.example`:
    - default Phase B cost budget knobs: `program_history_validation.phase_b_max_blocks_to_fetch`, `program_history_validation.phase_b_max_candidate_transactions_to_parse`, `program_history_validation.phase_b_parseable_rows_target`
    - Phase A positive means only `viable_enough_for_phase_b`; it is not final source proof and it is not restore-ready proof
    - this is validation-only; it does not restore coverage or enable trading by itself
+5. Program-scoped QuickNode gap-fill:
+   - config block: `program_history_gap_fill`
+   - required field: `program_history_gap_fill.http_url`
+   - runnable tool: `discovery_raw_gap_fill_program_history`
+   - default output: `/var/www/solana-copy-bot/state/discovery_restore/gap_fill_program_history/latest.sqlite`
+   - default metadata: `/var/www/solana-copy-bot/state/discovery_restore/gap_fill_program_history/latest.json`
+   - this is the production bounded program-history recovery path; it writes standalone recent-raw sqlite output only
+   - it does not write into the active runtime DB and it does not reuse the old runtime DB
 
 Systemd wiring:
 
@@ -469,6 +477,117 @@ If the verdict is `not_proven_due_to_provider_throttling`, tune the config in
 1. lower `program_history_validation.max_requests_per_second`
 2. raise `program_history_validation.retry_429_backoff_ms`
 3. keep `program_history_validation.max_requests_per_second <= 125`
+
+### Optional: Program-scoped QuickNode gap-fill after source proof
+
+Run this only after `discovery_program_history_source_validate --phase phase_b`
+already returned:
+
+1. `verdict = viable`
+2. `final_source_proof_completed = true`
+3. `next_step = program_scoped_gap_fill_batch`
+
+This tool derives the bounded missing window from the current restore state in
+`${TARGET_DB}` unless you pass `--window-start/--window-end` explicitly. It
+fetches only that bounded window, writes a standalone recent-raw sqlite, and
+never writes into the active live runtime DB.
+
+Resolve the QuickNode program-gap-fill URL from config:
+
+```bash
+PROGRAM_HISTORY_GAP_FILL_URL="$(awk -F'=' '
+  /^\s*\[/ {
+    in_section = ($0 == "[program_history_gap_fill]")
+  }
+  in_section {
+    left = $1
+    gsub(/[[:space:]]/, "", left)
+    if (left == "http_url") {
+      value = substr($0, index($0, "=") + 1)
+      sub(/[[:space:]]*#.*/, "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      gsub(/^"|"$/, "", value)
+      print value
+      exit
+    }
+  }
+' "${CONFIG_PATH}")"
+if [ -z "${PROGRAM_HISTORY_GAP_FILL_URL}" ]; then
+  echo "program_history_gap_fill.http_url is empty in ${CONFIG_PATH}; populate it or pass --http-url explicitly" >&2
+  exit 1
+fi
+```
+
+Run the bounded program-history gap-fill:
+
+```bash
+/var/www/solana-copy-bot/target/release/discovery_raw_gap_fill_program_history \
+  --config "${CONFIG_PATH}" \
+  --db-path "${TARGET_DB}" \
+  --http-url "${PROGRAM_HISTORY_GAP_FILL_URL}" \
+  --json | tee /tmp/discovery_raw_gap_fill_program_history.json
+```
+
+Fields to inspect:
+
+1. `verdict`
+2. `reason`
+3. `replayable_output`
+4. `sufficient_for_healthy_restore`
+5. `requested_window_start`
+6. `requested_window_end`
+7. `resolved_start_slot`
+8. `resolved_end_slot`
+9. `scanned_blocks`
+10. `scanned_transactions`
+11. `candidate_program_transactions`
+12. `parsed_candidate_transactions`
+13. `parsed_candidate_swaps`
+14. `inserted_rows`
+15. `rows_withheld_due_to_incomplete_outcome`
+16. `gap_fill_covered_since`
+17. `final_covered_since`
+18. `missing_segments`
+19. `early_stop_reason`
+
+Program-gap-fill verdict semantics:
+
+1. `complete_sufficient_for_healthy_restore`:
+   - the bounded scan completed
+   - replayable output was materialized
+   - the resulting coverage is sufficient to close the current restore gap if journal lineage is still intact
+2. `complete_but_insufficient_for_healthy_restore`:
+   - the bounded scan completed honestly
+   - replayable output exists
+   - but coverage still does not close the required recent-raw window
+3. `not_proven_due_to_scan_budget`:
+   - the bounded slot span exceeded the configured local scan budget
+   - the tool may still report parsed candidate counts from sampled windows
+   - but it withholds replayable rows, so this cannot fake a healthy restore
+4. `not_proven_due_to_cost_budget`:
+   - the expensive parse/write pass exhausted `program_history_gap_fill.max_blocks_to_fetch` or `program_history_gap_fill.max_candidate_transactions_to_parse`
+   - this is a terminal bounded not-proven outcome, not a hard provider rejection
+5. `not_proven_due_to_provider_throttling`:
+   - the tool respected its local limiter, retried 429s, and still exhausted provider throttling retries
+6. `non_viable_source_contract`:
+   - the source contract itself failed before the bounded gap-fill could complete
+
+If `replayable_output = true`, replay it into a fresh restore run:
+
+```bash
+/var/www/solana-copy-bot/target/release/discovery_runtime_restore \
+  --config "${CONFIG_PATH}" \
+  --artifact "${ARTIFACT_PATH}" \
+  --db-path "${TARGET_DB}" \
+  --journal-db-path "${APP_ROOT}/state/discovery_restore/recent_raw/latest.sqlite" \
+  --gap-fill-db-path "${APP_ROOT}/state/discovery_restore/gap_fill_program_history/latest.sqlite" \
+  --json | tee /tmp/discovery_runtime_restore_after_program_gap_fill.json
+```
+
+Only `complete_sufficient_for_healthy_restore` is the operator signal that this
+path should be expected to produce `raw_coverage_satisfied = true` and a final
+`trading_ready` restore verdict. `complete_but_insufficient_for_healthy_restore`
+is replayable, but it should still end fail-closed.
 
 ### 5. Decide service posture
 

@@ -107,6 +107,33 @@ fn program_history_validation_defaults_are_quicknode_first_and_bounded() {
 }
 
 #[test]
+fn program_history_gap_fill_defaults_are_quicknode_first_and_bounded() {
+    let gap_fill = ProgramHistoryGapFillConfig::default();
+    assert_eq!(gap_fill.source, "quicknode_blocks_rpc");
+    assert_eq!(
+        gap_fill.http_url,
+        "https://YOUR_QUICKNODE_HOST.solana-mainnet.quiknode.pro/REPLACE_ON_SERVER/"
+    );
+    assert_eq!(gap_fill.request_timeout_ms, 20_000);
+    assert_eq!(gap_fill.max_requests_per_second, 60);
+    assert_eq!(gap_fill.retry_429_max_attempts, 6);
+    assert_eq!(gap_fill.retry_429_backoff_ms, 500);
+    assert_eq!(gap_fill.block_batch_size, 1_005);
+    assert_eq!(gap_fill.block_time_probe_slots, 128);
+    assert_eq!(gap_fill.max_slots_to_scan, 1_200_000);
+    assert_eq!(gap_fill.sampling_segments, 8);
+    assert_eq!(gap_fill.max_blocks_to_fetch, 120_000);
+    assert_eq!(gap_fill.max_candidate_transactions_to_parse, 240_000);
+    assert_eq!(
+        gap_fill.output_dir,
+        "state/discovery_restore/gap_fill_program_history"
+    );
+    assert_eq!(gap_fill.output_retention, 16);
+    assert_eq!(gap_fill.raydium_program_ids.len(), 2);
+    assert_eq!(gap_fill.pumpswap_program_ids.len(), 1);
+}
+
+#[test]
 fn runtime_restore_ops_defaults_are_explicit_and_operational() {
     let ops = RuntimeRestoreOpsConfig::default();
     assert_eq!(ops.artifact_dir, "state/discovery_restore/artifacts");
@@ -180,6 +207,23 @@ sampling_segments = 6
 block_time_probe_slots = 64
 raydium_program_ids = ["raydium-a", "raydium-b"]
 pumpswap_program_ids = ["pump-a"]
+
+[program_history_gap_fill]
+http_url = "https://quicknode-gap-fill.example/?api-key=test"
+request_timeout_ms = 13000
+max_requests_per_second = 60
+retry_429_max_attempts = 6
+retry_429_backoff_ms = 500
+block_batch_size = 1005
+block_time_probe_slots = 96
+max_slots_to_scan = 1081575
+sampling_segments = 6
+max_blocks_to_fetch = 250000
+max_candidate_transactions_to_parse = 300000
+output_dir = "restore/gap-fill-program-history"
+output_retention = 5
+raydium_program_ids = ["raydium-c"]
+pumpswap_program_ids = ["pump-b"]
 
 [runtime_restore_ops]
 artifact_dir = "restore/artifacts"
@@ -274,6 +318,38 @@ metric_snapshot_interval_seconds = 1800
                 config.program_history_validation.pumpswap_program_ids,
                 vec!["pump-a".to_string()]
             );
+            assert_eq!(
+                config.program_history_gap_fill.http_url,
+                "https://quicknode-gap-fill.example/?api-key=test"
+            );
+            assert_eq!(config.program_history_gap_fill.request_timeout_ms, 13_000);
+            assert_eq!(config.program_history_gap_fill.max_requests_per_second, 60);
+            assert_eq!(config.program_history_gap_fill.retry_429_max_attempts, 6);
+            assert_eq!(config.program_history_gap_fill.retry_429_backoff_ms, 500);
+            assert_eq!(config.program_history_gap_fill.block_batch_size, 1_005);
+            assert_eq!(config.program_history_gap_fill.block_time_probe_slots, 96);
+            assert_eq!(config.program_history_gap_fill.max_slots_to_scan, 1_081_575);
+            assert_eq!(config.program_history_gap_fill.sampling_segments, 6);
+            assert_eq!(config.program_history_gap_fill.max_blocks_to_fetch, 250_000);
+            assert_eq!(
+                config
+                    .program_history_gap_fill
+                    .max_candidate_transactions_to_parse,
+                300_000
+            );
+            assert_eq!(
+                config.program_history_gap_fill.output_dir,
+                "restore/gap-fill-program-history"
+            );
+            assert_eq!(config.program_history_gap_fill.output_retention, 5);
+            assert_eq!(
+                config.program_history_gap_fill.raydium_program_ids,
+                vec!["raydium-c".to_string()]
+            );
+            assert_eq!(
+                config.program_history_gap_fill.pumpswap_program_ids,
+                vec!["pump-b".to_string()]
+            );
             assert_eq!(config.runtime_restore_ops.artifact_dir, "restore/artifacts");
             assert_eq!(config.runtime_restore_ops.artifact_retention, 32);
             assert_eq!(config.runtime_restore_ops.artifact_cadence_minutes, 5);
@@ -367,6 +443,31 @@ fn live_server_template_exposes_recent_raw_gap_fill_contract() {
         1
     );
     assert_eq!(config.program_history_validation.sampling_segments, 8);
+    assert_eq!(
+        config.program_history_gap_fill.source,
+        "quicknode_blocks_rpc"
+    );
+    assert!(
+        !config.program_history_gap_fill.http_url.trim().is_empty(),
+        "template must expose a non-empty program_history_gap_fill.http_url placeholder"
+    );
+    assert_eq!(config.program_history_gap_fill.max_requests_per_second, 60);
+    assert_eq!(config.program_history_gap_fill.retry_429_max_attempts, 6);
+    assert_eq!(config.program_history_gap_fill.retry_429_backoff_ms, 500);
+    assert_eq!(config.program_history_gap_fill.block_batch_size, 1_005);
+    assert_eq!(config.program_history_gap_fill.max_slots_to_scan, 1_200_000);
+    assert_eq!(config.program_history_gap_fill.sampling_segments, 8);
+    assert_eq!(config.program_history_gap_fill.max_blocks_to_fetch, 120_000);
+    assert_eq!(
+        config
+            .program_history_gap_fill
+            .max_candidate_transactions_to_parse,
+        240_000
+    );
+    assert_eq!(
+        config.program_history_gap_fill.output_dir,
+        "state/discovery_restore/gap_fill_program_history"
+    );
 }
 
 #[test]
@@ -504,6 +605,55 @@ metric_snapshot_interval_seconds = 1800
                 .to_string();
             assert!(
                 err.contains("program_history_validation.retry_429_backoff_ms (0) must be >= 1"),
+                "unexpected error: {err}"
+            );
+        },
+    );
+}
+
+#[test]
+fn load_from_path_rejects_invalid_program_history_gap_fill_bounds() {
+    with_temp_config_file(
+        r#"
+[program_history_gap_fill]
+block_batch_size = 1006
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("oversized program history gap-fill block batch size must fail")
+                .to_string();
+            assert!(
+                err.contains(
+                    "program_history_gap_fill.block_batch_size (1006) must be between 1 and 1005"
+                ),
+                "unexpected error: {err}"
+            );
+        },
+    );
+}
+
+#[test]
+fn load_from_path_rejects_program_history_gap_fill_sampling_segments_above_budget() {
+    with_temp_config_file(
+        r#"
+[program_history_gap_fill]
+max_slots_to_scan = 4
+sampling_segments = 8
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("oversized program history gap-fill sampling segments must fail")
+                .to_string();
+            assert!(
+                err.contains(
+                    "program_history_gap_fill.sampling_segments (8) must be <= program_history_gap_fill.max_slots_to_scan (4)"
+                ),
                 "unexpected error: {err}"
             );
         },

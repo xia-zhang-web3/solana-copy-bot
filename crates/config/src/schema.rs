@@ -11,6 +11,7 @@ pub struct AppConfig {
     pub recent_raw_gap_fill: RecentRawGapFillConfig,
     pub recent_raw_gap_fill_helius: RecentRawGapFillHeliusConfig,
     pub program_history_validation: ProgramHistoryValidationConfig,
+    pub program_history_gap_fill: ProgramHistoryGapFillConfig,
     pub runtime_restore_ops: RuntimeRestoreOpsConfig,
     pub history_retention: HistoryRetentionConfig,
     pub ingestion: IngestionConfig,
@@ -425,6 +426,54 @@ impl Default for ProgramHistoryValidationConfig {
             max_slots_to_scan: 20_000,
             sampling_segments: 8,
             block_time_probe_slots: 128,
+            raydium_program_ids: vec![
+                "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string(),
+                "CPMMoo8L3F4NbTegBCKVN6DKuQh8fYfY4yR4j3uP9s5".to_string(),
+            ],
+            pumpswap_program_ids: vec!["pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA".to_string()],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ProgramHistoryGapFillConfig {
+    pub source: String,
+    pub http_url: String,
+    pub request_timeout_ms: u64,
+    pub max_requests_per_second: usize,
+    pub retry_429_max_attempts: usize,
+    pub retry_429_backoff_ms: u64,
+    pub block_batch_size: usize,
+    pub block_time_probe_slots: u64,
+    pub max_slots_to_scan: usize,
+    pub sampling_segments: usize,
+    pub max_blocks_to_fetch: usize,
+    pub max_candidate_transactions_to_parse: usize,
+    pub output_dir: String,
+    pub output_retention: usize,
+    pub raydium_program_ids: Vec<String>,
+    pub pumpswap_program_ids: Vec<String>,
+}
+
+impl Default for ProgramHistoryGapFillConfig {
+    fn default() -> Self {
+        Self {
+            source: "quicknode_blocks_rpc".to_string(),
+            http_url: "https://YOUR_QUICKNODE_HOST.solana-mainnet.quiknode.pro/REPLACE_ON_SERVER/"
+                .to_string(),
+            request_timeout_ms: 20_000,
+            max_requests_per_second: 60,
+            retry_429_max_attempts: 6,
+            retry_429_backoff_ms: 500,
+            block_batch_size: 1_005,
+            block_time_probe_slots: 128,
+            max_slots_to_scan: 1_200_000,
+            sampling_segments: 8,
+            max_blocks_to_fetch: 120_000,
+            max_candidate_transactions_to_parse: 240_000,
+            output_dir: "state/discovery_restore/gap_fill_program_history".to_string(),
+            output_retention: 16,
             raydium_program_ids: vec![
                 "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string(),
                 "CPMMoo8L3F4NbTegBCKVN6DKuQh8fYfY4yR4j3uP9s5".to_string(),

@@ -789,6 +789,7 @@ fn validate_loaded_config(config: &AppConfig) -> Result<()> {
     validate_recent_raw_gap_fill_config(config)?;
     validate_recent_raw_gap_fill_helius_config(config)?;
     validate_program_history_validation_config(config)?;
+    validate_program_history_gap_fill_config(config)?;
     validate_runtime_restore_ops_config(config)?;
     validate_discovery_aggregate_activation_config(config)?;
     validate_execution_exact_sizing_config(config)?;
@@ -1096,6 +1097,111 @@ fn validate_program_history_validation_config(config: &AppConfig) -> Result<()> 
     if validation.pumpswap_program_ids.is_empty() {
         return Err(anyhow!(
             "program_history_validation.pumpswap_program_ids must contain at least one program id"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_program_history_gap_fill_config(config: &AppConfig) -> Result<()> {
+    let gap_fill = &config.program_history_gap_fill;
+    let source = gap_fill.source.trim();
+    if source.is_empty() {
+        return Err(anyhow!("program_history_gap_fill.source cannot be empty"));
+    }
+    if source != "quicknode_blocks_rpc" {
+        return Err(anyhow!(
+            "program_history_gap_fill.source ({source}) must be quicknode_blocks_rpc"
+        ));
+    }
+    if gap_fill.http_url.trim().is_empty() {
+        return Err(anyhow!("program_history_gap_fill.http_url cannot be empty"));
+    }
+    if gap_fill.request_timeout_ms == 0 {
+        return Err(anyhow!(
+            "program_history_gap_fill.request_timeout_ms ({}) must be >= 1",
+            gap_fill.request_timeout_ms
+        ));
+    }
+    if gap_fill.max_requests_per_second == 0 || gap_fill.max_requests_per_second > 125 {
+        return Err(anyhow!(
+            "program_history_gap_fill.max_requests_per_second ({}) must be between 1 and 125",
+            gap_fill.max_requests_per_second
+        ));
+    }
+    if gap_fill.retry_429_max_attempts == 0 {
+        return Err(anyhow!(
+            "program_history_gap_fill.retry_429_max_attempts ({}) must be >= 1",
+            gap_fill.retry_429_max_attempts
+        ));
+    }
+    if gap_fill.retry_429_backoff_ms == 0 {
+        return Err(anyhow!(
+            "program_history_gap_fill.retry_429_backoff_ms ({}) must be >= 1",
+            gap_fill.retry_429_backoff_ms
+        ));
+    }
+    if gap_fill.block_batch_size == 0 || gap_fill.block_batch_size > 1_005 {
+        return Err(anyhow!(
+            "program_history_gap_fill.block_batch_size ({}) must be between 1 and 1005",
+            gap_fill.block_batch_size
+        ));
+    }
+    if gap_fill.block_time_probe_slots == 0 {
+        return Err(anyhow!(
+            "program_history_gap_fill.block_time_probe_slots ({}) must be >= 1",
+            gap_fill.block_time_probe_slots
+        ));
+    }
+    if gap_fill.max_slots_to_scan == 0 {
+        return Err(anyhow!(
+            "program_history_gap_fill.max_slots_to_scan ({}) must be >= 1",
+            gap_fill.max_slots_to_scan
+        ));
+    }
+    if gap_fill.sampling_segments == 0 {
+        return Err(anyhow!(
+            "program_history_gap_fill.sampling_segments ({}) must be >= 1",
+            gap_fill.sampling_segments
+        ));
+    }
+    if gap_fill.sampling_segments > gap_fill.max_slots_to_scan {
+        return Err(anyhow!(
+            "program_history_gap_fill.sampling_segments ({}) must be <= program_history_gap_fill.max_slots_to_scan ({})",
+            gap_fill.sampling_segments,
+            gap_fill.max_slots_to_scan
+        ));
+    }
+    if gap_fill.max_blocks_to_fetch == 0 {
+        return Err(anyhow!(
+            "program_history_gap_fill.max_blocks_to_fetch ({}) must be >= 1",
+            gap_fill.max_blocks_to_fetch
+        ));
+    }
+    if gap_fill.max_candidate_transactions_to_parse == 0 {
+        return Err(anyhow!(
+            "program_history_gap_fill.max_candidate_transactions_to_parse ({}) must be >= 1",
+            gap_fill.max_candidate_transactions_to_parse
+        ));
+    }
+    if gap_fill.output_dir.trim().is_empty() {
+        return Err(anyhow!(
+            "program_history_gap_fill.output_dir cannot be empty"
+        ));
+    }
+    if gap_fill.output_retention == 0 {
+        return Err(anyhow!(
+            "program_history_gap_fill.output_retention ({}) must be >= 1",
+            gap_fill.output_retention
+        ));
+    }
+    if gap_fill.raydium_program_ids.is_empty() {
+        return Err(anyhow!(
+            "program_history_gap_fill.raydium_program_ids must contain at least one program id"
+        ));
+    }
+    if gap_fill.pumpswap_program_ids.is_empty() {
+        return Err(anyhow!(
+            "program_history_gap_fill.pumpswap_program_ids must contain at least one program id"
         ));
     }
     Ok(())
