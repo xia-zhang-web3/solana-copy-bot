@@ -786,6 +786,7 @@ fn validate_loaded_config(config: &AppConfig) -> Result<()> {
     validate_shadow_quality_thresholds(config)?;
     validate_discovery_storage_mitigation_config(config)?;
     validate_recent_raw_journal_config(config)?;
+    validate_recent_raw_gap_fill_config(config)?;
     validate_runtime_restore_ops_config(config)?;
     validate_discovery_aggregate_activation_config(config)?;
     validate_execution_exact_sizing_config(config)?;
@@ -882,6 +883,47 @@ fn validate_recent_raw_journal_config(config: &AppConfig) -> Result<()> {
         return Err(anyhow!(
             "recent_raw_journal.replay_batch_size ({}) must be >= 1",
             journal.replay_batch_size
+        ));
+    }
+    Ok(())
+}
+
+fn validate_recent_raw_gap_fill_config(config: &AppConfig) -> Result<()> {
+    let gap_fill = &config.recent_raw_gap_fill;
+    let source = gap_fill.source.trim();
+    if source.is_empty() {
+        return Err(anyhow!("recent_raw_gap_fill.source cannot be empty"));
+    }
+    if source != "helius_rpc" {
+        return Err(anyhow!(
+            "recent_raw_gap_fill.source ({source}) must be helius_rpc"
+        ));
+    }
+    if gap_fill.output_dir.trim().is_empty() {
+        return Err(anyhow!("recent_raw_gap_fill.output_dir cannot be empty"));
+    }
+    if gap_fill.output_retention == 0 {
+        return Err(anyhow!(
+            "recent_raw_gap_fill.output_retention ({}) must be >= 1",
+            gap_fill.output_retention
+        ));
+    }
+    if gap_fill.request_timeout_ms == 0 {
+        return Err(anyhow!(
+            "recent_raw_gap_fill.request_timeout_ms ({}) must be >= 1",
+            gap_fill.request_timeout_ms
+        ));
+    }
+    if gap_fill.signature_page_size == 0 || gap_fill.signature_page_size > 1_000 {
+        return Err(anyhow!(
+            "recent_raw_gap_fill.signature_page_size ({}) must be between 1 and 1000",
+            gap_fill.signature_page_size
+        ));
+    }
+    if gap_fill.max_signature_pages_per_wallet == 0 {
+        return Err(anyhow!(
+            "recent_raw_gap_fill.max_signature_pages_per_wallet ({}) must be >= 1",
+            gap_fill.max_signature_pages_per_wallet
         ));
     }
     Ok(())

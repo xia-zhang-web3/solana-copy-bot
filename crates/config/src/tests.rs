@@ -52,6 +52,18 @@ fn recent_raw_journal_defaults_are_explicit_and_bounded() {
 }
 
 #[test]
+fn recent_raw_gap_fill_defaults_are_explicit_and_bounded() {
+    let gap_fill = RecentRawGapFillConfig::default();
+    assert_eq!(gap_fill.source, "helius_rpc");
+    assert_eq!(gap_fill.helius_http_url, "");
+    assert_eq!(gap_fill.output_dir, "state/discovery_restore/gap_fill");
+    assert_eq!(gap_fill.output_retention, 16);
+    assert_eq!(gap_fill.request_timeout_ms, 20_000);
+    assert_eq!(gap_fill.signature_page_size, 1_000);
+    assert_eq!(gap_fill.max_signature_pages_per_wallet, 64);
+}
+
+#[test]
 fn runtime_restore_ops_defaults_are_explicit_and_operational() {
     let ops = RuntimeRestoreOpsConfig::default();
     assert_eq!(ops.artifact_dir, "state/discovery_restore/artifacts");
@@ -91,6 +103,14 @@ fn parse_from_path_uses_disabled_history_retention_for_legacy_config_without_blo
 fn parse_from_path_reads_runtime_restore_ops_block() {
     with_temp_config_file(
         r#"
+[recent_raw_gap_fill]
+helius_http_url = "https://gap-fill.helius.example/?api-key=test"
+output_dir = "restore/gap-fill"
+output_retention = 8
+request_timeout_ms = 15000
+signature_page_size = 500
+max_signature_pages_per_wallet = 12
+
 [runtime_restore_ops]
 artifact_dir = "restore/artifacts"
 artifact_retention = 32
@@ -105,6 +125,18 @@ metric_snapshot_interval_seconds = 1800
 "#,
         |config_path| {
             let config = load_from_path(config_path).expect("config must parse");
+            assert_eq!(
+                config.recent_raw_gap_fill.helius_http_url,
+                "https://gap-fill.helius.example/?api-key=test"
+            );
+            assert_eq!(config.recent_raw_gap_fill.output_dir, "restore/gap-fill");
+            assert_eq!(config.recent_raw_gap_fill.output_retention, 8);
+            assert_eq!(config.recent_raw_gap_fill.request_timeout_ms, 15_000);
+            assert_eq!(config.recent_raw_gap_fill.signature_page_size, 500);
+            assert_eq!(
+                config.recent_raw_gap_fill.max_signature_pages_per_wallet,
+                12
+            );
             assert_eq!(config.runtime_restore_ops.artifact_dir, "restore/artifacts");
             assert_eq!(config.runtime_restore_ops.artifact_retention, 32);
             assert_eq!(config.runtime_restore_ops.artifact_cadence_minutes, 5);
@@ -120,6 +152,46 @@ metric_snapshot_interval_seconds = 1800
             assert_eq!(
                 config.runtime_restore_ops.drill_workspace_dir,
                 "restore/drills"
+            );
+        },
+    );
+}
+
+#[test]
+fn live_server_template_exposes_recent_raw_gap_fill_contract() {
+    let template_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../ops/server_templates/live.server.toml.example");
+    let config = load_from_path(&template_path).expect("live server template must parse");
+    assert_eq!(config.recent_raw_gap_fill.source, "helius_rpc");
+    assert!(
+        !config.recent_raw_gap_fill.helius_http_url.trim().is_empty(),
+        "template must expose a non-empty recent_raw_gap_fill.helius_http_url placeholder"
+    );
+    assert_eq!(
+        config.recent_raw_gap_fill.output_dir,
+        "state/discovery_restore/gap_fill"
+    );
+}
+
+#[test]
+fn load_from_path_rejects_invalid_recent_raw_gap_fill_bounds() {
+    with_temp_config_file(
+        r#"
+[recent_raw_gap_fill]
+signature_page_size = 1001
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("oversized signature page must fail")
+                .to_string();
+            assert!(
+                err.contains(
+                    "recent_raw_gap_fill.signature_page_size (1001) must be between 1 and 1000"
+                ),
+                "unexpected error: {err}"
             );
         },
     );

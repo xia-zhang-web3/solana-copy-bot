@@ -205,7 +205,9 @@ The current conclusions are:
    - live `runtime artifact` baseline exists
    - live `recent raw journal` sidecar exists
    - a fresh-DB restore drill from those surfaces completed successfully
-   - the drill verdict is still only `bootstrap_degraded`, not `healthy`
+   - live was then cut over onto a new fresh runtime DB restored from those surfaces
+   - the old `live_copybot.db` was removed from the active path and then deleted from disk
+   - the resulting live verdict is still only `bootstrap_degraded`, not `healthy`
 6. what remains open right now:
    - runtime has not yet exited from `bootstrap_degraded` to `healthy`
    - raw coverage is still insufficient for a real trading-ready restore
@@ -252,6 +254,10 @@ Recommended operational posture now:
   - `solana-copy-bot.service -> active`
   - `copybot-adapter.service -> active`
   - `copybot-executor.service -> active`
+- Current live runtime DB:
+  - active runtime DB path is now
+    `/var/www/solana-copy-bot/state/live_runtime_20260324T134339Z.db`
+  - legacy `/var/www/solana-copy-bot/state/live_copybot.db` was deleted from disk
 - Current live discovery state:
   - `runtime_state = bootstrap_degraded_publication_truth`
   - `runtime_mode = bootstrap_degraded`
@@ -278,12 +284,13 @@ Recommended operational posture now:
   - `journal_available = true`
   - `journal_replayed = true`
   - `journal_covers_artifact_cursor = true`
-  - `replayed_rows = 61887`
+  - the later live cutover replayed `534244` rows into the fresh runtime DB
   - `raw_coverage_satisfied = false`
   - final verdict = `bootstrap_degraded`
 - Business meaning of the current server state:
   - the dead multi-day replay path is no longer the active plan
-  - discovery is alive and holding `15` wallets instead of zero
+  - discovery is alive on a new fresh runtime DB and holding `15` wallets instead of zero
+  - the old `live_copybot.db` has been fully removed and is no longer a dependency
   - copy trading / shadow trading are still not opening positions
   - the server is stabilized, but the incident is not yet closed in the
     trading-ready sense

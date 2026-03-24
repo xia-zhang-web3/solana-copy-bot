@@ -8,6 +8,7 @@ pub struct AppConfig {
     pub system: SystemConfig,
     pub sqlite: SqliteConfig,
     pub recent_raw_journal: RecentRawJournalConfig,
+    pub recent_raw_gap_fill: RecentRawGapFillConfig,
     pub runtime_restore_ops: RuntimeRestoreOpsConfig,
     pub history_retention: HistoryRetentionConfig,
     pub ingestion: IngestionConfig,
@@ -325,6 +326,32 @@ impl Default for RecentRawJournalConfig {
             retention_safety_buffer_days: 2,
             writer_queue_capacity_batches: 64,
             replay_batch_size: 1_024,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct RecentRawGapFillConfig {
+    pub source: String,
+    pub helius_http_url: String,
+    pub output_dir: String,
+    pub output_retention: usize,
+    pub request_timeout_ms: u64,
+    pub signature_page_size: usize,
+    pub max_signature_pages_per_wallet: usize,
+}
+
+impl Default for RecentRawGapFillConfig {
+    fn default() -> Self {
+        Self {
+            source: "helius_rpc".to_string(),
+            helius_http_url: String::new(),
+            output_dir: "state/discovery_restore/gap_fill".to_string(),
+            output_retention: 16,
+            request_timeout_ms: 20_000,
+            signature_page_size: 1_000,
+            max_signature_pages_per_wallet: 64,
         }
     }
 }

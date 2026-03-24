@@ -221,8 +221,42 @@ fn render_human(config_path: &Path, db_path: &Path, status: &DiscoveryOperatorSt
             )
         ),
         format!(
+            "recent_raw_gap_fill_replayed={}",
+            status.recent_raw_restore.gap_fill_replayed
+        ),
+        format!(
+            "recent_raw_gap_fill_covered_since={}",
+            format_optional_ts(status.recent_raw_restore.gap_fill_covered_since.as_ref())
+        ),
+        format!(
+            "recent_raw_gap_fill_covered_through_cursor={}",
+            format_optional_cursor(
+                status
+                    .recent_raw_restore
+                    .gap_fill_covered_through_cursor
+                    .as_ref()
+            )
+        ),
+        format!(
+            "recent_raw_effective_covered_since={}",
+            format_optional_ts(status.recent_raw_restore.effective_covered_since.as_ref())
+        ),
+        format!(
+            "recent_raw_effective_covered_through_cursor={}",
+            format_optional_cursor(
+                status
+                    .recent_raw_restore
+                    .effective_covered_through_cursor
+                    .as_ref()
+            )
+        ),
+        format!(
             "recent_raw_artifact_runtime_cursor={}",
             format_optional_cursor(status.recent_raw_restore.artifact_runtime_cursor.as_ref())
+        ),
+        format!(
+            "recent_raw_gap_fill_replayed_rows={}",
+            status.recent_raw_restore.gap_fill_replayed_rows
         ),
         format!(
             "recent_raw_replayed_rows={}",
@@ -486,6 +520,19 @@ mod tests {
                     slot: 77,
                     signature: "recent-raw-covered".to_string(),
                 }),
+                gap_fill_replayed: true,
+                gap_fill_covered_since: Some(now - Duration::days(8)),
+                gap_fill_covered_through_cursor: Some(copybot_storage::DiscoveryRuntimeCursor {
+                    ts_utc: now - Duration::days(7),
+                    slot: 70,
+                    signature: "gap-fill-covered".to_string(),
+                }),
+                effective_covered_since: Some(now - Duration::days(8)),
+                effective_covered_through_cursor: Some(copybot_storage::DiscoveryRuntimeCursor {
+                    ts_utc: now - Duration::minutes(1),
+                    slot: 77,
+                    signature: "recent-raw-covered".to_string(),
+                }),
                 artifact_runtime_cursor: Some(copybot_storage::DiscoveryRuntimeCursor {
                     ts_utc: now - Duration::minutes(2),
                     slot: 76,
@@ -493,6 +540,7 @@ mod tests {
                 }),
                 journal_covers_artifact_cursor: true,
                 raw_coverage_satisfied: true,
+                gap_fill_replayed_rows: 11,
                 replayed_rows: 42,
                 reason: Some("recent_raw_journal_replay_completed".to_string()),
                 replay_started_at: Some(now - Duration::minutes(1)),

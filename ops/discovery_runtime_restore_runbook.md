@@ -15,6 +15,11 @@ Live config defaults in `ops/server_templates/live.server.toml.example`:
    - latest snapshot: `/var/www/solana-copy-bot/state/discovery_restore/recent_raw/latest.sqlite`
    - latest metadata: `/var/www/solana-copy-bot/state/discovery_restore/recent_raw/latest.json`
    - cadence: `runtime_restore_ops.journal_snapshot_cadence_minutes`
+3. Bounded gap-fill source:
+   - config block: `recent_raw_gap_fill`
+   - required field: `recent_raw_gap_fill.helius_http_url`
+   - live server contract: populate it in `/etc/solana-copy-bot/live.server.toml` or pass `--helius-http-url` explicitly during the incident run
+   - default gap-fill output: `/var/www/solana-copy-bot/state/discovery_restore/gap_fill/latest.sqlite`
 
 Systemd wiring:
 
@@ -40,23 +45,109 @@ sudo systemctl stop solana-copy-bot.service
 ### 2. Archive the broken runtime DB
 
 ```bash
+CONFIG_PATH=/etc/solana-copy-bot/live.server.toml
+APP_ROOT=/var/www/solana-copy-bot
+cfg_value() {
+  local section="$1"
+  local key="$2"
+  awk -F'=' -v section="[$section]" -v key="$key" '
+    /^\s*\[/ {
+      in_section = ($0 == section)
+    }
+    in_section {
+      left = $1
+      gsub(/[[:space:]]/, "", left)
+      if (left == key) {
+        value = substr($0, index($0, "=") + 1)
+        sub(/[[:space:]]*#.*/, "", value)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+        gsub(/^"|"$/, "", value)
+        print value
+        exit
+      }
+    }
+  ' "${CONFIG_PATH}"
+}
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
-cd /var/www/solana-copy-bot/state
+cd "${APP_ROOT}/state"
 mkdir -p broken
-mv live_copybot.db "broken/live_copybot.db.${ts}" || true
-mv live_copybot.db-wal "broken/live_copybot.db-wal.${ts}" || true
-mv live_copybot.db-shm "broken/live_copybot.db-shm.${ts}" || true
+ACTIVE_DB_RAW="$(cfg_value sqlite path)"
+ACTIVE_DB="$(python3 - "$APP_ROOT" "$ACTIVE_DB_RAW" <<'PY'
+import pathlib
+import sys
+
+app_root = pathlib.Path(sys.argv[1])
+raw_path = pathlib.Path(sys.argv[2])
+if not raw_path.is_absolute():
+    raw_path = (app_root / raw_path).resolve()
+print(raw_path)
+PY
+)"
+echo "archiving configured sqlite.path=${ACTIVE_DB}"
+mv "${ACTIVE_DB}" "broken/$(basename "${ACTIVE_DB}").${ts}" || true
+mv "${ACTIVE_DB}-wal" "broken/$(basename "${ACTIVE_DB}").wal.${ts}" || true
+mv "${ACTIVE_DB}-shm" "broken/$(basename "${ACTIVE_DB}").shm.${ts}" || true
+TARGET_DB="${APP_ROOT}/state/live_runtime_${ts}.db"
 ```
 
 ### 3. Restore into a fresh runtime DB
 
 ```bash
+CONFIG_PATH=/etc/solana-copy-bot/live.server.toml
+APP_ROOT=/var/www/solana-copy-bot
 /var/www/solana-copy-bot/target/release/discovery_runtime_restore \
-  --config /etc/solana-copy-bot/live.server.toml \
-  --artifact /var/www/solana-copy-bot/state/discovery_restore/artifacts/latest.json \
-  --db-path /var/www/solana-copy-bot/state/live_copybot.db \
-  --journal-db-path /var/www/solana-copy-bot/state/discovery_restore/recent_raw/latest.sqlite \
+  --config "${CONFIG_PATH}" \
+  --artifact "${APP_ROOT}/state/discovery_restore/artifacts/latest.json" \
+  --db-path "${TARGET_DB}" \
+  --journal-db-path "${APP_ROOT}/state/discovery_restore/recent_raw/latest.sqlite" \
   --json | tee /tmp/discovery_runtime_restore.json
+```
+
+If `raw_coverage_satisfied=false` but `journal_covers_artifact_cursor=true`, run bounded gap-fill:
+
+```bash
+GAP_FILL_SOURCE_URL="$(python3 - "$CONFIG_PATH" <<'PY'
+  awk -F'=' '
+    /^\s*\[/ {
+      in_section = ($0 == "[recent_raw_gap_fill]")
+    }
+    in_section {
+      left = $1
+      gsub(/[[:space:]]/, "", left)
+      if (left == "helius_http_url") {
+        value = substr($0, index($0, "=") + 1)
+        sub(/[[:space:]]*#.*/, "", value)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+        gsub(/^"|"$/, "", value)
+        print value
+        exit
+      }
+    }
+  ' "${CONFIG_PATH}"
+)"
+if [ -z "${GAP_FILL_SOURCE_URL}" ]; then
+  echo "recent_raw_gap_fill.helius_http_url is empty in ${CONFIG_PATH}; populate it or pass --helius-http-url explicitly" >&2
+  exit 1
+fi
+/var/www/solana-copy-bot/target/release/discovery_raw_gap_fill \
+  --config "${CONFIG_PATH}" \
+  --db-path "${TARGET_DB}" \
+  --helius-http-url "${GAP_FILL_SOURCE_URL}" \
+  --json | tee /tmp/discovery_raw_gap_fill.json
+```
+
+Then rerun restore into a new fresh target with the produced gap-fill journal:
+
+```bash
+TARGET_DB_FILLED="${APP_ROOT}/state/live_runtime_${ts}_gapfill.db"
+/var/www/solana-copy-bot/target/release/discovery_runtime_restore \
+  --config "${CONFIG_PATH}" \
+  --artifact "${APP_ROOT}/state/discovery_restore/artifacts/latest.json" \
+  --db-path "${TARGET_DB_FILLED}" \
+  --journal-db-path "${APP_ROOT}/state/discovery_restore/recent_raw/latest.sqlite" \
+  --gap-fill-db-path "${APP_ROOT}/state/discovery_restore/gap_fill/latest.sqlite" \
+  --json | tee /tmp/discovery_runtime_restore.json
+TARGET_DB="${TARGET_DB_FILLED}"
 ```
 
 Inspect the restore verdict:
@@ -82,8 +173,8 @@ PY
 
 ```bash
 /var/www/solana-copy-bot/target/release/discovery_status \
-  --config /etc/solana-copy-bot/live.server.toml \
-  --db-path /var/www/solana-copy-bot/state/live_copybot.db \
+  --config "${CONFIG_PATH}" \
+  --db-path "${TARGET_DB}" \
   --json | tee /tmp/discovery_status_after_restore.json
 ```
 

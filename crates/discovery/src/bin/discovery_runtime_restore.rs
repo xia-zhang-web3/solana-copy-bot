@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use tempfile::tempdir;
 
-const USAGE: &str = "usage: discovery_runtime_restore --config <path> --artifact <path> [--db-path <path>] [--journal-db-path <path>] [--bootstrap-degraded] [--json] [--now <rfc3339>]";
+const USAGE: &str = "usage: discovery_runtime_restore --config <path> --artifact <path> [--db-path <path>] [--journal-db-path <path>] [--gap-fill-db-path <path>] [--bootstrap-degraded] [--json] [--now <rfc3339>]";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -39,6 +39,7 @@ struct Config {
     artifact_path: PathBuf,
     db_path: Option<PathBuf>,
     journal_db_path: Option<PathBuf>,
+    gap_fill_db_path: Option<PathBuf>,
     bootstrap_degraded: bool,
     json: bool,
     now: DateTime<Utc>,
@@ -48,10 +49,29 @@ struct Config {
 struct RestoreOutput {
     db_path: String,
     journal_db_path: String,
+    gap_fill_db_path: Option<String>,
     freshness: DiscoveryRuntimeArtifactFreshnessAssessment,
-    replay: RecentRawJournalReplaySummary,
+    replay: RestoreReplaySummary,
     verdict: DiscoveryRuntimeRestoreVerdict,
     operator_status: DiscoveryOperatorStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RestoreReplaySummary {
+    required_window_start: DateTime<Utc>,
+    artifact_runtime_cursor: DiscoveryRuntimeCursor,
+    journal_available: bool,
+    journal_covered_since: Option<DateTime<Utc>>,
+    journal_covered_through_cursor: Option<DiscoveryRuntimeCursor>,
+    journal_covers_artifact_cursor: bool,
+    gap_fill_replayed: bool,
+    gap_fill_covered_since: Option<DateTime<Utc>>,
+    gap_fill_covered_through_cursor: Option<DiscoveryRuntimeCursor>,
+    effective_covered_since: Option<DateTime<Utc>>,
+    effective_covered_through_cursor: Option<DiscoveryRuntimeCursor>,
+    gap_fill_replayed_rows: usize,
+    replayed_rows: usize,
+    raw_coverage_satisfied: bool,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -67,6 +87,7 @@ where
     let mut artifact_path: Option<PathBuf> = None;
     let mut db_path: Option<PathBuf> = None;
     let mut journal_db_path: Option<PathBuf> = None;
+    let mut gap_fill_db_path: Option<PathBuf> = None;
     let mut bootstrap_degraded = false;
     let mut json = false;
     let mut now: Option<DateTime<Utc>> = None;
@@ -88,6 +109,12 @@ where
                     args.next(),
                 )?))
             }
+            "--gap-fill-db-path" => {
+                gap_fill_db_path = Some(PathBuf::from(parse_string_arg(
+                    "--gap-fill-db-path",
+                    args.next(),
+                )?))
+            }
             "--bootstrap-degraded" => bootstrap_degraded = true,
             "--json" => json = true,
             "--now" => now = Some(parse_ts_arg("--now", args.next())?),
@@ -101,6 +128,7 @@ where
         artifact_path: artifact_path.ok_or_else(|| anyhow!("missing required --artifact"))?,
         db_path,
         journal_db_path,
+        gap_fill_db_path,
         bootstrap_degraded,
         json,
         now: now.unwrap_or_else(Utc::now),
@@ -218,6 +246,7 @@ fn run(config: Config) -> Result<String> {
     let replay = replay_recent_raw_journal(
         &store,
         &journal_db_path,
+        config.gap_fill_db_path.as_deref(),
         config.now,
         i64::from(loaded_config.discovery.scoring_window_days.max(1)),
         loaded_config.recent_raw_journal.replay_batch_size.max(1),
@@ -229,6 +258,10 @@ fn run(config: Config) -> Result<String> {
     let output = RestoreOutput {
         db_path: db_path.display().to_string(),
         journal_db_path: journal_db_path.display().to_string(),
+        gap_fill_db_path: config
+            .gap_fill_db_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
         freshness,
         replay,
         verdict,
@@ -252,12 +285,14 @@ fn render_human(
     journal_db_path: &Path,
     output: &RestoreOutput,
 ) -> String {
+    let gap_fill_db_path = output.gap_fill_db_path.as_deref().unwrap_or("null");
     [
         "event=discovery_runtime_restore".to_string(),
         format!("config_path={}", config_path.display()),
         format!("artifact_path={}", artifact_path.display()),
         format!("db_path={}", output.db_path),
         format!("journal_db_path={}", journal_db_path.display()),
+        format!("gap_fill_db_path={gap_fill_db_path}"),
         format!("verdict={}", output.verdict.verdict),
         format!(
             "fresh_under_export_gate={}",
@@ -288,6 +323,11 @@ fn render_human(
             "journal_replayed_rows={}",
             output.verdict.journal_replayed_rows
         ),
+        format!("gap_fill_replayed={}", output.replay.gap_fill_replayed),
+        format!(
+            "gap_fill_replayed_rows={}",
+            output.replay.gap_fill_replayed_rows
+        ),
         format!(
             "bootstrap_degraded_active={}",
             output.verdict.bootstrap_degraded_active
@@ -299,11 +339,12 @@ fn render_human(
 fn replay_recent_raw_journal(
     runtime_store: &SqliteStore,
     journal_db_path: &Path,
+    gap_fill_db_path: Option<&Path>,
     now: DateTime<Utc>,
     scoring_window_days: i64,
     replay_batch_size: usize,
     artifact_runtime_cursor: &DiscoveryRuntimeCursor,
-) -> Result<RecentRawJournalReplaySummary> {
+) -> Result<RestoreReplaySummary> {
     let required_window_start = now - Duration::days(scoring_window_days.max(1));
     runtime_store.set_discovery_recent_raw_restore_state(
         &DiscoveryRecentRawRestoreStateUpdate {
@@ -312,9 +353,15 @@ fn replay_recent_raw_journal(
             required_window_start: Some(required_window_start),
             journal_covered_since: None,
             journal_covered_through_cursor: None,
+            gap_fill_replayed: false,
+            gap_fill_covered_since: None,
+            gap_fill_covered_through_cursor: None,
+            effective_covered_since: None,
+            effective_covered_through_cursor: None,
             artifact_runtime_cursor: Some(artifact_runtime_cursor.clone()),
             journal_covers_artifact_cursor: false,
             raw_coverage_satisfied: false,
+            gap_fill_replayed_rows: 0,
             replayed_rows: 0,
             reason: Some("journal_replay_started".to_string()),
             replay_started_at: Some(now),
@@ -348,28 +395,108 @@ fn replay_recent_raw_journal(
         }
     };
 
+    let gap_fill_replay = match gap_fill_db_path {
+        Some(path) if path.exists() => {
+            let gap_fill_store = SqliteStore::open_read_only(path)
+                .with_context(|| format!("failed opening raw gap fill db {}", path.display()))?;
+            Some(gap_fill_store.replay_recent_raw_journal_into_runtime_store(
+                runtime_store,
+                required_window_start,
+                artifact_runtime_cursor,
+                replay_batch_size.max(1),
+            )?)
+        }
+        Some(_) | None => None,
+    };
+
+    let effective_covered_since = min_ts_opt(
+        replay.journal_covered_since,
+        gap_fill_replay
+            .as_ref()
+            .and_then(|summary| summary.journal_covered_since),
+    );
+    let effective_covered_through_cursor = max_cursor_opt(
+        replay.journal_covered_through_cursor.as_ref(),
+        gap_fill_replay
+            .as_ref()
+            .and_then(|summary| summary.journal_covered_through_cursor.as_ref()),
+    );
+    let runtime_window_has_rows = !runtime_store
+        .load_recent_observed_swaps_since(required_window_start, 1)?
+        .0
+        .is_empty();
+    let raw_coverage_satisfied = replay.journal_available
+        && replay.journal_covers_artifact_cursor
+        && effective_covered_since
+            .is_some_and(|covered_since| covered_since <= required_window_start)
+        && runtime_window_has_rows;
+    let gap_fill_replayed = gap_fill_replay.is_some();
+    let gap_fill_replayed_rows = gap_fill_replay
+        .as_ref()
+        .map(|summary| summary.replayed_rows)
+        .unwrap_or(0);
+    let replayed_rows = replay.replayed_rows.saturating_add(gap_fill_replayed_rows);
+
+    let replay_summary = RestoreReplaySummary {
+        required_window_start,
+        artifact_runtime_cursor: artifact_runtime_cursor.clone(),
+        journal_available: replay.journal_available,
+        journal_covered_since: replay.journal_covered_since,
+        journal_covered_through_cursor: replay.journal_covered_through_cursor.clone(),
+        journal_covers_artifact_cursor: replay.journal_covers_artifact_cursor,
+        gap_fill_replayed,
+        gap_fill_covered_since: gap_fill_replay
+            .as_ref()
+            .and_then(|summary| summary.journal_covered_since),
+        gap_fill_covered_through_cursor: gap_fill_replay
+            .as_ref()
+            .and_then(|summary| summary.journal_covered_through_cursor.clone()),
+        effective_covered_since,
+        effective_covered_through_cursor,
+        gap_fill_replayed_rows,
+        replayed_rows,
+        raw_coverage_satisfied,
+    };
+
     runtime_store.set_discovery_recent_raw_restore_state(
         &DiscoveryRecentRawRestoreStateUpdate {
             journal_available: replay.journal_available,
             journal_replayed: replay.replayed_rows > 0 || replay.journal_available,
-            required_window_start: Some(replay.required_window_start),
+            required_window_start: Some(replay_summary.required_window_start),
             journal_covered_since: replay.journal_covered_since,
             journal_covered_through_cursor: replay.journal_covered_through_cursor.clone(),
+            gap_fill_replayed,
+            gap_fill_covered_since: replay_summary.gap_fill_covered_since,
+            gap_fill_covered_through_cursor: replay_summary.gap_fill_covered_through_cursor.clone(),
+            effective_covered_since: replay_summary.effective_covered_since,
+            effective_covered_through_cursor: replay_summary
+                .effective_covered_through_cursor
+                .clone(),
             artifact_runtime_cursor: Some(replay.artifact_runtime_cursor.clone()),
             journal_covers_artifact_cursor: replay.journal_covers_artifact_cursor,
-            raw_coverage_satisfied: replay.raw_coverage_satisfied,
-            replayed_rows: replay.replayed_rows,
-            reason: Some(recent_raw_journal_restore_reason(&replay, journal_db_path)),
+            raw_coverage_satisfied,
+            gap_fill_replayed_rows,
+            replayed_rows,
+            reason: Some(recent_raw_journal_restore_reason(
+                &replay,
+                gap_fill_replay.as_ref(),
+                journal_db_path,
+                gap_fill_db_path,
+                raw_coverage_satisfied,
+            )),
             replay_started_at: Some(now),
             replay_completed_at: Some(now),
         },
     )?;
-    Ok(replay)
+    Ok(replay_summary)
 }
 
 fn recent_raw_journal_restore_reason(
     replay: &RecentRawJournalReplaySummary,
+    gap_fill_replay: Option<&RecentRawJournalReplaySummary>,
     journal_db_path: &Path,
+    gap_fill_db_path: Option<&Path>,
+    raw_coverage_satisfied: bool,
 ) -> String {
     if !replay.journal_available {
         return format!(
@@ -380,10 +507,55 @@ fn recent_raw_journal_restore_reason(
     if !replay.journal_covers_artifact_cursor {
         return "recent_raw_journal_missing_artifact_cursor_lineage".to_string();
     }
-    if !replay.raw_coverage_satisfied {
+    if !raw_coverage_satisfied {
+        if let Some(path) = gap_fill_db_path {
+            if gap_fill_replay.is_some() {
+                return format!(
+                    "recent_raw_gap_fill_raw_coverage_unsatisfied:{}",
+                    path.display()
+                );
+            }
+        }
         return "recent_raw_journal_raw_coverage_unsatisfied".to_string();
     }
+    if gap_fill_replay.is_some() {
+        return "recent_raw_journal_gap_fill_replay_completed".to_string();
+    }
     "recent_raw_journal_replay_completed".to_string()
+}
+
+fn min_ts_opt(left: Option<DateTime<Utc>>, right: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
+fn max_cursor_opt(
+    left: Option<&DiscoveryRuntimeCursor>,
+    right: Option<&DiscoveryRuntimeCursor>,
+) -> Option<DiscoveryRuntimeCursor> {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            if cmp_cursor(left, right) != std::cmp::Ordering::Less {
+                Some(left.clone())
+            } else {
+                Some(right.clone())
+            }
+        }
+        (Some(left), None) => Some(left.clone()),
+        (None, Some(right)) => Some(right.clone()),
+        (None, None) => None,
+    }
+}
+
+fn cmp_cursor(left: &DiscoveryRuntimeCursor, right: &DiscoveryRuntimeCursor) -> std::cmp::Ordering {
+    left.ts_utc
+        .cmp(&right.ts_utc)
+        .then_with(|| left.slot.cmp(&right.slot))
+        .then_with(|| left.signature.cmp(&right.signature))
 }
 
 #[cfg(test)]
@@ -420,6 +592,7 @@ mod tests {
         );
         assert_eq!(parsed.db_path, Some(PathBuf::from("state/live.db")));
         assert_eq!(parsed.journal_db_path, None);
+        assert_eq!(parsed.gap_fill_db_path, None);
         assert!(parsed.bootstrap_degraded);
         assert!(parsed.json);
         assert_eq!(parsed.now.to_rfc3339(), "2026-03-23T12:00:00+00:00");
@@ -440,6 +613,7 @@ mod tests {
             artifact_path: artifact_path.clone(),
             db_path: Some(restored_db_path.clone()),
             journal_db_path: None,
+            gap_fill_db_path: None,
             bootstrap_degraded: false,
             json: false,
             now,
@@ -489,6 +663,7 @@ mod tests {
             artifact_path: artifact_path.clone(),
             db_path: Some(fixture.temp.path().join("restored-stale.db")),
             journal_db_path: None,
+            gap_fill_db_path: None,
             bootstrap_degraded: false,
             json: false,
             now,
@@ -516,6 +691,7 @@ mod tests {
             artifact_path: artifact_path.clone(),
             db_path: Some(restored_db_path.clone()),
             journal_db_path: None,
+            gap_fill_db_path: None,
             bootstrap_degraded: true,
             json: true,
             now,
@@ -568,6 +744,7 @@ mod tests {
             artifact_path,
             db_path: Some(restored_db_path),
             journal_db_path: Some(journal_db_path),
+            gap_fill_db_path: None,
             bootstrap_degraded: false,
             json: true,
             now,
@@ -625,6 +802,7 @@ mod tests {
             artifact_path: artifact_path.clone(),
             db_path: Some(restored_db_path.clone()),
             journal_db_path: Some(journal_db_path),
+            gap_fill_db_path: None,
             bootstrap_degraded: false,
             json: true,
             now,
@@ -694,6 +872,7 @@ mod tests {
             artifact_path,
             db_path: Some(restored_db_path.clone()),
             journal_db_path: Some(journal_db_path),
+            gap_fill_db_path: None,
             bootstrap_degraded: true,
             json: true,
             now,
@@ -711,6 +890,127 @@ mod tests {
         );
         let restored = SqliteStore::open(Path::new(&restored_db_path))?;
         assert!(restored.discovery_bootstrap_degraded_state()?.active);
+        Ok(())
+    }
+
+    #[test]
+    fn run_gap_fill_plus_recent_journal_restores_trading_ready_verdict() -> Result<()> {
+        let fixture = make_fixture("runtime-restore-gap-fill-healthy")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let artifact_now = now - Duration::minutes(30);
+        seed_runtime_artifact_source(&fixture.source_store, artifact_now)?;
+        let artifact = export_artifact(&fixture.source_store, &fixture.config_path, now)?;
+        let artifact_path = fixture.temp.path().join("artifact-gap-fill-healthy.json");
+        std::fs::write(&artifact_path, serde_json::to_vec_pretty(&artifact)?)?;
+
+        let restored_db_path = fixture.temp.path().join("restored-gap-fill-healthy.db");
+        let journal_db_path = fixture.temp.path().join("recent-gap-fill-healthy.db");
+        let gap_fill_db_path = fixture.temp.path().join("gap-fill-healthy.db");
+        seed_recent_raw_journal(
+            &journal_db_path,
+            &[make_swap("journal-recent", now - Duration::minutes(5), 12)],
+            now,
+        )?;
+        seed_recent_raw_journal(
+            &gap_fill_db_path,
+            &[make_swap(
+                "gap-fill-window-start",
+                now - Duration::days(7),
+                11,
+            )],
+            now,
+        )?;
+
+        let output = run(Config {
+            config_path: fixture.config_path.clone(),
+            artifact_path,
+            db_path: Some(restored_db_path.clone()),
+            journal_db_path: Some(journal_db_path),
+            gap_fill_db_path: Some(gap_fill_db_path),
+            bootstrap_degraded: false,
+            json: true,
+            now,
+        })?;
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(
+            parsed.pointer("/verdict/verdict").and_then(Value::as_str),
+            Some("trading_ready")
+        );
+        assert_eq!(
+            parsed
+                .pointer("/replay/gap_fill_replayed")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/replay/raw_coverage_satisfied")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+
+        let restored = SqliteStore::open(Path::new(&restored_db_path))?;
+        let restore_state = restored.discovery_recent_raw_restore_state()?;
+        assert!(restore_state.raw_coverage_satisfied);
+        assert!(restore_state.gap_fill_replayed);
+        assert_eq!(restore_state.gap_fill_replayed_rows, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn run_partial_gap_fill_keeps_restore_fail_closed() -> Result<()> {
+        let fixture = make_fixture("runtime-restore-gap-fill-partial")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let artifact_now = now - Duration::minutes(30);
+        seed_runtime_artifact_source(&fixture.source_store, artifact_now)?;
+        let artifact = export_artifact(&fixture.source_store, &fixture.config_path, now)?;
+        let artifact_path = fixture.temp.path().join("artifact-gap-fill-partial.json");
+        std::fs::write(&artifact_path, serde_json::to_vec_pretty(&artifact)?)?;
+
+        let restored_db_path = fixture.temp.path().join("restored-gap-fill-partial.db");
+        let journal_db_path = fixture.temp.path().join("recent-gap-fill-partial.db");
+        let gap_fill_db_path = fixture.temp.path().join("gap-fill-partial.db");
+        seed_recent_raw_journal(
+            &journal_db_path,
+            &[make_swap("journal-recent", now - Duration::minutes(5), 12)],
+            now,
+        )?;
+        seed_recent_raw_journal(
+            &gap_fill_db_path,
+            &[make_swap(
+                "gap-fill-too-new",
+                now - Duration::days(6) + Duration::hours(1),
+                11,
+            )],
+            now,
+        )?;
+
+        let output = run(Config {
+            config_path: fixture.config_path.clone(),
+            artifact_path,
+            db_path: Some(restored_db_path.clone()),
+            journal_db_path: Some(journal_db_path),
+            gap_fill_db_path: Some(gap_fill_db_path),
+            bootstrap_degraded: false,
+            json: true,
+            now,
+        })?;
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(
+            parsed.pointer("/verdict/verdict").and_then(Value::as_str),
+            Some("fail_closed")
+        );
+        assert_eq!(
+            parsed
+                .pointer("/replay/raw_coverage_satisfied")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+
+        let restored = SqliteStore::open(Path::new(&restored_db_path))?;
+        let restore_state = restored.discovery_recent_raw_restore_state()?;
+        assert!(!restore_state.raw_coverage_satisfied);
+        assert!(restore_state.gap_fill_replayed);
         Ok(())
     }
 }

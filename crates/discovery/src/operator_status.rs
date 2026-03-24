@@ -83,9 +83,15 @@ pub struct DiscoveryOperatorRecentRawRestoreStatus {
     pub required_window_start: Option<DateTime<Utc>>,
     pub journal_covered_since: Option<DateTime<Utc>>,
     pub journal_covered_through_cursor: Option<DiscoveryOperatorCursor>,
+    pub gap_fill_replayed: bool,
+    pub gap_fill_covered_since: Option<DateTime<Utc>>,
+    pub gap_fill_covered_through_cursor: Option<DiscoveryOperatorCursor>,
+    pub effective_covered_since: Option<DateTime<Utc>>,
+    pub effective_covered_through_cursor: Option<DiscoveryOperatorCursor>,
     pub artifact_runtime_cursor: Option<DiscoveryOperatorCursor>,
     pub journal_covers_artifact_cursor: bool,
     pub raw_coverage_satisfied: bool,
+    pub gap_fill_replayed_rows: usize,
     pub replayed_rows: usize,
     pub reason: Option<String>,
     pub replay_started_at: Option<DateTime<Utc>>,
@@ -374,9 +380,21 @@ fn operator_recent_raw_restore_status(
             .journal_covered_through_cursor
             .as_ref()
             .map(operator_cursor),
+        gap_fill_replayed: row.gap_fill_replayed,
+        gap_fill_covered_since: row.gap_fill_covered_since,
+        gap_fill_covered_through_cursor: row
+            .gap_fill_covered_through_cursor
+            .as_ref()
+            .map(operator_cursor),
+        effective_covered_since: row.effective_covered_since,
+        effective_covered_through_cursor: row
+            .effective_covered_through_cursor
+            .as_ref()
+            .map(operator_cursor),
         artifact_runtime_cursor: row.artifact_runtime_cursor.as_ref().map(operator_cursor),
         journal_covers_artifact_cursor: row.journal_covers_artifact_cursor,
         raw_coverage_satisfied: row.raw_coverage_satisfied,
+        gap_fill_replayed_rows: row.gap_fill_replayed_rows,
         replayed_rows: row.replayed_rows,
         reason: row.reason.clone(),
         replay_started_at: row.replay_started_at,

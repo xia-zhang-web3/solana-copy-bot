@@ -271,11 +271,21 @@ fn discovery_recent_raw_restore_state_query(
                 journal_covered_through_cursor_ts,
                 journal_covered_through_cursor_slot,
                 journal_covered_through_cursor_signature,
+                gap_fill_replayed,
+                gap_fill_covered_since,
+                gap_fill_covered_through_cursor_ts,
+                gap_fill_covered_through_cursor_slot,
+                gap_fill_covered_through_cursor_signature,
+                effective_covered_since,
+                effective_covered_through_cursor_ts,
+                effective_covered_through_cursor_slot,
+                effective_covered_through_cursor_signature,
                 artifact_runtime_cursor_ts,
                 artifact_runtime_cursor_slot,
                 artifact_runtime_cursor_signature,
                 journal_covers_artifact_cursor,
                 raw_coverage_satisfied,
+                gap_fill_replayed_rows,
                 replayed_rows,
                 reason,
                 replay_started_at,
@@ -293,16 +303,26 @@ fn discovery_recent_raw_restore_state_query(
                     row.get::<_, Option<String>>(4)?,
                     row.get::<_, Option<i64>>(5)?,
                     row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<String>>(7)?,
-                    row.get::<_, Option<i64>>(8)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                     row.get::<_, Option<String>>(9)?,
-                    row.get::<_, i64>(10)?,
-                    row.get::<_, i64>(11)?,
-                    row.get::<_, i64>(12)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
                     row.get::<_, Option<String>>(13)?,
-                    row.get::<_, Option<String>>(14)?,
+                    row.get::<_, Option<i64>>(14)?,
                     row.get::<_, Option<String>>(15)?,
                     row.get::<_, Option<String>>(16)?,
+                    row.get::<_, Option<i64>>(17)?,
+                    row.get::<_, Option<String>>(18)?,
+                    row.get::<_, i64>(19)?,
+                    row.get::<_, i64>(20)?,
+                    row.get::<_, i64>(21)?,
+                    row.get::<_, i64>(22)?,
+                    row.get::<_, Option<String>>(23)?,
+                    row.get::<_, Option<String>>(24)?,
+                    row.get::<_, Option<String>>(25)?,
+                    row.get::<_, Option<String>>(26)?,
                 ))
             },
         )
@@ -316,11 +336,21 @@ fn discovery_recent_raw_restore_state_query(
         journal_covered_through_cursor_ts_raw,
         journal_covered_through_cursor_slot_raw,
         journal_covered_through_cursor_signature,
+        gap_fill_replayed,
+        gap_fill_covered_since_raw,
+        gap_fill_covered_through_cursor_ts_raw,
+        gap_fill_covered_through_cursor_slot_raw,
+        gap_fill_covered_through_cursor_signature,
+        effective_covered_since_raw,
+        effective_covered_through_cursor_ts_raw,
+        effective_covered_through_cursor_slot_raw,
+        effective_covered_through_cursor_signature,
         artifact_runtime_cursor_ts_raw,
         artifact_runtime_cursor_slot_raw,
         artifact_runtime_cursor_signature,
         journal_covers_artifact_cursor,
         raw_coverage_satisfied,
+        gap_fill_replayed_rows,
         replayed_rows,
         reason,
         replay_started_at_raw,
@@ -348,6 +378,27 @@ fn discovery_recent_raw_restore_state_query(
             journal_covered_through_cursor_signature,
             "discovery_recent_raw_restore_state.journal_covered_through_cursor",
         )?,
+        gap_fill_replayed: gap_fill_replayed != 0,
+        gap_fill_covered_since: parse_optional_rfc3339_utc(
+            gap_fill_covered_since_raw,
+            "discovery_recent_raw_restore_state.gap_fill_covered_since",
+        )?,
+        gap_fill_covered_through_cursor: parse_optional_runtime_cursor(
+            gap_fill_covered_through_cursor_ts_raw,
+            gap_fill_covered_through_cursor_slot_raw,
+            gap_fill_covered_through_cursor_signature,
+            "discovery_recent_raw_restore_state.gap_fill_covered_through_cursor",
+        )?,
+        effective_covered_since: parse_optional_rfc3339_utc(
+            effective_covered_since_raw,
+            "discovery_recent_raw_restore_state.effective_covered_since",
+        )?,
+        effective_covered_through_cursor: parse_optional_runtime_cursor(
+            effective_covered_through_cursor_ts_raw,
+            effective_covered_through_cursor_slot_raw,
+            effective_covered_through_cursor_signature,
+            "discovery_recent_raw_restore_state.effective_covered_through_cursor",
+        )?,
         artifact_runtime_cursor: parse_optional_runtime_cursor(
             artifact_runtime_cursor_ts_raw,
             artifact_runtime_cursor_slot_raw,
@@ -356,6 +407,7 @@ fn discovery_recent_raw_restore_state_query(
         )?,
         journal_covers_artifact_cursor: journal_covers_artifact_cursor != 0,
         raw_coverage_satisfied: raw_coverage_satisfied != 0,
+        gap_fill_replayed_rows: gap_fill_replayed_rows.max(0) as usize,
         replayed_rows: replayed_rows.max(0) as usize,
         reason,
         replay_started_at: parse_optional_rfc3339_utc(
@@ -731,18 +783,28 @@ impl SqliteStore {
                     journal_covered_through_cursor_ts,
                     journal_covered_through_cursor_slot,
                     journal_covered_through_cursor_signature,
+                    gap_fill_replayed,
+                    gap_fill_covered_since,
+                    gap_fill_covered_through_cursor_ts,
+                    gap_fill_covered_through_cursor_slot,
+                    gap_fill_covered_through_cursor_signature,
+                    effective_covered_since,
+                    effective_covered_through_cursor_ts,
+                    effective_covered_through_cursor_slot,
+                    effective_covered_through_cursor_signature,
                     artifact_runtime_cursor_ts,
                     artifact_runtime_cursor_slot,
                     artifact_runtime_cursor_signature,
                     journal_covers_artifact_cursor,
                     raw_coverage_satisfied,
+                    gap_fill_replayed_rows,
                     replayed_rows,
                     reason,
                     replay_started_at,
                     replay_completed_at,
                     updated_at
                  ) VALUES (
-                    1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
+                    1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
                  )
                  ON CONFLICT(id) DO UPDATE SET
                     journal_available = excluded.journal_available,
@@ -755,6 +817,21 @@ impl SqliteStore {
                         excluded.journal_covered_through_cursor_slot,
                     journal_covered_through_cursor_signature =
                         excluded.journal_covered_through_cursor_signature,
+                    gap_fill_replayed = excluded.gap_fill_replayed,
+                    gap_fill_covered_since = excluded.gap_fill_covered_since,
+                    gap_fill_covered_through_cursor_ts =
+                        excluded.gap_fill_covered_through_cursor_ts,
+                    gap_fill_covered_through_cursor_slot =
+                        excluded.gap_fill_covered_through_cursor_slot,
+                    gap_fill_covered_through_cursor_signature =
+                        excluded.gap_fill_covered_through_cursor_signature,
+                    effective_covered_since = excluded.effective_covered_since,
+                    effective_covered_through_cursor_ts =
+                        excluded.effective_covered_through_cursor_ts,
+                    effective_covered_through_cursor_slot =
+                        excluded.effective_covered_through_cursor_slot,
+                    effective_covered_through_cursor_signature =
+                        excluded.effective_covered_through_cursor_signature,
                     artifact_runtime_cursor_ts = excluded.artifact_runtime_cursor_ts,
                     artifact_runtime_cursor_slot = excluded.artifact_runtime_cursor_slot,
                     artifact_runtime_cursor_signature =
@@ -762,6 +839,7 @@ impl SqliteStore {
                     journal_covers_artifact_cursor =
                         excluded.journal_covers_artifact_cursor,
                     raw_coverage_satisfied = excluded.raw_coverage_satisfied,
+                    gap_fill_replayed_rows = excluded.gap_fill_replayed_rows,
                     replayed_rows = excluded.replayed_rows,
                     reason = excluded.reason,
                     replay_started_at = excluded.replay_started_at,
@@ -784,6 +862,33 @@ impl SqliteStore {
                         .journal_covered_through_cursor
                         .as_ref()
                         .map(|cursor| cursor.signature.as_str()),
+                    if update.gap_fill_replayed { 1 } else { 0 },
+                    update.gap_fill_covered_since.map(|ts| ts.to_rfc3339()),
+                    update
+                        .gap_fill_covered_through_cursor
+                        .as_ref()
+                        .map(|cursor| cursor.ts_utc.to_rfc3339()),
+                    update
+                        .gap_fill_covered_through_cursor
+                        .as_ref()
+                        .map(|cursor| cursor.slot as i64),
+                    update
+                        .gap_fill_covered_through_cursor
+                        .as_ref()
+                        .map(|cursor| cursor.signature.as_str()),
+                    update.effective_covered_since.map(|ts| ts.to_rfc3339()),
+                    update
+                        .effective_covered_through_cursor
+                        .as_ref()
+                        .map(|cursor| cursor.ts_utc.to_rfc3339()),
+                    update
+                        .effective_covered_through_cursor
+                        .as_ref()
+                        .map(|cursor| cursor.slot as i64),
+                    update
+                        .effective_covered_through_cursor
+                        .as_ref()
+                        .map(|cursor| cursor.signature.as_str()),
                     update
                         .artifact_runtime_cursor
                         .as_ref()
@@ -802,6 +907,7 @@ impl SqliteStore {
                         0
                     },
                     if update.raw_coverage_satisfied { 1 } else { 0 },
+                    update.gap_fill_replayed_rows as i64,
                     update.replayed_rows as i64,
                     update.reason.as_deref(),
                     update.replay_started_at.map(|ts| ts.to_rfc3339()),
@@ -1527,11 +1633,21 @@ impl SqliteStore {
                     journal_covered_through_cursor_ts TEXT,
                     journal_covered_through_cursor_slot INTEGER,
                     journal_covered_through_cursor_signature TEXT,
+                    gap_fill_replayed INTEGER NOT NULL DEFAULT 0,
+                    gap_fill_covered_since TEXT,
+                    gap_fill_covered_through_cursor_ts TEXT,
+                    gap_fill_covered_through_cursor_slot INTEGER,
+                    gap_fill_covered_through_cursor_signature TEXT,
+                    effective_covered_since TEXT,
+                    effective_covered_through_cursor_ts TEXT,
+                    effective_covered_through_cursor_slot INTEGER,
+                    effective_covered_through_cursor_signature TEXT,
                     artifact_runtime_cursor_ts TEXT,
                     artifact_runtime_cursor_slot INTEGER,
                     artifact_runtime_cursor_signature TEXT,
                     journal_covers_artifact_cursor INTEGER NOT NULL DEFAULT 0,
                     raw_coverage_satisfied INTEGER NOT NULL DEFAULT 0,
+                    gap_fill_replayed_rows INTEGER NOT NULL DEFAULT 0,
                     replayed_rows INTEGER NOT NULL DEFAULT 0,
                     reason TEXT,
                     replay_started_at TEXT,
@@ -1763,18 +1879,28 @@ impl SqliteStore {
                     journal_covered_through_cursor_ts,
                     journal_covered_through_cursor_slot,
                     journal_covered_through_cursor_signature,
+                    gap_fill_replayed,
+                    gap_fill_covered_since,
+                    gap_fill_covered_through_cursor_ts,
+                    gap_fill_covered_through_cursor_slot,
+                    gap_fill_covered_through_cursor_signature,
+                    effective_covered_since,
+                    effective_covered_through_cursor_ts,
+                    effective_covered_through_cursor_slot,
+                    effective_covered_through_cursor_signature,
                     artifact_runtime_cursor_ts,
                     artifact_runtime_cursor_slot,
                     artifact_runtime_cursor_signature,
                     journal_covers_artifact_cursor,
                     raw_coverage_satisfied,
+                    gap_fill_replayed_rows,
                     replayed_rows,
                     reason,
                     replay_started_at,
                     replay_completed_at,
                     updated_at
                  ) VALUES (
-                    1, 0, 0, NULL, NULL, NULL, NULL, NULL, ?1, ?2, ?3, 0, 0, 0, ?4, NULL, NULL, ?5
+                    1, 0, 0, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?1, ?2, ?3, 0, 0, 0, 0, ?4, NULL, NULL, ?5
                  )",
                 params![
                     artifact.runtime_cursor.ts_utc.to_rfc3339(),
@@ -2273,11 +2399,21 @@ impl SqliteStore {
                     journal_covered_through_cursor_ts TEXT,
                     journal_covered_through_cursor_slot INTEGER,
                     journal_covered_through_cursor_signature TEXT,
+                    gap_fill_replayed INTEGER NOT NULL DEFAULT 0,
+                    gap_fill_covered_since TEXT,
+                    gap_fill_covered_through_cursor_ts TEXT,
+                    gap_fill_covered_through_cursor_slot INTEGER,
+                    gap_fill_covered_through_cursor_signature TEXT,
+                    effective_covered_since TEXT,
+                    effective_covered_through_cursor_ts TEXT,
+                    effective_covered_through_cursor_slot INTEGER,
+                    effective_covered_through_cursor_signature TEXT,
                     artifact_runtime_cursor_ts TEXT,
                     artifact_runtime_cursor_slot INTEGER,
                     artifact_runtime_cursor_signature TEXT,
                     journal_covers_artifact_cursor INTEGER NOT NULL DEFAULT 0,
                     raw_coverage_satisfied INTEGER NOT NULL DEFAULT 0,
+                    gap_fill_replayed_rows INTEGER NOT NULL DEFAULT 0,
                     replayed_rows INTEGER NOT NULL DEFAULT 0,
                     reason TEXT,
                     replay_started_at TEXT,
@@ -2286,6 +2422,128 @@ impl SqliteStore {
                 )",
             )
             .context("failed to ensure discovery_recent_raw_restore_state table exists")?;
+        let columns: HashSet<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("PRAGMA table_info(discovery_recent_raw_restore_state)")
+                .context(
+                    "failed to prepare discovery_recent_raw_restore_state column introspection",
+                )?;
+            let columns = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .context("failed querying discovery_recent_raw_restore_state columns")?
+                .collect::<rusqlite::Result<HashSet<String>>>()
+                .context("failed collecting discovery_recent_raw_restore_state columns")?;
+            columns
+        };
+        if !columns.contains("gap_fill_replayed") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_recent_raw_restore_state
+                     ADD COLUMN gap_fill_replayed INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )
+                .context("failed adding discovery_recent_raw_restore_state.gap_fill_replayed")?;
+        }
+        if !columns.contains("gap_fill_covered_since") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_recent_raw_restore_state
+                     ADD COLUMN gap_fill_covered_since TEXT",
+                    [],
+                )
+                .context(
+                    "failed adding discovery_recent_raw_restore_state.gap_fill_covered_since",
+                )?;
+        }
+        if !columns.contains("gap_fill_covered_through_cursor_ts") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_recent_raw_restore_state
+                     ADD COLUMN gap_fill_covered_through_cursor_ts TEXT",
+                    [],
+                )
+                .context(
+                    "failed adding discovery_recent_raw_restore_state.gap_fill_covered_through_cursor_ts",
+                )?;
+        }
+        if !columns.contains("gap_fill_covered_through_cursor_slot") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_recent_raw_restore_state
+                     ADD COLUMN gap_fill_covered_through_cursor_slot INTEGER",
+                    [],
+                )
+                .context(
+                    "failed adding discovery_recent_raw_restore_state.gap_fill_covered_through_cursor_slot",
+                )?;
+        }
+        if !columns.contains("gap_fill_covered_through_cursor_signature") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_recent_raw_restore_state
+                     ADD COLUMN gap_fill_covered_through_cursor_signature TEXT",
+                    [],
+                )
+                .context(
+                    "failed adding discovery_recent_raw_restore_state.gap_fill_covered_through_cursor_signature",
+                )?;
+        }
+        if !columns.contains("effective_covered_since") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_recent_raw_restore_state
+                     ADD COLUMN effective_covered_since TEXT",
+                    [],
+                )
+                .context(
+                    "failed adding discovery_recent_raw_restore_state.effective_covered_since",
+                )?;
+        }
+        if !columns.contains("effective_covered_through_cursor_ts") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_recent_raw_restore_state
+                     ADD COLUMN effective_covered_through_cursor_ts TEXT",
+                    [],
+                )
+                .context(
+                    "failed adding discovery_recent_raw_restore_state.effective_covered_through_cursor_ts",
+                )?;
+        }
+        if !columns.contains("effective_covered_through_cursor_slot") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_recent_raw_restore_state
+                     ADD COLUMN effective_covered_through_cursor_slot INTEGER",
+                    [],
+                )
+                .context(
+                    "failed adding discovery_recent_raw_restore_state.effective_covered_through_cursor_slot",
+                )?;
+        }
+        if !columns.contains("effective_covered_through_cursor_signature") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_recent_raw_restore_state
+                     ADD COLUMN effective_covered_through_cursor_signature TEXT",
+                    [],
+                )
+                .context(
+                    "failed adding discovery_recent_raw_restore_state.effective_covered_through_cursor_signature",
+                )?;
+        }
+        if !columns.contains("gap_fill_replayed_rows") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_recent_raw_restore_state
+                     ADD COLUMN gap_fill_replayed_rows INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )
+                .context(
+                    "failed adding discovery_recent_raw_restore_state.gap_fill_replayed_rows",
+                )?;
+        }
         Ok(())
     }
 
