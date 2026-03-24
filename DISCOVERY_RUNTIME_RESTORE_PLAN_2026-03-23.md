@@ -1,7 +1,7 @@
 # DISCOVERY RUNTIME RESTORE PLAN
 
 Date: 2026-03-23
-Status: Canonical
+Status: Canonical, Batch 1-3 implemented; live server is currently in bootstrap-degraded bridge mode
 
 ## 0. Суть
 
@@ -24,6 +24,46 @@ Status: Canonical
 - его state, cursor и логи можно сохранить только для postmortem
 - этот план фиксирует новый контракт именно для runtime restore, а не для
   доведения старого giant replay до конца
+
+## 0.1 Live server status on 2026-03-24
+
+Что уже правда на реальном сервере:
+
+- код Batch 1-3 раскатан на live server в коммите `40fff47`
+- старый giant replay path больше не является активным runtime path
+- `solana-copy-bot.service` снова запущен и live ingestion снова идет
+- текущий live runtime state:
+  - `runtime_state = bootstrap_degraded_publication_truth`
+  - `runtime_mode = bootstrap_degraded`
+  - `scoring_source = bootstrap_degraded_publication_truth_raw_window_degraded`
+  - `active_follow_wallets = 15`
+  - `published_wallet_count = 15`
+- текущий bootstrap-degraded universe был явно поднят как временный мост из
+  top-15 `wallet_metrics` snapshot с
+  `last_published_window_start = 2026-03-19T12:00:00Z`
+- live execution остается выключенным:
+  - `execution.enabled = false`
+  - copy trading / shadow trading не должны открывать новые позиции
+- live restore surfaces уже существуют:
+  - artifact: `/var/www/solana-copy-bot/state/discovery_restore/artifacts/latest.json`
+  - recent raw journal: `/var/www/solana-copy-bot/state/discovery_recent_raw.db`
+  - recent raw snapshot: `/var/www/solana-copy-bot/state/discovery_restore/recent_raw/latest.sqlite`
+- server-side fresh-DB restore drill уже прошел на этих поверхностях:
+  - `journal_available = true`
+  - `journal_replayed = true`
+  - `journal_covers_artifact_cursor = true`
+  - `replayed_rows = 61887`
+  - `raw_coverage_satisfied = false`
+  - final verdict = `bootstrap_degraded`
+
+Что это значит честно:
+
+- сервер больше не мертв и не сидит на старом giant replay path
+- restore chain уже существует и реально исполним на проде
+- но инцидент еще не закрыт:
+  - runtime все еще не `healthy`
+  - trading-ready restore еще не достигнут
+  - текущий state это safe bridge, а не полноценное восстановление
 
 ## 1. Что считать истиной
 
@@ -945,3 +985,149 @@ Final Batch 3 acceptance update on `2026-03-24`:
   3. следующий scheduled run в пределах cadence возвращает
      `self_healed_latest_surface`
   4. `latest.sqlite` восстанавливается из archive snapshot
+
+## 14. Live server verdict on 2026-03-24
+
+Batch 1-3 закрыли repo-level restore architecture, но live incident закрыт не
+полностью.
+
+На реальном сервере уже достигнуто:
+
+- giant replay path убран из active runtime path
+- новый restore stack реально раскатан и работает
+- discovery больше не сидит в `active_follow_wallets = 0`
+- live runtime держит `15` кошельков через explicit bootstrap-degraded bridge
+- artifact export baseline создан
+- recent raw journal sidecar живет и наполняется
+- recent raw snapshot baseline создан
+- fresh-DB restore drill на реальных live surfaces проходит и дает
+  воспроизводимый `bootstrap_degraded` verdict
+
+Но business closure пока не достигнут:
+
+- live runtime все еще не `healthy`
+- trading-ready restore на сервере еще не доказан
+- `execution.enabled = false` должен оставаться false
+- copy trading / shadow trading не должны открывать позиции
+- текущий server state нельзя называть “recovered” в healthy-смысле
+
+Отдельно важно зафиксировать текущий live sharp edge:
+
+- `copybot-discovery-runtime-export.timer` можно держать включенным
+- `copybot-discovery-recent-raw-snapshot.timer` на этом сервере сейчас
+  выключен
+- причина не в giant replay и не в stale artifact, а в том, что snapshot path
+  под реальными live writes оказался пока неоперационным
+- значит operational contract на проде сейчас асимметричен:
+  - artifact cadence уже автоматизирован
+  - recent raw snapshot cadence пока требует дополнительного hardening
+
+## 15. Что код должен сделать дальше, чтобы реально закрыть инцидент
+
+Ниже не новый большой “план восстановления всего мира”, а узкий список того,
+что действительно нужно, чтобы закрыть оставшийся gap.
+
+### 15.1 Не путать текущий bridge с recovery closure
+
+Сейчас сервер уже не мертв, но это все еще bridge-state.
+
+Значит нельзя:
+
+- форсить `healthy`
+- ослаблять freshness / raw coverage gate
+- включать `execution` в `bootstrap_degraded`
+- считать top-15 bridge нормальной trading truth
+
+Иначе мы просто сделаем красивую ложную зелень и снова въедем в еще более
+грязный инцидент.
+
+### 15.2 Первое узкое место по коду: live-safe recent raw snapshot
+
+Следующий кодовый приоритет номер один:
+
+- довести `discovery_recent_raw_snapshot` до состояния, где он стабильно
+  работает под реальными live writes на сервере, а не только в локальном
+  smoke path
+
+Почему это важно:
+
+- без этого у нас нет надежного steady-state capture для `recent raw journal`
+- значит следующий инцидент снова может застать нас без свежего raw snapshot
+- текущий disabled timer на проде делает Batch 3 operationally неполным именно
+  для реального сервера
+
+Что я бы требовал от следующего кода:
+
+1. snapshot path должен быть writer-safe на живом `discovery_recent_raw.db`
+2. решение не должно требовать остановки `copybot-app`
+3. операторский результат должен быть однозначным:
+   - snapshot written
+   - self-healed
+   - retryable busy/deferred
+   - hard failure
+4. после фикса timer должен быть безопасно возвращаем в `enabled`
+
+### 15.3 Второе узкое место по коду: deterministic path из bootstrap-degraded в healthy
+
+Сейчас главный бизнес-gap не в том, что “restore chain отсутствует”.
+
+Он уже есть.
+
+Главный gap в том, что live runtime и live drill пока доходят только до
+`bootstrap_degraded`.
+
+Причина простая:
+
+- текущий live recent raw snapshot покрывает только короткий свежий хвост
+- scoring horizon в live-конфиге = `5` дней
+- значит текущего raw window недостаточно, чтобы честно получить
+  trading-ready `healthy`
+
+Поэтому “просто ждать” я не считаю основной стратегией.
+
+Да, ожидание теоретически может помочь, но это слишком похоже на прошлую
+ловушку “еще один день, еще один blocker”.
+
+Что код должен дать вместо этого:
+
+1. targeted bounded gap-fill для missing recent raw horizon
+2. этот gap-fill должен наполнять `recent raw journal` или fresh restore target,
+   а не возвращать giant replay в boot path
+3. gap-fill должен быть ограничен runtime horizon, а не всей историей
+4. после gap-fill должен существовать явный operator flow:
+   - fresh DB
+   - artifact restore
+   - recent raw journal replay
+   - gap-fill apply if needed
+   - final verdict
+
+Иными словами, следующий код должен не “улучшать bootstrap-degraded”, а
+довести path до честного выхода в `healthy` без многодневной пассивной надежды.
+
+### 15.4 Нужен реальный server-side proof of healthy exit
+
+После фикса snapshot path и после targeted gap-fill нужен не абстрактный вывод,
+а реальный серверный proof:
+
+1. на fresh DB выполняется restore из live artifact + live recent raw inputs
+2. verdict становится `trading_ready`
+3. `runtime_mode` становится `healthy`
+4. только после этого можно обсуждать включение `execution`
+
+Пока такого доказательства нет, инцидент надо считать открытым.
+
+### 15.5 Optional hardening, но уже после closure
+
+После закрытия основного инцидента имеет смысл отдельно рассмотреть:
+
+- stronger continuity proof для raw coverage, чтобы уменьшить риск false
+  trading-ready verdict на sparse/gappy raw data
+- alerting на слишком долгий `bootstrap_degraded`
+- alerting на disabled snapshot timer или stale journal snapshot
+
+Но это следующий слой.
+
+Сначала нужно закрыть две практические вещи:
+
+1. live-safe snapshot under write pressure
+2. deterministic healthy exit path вместо пассивного ожидания

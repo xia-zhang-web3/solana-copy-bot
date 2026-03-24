@@ -1,7 +1,7 @@
 # ROAD TO PRODUCTION v2
 
 Date: 2026-03-17
-Status: Active historical roadmap with 2026-03-23 runtime-restore addendum
+Status: Active historical roadmap with 2026-03-24 live bootstrap-degraded addendum
 
 ## 0. Why v2 exists
 
@@ -164,16 +164,13 @@ investigation is still the active restore plan, which it is not.
    - the remaining risk is manual operator orchestration, not the replay contract itself
    - the loop wrapper keeps the persisted SQLite cursor as the single source of truth without manual cursor handoff
 
-### 2.4 Current verdict (updated 2026-03-23)
+### 2.4 Current verdict (updated 2026-03-24)
 
-The project is not blocked by ingestion.
+The project is no longer on the dead long-running replay path.
 
 The startup SQLite silent-hang blocker is no longer the current blocker.
 
 Stage 1 is still `partial`.
-
-The emergency raw-bridge track is no longer "in progress"; it has failed as a
-durable closure path.
 
 The historical aggregate / backfill investigation below remains useful as
 evidence and postmortem material, but it is no longer the chosen runtime
@@ -181,29 +178,45 @@ restore path for the current incident.
 
 The current conclusions are:
 
-1. raw-path micro-fixes did prove the old blocker is gone, but they still did
-   not land the missing end-to-end result:
-   - no `scoring_source = raw_window_persisted_stream`
-   - no `active_follow_wallets > 0`
-2. the config-only raw bridge also failed as a durable closure path
-3. giant replay is not an acceptable restore path:
+1. giant replay remains dead as a runtime-restore path:
    - if a recovery path has already spent roughly `9.5` hours and still
      projects remaining time on the order of `14` days, that path is dead for
      runtime restore
    - it may still contain useful tooling evidence, but it is not an incident
-     recovery plan
-4. the valid runtime-restore direction now lives in
+     closure plan
+2. the valid runtime-restore direction now lives in
    [`DISCOVERY_RUNTIME_RESTORE_PLAN_2026-03-23.md`](/Users/blacktower/Documents/solana-copy-bot/DISCOVERY_RUNTIME_RESTORE_PLAN_2026-03-23.md):
    - broken runtime DB is disposable
    - restore truth is external to runtime DB
    - restore must come from `runtime artifact` + `recent raw journal`
    - stale publication truth must not silently turn into trading-ready truth
-5. what remains valid from the aggregate investigation in this file:
+3. that new restore stack is now actually deployed on the live server:
+   - runtime repo / live build is on commit `40fff47`
+   - `solana-copy-bot.service` is running again
+   - live discovery is no longer stuck at `active_follow_wallets = 0`
+4. the live server is still not healthy:
+   - current runtime state is `bootstrap_degraded_publication_truth`
+   - `runtime_mode = bootstrap_degraded`
+   - `scoring_source = bootstrap_degraded_publication_truth_raw_window_degraded`
+   - `active_follow_wallets = 15`
+   - `execution.enabled = false`
+   - copy trading / shadow trading remain fail-closed; this is not a trading-ready recovery
+5. the new restore chain is proven operationally on the server:
+   - live `runtime artifact` baseline exists
+   - live `recent raw journal` sidecar exists
+   - a fresh-DB restore drill from those surfaces completed successfully
+   - the drill verdict is still only `bootstrap_degraded`, not `healthy`
+6. what remains open right now:
+   - runtime has not yet exited from `bootstrap_degraded` to `healthy`
+   - raw coverage is still insufficient for a real trading-ready restore
+   - the scheduled recent-raw snapshot timer is disabled because snapshotting
+     under live writes is not yet operationally safe
+7. what remains valid from the aggregate investigation in this file:
    - same-host hot clone under live load is unsafe
    - stopped-host / offline investigation is operationally safe
    - the seeded-boundary and startup-tooling fixes are real code findings
    - the aggregate tooling notes below remain valid as historical debug context
-6. what is no longer valid as current runtime plan:
+8. what is no longer valid as current runtime plan:
    - continuing the bounded seeded replay loop until readiness as the chosen
      runtime restore path
    - treating manual cursor-by-cursor replay orchestration as acceptable
@@ -212,33 +225,70 @@ The current conclusions are:
 
 Recommended operational posture now:
 
-1. keep the bot stopped while discovery remains fail-closed and non-publishing
+1. keep the bot running only in the current safe `bootstrap_degraded` posture
 2. keep `execution.enabled = false`
 3. do not resume the old long-running replay as the runtime restore path
-4. do not start Stage 2 yet
+4. do not call the current server state “recovered” in the healthy sense
 5. use this file for Stage 1 findings and investigation history
-6. use `DISCOVERY_RUNTIME_RESTORE_PLAN_2026-03-23.md` for the current runtime
-   restore contract and incident-response actions
+6. use `DISCOVERY_RUNTIME_RESTORE_PLAN_2026-03-23.md` for the active restore
+   contract and the remaining incident-closure work
 
-### 2.5 Server state (updated 2026-03-23)
+### 2.5 Server state (updated 2026-03-24)
 
-- Deployed binary commit: `70e959df677f35347fd25b2a1ed91481b6d90769` (unchanged)
-- Production runtime repo / last old offline tooling commit before the latest investigation: `02f887a3a37ad57cf09578c9105d1f11d08744d8`
-- Current server repo / offline tooling checkout used for the latest stopped-host investigation: `ae688b7fb84cead93185f6f5bbd50ac32f59f452`
-- Current stabilized host config after stopping the failed raw bridge:
+- Live runtime repo / deployed build: `40fff47`
+- Historical stopped-host investigation checkout preserved below:
+  - old offline tooling checkpoint before the last investigation:
+    `02f887a3a37ad57cf09578c9105d1f11d08744d8`
+  - latest stopped-host aggregate validation checkout:
+    `ae688b7fb84cead93185f6f5bbd50ac32f59f452`
+- Current live host config relevant to restore:
   - `scoring_window_days = 5`
   - `metric_snapshot_interval_seconds = 3600`
   - `scoring_aggregates_write_enabled = false`
   - `scoring_aggregates_enabled = false`
-- Service: intentionally stopped and left inactive to stop burning Yellowstone / gRPC tokens while discovery remains fail-closed and non-publishing
-- `execution.enabled = false`
-- `active_follow_wallets = 0`
-- Stabilized stopped-state checks:
-  - `systemctl is-active solana-copy-bot.service -> inactive`
-  - no active `copybot-app`
-  - no active `backfill_discovery_scoring`
-  - no active `sqlite3 .*live_copybot`
-  - unrelated `copybot-executor` / `copybot-adapter` processes may still exist; they are not the stopped discovery runtime
+  - `execution.enabled = false`
+  - live config paths were converted to absolute state paths during rollout
+- Current live service state:
+  - `solana-copy-bot.service -> active`
+  - `copybot-adapter.service -> active`
+  - `copybot-executor.service -> active`
+- Current live discovery state:
+  - `runtime_state = bootstrap_degraded_publication_truth`
+  - `runtime_mode = bootstrap_degraded`
+  - `scoring_source = bootstrap_degraded_publication_truth_raw_window_degraded`
+  - `active_follow_wallets = 15`
+  - `published_wallet_count = 15`
+  - the current bootstrap universe was manually bridged from the latest
+    `wallet_metrics` top-15 snapshot at
+    `last_published_window_start = 2026-03-19T12:00:00Z`
+- Current live restore surfaces:
+  - runtime artifact baseline exists at
+    `/var/www/solana-copy-bot/state/discovery_restore/artifacts/latest.json`
+  - recent raw journal sidecar exists at
+    `/var/www/solana-copy-bot/state/discovery_recent_raw.db`
+  - recent raw snapshot baseline exists at
+    `/var/www/solana-copy-bot/state/discovery_restore/recent_raw/latest.sqlite`
+- Current timer state:
+  - `copybot-discovery-runtime-export.timer -> active/enabled`
+  - `copybot-discovery-recent-raw-snapshot.timer -> inactive/disabled`
+  - runtime artifact export is already running on cadence
+  - recent raw snapshot timer was disabled after a live-write contention issue
+- Current server-side restore drill result:
+  - fresh DB restore from live artifact + live recent raw snapshot succeeds
+  - `journal_available = true`
+  - `journal_replayed = true`
+  - `journal_covers_artifact_cursor = true`
+  - `replayed_rows = 61887`
+  - `raw_coverage_satisfied = false`
+  - final verdict = `bootstrap_degraded`
+- Business meaning of the current server state:
+  - the dead multi-day replay path is no longer the active plan
+  - discovery is alive and holding `15` wallets instead of zero
+  - copy trading / shadow trading are still not opening positions
+  - the server is stabilized, but the incident is not yet closed in the
+    trading-ready sense
+
+- Historical stopped-host investigation record preserved below.
 - Aggregate backfill status: **blocked, but materially narrowed**:
   - same-host hot clone under active live load was aborted as unsafe after pressure spiked to:
     - `observed_swap_writer_pending_requests = 4224`
