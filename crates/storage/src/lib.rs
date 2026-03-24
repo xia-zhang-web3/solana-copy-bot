@@ -151,6 +151,7 @@ pub struct SqliteSnapshotPolicy {
     pub pause_between_steps: StdDuration,
     pub retry_backoff_ms: Vec<u64>,
     pub max_attempt_duration: Option<StdDuration>,
+    pub pin_source_snapshot: bool,
 }
 
 impl Default for SqliteSnapshotPolicy {
@@ -163,6 +164,7 @@ impl Default for SqliteSnapshotPolicy {
             max_attempt_duration: Some(StdDuration::from_millis(
                 SQLITE_SNAPSHOT_DEFAULT_MAX_ATTEMPT_DURATION_MS,
             )),
+            pin_source_snapshot: true,
         }
     }
 }
@@ -226,6 +228,42 @@ fn set_snapshot_progress(
     summary.total_page_count = total_page_count;
     summary.remaining_page_count = remaining_page_count.min(total_page_count);
     summary.copied_page_count = total_page_count.saturating_sub(summary.remaining_page_count);
+}
+
+struct SqliteSnapshotReadTransactionGuard<'a> {
+    conn: &'a Connection,
+    active: bool,
+}
+
+impl<'a> SqliteSnapshotReadTransactionGuard<'a> {
+    fn begin(conn: &'a Connection) -> Result<Self> {
+        conn.execute_batch("BEGIN DEFERRED TRANSACTION")
+            .context("failed to begin sqlite snapshot read transaction")?;
+        conn.query_row("SELECT COUNT(*) FROM sqlite_schema", [], |_row| Ok(()))
+            .context("failed to materialize sqlite snapshot read transaction")?;
+        Ok(Self { conn, active: true })
+    }
+}
+
+impl Drop for SqliteSnapshotReadTransactionGuard<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
+    }
+}
+
+fn prepare_snapshot_destination(destination: &Connection) -> Result<()> {
+    destination
+        .pragma_update(None, "journal_mode", "OFF")
+        .context("failed to set sqlite snapshot destination journal_mode=OFF")?;
+    destination
+        .pragma_update(None, "synchronous", "OFF")
+        .context("failed to set sqlite snapshot destination synchronous=OFF")?;
+    destination
+        .pragma_update(None, "temp_store", "MEMORY")
+        .context("failed to set sqlite snapshot destination temp_store=MEMORY")?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1659,6 +1697,62 @@ impl SqliteStore {
         destination
             .busy_timeout(policy.busy_timeout)
             .context("failed to set sqlite snapshot busy_timeout")?;
+        loop {
+            match prepare_snapshot_destination(&destination) {
+                Ok(()) => break,
+                Err(error) => {
+                    if let Some(reason) = retry_reason_from_sqlite_error(&error) {
+                        record_snapshot_retry(&mut summary, reason);
+                        note_sqlite_busy_error();
+                        if let Some(backoff_ms) =
+                            policy.retry_backoff_ms.get(summary.backup_retry_count)
+                        {
+                            summary.backup_retry_count =
+                                summary.backup_retry_count.saturating_add(1);
+                            note_sqlite_write_retry();
+                            thread::sleep(StdDuration::from_millis(*backoff_ms));
+                            continue;
+                        }
+                        summary.duration_ms =
+                            started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                        summary.retry_exhausted_reason = Some(retry_reason_from_summary(&summary));
+                        return Ok(SqliteSnapshotOutcome::RetryableBusy(summary));
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        let _source_read_tx = if policy.pin_source_snapshot {
+            let guard = loop {
+                match SqliteSnapshotReadTransactionGuard::begin(&self.conn) {
+                    Ok(guard) => break guard,
+                    Err(error) => {
+                        if let Some(reason) = retry_reason_from_sqlite_error(&error) {
+                            record_snapshot_retry(&mut summary, reason);
+                            note_sqlite_busy_error();
+                            if let Some(backoff_ms) =
+                                policy.retry_backoff_ms.get(summary.backup_retry_count)
+                            {
+                                summary.backup_retry_count =
+                                    summary.backup_retry_count.saturating_add(1);
+                                note_sqlite_write_retry();
+                                thread::sleep(StdDuration::from_millis(*backoff_ms));
+                                continue;
+                            }
+                            summary.duration_ms =
+                                started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                            summary.retry_exhausted_reason =
+                                Some(retry_reason_from_summary(&summary));
+                            return Ok(SqliteSnapshotOutcome::RetryableBusy(summary));
+                        }
+                        return Err(error);
+                    }
+                }
+            };
+            Some(guard)
+        } else {
+            None
+        };
         let backup = loop {
             match Backup::new(&self.conn, &mut destination) {
                 Ok(backup) => break backup,
@@ -2599,6 +2693,7 @@ mod tests {
     use chrono::Duration;
     use copybot_core_types::SwapEvent;
     use std::collections::HashSet;
+    use std::sync::atomic::AtomicBool;
     use tempfile::tempdir;
 
     fn copy_migrations_through(dest: &Path, max_version: &str) -> Result<()> {
@@ -10197,6 +10292,7 @@ mod tests {
                 pause_between_steps: StdDuration::from_millis(1),
                 retry_backoff_ms: vec![1, 1],
                 max_attempt_duration: Some(StdDuration::from_millis(1)),
+                pin_source_snapshot: true,
             },
         )?;
         blocker.conn.execute_batch("ROLLBACK")?;
@@ -10252,6 +10348,7 @@ mod tests {
                 pause_between_steps: StdDuration::from_millis(0),
                 retry_backoff_ms: vec![1, 1],
                 max_attempt_duration: Some(StdDuration::ZERO),
+                pin_source_snapshot: true,
             },
         )?;
 
@@ -10277,6 +10374,104 @@ mod tests {
         assert!(
             summary.copied_page_count < summary.total_page_count,
             "deferred outcome must not claim full completion"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn snapshot_into_path_with_policy_completes_under_concurrent_source_writes_when_snapshot_is_pinned(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let source_path = temp.path().join("snapshot-source-pinned.db");
+        let destination_path = temp.path().join("snapshot-destination-pinned.db");
+
+        {
+            let seed_store = SqliteStore::open(Path::new(&source_path))?;
+            seed_store
+                .conn
+                .execute_batch("CREATE TABLE snapshot_source(id INTEGER PRIMARY KEY, value TEXT);")
+                .context("failed creating pinned snapshot source table")?;
+            let large_value = "x".repeat(2048);
+            for idx in 0..2048 {
+                seed_store
+                    .conn
+                    .execute(
+                        "INSERT INTO snapshot_source(id, value) VALUES (?1, ?2)",
+                        params![idx, large_value],
+                    )
+                    .context("failed seeding pinned snapshot source table")?;
+            }
+        }
+
+        let source_store = SqliteStore::open_read_only(Path::new(&source_path))?;
+        let start_barrier = Arc::new(std::sync::Barrier::new(2));
+        let stop_writes = Arc::new(AtomicBool::new(false));
+        let writer_path = source_path.clone();
+        let writer_barrier = start_barrier.clone();
+        let writer_stop = stop_writes.clone();
+        let writer = thread::spawn(move || -> Result<()> {
+            let writer_store = SqliteStore::open(Path::new(&writer_path))?;
+            writer_store
+                .conn
+                .busy_timeout(StdDuration::from_millis(1))
+                .context("failed to shorten concurrent writer busy timeout")?;
+            writer_barrier.wait();
+            let mut counter: i64 = 3_000;
+            while !writer_stop.load(Ordering::Relaxed) {
+                let row_id = (counter % 256) + 1;
+                let _ = writer_store.conn.execute(
+                    "UPDATE snapshot_source SET value = ?1 WHERE id = ?2",
+                    params![format!("writer-{counter}"), row_id],
+                );
+                if counter % 16 == 0 {
+                    let _ = writer_store.conn.execute(
+                        "INSERT INTO snapshot_source(id, value) VALUES (?1, ?2)",
+                        params![counter, format!("writer-insert-{counter}")],
+                    );
+                }
+                counter += 1;
+            }
+            Ok(())
+        });
+
+        start_barrier.wait();
+        let outcome = source_store.snapshot_into_path_with_policy(
+            &destination_path,
+            &SqliteSnapshotPolicy {
+                busy_timeout: StdDuration::from_millis(5),
+                pages_per_step: 256,
+                pause_between_steps: StdDuration::from_millis(0),
+                retry_backoff_ms: vec![1, 5, 10],
+                max_attempt_duration: Some(StdDuration::from_secs(2)),
+                pin_source_snapshot: true,
+            },
+        )?;
+        stop_writes.store(true, Ordering::Relaxed);
+        writer
+            .join()
+            .expect("writer thread panicked")
+            .context("concurrent writer thread failed")?;
+
+        let SqliteSnapshotOutcome::Written(summary) = outcome else {
+            anyhow::bail!("expected pinned source snapshot backup to complete");
+        };
+        assert!(
+            summary.total_page_count > 0,
+            "written snapshot must report total page count"
+        );
+        assert_eq!(
+            summary.copied_page_count, summary.total_page_count,
+            "written snapshot must report full page coverage"
+        );
+
+        let snapshot_store = SqliteStore::open_read_only(&destination_path)?;
+        let copied_rows: i64 =
+            snapshot_store
+                .conn
+                .query_row("SELECT COUNT(*) FROM snapshot_source", [], |row| row.get(0))?;
+        assert!(
+            copied_rows >= 2048,
+            "snapshot must contain seeded source rows"
         );
         Ok(())
     }

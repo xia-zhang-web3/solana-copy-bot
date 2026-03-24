@@ -191,7 +191,7 @@ The current conclusions are:
    - restore must come from `runtime artifact` + `recent raw journal`
    - stale publication truth must not silently turn into trading-ready truth
 3. that new restore stack is now actually deployed on the live server:
-   - runtime repo / live build is now on commit `9661844`
+   - runtime repo / live build is now on commit `f19360f`
    - `solana-copy-bot.service` is running again
    - live discovery is no longer stuck at `active_follow_wallets = 0`
 4. the live server is still not healthy:
@@ -211,11 +211,15 @@ The current conclusions are:
 6. what remains open right now:
    - runtime has not yet exited from `bootstrap_degraded` to `healthy`
    - raw coverage is still insufficient for a real trading-ready restore
-   - the scheduled recent-raw snapshot timer is disabled because snapshotting
-     under live writes is not yet operationally safe
+   - the scheduled recent-raw snapshot timer is still disabled because the new
+     live rerun now exits honestly as bounded `deferred`, but still does not
+     complete a fresh large-journal snapshot on the server
    - address-scoped bounded gap-fill has now been tested against both the
      current QuickNode path and a separate Helius-specific path and still did
      not close the missing recent-raw window
+   - QuickNode-first program-history validation no longer dies instantly in
+     `429`, but on the real live window it still did not produce a terminal
+     verdict within a `900s` bounded run
 7. what remains valid from the aggregate investigation in this file:
    - same-host hot clone under live load is unsafe
    - stopped-host / offline investigation is operationally safe
@@ -240,7 +244,7 @@ Recommended operational posture now:
 
 ### 2.5 Server state (updated 2026-03-24)
 
-- Live runtime repo / deployed build: `9661844`
+- Live runtime repo / deployed build: `f19360f`
 - Historical stopped-host investigation checkout preserved below:
   - old offline tooling checkpoint before the last investigation:
     `02f887a3a37ad57cf09578c9105d1f11d08744d8`
@@ -281,11 +285,17 @@ Recommended operational posture now:
   - `copybot-discovery-runtime-export.timer -> active/enabled`
   - `copybot-discovery-recent-raw-snapshot.timer -> inactive/disabled`
   - runtime artifact export is already running on cadence
-  - recent raw snapshot timer was disabled after a live-write contention issue
+  - recent raw snapshot timer is still disabled after the new live rerun
+    because the bounded large-journal path now exits honestly, but only as
+    transient `deferred`, not as a completed fresh snapshot
 - Current provider posture:
   - QuickNode remains the active production path in live config
   - `[recent_raw_gap_fill]` in `/etc/solana-copy-bot/live.server.toml` still
     points at the existing QuickNode HTTP endpoint
+  - `[program_history_validation]` now also has explicit QuickNode pacing knobs:
+    - `max_requests_per_second = 60`
+    - `retry_429_max_attempts = 6`
+    - `retry_429_backoff_ms = 500`
   - no Helius endpoint was left active in live config
   - Helius was tested only via explicit CLI override / separate bin runs and
     was not adopted as the active server contract
@@ -319,6 +329,36 @@ Recommended operational posture now:
     - `sufficient_for_healthy_restore = false`
   - conclusion: provider swap / address-history fetch strategy did not improve
     coverage on the real incident window
+- Current program-history validation finding on the real server after
+  throttling adaptation:
+  - `discovery_program_history_source_validate` no longer failed immediately
+    with QuickNode `429`
+  - the same live missing window was rerun with local pacing / retry knobs
+    capped below the QuickNode `125 req/s` ceiling
+  - the process stayed alive and kept making progress, but still did not emit a
+    terminal JSON verdict before bounded `timeout 900`
+  - current conclusion: self-inflicted `429` storm was removed, but the
+    QuickNode block-history validation path is still operationally expensive on
+    the live incident window
+- Current recent-raw snapshot rerun finding on the real server after throughput
+  hardening:
+  - `discovery_recent_raw_snapshot --scheduled --json` now exits with an
+    explicit bounded terminal outcome instead of a many-minute ambiguous run
+  - observed live result:
+    - `state = deferred`
+    - `latest_surface_status = healthy`
+    - `latest_surface_action = deferred_due_to_attempt_budget`
+    - `terminal_reason = attempt_duration_budget_exhausted`
+    - `source_total_bytes = 1789535936`
+    - `snapshot_pages_per_step = 1024`
+    - `snapshot_max_attempt_duration_ms = 120000`
+    - `attempt_duration_ms = 120005`
+    - `backup_step_count = 14000`
+    - `backup_copied_page_count = 2048`
+    - `backup_total_page_count = 320813`
+  - current conclusion: the snapshot path is now operationally honest and
+    bounded, but it still did not finish a fresh large-journal snapshot on the
+    live server
 - Business meaning of the current server state:
   - the dead multi-day replay path is no longer the active plan
   - discovery is alive on a new fresh runtime DB and holding `15` wallets instead of zero

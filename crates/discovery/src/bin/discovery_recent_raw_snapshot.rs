@@ -1029,7 +1029,7 @@ fn write_fresh_scheduled_snapshot(
             Some(error.to_string()),
         ));
     }
-    if let Err(error) = copy_atomic(&archive_path, latest_snapshot_path)
+    if let Err(error) = link_or_copy_atomic(&archive_path, latest_snapshot_path)
         .with_context(|| format!("failed updating {}", latest_snapshot_path.display()))
     {
         return Ok(render_output(
@@ -1358,6 +1358,25 @@ fn cleanup_snapshot_temp(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
+fn link_or_copy_atomic(source_path: &Path, destination_path: &Path) -> Result<()> {
+    if let Some(parent) = destination_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating {}", parent.display()))?;
+    }
+    let temp_path = snapshot_temp_path(destination_path);
+    cleanup_snapshot_temp(&temp_path);
+    match fs::hard_link(source_path, &temp_path) {
+        Ok(()) => fs::rename(&temp_path, destination_path).with_context(|| {
+            format!(
+                "failed renaming {} to {}",
+                temp_path.display(),
+                destination_path.display()
+            )
+        }),
+        Err(_) => copy_atomic(source_path, destination_path),
+    }
+}
+
 fn snapshot_manifest(
     created_at: DateTime<Utc>,
     source_db_path: &Path,
@@ -1612,6 +1631,8 @@ mod tests {
     use copybot_storage::RecentRawJournalStateRow;
     use serde_json::Value;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
     use std::time::Duration as StdDuration;
     use tempfile::tempdir;
 
@@ -1725,6 +1746,7 @@ mod tests {
                 pause_between_steps: StdDuration::from_millis(0),
                 retry_backoff_ms: vec![1, 1],
                 max_attempt_duration: Some(StdDuration::ZERO),
+                pin_source_snapshot: true,
             }),
         )?;
         assert_eq!(deferred.exit_code, 75);
@@ -1749,6 +1771,78 @@ mod tests {
                     .unwrap_or_default(),
             "bounded deferred outcome must expose unfinished backup progress"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn scheduled_run_completes_under_live_source_writes() -> Result<()> {
+        let fixture = make_fixture("recent-raw-snapshot-live-writes")?;
+        let now = parse_ts("2026-03-23T12:00:00Z")?;
+        seed_recent_raw_journal_many(&fixture.journal_store, now, 1024)?;
+
+        let start_barrier = Arc::new(Barrier::new(2));
+        let stop_writes = Arc::new(AtomicBool::new(false));
+        let writer_path = fixture.journal_db_path.clone();
+        let writer_barrier = start_barrier.clone();
+        let writer_stop = stop_writes.clone();
+        let writer_now = now + Duration::minutes(1);
+        let writer = std::thread::spawn(move || -> Result<()> {
+            let writer_store = SqliteStore::open(&writer_path)?;
+            writer_barrier.wait();
+            let mut counter = 0usize;
+            while !writer_stop.load(Ordering::Relaxed) {
+                writer_store.insert_recent_raw_journal_batch(
+                    &[make_swap(
+                        &format!("sig-live-{counter:04}"),
+                        writer_now + Duration::seconds(counter as i64),
+                        20_000 + counter as u64,
+                    )],
+                    writer_now + Duration::seconds(counter as i64),
+                )?;
+                counter += 1;
+            }
+            Ok(())
+        });
+
+        start_barrier.wait();
+        let written = run(Config {
+            config_path: fixture.config_path.clone(),
+            journal_db_path: Some(fixture.journal_db_path.clone()),
+            output_path: None,
+            scheduled: true,
+            force: true,
+            json: true,
+            now,
+        })?;
+        stop_writes.store(true, Ordering::Relaxed);
+        writer
+            .join()
+            .expect("writer thread panicked")
+            .context("live writer thread failed")?;
+
+        assert_eq!(written.exit_code, 0);
+        let output: Value = serde_json::from_str(&written.rendered_output)?;
+        assert_eq!(output["state"], "written");
+        assert_eq!(output["terminal_reason"], "written");
+        assert!(
+            output["backup_copied_page_count"]
+                .as_u64()
+                .unwrap_or_default()
+                >= output["backup_total_page_count"]
+                    .as_u64()
+                    .unwrap_or_default(),
+            "completed snapshot must report full backup page coverage"
+        );
+
+        let latest_snapshot_path = fixture.snapshot_dir().join("latest.sqlite");
+        let latest_manifest: RecentRawJournalSnapshotManifest =
+            load_json(&fixture.snapshot_dir().join("latest.json"))?;
+        let latest_state = load_snapshot_state(&latest_snapshot_path)?;
+        assert_snapshot_manifest_matches_state(
+            &latest_manifest,
+            &latest_state,
+            &latest_snapshot_path,
+        )?;
         Ok(())
     }
 

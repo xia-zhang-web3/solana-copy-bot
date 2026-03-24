@@ -38,19 +38,28 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 4. Operators should inspect `terminal_reason`, `attempt_duration_ms`,
    `backup_total_page_count`, `backup_copied_page_count`, `source_db_bytes`, and
    `source_wal_bytes` before deciding the timer is healthy on a large journal.
-5. Expected non-fatal states:
+5. The snapshot path now pins the source journal inside a read transaction for
+   the duration of the online backup, so live writes no longer force the
+   snapshot to chase a moving target forever.
+6. Latest surface publication now prefers a hard link from the fresh archive
+   snapshot to `latest.sqlite`, falling back to an atomic copy only if linking
+   is unavailable.
+7. Expected non-fatal states:
    - `written`
    - `self_healed_latest_surface`
    - `skipped_not_due`
    - `deferred`
    - `retryable_busy`
-6. `deferred` means the service exited cleanly with a transient non-success
+8. `deferred` means the service exited cleanly with a transient non-success
    reason such as bounded attempt-duration exhaustion or, if a healthy latest
    surface existed, retained that surface after the failed attempt.
-7. `retryable_busy` means retryable contention happened without a healthy latest
+9. After the practical-completion rollout, repeated `deferred` with tiny
+   `backup_copied_page_count` relative to `backup_total_page_count` should be
+   treated as abnormal and investigated before leaving the timer disabled.
+10. `retryable_busy` means retryable contention happened without a healthy latest
    surface to defer onto; rerun or investigate before calling the snapshot
    surface healthy again.
-8. `hard_failure` remains a real failure and should leave the service in the
+11. `hard_failure` remains a real failure and should leave the service in the
    normal non-zero failed state.
 
 ## Server target paths

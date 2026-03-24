@@ -71,6 +71,8 @@ Snapshot outcome contract:
    - snapshot hit bounded retryable SQLite contention
    - latest healthy snapshot surface was retained
    - timer may remain enabled and retry on the next run
+   - after the practical-completion rollout, this should stay transient rather
+     than becoming the steady-state result for every large-journal run
 5. `retryable_busy`:
    - snapshot hit bounded retryable SQLite contention
    - there was no healthy latest surface to defer onto, or the run was forced
@@ -84,9 +86,12 @@ Healthy timer interpretation:
 1. `written`, `self_healed_latest_surface`, and `skipped_not_due` are healthy.
 2. `deferred` is acceptable as a transient state if it is occasional and the
    latest snapshot surface remains usable.
-3. repeated `retryable_busy` means the timer is not closing the steady-state
+3. repeated `deferred` with very small `backup_copied_page_count` relative to
+   `backup_total_page_count` means the snapshot path is not making meaningful
+   forward progress and should be investigated.
+4. repeated `retryable_busy` means the timer is not closing the steady-state
    snapshot contract and needs operator follow-up.
-4. any `hard_failure` is abnormal.
+5. any `hard_failure` is abnormal.
 
 ## Incident restore flow
 
