@@ -3,9 +3,9 @@ use chrono::{DateTime, Duration, Utc};
 use copybot_config::load_from_path;
 use copybot_discovery::runtime_restore_ops::{
     copy_atomic, journal_snapshot_archive_path, journal_snapshot_latest_metadata_path,
-    journal_snapshot_latest_path, journal_snapshot_metadata_path, load_json,
-    prune_rotated_archives, resolve_db_path, resolve_relative_to_config, write_json_atomic,
-    JOURNAL_SNAPSHOT_ARCHIVE_PREFIX, JOURNAL_SNAPSHOT_ARCHIVE_SUFFIX,
+    journal_snapshot_latest_path, journal_snapshot_metadata_path, load_json, resolve_db_path,
+    resolve_relative_to_config, write_json_atomic, JOURNAL_SNAPSHOT_ARCHIVE_PREFIX,
+    JOURNAL_SNAPSHOT_ARCHIVE_SUFFIX,
 };
 use copybot_storage::{
     DiscoveryRuntimeCursor, RecentRawJournalStateRow, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
@@ -35,6 +35,8 @@ const SNAPSHOT_SMALL_MAX_ATTEMPT_DURATION_MS: u64 = 45_000;
 const SNAPSHOT_MEDIUM_MAX_ATTEMPT_DURATION_MS: u64 = 60_000;
 const SNAPSHOT_LARGE_MAX_ATTEMPT_DURATION_MS: u64 = 90_000;
 const SNAPSHOT_HUGE_MAX_ATTEMPT_DURATION_MS: u64 = 120_000;
+const STAGED_ARCHIVE_SNAPSHOT_SUFFIX: &str = ".archive-staged";
+const STAGED_ARCHIVE_METADATA_SUFFIX: &str = ".archive-staged.json";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -87,6 +89,10 @@ struct SnapshotOutput {
     cadence_minutes: Option<u64>,
     retention: Option<usize>,
     pruned_snapshot_paths: Vec<String>,
+    cleanup_removed_paths: Vec<String>,
+    archive_promoted: bool,
+    archive_set_count_before: Option<usize>,
+    archive_set_count_after: Option<usize>,
     source_db_bytes: u64,
     source_wal_bytes: u64,
     source_total_bytes: u64,
@@ -238,6 +244,37 @@ struct SnapshotContext {
 struct SnapshotExecution {
     rendered_output: String,
     exit_code: i32,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SnapshotArchiveMaintenance {
+    cleanup_removed_paths: Vec<PathBuf>,
+    pruned_snapshot_paths: Vec<PathBuf>,
+    archive_set_count_before: Option<usize>,
+    archive_set_count_after: Option<usize>,
+}
+
+impl SnapshotArchiveMaintenance {
+    fn record_pass(
+        &mut self,
+        archive_set_count_before: usize,
+        archive_set_count_after: usize,
+        cleanup_removed_paths: Vec<PathBuf>,
+        pruned_snapshot_paths: Vec<PathBuf>,
+    ) {
+        if self.archive_set_count_before.is_none() {
+            self.archive_set_count_before = Some(archive_set_count_before);
+        }
+        self.archive_set_count_after = Some(archive_set_count_after);
+        self.cleanup_removed_paths.extend(cleanup_removed_paths);
+        self.pruned_snapshot_paths.extend(pruned_snapshot_paths);
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct SnapshotOutputContext {
+    archive_promoted: bool,
+    archive_maintenance: SnapshotArchiveMaintenance,
 }
 
 #[derive(Debug, Clone)]
@@ -575,12 +612,12 @@ fn run_with_snapshot_policy_override(
                         None,
                         None,
                         None,
-                        &[],
                         Some(&manifest),
                         Some(&summary),
                         None,
                         None,
                         None,
+                        SnapshotOutputContext::default(),
                     ),
                     Err(error) => render_output(
                         SnapshotState::HardFailure,
@@ -594,12 +631,12 @@ fn run_with_snapshot_policy_override(
                         None,
                         None,
                         None,
-                        &[],
                         Some(&manifest),
                         Some(&summary),
                         None,
                         None,
                         Some(error.to_string()),
+                        SnapshotOutputContext::default(),
                     ),
                 }
             }
@@ -615,12 +652,12 @@ fn run_with_snapshot_policy_override(
                 None,
                 None,
                 None,
-                &[],
                 None,
                 Some(&summary),
                 Some(summary_reason(&summary)),
                 None,
                 None,
+                SnapshotOutputContext::default(),
             ),
             Err(SnapshotWriteError::Deferred { summary }) => render_output(
                 SnapshotState::Deferred,
@@ -634,12 +671,12 @@ fn run_with_snapshot_policy_override(
                 None,
                 None,
                 None,
-                &[],
                 None,
                 Some(&summary),
                 None,
                 Some(deferred_summary_reason(&summary)),
                 None,
+                SnapshotOutputContext::default(),
             ),
             Err(SnapshotWriteError::HardFailure { summary, reason }) => render_output(
                 SnapshotState::HardFailure,
@@ -653,12 +690,12 @@ fn run_with_snapshot_policy_override(
                 None,
                 None,
                 None,
-                &[],
                 None,
                 summary.as_ref(),
                 None,
                 None,
                 Some(reason),
+                SnapshotOutputContext::default(),
             ),
         }
     };
@@ -707,6 +744,8 @@ fn run_scheduled(
         .unwrap_or(true);
 
     if !config.force && latest_surface.status == LatestSurfaceStatus::Healthy && !latest_is_due {
+        let archive_maintenance =
+            enforce_snapshot_archive_retention(&snapshot_dir, retention, &[])?;
         let manifest = latest_surface
             .manifest
             .as_ref()
@@ -723,12 +762,15 @@ fn run_scheduled(
             None,
             Some(cadence_minutes),
             Some(retention),
-            &[],
             Some(manifest),
             None,
             None,
             None,
             None,
+            SnapshotOutputContext {
+                archive_promoted: false,
+                archive_maintenance,
+            },
         ));
     }
 
@@ -740,6 +782,8 @@ fn run_scheduled(
             &latest_metadata_path,
             latest_surface.clone(),
         )? {
+            let archive_maintenance =
+                enforce_snapshot_archive_retention(&snapshot_dir, retention, &[])?;
             return Ok(render_output(
                 SnapshotState::SelfHealedLatestSurface,
                 latest_surface.status,
@@ -752,15 +796,20 @@ fn run_scheduled(
                 None,
                 Some(cadence_minutes),
                 Some(retention),
-                &[],
                 Some(&manifest),
                 None,
                 None,
                 None,
                 None,
+                SnapshotOutputContext {
+                    archive_promoted: false,
+                    archive_maintenance,
+                },
             ));
         }
     }
+
+    let archive_maintenance = enforce_snapshot_archive_retention(&snapshot_dir, retention, &[])?;
 
     let action = if latest_surface.status == LatestSurfaceStatus::Healthy {
         LatestSurfaceAction::RefreshedFromSource
@@ -782,6 +831,7 @@ fn run_scheduled(
         snapshot_context,
         latest_surface.manifest.as_ref(),
         config.force,
+        archive_maintenance,
     )
 }
 
@@ -925,13 +975,16 @@ fn write_fresh_scheduled_snapshot(
     snapshot_context: &SnapshotContext,
     latest_manifest: Option<&RecentRawJournalSnapshotManifest>,
     force: bool,
+    mut archive_maintenance: SnapshotArchiveMaintenance,
 ) -> Result<SnapshotOutput> {
     let archive_path = journal_snapshot_archive_path(snapshot_dir, now);
     let archive_metadata_path = journal_snapshot_metadata_path(&archive_path);
+    let staged_archive_path = staged_snapshot_archive_path(snapshot_dir, now);
+    let staged_archive_metadata_path = staged_snapshot_metadata_path(&staged_archive_path);
     let (manifest, summary) = match write_snapshot_with_policy(
         source_db_path,
         source_store,
-        &archive_path,
+        &staged_archive_path,
         now,
         &snapshot_context.policy,
     ) {
@@ -952,12 +1005,15 @@ fn write_fresh_scheduled_snapshot(
                 None,
                 Some(cadence_minutes),
                 Some(retention),
-                &[],
                 latest_manifest,
                 Some(&summary),
                 Some(reason),
                 deferred_reason,
                 None,
+                SnapshotOutputContext {
+                    archive_promoted: false,
+                    archive_maintenance,
+                },
             ));
         }
         Err(SnapshotWriteError::Deferred { summary }) => {
@@ -976,12 +1032,15 @@ fn write_fresh_scheduled_snapshot(
                 None,
                 Some(cadence_minutes),
                 Some(retention),
-                &[],
                 latest_manifest,
                 Some(&summary),
                 None,
                 deferred_reason,
                 None,
+                SnapshotOutputContext {
+                    archive_promoted: false,
+                    archive_maintenance,
+                },
             ));
         }
         Err(SnapshotWriteError::HardFailure { summary, reason }) => {
@@ -997,18 +1056,23 @@ fn write_fresh_scheduled_snapshot(
                 None,
                 Some(cadence_minutes),
                 Some(retention),
-                &[],
                 latest_manifest,
                 summary.as_ref(),
                 None,
                 None,
                 Some(reason),
+                SnapshotOutputContext {
+                    archive_promoted: false,
+                    archive_maintenance,
+                },
             ));
         }
     };
-    if let Err(error) = write_json_atomic(&archive_metadata_path, &manifest)
-        .with_context(|| format!("failed writing {}", archive_metadata_path.display()))
+    if let Err(error) = write_json_atomic(&staged_archive_metadata_path, &manifest)
+        .with_context(|| format!("failed writing {}", staged_archive_metadata_path.display()))
     {
+        let _ = remove_snapshot_set(&staged_archive_path);
+        let _ = remove_file_if_exists(&staged_archive_metadata_path);
         return Ok(render_output(
             SnapshotState::HardFailure,
             latest_surface_status,
@@ -1021,69 +1085,38 @@ fn write_fresh_scheduled_snapshot(
             Some(&archive_path),
             Some(cadence_minutes),
             Some(retention),
-            &[],
             Some(&manifest),
             Some(&summary),
             None,
             None,
             Some(error.to_string()),
-        ));
-    }
-    if let Err(error) = link_or_copy_atomic(&archive_path, latest_snapshot_path)
-        .with_context(|| format!("failed updating {}", latest_snapshot_path.display()))
-    {
-        return Ok(render_output(
-            SnapshotState::HardFailure,
-            latest_surface_status,
-            LatestSurfaceAction::UnchangedDueToHardFailure,
-            snapshot_context,
-            config_path,
-            source_db_path,
-            latest_snapshot_path,
-            latest_metadata_path,
-            Some(&archive_path),
-            Some(cadence_minutes),
-            Some(retention),
-            &[],
-            Some(&manifest),
-            Some(&summary),
-            None,
-            None,
-            Some(error.to_string()),
-        ));
-    }
-    if let Err(error) = write_json_atomic(latest_metadata_path, &manifest)
-        .with_context(|| format!("failed writing {}", latest_metadata_path.display()))
-    {
-        return Ok(render_output(
-            SnapshotState::HardFailure,
-            latest_surface_status,
-            LatestSurfaceAction::UnchangedDueToHardFailure,
-            snapshot_context,
-            config_path,
-            source_db_path,
-            latest_snapshot_path,
-            latest_metadata_path,
-            Some(&archive_path),
-            Some(cadence_minutes),
-            Some(retention),
-            &[],
-            Some(&manifest),
-            Some(&summary),
-            None,
-            None,
-            Some(error.to_string()),
+            SnapshotOutputContext {
+                archive_promoted: false,
+                archive_maintenance,
+            },
         ));
     }
 
-    let pruned = match prune_rotated_archives(
+    let staged_preserve_paths = vec![
+        staged_archive_path.clone(),
+        staged_archive_metadata_path.clone(),
+    ];
+    match enforce_snapshot_archive_retention(
         snapshot_dir,
-        JOURNAL_SNAPSHOT_ARCHIVE_PREFIX,
-        JOURNAL_SNAPSHOT_ARCHIVE_SUFFIX,
-        retention,
+        retention.saturating_sub(1),
+        &staged_preserve_paths,
     ) {
-        Ok(pruned) => pruned,
+        Ok(maintenance) => {
+            archive_maintenance.record_pass(
+                maintenance.archive_set_count_before.unwrap_or_default(),
+                maintenance.archive_set_count_after.unwrap_or_default(),
+                maintenance.cleanup_removed_paths,
+                maintenance.pruned_snapshot_paths,
+            );
+        }
         Err(error) => {
+            let _ = remove_snapshot_set(&staged_archive_path);
+            let _ = remove_file_if_exists(&staged_archive_metadata_path);
             return Ok(render_output(
                 SnapshotState::HardFailure,
                 latest_surface_status,
@@ -1096,43 +1129,175 @@ fn write_fresh_scheduled_snapshot(
                 Some(&archive_path),
                 Some(cadence_minutes),
                 Some(retention),
-                &[],
                 Some(&manifest),
                 Some(&summary),
                 None,
                 None,
                 Some(error.to_string()),
+                SnapshotOutputContext {
+                    archive_promoted: false,
+                    archive_maintenance,
+                },
             ));
         }
-    };
-    for snapshot_path in &pruned {
-        let metadata_path = journal_snapshot_metadata_path(snapshot_path);
-        if metadata_path.exists() {
-            if let Err(error) = fs::remove_file(&metadata_path)
-                .with_context(|| format!("failed removing {}", metadata_path.display()))
-            {
-                return Ok(render_output(
-                    SnapshotState::HardFailure,
-                    latest_surface_status,
-                    LatestSurfaceAction::UnchangedDueToHardFailure,
-                    snapshot_context,
-                    config_path,
-                    source_db_path,
-                    latest_snapshot_path,
-                    latest_metadata_path,
-                    Some(&archive_path),
-                    Some(cadence_minutes),
-                    Some(retention),
-                    &[],
-                    Some(&manifest),
-                    Some(&summary),
-                    None,
-                    None,
-                    Some(error.to_string()),
-                ));
-            }
-        }
     }
+
+    if let Err(error) = link_or_copy_atomic(&staged_archive_path, latest_snapshot_path)
+        .with_context(|| format!("failed updating {}", latest_snapshot_path.display()))
+    {
+        let _ = remove_snapshot_set(&staged_archive_path);
+        let _ = remove_file_if_exists(&staged_archive_metadata_path);
+        return Ok(render_output(
+            SnapshotState::HardFailure,
+            latest_surface_status,
+            LatestSurfaceAction::UnchangedDueToHardFailure,
+            snapshot_context,
+            config_path,
+            source_db_path,
+            latest_snapshot_path,
+            latest_metadata_path,
+            Some(&archive_path),
+            Some(cadence_minutes),
+            Some(retention),
+            Some(&manifest),
+            Some(&summary),
+            None,
+            None,
+            Some(error.to_string()),
+            SnapshotOutputContext {
+                archive_promoted: false,
+                archive_maintenance,
+            },
+        ));
+    }
+    if let Err(error) = write_json_atomic(latest_metadata_path, &manifest)
+        .with_context(|| format!("failed writing {}", latest_metadata_path.display()))
+    {
+        let _ = remove_snapshot_set(&staged_archive_path);
+        let _ = remove_file_if_exists(&staged_archive_metadata_path);
+        return Ok(render_output(
+            SnapshotState::HardFailure,
+            latest_surface_status,
+            LatestSurfaceAction::UnchangedDueToHardFailure,
+            snapshot_context,
+            config_path,
+            source_db_path,
+            latest_snapshot_path,
+            latest_metadata_path,
+            Some(&archive_path),
+            Some(cadence_minutes),
+            Some(retention),
+            Some(&manifest),
+            Some(&summary),
+            None,
+            None,
+            Some(error.to_string()),
+            SnapshotOutputContext {
+                archive_promoted: false,
+                archive_maintenance,
+            },
+        ));
+    }
+    if let Err(error) = invoke_pre_archive_promotion_hook(&staged_archive_path) {
+        let _ = remove_snapshot_set(&staged_archive_path);
+        let _ = remove_file_if_exists(&staged_archive_metadata_path);
+        return Ok(render_output(
+            SnapshotState::HardFailure,
+            latest_surface_status,
+            LatestSurfaceAction::UnchangedDueToHardFailure,
+            snapshot_context,
+            config_path,
+            source_db_path,
+            latest_snapshot_path,
+            latest_metadata_path,
+            Some(&archive_path),
+            Some(cadence_minutes),
+            Some(retention),
+            Some(&manifest),
+            Some(&summary),
+            None,
+            None,
+            Some(format!(
+                "failed running pre-archive promotion hook for {}: {error}",
+                staged_archive_path.display()
+            )),
+            SnapshotOutputContext {
+                archive_promoted: false,
+                archive_maintenance,
+            },
+        ));
+    }
+
+    if let Err(error) = fs::rename(&staged_archive_metadata_path, &archive_metadata_path)
+        .with_context(|| {
+            format!(
+                "failed renaming {} to {}",
+                staged_archive_metadata_path.display(),
+                archive_metadata_path.display()
+            )
+        })
+    {
+        let _ = remove_snapshot_set(&staged_archive_path);
+        let _ = remove_file_if_exists(&archive_metadata_path);
+        let _ = remove_file_if_exists(&staged_archive_metadata_path);
+        return Ok(render_output(
+            SnapshotState::HardFailure,
+            latest_surface_status,
+            LatestSurfaceAction::UnchangedDueToHardFailure,
+            snapshot_context,
+            config_path,
+            source_db_path,
+            latest_snapshot_path,
+            latest_metadata_path,
+            Some(&archive_path),
+            Some(cadence_minutes),
+            Some(retention),
+            Some(&manifest),
+            Some(&summary),
+            None,
+            None,
+            Some(error.to_string()),
+            SnapshotOutputContext {
+                archive_promoted: false,
+                archive_maintenance,
+            },
+        ));
+    }
+    if let Err(error) = fs::rename(&staged_archive_path, &archive_path).with_context(|| {
+        format!(
+            "failed renaming {} to {}",
+            staged_archive_path.display(),
+            archive_path.display()
+        )
+    }) {
+        let _ = remove_file_if_exists(&archive_metadata_path);
+        let _ = remove_snapshot_set(&staged_archive_path);
+        let _ = remove_file_if_exists(&staged_archive_metadata_path);
+        return Ok(render_output(
+            SnapshotState::HardFailure,
+            latest_surface_status,
+            LatestSurfaceAction::UnchangedDueToHardFailure,
+            snapshot_context,
+            config_path,
+            source_db_path,
+            latest_snapshot_path,
+            latest_metadata_path,
+            Some(&archive_path),
+            Some(cadence_minutes),
+            Some(retention),
+            Some(&manifest),
+            Some(&summary),
+            None,
+            None,
+            Some(error.to_string()),
+            SnapshotOutputContext {
+                archive_promoted: false,
+                archive_maintenance,
+            },
+        ));
+    }
+    archive_maintenance.archive_set_count_after =
+        Some(list_archive_snapshot_paths(snapshot_dir)?.len());
 
     Ok(render_output(
         SnapshotState::Written,
@@ -1146,12 +1311,15 @@ fn write_fresh_scheduled_snapshot(
         Some(&archive_path),
         Some(cadence_minutes),
         Some(retention),
-        &pruned,
         Some(&manifest),
         Some(&summary),
         None,
         None,
         None,
+        SnapshotOutputContext {
+            archive_promoted: true,
+            archive_maintenance,
+        },
     ))
 }
 
@@ -1186,6 +1354,192 @@ fn newest_snapshot_archive(snapshot_dir: &Path) -> Option<PathBuf> {
         .collect::<Vec<_>>();
     archives.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
     archives.into_iter().next()
+}
+
+fn staged_snapshot_archive_path(snapshot_dir: &Path, now: DateTime<Utc>) -> PathBuf {
+    let final_archive_path = journal_snapshot_archive_path(snapshot_dir, now);
+    let file_name = final_archive_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("discovery_recent_raw.sqlite");
+    final_archive_path.with_file_name(format!(".{file_name}{STAGED_ARCHIVE_SNAPSHOT_SUFFIX}"))
+}
+
+fn staged_snapshot_metadata_path(staged_snapshot_path: &Path) -> PathBuf {
+    let file_name = staged_snapshot_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("discovery_recent_raw.sqlite");
+    staged_snapshot_path.with_file_name(format!("{file_name}{STAGED_ARCHIVE_METADATA_SUFFIX}"))
+}
+
+fn sqlite_snapshot_wal_path(snapshot_path: &Path) -> PathBuf {
+    let mut wal_path = snapshot_path.as_os_str().to_os_string();
+    wal_path.push("-wal");
+    PathBuf::from(wal_path)
+}
+
+fn sqlite_snapshot_shm_path(snapshot_path: &Path) -> PathBuf {
+    let mut shm_path = snapshot_path.as_os_str().to_os_string();
+    shm_path.push("-shm");
+    PathBuf::from(shm_path)
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<bool> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("failed removing {}", path.display())),
+    }
+}
+
+fn remove_snapshot_set(snapshot_path: &Path) -> Result<Vec<PathBuf>> {
+    let mut removed_paths = Vec::new();
+    for path in [
+        snapshot_path.to_path_buf(),
+        journal_snapshot_metadata_path(snapshot_path),
+        sqlite_snapshot_wal_path(snapshot_path),
+        sqlite_snapshot_shm_path(snapshot_path),
+    ] {
+        if remove_file_if_exists(&path)? {
+            removed_paths.push(path);
+        }
+    }
+    Ok(removed_paths)
+}
+
+fn list_archive_snapshot_paths(snapshot_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut archives = Vec::new();
+    if !snapshot_dir.exists() {
+        return Ok(archives);
+    }
+    for entry in fs::read_dir(snapshot_dir)
+        .with_context(|| format!("failed reading {}", snapshot_dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("failed reading {}", snapshot_dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with(JOURNAL_SNAPSHOT_ARCHIVE_PREFIX)
+            && name.ends_with(JOURNAL_SNAPSHOT_ARCHIVE_SUFFIX)
+        {
+            archives.push(path);
+        }
+    }
+    archives.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+    Ok(archives)
+}
+
+fn remove_orphan_archive_sidecars(snapshot_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut removed_paths = Vec::new();
+    if !snapshot_dir.exists() {
+        return Ok(removed_paths);
+    }
+    for entry in fs::read_dir(snapshot_dir)
+        .with_context(|| format!("failed reading {}", snapshot_dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("failed reading {}", snapshot_dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with(JOURNAL_SNAPSHOT_ARCHIVE_PREFIX) && name.ends_with(".json") {
+            let sqlite_path = path.with_extension("sqlite");
+            if !sqlite_path.exists() {
+                if remove_file_if_exists(&path)? {
+                    removed_paths.push(path);
+                }
+            }
+            continue;
+        }
+        if name.starts_with(JOURNAL_SNAPSHOT_ARCHIVE_PREFIX)
+            && (name.ends_with(".sqlite-wal") || name.ends_with(".sqlite-shm"))
+        {
+            let sqlite_name = name
+                .trim_end_matches("-wal")
+                .trim_end_matches("-shm")
+                .to_string();
+            let sqlite_path = snapshot_dir.join(sqlite_name);
+            if !sqlite_path.exists() && remove_file_if_exists(&path)? {
+                removed_paths.push(path);
+            }
+        }
+    }
+    Ok(removed_paths)
+}
+
+fn cleanup_stale_staged_snapshot_artifacts(
+    snapshot_dir: &Path,
+    preserve_paths: &[PathBuf],
+) -> Result<Vec<PathBuf>> {
+    let mut removed_paths = Vec::new();
+    if !snapshot_dir.exists() {
+        return Ok(removed_paths);
+    }
+    for entry in fs::read_dir(snapshot_dir)
+        .with_context(|| format!("failed reading {}", snapshot_dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("failed reading {}", snapshot_dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let is_hidden_recent_raw_temp = name.starts_with('.')
+            && name.contains(JOURNAL_SNAPSHOT_ARCHIVE_PREFIX)
+            && (name.contains(".snapshot-tmp-")
+                || name.contains(".tmp-")
+                || name.ends_with(STAGED_ARCHIVE_SNAPSHOT_SUFFIX)
+                || name.ends_with(STAGED_ARCHIVE_METADATA_SUFFIX));
+        if is_hidden_recent_raw_temp
+            && !preserve_paths
+                .iter()
+                .any(|preserve_path| preserve_path == &path)
+            && remove_file_if_exists(&path)?
+        {
+            removed_paths.push(path);
+        }
+    }
+    Ok(removed_paths)
+}
+
+fn enforce_snapshot_archive_retention(
+    snapshot_dir: &Path,
+    keep: usize,
+    preserve_paths: &[PathBuf],
+) -> Result<SnapshotArchiveMaintenance> {
+    let cleanup_removed_paths =
+        cleanup_stale_staged_snapshot_artifacts(snapshot_dir, preserve_paths)?;
+    let mut orphan_cleanup_removed_paths = remove_orphan_archive_sidecars(snapshot_dir)?;
+    let archive_paths = list_archive_snapshot_paths(snapshot_dir)?;
+    let archive_set_count_before = archive_paths.len();
+    let mut pruned_snapshot_paths = Vec::new();
+    for snapshot_path in archive_paths.into_iter().skip(keep) {
+        let removed_paths = remove_snapshot_set(&snapshot_path)?;
+        if removed_paths.iter().any(|path| path == &snapshot_path) {
+            pruned_snapshot_paths.push(snapshot_path);
+        }
+    }
+    let archive_set_count_after = list_archive_snapshot_paths(snapshot_dir)?.len();
+    let mut cleanup_removed_paths_all = cleanup_removed_paths;
+    cleanup_removed_paths_all.append(&mut orphan_cleanup_removed_paths);
+    let mut maintenance = SnapshotArchiveMaintenance::default();
+    maintenance.record_pass(
+        archive_set_count_before,
+        archive_set_count_after,
+        cleanup_removed_paths_all,
+        pruned_snapshot_paths,
+    );
+    Ok(maintenance)
 }
 
 fn manifest_for_existing_snapshot(
@@ -1228,6 +1582,8 @@ fn manifest_for_snapshot(
 thread_local! {
     static POST_SNAPSHOT_PUBLISH_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&Path) -> Result<()>>>> =
         std::cell::RefCell::new(None);
+    static PRE_ARCHIVE_PROMOTION_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&Path) -> Result<()>>>> =
+        std::cell::RefCell::new(None);
 }
 
 #[cfg(test)]
@@ -1237,6 +1593,9 @@ struct SnapshotPublishHookGuard;
 impl Drop for SnapshotPublishHookGuard {
     fn drop(&mut self) {
         POST_SNAPSHOT_PUBLISH_HOOK.with(|slot| {
+            slot.borrow_mut().take();
+        });
+        PRE_ARCHIVE_PROMOTION_HOOK.with(|slot| {
             slot.borrow_mut().take();
         });
     }
@@ -1256,6 +1615,22 @@ where
 }
 
 #[cfg(test)]
+fn install_pre_archive_promotion_hook<F>(hook: F) -> SnapshotPublishHookGuard
+where
+    F: FnMut(&Path) -> Result<()> + 'static,
+{
+    PRE_ARCHIVE_PROMOTION_HOOK.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        assert!(
+            slot.is_none(),
+            "pre-archive promotion hook already installed"
+        );
+        *slot = Some(Box::new(hook));
+    });
+    SnapshotPublishHookGuard
+}
+
+#[cfg(test)]
 fn invoke_post_snapshot_publish_hook(snapshot_path: &Path) -> Result<()> {
     let hook = POST_SNAPSHOT_PUBLISH_HOOK.with(|slot| slot.borrow_mut().take());
     if let Some(mut hook) = hook {
@@ -1266,6 +1641,20 @@ fn invoke_post_snapshot_publish_hook(snapshot_path: &Path) -> Result<()> {
 
 #[cfg(not(test))]
 fn invoke_post_snapshot_publish_hook(_snapshot_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+fn invoke_pre_archive_promotion_hook(snapshot_path: &Path) -> Result<()> {
+    let hook = PRE_ARCHIVE_PROMOTION_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(mut hook) = hook {
+        hook(snapshot_path)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn invoke_pre_archive_promotion_hook(_snapshot_path: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -1409,12 +1798,12 @@ fn render_output(
     archive_path: Option<&Path>,
     cadence_minutes: Option<u64>,
     retention: Option<usize>,
-    pruned_snapshot_paths: &[PathBuf],
     manifest: Option<&RecentRawJournalSnapshotManifest>,
     snapshot_summary: Option<&SqliteSnapshotSummary>,
     retryable_reason: Option<String>,
     deferred_reason: Option<String>,
     hard_failure_reason: Option<String>,
+    output_context: SnapshotOutputContext,
 ) -> SnapshotOutput {
     SnapshotOutput {
         event: "discovery_recent_raw_snapshot".to_string(),
@@ -1428,10 +1817,21 @@ fn render_output(
         archive_path: archive_path.map(|path| path.display().to_string()),
         cadence_minutes,
         retention,
-        pruned_snapshot_paths: pruned_snapshot_paths
+        pruned_snapshot_paths: output_context
+            .archive_maintenance
+            .pruned_snapshot_paths
             .iter()
             .map(|path| path.display().to_string())
             .collect(),
+        cleanup_removed_paths: output_context
+            .archive_maintenance
+            .cleanup_removed_paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect(),
+        archive_promoted: output_context.archive_promoted,
+        archive_set_count_before: output_context.archive_maintenance.archive_set_count_before,
+        archive_set_count_after: output_context.archive_maintenance.archive_set_count_after,
         source_db_bytes: snapshot_context.source_stats.source_db_bytes,
         source_wal_bytes: snapshot_context.source_stats.source_wal_bytes,
         source_total_bytes: snapshot_context.source_stats.source_total_bytes(),
@@ -1507,6 +1907,25 @@ fn render_human(output: &SnapshotOutput) -> String {
                 .unwrap_or_else(|| "null".to_string())
         ),
         format!("pruned_snapshots={}", output.pruned_snapshot_paths.len()),
+        format!(
+            "cleanup_removed_paths={}",
+            output.cleanup_removed_paths.len()
+        ),
+        format!("archive_promoted={}", output.archive_promoted),
+        format!(
+            "archive_set_count_before={}",
+            output
+                .archive_set_count_before
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "archive_set_count_after={}",
+            output
+                .archive_set_count_after
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
         format!("source_db_bytes={}", output.source_db_bytes),
         format!("source_wal_bytes={}", output.source_wal_bytes),
         format!("source_total_bytes={}", output.source_total_bytes),
@@ -1621,8 +2040,9 @@ fn render_human(output: &SnapshotOutput) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        adaptive_snapshot_policy, parse_args_from, run, run_with_snapshot_policy_override, Config,
-        RecentRawJournalSnapshotManifest, SnapshotSourceStats, SqliteStore,
+        adaptive_snapshot_policy, install_pre_archive_promotion_hook, parse_args_from, run,
+        run_with_snapshot_policy_override, Config, RecentRawJournalSnapshotManifest,
+        SnapshotSourceStats, SqliteStore,
     };
     use anyhow::{Context, Result};
     use chrono::{DateTime, Duration, Utc};
@@ -1862,8 +2282,8 @@ mod tests {
             "snapshot service must keep transient deferred outcomes non-fatal for systemd"
         );
         assert!(
-            service.contains("TimeoutStartSec="),
-            "snapshot service must bound startup/runtime from the service layer too"
+            service.contains("TimeoutStartSec=10min"),
+            "snapshot service must leave enough outer runtime budget for bounded finalize and retention cleanup"
         );
         assert!(
             timer.contains("OnUnitActiveSec=5m"),
@@ -2086,6 +2506,87 @@ mod tests {
             now: third_now,
         })?;
         assert_eq!(archive_count(&snapshot_dir)?, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduled_skip_prunes_full_snapshot_sets_and_sidecars() -> Result<()> {
+        let fixture = make_fixture("recent-raw-snapshot-full-set-prune")?;
+        let now = parse_ts("2026-03-23T12:00:00Z")?;
+        seed_recent_raw_journal(&fixture.journal_store, now)?;
+        let snapshot_dir = fixture.snapshot_dir();
+
+        run(Config {
+            config_path: fixture.config_path.clone(),
+            journal_db_path: Some(fixture.journal_db_path.clone()),
+            output_path: None,
+            scheduled: true,
+            force: false,
+            json: false,
+            now,
+        })?;
+
+        seed_fake_archive_set(&snapshot_dir, "20260323T115500Z")?;
+        seed_fake_archive_set(&snapshot_dir, "20260323T115000Z")?;
+
+        let skipped = run(Config {
+            config_path: fixture.config_path.clone(),
+            journal_db_path: Some(fixture.journal_db_path.clone()),
+            output_path: None,
+            scheduled: true,
+            force: false,
+            json: true,
+            now: now + Duration::minutes(2),
+        })?;
+        assert_eq!(skipped.exit_code, 0);
+        let output: Value = serde_json::from_str(&skipped.rendered_output)?;
+        assert_eq!(output["state"], "skipped_not_due");
+        assert_eq!(output["archive_set_count_before"], 3);
+        assert_eq!(output["archive_set_count_after"], 2);
+        assert_eq!(archive_count(&snapshot_dir)?, 2);
+        assert_fake_archive_set_absent(&snapshot_dir, "20260323T115000Z");
+        assert_fake_archive_set_present(&snapshot_dir, "20260323T115500Z");
+        Ok(())
+    }
+
+    #[test]
+    fn scheduled_failure_before_archive_promotion_keeps_latest_surface_without_archive_growth(
+    ) -> Result<()> {
+        let fixture = make_fixture("recent-raw-snapshot-pre-promotion-failure")?;
+        let now = parse_ts("2026-03-23T12:00:00Z")?;
+        seed_recent_raw_journal(&fixture.journal_store, now)?;
+        let snapshot_dir = fixture.snapshot_dir();
+        let _guard = install_pre_archive_promotion_hook(|_| {
+            Err(anyhow::anyhow!("synthetic_pre_archive_promotion_failure"))
+        });
+
+        let failed = run(Config {
+            config_path: fixture.config_path.clone(),
+            journal_db_path: Some(fixture.journal_db_path.clone()),
+            output_path: None,
+            scheduled: true,
+            force: true,
+            json: true,
+            now,
+        })?;
+        assert_eq!(failed.exit_code, 1);
+        let output: Value = serde_json::from_str(&failed.rendered_output)?;
+        assert_eq!(output["state"], "hard_failure");
+        assert_eq!(output["archive_promoted"], false);
+        assert_eq!(output["archive_set_count_after"], 0);
+        let archive_path = PathBuf::from(
+            output["archive_path"]
+                .as_str()
+                .context("archive path must be present for failed scheduled snapshot")?,
+        );
+        assert!(
+            !archive_path.exists(),
+            "failed run must not promote archive sqlite"
+        );
+        assert!(!archive_path.with_extension("json").exists());
+        assert!(snapshot_dir.join("latest.sqlite").exists());
+        assert!(snapshot_dir.join("latest.json").exists());
+        assert_eq!(archive_count(&snapshot_dir)?, 0);
         Ok(())
     }
 
@@ -2333,5 +2834,40 @@ mod tests {
                     })
             })
             .count())
+    }
+
+    fn seed_fake_archive_set(snapshot_dir: &Path, slug: &str) -> Result<()> {
+        std::fs::create_dir_all(snapshot_dir)?;
+        let sqlite_path = snapshot_dir.join(format!("discovery_recent_raw_{slug}.sqlite"));
+        std::fs::write(&sqlite_path, format!("archive-{slug}"))?;
+        std::fs::write(
+            sqlite_path.with_extension("json"),
+            format!("manifest-{slug}"),
+        )?;
+        std::fs::write(
+            super::sqlite_snapshot_wal_path(&sqlite_path),
+            format!("wal-{slug}"),
+        )?;
+        std::fs::write(
+            super::sqlite_snapshot_shm_path(&sqlite_path),
+            format!("shm-{slug}"),
+        )?;
+        Ok(())
+    }
+
+    fn assert_fake_archive_set_absent(snapshot_dir: &Path, slug: &str) {
+        let sqlite_path = snapshot_dir.join(format!("discovery_recent_raw_{slug}.sqlite"));
+        assert!(!sqlite_path.exists());
+        assert!(!sqlite_path.with_extension("json").exists());
+        assert!(!super::sqlite_snapshot_wal_path(&sqlite_path).exists());
+        assert!(!super::sqlite_snapshot_shm_path(&sqlite_path).exists());
+    }
+
+    fn assert_fake_archive_set_present(snapshot_dir: &Path, slug: &str) {
+        let sqlite_path = snapshot_dir.join(format!("discovery_recent_raw_{slug}.sqlite"));
+        assert!(sqlite_path.exists());
+        assert!(sqlite_path.with_extension("json").exists());
+        assert!(super::sqlite_snapshot_wal_path(&sqlite_path).exists());
+        assert!(super::sqlite_snapshot_shm_path(&sqlite_path).exists());
     }
 }

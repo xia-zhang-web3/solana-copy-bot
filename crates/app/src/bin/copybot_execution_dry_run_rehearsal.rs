@@ -48,7 +48,7 @@ struct Config {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ExecutionDryRunRehearsalVerdict {
+pub(crate) enum ExecutionDryRunRehearsalVerdict {
     RehearsalGreen,
     RehearsalGreenWithBusinessReject,
     RehearsalBlockedByAdapterContract,
@@ -60,7 +60,7 @@ enum ExecutionDryRunRehearsalVerdict {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum RpcPreflightClassification {
+pub(crate) enum RpcPreflightClassification {
     Reachable,
     ConnectivityBlocked,
     Skipped,
@@ -68,7 +68,7 @@ enum RpcPreflightClassification {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum AdapterRehearsalClassification {
+pub(crate) enum AdapterRehearsalClassification {
     Accepted,
     BusinessReject,
     ContractReject,
@@ -78,94 +78,94 @@ enum AdapterRehearsalClassification {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct RehearsalIntentSummary {
-    route: String,
-    token: String,
-    notional_sol: f64,
-    side: String,
+pub(crate) struct RehearsalIntentSummary {
+    pub(crate) route: String,
+    pub(crate) token: String,
+    pub(crate) notional_sol: f64,
+    pub(crate) side: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct RoutePolicyEnvelope {
-    route: String,
-    slippage_bps_cap: Option<f64>,
-    tip_lamports: Option<u64>,
-    compute_unit_limit: Option<u64>,
-    compute_unit_price_micro_lamports: Option<u64>,
-    policy_echo_required: bool,
-    simulate_before_submit: bool,
-    dynamic_cu_price_enabled: bool,
-    dynamic_tip_lamports_enabled: bool,
+pub(crate) struct RoutePolicyEnvelope {
+    pub(crate) route: String,
+    pub(crate) slippage_bps_cap: Option<f64>,
+    pub(crate) tip_lamports: Option<u64>,
+    pub(crate) compute_unit_limit: Option<u64>,
+    pub(crate) compute_unit_price_micro_lamports: Option<u64>,
+    pub(crate) policy_echo_required: bool,
+    pub(crate) simulate_before_submit: bool,
+    pub(crate) dynamic_cu_price_enabled: bool,
+    pub(crate) dynamic_tip_lamports_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct RpcPreflightReport {
-    required: bool,
-    attempted: bool,
-    reachable: bool,
-    classification: RpcPreflightClassification,
-    timeout_ms: u64,
-    successful_endpoint_role: Option<String>,
-    detail: String,
-    slot: Option<u64>,
-    blockhash: Option<String>,
-    signer_balance_lamports: Option<u64>,
+pub(crate) struct RpcPreflightReport {
+    pub(crate) required: bool,
+    pub(crate) attempted: bool,
+    pub(crate) reachable: bool,
+    pub(crate) classification: RpcPreflightClassification,
+    pub(crate) timeout_ms: u64,
+    pub(crate) successful_endpoint_role: Option<String>,
+    pub(crate) detail: String,
+    pub(crate) slot: Option<u64>,
+    pub(crate) blockhash: Option<String>,
+    pub(crate) signer_balance_lamports: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct AdapterRehearsalReport {
-    required: bool,
-    attempted: bool,
-    reachable: bool,
-    contract_valid: bool,
-    policy_echo_present: bool,
-    route_echo_present: bool,
-    contract_version_echo_present: bool,
-    accepted: Option<bool>,
-    classification: AdapterRehearsalClassification,
-    timeout_ms: u64,
-    endpoint_role: Option<String>,
-    endpoint_label: Option<String>,
-    http_status: Option<u16>,
-    echoed_route: Option<String>,
-    echoed_contract_version: Option<String>,
-    response_status: Option<String>,
-    response_code: Option<String>,
-    response_detail: Option<String>,
-    response_slippage_bps: Option<f64>,
-    response_tip_lamports: Option<u64>,
-    response_compute_unit_limit: Option<u64>,
-    response_compute_unit_price_micro_lamports: Option<u64>,
-    detail: String,
+pub(crate) struct AdapterRehearsalReport {
+    pub(crate) required: bool,
+    pub(crate) attempted: bool,
+    pub(crate) reachable: bool,
+    pub(crate) contract_valid: bool,
+    pub(crate) policy_echo_present: bool,
+    pub(crate) route_echo_present: bool,
+    pub(crate) contract_version_echo_present: bool,
+    pub(crate) accepted: Option<bool>,
+    pub(crate) classification: AdapterRehearsalClassification,
+    pub(crate) timeout_ms: u64,
+    pub(crate) endpoint_role: Option<String>,
+    pub(crate) endpoint_label: Option<String>,
+    pub(crate) http_status: Option<u16>,
+    pub(crate) echoed_route: Option<String>,
+    pub(crate) echoed_contract_version: Option<String>,
+    pub(crate) response_status: Option<String>,
+    pub(crate) response_code: Option<String>,
+    pub(crate) response_detail: Option<String>,
+    pub(crate) response_slippage_bps: Option<f64>,
+    pub(crate) response_tip_lamports: Option<u64>,
+    pub(crate) response_compute_unit_limit: Option<u64>,
+    pub(crate) response_compute_unit_price_micro_lamports: Option<u64>,
+    pub(crate) detail: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ExecutionDryRunRehearsalReport {
-    generated_at: DateTime<Utc>,
-    rehearsal_id: Option<i64>,
-    config_path: String,
-    db_path: String,
-    execution_enabled: bool,
-    execution_dry_run_only: bool,
-    stage3_gate_not_evaluated: bool,
-    mode: String,
-    signer_pubkey_configured: bool,
-    config_valid: bool,
-    connectivity_valid: bool,
-    adapter_contract_valid: bool,
-    signer_contract_valid: bool,
-    policy_contract_valid: bool,
-    route_contract_valid: bool,
-    ready_for_dry_run: bool,
-    would_be_admissible_for_later_tiny_live: bool,
-    verdict: ExecutionDryRunRehearsalVerdict,
-    reason: String,
-    blockers: Vec<String>,
-    warnings: Vec<String>,
-    intent: RehearsalIntentSummary,
-    route_policy: RoutePolicyEnvelope,
-    rpc_preflight: RpcPreflightReport,
-    adapter_rehearsal: AdapterRehearsalReport,
+pub(crate) struct ExecutionDryRunRehearsalReport {
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) rehearsal_id: Option<i64>,
+    pub(crate) config_path: String,
+    pub(crate) db_path: String,
+    pub(crate) execution_enabled: bool,
+    pub(crate) execution_dry_run_only: bool,
+    pub(crate) stage3_gate_not_evaluated: bool,
+    pub(crate) mode: String,
+    pub(crate) signer_pubkey_configured: bool,
+    pub(crate) config_valid: bool,
+    pub(crate) connectivity_valid: bool,
+    pub(crate) adapter_contract_valid: bool,
+    pub(crate) signer_contract_valid: bool,
+    pub(crate) policy_contract_valid: bool,
+    pub(crate) route_contract_valid: bool,
+    pub(crate) ready_for_dry_run: bool,
+    pub(crate) would_be_admissible_for_later_tiny_live: bool,
+    pub(crate) verdict: ExecutionDryRunRehearsalVerdict,
+    pub(crate) reason: String,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) intent: RehearsalIntentSummary,
+    pub(crate) route_policy: RoutePolicyEnvelope,
+    pub(crate) rpc_preflight: RpcPreflightReport,
+    pub(crate) adapter_rehearsal: AdapterRehearsalReport,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -343,7 +343,7 @@ async fn run(config: Config) -> Result<String> {
     }
 }
 
-async fn evaluate_execution_dry_run_rehearsal(
+pub(crate) async fn evaluate_execution_dry_run_rehearsal(
     config_path: &Path,
     db_path: &Path,
     loaded_config: &AppConfig,
@@ -1832,7 +1832,7 @@ fn collect_warnings(
     warnings
 }
 
-fn resolve_db_path(config_path: &Path, sqlite_path: &str) -> PathBuf {
+pub(crate) fn resolve_db_path(config_path: &Path, sqlite_path: &str) -> PathBuf {
     let configured = Path::new(sqlite_path.trim());
     if configured.is_absolute() {
         return configured.to_path_buf();

@@ -316,6 +316,17 @@ pub fn load_from_env_or_default(default_path: &Path) -> Result<(AppConfig, PathB
     {
         config.execution.submit_adapter_fallback_http_url = submit_adapter_fallback_http_url;
     }
+    if let Ok(submit_adapter_devnet_http_url) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_DEVNET_HTTP_URL")
+    {
+        config.execution.submit_adapter_devnet_http_url = submit_adapter_devnet_http_url;
+    }
+    if let Ok(submit_adapter_devnet_fallback_http_url) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_DEVNET_FALLBACK_HTTP_URL")
+    {
+        config.execution.submit_adapter_devnet_fallback_http_url =
+            submit_adapter_devnet_fallback_http_url;
+    }
     if let Ok(submit_adapter_auth_token) =
         env::var("SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_AUTH_TOKEN")
     {

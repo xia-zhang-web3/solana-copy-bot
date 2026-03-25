@@ -1295,6 +1295,10 @@ Acceptance update (`2026-03-25`):
     - live `journal_snapshot_retention` was reduced from `144` to `24` to
       prevent the same disk-full failure mode from recurring on the current
       host
+    - the follow-up repo fix now stages recent-raw archive promotion under temp
+      names, enforces full `{sqlite,json,wal,shm}` retention on every scheduled
+      invocation, and raises the service outer timeout to `10min` so systemd no
+      longer kills the finalize/prune phase mid-run
 17. Current Stage 3 live status after recovery:
     - `discovery_wallet_freshness_report --config /etc/solana-copy-bot/live.server.toml --json --limit 10`
       now shows that in-band evidence is accumulating on the live path:
@@ -1467,6 +1471,38 @@ Acceptance update (`2026-03-25`, tiny-live policy audit package):
      contract, not ad-hoc operator judgment
    - this still does not authorize activation and does not override the Stage 3
      discovery gate
+
+Acceptance update (`2026-03-25`, devnet dress-rehearsal package):
+
+1. Stage 4 now also has a first-class non-production dress-rehearsal surface:
+   - run and persist one devnet rehearsal:
+     `copybot_devnet_dress_rehearsal --config /etc/solana-copy-bot/devnet.server.toml --route jito --token So11111111111111111111111111111111111111112 --notional-sol 0.01 --json`
+   - inspect recent persisted devnet rehearsal trail:
+     `copybot_devnet_dress_rehearsal --config /etc/solana-copy-bot/devnet.server.toml --history --limit 10 --json`
+2. The command is hard-guarded against production-like config profiles:
+   - it refuses production-like `system.env` values
+   - it uses `execution.rpc_devnet_http_url` as the rehearsal RPC target
+   - it now also requires explicit non-production adapter endpoints in
+     `execution.submit_adapter_devnet_http_url` /
+     `execution.submit_adapter_devnet_fallback_http_url`, and refuses any
+     devnet endpoint that reuses the normal adapter URL set
+   - the same refusal contract applies to `--history`
+   - it does not enable `execution.enabled` and does not submit real trades on
+     production
+3. The devnet package reuses accepted Stage 4 truth instead of inventing new
+   execution logic:
+   - readiness/preflight truth from `copybot_execution_readiness_audit`
+   - bounded policy truth from `copybot_tiny_live_policy_audit`
+   - safe simulate/preflight execution truth from
+     `copybot_execution_dry_run_rehearsal`
+4. Persisted history is explicitly environment-labeled, so non-production dress
+   rehearsal evidence does not leak into the production pre-activation trail.
+5. Practical meaning:
+   - while Stage 3 keeps accumulating live production evidence, the team can now
+     rehearse the accepted execution-side contract on non-production
+     infrastructure
+   - a green devnet dress rehearsal still does not authorize production
+     activation and does not override the Stage 3 gate
 
 Exit criteria:
 

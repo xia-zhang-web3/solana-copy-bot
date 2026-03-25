@@ -2327,6 +2327,8 @@ fn execution_config_debug_redacts_secret_values() {
     execution.submit_dynamic_cu_price_api_auth_token = "priority-fee-secret".to_string();
     execution.submit_adapter_http_url =
         "https://adapter.example.com/submit?api-key=adapter-query-secret".to_string();
+    execution.submit_adapter_devnet_http_url =
+        "https://devnet-adapter.example.com/submit?api-key=devnet-secret".to_string();
 
     let execution_debug = format!("{execution:?}");
     assert!(
@@ -2350,8 +2352,16 @@ fn execution_config_debug_redacts_secret_values() {
         "debug output leaked adapter URL query secret: {execution_debug}"
     );
     assert!(
+        !execution_debug.contains("devnet-secret"),
+        "debug output leaked devnet adapter URL query secret: {execution_debug}"
+    );
+    assert!(
         execution_debug.contains("https://adapter.example.com/submit?<redacted>"),
         "debug output should redact adapter URL query: {execution_debug}"
+    );
+    assert!(
+        execution_debug.contains("https://devnet-adapter.example.com/submit?<redacted>"),
+        "debug output should redact devnet adapter URL query: {execution_debug}"
     );
 
     let mut ingestion = IngestionConfig::default();
@@ -2435,6 +2445,43 @@ fn execution_config_debug_redacts_secret_values() {
             "AppConfig debug output leaked nested URL secret={secret}: {app_debug}"
         );
     }
+}
+
+#[test]
+fn execution_config_defaults_keep_devnet_adapter_contract_explicit() {
+    let execution = ExecutionConfig::default();
+    assert_eq!(execution.submit_adapter_devnet_http_url, "");
+    assert_eq!(execution.submit_adapter_devnet_fallback_http_url, "");
+}
+
+#[test]
+fn load_from_env_applies_devnet_adapter_endpoint_overrides() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            with_env_var(
+                "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_DEVNET_HTTP_URL",
+                "http://127.0.0.1:18080/submit",
+                || {
+                    with_env_var(
+                        "SOLANA_COPY_BOT_EXECUTION_SUBMIT_ADAPTER_DEVNET_FALLBACK_HTTP_URL",
+                        "http://127.0.0.1:18081/submit",
+                        || {
+                            let (cfg, _) = load_from_env_or_default(config_path)
+                                .expect("load config with devnet adapter env overrides");
+                            assert_eq!(
+                                cfg.execution.submit_adapter_devnet_http_url,
+                                "http://127.0.0.1:18080/submit"
+                            );
+                            assert_eq!(
+                                cfg.execution.submit_adapter_devnet_fallback_http_url,
+                                "http://127.0.0.1:18081/submit"
+                            );
+                        },
+                    );
+                },
+            );
+        });
+    });
 }
 
 fn assert_duplicate_normalized_route_env_rejected(env_name: &'static str, env_value: &str) {

@@ -59,6 +59,8 @@ pub struct ExecutionConfig {
     pub rpc_devnet_http_url: String,
     pub submit_adapter_http_url: String,
     pub submit_adapter_fallback_http_url: String,
+    pub submit_adapter_devnet_http_url: String,
+    pub submit_adapter_devnet_fallback_http_url: String,
     pub submit_adapter_auth_token: String,
     pub submit_adapter_auth_token_file: String,
     pub submit_adapter_hmac_key_id: String,
@@ -130,6 +132,8 @@ impl Default for ExecutionConfig {
             rpc_devnet_http_url: String::new(),
             submit_adapter_http_url: String::new(),
             submit_adapter_fallback_http_url: String::new(),
+            submit_adapter_devnet_http_url: String::new(),
+            submit_adapter_devnet_fallback_http_url: String::new(),
             submit_adapter_auth_token: String::new(),
             submit_adapter_auth_token_file: String::new(),
             submit_adapter_hmac_key_id: String::new(),
@@ -216,6 +220,14 @@ impl fmt::Debug for ExecutionConfig {
             .field(
                 "submit_adapter_fallback_http_url",
                 &redacted_url_debug_value(&self.submit_adapter_fallback_http_url),
+            )
+            .field(
+                "submit_adapter_devnet_http_url",
+                &redacted_url_debug_value(&self.submit_adapter_devnet_http_url),
+            )
+            .field(
+                "submit_adapter_devnet_fallback_http_url",
+                &redacted_url_debug_value(&self.submit_adapter_devnet_fallback_http_url),
             )
             .field(
                 "submit_adapter_auth_token",

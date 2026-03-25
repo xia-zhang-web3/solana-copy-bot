@@ -33,8 +33,10 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    an expected transient outcome for snapshot contention.
 2. Operators must inspect the JSON `state` emitted by
    `discovery_recent_raw_snapshot`, not just the systemd success/failure bit.
-3. The service template also sets `TimeoutStartSec=3min` so systemd has an
-   outer bound if the process ever stops honoring its own attempt budget.
+3. The service template now sets `TimeoutStartSec=10min`. The binary still
+   self-bounds the SQLite backup attempt internally, but large-journal finalize
+   and full-set retention cleanup can legitimately outlive the old `3min`
+   systemd kill window.
 4. Operators should inspect `terminal_reason`, `attempt_duration_ms`,
    `backup_total_page_count`, `backup_copied_page_count`, `source_db_bytes`, and
    `source_wal_bytes` before deciding the timer is healthy on a large journal.
@@ -53,10 +55,14 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 8. `deferred` means the service exited cleanly with a transient non-success
    reason such as bounded attempt-duration exhaustion or, if a healthy latest
    surface existed, retained that surface after the failed attempt.
-9. After the practical-completion rollout, repeated `deferred` with tiny
+9. Scheduled runs now stage the new archive set under hidden temp names and
+   enforce full-set retention on every invocation, including `skipped_not_due`
+   and `self_healed_latest_surface`. Failed or interrupted runs must not leave
+   behind promoted archive sets that count against retention.
+10. After the practical-completion rollout, repeated `deferred` with tiny
    `backup_copied_page_count` relative to `backup_total_page_count` should be
    treated as abnormal and investigated before leaving the timer disabled.
-10. `retryable_busy` means retryable contention happened without a healthy latest
+11. `retryable_busy` means retryable contention happened without a healthy latest
    surface to defer onto; rerun or investigate before calling the snapshot
    surface healthy again.
 11. `hard_failure` remains a real failure and should leave the service in the
@@ -169,6 +175,51 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 13. `rehearsal_green` and `rehearsal_green_with_business_reject` still do not
     override Stage 3. Discovery freshness evidence remains the gate before any
     activation discussion.
+
+## Devnet Dress Rehearsal
+
+1. Stage 4 now also has a first-class non-production dress-rehearsal command:
+   - run and persist one devnet rehearsal:
+     `copybot_devnet_dress_rehearsal --config /etc/solana-copy-bot/devnet.server.toml --route jito --token So11111111111111111111111111111111111111112 --notional-sol 0.01 --json`
+   - inspect recent persisted devnet rehearsal history:
+     `copybot_devnet_dress_rehearsal --config /etc/solana-copy-bot/devnet.server.toml --history --limit 10 --json`
+2. This command is non-prod only:
+   - it explicitly refuses production-like `system.env` profiles such as
+     `prod`, `production`, `prod-live`, or `production_canary`
+   - the same refusal now applies to `--history`; production-like configs are
+     not allowed to read or append devnet rehearsal history accidentally
+   - it uses `execution.rpc_devnet_http_url` as the RPC target for the
+     rehearsal instead of the production execution RPC
+   - it requires an explicit non-production adapter endpoint in
+     `execution.submit_adapter_devnet_http_url` or
+     `execution.submit_adapter_devnet_fallback_http_url`
+   - it refuses any devnet adapter endpoint that resolves to the normal
+     `execution.submit_adapter_http_url` /
+     `execution.submit_adapter_fallback_http_url`
+   - it does not enable `execution.enabled` and does not submit real trades on
+     production
+3. The dress rehearsal reuses the accepted Stage 4 surfaces instead of
+   re-implementing them:
+   - execution readiness/preflight contract
+   - tiny-live policy boundedness contract
+   - safe dry-run rehearsal contract with adapter `simulate`
+4. Persisted devnet history includes an explicit environment label so
+   non-production rehearsal evidence does not get mixed into the production
+   pre-activation trail.
+5. Important devnet rehearsal verdicts:
+   - `devnet_rehearsal_green`
+   - `devnet_rehearsal_green_with_business_reject`
+   - `devnet_rehearsal_blocked_by_connectivity`
+   - `devnet_rehearsal_blocked_by_adapter_contract`
+   - `devnet_rehearsal_blocked_by_policy_contract`
+   - `devnet_rehearsal_refused_for_prod_profile`
+6. A green devnet result means the execution-side contract can be exercised
+   end-to-end on non-production infrastructure. It still does not authorize
+   production activation, and it does not override Stage 3.
+7. For a safe non-live contour, keep using the existing executor and mock
+   upstream templates:
+   - `ops/server_templates/executor.env.example`
+   - `ops/server_templates/copybot-execution-mock-upstream.service`
 
 ## Consolidated Pre-Activation Gate
 
