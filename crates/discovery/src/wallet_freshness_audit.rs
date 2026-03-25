@@ -10,7 +10,7 @@ use copybot_storage::{
     WalletRecentActivityCountRow,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, time::Instant};
 
 pub const DEFAULT_RECENT_CYCLES: usize = 3;
 pub const DEFAULT_HISTORY_CAPTURE_LIMIT: usize = 5;
@@ -140,6 +140,8 @@ impl WalletShadowSignalVerdict {
 pub struct WalletFreshnessShadowSignalEvidence {
     pub recent_window_start: DateTime<Utc>,
     pub recent_window_end: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_lookback_seconds: Option<u64>,
     pub selected_wallet_ids: Vec<String>,
     pub selected_wallet_count: usize,
     pub selected_wallets_with_recent_raw_activity: usize,
@@ -169,6 +171,13 @@ pub struct WalletFreshnessCaptureSnapshot {
     pub recent_cycles: usize,
     pub audit: WalletFreshnessAuditReport,
     pub shadow_signal: WalletFreshnessShadowSignalEvidence,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletFreshnessCaptureComputation {
+    pub snapshot: WalletFreshnessCaptureSnapshot,
+    pub raw_truth_build_duration_ms: u64,
+    pub shadow_signal_duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +238,12 @@ struct RawTruthSample {
     top_wallet_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+struct RawTruthCyclePoint {
+    sample_now: DateTime<Utc>,
+    sample: RawTruthSample,
+}
+
 impl DiscoveryService {
     pub fn wallet_freshness_audit(
         &self,
@@ -237,99 +252,14 @@ impl DiscoveryService {
         recent_cycles: usize,
     ) -> Result<WalletFreshnessAuditReport> {
         let recent_cycles = recent_cycles.max(1);
-        let window_start = now - Duration::days(self.config.scoring_window_days.max(1) as i64);
-        let publication_state = store.discovery_publication_state_read_only()?;
-        let publication_truth = publication_truth_for_audit(publication_state.as_ref());
-        let publication_recent_under_gate = publication_state
-            .as_ref()
-            .is_some_and(|state| state.is_fresh_under_gate(self.publication_freshness_gate(), now));
-        let active_follow_wallet_ids =
-            sorted_wallets_from_iter(store.list_active_follow_wallets()?);
-        let current_raw = self.current_raw_truth_sample(store, now)?;
-        let raw_coverage = store.observed_swaps_coverage_snapshot()?;
-        let raw_truth =
-            self.classify_raw_truth_status(raw_coverage, window_start, now, &current_raw);
-
-        let published_wallet_ids = publication_truth
-            .as_ref()
-            .map(|truth| truth.published_wallet_ids.clone())
-            .unwrap_or_default();
-        let published_vs_current_raw =
-            compare_wallet_universes(&published_wallet_ids, &current_raw.top_wallet_ids);
-        let active_follow_vs_current_raw =
-            compare_wallet_universes(&active_follow_wallet_ids, &current_raw.top_wallet_ids);
-        let active_follow_vs_published =
-            compare_wallet_universes(&active_follow_wallet_ids, &published_wallet_ids);
-        let rotation = self.build_rotation_signal(store, now, recent_cycles)?;
-
-        let verdict = if publication_truth.is_none() {
-            WalletFreshnessVerdict::FailClosedNoPublicationTruth
-        } else if !raw_truth.sufficient {
-            WalletFreshnessVerdict::InsufficientRawTruth
-        } else if published_vs_current_raw.exact_match && active_follow_vs_published.exact_match {
-            WalletFreshnessVerdict::FreshCurrent
-        } else if publication_recent_under_gate && active_follow_vs_published.exact_match {
-            WalletFreshnessVerdict::DriftingButAcceptable
-        } else {
-            WalletFreshnessVerdict::StalePublicationTruth
-        };
-
-        let reason = match verdict {
-            WalletFreshnessVerdict::FailClosedNoPublicationTruth => {
-                "no_complete_publication_truth".to_string()
-            }
-            WalletFreshnessVerdict::InsufficientRawTruth => raw_truth.reason.clone(),
-            WalletFreshnessVerdict::FreshCurrent => {
-                "published_and_active_match_current_raw_top_n".to_string()
-            }
-            WalletFreshnessVerdict::DriftingButAcceptable => {
-                "publication_recent_under_gate_but_current_raw_top_n_has_rotated".to_string()
-            }
-            WalletFreshnessVerdict::StalePublicationTruth => {
-                if !active_follow_vs_published.exact_match {
-                    "active_follow_universe_drifted_from_published_truth".to_string()
-                } else if !publication_recent_under_gate {
-                    "publication_truth_not_recent_under_gate".to_string()
-                } else {
-                    "published_universe_drifted_from_current_raw_top_n".to_string()
-                }
-            }
-        };
-
-        Ok(WalletFreshnessAuditReport {
+        let raw_truth_cycle_points =
+            self.collect_raw_truth_cycle_points(store, now, recent_cycles)?;
+        self.wallet_freshness_audit_with_cycle_points(
+            store,
             now,
-            window_start,
-            verdict,
-            reason,
-            follow_top_n: self.config.follow_top_n as usize,
-            publication_truth_available: publication_truth.is_some(),
-            publication_runtime_mode: publication_truth
-                .as_ref()
-                .map(|truth| truth.runtime_mode.as_str().to_string()),
-            publication_recent_under_gate,
-            latest_publication_ts: publication_truth
-                .as_ref()
-                .map(|truth| truth.last_published_at),
-            publication_age_seconds: publication_truth.as_ref().map(|truth| {
-                now.signed_duration_since(truth.last_published_at)
-                    .num_seconds()
-                    .max(0) as u64
-            }),
-            latest_publication_window_start: publication_truth
-                .as_ref()
-                .map(|truth| truth.last_published_window_start),
-            published_scoring_source: publication_truth
-                .as_ref()
-                .and_then(|truth| truth.published_scoring_source.clone()),
-            published_wallet_ids,
-            active_follow_wallet_ids,
-            current_raw_top_wallet_ids: current_raw.top_wallet_ids,
-            published_vs_current_raw,
-            active_follow_vs_current_raw,
-            active_follow_vs_published,
-            raw_truth,
-            rotation,
-        })
+            recent_cycles,
+            raw_truth_cycle_points.as_slice(),
+        )
     }
 
     pub fn wallet_freshness_capture_snapshot(
@@ -338,17 +268,64 @@ impl DiscoveryService {
         now: DateTime<Utc>,
         recent_cycles: usize,
     ) -> Result<WalletFreshnessCaptureSnapshot> {
-        let recent_cycles = recent_cycles.max(1);
-        let audit = self.wallet_freshness_audit(store, now, recent_cycles)?;
-        let shadow_signal = self.build_shadow_signal_evidence(store, now, recent_cycles, &audit)?;
-        Ok(WalletFreshnessCaptureSnapshot {
-            capture_id: None,
-            captured_at: now,
-            capture_age_seconds: None,
-            within_recent_horizon: None,
+        Ok(self
+            .wallet_freshness_capture_snapshot_measured(store, now, recent_cycles)?
+            .snapshot)
+    }
+
+    pub fn wallet_freshness_capture_snapshot_measured(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        recent_cycles: usize,
+    ) -> Result<WalletFreshnessCaptureComputation> {
+        self.wallet_freshness_capture_snapshot_measured_with_lookback(
+            store,
+            now,
             recent_cycles,
-            audit,
-            shadow_signal,
+            None,
+        )
+    }
+
+    pub fn wallet_freshness_capture_snapshot_measured_with_lookback(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        recent_cycles: usize,
+        shadow_evidence_lookback_seconds: Option<u64>,
+    ) -> Result<WalletFreshnessCaptureComputation> {
+        let recent_cycles = recent_cycles.max(1);
+        let raw_truth_started = Instant::now();
+        let raw_truth_cycle_points =
+            self.collect_raw_truth_cycle_points(store, now, recent_cycles)?;
+        let raw_truth_build_duration_ms = raw_truth_started.elapsed().as_millis() as u64;
+        let audit = self.wallet_freshness_audit_with_cycle_points(
+            store,
+            now,
+            recent_cycles,
+            raw_truth_cycle_points.as_slice(),
+        )?;
+        let shadow_signal_started = Instant::now();
+        let shadow_signal = self.build_shadow_signal_evidence(
+            store,
+            now,
+            recent_cycles,
+            shadow_evidence_lookback_seconds,
+            &audit,
+        )?;
+        let shadow_signal_duration_ms = shadow_signal_started.elapsed().as_millis() as u64;
+        Ok(WalletFreshnessCaptureComputation {
+            snapshot: WalletFreshnessCaptureSnapshot {
+                capture_id: None,
+                captured_at: now,
+                capture_age_seconds: None,
+                within_recent_horizon: None,
+                recent_cycles,
+                audit,
+                shadow_signal,
+            },
+            raw_truth_build_duration_ms,
+            shadow_signal_duration_ms,
         })
     }
 
@@ -418,19 +395,149 @@ impl DiscoveryService {
         })
     }
 
+    fn collect_raw_truth_cycle_points(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        recent_cycles: usize,
+    ) -> Result<Vec<RawTruthCyclePoint>> {
+        let cycles_requested = recent_cycles.max(1);
+        let sample_interval_seconds = self.config.refresh_seconds.max(1);
+        let mut cycle_points = Vec::with_capacity(cycles_requested);
+        for idx in 0..cycles_requested {
+            let sample_now =
+                now - Duration::seconds(sample_interval_seconds.saturating_mul(idx as u64) as i64);
+            cycle_points.push(RawTruthCyclePoint {
+                sample_now,
+                sample: self.current_raw_truth_sample(store, sample_now)?,
+            });
+        }
+        Ok(cycle_points)
+    }
+
+    fn wallet_freshness_audit_with_cycle_points(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        recent_cycles: usize,
+        raw_truth_cycle_points: &[RawTruthCyclePoint],
+    ) -> Result<WalletFreshnessAuditReport> {
+        let current_raw = raw_truth_cycle_points
+            .first()
+            .map(|point| &point.sample)
+            .context("wallet freshness audit requires at least one raw-truth cycle sample")?;
+        let window_start = current_raw.window_start;
+        let publication_state = store.discovery_publication_state_read_only()?;
+        let publication_truth = publication_truth_for_audit(publication_state.as_ref());
+        let publication_recent_under_gate = publication_state
+            .as_ref()
+            .is_some_and(|state| state.is_fresh_under_gate(self.publication_freshness_gate(), now));
+        let active_follow_wallet_ids =
+            sorted_wallets_from_iter(store.list_active_follow_wallets()?);
+        let raw_coverage = store.observed_swaps_coverage_snapshot()?;
+        let raw_truth =
+            self.classify_raw_truth_status(raw_coverage, window_start, now, current_raw);
+
+        let published_wallet_ids = publication_truth
+            .as_ref()
+            .map(|truth| truth.published_wallet_ids.clone())
+            .unwrap_or_default();
+        let published_vs_current_raw =
+            compare_wallet_universes(&published_wallet_ids, &current_raw.top_wallet_ids);
+        let active_follow_vs_current_raw =
+            compare_wallet_universes(&active_follow_wallet_ids, &current_raw.top_wallet_ids);
+        let active_follow_vs_published =
+            compare_wallet_universes(&active_follow_wallet_ids, &published_wallet_ids);
+        let rotation =
+            self.build_rotation_signal_from_cycle_points(raw_truth_cycle_points, recent_cycles);
+
+        let verdict = if publication_truth.is_none() {
+            WalletFreshnessVerdict::FailClosedNoPublicationTruth
+        } else if !raw_truth.sufficient {
+            WalletFreshnessVerdict::InsufficientRawTruth
+        } else if published_vs_current_raw.exact_match && active_follow_vs_published.exact_match {
+            WalletFreshnessVerdict::FreshCurrent
+        } else if publication_recent_under_gate && active_follow_vs_published.exact_match {
+            WalletFreshnessVerdict::DriftingButAcceptable
+        } else {
+            WalletFreshnessVerdict::StalePublicationTruth
+        };
+
+        let reason = match verdict {
+            WalletFreshnessVerdict::FailClosedNoPublicationTruth => {
+                "no_complete_publication_truth".to_string()
+            }
+            WalletFreshnessVerdict::InsufficientRawTruth => raw_truth.reason.clone(),
+            WalletFreshnessVerdict::FreshCurrent => {
+                "published_and_active_match_current_raw_top_n".to_string()
+            }
+            WalletFreshnessVerdict::DriftingButAcceptable => {
+                "publication_recent_under_gate_but_current_raw_top_n_has_rotated".to_string()
+            }
+            WalletFreshnessVerdict::StalePublicationTruth => {
+                if !active_follow_vs_published.exact_match {
+                    "active_follow_universe_drifted_from_published_truth".to_string()
+                } else if !publication_recent_under_gate {
+                    "publication_truth_not_recent_under_gate".to_string()
+                } else {
+                    "published_universe_drifted_from_current_raw_top_n".to_string()
+                }
+            }
+        };
+
+        Ok(WalletFreshnessAuditReport {
+            now,
+            window_start,
+            verdict,
+            reason,
+            follow_top_n: self.config.follow_top_n as usize,
+            publication_truth_available: publication_truth.is_some(),
+            publication_runtime_mode: publication_truth
+                .as_ref()
+                .map(|truth| truth.runtime_mode.as_str().to_string()),
+            publication_recent_under_gate,
+            latest_publication_ts: publication_truth
+                .as_ref()
+                .map(|truth| truth.last_published_at),
+            publication_age_seconds: publication_truth.as_ref().map(|truth| {
+                now.signed_duration_since(truth.last_published_at)
+                    .num_seconds()
+                    .max(0) as u64
+            }),
+            latest_publication_window_start: publication_truth
+                .as_ref()
+                .map(|truth| truth.last_published_window_start),
+            published_scoring_source: publication_truth
+                .as_ref()
+                .and_then(|truth| truth.published_scoring_source.clone()),
+            published_wallet_ids,
+            active_follow_wallet_ids,
+            current_raw_top_wallet_ids: current_raw.top_wallet_ids.clone(),
+            published_vs_current_raw,
+            active_follow_vs_current_raw,
+            active_follow_vs_published,
+            raw_truth,
+            rotation,
+        })
+    }
+
     fn build_shadow_signal_evidence(
         &self,
         store: &SqliteStore,
         now: DateTime<Utc>,
         recent_cycles: usize,
+        explicit_lookback_seconds: Option<u64>,
         audit: &WalletFreshnessAuditReport,
     ) -> Result<WalletFreshnessShadowSignalEvidence> {
         let selected_wallet_ids = audit.active_follow_wallet_ids.clone();
-        let evidence_window_seconds = self
+        let default_evidence_window_seconds = self
             .config
             .refresh_seconds
             .max(1)
             .saturating_mul(recent_cycles.max(1) as u64);
+        let evidence_window_seconds = explicit_lookback_seconds
+            .unwrap_or(default_evidence_window_seconds)
+            .max(1);
         let recent_window_start = now - Duration::seconds(evidence_window_seconds as i64);
         let mut recent_raw_activity_by_wallet = store
             .recent_observed_swap_counts_for_wallets(recent_window_start, &selected_wallet_ids)?;
@@ -509,6 +616,7 @@ impl DiscoveryService {
         Ok(WalletFreshnessShadowSignalEvidence {
             recent_window_start,
             recent_window_end: now,
+            evidence_lookback_seconds: Some(evidence_window_seconds),
             selected_wallet_ids,
             selected_wallet_count: audit.active_follow_wallet_ids.len(),
             selected_wallets_with_recent_raw_activity: recent_raw_activity_wallet_ids.len(),
@@ -589,30 +697,26 @@ impl DiscoveryService {
         }
     }
 
-    fn build_rotation_signal(
+    fn build_rotation_signal_from_cycle_points(
         &self,
-        store: &SqliteStore,
-        now: DateTime<Utc>,
+        raw_truth_cycle_points: &[RawTruthCyclePoint],
         recent_cycles: usize,
-    ) -> Result<WalletFreshnessRotationSignal> {
+    ) -> WalletFreshnessRotationSignal {
         let cycles_requested = recent_cycles.max(1);
         let sample_interval_seconds = self.config.refresh_seconds.max(1);
-        let mut samples = Vec::with_capacity(cycles_requested);
-        for idx in 0..cycles_requested {
-            let sample_now =
-                now - Duration::seconds(sample_interval_seconds.saturating_mul(idx as u64) as i64);
-            let sample = self.current_raw_truth_sample(store, sample_now)?;
-            samples.push(WalletFreshnessRawCycleSample {
-                sample_now,
-                window_start: sample.window_start,
-                observed_swaps_loaded: sample.observed_swaps_loaded,
-                eligible_wallet_count: sample.eligible_wallet_count,
-                top_wallet_ids: sample.top_wallet_ids,
-            });
-        }
+        let samples = raw_truth_cycle_points
+            .iter()
+            .map(|point| WalletFreshnessRawCycleSample {
+                sample_now: point.sample_now,
+                window_start: point.sample.window_start,
+                observed_swaps_loaded: point.sample.observed_swaps_loaded,
+                eligible_wallet_count: point.sample.eligible_wallet_count,
+                top_wallet_ids: point.sample.top_wallet_ids.clone(),
+            })
+            .collect::<Vec<_>>();
 
         if samples.len() < 2 {
-            return Ok(WalletFreshnessRotationSignal {
+            return WalletFreshnessRotationSignal {
                 signal_available: false,
                 reason: Some("fewer_than_two_raw_truth_cycle_samples".to_string()),
                 cycles_requested,
@@ -631,7 +735,7 @@ impl DiscoveryService {
                     .collect::<BTreeSet<_>>()
                     .len(),
                 samples,
-            });
+            };
         }
 
         let current = &samples[0].top_wallet_ids;
@@ -654,7 +758,7 @@ impl DiscoveryService {
             .collect::<BTreeSet<_>>()
             .len();
 
-        Ok(WalletFreshnessRotationSignal {
+        WalletFreshnessRotationSignal {
             signal_available: true,
             reason: None,
             cycles_requested,
@@ -666,7 +770,7 @@ impl DiscoveryService {
             stable_wallets_across_cycles,
             unique_wallet_count_across_cycles,
             samples,
-        })
+        }
     }
 }
 
@@ -1471,6 +1575,216 @@ mod tests {
     }
 
     #[test]
+    fn measured_capture_snapshot_keeps_exact_stage_three_semantics_for_scheduled_mode() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("wallet-freshness-scheduled-capture.db");
+        let store = open_store(&db_path)?;
+        let now = ts("2026-03-25T12:00:00Z");
+        let config = freshness_test_config();
+        seed_ranked_wallet_window(
+            &store,
+            now,
+            &[
+                ("wallet-alpha", "mint-a", 4, 0),
+                ("wallet-beta", "mint-b", 3, 10),
+            ],
+        )?;
+        seed_publication_truth(
+            &store,
+            &config,
+            now - Duration::seconds(60),
+            now,
+            DiscoveryRuntimeMode::Healthy,
+            &["wallet-alpha", "wallet-beta"],
+        )?;
+        store.activate_follow_wallet("wallet-alpha", now, "test-follow")?;
+        store.activate_follow_wallet("wallet-beta", now, "test-follow")?;
+        store.insert_copy_signal(&CopySignalRow {
+            signal_id: "shadow:sig:wallet-alpha".to_string(),
+            wallet_id: "wallet-alpha".to_string(),
+            side: "buy".to_string(),
+            token: "mint-a".to_string(),
+            notional_sol: 0.2,
+            notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
+            ts: now - Duration::seconds(45),
+            status: "shadow_recorded".to_string(),
+        })?;
+
+        let discovery = DiscoveryService::new(config, ShadowConfig::default());
+        let capture = discovery.wallet_freshness_capture_snapshot_measured_with_lookback(
+            &store,
+            now,
+            1,
+            Some(960),
+        )?;
+
+        assert_eq!(
+            capture.snapshot.audit.verdict,
+            WalletFreshnessVerdict::FreshCurrent
+        );
+        assert_eq!(
+            capture.snapshot.shadow_signal.verdict,
+            WalletShadowSignalVerdict::ShadowSignalsPresentButConcentrated
+        );
+        assert_eq!(capture.snapshot.recent_cycles, 1);
+        assert!(!capture.snapshot.audit.rotation.signal_available);
+        assert_eq!(
+            capture.snapshot.shadow_signal.evidence_lookback_seconds,
+            Some(960)
+        );
+        assert_eq!(capture.snapshot.shadow_signal.selected_wallet_count, 2);
+        assert_eq!(
+            capture
+                .snapshot
+                .shadow_signal
+                .selected_wallets_with_recent_shadow_signal,
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_shadow_evidence_lookback_covers_scheduled_timer_gap_without_blind_spot(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("wallet-freshness-scheduled-gap-free.db");
+        let store = open_store(&db_path)?;
+        let now = ts("2026-03-25T12:15:00Z");
+        let config = freshness_test_config();
+        seed_ranked_wallet_window(
+            &store,
+            now,
+            &[
+                ("wallet-alpha", "mint-a", 4, 0),
+                ("wallet-beta", "mint-b", 3, 10),
+            ],
+        )?;
+        seed_publication_truth(
+            &store,
+            &config,
+            now - Duration::seconds(60),
+            now,
+            DiscoveryRuntimeMode::Healthy,
+            &["wallet-alpha", "wallet-beta"],
+        )?;
+        store.activate_follow_wallet("wallet-alpha", now, "test-follow")?;
+        store.activate_follow_wallet("wallet-beta", now, "test-follow")?;
+        store.insert_copy_signal(&CopySignalRow {
+            signal_id: "shadow:sig:wallet-alpha-gap".to_string(),
+            wallet_id: "wallet-alpha".to_string(),
+            side: "buy".to_string(),
+            token: "mint-a".to_string(),
+            notional_sol: 0.2,
+            notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
+            // This lands in the 5 minute blind interval that existed between
+            // a 15 minute timer cadence and the old 10 minute evidence window.
+            ts: now - Duration::minutes(11),
+            status: "shadow_recorded".to_string(),
+        })?;
+
+        let discovery = DiscoveryService::new(config, ShadowConfig::default());
+        let capture = discovery.wallet_freshness_capture_snapshot_measured_with_lookback(
+            &store,
+            now,
+            1,
+            Some(960),
+        )?;
+
+        assert_eq!(
+            capture.snapshot.shadow_signal.evidence_lookback_seconds,
+            Some(960)
+        );
+        assert_eq!(
+            capture.snapshot.shadow_signal.recent_window_start,
+            now - Duration::seconds(960)
+        );
+        assert_eq!(
+            capture
+                .snapshot
+                .shadow_signal
+                .selected_wallets_with_recent_shadow_signal,
+            1
+        );
+        assert_eq!(
+            capture
+                .snapshot
+                .shadow_signal
+                .recent_shadow_signal_wallet_ids,
+            vec!["wallet-alpha".to_string()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_capture_with_gap_free_lookback_remains_visible_to_history_report() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("wallet-freshness-scheduled-gap-history.db");
+        let store = open_store(&db_path)?;
+        let now = ts("2026-03-25T12:15:00Z");
+        let config = freshness_test_config();
+        seed_ranked_wallet_window(
+            &store,
+            now,
+            &[
+                ("wallet-alpha", "mint-a", 4, 0),
+                ("wallet-beta", "mint-b", 3, 10),
+            ],
+        )?;
+        seed_publication_truth(
+            &store,
+            &config,
+            now - Duration::seconds(60),
+            now,
+            DiscoveryRuntimeMode::Healthy,
+            &["wallet-alpha", "wallet-beta"],
+        )?;
+        store.activate_follow_wallet("wallet-alpha", now, "test-follow")?;
+        store.activate_follow_wallet("wallet-beta", now, "test-follow")?;
+        store.insert_copy_signal(&CopySignalRow {
+            signal_id: "shadow:sig:wallet-alpha-gap-history".to_string(),
+            wallet_id: "wallet-alpha".to_string(),
+            side: "buy".to_string(),
+            token: "mint-a".to_string(),
+            notional_sol: 0.2,
+            notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
+            ts: now - Duration::minutes(11),
+            status: "shadow_recorded".to_string(),
+        })?;
+
+        let discovery = DiscoveryService::new(config, ShadowConfig::default());
+        let capture = discovery.wallet_freshness_capture_snapshot_measured_with_lookback(
+            &store,
+            now,
+            1,
+            Some(960),
+        )?;
+        persist_capture(&store, capture.snapshot)?;
+
+        let report =
+            discovery.wallet_freshness_history_report_with_horizon(&store, now, 5, 3_600)?;
+
+        assert_eq!(report.captures_loaded, 1);
+        assert_eq!(report.shadow_signal_present_capture_count, 1);
+        assert_eq!(
+            report.captures[0].shadow_signal.evidence_lookback_seconds,
+            Some(960)
+        );
+        assert_eq!(
+            report.captures[0]
+                .shadow_signal
+                .recent_shadow_signal_wallet_ids,
+            vec!["wallet-alpha".to_string()]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn history_report_validates_current_selection_across_multiple_captures() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("wallet-freshness-history-validated.db");
@@ -2233,6 +2547,7 @@ mod tests {
             shadow_signal: WalletFreshnessShadowSignalEvidence {
                 recent_window_start: captured_at - Duration::minutes(30),
                 recent_window_end: captured_at,
+                evidence_lookback_seconds: Some(1_800),
                 selected_wallet_ids: active_follow_wallet_ids,
                 selected_wallet_count,
                 selected_wallets_with_recent_raw_activity: selected_raw_wallet_ids.len(),

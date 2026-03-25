@@ -14,4 +14,4 @@ SyslogIdentifier=discovery_wallet_freshness_capture
 StandardOutput=journal
 StandardError=journal
 TimeoutStartSec=5min
-ExecStart=/var/www/solana-copy-bot/target/release/discovery_wallet_freshness_capture --config /etc/solana-copy-bot/live.server.toml --recent-cycles 3 --json
+ExecStart=/var/www/solana-copy-bot/target/release/discovery_wallet_freshness_capture --config /etc/solana-copy-bot/live.server.toml --recent-cycles 1 --shadow-evidence-lookback-seconds 960 --json

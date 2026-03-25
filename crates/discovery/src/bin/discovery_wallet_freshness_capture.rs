@@ -6,10 +6,12 @@ use copybot_discovery::{
     DiscoveryService,
 };
 use copybot_storage::SqliteStore;
+use serde::Serialize;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
-const USAGE: &str = "usage: discovery_wallet_freshness_capture --config <path> [--db-path <path>] [--json] [--now <rfc3339>] [--recent-cycles <count>]";
+const USAGE: &str = "usage: discovery_wallet_freshness_capture --config <path> [--db-path <path>] [--json] [--now <rfc3339>] [--recent-cycles <count>] [--shadow-evidence-lookback-seconds <seconds>]";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -28,6 +30,24 @@ struct Config {
     json: bool,
     now: DateTime<Utc>,
     recent_cycles: usize,
+    shadow_evidence_lookback_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CaptureRunOutput {
+    event: &'static str,
+    status: &'static str,
+    complete: bool,
+    config_path: String,
+    db_path: String,
+    capture_duration_ms: u64,
+    raw_truth_build_duration_ms: u64,
+    shadow_signal_duration_ms: u64,
+    persistence_duration_ms: u64,
+    dominant_phase: String,
+    shadow_evidence_lookback_seconds: Option<u64>,
+    #[serde(flatten)]
+    snapshot: WalletFreshnessCaptureSnapshot,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -44,6 +64,7 @@ where
     let mut json = false;
     let mut now: Option<DateTime<Utc>> = None;
     let mut recent_cycles = DEFAULT_RECENT_CYCLES;
+    let mut shadow_evidence_lookback_seconds: Option<u64> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -58,6 +79,12 @@ where
             "--recent-cycles" => {
                 recent_cycles = parse_usize_arg("--recent-cycles", args.next())?;
             }
+            "--shadow-evidence-lookback-seconds" => {
+                shadow_evidence_lookback_seconds = Some(parse_u64_arg(
+                    "--shadow-evidence-lookback-seconds",
+                    args.next(),
+                )?);
+            }
             "--help" | "-h" => return Ok(None),
             other => bail!("unknown argument: {other}"),
         }
@@ -69,6 +96,7 @@ where
         json,
         now: now.unwrap_or_else(Utc::now),
         recent_cycles: recent_cycles.max(1),
+        shadow_evidence_lookback_seconds,
     }))
 }
 
@@ -94,6 +122,17 @@ fn parse_usize_arg(flag: &str, value: Option<String>) -> Result<usize> {
         .with_context(|| format!("invalid {flag} usize value: {raw}"))
 }
 
+fn parse_u64_arg(flag: &str, value: Option<String>) -> Result<u64> {
+    let raw = parse_string_arg(flag, value)?;
+    let parsed = raw
+        .parse::<u64>()
+        .with_context(|| format!("invalid {flag} u64 value: {raw}"))?;
+    if parsed == 0 {
+        bail!("{flag} must be greater than zero");
+    }
+    Ok(parsed)
+}
+
 fn resolve_db_path(
     config_path: &Path,
     db_path_override: Option<&Path>,
@@ -113,6 +152,7 @@ fn resolve_db_path(
 }
 
 fn run(config: Config) -> Result<String> {
+    let capture_started = Instant::now();
     let loaded_config = load_from_path(&config.config_path)
         .with_context(|| format!("failed loading config {}", config.config_path.display()))?;
     let db_path = resolve_db_path(
@@ -126,76 +166,137 @@ fn run(config: Config) -> Result<String> {
         loaded_config.discovery.clone(),
         loaded_config.shadow.clone(),
     );
-    let snapshot =
-        discovery.wallet_freshness_capture_snapshot(&store, config.now, config.recent_cycles)?;
+    let computed = discovery.wallet_freshness_capture_snapshot_measured_with_lookback(
+        &store,
+        config.now,
+        config.recent_cycles,
+        config.shadow_evidence_lookback_seconds,
+    )?;
+    let persist_started = Instant::now();
     let persisted =
-        store.append_discovery_wallet_freshness_capture(&snapshot.to_storage_write()?)?;
+        store.append_discovery_wallet_freshness_capture(&computed.snapshot.to_storage_write()?)?;
+    let persistence_duration_ms = persist_started.elapsed().as_millis() as u64;
     let persisted_snapshot =
         copybot_discovery::wallet_freshness_audit::wallet_freshness_capture_from_row(persisted)?;
+    let output = CaptureRunOutput {
+        event: "discovery_wallet_freshness_capture",
+        status: "completed",
+        complete: true,
+        config_path: config.config_path.display().to_string(),
+        db_path: db_path.display().to_string(),
+        capture_duration_ms: capture_started.elapsed().as_millis() as u64,
+        raw_truth_build_duration_ms: computed.raw_truth_build_duration_ms,
+        shadow_signal_duration_ms: computed.shadow_signal_duration_ms,
+        persistence_duration_ms,
+        dominant_phase: dominant_phase(
+            computed.raw_truth_build_duration_ms,
+            computed.shadow_signal_duration_ms,
+            persistence_duration_ms,
+        )
+        .to_string(),
+        shadow_evidence_lookback_seconds: persisted_snapshot
+            .shadow_signal
+            .evidence_lookback_seconds,
+        snapshot: persisted_snapshot,
+    };
     if config.json {
-        serde_json::to_string_pretty(&persisted_snapshot)
+        serde_json::to_string_pretty(&output)
             .context("failed serializing discovery wallet freshness capture json")
     } else {
-        Ok(render_human(
-            &config.config_path,
-            &db_path,
-            &persisted_snapshot,
-        ))
+        Ok(render_human(&output))
     }
 }
 
-fn render_human(
-    config_path: &Path,
-    db_path: &Path,
-    snapshot: &WalletFreshnessCaptureSnapshot,
-) -> String {
+fn dominant_phase(
+    raw_truth_build_duration_ms: u64,
+    shadow_signal_duration_ms: u64,
+    persistence_duration_ms: u64,
+) -> &'static str {
+    if raw_truth_build_duration_ms >= shadow_signal_duration_ms
+        && raw_truth_build_duration_ms >= persistence_duration_ms
+    {
+        "raw_truth_build"
+    } else if shadow_signal_duration_ms >= persistence_duration_ms {
+        "shadow_signal_evidence"
+    } else {
+        "persistence"
+    }
+}
+
+fn render_human(output: &CaptureRunOutput) -> String {
     [
-        "event=discovery_wallet_freshness_capture".to_string(),
-        format!("config_path={}", config_path.display()),
-        format!("db_path={}", db_path.display()),
+        format!("event={}", output.event),
+        format!("status={}", output.status),
+        format!("complete={}", output.complete),
+        format!("config_path={}", output.config_path),
+        format!("db_path={}", output.db_path),
+        format!("capture_duration_ms={}", output.capture_duration_ms),
+        format!(
+            "raw_truth_build_duration_ms={}",
+            output.raw_truth_build_duration_ms
+        ),
+        format!(
+            "shadow_signal_duration_ms={}",
+            output.shadow_signal_duration_ms
+        ),
+        format!("persistence_duration_ms={}", output.persistence_duration_ms),
+        format!("dominant_phase={}", output.dominant_phase),
+        format!(
+            "shadow_evidence_lookback_seconds={}",
+            output
+                .shadow_evidence_lookback_seconds
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
         format!(
             "capture_id={}",
-            snapshot
+            output
+                .snapshot
                 .capture_id
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "null".to_string())
         ),
-        format!("captured_at={}", snapshot.captured_at.to_rfc3339()),
-        format!("recent_cycles={}", snapshot.recent_cycles),
-        format!("audit_verdict={}", snapshot.audit.verdict.as_str()),
-        format!("audit_reason={}", snapshot.audit.reason),
+        format!("captured_at={}", output.snapshot.captured_at.to_rfc3339()),
+        format!("recent_cycles={}", output.snapshot.recent_cycles),
+        format!("audit_verdict={}", output.snapshot.audit.verdict.as_str()),
+        format!("audit_reason={}", output.snapshot.audit.reason),
         format!(
             "shadow_signal_verdict={}",
-            snapshot.shadow_signal.verdict.as_str()
+            output.snapshot.shadow_signal.verdict.as_str()
         ),
-        format!("shadow_signal_reason={}", snapshot.shadow_signal.reason),
+        format!(
+            "shadow_signal_reason={}",
+            output.snapshot.shadow_signal.reason
+        ),
         format!(
             "published_wallet_count={}",
-            snapshot.audit.published_wallet_ids.len()
+            output.snapshot.audit.published_wallet_ids.len()
         ),
         format!(
             "active_follow_wallet_count={}",
-            snapshot.audit.active_follow_wallet_ids.len()
+            output.snapshot.audit.active_follow_wallet_ids.len()
         ),
         format!(
             "current_raw_top_wallet_count={}",
-            snapshot.audit.current_raw_top_wallet_ids.len()
+            output.snapshot.audit.current_raw_top_wallet_ids.len()
         ),
         format!(
             "selected_wallets_with_recent_raw_activity={}",
-            snapshot
+            output
+                .snapshot
                 .shadow_signal
                 .selected_wallets_with_recent_raw_activity
         ),
         format!(
             "selected_wallets_with_recent_shadow_signal={}",
-            snapshot
+            output
+                .snapshot
                 .shadow_signal
                 .selected_wallets_with_recent_shadow_signal
         ),
         format!(
             "recent_shadow_signal_count={}",
-            snapshot.shadow_signal.recent_shadow_signal_count
+            output.snapshot.shadow_signal.recent_shadow_signal_count
         ),
     ]
     .join("\n")
@@ -219,9 +320,12 @@ mod tests {
             "/tmp/live.toml".to_string(),
             "--recent-cycles".to_string(),
             "5".to_string(),
+            "--shadow-evidence-lookback-seconds".to_string(),
+            "960".to_string(),
         ])?
         .expect("config should parse");
         assert_eq!(config.recent_cycles, 5);
+        assert_eq!(config.shadow_evidence_lookback_seconds, Some(960));
         Ok(())
     }
 
@@ -261,15 +365,25 @@ mod tests {
             json: true,
             now,
             recent_cycles: 3,
+            shadow_evidence_lookback_seconds: Some(1_800),
         })?;
         let json: serde_json::Value =
             serde_json::from_str(&output).context("json output must parse")?;
+        assert_eq!(json["status"], "completed");
+        assert_eq!(json["complete"], true);
         assert_eq!(json["audit"]["verdict"], "fresh_current");
         assert_eq!(
             json["shadow_signal"]["verdict"],
             "shadow_signals_present_but_concentrated"
         );
         assert_eq!(json["capture_id"], 1);
+        assert!(json["capture_duration_ms"].is_number());
+        assert!(json["raw_truth_build_duration_ms"].is_number());
+        assert!(json["shadow_signal_duration_ms"].is_number());
+        assert!(json["persistence_duration_ms"].is_number());
+        assert!(json["dominant_phase"].is_string());
+        assert_eq!(json["shadow_evidence_lookback_seconds"], 1800);
+        assert_eq!(json["shadow_signal"]["evidence_lookback_seconds"], 1800);
         Ok(())
     }
 

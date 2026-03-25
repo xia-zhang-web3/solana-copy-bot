@@ -16,7 +16,7 @@ require_line() {
   }
 }
 
-require_line "ExecStart=/var/www/solana-copy-bot/target/release/discovery_wallet_freshness_capture --config /etc/solana-copy-bot/live.server.toml --recent-cycles 3 --json" "$SERVICE_PATH"
+require_line "ExecStart=/var/www/solana-copy-bot/target/release/discovery_wallet_freshness_capture --config /etc/solana-copy-bot/live.server.toml --recent-cycles 1 --shadow-evidence-lookback-seconds 960 --json" "$SERVICE_PATH"
 require_line "TimeoutStartSec=5min" "$SERVICE_PATH"
 require_line "StandardOutput=journal" "$SERVICE_PATH"
 require_line "StandardError=journal" "$SERVICE_PATH"
@@ -37,15 +37,22 @@ road = pathlib.Path(sys.argv[2]).read_text()
 
 assert "copybot-discovery-wallet-freshness-capture.service" in readme, "README must list Stage 3 capture service"
 assert "copybot-discovery-wallet-freshness-capture.timer" in readme, "README must list Stage 3 capture timer"
-assert "discovery_wallet_freshness_capture --config /etc/solana-copy-bot/live.server.toml" in readme, "README must show exact capture command"
+assert "discovery_wallet_freshness_capture --config /etc/solana-copy-bot/live.server.toml --recent-cycles 1 --shadow-evidence-lookback-seconds 960 --json" in readme, "README must show exact scheduled capture command"
 assert "discovery_wallet_freshness_report --config /etc/solana-copy-bot/live.server.toml" in readme, "README must show report command"
 assert "latest_capture_age_seconds" in readme, "README must explain current report freshness fields"
 assert "journalctl -u copybot-discovery-wallet-freshness-capture.service" in readme, "README must show failure inspection path"
 assert "15 minute capture cadence" in readme, "README must explain capture cadence"
+assert "--recent-cycles 1" in readme, "README must explain the cheaper scheduled capture mode"
+assert "--shadow-evidence-lookback-seconds 960" in readme, "README must explain the gap-free scheduled evidence lookback"
+assert "15m timer cadence + 60s timer jitter" in readme, "README must explain why the scheduled evidence lookback is gap-free"
+assert "capture_duration_ms" in readme, "README must explain capture timing diagnostics"
+assert "shadow_evidence_lookback_seconds" in readme, "README must explain capture evidence lookback diagnostics"
 assert "execution.enabled = false" in readme, "README must restate no execution activation"
 
 assert "copybot-discovery-wallet-freshness-capture.timer" in road, "ROAD must mention scheduled Stage 3 capture path"
 assert "15 minute cadence" in road, "ROAD must record the accepted cadence"
+assert "--recent-cycles 1" in road, "ROAD must record the cheaper scheduled Stage 3 capture command"
+assert "--shadow-evidence-lookback-seconds 960" in road, "ROAD must record the gap-free scheduled evidence lookback"
 PY
 
 echo "discovery_wallet_freshness_capture_operator_contract_smoke_test: ok"

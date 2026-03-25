@@ -77,19 +77,43 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - not hourly, because Stage 3 recent-history validation would accumulate too
      slowly to be operationally useful
 3. `copybot-discovery-wallet-freshness-capture.service` runs:
-   - `discovery_wallet_freshness_capture --config /etc/solana-copy-bot/live.server.toml --recent-cycles 3 --json`
-4. The service is explicitly bounded by `TimeoutStartSec=5min`, so the scheduled
+   - `discovery_wallet_freshness_capture --config /etc/solana-copy-bot/live.server.toml --recent-cycles 1 --shadow-evidence-lookback-seconds 960 --json`
+4. The scheduled service intentionally uses `--recent-cycles 1` for the raw-truth
+   build, but widens exact shadow/raw activity evidence with
+   `--shadow-evidence-lookback-seconds 960`:
+   - `960s = 15m timer cadence + 60s timer jitter`, so persisted Stage 3
+     evidence does not leave blind intervals between scheduled captures
+   - this keeps the cheaper scheduled current-raw top-N path while still
+     accumulating exact selected-wallet raw/shadow evidence across the full
+     timer cadence
+5. The scheduled service intentionally uses `--recent-cycles 1`:
+   - each persisted capture is still exact for its point-in-time publication
+     truth, active follow truth, current raw top-N, and shadow evidence
+   - recent-cycle validation now comes from accumulated persisted captures via
+     `discovery_wallet_freshness_report`, instead of paying for extra
+     self-resampling inside every scheduled capture
+   - operators can still run larger `--recent-cycles` manually for deeper
+     spot checks, or a different explicit `--shadow-evidence-lookback-seconds`,
+     but that is not the default timer path
+6. The service is explicitly bounded by `TimeoutStartSec=5min`, so the scheduled
    path does not rely on an unbounded shell session.
-5. Operators should inspect capture failures with:
+7. Operators should inspect capture failures with:
    - `journalctl -u copybot-discovery-wallet-freshness-capture.service -n 20 --no-pager`
-6. Operators should inspect the accumulated Stage 3 verdict with:
+8. Operators should inspect the accumulated Stage 3 verdict with:
    - `discovery_wallet_freshness_report --config /etc/solana-copy-bot/live.server.toml --limit 5 --json`
-7. For recent-cycle validation, the important report fields are:
+9. For recent-cycle validation, the important report fields are:
    - `latest_capture_age_seconds`
    - `captures_within_recent_horizon`
    - `recent_horizon_seconds`
    - `stale_captures_excluded_from_verdict`
-8. `execution.enabled = false` remains unchanged. This timer only accumulates
+10. For capture cost diagnostics, the important capture output fields are:
+   - `capture_duration_ms`
+   - `raw_truth_build_duration_ms`
+   - `shadow_signal_duration_ms`
+   - `persistence_duration_ms`
+   - `dominant_phase`
+   - `shadow_evidence_lookback_seconds`
+11. `execution.enabled = false` remains unchanged. This timer only accumulates
    evidence for Stage 3 and must not be interpreted as execution activation.
 
 ## Server target paths
