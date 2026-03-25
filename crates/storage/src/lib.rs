@@ -732,6 +732,13 @@ pub struct RecentRawJournalStateRow {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservedSwapsCoverageSnapshot {
+    pub covered_since: Option<DateTime<Utc>>,
+    pub covered_through_cursor: Option<DiscoveryRuntimeCursor>,
+    pub row_count: usize,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RecentRawJournalWriteSummary {
     pub batch_rows: usize,

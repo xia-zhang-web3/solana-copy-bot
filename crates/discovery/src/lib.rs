@@ -30,6 +30,7 @@ pub mod raw_gap_fill_support;
 pub mod restore_verdict;
 pub mod runtime_restore_ops;
 mod scoring;
+pub mod wallet_freshness_audit;
 mod windows;
 use self::followlist::{desired_wallets, rank_follow_candidates, top_wallet_labels};
 use self::scoring::{hold_time_quality_score, median_i64, tanh01};

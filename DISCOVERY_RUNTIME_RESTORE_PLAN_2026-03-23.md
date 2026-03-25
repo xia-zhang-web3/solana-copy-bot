@@ -2044,3 +2044,216 @@ Current reading:
   - either `attempt_block_fetch_ms` drops materially under the same bounded run
   - or the live telemetry will prove that the practical frontier is now limited
     by dense-window `max_blocks_to_fetch`, not by avoidable fetch latency
+
+### 20.6 Live provider compare-runs after throughput hardening (`2026-03-25`)
+
+Additional provider tests were run after the resumable / throughput-hardening
+path was already in place.
+
+QuickNode remained the live reference point:
+
+- same bounded live contract:
+  - `--max-slot-batches-per-attempt 64`
+  - `--max-blocks-to-fetch 200`
+- observed steady-state server result:
+  - `attempt_block_fetch_ms = 18874`
+  - `attempt_frontier_advanced_slots = 200`
+  - `verdict = not_proven_due_to_cost_budget`
+- observed larger bounded run:
+  - `--max-blocks-to-fetch 600`
+  - `attempt_block_fetch_ms = 52039`
+  - `attempt_frontier_advanced_slots = 600`
+  - still no replayable output
+
+Alchemy compare-run:
+
+- same bounded `200`-block contract, isolated into a separate output surface
+- first attempt:
+  - `resolve_slot_bounds_ms = 54557`
+  - `attempt_block_fetch_ms = 26784`
+  - `attempt_frontier_advanced_slots = 200`
+  - `verdict = not_proven_due_to_cost_budget`
+- second attempt with reused bounds:
+  - `resolve_slot_bounds_ms = 0`
+  - `attempt_block_fetch_ms = 30075`
+  - `attempt_frontier_advanced_slots = 200`
+  - `verdict = not_proven_due_to_cost_budget`
+- reading:
+  - bounded `Alchemy` runs looked more stable than the long `QuickNode` runs
+  - but they were slower on the actual bounded contract and did not improve
+    frontier advance
+
+ANKR compare-run:
+
+- failed immediately with:
+  - `verdict = non_viable_source_contract`
+  - `Block 407480552 cleaned up, does not exist on node. First available block: 408632723`
+- reading:
+  - the tested endpoint is not archive-grade for the missing incident window
+  - it cannot be used for this restore path
+
+Infura compare-run:
+
+- same bounded `200`-block contract
+- no terminal JSON returned even after more than two minutes
+- no progress/output files were materialized
+- reading:
+  - `Infura` is not a practical source on the current
+    `program_history_gap_fill` contract
+
+Honest provider conclusion after these compare-runs:
+
+- `QuickNode` remains the fastest provider actually observed on this exact tool
+  contract
+- `QuickNode` is also the one that still intermittently fails the historical
+  path with `503`
+- `Alchemy` is slower
+- `ANKR` does not provide the required archive depth
+- `Infura` did not produce a usable bounded run
+- none of the tested providers produced a practical timely recovery source on
+  the full incident window
+
+### 20.7 Local Mac Studio compare-run (`2026-03-25`)
+
+The “maybe the production host is too weak” hypothesis was tested directly.
+
+What was done:
+
+- a local run was executed on a `Mac Studio M3 Ultra / 96 GB`
+- the exact same QuickNode HTTP endpoint was used
+- the same live incident window was used
+- the current server progress state was copied locally
+- a minimal local runtime DB was created with the same
+  `discovery_recent_raw_restore_state`, so the comparison isolated provider /
+  fetch cost from the production host itself
+
+Observed local bounded results:
+
+- first local run returned after the local copied progress state was reset as
+  incompatible because of path mismatch in the copied output metadata
+  - `attempt_block_fetch_ms = 20787`
+  - `attempt_frontier_advanced_slots = 200`
+- second local steady-state run:
+  - `resolved_bounds_reused_from_progress = true`
+  - `attempt_block_fetch_ms = 24618`
+  - `attempt_frontier_advanced_slots = 200`
+
+Compared with the steady-state live server result:
+
+- live server:
+  - `attempt_block_fetch_ms = 18874`
+  - `attempt_frontier_advanced_slots = 200`
+- local Mac Studio:
+  - `attempt_block_fetch_ms = 24618`
+  - `attempt_frontier_advanced_slots = 200`
+
+Reading:
+
+- the hypothesis that the production host is the primary bottleneck is not
+  supported
+- the dominant constraint remains provider-side historical `getBlock`
+  throughput / reliability, not local CPU or RAM
+- moving the same QuickNode path onto a much stronger machine did not produce
+  the expected breakthrough
+
+### 20.8 Decision: stop active provider / gap-fill experiments for now (`2026-03-25`)
+
+Current decision:
+
+- stop active provider-swap / gap-fill experiment work for now
+- do not invest more calendar time into this branch unless a truly different
+  archive-grade source contract appears
+- keep the already-built tooling and documentation; do not delete it
+- keep the production server in the current safe bridge posture:
+  - `runtime_mode = bootstrap_degraded`
+  - `execution.enabled = false`
+  - `copybot-discovery-recent-raw-snapshot.timer = active`
+
+Why this decision is justified:
+
+- snapshot durability is already operationally closed
+- restore tooling is already operationally closed
+- source viability research is already closed
+- resumable gap-fill research is already closed
+- provider compare-runs and local host compare-runs did not uncover a practical
+  timely recovery source
+- the remaining blocker is no longer lack of engineering structure; it is the
+  practical cost / reliability of provider-side historical block fetch for the
+  missing incident window
+
+What stays true after freezing this branch:
+
+- the incident is not yet closed in the `healthy / trading_ready` sense
+- live accumulation can continue in the background
+- the team no longer needs to freeze product development behind this recovery
+  branch
+- future engineering focus should return to the main roadmap captured in
+  `ROAD_TO_PRODUCTION_v2.md`
+
+### 20.9 Live server stability / recent-raw write verification (`2026-03-25`)
+
+After the provider / gap-fill branch was frozen, one additional direct
+server-health verification was run to answer the practical question:
+
+> “Is the server actually still writing recent raw, or can we wake up in three
+> days and discover that nothing was being persisted?”
+
+What was checked:
+
+- explicit server-side build without stopping the live app:
+  - `~/.cargo/bin/cargo build --release -p copybot-discovery --bin discovery_raw_gap_fill_program_history --bin discovery_status`
+- live unit state during the same check:
+  - `solana-copy-bot.service = active`
+  - `copybot-discovery-recent-raw-snapshot.timer = active`
+  - `copybot-discovery-runtime-export.timer = active`
+- live ingestion / writer logs from `journalctl -u solana-copy-bot.service`
+- direct SQLite reads from the live recent-raw journal
+- the latest timer-triggered `discovery_recent_raw_snapshot` run
+
+Observed facts:
+
+- build succeeded on the server without stopping the bot
+- live log slice still showed active ingestion:
+  - `grpc_message_total` increasing
+  - `grpc_transaction_updates_total` increasing
+  - `swaps_seen` increasing
+  - sampled live telemetry reported `rpc_429 = 0` and `rpc_5xx = 0`
+- direct SQLite verification on
+  `/var/www/solana-copy-bot/state/discovery_recent_raw.db` confirmed
+  real recent-raw forward progress:
+  - at `2026-03-25T13:44:28Z` the latest `observed_swaps` row was:
+    - `rowid = 8270426`
+    - `ts = 2026-03-25T13:43:40.433157287+00:00`
+    - `slot = 408776640`
+  - at `2026-03-25T13:45:38Z` the latest `observed_swaps` row was:
+    - `rowid = 8276618`
+    - `ts = 2026-03-25T13:44:57.514693140+00:00`
+    - `slot = 408776834`
+  - observed delta over `70s`:
+    - `+6192` rows
+    - slot frontier moved forward
+    - latest raw timestamp moved forward
+- latest timer-triggered snapshot service was also healthy:
+  - `copybot-discovery-recent-raw-snapshot.service` completed
+    `status=0/SUCCESS` at `2026-03-25 13:42:54 UTC`
+  - emitted snapshot metadata included:
+    - `row_count = 8233319`
+    - `covered_through_cursor.ts_utc = 2026-03-25T13:36:30.059096747Z`
+    - `covered_through_cursor.slot = 408775557`
+
+Reading:
+
+- the live server is currently stable
+- the recent-raw journal is currently still being populated
+- the recent-raw snapshot timer is currently still executing successfully
+- this is a sampled real-time health confirmation, not a promise that no later
+  operational incident can happen
+
+Current branch status after this verification:
+
+- active provider / gap-fill experiments remain paused
+- the live server stays in the safe bridge posture:
+  - `runtime_mode = bootstrap_degraded`
+  - `execution.enabled = false`
+- the restore / snapshot branch is no longer the active coding focus
+- the primary development roadmap is again `ROAD_TO_PRODUCTION_v2.md`

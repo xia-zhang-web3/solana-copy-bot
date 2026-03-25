@@ -1,9 +1,9 @@
 use crate::{
     discovery::upsert_wallet_activity_days_on_conn, DiscoveryPersistedRebuildPhase,
     DiscoveryPersistedRebuildStateRow, DiscoveryRuntimeCursor, ObservedSwapBatchWriteMetrics,
-    RecentRawJournalReplaySummary, RecentRawJournalStateRow, RecentRawJournalWriteSummary,
-    SqliteBatchedDeleteSummary, SqliteStore, TokenMarketStats, TokenQualityCacheRow,
-    TokenQualityRpcRow, WalletActivityDayRow,
+    ObservedSwapsCoverageSnapshot, RecentRawJournalReplaySummary, RecentRawJournalStateRow,
+    RecentRawJournalWriteSummary, SqliteBatchedDeleteSummary, SqliteStore, TokenMarketStats,
+    TokenQualityCacheRow, TokenQualityRpcRow, WalletActivityDayRow,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -2280,6 +2280,48 @@ impl SqliteStore {
         }
         swaps.reverse();
         Ok((swaps, truncated_by_limit))
+    }
+
+    pub fn observed_swaps_coverage_snapshot(&self) -> Result<ObservedSwapsCoverageSnapshot> {
+        let row_count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM observed_swaps", [], |row| row.get(0))
+            .context("failed counting observed_swaps rows")?;
+        let covered_since_raw: Option<String> = self
+            .conn
+            .query_row("SELECT MIN(ts) FROM observed_swaps", [], |row| row.get(0))
+            .optional()
+            .context("failed loading observed_swaps covered_since timestamp")?
+            .flatten();
+        let covered_since = parse_optional_rfc3339_utc(covered_since_raw, "observed_swaps.ts")?;
+        let covered_through_cursor_raw = self
+            .conn
+            .query_row(
+                "SELECT ts, slot, signature
+                 FROM observed_swaps
+                 ORDER BY ts DESC, slot DESC, signature DESC
+                 LIMIT 1",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get(2)?)),
+            )
+            .optional()
+            .context("failed loading observed_swaps covered_through cursor")?;
+        let covered_through_cursor = covered_through_cursor_raw
+            .map(
+                |(ts_raw, slot_raw, signature)| -> Result<DiscoveryRuntimeCursor> {
+                    Ok(DiscoveryRuntimeCursor {
+                        ts_utc: parse_rfc3339_utc(&ts_raw, "observed_swaps.ts")?,
+                        slot: slot_raw.max(0) as u64,
+                        signature,
+                    })
+                },
+            )
+            .transpose()?;
+        Ok(ObservedSwapsCoverageSnapshot {
+            covered_since,
+            covered_through_cursor,
+            row_count: row_count.max(0) as usize,
+        })
     }
 
     pub fn load_discovery_runtime_cursor(&self) -> Result<Option<DiscoveryRuntimeCursor>> {

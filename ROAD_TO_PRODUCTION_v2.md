@@ -411,6 +411,100 @@ Recommended operational posture now:
     - but the current practical tuning is still far too slow for incident
       closure, because the real window advances only a few hundred slots per
       long attempt and still produces no replayable output
+- Additional provider compare-runs completed on `2026-03-25`:
+  - QuickNode remains the fastest provider actually observed on this exact
+    `program_history_gap_fill` contract, but it is still not practical enough
+    for timely recovery and intermittently returns `503` on long historical
+    runs
+  - Alchemy compare-run on the same bounded `200`-block contract completed
+    cleanly but was slower:
+    - first attempt:
+      - `resolve_slot_bounds_ms = 54557`
+      - `attempt_block_fetch_ms = 26784`
+      - `attempt_frontier_advanced_slots = 200`
+    - second attempt with reused bounds:
+      - `attempt_block_fetch_ms = 30075`
+      - `attempt_frontier_advanced_slots = 200`
+    - conclusion: more stable than QuickNode on this small bounded run, but
+      slower and not a better recovery source on the current tool contract
+  - ANKR compare-run failed immediately as a non-archive source:
+    - `verdict = non_viable_source_contract`
+    - provider returned:
+      `Block 407480552 cleaned up, does not exist on node. First available block: 408632723`
+    - conclusion: this endpoint does not retain the historical depth needed
+      for the incident window
+  - Infura compare-run did not return a bounded terminal JSON even after more
+    than two minutes on the same `200`-block attempt and produced no progress
+    files
+    - conclusion: unusable on the current gap-fill contract
+- Mac Studio local compare-run completed on `2026-03-25`:
+  - a local run was executed on an `M3 Ultra / 96 GB` host using:
+    - the same QuickNode HTTP endpoint
+    - the same live incident window
+    - the same current gap-fill progress state copied from the server
+  - a minimal local runtime DB was created with the same
+    `discovery_recent_raw_restore_state`, so the comparison isolated provider
+    / fetch cost from the server host itself
+  - observed local steady-state result on the same bounded `200`-block attempt:
+    - `attempt_block_fetch_ms = 24618`
+    - `attempt_frontier_advanced_slots = 200`
+  - observed live server steady-state result on the same bounded `200`-block
+    attempt remained better:
+    - `attempt_block_fetch_ms = 18874`
+    - `attempt_frontier_advanced_slots = 200`
+  - conclusion: the hypothesis that the production host is the primary
+    bottleneck is not supported; the dominant constraint remains provider-side
+    historical `getBlock` throughput / reliability, not local CPU or RAM
+- Current decision on this branch:
+  - active provider / gap-fill compare-testing is now paused
+  - the branch is considered operationally explored enough to conclude:
+    - snapshots are healthy and protect accumulated raw progress
+    - discovery restore tooling is no longer the main blocker
+    - the remaining blocker is the practical cost of provider-side historical
+      `getBlock` recovery on the incident window
+  - engineering focus should return to the main delivery plan while live
+    ingestion continues to accumulate the missing raw window in the background
+- Server build / stability check on `2026-03-25`:
+  - the live repo remained on commit `c3ad5d8`
+  - an explicit server-side build check succeeded without stopping the bot:
+    - `~/.cargo/bin/cargo build --release -p copybot-discovery --bin discovery_raw_gap_fill_program_history --bin discovery_status`
+  - both before and after the build:
+    - `solana-copy-bot.service = active`
+    - `copybot-discovery-recent-raw-snapshot.timer = active`
+  - a direct live-write verification was then run against the server:
+    - service/timer state at the same check:
+      - `solana-copy-bot.service = active`
+      - `copybot-discovery-recent-raw-snapshot.timer = active`
+      - `copybot-discovery-runtime-export.timer = active`
+    - live app logs remained healthy in the observed window:
+      - `grpc_message_total` and `grpc_transaction_updates_total` were still increasing
+      - `swaps_seen` was still increasing
+      - live ingestion telemetry reported `rpc_429 = 0` and `rpc_5xx = 0`
+      - no writer-death or process-crash signal appeared in the sampled `journalctl` window
+    - direct SQLite verification on `observed_swaps` confirmed recent-raw writes were still advancing:
+      - at `2026-03-25T13:44:28Z` the latest row was:
+        - `rowid = 8270426`
+        - `ts = 2026-03-25T13:43:40.433157287+00:00`
+        - `slot = 408776640`
+      - at `2026-03-25T13:45:38Z` the latest row was:
+        - `rowid = 8276618`
+        - `ts = 2026-03-25T13:44:57.514693140+00:00`
+        - `slot = 408776834`
+      - observed delta over `70s`:
+        - `+6192` rows
+        - slot frontier moved from `408776640` to `408776834`
+        - latest raw timestamp moved forward by `77s`
+    - snapshot timer also remained operational:
+      - latest sampled timer-triggered run completed with `status=0/SUCCESS` at `2026-03-25 13:42:54 UTC`
+      - snapshot metadata from that run reported:
+        - `row_count = 8233319`
+        - `covered_through_cursor.ts_utc = 2026-03-25T13:36:30.059096747Z`
+        - `covered_through_cursor.slot = 408775557`
+  - conclusion from this check:
+    - the server is currently stable
+    - the recent-raw journal is currently still being written
+    - the snapshot/export timers are currently still functioning
+    - this is a real-time health slice, not a guarantee that nothing can break later
 - Business meaning of the current server state:
   - the dead multi-day replay path is no longer the active plan
   - discovery is alive on a new fresh runtime DB and holding `15` wallets instead of zero
@@ -424,6 +518,13 @@ Recommended operational posture now:
   - the remaining live blocker is now extremely narrow:
     practical completion of program-history gap-fill on the real incident
     window
+  - however, the active decision is to stop spending additional calendar time
+    on this gap-fill/provider branch for now and let live accumulation continue
+    while the team returns to the main roadmap
+  - until that branch is intentionally reopened, `ROAD_TO_PRODUCTION_v2.md`
+    is again the primary document for ongoing development, while
+    `DISCOVERY_RUNTIME_RESTORE_PLAN_2026-03-23.md` remains the incident /
+    restore record
 
 - Historical stopped-host investigation record preserved below.
 - Aggregate backfill status: **blocked, but materially narrowed**:
@@ -1074,6 +1175,44 @@ Work:
 2. verify followlist churn is real again
 3. verify shadow signals appear from current selected wallets
 4. do this validation on the live runtime path, not by re-opening aggregate recovery as the blocker
+
+Operator surface:
+
+1. `discovery_wallet_freshness_audit` is the exact Stage 3 runtime check:
+   it compares exact publication truth, exact active follow truth, and current raw-truth top-N on the same bounded scoring window without reopening aggregate/offline recovery as runtime truth.
+
+Acceptance update (`2026-03-25`):
+
+1. The first Stage 3 operator surface is now landed in code:
+   - shared classifier / comparator logic lives in
+     `crates/discovery/src/wallet_freshness_audit.rs`
+   - runnable operator command lives in
+     `crates/discovery/src/bin/discovery_wallet_freshness_audit.rs`
+2. The surface now reports one explicit verdict:
+   - `fresh_current`
+   - `drifting_but_acceptable`
+   - `stale_publication_truth`
+   - `insufficient_raw_truth`
+   - `fail_closed_no_publication_truth`
+3. The accepted correctness follow-up for this Stage 3 slice is also landed:
+   - stale raw tail no longer counts as “current raw truth”
+   - `fail_closed` publication state with a preserved exact published set is
+     audited as exact publication truth rather than being downgraded to
+     “no publication truth”
+4. Accepted verification for this Stage 3 slice:
+   - `cargo test -p copybot-discovery --bin discovery_wallet_freshness_audit`
+   - `cargo test -p copybot-discovery --lib wallet_freshness_audit -- --nocapture`
+5. What this closes:
+   - operators now have one exact runtime-facing command to compare:
+     - exact publication truth
+     - exact active follow truth
+     - current raw-truth top-N
+   - the project no longer needs log archaeology to answer “do the currently
+     selected wallets still look current?”
+6. What this does not close yet:
+   - Stage 3 live validation itself still has to be run over several cycles
+   - Stage 4 execution activation remains blocked until that live validation is
+     complete
 
 Exit criteria:
 
