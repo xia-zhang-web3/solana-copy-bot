@@ -141,6 +141,34 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 7. `adapter_contract_incomplete`, `signer_contract_incomplete`, and
    `policy_contract_incomplete` are pre-activation blockers and should be fixed
    before any later tiny-live decision is even discussed.
+8. Stage 4 preparation now also has a persisted dry-run rehearsal surface:
+   - run and persist one rehearsal:
+     `copybot_execution_dry_run_rehearsal --config /etc/solana-copy-bot/live.server.toml --json`
+   - inspect recent persisted rehearsal history:
+     `copybot_execution_dry_run_rehearsal --config /etc/solana-copy-bot/live.server.toml --history --limit 10 --json`
+9. The rehearsal command stays in safe pre-activation mode:
+   - it does not enable `execution.enabled`
+   - it does not submit real swaps
+   - it only uses RPC read/preflight checks plus adapter `action=simulate`
+10. Each persisted rehearsal records:
+    - deterministic intent summary (`route`, `token`, `notional_sol`)
+    - route/policy envelope chosen from current config
+    - RPC preflight result (`slot`, `blockhash`, signer balance if available)
+    - adapter simulate classification and policy-echo result
+    - overall rehearsal verdict, blockers, and warnings
+11. Important rehearsal verdicts:
+    - `rehearsal_green`
+    - `rehearsal_green_with_business_reject`
+    - `rehearsal_blocked_by_connectivity`
+    - `rehearsal_blocked_by_adapter_contract`
+    - `rehearsal_blocked_by_policy_echo`
+12. `rehearsal_green_with_business_reject` means wiring and simulate contract
+    look valid, but the fixed synthetic probe intent was rejected business-wise.
+    That is still useful evidence for later tiny-live preparation, but it does
+    not authorize activation.
+13. `rehearsal_green` and `rehearsal_green_with_business_reject` still do not
+    override Stage 3. Discovery freshness evidence remains the gate before any
+    activation discussion.
 
 ## Server target paths
 

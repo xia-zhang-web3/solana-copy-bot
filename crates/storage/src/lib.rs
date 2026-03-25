@@ -51,6 +51,7 @@ mod discovery;
 mod discovery_scoring;
 mod discovery_scoring_builder;
 mod execution_orders;
+mod execution_rehearsal;
 mod history_retention;
 mod market_data;
 mod migrations;
@@ -781,6 +782,81 @@ pub struct DiscoveryWalletFreshnessCaptureRow {
     pub current_raw_top_wallet_ids: Vec<String>,
     pub audit_json: String,
     pub shadow_signal_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecutionDryRunRehearsalWrite {
+    pub rehearsed_at: DateTime<Utc>,
+    pub execution_mode: String,
+    pub execution_enabled: bool,
+    pub route: String,
+    pub token: String,
+    pub notional_sol: f64,
+    pub signer_pubkey_configured: bool,
+    pub config_valid: bool,
+    pub connectivity_valid: bool,
+    pub adapter_contract_valid: bool,
+    pub policy_contract_valid: bool,
+    pub route_contract_valid: bool,
+    pub ready_for_dry_run: bool,
+    pub would_be_admissible_for_later_tiny_live: bool,
+    pub rpc_preconditions_valid: bool,
+    pub rpc_slot: Option<u64>,
+    pub rpc_blockhash: Option<String>,
+    pub rpc_signer_balance_lamports: Option<u64>,
+    pub adapter_result_classification: String,
+    pub adapter_accepted: Option<bool>,
+    pub adapter_detail: String,
+    pub policy_echo_present: bool,
+    pub route_echo_present: bool,
+    pub contract_version_echo_present: bool,
+    pub response_slippage_bps: Option<f64>,
+    pub response_tip_lamports: Option<u64>,
+    pub response_compute_unit_limit: Option<u64>,
+    pub response_compute_unit_price_micro_lamports: Option<u64>,
+    pub verdict: String,
+    pub reason: String,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+    pub rehearsal_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecutionDryRunRehearsalRow {
+    pub rehearsal_id: i64,
+    pub rehearsed_at: DateTime<Utc>,
+    pub execution_mode: String,
+    pub execution_enabled: bool,
+    pub route: String,
+    pub token: String,
+    pub notional_sol: f64,
+    pub signer_pubkey_configured: bool,
+    pub config_valid: bool,
+    pub connectivity_valid: bool,
+    pub adapter_contract_valid: bool,
+    pub policy_contract_valid: bool,
+    pub route_contract_valid: bool,
+    pub ready_for_dry_run: bool,
+    pub would_be_admissible_for_later_tiny_live: bool,
+    pub rpc_preconditions_valid: bool,
+    pub rpc_slot: Option<u64>,
+    pub rpc_blockhash: Option<String>,
+    pub rpc_signer_balance_lamports: Option<u64>,
+    pub adapter_result_classification: String,
+    pub adapter_accepted: Option<bool>,
+    pub adapter_detail: String,
+    pub policy_echo_present: bool,
+    pub route_echo_present: bool,
+    pub contract_version_echo_present: bool,
+    pub response_slippage_bps: Option<f64>,
+    pub response_tip_lamports: Option<u64>,
+    pub response_compute_unit_limit: Option<u64>,
+    pub response_compute_unit_price_micro_lamports: Option<u64>,
+    pub verdict: String,
+    pub reason: String,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+    pub rehearsal_json: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

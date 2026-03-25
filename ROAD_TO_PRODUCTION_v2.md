@@ -1389,6 +1389,31 @@ Acceptance update (`2026-03-25`):
    - this still does not authorize activation; Stage 3 remains the gate before
      any future tiny-live rehearsal discussion
 
+Acceptance update (`2026-03-25`, Stage 4 dry-run rehearsal trail):
+
+1. Stage 4 now also has a persisted dry-run rehearsal surface:
+   - run and persist one safe rehearsal:
+     `copybot_execution_dry_run_rehearsal --config /etc/solana-copy-bot/live.server.toml --json`
+   - inspect recent rehearsal trail:
+     `copybot_execution_dry_run_rehearsal --config /etc/solana-copy-bot/live.server.toml --history --limit 10 --json`
+2. The rehearsal stays pre-activation only:
+   - `execution.enabled` remains unchanged
+   - no real trades are submitted
+   - only RPC preflight/read checks and adapter `action=simulate` are used
+3. Persisted rehearsal history now records:
+   - deterministic intent summary (`route`, `token`, `notional_sol`)
+   - exact route/policy envelope from current execution config
+   - RPC preflight result and adapter simulate classification
+   - policy echo result, blockers, warnings, and overall verdict
+4. Accepted verification for this Stage 4 slice:
+   - `cargo test -p copybot-app --bin copybot_execution_dry_run_rehearsal`
+   - `cargo test -p copybot-app --bin copybot_execution_readiness_audit`
+5. Practical meaning:
+   - while Stage 3 is still accumulating live discovery evidence, the team can
+     now accumulate execution-side dry-run rehearsal evidence without ad-hoc
+     shell archaeology
+   - good rehearsal history still does not override the Stage 3 discovery gate
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored
