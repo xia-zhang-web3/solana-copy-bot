@@ -1209,10 +1209,42 @@ Acceptance update (`2026-03-25`):
      - current raw-truth top-N
    - the project no longer needs log archaeology to answer “do the currently
      selected wallets still look current?”
-6. What this does not close yet:
-   - Stage 3 live validation itself still has to be run over several cycles
-   - Stage 4 execution activation remains blocked until that live validation is
-     complete
+6. The multi-cycle Stage 3 validation layer is now landed in code:
+   - persisted point-in-time captures:
+     `crates/discovery/src/bin/discovery_wallet_freshness_capture.rs`
+   - recent-history verdict over persisted captures:
+     `crates/discovery/src/bin/discovery_wallet_freshness_report.rs`
+   - these persist exact publication truth vs active follow vs current raw
+     top-N, plus shadow-signal evidence for the current selected wallets
+7. New exact operator commands:
+   - `discovery_wallet_freshness_capture --config <live.server.toml>`
+   - `discovery_wallet_freshness_report --config <live.server.toml> --limit 5`
+8. What remains before Stage 4:
+   - run the Stage 3 history captures on the live runtime path for several
+     cycles
+   - require the recent-history verdict to validate the live selection as
+     current before revisiting execution activation
+9. What this still does not close by itself:
+   - Stage 3 live validation itself still has to be accumulated on the live
+     runtime over several captures
+   - Stage 4 execution activation remains blocked until that live history says
+     the selected wallets are truly current and alive
+10. Accepted correctness follow-up for the history layer is also landed:
+    - stale persisted captures are now excluded from the validation verdict
+    - `discovery_wallet_freshness_report` is recent-cycle-aware via an explicit
+      recency horizon, so old stored captures remain historical evidence but no
+      longer validate the current selection by themselves
+11. Accepted verification for the Stage 3 history layer:
+    - `cargo test -p copybot-discovery --lib wallet_freshness_audit -- --skip quality_cache::tests::resolve_token_quality_for_mints_returns_error_on_fatal_cache_write_failure`
+    - `cargo test -p copybot-discovery --bin discovery_wallet_freshness_capture`
+    - `cargo test -p copybot-discovery --bin discovery_wallet_freshness_report`
+12. Practical meaning of the new Stage 3 surfaces:
+    - point-in-time freshness is now checked by `discovery_wallet_freshness_audit`
+    - multi-cycle validation is now persisted and reported by:
+      - `discovery_wallet_freshness_capture`
+      - `discovery_wallet_freshness_report`
+    - Stage 4 should not be revisited until recent live captures, inside the
+      explicit recency horizon, validate the current published selection
 
 Exit criteria:
 

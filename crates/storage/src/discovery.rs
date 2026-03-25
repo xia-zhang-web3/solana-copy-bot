@@ -4,16 +4,18 @@ use super::{
     DiscoveryRecentRawRestoreStateRow, DiscoveryRecentRawRestoreStateUpdate,
     DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
     DiscoveryTrustedSelectionStateRow, DiscoveryTrustedSelectionStateUpdate,
+    DiscoveryWalletFreshnessCaptureRow, DiscoveryWalletFreshnessCaptureWrite,
     FollowlistUpdateResult, PersistedWalletMetricSnapshotRow, SqliteStore,
     StartupTrustedSelectionGateStatus, TrustedSelectionState, TrustedSnapshotSourceKind,
     TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite, WalletActivityDayRow,
-    WalletMetricRow, WalletUpsertRow, DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
-    DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS,
+    WalletMetricRow, WalletRecentActivityCountRow, WalletUpsertRow,
+    DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION, DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
+use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
 pub(crate) fn canonical_wallet_metrics_window_start(window_start: DateTime<Utc>) -> String {
     window_start.to_rfc3339()
@@ -63,6 +65,91 @@ fn parse_optional_wallet_ids_json(
         Ok(canonicalize_wallet_ids(&wallet_ids))
     })
     .transpose()
+}
+
+fn parse_wallet_ids_json(raw: String, field_name: &str) -> Result<Vec<String>> {
+    serde_json::from_str::<Vec<String>>(&raw)
+        .with_context(|| format!("invalid {field_name} JSON payload: {raw}"))
+}
+
+fn read_discovery_wallet_freshness_capture_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<DiscoveryWalletFreshnessCaptureRow> {
+    let capture_id: i64 = row.get(0)?;
+    let captured_at_raw: String = row.get(1)?;
+    let recent_cycles_raw: i64 = row.get(2)?;
+    let verdict: String = row.get(3)?;
+    let reason: String = row.get(4)?;
+    let publication_age_seconds_raw: Option<i64> = row.get(5)?;
+    let raw_truth_sufficient: i64 = row.get(6)?;
+    let raw_truth_reason: String = row.get(7)?;
+    let shadow_signal_verdict: String = row.get(8)?;
+    let shadow_signal_reason: String = row.get(9)?;
+    let published_wallet_ids_json: String = row.get(10)?;
+    let active_follow_wallet_ids_json: String = row.get(11)?;
+    let current_raw_top_wallet_ids_json: String = row.get(12)?;
+    let audit_json: String = row.get(13)?;
+    let shadow_signal_json: String = row.get(14)?;
+    let captured_at = parse_rfc3339_utc(
+        &captured_at_raw,
+        "discovery_wallet_freshness_history.captured_at",
+    )
+    .map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            1,
+            rusqlite::types::Type::Text,
+            Box::new(IoError::new(IoErrorKind::InvalidData, error.to_string())),
+        )
+    })?;
+    let published_wallet_ids =
+        parse_wallet_ids_json(published_wallet_ids_json, "published_wallet_ids_json").map_err(
+            |error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    10,
+                    rusqlite::types::Type::Text,
+                    Box::new(IoError::new(IoErrorKind::InvalidData, error.to_string())),
+                )
+            },
+        )?;
+    let active_follow_wallet_ids = parse_wallet_ids_json(
+        active_follow_wallet_ids_json,
+        "active_follow_wallet_ids_json",
+    )
+    .map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            11,
+            rusqlite::types::Type::Text,
+            Box::new(IoError::new(IoErrorKind::InvalidData, error.to_string())),
+        )
+    })?;
+    let current_raw_top_wallet_ids = parse_wallet_ids_json(
+        current_raw_top_wallet_ids_json,
+        "current_raw_top_wallet_ids_json",
+    )
+    .map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            12,
+            rusqlite::types::Type::Text,
+            Box::new(IoError::new(IoErrorKind::InvalidData, error.to_string())),
+        )
+    })?;
+    Ok(DiscoveryWalletFreshnessCaptureRow {
+        capture_id,
+        captured_at,
+        recent_cycles: recent_cycles_raw.max(1) as usize,
+        verdict,
+        reason,
+        publication_age_seconds: publication_age_seconds_raw.map(|value| value.max(0) as u64),
+        raw_truth_sufficient: raw_truth_sufficient != 0,
+        raw_truth_reason,
+        shadow_signal_verdict,
+        shadow_signal_reason,
+        published_wallet_ids,
+        active_follow_wallet_ids,
+        current_raw_top_wallet_ids,
+        audit_json,
+        shadow_signal_json,
+    })
 }
 
 fn validate_runtime_artifact_snapshot_shape(artifact: &DiscoveryRuntimeArtifact) -> Result<()> {
@@ -2360,6 +2447,199 @@ impl SqliteStore {
         Ok(changed > 0)
     }
 
+    pub fn recent_copy_signal_counts_for_wallets_by_status(
+        &self,
+        since: DateTime<Utc>,
+        wallet_ids: &[String],
+        status: &str,
+    ) -> Result<Vec<WalletRecentActivityCountRow>> {
+        if wallet_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let placeholders = std::iter::repeat_n("?", wallet_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query = format!(
+            "SELECT wallet_id, COUNT(*), MAX(ts)
+             FROM copy_signals
+             WHERE status = ?1
+               AND ts >= ?2
+               AND wallet_id IN ({placeholders})
+             GROUP BY wallet_id
+             ORDER BY wallet_id ASC"
+        );
+        let mut params = vec![
+            rusqlite::types::Value::from(status.to_string()),
+            rusqlite::types::Value::from(since.to_rfc3339()),
+        ];
+        params.extend(wallet_ids.iter().cloned().map(rusqlite::types::Value::from));
+        let mut stmt = self
+            .conn
+            .prepare(&query)
+            .context("failed to prepare recent copy_signals wallet activity query")?;
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params))
+            .context("failed querying recent copy_signals wallet activity")?;
+
+        let mut summaries = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating recent copy_signals wallet activity rows")?
+        {
+            let wallet_id: String = row
+                .get(0)
+                .context("failed reading recent copy_signals wallet_id")?;
+            let row_count_raw: i64 = row
+                .get(1)
+                .context("failed reading recent copy_signals row_count")?;
+            let latest_ts_raw: String = row
+                .get(2)
+                .context("failed reading recent copy_signals latest_ts")?;
+            summaries.push(WalletRecentActivityCountRow {
+                wallet_id,
+                row_count: row_count_raw.max(0) as usize,
+                latest_ts: parse_rfc3339_utc(&latest_ts_raw, "recent copy_signals latest_ts")?,
+            });
+        }
+        Ok(summaries)
+    }
+
+    pub fn append_discovery_wallet_freshness_capture(
+        &self,
+        capture: &DiscoveryWalletFreshnessCaptureWrite,
+    ) -> Result<DiscoveryWalletFreshnessCaptureRow> {
+        self.ensure_discovery_wallet_freshness_history_table()?;
+        let published_wallet_ids_json = serde_json::to_string(&capture.published_wallet_ids)
+            .context("failed serializing discovery wallet freshness published wallet ids")?;
+        let active_follow_wallet_ids_json = serde_json::to_string(
+            &capture.active_follow_wallet_ids,
+        )
+        .context("failed serializing discovery wallet freshness active follow wallet ids")?;
+        let current_raw_top_wallet_ids_json = serde_json::to_string(
+            &capture.current_raw_top_wallet_ids,
+        )
+        .context("failed serializing discovery wallet freshness current raw top wallet ids")?;
+        let capture_id = self
+            .execute_with_retry_result(|conn| {
+                conn.execute(
+                    "INSERT INTO discovery_wallet_freshness_history(
+                        captured_at,
+                        recent_cycles,
+                        verdict,
+                        reason,
+                        publication_age_seconds,
+                        raw_truth_sufficient,
+                        raw_truth_reason,
+                        shadow_signal_verdict,
+                        shadow_signal_reason,
+                        published_wallet_ids_json,
+                        active_follow_wallet_ids_json,
+                        current_raw_top_wallet_ids_json,
+                        audit_json,
+                        shadow_signal_json
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    params![
+                        capture.captured_at.to_rfc3339(),
+                        capture.recent_cycles.max(1) as i64,
+                        capture.verdict,
+                        capture.reason,
+                        capture
+                            .publication_age_seconds
+                            .map(|value| value.min(i64::MAX as u64) as i64),
+                        if capture.raw_truth_sufficient { 1 } else { 0 },
+                        capture.raw_truth_reason,
+                        capture.shadow_signal_verdict,
+                        capture.shadow_signal_reason,
+                        published_wallet_ids_json,
+                        active_follow_wallet_ids_json,
+                        current_raw_top_wallet_ids_json,
+                        capture.audit_json,
+                        capture.shadow_signal_json,
+                    ],
+                )?;
+                Ok(conn.last_insert_rowid())
+            })
+            .context("failed appending discovery wallet freshness capture")?;
+        self.load_discovery_wallet_freshness_capture(capture_id)?
+            .ok_or_else(|| anyhow::anyhow!("wallet freshness capture disappeared after insert"))
+    }
+
+    pub fn list_discovery_wallet_freshness_captures(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<DiscoveryWalletFreshnessCaptureRow>> {
+        self.ensure_discovery_wallet_freshness_history_table()?;
+        let query_limit = limit.max(1).min(i64::MAX as usize) as i64;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT
+                    capture_id,
+                    captured_at,
+                    recent_cycles,
+                    verdict,
+                    reason,
+                    publication_age_seconds,
+                    raw_truth_sufficient,
+                    raw_truth_reason,
+                    shadow_signal_verdict,
+                    shadow_signal_reason,
+                    published_wallet_ids_json,
+                    active_follow_wallet_ids_json,
+                    current_raw_top_wallet_ids_json,
+                    audit_json,
+                    shadow_signal_json
+                 FROM discovery_wallet_freshness_history
+                 ORDER BY captured_at DESC, capture_id DESC
+                 LIMIT ?1",
+            )
+            .context("failed to prepare discovery wallet freshness history query")?;
+        let mut rows = stmt
+            .query(params![query_limit])
+            .context("failed querying discovery wallet freshness history")?;
+        let mut captures = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating discovery wallet freshness history rows")?
+        {
+            captures.push(read_discovery_wallet_freshness_capture_row(row)?);
+        }
+        Ok(captures)
+    }
+
+    fn load_discovery_wallet_freshness_capture(
+        &self,
+        capture_id: i64,
+    ) -> Result<Option<DiscoveryWalletFreshnessCaptureRow>> {
+        self.ensure_discovery_wallet_freshness_history_table()?;
+        self.conn
+            .query_row(
+                "SELECT
+                    capture_id,
+                    captured_at,
+                    recent_cycles,
+                    verdict,
+                    reason,
+                    publication_age_seconds,
+                    raw_truth_sufficient,
+                    raw_truth_reason,
+                    shadow_signal_verdict,
+                    shadow_signal_reason,
+                    published_wallet_ids_json,
+                    active_follow_wallet_ids_json,
+                    current_raw_top_wallet_ids_json,
+                    audit_json,
+                    shadow_signal_json
+                 FROM discovery_wallet_freshness_history
+                 WHERE capture_id = ?1",
+                params![capture_id],
+                read_discovery_wallet_freshness_capture_row,
+            )
+            .optional()
+            .context("failed loading discovery wallet freshness capture")
+    }
+
     fn ensure_trusted_wallet_metrics_snapshots_table(&self) -> Result<()> {
         self.conn
             .execute_batch(
@@ -2384,6 +2664,34 @@ impl SqliteStore {
                 ON trusted_wallet_metrics_snapshots(created_at DESC);",
             )
             .context("failed to ensure trusted wallet_metrics snapshots table exists")?;
+        Ok(())
+    }
+
+    fn ensure_discovery_wallet_freshness_history_table(&self) -> Result<()> {
+        self.conn
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS discovery_wallet_freshness_history (
+                    capture_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    captured_at TEXT NOT NULL,
+                    recent_cycles INTEGER NOT NULL,
+                    verdict TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    publication_age_seconds INTEGER,
+                    raw_truth_sufficient INTEGER NOT NULL,
+                    raw_truth_reason TEXT NOT NULL,
+                    shadow_signal_verdict TEXT NOT NULL,
+                    shadow_signal_reason TEXT NOT NULL,
+                    published_wallet_ids_json TEXT NOT NULL,
+                    active_follow_wallet_ids_json TEXT NOT NULL,
+                    current_raw_top_wallet_ids_json TEXT NOT NULL,
+                    audit_json TEXT NOT NULL,
+                    shadow_signal_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS
+                    idx_discovery_wallet_freshness_history_captured_at
+                ON discovery_wallet_freshness_history(captured_at DESC, capture_id DESC);",
+            )
+            .context("failed to ensure discovery_wallet_freshness_history table exists")?;
         Ok(())
     }
 

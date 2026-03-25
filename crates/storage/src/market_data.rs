@@ -3,7 +3,7 @@ use crate::{
     DiscoveryPersistedRebuildStateRow, DiscoveryRuntimeCursor, ObservedSwapBatchWriteMetrics,
     ObservedSwapsCoverageSnapshot, RecentRawJournalReplaySummary, RecentRawJournalStateRow,
     RecentRawJournalWriteSummary, SqliteBatchedDeleteSummary, SqliteStore, TokenMarketStats,
-    TokenQualityCacheRow, TokenQualityRpcRow, WalletActivityDayRow,
+    TokenQualityCacheRow, TokenQualityRpcRow, WalletActivityDayRow, WalletRecentActivityCountRow,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -2322,6 +2322,59 @@ impl SqliteStore {
             covered_through_cursor,
             row_count: row_count.max(0) as usize,
         })
+    }
+
+    pub fn recent_observed_swap_counts_for_wallets(
+        &self,
+        since: DateTime<Utc>,
+        wallet_ids: &[String],
+    ) -> Result<Vec<WalletRecentActivityCountRow>> {
+        if wallet_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let placeholders = std::iter::repeat_n("?", wallet_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query = format!(
+            "SELECT wallet_id, COUNT(*), MAX(ts)
+             FROM observed_swaps INDEXED BY idx_observed_swaps_wallet_ts
+             WHERE ts >= ?1
+               AND wallet_id IN ({placeholders})
+             GROUP BY wallet_id
+             ORDER BY wallet_id ASC"
+        );
+        let mut params = vec![rusqlite::types::Value::from(since.to_rfc3339())];
+        params.extend(wallet_ids.iter().cloned().map(rusqlite::types::Value::from));
+        let mut stmt = self
+            .conn
+            .prepare(&query)
+            .context("failed to prepare recent observed_swaps wallet activity query")?;
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params))
+            .context("failed querying recent observed_swaps wallet activity")?;
+
+        let mut summaries = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating recent observed_swaps wallet activity rows")?
+        {
+            let wallet_id: String = row
+                .get(0)
+                .context("failed reading recent observed_swaps wallet_id")?;
+            let row_count_raw: i64 = row
+                .get(1)
+                .context("failed reading recent observed_swaps row_count")?;
+            let latest_ts_raw: String = row
+                .get(2)
+                .context("failed reading recent observed_swaps latest_ts")?;
+            summaries.push(WalletRecentActivityCountRow {
+                wallet_id,
+                row_count: row_count_raw.max(0) as usize,
+                latest_ts: parse_rfc3339_utc(&latest_ts_raw, "recent observed_swaps latest_ts")?,
+            });
+        }
+        Ok(summaries)
     }
 
     pub fn load_discovery_runtime_cursor(&self) -> Result<Option<DiscoveryRuntimeCursor>> {

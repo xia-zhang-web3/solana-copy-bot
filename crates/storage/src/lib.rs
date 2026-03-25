@@ -739,6 +739,50 @@ pub struct ObservedSwapsCoverageSnapshot {
     pub row_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WalletRecentActivityCountRow {
+    pub wallet_id: String,
+    pub row_count: usize,
+    pub latest_ts: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveryWalletFreshnessCaptureWrite {
+    pub captured_at: DateTime<Utc>,
+    pub recent_cycles: usize,
+    pub verdict: String,
+    pub reason: String,
+    pub publication_age_seconds: Option<u64>,
+    pub raw_truth_sufficient: bool,
+    pub raw_truth_reason: String,
+    pub shadow_signal_verdict: String,
+    pub shadow_signal_reason: String,
+    pub published_wallet_ids: Vec<String>,
+    pub active_follow_wallet_ids: Vec<String>,
+    pub current_raw_top_wallet_ids: Vec<String>,
+    pub audit_json: String,
+    pub shadow_signal_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveryWalletFreshnessCaptureRow {
+    pub capture_id: i64,
+    pub captured_at: DateTime<Utc>,
+    pub recent_cycles: usize,
+    pub verdict: String,
+    pub reason: String,
+    pub publication_age_seconds: Option<u64>,
+    pub raw_truth_sufficient: bool,
+    pub raw_truth_reason: String,
+    pub shadow_signal_verdict: String,
+    pub shadow_signal_reason: String,
+    pub published_wallet_ids: Vec<String>,
+    pub active_follow_wallet_ids: Vec<String>,
+    pub current_raw_top_wallet_ids: Vec<String>,
+    pub audit_json: String,
+    pub shadow_signal_json: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RecentRawJournalWriteSummary {
     pub batch_rows: usize,
