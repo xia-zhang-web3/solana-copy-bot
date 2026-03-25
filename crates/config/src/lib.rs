@@ -13,7 +13,7 @@ pub use self::schema::{
     AppConfig, DiscoveryConfig, ExecutionConfig, HistoryRetentionConfig, IngestionConfig,
     ProgramHistoryGapFillConfig, ProgramHistoryValidationConfig, RecentRawGapFillConfig,
     RecentRawGapFillHeliusConfig, RecentRawJournalConfig, RiskConfig, RuntimeRestoreOpsConfig,
-    ShadowConfig, SqliteConfig, SystemConfig,
+    ShadowConfig, SqliteConfig, SystemConfig, TinyLivePolicyConfig,
 };
 
 pub const EXECUTION_ROUTE_TIP_LAMPORTS_MAX: u64 = 100_000_000;

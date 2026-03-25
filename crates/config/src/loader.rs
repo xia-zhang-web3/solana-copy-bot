@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -793,6 +794,7 @@ fn validate_loaded_config(config: &AppConfig) -> Result<()> {
     validate_runtime_restore_ops_config(config)?;
     validate_discovery_aggregate_activation_config(config)?;
     validate_execution_exact_sizing_config(config)?;
+    validate_tiny_live_policy_config(config)?;
     validate_history_retention_config(config)?;
     Ok(())
 }
@@ -1384,6 +1386,101 @@ fn validate_history_retention_config(config: &AppConfig) -> Result<()> {
             "effective shadow closed trade retention ({effective_shadow_closed_trades_days} days) must be >= {} days to preserve runtime risk windows",
             required_shadow_closed_trade_days
         ));
+    }
+
+    Ok(())
+}
+
+fn validate_tiny_live_policy_config(config: &AppConfig) -> Result<()> {
+    let policy = &config.tiny_live_policy;
+    if !policy.enabled {
+        return Ok(());
+    }
+
+    if !policy.max_trade_notional_sol.is_finite() || policy.max_trade_notional_sol <= 0.0 {
+        return Err(anyhow!(
+            "tiny_live_policy.max_trade_notional_sol ({}) must be finite and > 0 when tiny_live_policy.enabled = true",
+            policy.max_trade_notional_sol
+        ));
+    }
+    if policy.max_batch_size == 0 {
+        return Err(anyhow!(
+            "tiny_live_policy.max_batch_size ({}) must be >= 1 when tiny_live_policy.enabled = true",
+            policy.max_batch_size
+        ));
+    }
+    if policy.max_concurrent_positions == 0 {
+        return Err(anyhow!(
+            "tiny_live_policy.max_concurrent_positions ({}) must be >= 1 when tiny_live_policy.enabled = true",
+            policy.max_concurrent_positions
+        ));
+    }
+    if !policy.max_daily_loss_limit_pct.is_finite() || policy.max_daily_loss_limit_pct <= 0.0 {
+        return Err(anyhow!(
+            "tiny_live_policy.max_daily_loss_limit_pct ({}) must be finite and > 0 when tiny_live_policy.enabled = true",
+            policy.max_daily_loss_limit_pct
+        ));
+    }
+    if policy.allowed_routes.is_empty() {
+        return Err(anyhow!(
+            "tiny_live_policy.allowed_routes must contain at least one route when tiny_live_policy.enabled = true"
+        ));
+    }
+
+    let mut seen_routes = HashSet::new();
+    for route in &policy.allowed_routes {
+        let normalized = route.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return Err(anyhow!(
+                "tiny_live_policy.allowed_routes cannot contain empty route entries"
+            ));
+        }
+        if !seen_routes.insert(normalized.clone()) {
+            return Err(anyhow!(
+                "tiny_live_policy.allowed_routes contains duplicate route after normalization: {}",
+                normalized
+            ));
+        }
+        if !policy
+            .max_route_slippage_bps
+            .keys()
+            .any(|candidate| candidate.trim().eq_ignore_ascii_case(normalized.as_str()))
+        {
+            return Err(anyhow!(
+                "tiny_live_policy.max_route_slippage_bps is missing cap for allowed route={}",
+                normalized
+            ));
+        }
+        if !policy
+            .max_route_tip_lamports
+            .keys()
+            .any(|candidate| candidate.trim().eq_ignore_ascii_case(normalized.as_str()))
+        {
+            return Err(anyhow!(
+                "tiny_live_policy.max_route_tip_lamports is missing tip cap for allowed route={}",
+                normalized
+            ));
+        }
+        if !policy
+            .max_route_compute_unit_price_micro_lamports
+            .keys()
+            .any(|candidate| candidate.trim().eq_ignore_ascii_case(normalized.as_str()))
+        {
+            return Err(anyhow!(
+                "tiny_live_policy.max_route_compute_unit_price_micro_lamports is missing price cap for allowed route={}",
+                normalized
+            ));
+        }
+    }
+
+    for (route, value) in &policy.max_route_slippage_bps {
+        if !value.is_finite() || *value < 0.0 {
+            return Err(anyhow!(
+                "tiny_live_policy.max_route_slippage_bps[{}] ({}) must be finite and >= 0",
+                route,
+                value
+            ));
+        }
     }
 
     Ok(())

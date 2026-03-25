@@ -1440,6 +1440,29 @@ Acceptance update (`2026-03-25`, consolidated pre-activation gate):
    - `cargo test -p copybot-app --bin copybot_execution_readiness_audit`
    - `cargo test -p copybot-app --bin copybot_execution_dry_run_rehearsal`
 
+Acceptance update (`2026-03-25`, tiny-live policy audit package):
+
+1. Stage 4 preparation now also has an explicit bounded policy surface:
+   - `copybot_tiny_live_policy_audit --config /etc/solana-copy-bot/live.server.toml --json`
+2. This command is still pre-activation only:
+   - `execution.enabled` remains unchanged
+   - no real trades are submitted
+   - no Stage 3 truth is used as a substitute for execution-side boundedness
+3. The audit compares the current `execution` / `risk` / `shadow` envelope
+   against an explicit `[tiny_live_policy]` block in config, instead of
+   relying on hidden repo defaults.
+4. Important verdict semantics are now explicit:
+   - `tiny_live_policy_bounded`
+   - `tiny_live_policy_too_open`
+   - `tiny_live_policy_incomplete`
+   - `tiny_live_policy_route_risk_unbounded`
+   - `tiny_live_policy_fee_risk_unbounded`
+5. Practical meaning:
+   - later tiny-live discussion can rely on an explicit bounded policy
+     contract, not ad-hoc operator judgment
+   - this still does not authorize activation and does not override the Stage 3
+     discovery gate
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

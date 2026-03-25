@@ -270,6 +270,24 @@ max_confirm_seconds = 15
 max_submit_attempts = 3
 simulate_before_submit = true
 
+[tiny_live_policy]
+# This is an explicit pre-activation envelope for later tiny-live discussion.
+# It does not enable trading by itself. The audit command compares the current
+# execution/risk/shadow config against this envelope and reports whether the
+# current config is bounded enough yet.
+enabled = true
+max_trade_notional_sol = 0.05
+max_batch_size = 1
+max_concurrent_positions = 1
+max_daily_loss_limit_pct = 1.0
+allowed_routes = ["jito"]
+require_policy_echo = true
+max_pretrade_fee_overhead_bps = 1000
+max_pretrade_priority_fee_lamports = 2000
+max_route_slippage_bps = { jito = 50.0 }
+max_route_tip_lamports = { jito = 10000 }
+max_route_compute_unit_price_micro_lamports = { jito = 1500 }
+
 [risk]
 # Tiny-live defaults from Stage E (ROAD_TO_PRODUCTION.md).
 max_position_sol = 0.10

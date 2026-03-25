@@ -480,6 +480,19 @@ fn live_server_template_exposes_recent_raw_gap_fill_contract() {
         config.program_history_gap_fill.output_dir,
         "state/discovery_restore/gap_fill_program_history"
     );
+    assert!(config.tiny_live_policy.enabled);
+    assert_eq!(
+        config.tiny_live_policy.allowed_routes,
+        vec!["jito".to_string()]
+    );
+    assert!((config.tiny_live_policy.max_trade_notional_sol - 0.05).abs() <= f64::EPSILON);
+    assert_eq!(config.tiny_live_policy.max_batch_size, 1);
+    assert_eq!(config.tiny_live_policy.max_concurrent_positions, 1);
+    assert_eq!(config.tiny_live_policy.max_pretrade_fee_overhead_bps, 1000);
+    assert_eq!(
+        config.tiny_live_policy.max_pretrade_priority_fee_lamports,
+        2000
+    );
 }
 
 #[test]
@@ -500,6 +513,39 @@ metric_snapshot_interval_seconds = 1800
                 err.contains(
                     "recent_raw_gap_fill.signature_page_size (1001) must be between 1 and 1000"
                 ),
+                "unexpected error: {err}"
+            );
+        },
+    );
+}
+
+#[test]
+fn load_from_path_rejects_invalid_tiny_live_policy_bounds() {
+    with_temp_config_file(
+        r#"
+[tiny_live_policy]
+enabled = true
+max_trade_notional_sol = 0.0
+max_batch_size = 1
+max_concurrent_positions = 1
+max_daily_loss_limit_pct = 1.0
+allowed_routes = ["jito"]
+require_policy_echo = true
+max_pretrade_fee_overhead_bps = 1000
+max_pretrade_priority_fee_lamports = 2000
+max_route_slippage_bps = { jito = 50.0 }
+max_route_tip_lamports = { jito = 10000 }
+max_route_compute_unit_price_micro_lamports = { jito = 1500 }
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("invalid tiny-live policy bounds must fail")
+                .to_string();
+            assert!(
+                err.contains("tiny_live_policy.max_trade_notional_sol"),
                 "unexpected error: {err}"
             );
         },

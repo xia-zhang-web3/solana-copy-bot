@@ -210,6 +210,44 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 8. Stage 3 remains the primary gate. Even perfect Stage 4 readiness or
    rehearsal history cannot override a non-green Stage 3 verdict.
 
+## Tiny-Live Policy Audit
+
+1. Stage 4 preparation now also has an explicit tiny-live policy audit:
+   - `copybot_tiny_live_policy_audit --config /etc/solana-copy-bot/live.server.toml --json`
+2. This command stays read-only and pre-activation only:
+   - it does not enable `execution.enabled`
+   - it does not submit real trades
+   - it does not override Stage 3 or the consolidated pre-activation gate
+3. The audit compares the current config against the explicit
+   `[tiny_live_policy]` envelope in `live.server.toml`.
+4. Important policy areas checked:
+   - trade-size bounds (`shadow.copy_notional_sol`, `risk.max_position_sol`)
+   - batch/concurrency bounds (`execution.batch_size`,
+     `risk.max_concurrent_positions`)
+   - daily loss guardrail (`risk.daily_loss_limit_pct`)
+   - allowed routes and default route
+   - per-route slippage / tip / CU-price bounds
+   - policy-echo requirement
+   - pretrade fee-overhead and priority-fee caps
+5. Important top-level verdicts:
+   - `tiny_live_policy_bounded`
+   - `tiny_live_policy_too_open`
+   - `tiny_live_policy_incomplete`
+   - `tiny_live_policy_route_risk_unbounded`
+   - `tiny_live_policy_fee_risk_unbounded`
+   - `tiny_live_policy_not_applicable_current_mode`
+6. `tiny_live_policy_bounded` means the current config is explicitly narrow
+   enough for later tiny-live discussion. It still does not authorize
+   activation and does not override Stage 3.
+7. If the verdict is non-green, operators should read:
+   - `blockers`
+   - `current_allowed_routes`
+   - `policy_allowed_routes`
+   - the numeric `current_*` versus `policy_*` cap fields
+8. The repo template now contains an explicit `[tiny_live_policy]` block. That
+   block is the source of truth for the future tiny-live envelope; the audit
+   does not rely on hidden defaults in code.
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

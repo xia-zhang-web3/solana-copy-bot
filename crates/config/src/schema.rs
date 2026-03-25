@@ -18,6 +18,7 @@ pub struct AppConfig {
     pub discovery: DiscoveryConfig,
     pub shadow: ShadowConfig,
     pub execution: ExecutionConfig,
+    pub tiny_live_policy: TinyLivePolicyConfig,
     pub risk: RiskConfig,
 }
 
@@ -96,6 +97,26 @@ pub struct ExecutionConfig {
     pub simulate_before_submit: bool,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(default)]
+pub struct TinyLivePolicyConfig {
+    pub enabled: bool,
+    pub max_trade_notional_sol: f64,
+    pub max_batch_size: u32,
+    pub max_concurrent_positions: u32,
+    pub max_daily_loss_limit_pct: f64,
+    pub allowed_routes: Vec<String>,
+    pub require_policy_echo: bool,
+    pub max_pretrade_fee_overhead_bps: u32,
+    /// Legacy field name kept for backward compatibility.
+    /// Unit is micro-lamports per CU (not plain lamports).
+    #[serde(alias = "max_pretrade_priority_fee_micro_lamports_per_cu")]
+    pub max_pretrade_priority_fee_lamports: u64,
+    pub max_route_slippage_bps: BTreeMap<String, f64>,
+    pub max_route_tip_lamports: BTreeMap<String, u64>,
+    pub max_route_compute_unit_price_micro_lamports: BTreeMap<String, u64>,
+}
+
 impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
@@ -145,6 +166,25 @@ impl Default for ExecutionConfig {
             max_confirm_seconds: 15,
             max_submit_attempts: 3,
             simulate_before_submit: true,
+        }
+    }
+}
+
+impl Default for TinyLivePolicyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_trade_notional_sol: 0.0,
+            max_batch_size: 0,
+            max_concurrent_positions: 0,
+            max_daily_loss_limit_pct: 0.0,
+            allowed_routes: Vec::new(),
+            require_policy_echo: true,
+            max_pretrade_fee_overhead_bps: 0,
+            max_pretrade_priority_fee_lamports: 0,
+            max_route_slippage_bps: BTreeMap::new(),
+            max_route_tip_lamports: BTreeMap::new(),
+            max_route_compute_unit_price_micro_lamports: BTreeMap::new(),
         }
     }
 }
@@ -276,6 +316,34 @@ impl fmt::Debug for ExecutionConfig {
             .field("max_confirm_seconds", &self.max_confirm_seconds)
             .field("max_submit_attempts", &self.max_submit_attempts)
             .field("simulate_before_submit", &self.simulate_before_submit)
+            .finish()
+    }
+}
+
+impl fmt::Debug for TinyLivePolicyConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TinyLivePolicyConfig")
+            .field("enabled", &self.enabled)
+            .field("max_trade_notional_sol", &self.max_trade_notional_sol)
+            .field("max_batch_size", &self.max_batch_size)
+            .field("max_concurrent_positions", &self.max_concurrent_positions)
+            .field("max_daily_loss_limit_pct", &self.max_daily_loss_limit_pct)
+            .field("allowed_routes", &self.allowed_routes)
+            .field("require_policy_echo", &self.require_policy_echo)
+            .field(
+                "max_pretrade_fee_overhead_bps",
+                &self.max_pretrade_fee_overhead_bps,
+            )
+            .field(
+                "max_pretrade_priority_fee_lamports",
+                &self.max_pretrade_priority_fee_lamports,
+            )
+            .field("max_route_slippage_bps", &self.max_route_slippage_bps)
+            .field("max_route_tip_lamports", &self.max_route_tip_lamports)
+            .field(
+                "max_route_compute_unit_price_micro_lamports",
+                &self.max_route_compute_unit_price_micro_lamports,
+            )
             .finish()
     }
 }
