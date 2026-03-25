@@ -1891,3 +1891,80 @@ Current honest reading:
   - terminal JSON without relying on outer shell timeout
   - measurable forward progress across repeated attempts
   - final publish only on completed outcome
+
+### 20.3 Live rerun after resumable rollout (`2026-03-25`)
+
+Server rollout status:
+
+- live repo / binaries were updated to commit `d2a6253`
+- `discovery_raw_gap_fill_program_history` and `discovery_runtime_restore`
+  were rebuilt in `target/release`
+- live services remained stable:
+  - `solana-copy-bot.service = active`
+  - `copybot-discovery-recent-raw-snapshot.timer = active`
+
+The first direct live rerun immediately exposed an operator-path bug:
+
+- `[program_history_gap_fill].output_dir` in
+  `/etc/solana-copy-bot/live.server.toml` was still relative:
+  `state/discovery_restore/gap_fill_program_history`
+- this tool resolves relative output paths from the config directory
+  `/etc/solana-copy-bot`, not from `/var/www/solana-copy-bot`
+- the first run therefore failed trying to create:
+  `/etc/solana-copy-bot/state/discovery_restore/gap_fill_program_history`
+- the exact live error was:
+  - `failed creating /etc/solana-copy-bot/state/discovery_restore/gap_fill_program_history`
+  - `Permission denied (os error 13)`
+
+That live config bug was then fixed on the server by switching
+`program_history_gap_fill.output_dir` to the absolute state path:
+
+- `/var/www/solana-copy-bot/state/discovery_restore/gap_fill_program_history`
+
+After that fix, the new resumable contract became real on the live server.
+
+Observed live rerun with bounded overrides:
+
+- command:
+  - `discovery_raw_gap_fill_program_history --max-slot-batches-per-attempt 64 --max-blocks-to-fetch 200 --json`
+- attempt `1` returned its own terminal JSON without outer shell timeout:
+  - `verdict = not_proven_due_to_cost_budget`
+  - `current_phase = awaiting_next_attempt`
+  - `attempt_number = 1`
+  - `next_batch_start_slot = 407461317`
+  - `attempt_scanned_batches = 1`
+  - `attempt_scanned_blocks = 200`
+  - `staged_rows = 8385`
+  - `replayable_output = false`
+- attempt `2` returned its own terminal JSON again with cumulative progress:
+  - `verdict = not_proven_due_to_cost_budget`
+  - `attempt_number = 2`
+  - `cumulative_across_attempts = true`
+  - `next_batch_start_slot = 407461517`
+  - `scanned_batches = 2`
+  - `scanned_blocks = 400`
+  - `staged_rows = 15573`
+  - `replayable_output = false`
+
+What this proves:
+
+- the old “dies only via outer timeout” behavior is gone for this bounded live
+  tuning
+- resumable `in_progress.sqlite` / `in_progress.json` state is real on the
+  server
+- repeated attempts make forward progress on the real incident window
+
+What it does **not** prove:
+
+- it does not yet give replayable output
+- it does not yet close `raw_coverage_satisfied`
+- it does not yet make the path practical for incident closure
+
+Current honest reading:
+
+- the remaining blocker is no longer correctness, validation, or snapshot
+  durability
+- the remaining blocker is practical throughput of the real
+  program-history gap-fill path
+- with the current live tuning, progress per long attempt is still far too slow
+  for a useful closure cadence

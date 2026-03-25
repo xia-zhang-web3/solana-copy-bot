@@ -191,7 +191,7 @@ The current conclusions are:
    - restore must come from `runtime artifact` + `recent raw journal`
    - stale publication truth must not silently turn into trading-ready truth
 3. that new restore stack is now actually deployed on the live server:
-   - runtime repo / live build is now on commit `3ca84e8`
+   - runtime repo / live build is now on commit `d2a6253`
    - `solana-copy-bot.service` is running again
    - live discovery is no longer stuck at `active_follow_wallets = 0`
 4. the live server is still not healthy:
@@ -222,12 +222,18 @@ The current conclusions are:
        main uncertainty
    - the new production `program-scoped gap-fill` path is now deployed too:
      - live config includes `[program_history_gap_fill]`
-     - live bounded run of
-       `discovery_raw_gap_fill_program_history` on the real window did not
-       return its own terminal JSON before outer `timeout 1200`
-     - no replayable program-gap-fill output was materialized on disk
-     - so the current blocker is practical completion of this specific
-       program-gap-fill run, not source validation anymore
+     - the first live run exposed an operator-path bug:
+       relative `output_dir` resolved under `/etc/solana-copy-bot`, not under
+       `/var/www/solana-copy-bot`
+     - after fixing that live config path to an absolute state path, the tool
+       now returns its own bounded terminal JSON and persists resumable
+       `in_progress.*` state on the server
+     - however, the current practical tuning is still not enough for closure:
+       bounded live attempts are making forward progress, but only under
+       `not_proven_due_to_cost_budget`, with no replayable output yet
+     - so the current blocker is no longer source validation or snapshot
+       durability; it is practical completion / throughput of the real
+       program-history gap-fill run
 7. what remains valid from the aggregate investigation in this file:
    - same-host hot clone under live load is unsafe
    - stopped-host / offline investigation is operationally safe
@@ -250,9 +256,9 @@ Recommended operational posture now:
 6. use `DISCOVERY_RUNTIME_RESTORE_PLAN_2026-03-23.md` for the active restore
    contract and the remaining incident-closure work
 
-### 2.5 Server state (updated 2026-03-24)
+### 2.5 Server state (updated 2026-03-25)
 
-- Live runtime repo / deployed build: `4148969`
+- Live runtime repo / deployed build: `d2a6253`
 - Historical stopped-host investigation checkout preserved below:
   - old offline tooling checkpoint before the last investigation:
     `02f887a3a37ad57cf09578c9105d1f11d08744d8`
@@ -306,6 +312,9 @@ Recommended operational posture now:
     - `max_requests_per_second = 60`
     - `retry_429_max_attempts = 6`
     - `retry_429_backoff_ms = 500`
+  - `[program_history_gap_fill]` is also live in the same config
+  - its `output_dir` had to be corrected on the server to the absolute path:
+    `/var/www/solana-copy-bot/state/discovery_restore/gap_fill_program_history`
   - no Helius endpoint was left active in live config
   - Helius was tested only via explicit CLI override / separate bin runs and
     was not adopted as the active server contract
@@ -369,6 +378,39 @@ Recommended operational posture now:
     - `snapshot_bytes = 1436680192`
   - current conclusion: the recent-raw snapshot path is now operationally
     closed on the live server and the timer is back in service
+- Current program-history gap-fill rerun finding on the real server after the
+  resumable live-gap-fill rollout:
+  - the repo / server rollout to `d2a6253` succeeded and the new
+    `discovery_raw_gap_fill_program_history` binary was rebuilt on the server
+  - the first direct live rerun immediately exposed the relative `output_dir`
+    miswire above; the tool tried to create state under
+    `/etc/solana-copy-bot/state/...` and failed with `Permission denied`
+  - after fixing `program_history_gap_fill.output_dir` to an absolute state
+    path, the tool no longer needed an outer shell timeout to stop
+  - practical live result with bounded overrides:
+    - command used:
+      `discovery_raw_gap_fill_program_history --max-slot-batches-per-attempt 64 --max-blocks-to-fetch 200 --json`
+    - attempt `1` returned its own terminal JSON with:
+      - `verdict = not_proven_due_to_cost_budget`
+      - `current_phase = awaiting_next_attempt`
+      - `attempt_number = 1`
+      - `next_batch_start_slot = 407461317`
+      - `staged_rows = 8385`
+      - `replayable_output = false`
+    - attempt `2` returned its own terminal JSON again with cumulative forward
+      progress:
+      - `verdict = not_proven_due_to_cost_budget`
+      - `attempt_number = 2`
+      - `cumulative_across_attempts = true`
+      - `next_batch_start_slot = 407461517`
+      - `staged_rows = 15573`
+      - `replayable_output = false`
+  - current conclusion:
+    - the new resumable contract is real on the live server
+    - forward progress is real on the live server
+    - but the current practical tuning is still far too slow for incident
+      closure, because the real window advances only a few hundred slots per
+      long attempt and still produces no replayable output
 - Business meaning of the current server state:
   - the dead multi-day replay path is no longer the active plan
   - discovery is alive on a new fresh runtime DB and holding `15` wallets instead of zero
@@ -379,6 +421,9 @@ Recommended operational posture now:
   - copy trading / shadow trading are still not opening positions
   - the server is stabilized, but the incident is not yet closed in the
     trading-ready sense
+  - the remaining live blocker is now extremely narrow:
+    practical completion of program-history gap-fill on the real incident
+    window
 
 - Historical stopped-host investigation record preserved below.
 - Aggregate backfill status: **blocked, but materially narrowed**:
