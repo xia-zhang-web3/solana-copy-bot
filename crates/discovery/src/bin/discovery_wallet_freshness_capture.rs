@@ -11,7 +11,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const USAGE: &str = "usage: discovery_wallet_freshness_capture --config <path> [--db-path <path>] [--json] [--now <rfc3339>] [--recent-cycles <count>] [--shadow-evidence-lookback-seconds <seconds>]";
+const USAGE: &str = "usage: discovery_wallet_freshness_capture --config <path> [--db-path <path>] [--json] [--now <rfc3339>] [--recent-cycles <count>] [--shadow-evidence-lookback-seconds <seconds>]  # manual/debug Stage 3 capture";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -36,6 +36,7 @@ struct Config {
 #[derive(Debug, Clone, Serialize)]
 struct CaptureRunOutput {
     event: &'static str,
+    mode: &'static str,
     status: &'static str,
     complete: bool,
     config_path: String,
@@ -180,6 +181,7 @@ fn run(config: Config) -> Result<String> {
         copybot_discovery::wallet_freshness_audit::wallet_freshness_capture_from_row(persisted)?;
     let output = CaptureRunOutput {
         event: "discovery_wallet_freshness_capture",
+        mode: "manual_debug",
         status: "completed",
         complete: true,
         config_path: config.config_path.display().to_string(),
@@ -226,6 +228,7 @@ fn dominant_phase(
 fn render_human(output: &CaptureRunOutput) -> String {
     [
         format!("event={}", output.event),
+        format!("mode={}", output.mode),
         format!("status={}", output.status),
         format!("complete={}", output.complete),
         format!("config_path={}", output.config_path),
@@ -370,6 +373,7 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(&output).context("json output must parse")?;
         assert_eq!(json["status"], "completed");
+        assert_eq!(json["mode"], "manual_debug");
         assert_eq!(json["complete"], true);
         assert_eq!(json["audit"]["verdict"], "fresh_current");
         assert_eq!(

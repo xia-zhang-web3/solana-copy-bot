@@ -2257,3 +2257,69 @@ Current branch status after this verification:
   - `execution.enabled = false`
 - the restore / snapshot branch is no longer the active coding focus
 - the primary development roadmap is again `ROAD_TO_PRODUCTION_v2.md`
+
+### 20.10 Disk-full incident during Stage 3 rollout (`2026-03-25`)
+
+While rolling out the accepted in-band Stage 3 wallet-freshness capture path,
+the live server hit a separate operational failure unrelated to Stage 3
+semantics:
+
+- `solana-copy-bot.service` entered a restart loop on startup
+- failure point:
+  - `sqlite_pragma_journal_mode_wal`
+  - SQLite detail:
+    `disk I/O error: Error code 4874: I/O error within the xShmMap method`
+- direct probe writes confirmed the broader issue:
+  - any new SQLite WAL write under `/var/www/solana-copy-bot/state`
+    returned `database or disk is full`
+
+Root cause:
+
+- the dedicated state mount
+  `/var/www/solana-copy-bot/state`
+  had reached `100%` usage
+- `df -h` showed:
+  - `492G` total
+  - `467G` used
+  - `0` available
+- the dominant space consumer was:
+  - `/var/www/solana-copy-bot/state/discovery_restore/recent_raw`
+  - approximately `443G`
+- this was archive-retention growth, not a new corruption introduced by the
+  in-band Stage 3 code path
+
+Emergency operator action taken:
+
+- the restart loop was stopped
+- the recent-raw archive directory was pruned while preserving:
+  - `latest.sqlite`
+  - `latest.json`
+  - a short tail of recent archive snapshots
+- the displaced live runtime DB surface was restored to its original path
+- the service was restarted successfully
+
+Live config mitigation applied:
+
+- `runtime_restore_ops.journal_snapshot_retention`
+  in `/etc/solana-copy-bot/live.server.toml`
+  was reduced from `144` to `24`
+
+Post-recovery state:
+
+- `/var/www/solana-copy-bot/state` returned to healthy headroom:
+  - `95G` used
+  - `372G` available
+  - `21%` used
+- `solana-copy-bot.service = active`
+- `copybot-discovery-recent-raw-snapshot.timer = active`
+- `copybot-discovery-runtime-export.timer = active`
+- no long-running `discovery_runtime_restore` or standalone
+  `discovery_wallet_freshness_capture` process was intentionally left behind
+
+Reading:
+
+- the immediate incident was an operational storage-retention failure
+- the accepted in-band Stage 3 architecture still stands
+- the recovery/snapshot branch remains frozen as a coding focus, but the live
+  host now also has a concrete storage-retention guardrail that must be kept
+  under control during normal operations

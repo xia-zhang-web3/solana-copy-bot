@@ -1212,13 +1212,16 @@ Acceptance update (`2026-03-25`):
 6. The multi-cycle Stage 3 validation layer is now landed in code:
    - persisted point-in-time captures:
      `crates/discovery/src/bin/discovery_wallet_freshness_capture.rs`
+     retained only for explicit manual/debug spot checks
    - recent-history verdict over persisted captures:
      `crates/discovery/src/bin/discovery_wallet_freshness_report.rs`
    - these persist exact publication truth vs active follow vs current raw
      top-N, plus shadow-signal evidence for the current selected wallets
 7. New exact operator commands:
-   - `discovery_wallet_freshness_capture --config <live.server.toml>`
-   - `discovery_wallet_freshness_report --config <live.server.toml> --limit 5`
+   - primary read path:
+     `discovery_wallet_freshness_report --config <live.server.toml> --limit 5`
+   - manual/debug spot-check only:
+     `discovery_wallet_freshness_capture --config <live.server.toml>`
 8. What remains before Stage 4:
    - run the Stage 3 history captures on the live runtime path for several
      cycles
@@ -1240,9 +1243,11 @@ Acceptance update (`2026-03-25`):
     - `cargo test -p copybot-discovery --bin discovery_wallet_freshness_report`
 12. Practical meaning of the new Stage 3 surfaces:
     - point-in-time freshness is now checked by `discovery_wallet_freshness_audit`
-    - multi-cycle validation is now persisted and reported by:
-      - `discovery_wallet_freshness_capture`
+    - multi-cycle validation now accumulates in-band during the normal
+      refresh/publication path and is read by:
       - `discovery_wallet_freshness_report`
+    - `discovery_wallet_freshness_capture` remains only as a manual/debug deep
+      spot-check command
     - Stage 4 should not be revisited until recent live captures, inside the
       explicit recency horizon, validate the current published selection
 13. Accepted operational follow-up for Stage 3 evidence accumulation:
@@ -1262,11 +1267,43 @@ Acceptance update (`2026-03-25`):
       `wallet_freshness_capture_captured_at`
     - operators should validate recent Stage 3 evidence with:
       `discovery_wallet_freshness_report --config <live.server.toml> --limit 5`
-    - `copybot-discovery-wallet-freshness-capture.service` and `.timer`
-      remain available only for manual/debug spot checks with:
+    - the standalone systemd capture service/timer were removed after the
+      in-band architecture was accepted
+    - the standalone manual/debug command remains available for explicit
+      spot checks with:
       `discovery_wallet_freshness_capture --config <live.server.toml> --recent-cycles 1 --shadow-evidence-lookback-seconds 960 --json`
     - this Stage 3 evidence path still does not change `execution.enabled`,
       restore, gap-fill, snapshot, or scoring behavior
+14. Live rollout status for the in-band Stage 3 path (`2026-03-25`):
+    - commit `b279c4e` was rolled out to the live server
+    - the primary Stage 3 accumulation path is now the in-band refresh /
+      publication cycle inside `solana-copy-bot.service`
+    - the old standalone wallet-freshness capture timer/service are no longer
+      part of the primary accumulation architecture
+15. The rollout exposed a separate operational issue on the live host:
+    - `/var/www/solana-copy-bot/state` had reached `100%` usage
+    - the immediate failure mode was SQLite WAL startup failure on
+      `sqlite_pragma_journal_mode_wal`
+    - root cause was archive growth under
+      `/var/www/solana-copy-bot/state/discovery_restore/recent_raw`
+      rather than the Stage 3 in-band capture logic itself
+16. Emergency operator action taken on the live server:
+    - recent-raw archive history was pruned while preserving the `latest`
+      snapshot surface and a short tail of recent archives
+    - the live runtime DB surface was restored and `solana-copy-bot.service`
+      was brought back to `active`
+    - live `journal_snapshot_retention` was reduced from `144` to `24` to
+      prevent the same disk-full failure mode from recurring on the current
+      host
+17. Current Stage 3 live status after recovery:
+    - `discovery_wallet_freshness_report --config /etc/solana-copy-bot/live.server.toml --json --limit 5`
+      currently still reports:
+      - `captures_loaded = 0`
+      - `verdict = insufficient_evidence`
+      - `reason = no_persisted_wallet_freshness_captures`
+    - this means the architecture is now in the right place, but live Stage 3
+      evidence still needs time to accumulate through the normal refresh /
+      publication path before Stage 3 can be called operationally closed
 
 Exit criteria:
 

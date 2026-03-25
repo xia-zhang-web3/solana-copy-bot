@@ -26,8 +26,6 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 10. `copybot-discovery-runtime-export.timer`
 11. `copybot-discovery-recent-raw-snapshot.service`
 12. `copybot-discovery-recent-raw-snapshot.timer`
-13. `copybot-discovery-wallet-freshness-capture.service`
-14. `copybot-discovery-wallet-freshness-capture.timer`
 
 ## Recent Raw Snapshot Timer Contract
 
@@ -97,18 +95,22 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `captures_within_recent_horizon`
    - `recent_horizon_seconds`
    - `stale_captures_excluded_from_verdict`
-9. The standalone `copybot-discovery-wallet-freshness-capture.service` and
-   `.timer` are now manual/debug tools only. They are no longer the primary
-   Stage 3 accumulation path and should stay disabled unless operators need an
-   explicit one-off deep spot check.
-10. The manual/debug service still runs:
+9. The standalone scheduled capture timer/service were removed from the repo
+   after the in-band architecture was accepted. They are no longer part of the
+   production or debug operator contract.
+10. The standalone manual/debug command remains available for explicit deep
+    spot checks:
    - `discovery_wallet_freshness_capture --config /etc/solana-copy-bot/live.server.toml --recent-cycles 1 --shadow-evidence-lookback-seconds 960 --json`
-11. The manual/debug path intentionally keeps:
-   - `--recent-cycles 1` for the cheaper exact point-in-time raw-truth build
-   - `--shadow-evidence-lookback-seconds 960` so exact selected-wallet
-     raw/shadow evidence still covers the old 15m timer cadence + 60s jitter
+11. This manual/debug command is secondary only:
+   - it is useful when operators want an explicit one-off persisted capture
+     outside the normal refresh loop
+   - it is not the primary Stage 3 accumulation path
+   - its output now reports `mode=manual_debug`
+   - the `--shadow-evidence-lookback-seconds 960` example keeps exact
+     selected-wallet raw/shadow evidence aligned with the former 15 minute
+     standalone cadence envelope without reviving the old timer architecture
 12. `execution.enabled = false` remains unchanged. In-band Stage 3 capture and
-   the manual/debug service both collect evidence only; neither implies
+   the manual/debug command both collect evidence only; neither implies
    execution activation.
 
 ## Server target paths
@@ -125,8 +127,6 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 10. `/etc/systemd/system/copybot-discovery-runtime-export.timer`
 11. `/etc/systemd/system/copybot-discovery-recent-raw-snapshot.service`
 12. `/etc/systemd/system/copybot-discovery-recent-raw-snapshot.timer`
-13. `/etc/systemd/system/copybot-discovery-wallet-freshness-capture.service`
-14. `/etc/systemd/system/copybot-discovery-wallet-freshness-capture.timer`
 
 ## Apply sequence
 
@@ -141,6 +141,4 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    5. `copybot-discovery-runtime-export.timer`
    6. `copybot-discovery-recent-raw-snapshot.timer`
 5. Run preflight sequence from `ROAD_TO_PRODUCTION.md` section `6.1`.
-6. Leave `copybot-discovery-wallet-freshness-capture.timer` disabled unless you
-   explicitly need the standalone manual/debug capture path.
-7. Keep `ops/discovery_runtime_restore_runbook.md` on hand for the restore path and drill procedure.
+6. Keep `ops/discovery_runtime_restore_runbook.md` on hand for the restore path and drill procedure.
