@@ -16,6 +16,9 @@ use std::path::{Path, PathBuf};
 #[allow(dead_code)]
 #[path = "copybot_execution_readiness_audit.rs"]
 mod execution_readiness_audit;
+#[allow(dead_code)]
+#[path = "copybot_tiny_live_policy_audit.rs"]
+mod tiny_live_policy_audit;
 
 const USAGE: &str = "usage: copybot_pre_activation_gate_report --config <path> [--json] [--now <rfc3339>] [--stage3-limit <count>] [--stage3-recent-horizon-seconds <seconds>] [--rehearsal-limit <count>] [--rehearsal-recent-horizon-seconds <seconds>] [--min-recent-acceptable-rehearsals <count>]";
 const DEFAULT_REHEARSAL_HISTORY_LIMIT: usize = 10;
@@ -55,6 +58,7 @@ enum PreActivationGateVerdict {
     BlockedByStage3,
     BlockedByStage4Readiness,
     BlockedByDryRunHistory,
+    BlockedByTinyLivePolicy,
     InsufficientRecentEvidence,
 }
 
@@ -115,6 +119,20 @@ struct DryRunHistorySummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct TinyLivePolicySummary {
+    verdict: String,
+    reason: String,
+    tiny_live_policy_bounded: bool,
+    tiny_live_policy_enabled: bool,
+    blocker_count: usize,
+    first_blocker: Option<String>,
+    warnings_count: usize,
+    mode_compatible: bool,
+    execution_policy_contract_valid: bool,
+    execution_route_contract_valid: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct PreActivationGateReport {
     generated_at: DateTime<Utc>,
     config_path: String,
@@ -129,6 +147,7 @@ struct PreActivationGateReport {
     stage3: Stage3GateSummary,
     stage4_readiness: Stage4ReadinessSummary,
     stage4_dry_run_history: DryRunHistorySummary,
+    tiny_live_policy: TinyLivePolicySummary,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -263,6 +282,8 @@ async fn build_pre_activation_gate_report(
         config.rehearsal_recent_horizon_seconds,
         config.min_recent_acceptable_rehearsals,
     );
+    let tiny_live_policy_report =
+        tiny_live_policy_audit::evaluate_tiny_live_policy(&config.config_path, loaded_config)?;
     Ok(compose_gate_report(
         config,
         loaded_config.execution.enabled,
@@ -270,6 +291,7 @@ async fn build_pre_activation_gate_report(
         stage3_report,
         readiness_report,
         dry_run_history_summary,
+        tiny_live_policy_report,
     ))
 }
 
@@ -280,6 +302,7 @@ fn compose_gate_report(
     stage3_report: WalletFreshnessHistoryReport,
     readiness_report: execution_readiness_audit::ExecutionReadinessAuditReport,
     dry_run_history_summary: DryRunHistorySummary,
+    tiny_live_policy_report: tiny_live_policy_audit::TinyLivePolicyAuditReport,
 ) -> PreActivationGateReport {
     let stage3_summary = Stage3GateSummary {
         verdict: stage3_report.verdict.as_str().to_string(),
@@ -310,11 +333,28 @@ fn compose_gate_report(
         ready_for_dry_run: readiness_report.ready_for_dry_run,
         blocked_for_activation: readiness_report.blocked_for_activation,
     };
+    let tiny_live_policy_summary = TinyLivePolicySummary {
+        verdict: serde_json::to_string(&tiny_live_policy_report.verdict)
+            .unwrap_or_default()
+            .trim_matches('"')
+            .to_string(),
+        reason: tiny_live_policy_report.reason.clone(),
+        tiny_live_policy_bounded: tiny_live_policy_report
+            .current_config_bounded_for_later_tiny_live_discussion,
+        tiny_live_policy_enabled: tiny_live_policy_report.tiny_live_policy_enabled,
+        blocker_count: tiny_live_policy_report.blockers.len(),
+        first_blocker: tiny_live_policy_report.blockers.first().cloned(),
+        warnings_count: tiny_live_policy_report.warnings.len(),
+        mode_compatible: tiny_live_policy_report.mode_compatible,
+        execution_policy_contract_valid: tiny_live_policy_report.execution_policy_contract_valid,
+        execution_route_contract_valid: tiny_live_policy_report.execution_route_contract_valid,
+    };
 
     let (verdict, reason, mut blockers) = derive_top_level_gate(
         &stage3_summary,
         &stage4_readiness_summary,
         &dry_run_history_summary,
+        &tiny_live_policy_summary,
     );
     if !execution_enabled {
         blockers.push(
@@ -339,6 +379,7 @@ fn compose_gate_report(
         stage3: stage3_summary,
         stage4_readiness: stage4_readiness_summary,
         stage4_dry_run_history: dry_run_history_summary,
+        tiny_live_policy: tiny_live_policy_summary,
     }
 }
 
@@ -346,6 +387,7 @@ fn derive_top_level_gate(
     stage3: &Stage3GateSummary,
     readiness: &Stage4ReadinessSummary,
     dry_run_history: &DryRunHistorySummary,
+    tiny_live_policy: &TinyLivePolicySummary,
 ) -> (PreActivationGateVerdict, String, Vec<String>) {
     if stage3.captures_within_recent_horizon == 0
         || stage3.verdict == WalletFreshnessHistoryVerdict::InsufficientEvidence.as_str()
@@ -388,30 +430,53 @@ fn derive_top_level_gate(
     }
 
     match dry_run_history.verdict {
-        DryRunHistoryVerdict::SufficientRecentRehearsalEvidence => (
-            PreActivationGateVerdict::PreActivationGatesGreen,
-            "Stage 3 is green, Stage 4 readiness is green, and recent dry-run rehearsal history is sufficient for planning-safe tiny-live discussion".to_string(),
-            Vec::new(),
-        ),
+        DryRunHistoryVerdict::SufficientRecentRehearsalEvidence => {}
         DryRunHistoryVerdict::NoPersistedRehearsals
         | DryRunHistoryVerdict::StaleRehearsalsOnly
-        | DryRunHistoryVerdict::InsufficientRecentSuccessfulRehearsals => (
-            PreActivationGateVerdict::InsufficientRecentEvidence,
-            format!(
-                "Stage 4 dry-run rehearsal history is not recent/sufficient enough yet: {}",
-                dry_run_history.reason
-            ),
-            vec![format!("stage4_dry_run_history: {}", dry_run_history.reason)],
-        ),
-        DryRunHistoryVerdict::RecentHardBlockersPresent => (
-            PreActivationGateVerdict::BlockedByDryRunHistory,
-            format!(
-                "Recent dry-run rehearsal history still shows hard blockers: {}",
-                dry_run_history.reason
-            ),
-            vec![format!("stage4_dry_run_history: {}", dry_run_history.reason)],
-        ),
+        | DryRunHistoryVerdict::InsufficientRecentSuccessfulRehearsals => {
+            return (
+                PreActivationGateVerdict::InsufficientRecentEvidence,
+                format!(
+                    "Stage 4 dry-run rehearsal history is not recent/sufficient enough yet: {}",
+                    dry_run_history.reason
+                ),
+                vec![format!(
+                    "stage4_dry_run_history: {}",
+                    dry_run_history.reason
+                )],
+            )
+        }
+        DryRunHistoryVerdict::RecentHardBlockersPresent => {
+            return (
+                PreActivationGateVerdict::BlockedByDryRunHistory,
+                format!(
+                    "Recent dry-run rehearsal history still shows hard blockers: {}",
+                    dry_run_history.reason
+                ),
+                vec![format!(
+                    "stage4_dry_run_history: {}",
+                    dry_run_history.reason
+                )],
+            )
+        }
     }
+
+    if !tiny_live_policy.tiny_live_policy_bounded {
+        return (
+            PreActivationGateVerdict::BlockedByTinyLivePolicy,
+            format!(
+                "Tiny-live policy envelope is not bounded enough yet: {}",
+                tiny_live_policy.reason
+            ),
+            vec![format!("tiny_live_policy: {}", tiny_live_policy.reason)],
+        );
+    }
+
+    (
+        PreActivationGateVerdict::PreActivationGatesGreen,
+        "Stage 3 is green, Stage 4 readiness is green, recent dry-run rehearsal history is sufficient, and the tiny-live policy envelope is explicitly bounded for planning-safe tiny-live discussion".to_string(),
+        Vec::new(),
+    )
 }
 
 fn summarize_dry_run_history(
@@ -617,6 +682,27 @@ fn render_human(report: &PreActivationGateReport) -> String {
                 .stage4_dry_run_history
                 .recent_rehearsals_within_horizon
         ),
+        format!(
+            "tiny_live_policy_verdict={}",
+            report.tiny_live_policy.verdict
+        ),
+        format!("tiny_live_policy_reason={}", report.tiny_live_policy.reason),
+        format!(
+            "tiny_live_policy_bounded={}",
+            report.tiny_live_policy.tiny_live_policy_bounded
+        ),
+        format!(
+            "tiny_live_policy_enabled={}",
+            report.tiny_live_policy.tiny_live_policy_enabled
+        ),
+        format!(
+            "tiny_live_policy_first_blocker={}",
+            report
+                .tiny_live_policy
+                .first_blocker
+                .clone()
+                .unwrap_or_else(|| "null".to_string())
+        ),
     ]
     .join("\n")
 }
@@ -646,6 +732,7 @@ mod tests {
                 "ready",
             ),
             sufficient_rehearsal_summary(),
+            bounded_policy_report(),
         );
 
         assert_eq!(report.verdict, PreActivationGateVerdict::BlockedByStage3);
@@ -664,6 +751,7 @@ mod tests {
                 "rpc blocked",
             ),
             sufficient_rehearsal_summary(),
+            bounded_policy_report(),
         );
 
         assert_eq!(
@@ -699,6 +787,7 @@ mod tests {
                 "ready",
             ),
             summary,
+            bounded_policy_report(),
         );
 
         assert_eq!(
@@ -737,6 +826,7 @@ mod tests {
                 "ready",
             ),
             summary,
+            bounded_policy_report(),
         );
 
         assert_eq!(
@@ -765,6 +855,7 @@ mod tests {
                 "ready",
             ),
             sufficient_rehearsal_summary(),
+            bounded_policy_report(),
         );
 
         assert_eq!(
@@ -803,6 +894,68 @@ mod tests {
             DryRunHistoryVerdict::SufficientRecentRehearsalEvidence
         );
         Ok(())
+    }
+
+    #[test]
+    fn policy_non_green_blocks_gate_when_stage3_and_stage4_are_green() {
+        let report = compose_gate_report(
+            &test_config(),
+            false,
+            Path::new("/tmp/runtime.db"),
+            stage3_report(
+                WalletFreshnessHistoryVerdict::ValidatedCurrent,
+                "validated",
+                3,
+                Some(60),
+            ),
+            readiness_report(
+                execution_readiness_audit::ExecutionReadinessVerdict::ReadyForExecutionDryRun,
+                "ready",
+            ),
+            sufficient_rehearsal_summary(),
+            policy_report(
+                tiny_live_policy_audit::TinyLivePolicyVerdict::TinyLivePolicyTooOpen,
+                "shadow.copy_notional_sol exceeds tiny-live cap",
+                false,
+            ),
+        );
+
+        assert_eq!(
+            report.verdict,
+            PreActivationGateVerdict::BlockedByTinyLivePolicy
+        );
+        assert!(report.reason.contains("Tiny-live policy envelope"));
+        assert_eq!(
+            report.tiny_live_policy.verdict,
+            "tiny_live_policy_too_open".to_string()
+        );
+    }
+
+    #[test]
+    fn green_gate_now_requires_bounded_tiny_live_policy() {
+        let report = compose_gate_report(
+            &test_config(),
+            false,
+            Path::new("/tmp/runtime.db"),
+            stage3_report(
+                WalletFreshnessHistoryVerdict::ValidatedCurrent,
+                "validated",
+                3,
+                Some(60),
+            ),
+            readiness_report(
+                execution_readiness_audit::ExecutionReadinessVerdict::ReadyForExecutionDryRun,
+                "ready",
+            ),
+            sufficient_rehearsal_summary(),
+            bounded_policy_report(),
+        );
+
+        assert_eq!(
+            report.verdict,
+            PreActivationGateVerdict::PreActivationGatesGreen
+        );
+        assert!(report.tiny_live_policy.tiny_live_policy_bounded);
     }
 
     fn temp_dir(label: &str) -> PathBuf {
@@ -946,6 +1099,63 @@ mod tests {
             3_600,
             2,
         )
+    }
+
+    fn bounded_policy_report() -> tiny_live_policy_audit::TinyLivePolicyAuditReport {
+        policy_report(
+            tiny_live_policy_audit::TinyLivePolicyVerdict::TinyLivePolicyBounded,
+            "bounded",
+            true,
+        )
+    }
+
+    fn policy_report(
+        verdict: tiny_live_policy_audit::TinyLivePolicyVerdict,
+        reason: &str,
+        bounded: bool,
+    ) -> tiny_live_policy_audit::TinyLivePolicyAuditReport {
+        tiny_live_policy_audit::TinyLivePolicyAuditReport {
+            generated_at: ts("2026-03-25T12:00:00Z"),
+            config_path: "/tmp/live.server.toml".to_string(),
+            execution_enabled: false,
+            planning_safe_only: true,
+            stage3_gate_not_evaluated: true,
+            mode: "adapter_submit_confirm".to_string(),
+            mode_compatible: true,
+            execution_policy_contract_valid: true,
+            execution_route_contract_valid: true,
+            current_config_bounded_for_later_tiny_live_discussion: bounded,
+            suitable_only_for_paper_or_dry_run: !bounded,
+            verdict,
+            reason: reason.to_string(),
+            blockers: if bounded {
+                Vec::new()
+            } else {
+                vec![reason.to_string()]
+            },
+            warnings: vec!["execution.enabled=false".to_string()],
+            tiny_live_policy_enabled: true,
+            current_default_route: "jito".to_string(),
+            current_allowed_routes: vec!["jito".to_string()],
+            current_route_order: vec!["jito".to_string()],
+            policy_allowed_routes: vec!["jito".to_string()],
+            current_shadow_copy_notional_sol: 0.05,
+            current_risk_max_position_sol: 0.05,
+            policy_max_trade_notional_sol: 0.05,
+            current_execution_batch_size: 1,
+            policy_max_batch_size: 1,
+            current_risk_max_concurrent_positions: 1,
+            policy_max_concurrent_positions: 1,
+            current_risk_daily_loss_limit_pct: 1.0,
+            policy_max_daily_loss_limit_pct: 1.0,
+            current_pretrade_max_fee_overhead_bps: 1_000,
+            policy_max_pretrade_fee_overhead_bps: 1_000,
+            current_pretrade_max_priority_fee_lamports: 2_000,
+            policy_max_pretrade_priority_fee_lamports: 2_000,
+            current_policy_echo_required: true,
+            policy_echo_required_for_tiny_live: true,
+            route_policy_rows: Vec::new(),
+        }
     }
 
     fn rehearsal_row(

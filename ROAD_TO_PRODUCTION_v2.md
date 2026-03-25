@@ -1424,15 +1424,20 @@ Acceptance update (`2026-03-25`, consolidated pre-activation gate):
    - Stage 4 readiness truth from `copybot_execution_readiness_audit`
    - Stage 4 persisted rehearsal history from
      `copybot_execution_dry_run_rehearsal --history`
+   - explicit tiny-live bounded policy truth from
+     `copybot_tiny_live_policy_audit`
 3. Top-level verdict semantics are now explicit:
    - `pre_activation_gates_green`
    - `blocked_by_stage3`
    - `blocked_by_stage4_readiness`
    - `blocked_by_dry_run_history`
+   - `blocked_by_tiny_live_policy`
    - `insufficient_recent_evidence`
 4. Hierarchy remains strict:
    - Stage 3 stays the primary gate
    - Stage 4 cannot override a non-green Stage 3
+   - dry-run rehearsal history and tiny-live policy boundedness are additional
+     lower-layer blockers, not overrides
    - `pre_activation_gates_green` is still planning-safe only and does not
      enable execution by itself
 5. Accepted verification for this consolidation slice:

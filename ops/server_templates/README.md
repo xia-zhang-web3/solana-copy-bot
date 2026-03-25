@@ -183,6 +183,7 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - Stage 3 recent-cycle discovery truth from `discovery_wallet_freshness_report`
    - Stage 4 readiness/preflight truth from `copybot_execution_readiness_audit`
    - Stage 4 persisted dry-run rehearsal history
+   - explicit tiny-live bounded policy truth from `copybot_tiny_live_policy_audit`
 4. Important top-level fields:
    - `verdict`
    - `reason`
@@ -197,12 +198,14 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `blocked_by_stage3`
    - `blocked_by_stage4_readiness`
    - `blocked_by_dry_run_history`
+   - `blocked_by_tiny_live_policy`
    - `insufficient_recent_evidence`
 6. `pre_activation_gates_green` means:
    - Stage 3 recent evidence is currently green
    - Stage 4 readiness/preflight is currently green
    - recent dry-run rehearsal history is sufficient for planning-safe
      tiny-live discussion
+   - the explicit tiny-live policy envelope is bounded
 7. `pre_activation_gates_green` does not mean:
    - execution is enabled
    - activation permission has been granted
