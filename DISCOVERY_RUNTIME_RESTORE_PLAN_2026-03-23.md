@@ -2011,3 +2011,36 @@ Current reading:
 - but it is a valid and accepted throughput-hardening step
 - the next required action is server-side rerun and inspection of the new
   phase/latency telemetry on the real incident window
+
+### 20.5 Audit sync: block-fetch throughput + progress-state compatibility (`2026-03-25`)
+
+Статус аудита:
+
+- принят
+- `discovery_raw_gap_fill_program_history` now adds explicit
+  `block_fetch_concurrency` control for the live QuickNode path
+- resumable / safety semantics remain intact:
+  - bounded terminal JSON
+  - durable `in_progress.sqlite` / `in_progress.json`
+  - no replayable output before full completion
+- old progress-state handling is now safer:
+  - legacy `in_progress.json` missing newly added telemetry fields can still be
+    read via backward-compatible defaults
+  - truly unreadable progress state no longer kills the binary with a raw JSON
+    parse failure; it is reset with
+    `progress_reset_reason = program_history_gap_fill_progress_reset_unreadable_state`
+
+Regression coverage rerun:
+
+- `cargo test -p copybot-config --lib`
+- `cargo test -p copybot-discovery --bin discovery_raw_gap_fill_program_history`
+- `cargo test -p copybot-discovery --bin discovery_runtime_restore`
+- `bash tools/discovery_gap_fill_operator_contract_smoke_test.sh`
+
+Current reading:
+
+- this batch is a valid next hardening step
+- it should make the next live rerun more informative in two concrete ways:
+  - either `attempt_block_fetch_ms` drops materially under the same bounded run
+  - or the live telemetry will prove that the practical frontier is now limited
+    by dense-window `max_blocks_to_fetch`, not by avoidable fetch latency

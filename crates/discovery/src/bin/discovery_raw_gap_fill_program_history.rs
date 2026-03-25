@@ -11,7 +11,7 @@ use copybot_discovery::raw_gap_fill_support::{
 #[cfg(test)]
 use copybot_discovery::restore_verdict::DiscoveryRuntimeRestoreVerdictKind;
 use copybot_discovery::runtime_restore_ops::{
-    copy_atomic, journal_snapshot_metadata_path, load_json, program_history_gap_fill_archive_path,
+    copy_atomic, journal_snapshot_metadata_path, program_history_gap_fill_archive_path,
     program_history_gap_fill_latest_metadata_path, program_history_gap_fill_latest_path,
     prune_rotated_archives, resolve_db_path, resolve_relative_to_config, write_json_atomic,
     PROGRAM_HISTORY_GAP_FILL_ARCHIVE_PREFIX, PROGRAM_HISTORY_GAP_FILL_ARCHIVE_SUFFIX,
@@ -40,9 +40,24 @@ use std::time::{Duration as StdDuration, Instant};
 #[cfg(test)]
 use tempfile::tempdir;
 
-const USAGE: &str = "usage: discovery_raw_gap_fill_program_history --config <path> [--db-path <path>] [--output <path>] [--window-start <rfc3339> --window-end <rfc3339>] [--http-url <url>] [--max-slots-to-scan <n>] [--sampling-segments <n>] [--max-slot-batches-per-attempt <n>] [--max-blocks-to-fetch <n>] [--max-candidate-transactions-to-parse <n>] [--json] [--now <rfc3339>]";
+const USAGE: &str = "usage: discovery_raw_gap_fill_program_history --config <path> [--db-path <path>] [--output <path>] [--window-start <rfc3339> --window-end <rfc3339>] [--http-url <url>] [--max-slots-to-scan <n>] [--sampling-segments <n>] [--block-fetch-concurrency <n>] [--max-slot-batches-per-attempt <n>] [--max-blocks-to-fetch <n>] [--max-candidate-transactions-to-parse <n>] [--json] [--now <rfc3339>]";
 const AVG_SLOT_MS: f64 = 400.0;
 const IN_PROGRESS_DB_NAME: &str = "in_progress.sqlite";
+const DEFAULT_PROGRESS_DOMINANT_PHASE: &str = "unknown";
+const DEFAULT_BLOCK_FETCH_ENCODING: &str = "json";
+const DEFAULT_BLOCK_FETCH_CONCURRENCY: usize = 1;
+
+fn default_progress_dominant_phase() -> String {
+    DEFAULT_PROGRESS_DOMINANT_PHASE.to_string()
+}
+
+fn default_block_fetch_encoding() -> String {
+    DEFAULT_BLOCK_FETCH_ENCODING.to_string()
+}
+
+fn default_block_fetch_concurrency() -> usize {
+    DEFAULT_BLOCK_FETCH_CONCURRENCY
+}
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -63,6 +78,7 @@ struct Config {
     http_url: Option<String>,
     max_slots_to_scan_override: Option<usize>,
     sampling_segments_override: Option<usize>,
+    block_fetch_concurrency_override: Option<usize>,
     max_slot_batches_per_attempt_override: Option<usize>,
     max_blocks_to_fetch_override: Option<usize>,
     max_candidate_transactions_to_parse_override: Option<usize>,
@@ -94,8 +110,10 @@ struct ProgramHistoryGapFillOutput {
     resolved_start_slot: Option<u64>,
     resolved_end_slot: Option<u64>,
     slot_span: Option<u64>,
+    #[serde(default)]
     resolved_bounds_reused_from_progress: bool,
     coverage_method: String,
+    #[serde(default = "default_block_fetch_encoding")]
     block_fetch_encoding: String,
     scan_budget_slots: usize,
     budget_exhausted: bool,
@@ -103,6 +121,8 @@ struct ProgramHistoryGapFillOutput {
     sampling_segments: usize,
     sampling_window_slots: usize,
     block_batch_size: usize,
+    #[serde(default = "default_block_fetch_concurrency")]
+    block_fetch_concurrency: usize,
     max_slot_batches_per_attempt: usize,
     max_blocks_to_fetch: usize,
     max_candidate_transactions_to_parse: usize,
@@ -110,20 +130,28 @@ struct ProgramHistoryGapFillOutput {
     retry_429_max_attempts: usize,
     retry_429_backoff_ms: u64,
     current_phase: String,
+    #[serde(default = "default_progress_dominant_phase")]
     dominant_phase: String,
+    #[serde(default)]
     resolve_slot_bounds_ms: u64,
     attempt_number: usize,
     cumulative_across_attempts: bool,
     attempt_frontier_start_slot: Option<u64>,
     attempt_frontier_end_slot: Option<u64>,
+    #[serde(default)]
     attempt_frontier_advanced_slots: usize,
     next_batch_start_slot: Option<u64>,
     progress_reset_reason: Option<String>,
     attempt_budget_exhausted: bool,
+    #[serde(default)]
     attempt_block_list_ms: u64,
+    #[serde(default)]
     attempt_block_fetch_ms: u64,
+    #[serde(default)]
     attempt_candidate_filter_ms: u64,
+    #[serde(default)]
     attempt_swap_parse_ms: u64,
+    #[serde(default)]
     attempt_sqlite_stage_ms: u64,
     attempt_scanned_batches: usize,
     attempt_scanned_slots: usize,
@@ -222,6 +250,7 @@ struct ScanSettings {
     block_time_probe_slots: u64,
     max_slots_to_scan: usize,
     sampling_segments: usize,
+    block_fetch_concurrency: usize,
     max_slot_batches_per_attempt: usize,
     max_blocks_to_fetch: usize,
     max_candidate_transactions_to_parse: usize,
@@ -251,6 +280,7 @@ struct FetchResult {
     sampling_segments: usize,
     sampling_window_slots: usize,
     block_batch_size: usize,
+    block_fetch_concurrency: usize,
     max_slot_batches_per_attempt: usize,
     max_blocks_to_fetch: usize,
     max_candidate_transactions_to_parse: usize,
@@ -561,6 +591,7 @@ where
     let mut http_url: Option<String> = None;
     let mut max_slots_to_scan_override: Option<usize> = None;
     let mut sampling_segments_override: Option<usize> = None;
+    let mut block_fetch_concurrency_override: Option<usize> = None;
     let mut max_slot_batches_per_attempt_override: Option<usize> = None;
     let mut max_blocks_to_fetch_override: Option<usize> = None;
     let mut max_candidate_transactions_to_parse_override: Option<usize> = None;
@@ -588,6 +619,10 @@ where
             "--sampling-segments" => {
                 sampling_segments_override =
                     Some(parse_usize_arg("--sampling-segments", args.next())?)
+            }
+            "--block-fetch-concurrency" => {
+                block_fetch_concurrency_override =
+                    Some(parse_usize_arg("--block-fetch-concurrency", args.next())?)
             }
             "--max-slot-batches-per-attempt" => {
                 max_slot_batches_per_attempt_override = Some(parse_usize_arg(
@@ -625,6 +660,7 @@ where
         http_url,
         max_slots_to_scan_override,
         sampling_segments_override,
+        block_fetch_concurrency_override,
         max_slot_batches_per_attempt_override,
         max_blocks_to_fetch_override,
         max_candidate_transactions_to_parse_override,
@@ -688,7 +724,7 @@ fn run(config: Config) -> Result<String> {
     }
 }
 
-fn run_with_source<S: ProgramHistorySource>(
+fn run_with_source<S: ProgramHistorySource + Sync>(
     config: Config,
     loaded_config: &copybot_config::AppConfig,
     source: &S,
@@ -759,6 +795,7 @@ fn run_with_source<S: ProgramHistorySource>(
                     sampling_segments: settings.sampling_segments,
                     sampling_window_slots: 0,
                     block_batch_size: settings.block_batch_size,
+                    block_fetch_concurrency: settings.block_fetch_concurrency,
                     max_slot_batches_per_attempt: settings.max_slot_batches_per_attempt,
                     max_blocks_to_fetch: settings.max_blocks_to_fetch,
                     max_candidate_transactions_to_parse: settings
@@ -889,7 +926,18 @@ fn load_existing_progress(
             Some("program_history_gap_fill_progress_reset_orphaned_state".to_string()),
         ));
     }
-    Ok((Some(load_json(&paths.progress_state_path)?), None))
+    let raw_state = fs::read_to_string(&paths.progress_state_path)
+        .with_context(|| format!("failed reading {}", paths.progress_state_path.display()))?;
+    match serde_json::from_str::<ProgramHistoryGapFillOutput>(&raw_state) {
+        Ok(progress) => Ok((Some(progress), None)),
+        Err(_) => {
+            clear_progress_artifacts(paths)?;
+            Ok((
+                None,
+                Some("program_history_gap_fill_progress_reset_unreadable_state".to_string()),
+            ))
+        }
+    }
 }
 
 fn progress_matches_preflight(
@@ -985,6 +1033,11 @@ fn resolve_scan_settings(
         sampling_segments: config
             .sampling_segments_override
             .unwrap_or(loaded_config.program_history_gap_fill.sampling_segments),
+        block_fetch_concurrency: config.block_fetch_concurrency_override.unwrap_or(
+            loaded_config
+                .program_history_gap_fill
+                .block_fetch_concurrency,
+        ),
         max_slot_batches_per_attempt: config.max_slot_batches_per_attempt_override.unwrap_or(
             loaded_config
                 .program_history_gap_fill
@@ -1043,7 +1096,7 @@ fn dominant_phase_name(
     .unwrap_or_else(|| "idle".to_string())
 }
 
-fn fetch_program_history_gap_fill<S: ProgramHistorySource>(
+fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
     source: &S,
     program_ids: &ProgramIdConfig,
     target_program_ids: &[String],
@@ -1160,6 +1213,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource>(
             sampling_segments: scan_plan.sampling_segments,
             sampling_window_slots: scan_plan.sampling_window_slots,
             block_batch_size: settings.block_batch_size,
+            block_fetch_concurrency: settings.block_fetch_concurrency,
             max_slot_batches_per_attempt: settings.max_slot_batches_per_attempt,
             max_blocks_to_fetch: settings.max_blocks_to_fetch,
             max_candidate_transactions_to_parse: settings.max_candidate_transactions_to_parse,
@@ -1411,6 +1465,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource>(
         sampling_segments: scan_plan.sampling_segments,
         sampling_window_slots: scan_plan.sampling_window_slots,
         block_batch_size: settings.block_batch_size,
+        block_fetch_concurrency: settings.block_fetch_concurrency,
         max_slot_batches_per_attempt: settings.max_slot_batches_per_attempt,
         max_blocks_to_fetch: settings.max_blocks_to_fetch,
         max_candidate_transactions_to_parse: settings.max_candidate_transactions_to_parse,
@@ -1660,7 +1715,30 @@ fn nearest_slot_with_time<S: ProgramHistorySource>(
     bail!("failed to find a slot with block time near slot={slot}");
 }
 
-fn scan_slot_windows<S: ProgramHistorySource>(
+fn fetch_block_chunk<S: ProgramHistorySource + Sync>(
+    source: &S,
+    slots: &[u64],
+) -> Result<Vec<(u64, Result<Option<Value>>)>> {
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(slots.len());
+        for &slot in slots {
+            handles.push((slot, scope.spawn(move || source.get_block(slot))));
+        }
+        handles
+            .into_iter()
+            .map(|(slot, handle)| {
+                Ok((
+                    slot,
+                    handle
+                        .join()
+                        .map_err(|_| anyhow!("block fetch worker panicked"))?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()
+    })
+}
+
+fn scan_slot_windows<S: ProgramHistorySource + Sync>(
     source: &S,
     program_ids: &ProgramIdConfig,
     requested_window_start: DateTime<Utc>,
@@ -1730,7 +1808,7 @@ fn scan_slot_windows<S: ProgramHistorySource>(
     Ok(combined)
 }
 
-fn scan_slot_range_attempt<S: ProgramHistorySource>(
+fn scan_slot_range_attempt<S: ProgramHistorySource + Sync>(
     source: &S,
     program_ids: &ProgramIdConfig,
     requested_window_start: DateTime<Utc>,
@@ -1796,124 +1874,138 @@ fn scan_slot_range_attempt<S: ProgramHistorySource>(
         summary.listed_block_slots = summary
             .listed_block_slots
             .saturating_add(available_block_slots.len());
-        for slot in available_block_slots {
+        let mut slot_index = 0usize;
+        while slot_index < available_block_slots.len() {
             if summary.scanned_blocks >= settings.max_blocks_to_fetch {
                 summary.phase_b_like_cost_budget_exhausted = true;
                 summary.early_stop_reason =
                     Some("program_history_gap_fill_block_fetch_budget_exhausted".to_string());
                 return Ok(AttemptScanResult {
                     summary,
-                    next_slot_to_scan: Some(slot),
+                    next_slot_to_scan: available_block_slots.get(slot_index).copied(),
                     attempt_budget_exhausted: false,
                     source_error: None,
                 });
             }
+            let remaining_budget = settings
+                .max_blocks_to_fetch
+                .saturating_sub(summary.scanned_blocks);
+            let chunk_end = available_block_slots.len().min(
+                slot_index.saturating_add(
+                    settings
+                        .block_fetch_concurrency
+                        .max(1)
+                        .min(remaining_budget.max(1)),
+                ),
+            );
+            let slot_chunk = &available_block_slots[slot_index..chunk_end];
             let block_fetch_started_at = Instant::now();
-            summary.scanned_blocks = summary.scanned_blocks.saturating_add(1);
-            let block = match source.get_block(slot) {
-                Ok(block) => block,
-                Err(error) => {
-                    let source_error = error
-                        .chain()
-                        .find_map(|cause| cause.downcast_ref::<SourceError>())
-                        .map(|cause| SourceError {
-                            kind: cause.kind,
-                            message: cause.message.clone(),
-                        });
-                    summary.block_fetch_ms = summary
-                        .block_fetch_ms
-                        .saturating_add(elapsed_ms(block_fetch_started_at));
-                    return Ok(AttemptScanResult {
-                        summary: ScanSummary {
-                            frontier_end_slot: slot.checked_sub(1),
-                            ..summary
-                        },
-                        next_slot_to_scan: Some(slot),
-                        attempt_budget_exhausted: false,
-                        source_error,
-                    });
-                }
-            };
+            let fetched_blocks = fetch_block_chunk(source, slot_chunk)?;
             summary.block_fetch_ms = summary
                 .block_fetch_ms
                 .saturating_add(elapsed_ms(block_fetch_started_at));
-            let Some(block) = block else {
-                summary.frontier_end_slot = Some(slot);
-                continue;
-            };
-            let block_time = block
-                .get("blockTime")
-                .and_then(Value::as_i64)
-                .and_then(|value| DateTime::<Utc>::from_timestamp(value, 0));
-            let Some(transactions) = block.get("transactions").and_then(Value::as_array) else {
-                continue;
-            };
-            for transaction in transactions {
-                summary.scanned_transactions = summary.scanned_transactions.saturating_add(1);
-                let tx_time = transaction
+            for (slot, block_result) in fetched_blocks {
+                summary.scanned_blocks = summary.scanned_blocks.saturating_add(1);
+                let block = match block_result {
+                    Ok(block) => block,
+                    Err(error) => {
+                        let source_error = error
+                            .chain()
+                            .find_map(|cause| cause.downcast_ref::<SourceError>())
+                            .map(|cause| SourceError {
+                                kind: cause.kind,
+                                message: cause.message.clone(),
+                            });
+                        return Ok(AttemptScanResult {
+                            summary: ScanSummary {
+                                frontier_end_slot: slot.checked_sub(1),
+                                ..summary
+                            },
+                            next_slot_to_scan: Some(slot),
+                            attempt_budget_exhausted: false,
+                            source_error,
+                        });
+                    }
+                };
+                let Some(block) = block else {
+                    summary.frontier_end_slot = Some(slot);
+                    continue;
+                };
+                let block_time = block
                     .get("blockTime")
                     .and_then(Value::as_i64)
                     .and_then(|value| DateTime::<Utc>::from_timestamp(value, 0));
-                let Some(tx_time) = tx_time.or(block_time) else {
+                let Some(transactions) = block.get("transactions").and_then(Value::as_array) else {
                     continue;
                 };
-                if tx_time < requested_window_start || tx_time >= requested_window_end {
-                    continue;
-                }
-                let candidate_filter_started_at = Instant::now();
-                let can_support_swap_parse = candidate_can_support_swap_parse(transaction);
-                if !can_support_swap_parse {
+                for transaction in transactions {
+                    summary.scanned_transactions = summary.scanned_transactions.saturating_add(1);
+                    let tx_time = transaction
+                        .get("blockTime")
+                        .and_then(Value::as_i64)
+                        .and_then(|value| DateTime::<Utc>::from_timestamp(value, 0));
+                    let Some(tx_time) = tx_time.or(block_time) else {
+                        continue;
+                    };
+                    if tx_time < requested_window_start || tx_time >= requested_window_end {
+                        continue;
+                    }
+                    let candidate_filter_started_at = Instant::now();
+                    let can_support_swap_parse = candidate_can_support_swap_parse(transaction);
+                    if !can_support_swap_parse {
+                        summary.candidate_filter_ms = summary
+                            .candidate_filter_ms
+                            .saturating_add(elapsed_ms(candidate_filter_started_at));
+                        continue;
+                    }
+                    if !transaction_mentions_target_programs(transaction, program_ids) {
+                        summary.candidate_filter_ms = summary
+                            .candidate_filter_ms
+                            .saturating_add(elapsed_ms(candidate_filter_started_at));
+                        continue;
+                    }
                     summary.candidate_filter_ms = summary
                         .candidate_filter_ms
                         .saturating_add(elapsed_ms(candidate_filter_started_at));
-                    continue;
+                    summary.candidate_program_transactions =
+                        summary.candidate_program_transactions.saturating_add(1);
+                    if summary.parsed_candidate_transactions
+                        >= settings.max_candidate_transactions_to_parse
+                    {
+                        summary.phase_b_like_cost_budget_exhausted = true;
+                        summary.early_stop_reason = Some(
+                            "program_history_gap_fill_candidate_parse_budget_exhausted".to_string(),
+                        );
+                        return Ok(AttemptScanResult {
+                            summary,
+                            next_slot_to_scan: Some(slot),
+                            attempt_budget_exhausted: false,
+                            source_error: None,
+                        });
+                    }
+                    summary.parsed_candidate_transactions =
+                        summary.parsed_candidate_transactions.saturating_add(1);
+                    let swap_parse_started_at = Instant::now();
+                    if let Some(swap) = parse_program_scoped_transaction_to_swap_with_context(
+                        transaction,
+                        program_ids,
+                        slot,
+                        block_time,
+                    )? {
+                        summary.parsed_candidate_swaps =
+                            summary.parsed_candidate_swaps.saturating_add(1);
+                        summary
+                            .swaps_by_signature
+                            .entry(swap.signature.clone())
+                            .or_insert(swap);
+                    }
+                    summary.swap_parse_ms = summary
+                        .swap_parse_ms
+                        .saturating_add(elapsed_ms(swap_parse_started_at));
                 }
-                if !transaction_mentions_target_programs(transaction, program_ids) {
-                    summary.candidate_filter_ms = summary
-                        .candidate_filter_ms
-                        .saturating_add(elapsed_ms(candidate_filter_started_at));
-                    continue;
-                }
-                summary.candidate_filter_ms = summary
-                    .candidate_filter_ms
-                    .saturating_add(elapsed_ms(candidate_filter_started_at));
-                summary.candidate_program_transactions =
-                    summary.candidate_program_transactions.saturating_add(1);
-                if summary.parsed_candidate_transactions
-                    >= settings.max_candidate_transactions_to_parse
-                {
-                    summary.phase_b_like_cost_budget_exhausted = true;
-                    summary.early_stop_reason = Some(
-                        "program_history_gap_fill_candidate_parse_budget_exhausted".to_string(),
-                    );
-                    return Ok(AttemptScanResult {
-                        summary,
-                        next_slot_to_scan: Some(slot),
-                        attempt_budget_exhausted: false,
-                        source_error: None,
-                    });
-                }
-                summary.parsed_candidate_transactions =
-                    summary.parsed_candidate_transactions.saturating_add(1);
-                let swap_parse_started_at = Instant::now();
-                if let Some(swap) = parse_program_scoped_transaction_to_swap_with_context(
-                    transaction,
-                    program_ids,
-                    slot,
-                    block_time,
-                )? {
-                    summary.parsed_candidate_swaps =
-                        summary.parsed_candidate_swaps.saturating_add(1);
-                    summary
-                        .swaps_by_signature
-                        .entry(swap.signature.clone())
-                        .or_insert(swap);
-                }
-                summary.swap_parse_ms = summary
-                    .swap_parse_ms
-                    .saturating_add(elapsed_ms(swap_parse_started_at));
+                summary.frontier_end_slot = Some(slot);
             }
-            summary.frontier_end_slot = Some(slot);
+            slot_index = chunk_end;
         }
         batch_start = batch_end.saturating_add(1);
         if batch_start == 0 {
@@ -2067,6 +2159,7 @@ fn write_gap_fill_output<S: ProgramHistorySource>(
         sampling_segments: fetch.sampling_segments,
         sampling_window_slots: fetch.sampling_window_slots,
         block_batch_size: fetch.block_batch_size,
+        block_fetch_concurrency: fetch.block_fetch_concurrency,
         max_slot_batches_per_attempt: fetch.max_slot_batches_per_attempt,
         max_blocks_to_fetch: fetch.max_blocks_to_fetch,
         max_candidate_transactions_to_parse: fetch.max_candidate_transactions_to_parse,
@@ -2252,6 +2345,7 @@ fn render_human(output: &ProgramHistoryGapFillOutput) -> String {
         format!("sampling_segments={}", output.sampling_segments),
         format!("sampling_window_slots={}", output.sampling_window_slots),
         format!("block_batch_size={}", output.block_batch_size),
+        format!("block_fetch_concurrency={}", output.block_fetch_concurrency),
         format!(
             "max_slot_batches_per_attempt={}",
             output.max_slot_batches_per_attempt
@@ -2543,7 +2637,10 @@ fn rpc_result(response: &Value) -> &Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering as AtomicOrdering},
+        Mutex,
+    };
 
     #[derive(Debug, Clone)]
     struct BlockRangeRequest {
@@ -2557,6 +2654,9 @@ mod tests {
         block_times: HashMap<u64, DateTime<Utc>>,
         block_ranges: HashMap<(u64, u64), Vec<u64>>,
         blocks: HashMap<u64, Value>,
+        get_block_delay: StdDuration,
+        current_get_block_in_flight: AtomicUsize,
+        max_get_block_in_flight: AtomicUsize,
         list_requests: Mutex<Vec<BlockRangeRequest>>,
     }
 
@@ -2581,8 +2681,17 @@ mod tests {
             self
         }
 
+        fn with_get_block_delay(mut self, delay: StdDuration) -> Self {
+            self.get_block_delay = delay;
+            self
+        }
+
         fn list_requests(&self) -> Vec<BlockRangeRequest> {
             self.list_requests.lock().unwrap().clone()
+        }
+
+        fn max_get_block_in_flight(&self) -> usize {
+            self.max_get_block_in_flight.load(AtomicOrdering::SeqCst)
         }
     }
 
@@ -2625,7 +2734,35 @@ mod tests {
         }
 
         fn get_block(&self, slot: u64) -> Result<Option<Value>> {
-            Ok(self.blocks.get(&slot).cloned())
+            let current = self
+                .current_get_block_in_flight
+                .fetch_add(1, AtomicOrdering::SeqCst)
+                .saturating_add(1);
+            loop {
+                let observed = self.max_get_block_in_flight.load(AtomicOrdering::SeqCst);
+                if observed >= current {
+                    break;
+                }
+                if self
+                    .max_get_block_in_flight
+                    .compare_exchange(
+                        observed,
+                        current,
+                        AtomicOrdering::SeqCst,
+                        AtomicOrdering::SeqCst,
+                    )
+                    .is_ok()
+                {
+                    break;
+                }
+            }
+            if !self.get_block_delay.is_zero() {
+                sleep(self.get_block_delay);
+            }
+            let result = self.blocks.get(&slot).cloned();
+            self.current_get_block_in_flight
+                .fetch_sub(1, AtomicOrdering::SeqCst);
+            Ok(result)
         }
     }
 
@@ -3022,6 +3159,96 @@ mod tests {
     }
 
     #[test]
+    fn block_fetch_concurrency_parallelizes_get_block_under_same_contract() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-block-fetch-concurrency")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(4);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let output_path = fixture
+            .temp
+            .path()
+            .join("program-gap-fill-block-fetch-concurrency.sqlite");
+        let source = FakeProgramHistorySource::default()
+            .with_latest_slot(103)
+            .with_get_block_delay(StdDuration::from_millis(20))
+            .with_block_time(100, window_start)
+            .with_block_time(103, window_end)
+            .with_block_range(100, 103, vec![100, 101, 102, 103])
+            .with_block(
+                100,
+                block_with_transactions(
+                    100,
+                    window_start,
+                    vec![swap_tx(
+                        "concurrent-a",
+                        "wallet-gap",
+                        100,
+                        "raydium-program",
+                    )],
+                ),
+            )
+            .with_block(
+                101,
+                block_with_transactions(
+                    101,
+                    window_start + Duration::minutes(1),
+                    vec![swap_tx(
+                        "concurrent-b",
+                        "wallet-gap",
+                        101,
+                        "pumpswap-program",
+                    )],
+                ),
+            )
+            .with_block(
+                102,
+                block_with_transactions(
+                    102,
+                    window_start + Duration::minutes(2),
+                    vec![swap_tx(
+                        "concurrent-c",
+                        "wallet-gap",
+                        102,
+                        "raydium-program",
+                    )],
+                ),
+            )
+            .with_block(
+                103,
+                block_with_transactions(
+                    103,
+                    window_start + Duration::minutes(3),
+                    vec![swap_tx(
+                        "concurrent-d",
+                        "wallet-gap",
+                        103,
+                        "pumpswap-program",
+                    )],
+                ),
+            );
+
+        let output = run_output_with_source(
+            Config {
+                output_path: Some(output_path),
+                window_start: Some(window_start),
+                window_end: Some(window_end),
+                block_fetch_concurrency_override: Some(4),
+                max_slot_batches_per_attempt_override: Some(1),
+                max_blocks_to_fetch_override: Some(4),
+                now,
+                ..gap_fill_config(&fixture, Some(window_start), Some(window_end))
+            },
+            &source,
+        )?;
+
+        assert_eq!(output.block_fetch_concurrency, 4);
+        assert_eq!(output.attempt_scanned_blocks, 4);
+        assert!(source.max_get_block_in_flight() >= 2);
+        Ok(())
+    }
+
+    #[test]
     fn resumable_gap_fill_attempts_make_forward_progress_and_publish_only_on_completion(
     ) -> Result<()> {
         let fixture = make_fixture("program-gap-fill-resumable")?;
@@ -3091,6 +3318,110 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn legacy_progress_state_missing_new_telemetry_fields_still_resumes() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-legacy-progress")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let output_path = fixture
+            .temp
+            .path()
+            .join("program-gap-fill-legacy-progress.sqlite");
+        let source = resumable_source(window_start, window_end);
+
+        let base_config = Config {
+            output_path: Some(output_path),
+            window_start: Some(window_start),
+            window_end: Some(window_end),
+            max_slot_batches_per_attempt_override: Some(1),
+            now,
+            ..gap_fill_config(&fixture, Some(window_start), Some(window_end))
+        };
+
+        let first = run_output_with_source(base_config.clone(), &source)?;
+        let progress_state_path = PathBuf::from(
+            first
+                .progress_state_path
+                .clone()
+                .expect("first attempt must write progress state"),
+        );
+        let mut legacy_json: Value =
+            serde_json::from_str(&fs::read_to_string(&progress_state_path)?)?;
+        let Value::Object(ref mut fields) = legacy_json else {
+            bail!("progress state json must remain an object");
+        };
+        for field in [
+            "resolved_bounds_reused_from_progress",
+            "block_fetch_encoding",
+            "block_fetch_concurrency",
+            "dominant_phase",
+            "resolve_slot_bounds_ms",
+            "attempt_frontier_advanced_slots",
+            "attempt_block_list_ms",
+            "attempt_block_fetch_ms",
+            "attempt_candidate_filter_ms",
+            "attempt_swap_parse_ms",
+            "attempt_sqlite_stage_ms",
+        ] {
+            fields.remove(field);
+        }
+        fs::write(
+            &progress_state_path,
+            serde_json::to_vec_pretty(&legacy_json)?,
+        )?;
+
+        let second = run_output_with_source(base_config, &source)?;
+        assert_eq!(second.attempt_number, 2);
+        assert!(second.cumulative_across_attempts);
+        assert_eq!(second.progress_reset_reason, None);
+        assert!(second.resolved_bounds_reused_from_progress);
+        Ok(())
+    }
+
+    #[test]
+    fn unreadable_progress_state_resets_safely_without_operator_surgery() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-unreadable-progress")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let output_path = fixture
+            .temp
+            .path()
+            .join("program-gap-fill-unreadable-progress.sqlite");
+        let source = resumable_source(window_start, window_end);
+
+        let base_config = Config {
+            output_path: Some(output_path),
+            window_start: Some(window_start),
+            window_end: Some(window_end),
+            max_slot_batches_per_attempt_override: Some(1),
+            now,
+            ..gap_fill_config(&fixture, Some(window_start), Some(window_end))
+        };
+
+        let first = run_output_with_source(base_config.clone(), &source)?;
+        let progress_state_path = PathBuf::from(
+            first
+                .progress_state_path
+                .clone()
+                .expect("first attempt must write progress state"),
+        );
+        fs::write(&progress_state_path, "{not-json")?;
+
+        let second = run_output_with_source(base_config, &source)?;
+        assert_eq!(second.attempt_number, 1);
+        assert!(!second.cumulative_across_attempts);
+        assert_eq!(
+            second.progress_reset_reason.as_deref(),
+            Some("program_history_gap_fill_progress_reset_unreadable_state")
+        );
+        assert!(!second.replayable_output);
+        Ok(())
+    }
+
     fn gap_fill_config(
         fixture: &Fixture,
         window_start: Option<DateTime<Utc>>,
@@ -3105,6 +3436,7 @@ mod tests {
             http_url: Some("https://quicknode.example/?api-key=test".to_string()),
             max_slots_to_scan_override: None,
             sampling_segments_override: None,
+            block_fetch_concurrency_override: None,
             max_slot_batches_per_attempt_override: None,
             max_blocks_to_fetch_override: None,
             max_candidate_transactions_to_parse_override: None,
@@ -3113,7 +3445,7 @@ mod tests {
         }
     }
 
-    fn run_output_with_source<S: ProgramHistorySource>(
+    fn run_output_with_source<S: ProgramHistorySource + Sync>(
         config: Config,
         source: &S,
     ) -> Result<ProgramHistoryGapFillOutput> {

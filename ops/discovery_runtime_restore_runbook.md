@@ -528,6 +528,11 @@ Run the bounded program-history gap-fill:
   --json | tee /tmp/discovery_raw_gap_fill_program_history.json
 ```
 
+If live reruns still report `dominant_phase = block_fetch`, the first practical
+tuning knob is `--block-fetch-concurrency <n>` (or
+`program_history_gap_fill.block_fetch_concurrency` in config), not an outer
+shell timeout.
+
 This path is now resumable by default. One invocation scans at most
 `program_history_gap_fill.max_slot_batches_per_attempt` slot batches, writes
 its own terminal JSON, and persists progress in
@@ -553,6 +558,12 @@ Throughput telemetry contract:
 5. `block_fetch_encoding = json` is the intended live path; this tool no
    longer uses the heavier `jsonParsed` block payload for program-gap-fill
    fetches
+6. `block_fetch_concurrency` controls how many `getBlock` requests may be
+   in-flight concurrently under the same global QuickNode rate limiter; raising
+   it increases latency hiding, not the configured req/s ceiling
+7. if the tool detects unreadable or schema-incompatible persisted progress
+   state, it resets `in_progress.sqlite` / `in_progress.json` itself and
+   reports `progress_reset_reason` instead of dying with a raw JSON parse error
 
 Fields to inspect:
 
@@ -571,32 +582,33 @@ Fields to inspect:
 13. `resolved_end_slot`
 14. `resolved_bounds_reused_from_progress`
 15. `block_fetch_encoding`
-16. `dominant_phase`
-17. `resolve_slot_bounds_ms`
-18. `attempt_frontier_start_slot`
-19. `attempt_frontier_end_slot`
-20. `attempt_frontier_advanced_slots`
-21. `next_batch_start_slot`
-22. `max_slot_batches_per_attempt`
-23. `attempt_scanned_batches`
-24. `attempt_block_list_ms`
-25. `attempt_block_fetch_ms`
-26. `attempt_candidate_filter_ms`
-27. `attempt_swap_parse_ms`
-28. `attempt_sqlite_stage_ms`
-29. `scanned_blocks`
-30. `scanned_transactions`
-31. `candidate_program_transactions`
-32. `parsed_candidate_transactions`
-33. `parsed_candidate_swaps`
-34. `inserted_rows`
-35. `attempt_inserted_rows`
-36. `staged_rows`
-37. `rows_withheld_due_to_incomplete_outcome`
-38. `gap_fill_covered_since`
-39. `final_covered_since`
-40. `missing_segments`
-41. `early_stop_reason`
+16. `block_fetch_concurrency`
+17. `dominant_phase`
+18. `resolve_slot_bounds_ms`
+19. `attempt_frontier_start_slot`
+20. `attempt_frontier_end_slot`
+21. `attempt_frontier_advanced_slots`
+22. `next_batch_start_slot`
+23. `max_slot_batches_per_attempt`
+24. `attempt_scanned_batches`
+25. `attempt_block_list_ms`
+26. `attempt_block_fetch_ms`
+27. `attempt_candidate_filter_ms`
+28. `attempt_swap_parse_ms`
+29. `attempt_sqlite_stage_ms`
+30. `scanned_blocks`
+31. `scanned_transactions`
+32. `candidate_program_transactions`
+33. `parsed_candidate_transactions`
+34. `parsed_candidate_swaps`
+35. `inserted_rows`
+36. `attempt_inserted_rows`
+37. `staged_rows`
+38. `rows_withheld_due_to_incomplete_outcome`
+39. `gap_fill_covered_since`
+40. `final_covered_since`
+41. `missing_segments`
+42. `early_stop_reason`
 
 Program-gap-fill verdict semantics:
 
@@ -636,12 +648,17 @@ If repeated attempts stay incomplete:
 1. first check `dominant_phase`
 2. if `dominant_phase = block_fetch` and `attempt_frontier_advanced_slots`
    stays small, the run is spending its budget on expensive block fetches; the
-   practical tuning knob is `--max-blocks-to-fetch`, not an outer shell timeout
+   practical tuning knobs are `--max-blocks-to-fetch` and
+   `program_history_gap_fill.block_fetch_concurrency`, not an outer shell timeout
 3. if `dominant_phase = sqlite_stage`, the run is finishing fetch/parse work
    but bottlenecking on staging
 4. if `resolved_bounds_reused_from_progress = false` after the first retry, the
    run is not reusing persisted progress and should be investigated before more
    operator retries
+5. if `progress_reset_reason = program_history_gap_fill_progress_reset_unreadable_state`,
+   the tool discarded stale or schema-incompatible persisted progress itself and
+   restarted safely from a clean in-progress state; manual archive/delete is no
+   longer required for this case
 
 If `replayable_output = true`, replay it into a fresh restore run:
 

@@ -112,6 +112,10 @@ cfg_value() {
   echo "template program_history_gap_fill.block_batch_size must be 1005" >&2
   exit 1
 }
+[[ "$(cfg_value "$TEMPLATE_PATH" program_history_gap_fill block_fetch_concurrency)" == "12" ]] || {
+  echo "template program_history_gap_fill.block_fetch_concurrency must be 12" >&2
+  exit 1
+}
 [[ "$(cfg_value "$TEMPLATE_PATH" program_history_gap_fill max_slots_to_scan)" == "1200000" ]] || {
   echo "template program_history_gap_fill.max_slots_to_scan must be 1200000" >&2
   exit 1
@@ -173,6 +177,9 @@ assert "attempt_frontier_advanced_slots" in runbook, "runbook must document slot
 assert "attempt_block_fetch_ms" in runbook, "runbook must document block fetch timing telemetry"
 assert "attempt_sqlite_stage_ms" in runbook, "runbook must document sqlite staging telemetry"
 assert "block_fetch_encoding" in runbook, "runbook must document the lighter block fetch payload contract"
+assert "block_fetch_concurrency" in runbook, "runbook must document block fetch parallelism tuning"
+assert "--block-fetch-concurrency" in runbook, "runbook must show explicit block fetch concurrency tuning"
+assert "program_history_gap_fill_progress_reset_unreadable_state" in runbook, "runbook must explain unreadable progress-state reset behavior"
 assert "complete_sufficient_for_healthy_restore" in runbook, "runbook must document healthy program-gap-fill outcome"
 assert "complete_but_insufficient_for_healthy_restore" in runbook, "runbook must document incomplete but replayable program-gap-fill outcome"
 assert "not_proven_due_to_cost_budget" in runbook, "runbook must document program-gap-fill cost budget outcome"

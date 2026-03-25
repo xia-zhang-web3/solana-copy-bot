@@ -92,6 +92,9 @@ retry_429_backoff_ms = 500
 # `getBlocks` supports up to 1005 slots per request. Use the max to reduce
 # list-call pressure on live-sized bounded windows.
 block_batch_size = 1005
+# Parallelize `getBlock` under the same global request pacer to hide single-call
+# latency without exceeding the configured QuickNode req/s contract.
+block_fetch_concurrency = 12
 block_time_probe_slots = 128
 # This budget is intentionally sized above the current live missing window so
 # the default operator path can attempt a full bounded scan instead of staged
