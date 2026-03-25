@@ -44,6 +44,14 @@ impl CapTruncationDeactivationGuardReason {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct CachedCurrentRawTruthSample {
+    pub(super) window_start: DateTime<Utc>,
+    pub(super) observed_swaps_loaded: usize,
+    pub(super) eligible_wallet_count: usize,
+    pub(super) top_wallet_ids: Vec<String>,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct DiscoveryWindowState {
     pub(super) swaps: VecDeque<SwapEvent>,
@@ -60,6 +68,7 @@ pub(super) struct DiscoveryWindowState {
     pub(super) truncated_warm_restore_bootstrap: bool,
     pub(super) last_snapshot_bucket: Option<DateTime<Utc>>,
     pub(super) last_summary: Option<DiscoverySummary>,
+    pub(super) last_exact_current_raw_truth: Option<CachedCurrentRawTruthSample>,
     pub(super) last_publish_at: Option<DateTime<Utc>>,
 }
 
@@ -94,6 +103,10 @@ impl DiscoveryWindowState {
 
     pub(super) fn clear_cap_truncation(&mut self) {
         self.clear_cap_truncation_state();
+    }
+
+    pub(super) fn clear_exact_current_raw_truth(&mut self) {
+        self.last_exact_current_raw_truth = None;
     }
 
     pub(super) fn push_swap_capped(&mut self, swap: SwapEvent, max_swaps: usize) -> usize {

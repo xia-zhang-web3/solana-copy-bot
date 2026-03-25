@@ -1246,24 +1246,27 @@ Acceptance update (`2026-03-25`):
     - Stage 4 should not be revisited until recent live captures, inside the
       explicit recency horizon, validate the current published selection
 13. Accepted operational follow-up for Stage 3 evidence accumulation:
-    - live capture collection is now meant to run via
-      `copybot-discovery-wallet-freshness-capture.timer`
-    - the accepted cadence is a 15 minute cadence against the current
-      `refresh_seconds = 600` runtime:
-      frequent enough to accumulate recent-cycle evidence, but not every
-      refresh tick
-    - the scheduled service should run the cheaper exact point-in-time
-      capture path:
-      `discovery_wallet_freshness_capture --config <live.server.toml> --recent-cycles 1 --shadow-evidence-lookback-seconds 960 --json`
-      because recent-cycle validation now comes from accumulated persisted
-      captures rather than extra self-resampling inside every timer run
-    - the explicit `shadow-evidence-lookback-seconds = 960` keeps the cheaper
-      scheduled raw-truth build while still covering the 15 minute timer cadence
-      plus 60 second timer jitter for exact selected-wallet raw/shadow evidence
+    - the primary accumulation path is now in-band inside the normal
+      discovery refresh/publication cycle in `solana-copy-bot.service`
+    - each publish-due refresh reuses already computed exact publication truth,
+      active follow truth, current raw top-N, and exact selected-wallet
+      shadow/raw evidence, then appends one persisted Stage 3 capture
+    - this replaces the standalone timer as the primary operational path,
+      because the standalone job duplicated an expensive raw-truth build against
+      the live runtime DB
+    - operators should inspect in-band capture accumulation in
+      `journalctl -u solana-copy-bot.service`, especially:
+      `wallet_freshness_capture_state`,
+      `wallet_freshness_capture_reason`,
+      `wallet_freshness_capture_id`,
+      `wallet_freshness_capture_captured_at`
     - operators should validate recent Stage 3 evidence with:
       `discovery_wallet_freshness_report --config <live.server.toml> --limit 5`
-    - this timer collects validation evidence only; it does not change
-      `execution.enabled`, restore, gap-fill, snapshot, or scoring behavior
+    - `copybot-discovery-wallet-freshness-capture.service` and `.timer`
+      remain available only for manual/debug spot checks with:
+      `discovery_wallet_freshness_capture --config <live.server.toml> --recent-cycles 1 --shadow-evidence-lookback-seconds 960 --json`
+    - this Stage 3 evidence path still does not change `execution.enabled`,
+      restore, gap-fill, snapshot, or scoring behavior
 
 Exit criteria:
 

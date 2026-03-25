@@ -1,7 +1,9 @@
 [Unit]
-Description=Copybot Discovery Wallet Freshness Capture Timer
+Description=Copybot Discovery Wallet Freshness Capture Timer (Manual Debug)
 
 [Timer]
+# Primary Stage 3 evidence now accumulates in-band inside solana-copy-bot.service.
+# Keep this timer disabled unless operators explicitly want a standalone debug run.
 # Discovery refresh currently runs every 10 minutes. A 15 minute capture cadence
 # samples live selection often enough to accumulate recent Stage 3 evidence,
 # while avoiding one capture per refresh cycle when the scoring window barely

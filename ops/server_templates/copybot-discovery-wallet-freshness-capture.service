@@ -1,5 +1,5 @@
 [Unit]
-Description=Copybot Discovery Wallet Freshness Capture
+Description=Copybot Discovery Wallet Freshness Capture (Manual Debug)
 After=solana-copy-bot.service
 
 [Service]

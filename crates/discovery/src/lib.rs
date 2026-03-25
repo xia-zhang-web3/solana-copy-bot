@@ -34,8 +34,10 @@ pub mod wallet_freshness_audit;
 mod windows;
 use self::followlist::{desired_wallets, rank_follow_candidates, top_wallet_labels};
 use self::scoring::{hold_time_quality_score, median_i64, tanh01};
+use self::wallet_freshness_audit::PrecomputedWalletFreshnessCurrentRawTruth;
 use self::windows::{
-    cmp_swap_order, CapTruncationDeactivationGuardReason, DiscoveryCursor, DiscoveryWindowState,
+    cmp_swap_order, CachedCurrentRawTruthSample, CapTruncationDeactivationGuardReason,
+    DiscoveryCursor, DiscoveryWindowState,
 };
 use quality_cache::BuyTradability;
 
@@ -230,6 +232,10 @@ pub struct DiscoverySummary {
     pub cap_truncation_floor_ts_utc: Option<DateTime<Utc>>,
     pub cap_truncation_floor_signature: Option<String>,
     pub persisted_stream_catch_up_requested: bool,
+    pub wallet_freshness_capture_state: Option<&'static str>,
+    pub wallet_freshness_capture_reason: Option<String>,
+    pub wallet_freshness_capture_id: Option<i64>,
+    pub wallet_freshness_capture_captured_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -417,6 +423,17 @@ impl DiscoverySummary {
         self.persisted_stream_catch_up_requested = requested;
         self
     }
+
+    fn with_wallet_freshness_capture(
+        mut self,
+        telemetry: &InBandWalletFreshnessCaptureTelemetry,
+    ) -> Self {
+        self.wallet_freshness_capture_state = Some(telemetry.state);
+        self.wallet_freshness_capture_reason = telemetry.reason.clone();
+        self.wallet_freshness_capture_id = telemetry.capture_id;
+        self.wallet_freshness_capture_captured_at = telemetry.captured_at;
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -512,6 +529,7 @@ enum PreparedCycleState {
         followlist_activations_suppressed: bool,
         followlist_deactivations_suppressed: bool,
         summary: DiscoverySummary,
+        current_raw: Option<CachedCurrentRawTruthSample>,
     },
     Degraded {
         publish_due: bool,
@@ -540,6 +558,14 @@ enum PreparedCycleState {
         metrics_persistence_suppressed: bool,
         swaps: VecDeque<SwapEvent>,
     },
+}
+
+#[derive(Debug, Clone, Default)]
+struct InBandWalletFreshnessCaptureTelemetry {
+    state: &'static str,
+    reason: Option<String>,
+    capture_id: Option<i64>,
+    captured_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1146,6 +1172,102 @@ impl DiscoveryService {
                 None
             },
         })
+    }
+
+    fn in_band_wallet_freshness_shadow_evidence_lookback_seconds(&self) -> u64 {
+        self.config.refresh_seconds.max(1).saturating_mul(2)
+    }
+
+    fn maybe_persist_in_band_wallet_freshness_capture(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        capture_due: bool,
+        runtime_mode: DiscoveryRuntimeMode,
+        current_raw: Option<PrecomputedWalletFreshnessCurrentRawTruth>,
+    ) -> InBandWalletFreshnessCaptureTelemetry {
+        if !capture_due {
+            return InBandWalletFreshnessCaptureTelemetry {
+                state: "skipped_due_cadence",
+                reason: Some("capture_cadence_not_due".to_string()),
+                ..InBandWalletFreshnessCaptureTelemetry::default()
+            };
+        }
+        if runtime_mode != DiscoveryRuntimeMode::Healthy {
+            return InBandWalletFreshnessCaptureTelemetry {
+                state: "skipped_runtime_mode",
+                reason: Some(format!(
+                    "runtime_mode_{}_does_not_publish_exact_stage3_raw_truth",
+                    runtime_mode.as_str()
+                )),
+                ..InBandWalletFreshnessCaptureTelemetry::default()
+            };
+        }
+        let Some(current_raw) = current_raw else {
+            return InBandWalletFreshnessCaptureTelemetry {
+                state: "skipped_missing_current_raw_truth",
+                reason: Some("exact_current_raw_truth_not_cached_for_capture".to_string()),
+                ..InBandWalletFreshnessCaptureTelemetry::default()
+            };
+        };
+
+        let computed = match self.wallet_freshness_capture_snapshot_from_precomputed_current_raw(
+            store,
+            now,
+            current_raw,
+            Some(self.in_band_wallet_freshness_shadow_evidence_lookback_seconds()),
+        ) {
+            Ok(computed) => computed,
+            Err(error) => {
+                let error_text = format!("{error:#}");
+                warn!(
+                    error = %error,
+                    "in-band Stage 3 wallet freshness capture build failed; continuing discovery refresh without persisted capture"
+                );
+                return InBandWalletFreshnessCaptureTelemetry {
+                    state: "build_failed",
+                    reason: Some(error_text),
+                    ..InBandWalletFreshnessCaptureTelemetry::default()
+                };
+            }
+        };
+
+        let write = match computed.snapshot.to_storage_write() {
+            Ok(write) => write,
+            Err(error) => {
+                let error_text = format!("{error:#}");
+                warn!(
+                    error = %error,
+                    "in-band Stage 3 wallet freshness capture serialization failed; continuing discovery refresh without persisted capture"
+                );
+                return InBandWalletFreshnessCaptureTelemetry {
+                    state: "build_failed",
+                    reason: Some(error_text),
+                    ..InBandWalletFreshnessCaptureTelemetry::default()
+                };
+            }
+        };
+
+        match store.append_discovery_wallet_freshness_capture(&write) {
+            Ok(row) => InBandWalletFreshnessCaptureTelemetry {
+                state: "persisted",
+                reason: None,
+                capture_id: Some(row.capture_id),
+                captured_at: Some(row.captured_at),
+            },
+            Err(error) => {
+                let error_text = format!("{error:#}");
+                warn!(
+                    error = %error,
+                    "in-band Stage 3 wallet freshness capture persistence failed; continuing discovery refresh without persisted capture"
+                );
+                InBandWalletFreshnessCaptureTelemetry {
+                    state: "persistence_failed",
+                    reason: Some(error_text),
+                    ..InBandWalletFreshnessCaptureTelemetry::default()
+                }
+            }
+        }
     }
 
     fn degraded_summary_from_published_universe(
@@ -4245,6 +4367,7 @@ impl DiscoveryService {
                 state.clear_cap_truncation();
                 state.last_snapshot_bucket = None;
                 state.last_summary = None;
+                state.clear_exact_current_raw_truth();
                 if persisted_raw_window_complete {
                     (
                         swaps_window,
@@ -4309,6 +4432,7 @@ impl DiscoveryService {
                             .last_summary
                             .clone()
                             .expect("checked last_summary exists above"),
+                        current_raw: state.last_exact_current_raw_truth.clone(),
                     },
                 )
             } else if raw_window_history_incomplete || short_retention_window {
@@ -4406,6 +4530,7 @@ impl DiscoveryService {
             followlist_deactivations_suppressed,
             metrics_persistence_suppressed,
             snapshots,
+            observed_swaps_loaded_for_capture,
             scoring_source,
             effective_window_start,
             effective_metrics_window_start,
@@ -4576,6 +4701,7 @@ impl DiscoveryService {
                 followlist_activations_suppressed,
                 followlist_deactivations_suppressed,
                 summary: previous_summary,
+                current_raw,
             } => {
                 let active_follow_wallets = store.list_active_follow_wallets()?.len();
                 let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
@@ -4609,6 +4735,19 @@ impl DiscoveryService {
                         now,
                     )?;
                 }
+                let capture_telemetry = self.maybe_persist_in_band_wallet_freshness_capture(
+                    store,
+                    now,
+                    publish_due,
+                    previous_summary.runtime_mode,
+                    current_raw.map(|current_raw| PrecomputedWalletFreshnessCurrentRawTruth {
+                        window_start: current_raw.window_start,
+                        observed_swaps_loaded: current_raw.observed_swaps_loaded,
+                        eligible_wallet_count: current_raw.eligible_wallet_count,
+                        top_wallet_ids: current_raw.top_wallet_ids,
+                    }),
+                );
+                let summary = summary.with_wallet_freshness_capture(&capture_telemetry);
                 store.clear_discovery_persisted_rebuild_state()?;
                 info!(
                     window_start = %summary.window_start,
@@ -4639,6 +4778,10 @@ impl DiscoveryService {
                     followlist_activations_suppressed,
                     followlist_deactivations_suppressed,
                     discovery_cycle_duration_ms = elapsed_ms,
+                    wallet_freshness_capture_state = summary.wallet_freshness_capture_state,
+                    wallet_freshness_capture_reason = summary.wallet_freshness_capture_reason.as_deref(),
+                    wallet_freshness_capture_id = summary.wallet_freshness_capture_id,
+                    wallet_freshness_capture_captured_at = ?summary.wallet_freshness_capture_captured_at,
                     top_wallets = ?summary.top_wallets,
                     "discovery cycle completed"
                 );
@@ -4669,6 +4812,7 @@ impl DiscoveryService {
                 followlist_deactivations_suppressed,
                 metrics_persistence_suppressed,
                 self.build_wallet_snapshots_from_cached(store, &swaps, now)?,
+                swaps.len(),
                 "raw_window",
                 window_start,
                 metrics_window_start,
@@ -4858,6 +5002,7 @@ impl DiscoveryService {
                             false,
                             false,
                             snapshots,
+                            telemetry.observed_swaps_loaded,
                             scoring_source,
                             telemetry.window_start,
                             telemetry.metrics_window_start,
@@ -5105,6 +5250,12 @@ impl DiscoveryService {
 
         let ranked = rank_follow_candidates(&snapshots, self.config.min_score);
         let desired_wallets = desired_wallets(&ranked, self.config.follow_top_n);
+        let current_raw_for_capture = PrecomputedWalletFreshnessCurrentRawTruth {
+            window_start: effective_window_start,
+            observed_swaps_loaded: observed_swaps_loaded_for_capture,
+            eligible_wallet_count: ranked.len(),
+            top_wallet_ids: desired_wallets.clone(),
+        };
         let follow_delta = store.persist_discovery_cycle_with_snapshot_metadata(
             &wallet_rows,
             metrics_to_persist,
@@ -5146,6 +5297,14 @@ impl DiscoveryService {
             "discovery_score_refresh",
             now,
         )?;
+        let capture_telemetry = self.maybe_persist_in_band_wallet_freshness_capture(
+            store,
+            now,
+            publish_due,
+            DiscoveryRuntimeMode::Healthy,
+            Some(current_raw_for_capture.clone()),
+        );
+        let summary = summary.with_wallet_freshness_capture(&capture_telemetry);
         {
             let mut state = match self.window_state.lock() {
                 Ok(guard) => guard,
@@ -5156,6 +5315,12 @@ impl DiscoveryService {
             };
             state.last_snapshot_bucket = Some(effective_metrics_window_start);
             state.last_summary = Some(summary.clone());
+            state.last_exact_current_raw_truth = Some(CachedCurrentRawTruthSample {
+                window_start: current_raw_for_capture.window_start,
+                observed_swaps_loaded: current_raw_for_capture.observed_swaps_loaded,
+                eligible_wallet_count: current_raw_for_capture.eligible_wallet_count,
+                top_wallet_ids: current_raw_for_capture.top_wallet_ids.clone(),
+            });
         }
         if let Some(snapshot_write) = snapshot_write.as_ref() {
             self.persist_trusted_selection_state_from_snapshot(
@@ -5225,6 +5390,10 @@ impl DiscoveryService {
             followlist_activations_suppressed,
             followlist_deactivations_suppressed,
             discovery_cycle_duration_ms = elapsed_ms,
+            wallet_freshness_capture_state = summary.wallet_freshness_capture_state,
+            wallet_freshness_capture_reason = summary.wallet_freshness_capture_reason.as_deref(),
+            wallet_freshness_capture_id = summary.wallet_freshness_capture_id,
+            wallet_freshness_capture_captured_at = ?summary.wallet_freshness_capture_captured_at,
             top_wallets = ?summary.top_wallets,
             "discovery cycle completed"
         );
@@ -6460,12 +6629,17 @@ fn sol_leg_token(swap: &SwapEvent) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wallet_freshness_audit::{
+        current_raw_truth_sample_call_count_for_tests,
+        reset_current_raw_truth_sample_call_count_for_tests, wallet_freshness_capture_from_row,
+        WalletFreshnessHistoryVerdict,
+    };
     use anyhow::{anyhow, Context};
     use copybot_config::ShadowConfig;
     use copybot_storage::{
-        DiscoveryAggregateWriteConfig, DiscoveryPersistedRebuildPhase,
+        CopySignalRow, DiscoveryAggregateWriteConfig, DiscoveryPersistedRebuildPhase,
         DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor, DiscoveryRuntimeMode, SqliteStore,
-        WalletActivityDayRow,
+        WalletActivityDayRow, COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE,
     };
     use rusqlite::Connection;
     use std::collections::HashSet;
@@ -14980,6 +15154,251 @@ mod tests {
     }
 
     #[test]
+    fn run_cycle_persists_in_band_wallet_freshness_capture_without_standalone_raw_rebuild(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("stage3-in-band-capture.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-25T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.scoring_aggregates_enabled = true;
+        config.scoring_aggregates_write_enabled = true;
+        seed_runtime_aggregate_ready_wallet(
+            &store,
+            &config,
+            "wallet_aggregate_only",
+            "TokenAggregateOnlyStage31111111111111111",
+            now,
+        )?;
+        seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 6, 9)?;
+        insert_recent_profitable_pair(&store, "wallet_top", now, "stage3-in-band-capture-current")?;
+        insert_shadow_recorded_signal(
+            &store,
+            "wallet_top",
+            "TokenStage3Shadow1111111111111111111111111",
+            now - Duration::seconds(30),
+            "shadow:stage3:wallet-top",
+        )?;
+
+        reset_current_raw_truth_sample_call_count_for_tests();
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let summary = discovery.run_cycle(&store, now)?;
+
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert_eq!(summary.wallet_freshness_capture_state, Some("persisted"));
+        assert_eq!(summary.wallet_freshness_capture_reason, None);
+        assert_eq!(current_raw_truth_sample_call_count_for_tests(), 0);
+
+        let captures = store.list_discovery_wallet_freshness_captures(5)?;
+        assert_eq!(captures.len(), 1);
+        assert_eq!(
+            summary.wallet_freshness_capture_id,
+            Some(captures[0].capture_id)
+        );
+        let capture = wallet_freshness_capture_from_row(captures[0].clone())?;
+        assert_eq!(capture.audit.verdict.as_str(), "fresh_current");
+        assert_eq!(
+            capture.audit.published_wallet_ids,
+            vec!["wallet_top".to_string()]
+        );
+        assert_eq!(
+            capture.audit.active_follow_wallet_ids,
+            vec!["wallet_top".to_string()]
+        );
+        assert_eq!(
+            capture.audit.current_raw_top_wallet_ids,
+            vec!["wallet_top".to_string()]
+        );
+        assert!(
+            !capture
+                .audit
+                .current_raw_top_wallet_ids
+                .contains(&"wallet_aggregate_only".to_string()),
+            "in-band capture must stay anchored to raw-window truth even when aggregate state exists"
+        );
+        assert_eq!(
+            capture
+                .shadow_signal
+                .selected_wallets_with_recent_shadow_signal,
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_cycle_capture_persistence_failure_is_fail_open_for_publication() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("stage3-in-band-capture-fail-open.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-03-25T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = stage1_runtime_config();
+        seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 6, 9)?;
+        insert_recent_profitable_pair(
+            &store,
+            "wallet_top",
+            now,
+            "stage3-in-band-capture-fail-open-current",
+        )?;
+        insert_shadow_recorded_signal(
+            &store,
+            "wallet_top",
+            "TokenStage3ShadowFailOpen1111111111111111111",
+            now - Duration::seconds(30),
+            "shadow:stage3:wallet-top-fail-open",
+        )?;
+
+        assert!(store
+            .list_discovery_wallet_freshness_captures(1)?
+            .is_empty());
+        let conn = Connection::open(Path::new(&db_path))?;
+        conn.execute_batch(
+            "CREATE TRIGGER fail_discovery_wallet_freshness_capture_insert
+             BEFORE INSERT ON discovery_wallet_freshness_history
+             BEGIN
+                 SELECT RAISE(FAIL, 'simulated wallet freshness capture persistence failure');
+             END;",
+        )?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let summary = discovery.run_cycle(&store, now)?;
+
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert_eq!(
+            summary.wallet_freshness_capture_state,
+            Some("persistence_failed")
+        );
+        assert!(summary
+            .wallet_freshness_capture_reason
+            .as_deref()
+            .is_some_and(
+                |reason| reason.contains("simulated wallet freshness capture persistence failure")
+            ));
+        assert_eq!(store.list_discovery_wallet_freshness_captures(5)?.len(), 0);
+        assert!(
+            discovery
+                .recent_published_follow_universe_wallets(&store, now)?
+                .is_some_and(|wallets| wallets.contains("wallet_top")),
+            "capture persistence failure must not block exact publication truth"
+        );
+        assert!(
+            store.list_active_follow_wallets()?.contains("wallet_top"),
+            "capture persistence failure must not block active follow updates"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn wallet_freshness_history_report_reads_in_band_captures_from_run_cycle() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("stage3-in-band-capture-history.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let first_now = DateTime::parse_from_rfc3339("2026-03-25T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let second_now = first_now + Duration::minutes(10);
+        let third_now = first_now + Duration::minutes(20);
+        let config = stage1_runtime_config();
+        seed_stage1_persisted_stream_runtime_fixture(&store, &config, first_now, 6, 9)?;
+        insert_recent_profitable_pair(
+            &store,
+            "wallet_top",
+            first_now,
+            "stage3-in-band-history-current-1",
+        )?;
+        insert_shadow_recorded_signal(
+            &store,
+            "wallet_top",
+            "TokenStage3ShadowHistory1111111111111111111",
+            first_now - Duration::seconds(30),
+            "shadow:stage3:wallet-top-history-1",
+        )?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let first_summary = discovery.run_cycle(&store, first_now)?;
+        assert_eq!(
+            first_summary.wallet_freshness_capture_state,
+            Some("persisted")
+        );
+
+        insert_recent_tail_noise_swaps(
+            &store,
+            first_now + Duration::minutes(1),
+            10,
+            "stage3-in-band-history-2",
+        )?;
+        insert_recent_profitable_pair(
+            &store,
+            "wallet_top",
+            second_now,
+            "stage3-in-band-history-current-2",
+        )?;
+        insert_shadow_recorded_signal(
+            &store,
+            "wallet_top",
+            "TokenStage3ShadowHistory1111111111111111111",
+            second_now - Duration::seconds(30),
+            "shadow:stage3:wallet-top-history-2",
+        )?;
+        let second_summary = discovery.run_cycle(&store, second_now)?;
+        assert_eq!(
+            second_summary.wallet_freshness_capture_state,
+            Some("persisted")
+        );
+
+        insert_recent_tail_noise_swaps(
+            &store,
+            second_now + Duration::minutes(1),
+            10,
+            "stage3-in-band-history-3",
+        )?;
+        insert_recent_profitable_pair(
+            &store,
+            "wallet_top",
+            third_now,
+            "stage3-in-band-history-current-3",
+        )?;
+        insert_shadow_recorded_signal(
+            &store,
+            "wallet_top",
+            "TokenStage3ShadowHistory1111111111111111111",
+            third_now - Duration::seconds(30),
+            "shadow:stage3:wallet-top-history-3",
+        )?;
+        let third_summary = discovery.run_cycle(&store, third_now)?;
+        assert_eq!(
+            third_summary.wallet_freshness_capture_state,
+            Some("persisted")
+        );
+
+        let report = discovery.wallet_freshness_history_report(&store, third_now, 5)?;
+
+        assert_eq!(report.captures_loaded, 3);
+        assert_eq!(report.captures_considered, 3);
+        assert_eq!(report.captures_within_recent_horizon, 3);
+        assert_eq!(
+            report.verdict,
+            WalletFreshnessHistoryVerdict::PartiallyValidatedButLowRotation
+        );
+        assert_eq!(report.shadow_signal_present_capture_count, 3);
+        assert_eq!(report.current_raw_change_count, 0);
+        assert_eq!(report.active_follow_change_count, 0);
+        Ok(())
+    }
+
+    #[test]
     fn aggregate_ready_state_does_not_override_raw_window_truth_on_restart() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("aggregate-ready-raw-truth-restart.db");
@@ -15599,6 +16018,76 @@ mod tests {
             helius_http_url: None,
             min_token_age_hint_seconds: None,
         }
+    }
+
+    fn insert_shadow_recorded_signal(
+        store: &SqliteStore,
+        wallet_id: &str,
+        token: &str,
+        ts: DateTime<Utc>,
+        signal_id: &str,
+    ) -> Result<()> {
+        store.insert_copy_signal(&CopySignalRow {
+            signal_id: signal_id.to_string(),
+            wallet_id: wallet_id.to_string(),
+            side: "buy".to_string(),
+            token: token.to_string(),
+            notional_sol: 0.2,
+            notional_lamports: None,
+            notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
+            ts,
+            status: "shadow_recorded".to_string(),
+        })?;
+        Ok(())
+    }
+
+    fn insert_recent_tail_noise_swaps(
+        store: &SqliteStore,
+        start: DateTime<Utc>,
+        count: usize,
+        signature_prefix: &str,
+    ) -> Result<()> {
+        for idx in 0..count {
+            let ts = start + Duration::minutes(idx as i64);
+            store.insert_observed_swap(&swap(
+                "wallet_tail_noise",
+                &format!("{signature_prefix}-{idx}"),
+                ts,
+                SOL_MINT,
+                "TokenStage3TailNoise1111111111111111111111",
+                0.2,
+                20.0,
+            ))?;
+        }
+        Ok(())
+    }
+
+    fn insert_recent_profitable_pair(
+        store: &SqliteStore,
+        wallet_id: &str,
+        now: DateTime<Utc>,
+        signature_prefix: &str,
+    ) -> Result<()> {
+        let token = format!("Token{signature_prefix}111111111111111111111111");
+        store.insert_observed_swap(&swap(
+            wallet_id,
+            &format!("{signature_prefix}-buy"),
+            now - Duration::minutes(2),
+            SOL_MINT,
+            token.as_str(),
+            1.0,
+            100.0,
+        ))?;
+        store.insert_observed_swap(&swap(
+            wallet_id,
+            &format!("{signature_prefix}-sell"),
+            now - Duration::minutes(1),
+            token.as_str(),
+            SOL_MINT,
+            100.0,
+            1.2,
+        ))?;
+        Ok(())
     }
 
     fn swap(

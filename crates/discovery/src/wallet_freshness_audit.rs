@@ -10,11 +10,26 @@ use copybot_storage::{
     WalletRecentActivityCountRow,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{collections::BTreeSet, time::Instant};
 
 pub const DEFAULT_RECENT_CYCLES: usize = 3;
 pub const DEFAULT_HISTORY_CAPTURE_LIMIT: usize = 5;
 pub const DEFAULT_HISTORY_RECENT_HORIZON_MULTIPLIER: u64 = 2;
+
+#[cfg(test)]
+static CURRENT_RAW_TRUTH_SAMPLE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn reset_current_raw_truth_sample_call_count_for_tests() {
+    CURRENT_RAW_TRUTH_SAMPLE_CALLS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn current_raw_truth_sample_call_count_for_tests() -> usize {
+    CURRENT_RAW_TRUTH_SAMPLE_CALLS.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -67,6 +82,14 @@ pub struct WalletFreshnessRawTruthStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletFreshnessRawCycleSample {
     pub sample_now: DateTime<Utc>,
+    pub window_start: DateTime<Utc>,
+    pub observed_swaps_loaded: usize,
+    pub eligible_wallet_count: usize,
+    pub top_wallet_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PrecomputedWalletFreshnessCurrentRawTruth {
     pub window_start: DateTime<Utc>,
     pub observed_swaps_loaded: usize,
     pub eligible_wallet_count: usize,
@@ -329,6 +352,51 @@ impl DiscoveryService {
         })
     }
 
+    pub fn wallet_freshness_capture_snapshot_from_precomputed_current_raw(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        current_raw: PrecomputedWalletFreshnessCurrentRawTruth,
+        shadow_evidence_lookback_seconds: Option<u64>,
+    ) -> Result<WalletFreshnessCaptureComputation> {
+        let audit = self.wallet_freshness_audit_with_cycle_points(
+            store,
+            now,
+            1,
+            &[RawTruthCyclePoint {
+                sample_now: now,
+                sample: RawTruthSample {
+                    window_start: current_raw.window_start,
+                    observed_swaps_loaded: current_raw.observed_swaps_loaded,
+                    eligible_wallet_count: current_raw.eligible_wallet_count,
+                    top_wallet_ids: current_raw.top_wallet_ids,
+                },
+            }],
+        )?;
+        let shadow_signal_started = Instant::now();
+        let shadow_signal = self.build_shadow_signal_evidence(
+            store,
+            now,
+            1,
+            shadow_evidence_lookback_seconds,
+            &audit,
+        )?;
+        let shadow_signal_duration_ms = shadow_signal_started.elapsed().as_millis() as u64;
+        Ok(WalletFreshnessCaptureComputation {
+            snapshot: WalletFreshnessCaptureSnapshot {
+                capture_id: None,
+                captured_at: now,
+                capture_age_seconds: None,
+                within_recent_horizon: None,
+                recent_cycles: 1,
+                audit,
+                shadow_signal,
+            },
+            raw_truth_build_duration_ms: 0,
+            shadow_signal_duration_ms,
+        })
+    }
+
     pub fn wallet_freshness_history_report(
         &self,
         store: &SqliteStore,
@@ -382,6 +450,8 @@ impl DiscoveryService {
         store: &SqliteStore,
         now: DateTime<Utc>,
     ) -> Result<RawTruthSample> {
+        #[cfg(test)]
+        CURRENT_RAW_TRUTH_SAMPLE_CALLS.fetch_add(1, Ordering::Relaxed);
         let window_start = now - Duration::days(self.config.scoring_window_days.max(1) as i64);
         let (snapshots, observed_swaps_loaded) =
             self.build_wallet_snapshots_from_persisted_stream_one_shot(store, window_start, now)?;
