@@ -37,14 +37,14 @@ fn main() -> Result<()> {
 }
 
 #[derive(Debug, Clone)]
-struct Config {
+pub(crate) struct Config {
     config_path: PathBuf,
     json: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ExecutionReadinessVerdict {
+pub(crate) enum ExecutionReadinessVerdict {
     ReadyForExecutionDryRun,
     ConfigValidButConnectivityBlocked,
     AdapterContractIncomplete,
@@ -56,7 +56,7 @@ enum ExecutionReadinessVerdict {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum RpcProbeClassification {
+pub(crate) enum RpcProbeClassification {
     Reachable,
     ConnectivityBlocked,
     Skipped,
@@ -64,7 +64,7 @@ enum RpcProbeClassification {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum AdapterProbeClassification {
+pub(crate) enum AdapterProbeClassification {
     Accepted,
     BusinessReject,
     ContractReject,
@@ -73,67 +73,67 @@ enum AdapterProbeClassification {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct RouteSummary {
-    default_route: String,
-    allowed_routes: Vec<String>,
-    submit_route_order: Vec<String>,
-    policy_echo_required: bool,
-    simulate_before_submit: bool,
+pub(crate) struct RouteSummary {
+    pub(crate) default_route: String,
+    pub(crate) allowed_routes: Vec<String>,
+    pub(crate) submit_route_order: Vec<String>,
+    pub(crate) policy_echo_required: bool,
+    pub(crate) simulate_before_submit: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct RpcProbeReport {
-    required: bool,
-    attempted: bool,
-    reachable: bool,
-    classification: RpcProbeClassification,
-    timeout_ms: u64,
-    successful_endpoint_role: Option<String>,
-    detail: String,
-    slot: Option<u64>,
+pub(crate) struct RpcProbeReport {
+    pub(crate) required: bool,
+    pub(crate) attempted: bool,
+    pub(crate) reachable: bool,
+    pub(crate) classification: RpcProbeClassification,
+    pub(crate) timeout_ms: u64,
+    pub(crate) successful_endpoint_role: Option<String>,
+    pub(crate) detail: String,
+    pub(crate) slot: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct AdapterProbeReport {
-    required: bool,
-    attempted: bool,
-    reachable: bool,
-    contract_valid: bool,
-    accepted: Option<bool>,
-    classification: AdapterProbeClassification,
-    timeout_ms: u64,
-    route: Option<String>,
-    detail: String,
+pub(crate) struct AdapterProbeReport {
+    pub(crate) required: bool,
+    pub(crate) attempted: bool,
+    pub(crate) reachable: bool,
+    pub(crate) contract_valid: bool,
+    pub(crate) accepted: Option<bool>,
+    pub(crate) classification: AdapterProbeClassification,
+    pub(crate) timeout_ms: u64,
+    pub(crate) route: Option<String>,
+    pub(crate) detail: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ExecutionReadinessAuditReport {
-    generated_at: DateTime<Utc>,
-    config_path: String,
-    execution_enabled: bool,
-    mode: String,
-    mode_compatible: bool,
-    config_valid: bool,
-    connectivity_valid: bool,
-    adapter_contract_valid: bool,
-    signer_contract_valid: bool,
-    policy_contract_valid: bool,
-    route_contract_valid: bool,
-    ready_for_dry_run: bool,
-    blocked_for_activation: bool,
-    verdict: ExecutionReadinessVerdict,
-    reason: String,
-    activation_blockers: Vec<String>,
-    static_blockers: Vec<String>,
-    warnings: Vec<String>,
-    signer_pubkey_configured: bool,
-    adapter_auth_token_configured: bool,
-    adapter_auth_token_source: String,
-    adapter_hmac_configured: bool,
-    adapter_hmac_source: String,
-    route_summary: RouteSummary,
-    rpc_probe: RpcProbeReport,
-    adapter_probe: AdapterProbeReport,
+pub(crate) struct ExecutionReadinessAuditReport {
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) config_path: String,
+    pub(crate) execution_enabled: bool,
+    pub(crate) mode: String,
+    pub(crate) mode_compatible: bool,
+    pub(crate) config_valid: bool,
+    pub(crate) connectivity_valid: bool,
+    pub(crate) adapter_contract_valid: bool,
+    pub(crate) signer_contract_valid: bool,
+    pub(crate) policy_contract_valid: bool,
+    pub(crate) route_contract_valid: bool,
+    pub(crate) ready_for_dry_run: bool,
+    pub(crate) blocked_for_activation: bool,
+    pub(crate) verdict: ExecutionReadinessVerdict,
+    pub(crate) reason: String,
+    pub(crate) activation_blockers: Vec<String>,
+    pub(crate) static_blockers: Vec<String>,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) signer_pubkey_configured: bool,
+    pub(crate) adapter_auth_token_configured: bool,
+    pub(crate) adapter_auth_token_source: String,
+    pub(crate) adapter_hmac_configured: bool,
+    pub(crate) adapter_hmac_source: String,
+    pub(crate) route_summary: RouteSummary,
+    pub(crate) rpc_probe: RpcProbeReport,
+    pub(crate) adapter_probe: AdapterProbeReport,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -186,7 +186,7 @@ async fn run(config: Config) -> Result<String> {
     }
 }
 
-async fn evaluate_execution_readiness(
+pub(crate) async fn evaluate_execution_readiness(
     config_path: &Path,
     loaded_config: &AppConfig,
 ) -> Result<ExecutionReadinessAuditReport> {
@@ -776,7 +776,7 @@ fn secret_source(value: &str, file: &str) -> String {
     }
 }
 
-fn render_human(report: &ExecutionReadinessAuditReport) -> String {
+pub(crate) fn render_human(report: &ExecutionReadinessAuditReport) -> String {
     [
         "event=copybot_execution_readiness_audit".to_string(),
         format!("generated_at={}", report.generated_at.to_rfc3339()),

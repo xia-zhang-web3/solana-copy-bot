@@ -1414,6 +1414,32 @@ Acceptance update (`2026-03-25`, Stage 4 dry-run rehearsal trail):
      shell archaeology
    - good rehearsal history still does not override the Stage 3 discovery gate
 
+Acceptance update (`2026-03-25`, consolidated pre-activation gate):
+
+1. Operators now have a single planning-safe gate surface:
+   - `copybot_pre_activation_gate_report --config /etc/solana-copy-bot/live.server.toml --json`
+2. This command reuses existing truth instead of inventing a fourth ad-hoc
+   decision path:
+   - Stage 3 recent-cycle truth from `discovery_wallet_freshness_report`
+   - Stage 4 readiness truth from `copybot_execution_readiness_audit`
+   - Stage 4 persisted rehearsal history from
+     `copybot_execution_dry_run_rehearsal --history`
+3. Top-level verdict semantics are now explicit:
+   - `pre_activation_gates_green`
+   - `blocked_by_stage3`
+   - `blocked_by_stage4_readiness`
+   - `blocked_by_dry_run_history`
+   - `insufficient_recent_evidence`
+4. Hierarchy remains strict:
+   - Stage 3 stays the primary gate
+   - Stage 4 cannot override a non-green Stage 3
+   - `pre_activation_gates_green` is still planning-safe only and does not
+     enable execution by itself
+5. Accepted verification for this consolidation slice:
+   - `cargo test -p copybot-app --bin copybot_pre_activation_gate_report`
+   - `cargo test -p copybot-app --bin copybot_execution_readiness_audit`
+   - `cargo test -p copybot-app --bin copybot_execution_dry_run_rehearsal`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

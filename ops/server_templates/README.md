@@ -170,6 +170,46 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
     override Stage 3. Discovery freshness evidence remains the gate before any
     activation discussion.
 
+## Consolidated Pre-Activation Gate
+
+1. Operators now also have one consolidated pre-activation gate surface:
+   - `copybot_pre_activation_gate_report --config /etc/solana-copy-bot/live.server.toml --json`
+2. This command stays read-only and pre-activation only:
+   - it does not enable `execution.enabled`
+   - it does not submit real trades
+   - it reuses existing Stage 3 / Stage 4 truth surfaces instead of running a
+     second heavy decision path
+3. The command consolidates:
+   - Stage 3 recent-cycle discovery truth from `discovery_wallet_freshness_report`
+   - Stage 4 readiness/preflight truth from `copybot_execution_readiness_audit`
+   - Stage 4 persisted dry-run rehearsal history
+4. Important top-level fields:
+   - `verdict`
+   - `reason`
+   - `blockers`
+   - `stage3_verdict`
+   - `stage4_readiness_verdict`
+   - `stage4_rehearsal_history_verdict`
+   - `execution_enabled`
+   - `planning_safe_only`
+5. Important top-level verdicts:
+   - `pre_activation_gates_green`
+   - `blocked_by_stage3`
+   - `blocked_by_stage4_readiness`
+   - `blocked_by_dry_run_history`
+   - `insufficient_recent_evidence`
+6. `pre_activation_gates_green` means:
+   - Stage 3 recent evidence is currently green
+   - Stage 4 readiness/preflight is currently green
+   - recent dry-run rehearsal history is sufficient for planning-safe
+     tiny-live discussion
+7. `pre_activation_gates_green` does not mean:
+   - execution is enabled
+   - activation permission has been granted
+   - Stage 3 can be skipped later
+8. Stage 3 remains the primary gate. Even perfect Stage 4 readiness or
+   rehearsal history cannot override a non-green Stage 3 verdict.
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`
