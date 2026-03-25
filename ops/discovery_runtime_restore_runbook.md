@@ -528,27 +528,46 @@ Run the bounded program-history gap-fill:
   --json | tee /tmp/discovery_raw_gap_fill_program_history.json
 ```
 
+This path is now resumable by default. One invocation scans at most
+`program_history_gap_fill.max_slot_batches_per_attempt` slot batches, writes
+its own terminal JSON, and persists progress in
+`state/discovery_restore/gap_fill_program_history/in_progress.sqlite` plus
+`in_progress.json` until the bounded window is fully completed. Re-run the same
+command until `replayable_output = true`. Do not wrap the normal operator path
+in an outer shell `timeout`; the bin now returns its own bounded incomplete
+outcome.
+
 Fields to inspect:
 
 1. `verdict`
 2. `reason`
 3. `replayable_output`
 4. `sufficient_for_healthy_restore`
-5. `requested_window_start`
-6. `requested_window_end`
-7. `resolved_start_slot`
-8. `resolved_end_slot`
-9. `scanned_blocks`
-10. `scanned_transactions`
-11. `candidate_program_transactions`
-12. `parsed_candidate_transactions`
-13. `parsed_candidate_swaps`
-14. `inserted_rows`
-15. `rows_withheld_due_to_incomplete_outcome`
-16. `gap_fill_covered_since`
-17. `final_covered_since`
-18. `missing_segments`
-19. `early_stop_reason`
+5. `current_phase`
+6. `attempt_number`
+7. `cumulative_across_attempts`
+8. `progress_db_path`
+9. `progress_state_path`
+10. `requested_window_start`
+11. `requested_window_end`
+12. `resolved_start_slot`
+13. `resolved_end_slot`
+14. `next_batch_start_slot`
+15. `max_slot_batches_per_attempt`
+16. `attempt_scanned_batches`
+17. `scanned_blocks`
+18. `scanned_transactions`
+19. `candidate_program_transactions`
+20. `parsed_candidate_transactions`
+21. `parsed_candidate_swaps`
+22. `inserted_rows`
+23. `attempt_inserted_rows`
+24. `staged_rows`
+25. `rows_withheld_due_to_incomplete_outcome`
+26. `gap_fill_covered_since`
+27. `final_covered_since`
+28. `missing_segments`
+29. `early_stop_reason`
 
 Program-gap-fill verdict semantics:
 
@@ -560,17 +579,28 @@ Program-gap-fill verdict semantics:
    - the bounded scan completed honestly
    - replayable output exists
    - but coverage still does not close the required recent-raw window
-3. `not_proven_due_to_scan_budget`:
+3. `not_proven_due_to_attempt_budget`:
+   - this invocation exhausted `program_history_gap_fill.max_slot_batches_per_attempt`
+   - the tool persisted cumulative progress in `in_progress.sqlite` / `in_progress.json`
+   - re-run the exact same command to continue from `next_batch_start_slot`
+   - partial staged rows remain non-replayable until a completed run publishes `latest.sqlite`
+4. `not_proven_due_to_scan_budget`:
    - the bounded slot span exceeded the configured local scan budget
    - the tool may still report parsed candidate counts from sampled windows
    - but it withholds replayable rows, so this cannot fake a healthy restore
-4. `not_proven_due_to_cost_budget`:
+5. `not_proven_due_to_cost_budget`:
    - the expensive parse/write pass exhausted `program_history_gap_fill.max_blocks_to_fetch` or `program_history_gap_fill.max_candidate_transactions_to_parse`
-   - this is a terminal bounded not-proven outcome, not a hard provider rejection
-5. `not_proven_due_to_provider_throttling`:
+   - this is a terminal bounded not-proven outcome for the current invocation
+   - if `next_batch_start_slot` is still present, re-running can continue the bounded window without publishing partial replayable output
+6. `not_proven_due_to_provider_throttling`:
    - the tool respected its local limiter, retried 429s, and still exhausted provider throttling retries
-6. `non_viable_source_contract`:
+7. `non_viable_source_contract`:
    - the source contract itself failed before the bounded gap-fill could complete
+
+If `replayable_output = false` and `verdict = not_proven_due_to_attempt_budget`, keep
+re-running the same command until the tool either publishes replayable output or
+returns a different bounded terminal reason. Only the completed publish step
+creates `state/discovery_restore/gap_fill_program_history/latest.sqlite`.
 
 If `replayable_output = true`, replay it into a fresh restore run:
 

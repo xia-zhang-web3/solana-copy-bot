@@ -99,6 +99,10 @@ block_time_probe_slots = 128
 # `not_proven_due_to_scan_budget` outcome and withholds replayable rows.
 max_slots_to_scan = 1200000
 sampling_segments = 8
+# Each invocation scans at most this many slot batches before returning its own
+# terminal JSON. Re-run the same command to continue from the persisted
+# in_progress state; replayable output is published only after a completed run.
+max_slot_batches_per_attempt = 256
 # These are explicit internal cost ceilings for the expensive parse/write pass.
 # If they exhaust, the tool returns a terminal bounded not-proven outcome instead
 # of hanging until an external timeout kills the process.

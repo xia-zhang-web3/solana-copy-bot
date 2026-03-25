@@ -191,7 +191,7 @@ The current conclusions are:
    - restore must come from `runtime artifact` + `recent raw journal`
    - stale publication truth must not silently turn into trading-ready truth
 3. that new restore stack is now actually deployed on the live server:
-   - runtime repo / live build is now on commit `4148969`
+   - runtime repo / live build is now on commit `3ca84e8`
    - `solana-copy-bot.service` is running again
    - live discovery is no longer stuck at `active_follow_wallets = 0`
 4. the live server is still not healthy:
@@ -215,8 +215,19 @@ The current conclusions are:
      current QuickNode path and a separate Helius-specific path and still did
      not close the missing recent-raw window
    - QuickNode-first program-history validation no longer dies instantly in
-     `429`, but on the real live window it still did not produce a terminal
-     verdict within a `900s` bounded run
+     `429`; `Phase A / Phase B` validation is now code-proven and live-proven:
+     - `phase_a` returned `viable_enough_for_phase_b`
+     - `phase_b --max-slots-to-scan 1081575` returned `viable`
+     - therefore QuickNode program-history source viability is no longer the
+       main uncertainty
+   - the new production `program-scoped gap-fill` path is now deployed too:
+     - live config includes `[program_history_gap_fill]`
+     - live bounded run of
+       `discovery_raw_gap_fill_program_history` on the real window did not
+       return its own terminal JSON before outer `timeout 1200`
+     - no replayable program-gap-fill output was materialized on disk
+     - so the current blocker is practical completion of this specific
+       program-gap-fill run, not source validation anymore
 7. what remains valid from the aggregate investigation in this file:
    - same-host hot clone under live load is unsafe
    - stopped-host / offline investigation is operationally safe

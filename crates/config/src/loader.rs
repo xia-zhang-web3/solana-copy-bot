@@ -1171,6 +1171,12 @@ fn validate_program_history_gap_fill_config(config: &AppConfig) -> Result<()> {
             gap_fill.max_slots_to_scan
         ));
     }
+    if gap_fill.max_slot_batches_per_attempt == 0 {
+        return Err(anyhow!(
+            "program_history_gap_fill.max_slot_batches_per_attempt ({}) must be >= 1",
+            gap_fill.max_slot_batches_per_attempt
+        ));
+    }
     if gap_fill.max_blocks_to_fetch == 0 {
         return Err(anyhow!(
             "program_history_gap_fill.max_blocks_to_fetch ({}) must be >= 1",

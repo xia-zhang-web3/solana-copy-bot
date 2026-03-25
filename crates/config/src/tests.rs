@@ -122,6 +122,7 @@ fn program_history_gap_fill_defaults_are_quicknode_first_and_bounded() {
     assert_eq!(gap_fill.block_time_probe_slots, 128);
     assert_eq!(gap_fill.max_slots_to_scan, 1_200_000);
     assert_eq!(gap_fill.sampling_segments, 8);
+    assert_eq!(gap_fill.max_slot_batches_per_attempt, 256);
     assert_eq!(gap_fill.max_blocks_to_fetch, 120_000);
     assert_eq!(gap_fill.max_candidate_transactions_to_parse, 240_000);
     assert_eq!(
@@ -218,6 +219,7 @@ block_batch_size = 1005
 block_time_probe_slots = 96
 max_slots_to_scan = 1081575
 sampling_segments = 6
+max_slot_batches_per_attempt = 192
 max_blocks_to_fetch = 250000
 max_candidate_transactions_to_parse = 300000
 output_dir = "restore/gap-fill-program-history"
@@ -330,6 +332,10 @@ metric_snapshot_interval_seconds = 1800
             assert_eq!(config.program_history_gap_fill.block_time_probe_slots, 96);
             assert_eq!(config.program_history_gap_fill.max_slots_to_scan, 1_081_575);
             assert_eq!(config.program_history_gap_fill.sampling_segments, 6);
+            assert_eq!(
+                config.program_history_gap_fill.max_slot_batches_per_attempt,
+                192
+            );
             assert_eq!(config.program_history_gap_fill.max_blocks_to_fetch, 250_000);
             assert_eq!(
                 config
@@ -457,6 +463,10 @@ fn live_server_template_exposes_recent_raw_gap_fill_contract() {
     assert_eq!(config.program_history_gap_fill.block_batch_size, 1_005);
     assert_eq!(config.program_history_gap_fill.max_slots_to_scan, 1_200_000);
     assert_eq!(config.program_history_gap_fill.sampling_segments, 8);
+    assert_eq!(
+        config.program_history_gap_fill.max_slot_batches_per_attempt,
+        256
+    );
     assert_eq!(config.program_history_gap_fill.max_blocks_to_fetch, 120_000);
     assert_eq!(
         config
@@ -653,6 +663,30 @@ metric_snapshot_interval_seconds = 1800
             assert!(
                 err.contains(
                     "program_history_gap_fill.sampling_segments (8) must be <= program_history_gap_fill.max_slots_to_scan (4)"
+                ),
+                "unexpected error: {err}"
+            );
+        },
+    );
+}
+
+#[test]
+fn load_from_path_rejects_program_history_gap_fill_zero_attempt_budget() {
+    with_temp_config_file(
+        r#"
+[program_history_gap_fill]
+max_slot_batches_per_attempt = 0
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("zero program history gap-fill attempt budget must fail")
+                .to_string();
+            assert!(
+                err.contains(
+                    "program_history_gap_fill.max_slot_batches_per_attempt (0) must be >= 1"
                 ),
                 "unexpected error: {err}"
             );

@@ -116,6 +116,10 @@ cfg_value() {
   echo "template program_history_gap_fill.max_slots_to_scan must be 1200000" >&2
   exit 1
 }
+[[ "$(cfg_value "$TEMPLATE_PATH" program_history_gap_fill max_slot_batches_per_attempt)" == "256" ]] || {
+  echo "template program_history_gap_fill.max_slot_batches_per_attempt must be 256" >&2
+  exit 1
+}
 [[ -n "$(cfg_value "$TEMPLATE_PATH" program_history_gap_fill output_dir)" ]] || {
   echo "template program_history_gap_fill.output_dir must be explicit" >&2
   exit 1
@@ -160,6 +164,9 @@ assert "TARGET_DB" in runbook, "runbook must document fresh target creation"
 assert "--gap-fill-db-path" in runbook, "runbook must document bounded gap-fill replay"
 assert "discovery_raw_gap_fill_helius" in runbook, "runbook must document the Helius-specific bin"
 assert "replayable_output" in runbook, "runbook must document program-history gap-fill replay safety"
+assert "not_proven_due_to_attempt_budget" in runbook, "runbook must document attempt-budget bounded outcome"
+assert "max_slot_batches_per_attempt" in runbook, "runbook must document resumable attempt budget"
+assert "in_progress" in runbook, "runbook must explain persisted in-progress gap-fill state"
 assert "complete_sufficient_for_healthy_restore" in runbook, "runbook must document healthy program-gap-fill outcome"
 assert "complete_but_insufficient_for_healthy_restore" in runbook, "runbook must document incomplete but replayable program-gap-fill outcome"
 assert "not_proven_due_to_cost_budget" in runbook, "runbook must document program-gap-fill cost budget outcome"

@@ -1831,3 +1831,63 @@ Synthetic restore proof closed:
 - новый program-scoped gap-fill path действительно отделен от active runtime DB
 - partial / bounded incomplete outcomes не materialize replayable rows
 - restore integration и operator contract подтверждены целевыми тестами
+
+### 20.1 Live rollout result (`2026-03-25`)
+
+Серверный rollout нового program-scoped gap-fill path сделан:
+
+- live repo / binaries updated to commit `3ca84e8`
+- `discovery_raw_gap_fill_program_history` and `discovery_runtime_restore`
+  were rebuilt in `target/release`
+- live config now includes a valid `[program_history_gap_fill]` block
+- `solana-copy-bot.service` remained `active`
+- `copybot-discovery-recent-raw-snapshot.timer` remained `active`
+
+Точный live result:
+
+- `discovery_raw_gap_fill_program_history` was run against:
+  - runtime DB:
+    `/var/www/solana-copy-bot/state/live_runtime_20260324T134339Z.db`
+  - config:
+    `/etc/solana-copy-bot/live.server.toml`
+- outer bounded runtime budget used for the live run:
+  - `timeout 1200`
+- the tool did **not** return its own terminal JSON verdict before the outer
+  timeout fired
+- the process exited only with outer timeout `124`
+- no replayable output surface was materialized:
+  - `/var/www/solana-copy-bot/state/discovery_restore/gap_fill_program_history`
+    was still absent after the run
+
+What this means:
+
+- repo-level production gap-fill path is implemented and deployed
+- source-validation uncertainty is already closed
+- the remaining blocker is now narrower:
+  - not source viability
+  - not snapshot durability
+  - not restore wiring
+  - but practical completion of `discovery_raw_gap_fill_program_history` on the
+    real live window
+
+Current honest reading:
+
+- we are not back in the old giant-replay chaos
+- but this live gap-fill path is still not operationally closed
+- the next engineering step, if we continue, should be only about making this
+  specific live run complete with its own bounded terminal contract
+
+### 20.2 Audit sync: resumable attempt-budget contract for live gap-fill (`2026-03-25`)
+
+Статус аудита:
+
+- принят
+- `discovery_raw_gap_fill_program_history` now has its own bounded incomplete
+  outcome `not_proven_due_to_attempt_budget`
+- incomplete runs persist explicit resumable state in
+  `in_progress.sqlite` / `in_progress.json`
+- replayable output is still withheld until a completed publish step
+- targeted tests confirm:
+  - terminal JSON without relying on outer shell timeout
+  - measurable forward progress across repeated attempts
+  - final publish only on completed outcome
