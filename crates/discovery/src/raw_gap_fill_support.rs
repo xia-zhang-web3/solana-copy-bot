@@ -114,7 +114,7 @@ pub fn parse_transaction_to_swap(
     expected_wallet: &str,
     program_ids: &ProgramIdConfig,
 ) -> Result<Option<SwapEvent>> {
-    parse_transaction_to_swap_for_signer(result, expected_wallet, program_ids)
+    parse_transaction_to_swap_for_signer(result, expected_wallet, program_ids, None, None)
 }
 
 pub fn parse_program_scoped_transaction_to_swap(
@@ -124,7 +124,25 @@ pub fn parse_program_scoped_transaction_to_swap(
     let Some(signer) = extract_primary_signer(result) else {
         return Ok(None);
     };
-    parse_transaction_to_swap_for_signer(result, &signer, program_ids)
+    parse_transaction_to_swap_for_signer(result, &signer, program_ids, None, None)
+}
+
+pub fn parse_program_scoped_transaction_to_swap_with_context(
+    result: &Value,
+    program_ids: &ProgramIdConfig,
+    slot_override: u64,
+    block_time_override: Option<DateTime<Utc>>,
+) -> Result<Option<SwapEvent>> {
+    let Some(signer) = extract_primary_signer(result) else {
+        return Ok(None);
+    };
+    parse_transaction_to_swap_for_signer(
+        result,
+        &signer,
+        program_ids,
+        Some(slot_override),
+        block_time_override,
+    )
 }
 
 pub fn transaction_mentions_target_programs(result: &Value, program_ids: &ProgramIdConfig) -> bool {
@@ -156,6 +174,8 @@ fn parse_transaction_to_swap_for_signer(
     result: &Value,
     expected_wallet: &str,
     program_ids: &ProgramIdConfig,
+    slot_override: Option<u64>,
+    block_time_override: Option<DateTime<Utc>>,
 ) -> Result<Option<SwapEvent>> {
     let meta = match result.get("meta") {
         Some(value) if !value.is_null() => value,
@@ -212,10 +232,12 @@ fn parse_transaction_to_swap_for_signer(
         .get("blockTime")
         .and_then(Value::as_i64)
         .and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0))
+        .or(block_time_override)
         .unwrap_or_else(Utc::now);
     let slot = result
         .get("slot")
         .and_then(Value::as_u64)
+        .or(slot_override)
         .unwrap_or_default();
 
     Ok(Some(SwapEvent {

@@ -537,6 +537,23 @@ command until `replayable_output = true`. Do not wrap the normal operator path
 in an outer shell `timeout`; the bin now returns its own bounded incomplete
 outcome.
 
+Throughput telemetry contract:
+
+1. after the first incomplete attempt, repeated runs should normally report
+   `resolved_bounds_reused_from_progress = true`
+2. `dominant_phase` shows where the invocation spent most wall time:
+   `resolve_slot_bounds`, `block_listing`, `block_fetch`, `candidate_filter`,
+   `swap_parse`, or `sqlite_stage`
+3. `attempt_frontier_advanced_slots` shows how much of the bounded slot window
+   this invocation actually moved forward
+4. `attempt_block_list_ms`, `attempt_block_fetch_ms`,
+   `attempt_candidate_filter_ms`, `attempt_swap_parse_ms`, and
+   `attempt_sqlite_stage_ms` show whether the current tuning is bottlenecked on
+   RPC enumeration, block fetch, parse work, or sqlite staging
+5. `block_fetch_encoding = json` is the intended live path; this tool no
+   longer uses the heavier `jsonParsed` block payload for program-gap-fill
+   fetches
+
 Fields to inspect:
 
 1. `verdict`
@@ -552,22 +569,34 @@ Fields to inspect:
 11. `requested_window_end`
 12. `resolved_start_slot`
 13. `resolved_end_slot`
-14. `next_batch_start_slot`
-15. `max_slot_batches_per_attempt`
-16. `attempt_scanned_batches`
-17. `scanned_blocks`
-18. `scanned_transactions`
-19. `candidate_program_transactions`
-20. `parsed_candidate_transactions`
-21. `parsed_candidate_swaps`
-22. `inserted_rows`
-23. `attempt_inserted_rows`
-24. `staged_rows`
-25. `rows_withheld_due_to_incomplete_outcome`
-26. `gap_fill_covered_since`
-27. `final_covered_since`
-28. `missing_segments`
-29. `early_stop_reason`
+14. `resolved_bounds_reused_from_progress`
+15. `block_fetch_encoding`
+16. `dominant_phase`
+17. `resolve_slot_bounds_ms`
+18. `attempt_frontier_start_slot`
+19. `attempt_frontier_end_slot`
+20. `attempt_frontier_advanced_slots`
+21. `next_batch_start_slot`
+22. `max_slot_batches_per_attempt`
+23. `attempt_scanned_batches`
+24. `attempt_block_list_ms`
+25. `attempt_block_fetch_ms`
+26. `attempt_candidate_filter_ms`
+27. `attempt_swap_parse_ms`
+28. `attempt_sqlite_stage_ms`
+29. `scanned_blocks`
+30. `scanned_transactions`
+31. `candidate_program_transactions`
+32. `parsed_candidate_transactions`
+33. `parsed_candidate_swaps`
+34. `inserted_rows`
+35. `attempt_inserted_rows`
+36. `staged_rows`
+37. `rows_withheld_due_to_incomplete_outcome`
+38. `gap_fill_covered_since`
+39. `final_covered_since`
+40. `missing_segments`
+41. `early_stop_reason`
 
 Program-gap-fill verdict semantics:
 
@@ -601,6 +630,18 @@ If `replayable_output = false` and `verdict = not_proven_due_to_attempt_budget`,
 re-running the same command until the tool either publishes replayable output or
 returns a different bounded terminal reason. Only the completed publish step
 creates `state/discovery_restore/gap_fill_program_history/latest.sqlite`.
+
+If repeated attempts stay incomplete:
+
+1. first check `dominant_phase`
+2. if `dominant_phase = block_fetch` and `attempt_frontier_advanced_slots`
+   stays small, the run is spending its budget on expensive block fetches; the
+   practical tuning knob is `--max-blocks-to-fetch`, not an outer shell timeout
+3. if `dominant_phase = sqlite_stage`, the run is finishing fetch/parse work
+   but bottlenecking on staging
+4. if `resolved_bounds_reused_from_progress = false` after the first retry, the
+   run is not reusing persisted progress and should be investigated before more
+   operator retries
 
 If `replayable_output = true`, replay it into a fresh restore run:
 

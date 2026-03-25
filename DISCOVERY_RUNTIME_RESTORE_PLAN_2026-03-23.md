@@ -1968,3 +1968,46 @@ Current honest reading:
   program-history gap-fill path
 - with the current live tuning, progress per long attempt is still far too slow
   for a useful closure cadence
+
+### 20.4 Audit sync: throughput hardening for live program-gap-fill (`2026-03-25`)
+
+Статус аудита:
+
+- принят
+- `discovery_raw_gap_fill_program_history` keeps the accepted resumable
+  safety contract:
+  - bounded terminal JSON on incomplete runs
+  - durable `in_progress.sqlite` / `in_progress.json`
+  - no replayable output before completed publish
+- throughput-focused code changes are now in place:
+  - `getBlock` uses `encoding = json` instead of `jsonParsed`
+  - swap parse reuses block context instead of rewrapping/cloning transaction
+    payloads
+  - repeated attempts can reuse resolved slot bounds from progress state instead
+    of paying slot-bound resolution again
+- new operator-visible telemetry was added for live bottleneck inspection:
+  - `resolved_bounds_reused_from_progress`
+  - `block_fetch_encoding`
+  - `dominant_phase`
+  - `resolve_slot_bounds_ms`
+  - `attempt_frontier_start_slot`
+  - `attempt_frontier_end_slot`
+  - `attempt_frontier_advanced_slots`
+  - `attempt_block_list_ms`
+  - `attempt_block_fetch_ms`
+  - `attempt_candidate_filter_ms`
+  - `attempt_swap_parse_ms`
+  - `attempt_sqlite_stage_ms`
+
+Regression coverage rerun:
+
+- `cargo test -p copybot-discovery --bin discovery_raw_gap_fill_program_history`
+- `cargo test -p copybot-discovery --bin discovery_runtime_restore`
+- `bash tools/discovery_gap_fill_operator_contract_smoke_test.sh`
+
+Current reading:
+
+- this batch does not by itself prove live practical closure
+- but it is a valid and accepted throughput-hardening step
+- the next required action is server-side rerun and inspection of the new
+  phase/latency telemetry on the real incident window
