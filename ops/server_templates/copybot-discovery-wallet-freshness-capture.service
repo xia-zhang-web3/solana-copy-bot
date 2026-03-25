@@ -1,0 +1,17 @@
+[Unit]
+Description=Copybot Discovery Wallet Freshness Capture
+After=solana-copy-bot.service
+
+[Service]
+Type=oneshot
+User=copybot
+WorkingDirectory=/var/www/solana-copy-bot
+EnvironmentFile=/etc/solana-copy-bot/app.env
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+SyslogIdentifier=discovery_wallet_freshness_capture
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=5min
+ExecStart=/var/www/solana-copy-bot/target/release/discovery_wallet_freshness_capture --config /etc/solana-copy-bot/live.server.toml --recent-cycles 3 --json

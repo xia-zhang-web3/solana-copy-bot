@@ -1245,6 +1245,17 @@ Acceptance update (`2026-03-25`):
       - `discovery_wallet_freshness_report`
     - Stage 4 should not be revisited until recent live captures, inside the
       explicit recency horizon, validate the current published selection
+13. Accepted operational follow-up for Stage 3 evidence accumulation:
+    - live capture collection is now meant to run via
+      `copybot-discovery-wallet-freshness-capture.timer`
+    - the accepted cadence is a 15 minute cadence against the current
+      `refresh_seconds = 600` runtime:
+      frequent enough to accumulate recent-cycle evidence, but not every
+      refresh tick
+    - operators should validate recent Stage 3 evidence with:
+      `discovery_wallet_freshness_report --config <live.server.toml> --limit 5`
+    - this timer collects validation evidence only; it does not change
+      `execution.enabled`, restore, gap-fill, snapshot, or scoring behavior
 
 Exit criteria:
 

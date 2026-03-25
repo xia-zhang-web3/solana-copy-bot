@@ -1,0 +1,16 @@
+[Unit]
+Description=Copybot Discovery Wallet Freshness Capture Timer
+
+[Timer]
+# Discovery refresh currently runs every 10 minutes. A 15 minute capture cadence
+# samples live selection often enough to accumulate recent Stage 3 evidence,
+# while avoiding one capture per refresh cycle when the scoring window barely
+# moved.
+OnBootSec=12m
+OnUnitActiveSec=15m
+RandomizedDelaySec=60s
+Persistent=true
+Unit=copybot-discovery-wallet-freshness-capture.service
+
+[Install]
+WantedBy=timers.target

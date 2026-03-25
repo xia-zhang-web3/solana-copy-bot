@@ -26,6 +26,8 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 10. `copybot-discovery-runtime-export.timer`
 11. `copybot-discovery-recent-raw-snapshot.service`
 12. `copybot-discovery-recent-raw-snapshot.timer`
+13. `copybot-discovery-wallet-freshness-capture.service`
+14. `copybot-discovery-wallet-freshness-capture.timer`
 
 ## Recent Raw Snapshot Timer Contract
 
@@ -62,6 +64,34 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 11. `hard_failure` remains a real failure and should leave the service in the
    normal non-zero failed state.
 
+## Stage 3 Wallet Freshness Capture Timer Contract
+
+1. `copybot-discovery-wallet-freshness-capture.timer` is the operational Stage 3
+   evidence path. It exists only to accumulate persisted live-runtime captures
+   for `discovery_wallet_freshness_report`; it does not change execution,
+   restore, gap-fill, snapshot, or scoring semantics.
+2. Discovery refresh currently runs every `600s`, so the accepted Stage 3
+   capture cadence is a 15 minute capture cadence:
+   - not every refresh cycle, because that would mostly resample the same
+     bounded scoring window and add runtime cost without much new evidence
+   - not hourly, because Stage 3 recent-history validation would accumulate too
+     slowly to be operationally useful
+3. `copybot-discovery-wallet-freshness-capture.service` runs:
+   - `discovery_wallet_freshness_capture --config /etc/solana-copy-bot/live.server.toml --recent-cycles 3 --json`
+4. The service is explicitly bounded by `TimeoutStartSec=5min`, so the scheduled
+   path does not rely on an unbounded shell session.
+5. Operators should inspect capture failures with:
+   - `journalctl -u copybot-discovery-wallet-freshness-capture.service -n 20 --no-pager`
+6. Operators should inspect the accumulated Stage 3 verdict with:
+   - `discovery_wallet_freshness_report --config /etc/solana-copy-bot/live.server.toml --limit 5 --json`
+7. For recent-cycle validation, the important report fields are:
+   - `latest_capture_age_seconds`
+   - `captures_within_recent_horizon`
+   - `recent_horizon_seconds`
+   - `stale_captures_excluded_from_verdict`
+8. `execution.enabled = false` remains unchanged. This timer only accumulates
+   evidence for Stage 3 and must not be interpreted as execution activation.
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`
@@ -76,6 +106,8 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 10. `/etc/systemd/system/copybot-discovery-runtime-export.timer`
 11. `/etc/systemd/system/copybot-discovery-recent-raw-snapshot.service`
 12. `/etc/systemd/system/copybot-discovery-recent-raw-snapshot.timer`
+13. `/etc/systemd/system/copybot-discovery-wallet-freshness-capture.service`
+14. `/etc/systemd/system/copybot-discovery-wallet-freshness-capture.timer`
 
 ## Apply sequence
 
@@ -89,5 +121,6 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    4. `solana-copy-bot.service`
    5. `copybot-discovery-runtime-export.timer`
    6. `copybot-discovery-recent-raw-snapshot.timer`
+   7. `copybot-discovery-wallet-freshness-capture.timer`
 5. Run preflight sequence from `ROAD_TO_PRODUCTION.md` section `6.1`.
 6. Keep `ops/discovery_runtime_restore_runbook.md` on hand for the restore path and drill procedure.
