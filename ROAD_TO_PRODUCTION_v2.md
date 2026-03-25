@@ -1296,14 +1296,42 @@ Acceptance update (`2026-03-25`):
       prevent the same disk-full failure mode from recurring on the current
       host
 17. Current Stage 3 live status after recovery:
-    - `discovery_wallet_freshness_report --config /etc/solana-copy-bot/live.server.toml --json --limit 5`
-      currently still reports:
-      - `captures_loaded = 0`
-      - `verdict = insufficient_evidence`
-      - `reason = no_persisted_wallet_freshness_captures`
-    - this means the architecture is now in the right place, but live Stage 3
-      evidence still needs time to accumulate through the normal refresh /
-      publication path before Stage 3 can be called operationally closed
+    - `discovery_wallet_freshness_report --config /etc/solana-copy-bot/live.server.toml --json --limit 10`
+      now shows that in-band evidence is accumulating on the live path:
+      - `captures_loaded = 7`
+      - `captures_within_recent_horizon = 7`
+      - first persisted capture:
+        `2026-03-25T17:44:01.543908175+00:00`
+      - latest persisted capture:
+        `2026-03-25T18:48:01.541388757+00:00`
+      - current verdict still remains:
+        - `insufficient_evidence`
+        - `reason = recent_captures_include_missing_publication_truth`
+    - this means the Stage 3 plumbing is now live and honest, but discovery
+      truth itself is still fail-closed / incomplete until the raw window fully
+      covers the required scoring horizon
+18. Stage 3 evidence footprint and interference check (`2026-03-25`):
+    - persisted Stage 3 evidence is currently tiny relative to the live runtime
+      DB:
+      - `discovery_wallet_freshness_history` row count: `7`
+      - approximate JSON payload: `18.75 KiB`
+      - SQLite table footprint via `dbstat`: `32.0 KiB`
+    - recent raw accumulation continues in parallel while in-band capture is
+      enabled:
+      - `observed_swaps` advanced from:
+        - `rowid = 10151243`
+        - `ts = 2026-03-25T18:52:27.697467155+00:00`
+        - `slot = 408823514`
+      - to:
+        - `rowid = 10155054`
+        - `ts = 2026-03-25T18:53:02.879398891+00:00`
+        - `slot = 408823587`
+      - over roughly `35s`, i.e. `+3811` rows while the service continued to
+        log normal discovery cycles and in-band capture cadence
+    - practical reading:
+      - Stage 3 evidence storage is negligible
+      - it is not the thing filling disk
+      - current discovery/raw accumulation is still progressing alongside it
 
 Exit criteria:
 
@@ -1321,6 +1349,45 @@ Work:
 1. keep `execution.enabled = false` until Stage 3 is done
 2. validate adapter/execution path separately
 3. enable controlled tiny-live only after wallet selection is healthy
+
+Operator note:
+
+- Stage 4 preparation now has a dedicated readiness/preflight surface:
+  `copybot_execution_readiness_audit --config /etc/solana-copy-bot/live.server.toml --json`
+- This command does not enable execution and does not submit real trades.
+- It separates static contract validity from live reachability and answers
+  whether the current execution-side wiring is ready for a later dry-run
+  rehearsal or still blocked on adapter / signer / route / policy wiring.
+
+Acceptance update (`2026-03-25`):
+
+1. The first Stage 4 preparation surface is now landed in code:
+   - runnable operator command:
+     `crates/app/src/bin/copybot_execution_readiness_audit.rs`
+   - shared static contract classifier:
+     `crates/app/src/config_contract.rs`
+2. The audit now separates:
+   - `config_valid`
+   - `connectivity_valid`
+   - `adapter_contract_valid`
+   - `signer_contract_valid`
+   - `policy_contract_valid`
+   - `route_contract_valid`
+   - `ready_for_dry_run`
+   - `blocked_for_activation`
+3. The audit uses a safe adapter `action=simulate` probe and RPC reachability
+   checks only:
+   - it does not enable `execution.enabled`
+   - it does not submit real trades
+4. Accepted verification for this Stage 4 preparation slice:
+   - `cargo test -p copybot-app --bin copybot_execution_readiness_audit`
+   - `cargo test -p copybot-app validate_execution_runtime_contract -- --nocapture`
+5. Practical meaning:
+   - while Stage 3 accumulates live evidence, the team can now validate
+     execution-side wiring explicitly instead of guessing from ad-hoc shell
+     checks
+   - this still does not authorize activation; Stage 3 remains the gate before
+     any future tiny-live rehearsal discussion
 
 Exit criteria:
 

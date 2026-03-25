@@ -316,6 +316,7 @@ dependencies = [
  "copybot-storage",
  "reqwest",
  "rusqlite",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

@@ -9,8 +9,85 @@ use std::collections::{BTreeMap, HashSet};
 use tracing::info;
 use url::{Host, Url};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExecutionStaticContractAssessment {
+    pub mode: Option<String>,
+    pub mode_compatible: bool,
+    pub signer_contract_valid: bool,
+    pub adapter_contract_valid: bool,
+    pub policy_contract_valid: bool,
+    pub route_contract_valid: bool,
+    pub config_valid: bool,
+    pub mode_error: Option<String>,
+    pub signer_error: Option<String>,
+    pub adapter_error: Option<String>,
+    pub policy_error: Option<String>,
+    pub route_error: Option<String>,
+}
+
 pub(crate) fn contains_placeholder_value(value: &str) -> bool {
     value.to_ascii_uppercase().contains("REPLACE_ME")
+}
+
+pub(crate) fn assess_execution_static_contract(
+    config: &ExecutionConfig,
+    env: &str,
+) -> ExecutionStaticContractAssessment {
+    let mode = match validate_execution_mode_contract(config) {
+        Ok(mode) => mode,
+        Err(error) => {
+            return ExecutionStaticContractAssessment {
+                mode: None,
+                mode_compatible: false,
+                signer_contract_valid: false,
+                adapter_contract_valid: false,
+                policy_contract_valid: false,
+                route_contract_valid: false,
+                config_valid: false,
+                mode_error: Some(error.to_string()),
+                signer_error: None,
+                adapter_error: None,
+                policy_error: None,
+                route_error: None,
+            };
+        }
+    };
+
+    let signer_error = validate_signer_contract(config, mode.as_str())
+        .err()
+        .map(|error| error.to_string());
+    let adapter_error = validate_adapter_transport_contract(config, env, mode.as_str())
+        .err()
+        .map(|error| error.to_string());
+    let policy_error = validate_policy_contract(config, env, mode.as_str())
+        .err()
+        .map(|error| error.to_string());
+    let route_error = validate_routes_contract(config, env, mode.as_str())
+        .err()
+        .map(|error| error.to_string());
+
+    let signer_contract_valid = signer_error.is_none();
+    let adapter_contract_valid = adapter_error.is_none();
+    let policy_contract_valid = policy_error.is_none();
+    let route_contract_valid = route_error.is_none();
+
+    ExecutionStaticContractAssessment {
+        mode: Some(mode),
+        mode_compatible: true,
+        signer_contract_valid,
+        adapter_contract_valid,
+        policy_contract_valid,
+        route_contract_valid,
+        config_valid: signer_contract_valid
+            && adapter_contract_valid
+            && policy_contract_valid
+            && route_contract_valid,
+        mode_error: None,
+        signer_error,
+        adapter_error,
+        policy_error,
+        route_error,
+    }
 }
 
 pub(crate) fn validate_execution_runtime_contract(
@@ -21,10 +98,30 @@ pub(crate) fn validate_execution_runtime_contract(
         return Ok(());
     }
 
-    let mode = validate_execution_mode_contract(config)?;
-    validate_signer_contract(config, mode.as_str())?;
-    validate_adapter_contract(config, env, mode.as_str())?;
-    validate_routes_contract(config, env, mode.as_str())?;
+    let assessment = assess_execution_static_contract(config, env);
+    if !assessment.mode_compatible {
+        return Err(anyhow!(
+            "{}",
+            assessment
+                .mode_error
+                .unwrap_or_else(|| "execution mode contract incompatible".to_string())
+        ));
+    }
+    if let Some(error) = assessment.signer_error {
+        return Err(anyhow!("{error}"));
+    }
+    if let Some(error) = assessment.adapter_error {
+        return Err(anyhow!("{error}"));
+    }
+    if let Some(error) = assessment.policy_error {
+        return Err(anyhow!("{error}"));
+    }
+    if let Some(error) = assessment.route_error {
+        return Err(anyhow!("{error}"));
+    }
+    let mode = assessment
+        .mode
+        .unwrap_or_else(|| config.mode.trim().to_ascii_lowercase());
 
     if matches!(
         env.trim().to_ascii_lowercase().as_str(),
@@ -107,7 +204,11 @@ fn validate_signer_contract(config: &ExecutionConfig, mode: &str) -> Result<()> 
     Ok(())
 }
 
-fn validate_adapter_contract(config: &ExecutionConfig, env: &str, mode: &str) -> Result<()> {
+fn validate_adapter_transport_contract(
+    config: &ExecutionConfig,
+    env: &str,
+    mode: &str,
+) -> Result<()> {
     if mode != "adapter_submit_confirm" {
         return Ok(());
     }
@@ -174,7 +275,15 @@ fn validate_adapter_contract(config: &ExecutionConfig, env: &str, mode: &str) ->
             "execution.submit_adapter_contract_version must contain only [A-Za-z0-9._-]"
         ));
     }
-    if is_production_env_profile(env) && !config.submit_adapter_require_policy_echo {
+
+    Ok(())
+}
+
+fn validate_policy_contract(config: &ExecutionConfig, env: &str, mode: &str) -> Result<()> {
+    if mode == "adapter_submit_confirm"
+        && is_production_env_profile(env)
+        && !config.submit_adapter_require_policy_echo
+    {
         return Err(anyhow!(
             "execution.submit_adapter_require_policy_echo must be true in production-like environments when execution.mode=adapter_submit_confirm"
         ));

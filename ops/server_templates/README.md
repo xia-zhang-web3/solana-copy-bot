@@ -113,6 +113,35 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    the manual/debug command both collect evidence only; neither implies
    execution activation.
 
+## Stage 4 Execution Readiness Audit
+
+1. Stage 4 preparation now has a dedicated operator command:
+   - `copybot_execution_readiness_audit --config /etc/solana-copy-bot/live.server.toml --json`
+2. This command does not enable execution and does not submit real trades.
+3. It validates the execution-side contract separately from discovery:
+   - static execution config completeness
+   - signer / route / policy contract
+   - RPC reachability for the configured mode
+   - adapter dry-run contract via the existing `action=simulate` path
+4. The important top-level fields are:
+   - `verdict`
+   - `config_valid`
+   - `connectivity_valid`
+   - `adapter_contract_valid`
+   - `signer_contract_valid`
+   - `policy_contract_valid`
+   - `ready_for_dry_run`
+   - `blocked_for_activation`
+   - `activation_blockers`
+5. `ready_for_execution_dry_run` means the execution-side wiring is ready for a
+   later dress rehearsal, but it does not override the current Stage 3 gate:
+   `execution.enabled` must still remain `false` until discovery is trusted.
+6. `config_valid_but_connectivity_blocked` means static config is coherent but
+   RPC and/or adapter reachability is still not good enough even for a dry-run.
+7. `adapter_contract_incomplete`, `signer_contract_incomplete`, and
+   `policy_contract_incomplete` are pre-activation blockers and should be fixed
+   before any later tiny-live decision is even discussed.
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

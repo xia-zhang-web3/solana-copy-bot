@@ -2307,14 +2307,46 @@ Live config mitigation applied:
 Post-recovery state:
 
 - `/var/www/solana-copy-bot/state` returned to healthy headroom:
-  - `95G` used
-  - `372G` available
-  - `21%` used
+  - initially after emergency prune:
+    - `95G` used
+    - `372G` available
+    - `21%` used
+  - later steady-state check on `2026-03-25`:
+    - `150G` used
+    - `317G` available
+    - `32%` used
 - `solana-copy-bot.service = active`
 - `copybot-discovery-recent-raw-snapshot.timer = active`
 - `copybot-discovery-runtime-export.timer = active`
 - no long-running `discovery_runtime_restore` or standalone
   `discovery_wallet_freshness_capture` process was intentionally left behind
+
+Stage 3 follow-up checks on the recovered live host:
+
+- the accepted in-band Stage 3 evidence path is now actively accumulating
+  persisted captures inside the normal discovery refresh/publication cycle
+- `discovery_wallet_freshness_report --config /etc/solana-copy-bot/live.server.toml --json --limit 10`
+  showed:
+  - `captures_loaded = 7`
+  - `captures_within_recent_horizon = 7`
+  - latest verdict:
+    - `insufficient_evidence`
+    - `reason = recent_captures_include_missing_publication_truth`
+- the persisted evidence footprint is tiny:
+  - `discovery_wallet_freshness_history` approximate JSON payload:
+    `18.75 KiB`
+  - SQLite table footprint via `dbstat`:
+    `32.0 KiB`
+- current raw accumulation still advances alongside in-band Stage 3 capture:
+  - `observed_swaps` advanced from:
+    - `rowid = 10151243`
+    - `ts = 2026-03-25T18:52:27.697467155+00:00`
+    - `slot = 408823514`
+  - to:
+    - `rowid = 10155054`
+    - `ts = 2026-03-25T18:53:02.879398891+00:00`
+    - `slot = 408823587`
+  - over roughly `35s` (`+3811` rows)
 
 Reading:
 
