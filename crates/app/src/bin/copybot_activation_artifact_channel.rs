@@ -21,7 +21,7 @@ mod activation_artifact_bundle;
 mod activation_artifact_manifest;
 
 const USAGE: &str = "usage: copybot_activation_artifact_channel --archive-dir <path> --channel-dir <path> [--channel-name <name>] [--json] (--report | --verify | --promote --generation <id-or-rfc3339> [--manifest-path <path>] [--bundle-path <path>] [--allow-overwrite])";
-const DEFAULT_CHANNEL_NAME: &str = "current_review";
+pub(crate) const DEFAULT_CHANNEL_NAME: &str = "current_review";
 const CHANNEL_VERSION: &str = "1";
 
 fn main() -> Result<()> {
@@ -35,16 +35,16 @@ fn main() -> Result<()> {
 }
 
 #[derive(Debug, Clone)]
-struct Config {
-    archive_dir: PathBuf,
-    channel_dir: PathBuf,
-    channel_name: String,
-    json: bool,
-    mode: Mode,
+pub(crate) struct Config {
+    pub(crate) archive_dir: PathBuf,
+    pub(crate) channel_dir: PathBuf,
+    pub(crate) channel_name: String,
+    pub(crate) json: bool,
+    pub(crate) mode: Mode,
 }
 
 #[derive(Debug, Clone)]
-enum Mode {
+pub(crate) enum Mode {
     Report,
     Verify,
     Promote {
@@ -57,7 +57,7 @@ enum Mode {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ArtifactChannelVerdict {
+pub(crate) enum ArtifactChannelVerdict {
     ArtifactChannelOk,
     ArtifactChannelMissingTarget,
     ArtifactChannelInconsistent,
@@ -93,39 +93,39 @@ struct ActivationArtifactChannelMetadata {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ArtifactChannelReport {
-    mode: String,
-    verdict: ArtifactChannelVerdict,
-    reason: String,
-    archive_dir: String,
-    channel_dir: String,
-    channel_name: String,
-    channel_metadata_path: String,
-    channel_metadata_exists: bool,
-    promotion_happened: bool,
-    overwrite_used: bool,
-    selected_generation_id: Option<String>,
-    decision_packet_generated_at: Option<DateTime<Utc>>,
-    prod_config_fingerprint_sha256: Option<String>,
-    non_prod_config_fingerprint_sha256: Option<String>,
-    decision_packet_paths: Vec<String>,
-    runbook_json_paths: Vec<String>,
-    runbook_markdown_paths: Vec<String>,
-    manifest_path: Option<String>,
-    bundle_path: Option<String>,
-    latest_packet_verdict: Option<String>,
-    latest_runbook_verdict: Option<String>,
-    promoted_at: Option<DateTime<Utc>>,
-    manifest_verification_verdict: Option<String>,
-    bundle_verification_verdict: Option<String>,
-    archive_invalid_artifact_count: usize,
-    invalid_artifacts: Vec<activation_artifact_archive::InvalidArtifact>,
-    missing_paths: Vec<String>,
-    inconsistencies: Vec<String>,
-    channel_metadata_only: bool,
-    execution_untouched: bool,
-    activation_authorized: bool,
-    not_authorized_summary: String,
+pub(crate) struct ArtifactChannelReport {
+    pub(crate) mode: String,
+    pub(crate) verdict: ArtifactChannelVerdict,
+    pub(crate) reason: String,
+    pub(crate) archive_dir: String,
+    pub(crate) channel_dir: String,
+    pub(crate) channel_name: String,
+    pub(crate) channel_metadata_path: String,
+    pub(crate) channel_metadata_exists: bool,
+    pub(crate) promotion_happened: bool,
+    pub(crate) overwrite_used: bool,
+    pub(crate) selected_generation_id: Option<String>,
+    pub(crate) decision_packet_generated_at: Option<DateTime<Utc>>,
+    pub(crate) prod_config_fingerprint_sha256: Option<String>,
+    pub(crate) non_prod_config_fingerprint_sha256: Option<String>,
+    pub(crate) decision_packet_paths: Vec<String>,
+    pub(crate) runbook_json_paths: Vec<String>,
+    pub(crate) runbook_markdown_paths: Vec<String>,
+    pub(crate) manifest_path: Option<String>,
+    pub(crate) bundle_path: Option<String>,
+    pub(crate) latest_packet_verdict: Option<String>,
+    pub(crate) latest_runbook_verdict: Option<String>,
+    pub(crate) promoted_at: Option<DateTime<Utc>>,
+    pub(crate) manifest_verification_verdict: Option<String>,
+    pub(crate) bundle_verification_verdict: Option<String>,
+    pub(crate) archive_invalid_artifact_count: usize,
+    pub(crate) invalid_artifacts: Vec<activation_artifact_archive::InvalidArtifact>,
+    pub(crate) missing_paths: Vec<String>,
+    pub(crate) inconsistencies: Vec<String>,
+    pub(crate) channel_metadata_only: bool,
+    pub(crate) execution_untouched: bool,
+    pub(crate) activation_authorized: bool,
+    pub(crate) not_authorized_summary: String,
 }
 
 #[derive(Debug, Clone)]
@@ -274,7 +274,10 @@ fn run(config: Config) -> Result<String> {
     }
 }
 
-fn inspect_channel(config: &Config, verify_references: bool) -> Result<ArtifactChannelReport> {
+pub(crate) fn inspect_channel(
+    config: &Config,
+    verify_references: bool,
+) -> Result<ArtifactChannelReport> {
     let metadata_path = channel_metadata_path(&config.channel_dir, &config.channel_name);
     if !metadata_path.exists() {
         return Ok(ArtifactChannelReport {
@@ -572,7 +575,7 @@ fn inspect_channel(config: &Config, verify_references: bool) -> Result<ArtifactC
     ))
 }
 
-fn promote_channel(
+pub(crate) fn promote_channel(
     config: &Config,
     generation_selector: &str,
     manifest_path: Option<&Path>,

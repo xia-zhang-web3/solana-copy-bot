@@ -27,6 +27,30 @@ mod activation_decision_packet;
 mod activation_runbook;
 
 const USAGE: &str = "usage: copybot_activation_artifact_publish --config <prod-path> --non-prod-config <path> --archive-dir <path> [--json] [--manifest-output <path>] [--bundle-output-dir <path>] [--note <text>] [--now <rfc3339>] [--stage3-limit <count>] [--stage3-recent-horizon-seconds <seconds>] [--rehearsal-limit <count>] [--rehearsal-recent-horizon-seconds <seconds>] [--min-recent-acceptable-rehearsals <count>] [--non-prod-limit <count>] [--non-prod-dress-recent-horizon-seconds <seconds>] [--non-prod-activation-recent-horizon-seconds <seconds>] [--non-prod-min-recent-green-dress <count>] [--non-prod-min-recent-green-activation <count>]";
+#[allow(dead_code)]
+pub(crate) const DEFAULT_REHEARSAL_HISTORY_LIMIT: usize =
+    activation_decision_packet::activation_checklist_report::DEFAULT_REHEARSAL_HISTORY_LIMIT;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_REHEARSAL_RECENT_HORIZON_SECONDS: u64 =
+    activation_decision_packet::activation_checklist_report::DEFAULT_REHEARSAL_RECENT_HORIZON_SECONDS;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_MIN_RECENT_ACCEPTABLE_REHEARSALS: usize =
+    activation_decision_packet::activation_checklist_report::DEFAULT_MIN_RECENT_ACCEPTABLE_REHEARSALS;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_NON_PROD_HISTORY_LIMIT: usize =
+    activation_decision_packet::activation_checklist_report::DEFAULT_NON_PROD_HISTORY_LIMIT;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_NON_PROD_DRESS_RECENT_HORIZON_SECONDS: u64 =
+    activation_decision_packet::activation_checklist_report::DEFAULT_NON_PROD_DRESS_RECENT_HORIZON_SECONDS;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_NON_PROD_ACTIVATION_RECENT_HORIZON_SECONDS: u64 =
+    activation_decision_packet::activation_checklist_report::DEFAULT_NON_PROD_ACTIVATION_RECENT_HORIZON_SECONDS;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_NON_PROD_MIN_RECENT_GREEN_DRESS: usize =
+    activation_decision_packet::activation_checklist_report::DEFAULT_NON_PROD_MIN_RECENT_GREEN_DRESS;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_NON_PROD_MIN_RECENT_GREEN_ACTIVATION: usize =
+    activation_decision_packet::activation_checklist_report::DEFAULT_NON_PROD_MIN_RECENT_GREEN_ACTIVATION;
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -43,30 +67,30 @@ fn main() -> Result<()> {
 }
 
 #[derive(Debug, Clone)]
-struct Config {
-    config_path: PathBuf,
-    non_prod_config_path: PathBuf,
-    archive_dir: PathBuf,
-    json: bool,
-    manifest_output_path: Option<PathBuf>,
-    bundle_output_dir: Option<PathBuf>,
-    note: Option<String>,
-    now: DateTime<Utc>,
-    stage3_limit: usize,
-    stage3_recent_horizon_seconds: Option<u64>,
-    rehearsal_limit: usize,
-    rehearsal_recent_horizon_seconds: u64,
-    min_recent_acceptable_rehearsals: usize,
-    non_prod_limit: usize,
-    non_prod_dress_recent_horizon_seconds: u64,
-    non_prod_activation_recent_horizon_seconds: u64,
-    non_prod_min_recent_green_dress: usize,
-    non_prod_min_recent_green_activation: usize,
+pub(crate) struct Config {
+    pub(crate) config_path: PathBuf,
+    pub(crate) non_prod_config_path: PathBuf,
+    pub(crate) archive_dir: PathBuf,
+    pub(crate) json: bool,
+    pub(crate) manifest_output_path: Option<PathBuf>,
+    pub(crate) bundle_output_dir: Option<PathBuf>,
+    pub(crate) note: Option<String>,
+    pub(crate) now: DateTime<Utc>,
+    pub(crate) stage3_limit: usize,
+    pub(crate) stage3_recent_horizon_seconds: Option<u64>,
+    pub(crate) rehearsal_limit: usize,
+    pub(crate) rehearsal_recent_horizon_seconds: u64,
+    pub(crate) min_recent_acceptable_rehearsals: usize,
+    pub(crate) non_prod_limit: usize,
+    pub(crate) non_prod_dress_recent_horizon_seconds: u64,
+    pub(crate) non_prod_activation_recent_horizon_seconds: u64,
+    pub(crate) non_prod_min_recent_green_dress: usize,
+    pub(crate) non_prod_min_recent_green_activation: usize,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ArtifactPublishVerdict {
+pub(crate) enum ArtifactPublishVerdict {
     ArtifactPublishSucceeded,
     ArtifactPublishBlockedByChecklist,
     ArtifactPublishBlockedByInvalidArchiveState,
@@ -75,42 +99,42 @@ enum ArtifactPublishVerdict {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ArtifactPublishReport {
-    mode: String,
-    verdict: ArtifactPublishVerdict,
-    reason: String,
-    config_path: String,
-    non_prod_config_path: String,
-    archive_dir: String,
-    generation_id: Option<String>,
-    generation_directory: Option<String>,
-    packet_path: Option<String>,
-    runbook_json_path: Option<String>,
-    runbook_markdown_path: Option<String>,
-    manifest_path: Option<String>,
-    bundle_path: Option<String>,
-    decision_packet_verdict: Option<String>,
-    checklist_verdict: Option<String>,
-    archive_invalid_artifact_count: usize,
-    manifest_generated: bool,
-    bundle_exported: bool,
-    manifest_output_cleaned: bool,
-    bundle_output_cleaned: bool,
-    read_only_source_config: bool,
-    activation_authorized: bool,
-    not_authorized_summary: String,
+pub(crate) struct ArtifactPublishReport {
+    pub(crate) mode: String,
+    pub(crate) verdict: ArtifactPublishVerdict,
+    pub(crate) reason: String,
+    pub(crate) config_path: String,
+    pub(crate) non_prod_config_path: String,
+    pub(crate) archive_dir: String,
+    pub(crate) generation_id: Option<String>,
+    pub(crate) generation_directory: Option<String>,
+    pub(crate) packet_path: Option<String>,
+    pub(crate) runbook_json_path: Option<String>,
+    pub(crate) runbook_markdown_path: Option<String>,
+    pub(crate) manifest_path: Option<String>,
+    pub(crate) bundle_path: Option<String>,
+    pub(crate) decision_packet_verdict: Option<String>,
+    pub(crate) checklist_verdict: Option<String>,
+    pub(crate) archive_invalid_artifact_count: usize,
+    pub(crate) manifest_generated: bool,
+    pub(crate) bundle_exported: bool,
+    pub(crate) manifest_output_cleaned: bool,
+    pub(crate) bundle_output_cleaned: bool,
+    pub(crate) read_only_source_config: bool,
+    pub(crate) activation_authorized: bool,
+    pub(crate) not_authorized_summary: String,
 }
 
 #[derive(Debug, Clone)]
-struct PreparedGeneration {
-    generated_at: DateTime<Utc>,
-    prod_config_fingerprint_sha256: String,
-    non_prod_config_fingerprint_sha256: String,
-    decision_packet_verdict: String,
-    checklist_verdict: String,
-    packet_json: String,
-    runbook_json: String,
-    runbook_markdown: String,
+pub(crate) struct PreparedGeneration {
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) prod_config_fingerprint_sha256: String,
+    pub(crate) non_prod_config_fingerprint_sha256: String,
+    pub(crate) decision_packet_verdict: String,
+    pub(crate) checklist_verdict: String,
+    pub(crate) packet_json: String,
+    pub(crate) runbook_json: String,
+    pub(crate) runbook_markdown: String,
 }
 
 #[derive(Debug, Clone)]
@@ -292,7 +316,7 @@ async fn run(config: Config) -> Result<String> {
     }
 }
 
-async fn evaluate_publish(config: &Config) -> Result<ArtifactPublishReport> {
+pub(crate) async fn evaluate_publish(config: &Config) -> Result<ArtifactPublishReport> {
     let packet = activation_decision_packet::evaluate_activation_decision_packet(
         &activation_decision_packet::Config {
             config_path: config.config_path.clone(),
@@ -428,7 +452,7 @@ async fn evaluate_publish(config: &Config) -> Result<ArtifactPublishReport> {
     publish_prepared_generation(config, prepared)
 }
 
-fn publish_prepared_generation(
+pub(crate) fn publish_prepared_generation(
     config: &Config,
     prepared: PreparedGeneration,
 ) -> Result<ArtifactPublishReport> {

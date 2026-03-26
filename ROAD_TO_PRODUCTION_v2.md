@@ -1987,6 +1987,40 @@ Acceptance update (`2026-03-26`, activation artifact channel/latest-pointer mana
 7. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_channel`
 
+Acceptance update (`2026-03-26`, activation artifact release flow):
+
+1. The repo now also has one bounded artifact release flow over publish plus
+   optional channel promotion:
+   - publish only:
+     `copybot_activation_artifact_release --config /etc/solana-copy-bot/live.server.toml --non-prod-config /etc/solana-copy-bot/devnet.server.toml --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --manifest-output /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest/latest.json --bundle-output-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles/review-2026-03-26T12-00-00Z --json`
+   - publish plus promote:
+     `copybot_activation_artifact_release --config /etc/solana-copy-bot/live.server.toml --non-prod-config /etc/solana-copy-bot/devnet.server.toml --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --manifest-output /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest/latest.json --bundle-output-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles/review-2026-03-26T12-00-00Z --promote-channel --channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --allow-channel-overwrite --json`
+2. The new flow reuses the accepted publish and channel surfaces rather than
+   duplicating artifact logic:
+   - it writes at most one new packet-backed review generation
+   - it may optionally promote `current_review` channel metadata under explicit
+     `--channel-dir`
+   - it does not rewrite unrelated archive generations or delete anything
+3. Partial-success semantics stay explicit:
+   - if publish does not complete cleanly, channel promotion is not attempted
+   - if publish succeeds but channel promotion is blocked, the report remains
+     non-green while still surfacing the published generation
+   - no raw post-publish channel error is allowed to masquerade as a clean
+     release
+4. Important release verdicts:
+   - `artifact_release_published`
+   - `artifact_release_published_and_promoted`
+   - `artifact_release_publish_failed`
+   - `artifact_release_channel_promote_blocked`
+   - `artifact_release_failed`
+5. Practical meaning:
+   - operators no longer need to run publish and channel promotion as separate
+     manual steps
+   - this is still artifact workflow only and does not authorize activation or
+     override the Stage 3 prod gate
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_release`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

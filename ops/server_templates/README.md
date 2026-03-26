@@ -776,6 +776,38 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not authorize production activation or override the Stage 3 prod
      gate
 
+## Activation Artifact Release
+
+1. Operators now also have one bounded release flow over publish + optional
+   channel promotion:
+   - publish only:
+     `copybot_activation_artifact_release --config /etc/solana-copy-bot/live.server.toml --non-prod-config /etc/solana-copy-bot/devnet.server.toml --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --manifest-output /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest/latest.json --bundle-output-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles/review-2026-03-26T12-00-00Z --json`
+   - publish and promote current review channel:
+     `copybot_activation_artifact_release --config /etc/solana-copy-bot/live.server.toml --non-prod-config /etc/solana-copy-bot/devnet.server.toml --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --manifest-output /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest/latest.json --bundle-output-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles/review-2026-03-26T12-00-00Z --promote-channel --channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --allow-channel-overwrite --json`
+2. This flow stays artifact-only and bounded:
+   - it may publish one new review generation
+   - it may optionally update explicit channel metadata under `--channel-dir`
+   - it does not enable `execution.enabled`
+   - it does not mutate live config
+   - it does not restart services
+   - it does not delete archive generations or rewrite unrelated artifacts
+3. Partial-success semantics stay honest:
+   - if publish does not complete cleanly, channel promotion is not attempted
+   - if publish succeeds but channel promotion is blocked, the report stays
+     non-green and still shows the published generation paths
+   - existing generation directories and existing channel metadata are not
+     overwritten silently
+4. Important release verdicts:
+   - `artifact_release_published`
+   - `artifact_release_published_and_promoted`
+   - `artifact_release_publish_failed`
+   - `artifact_release_channel_promote_blocked`
+   - `artifact_release_failed`
+5. This is still artifact workflow only:
+   - it does not authorize production activation
+   - it does not override the Stage 3 prod gate
+   - it does not change live trading state
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`
