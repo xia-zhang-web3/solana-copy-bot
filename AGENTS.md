@@ -1,0 +1,225 @@
+# AGENTS.md
+
+This file describes the working contract for AI-assisted development in this repository.
+
+It is intentionally operational and specific to how this project is being run.
+
+## Purpose
+
+Use this file to keep future AI sessions consistent when work is moved to another machine or another session.
+
+The project uses a two-step AI workflow:
+
+1. A coding worker implements one bounded batch.
+2. A reviewer/operator audits that batch, reruns tests, accepts or rejects it, and only then commits, pushes, or deploys it.
+
+This split is deliberate. It reduces silent semantic regressions and keeps roadmap progress disciplined.
+
+## Roles
+
+There are three actors.
+
+### User
+
+- Sets priorities.
+- Decides when to move to the next roadmap batch.
+- Decides when to deploy to the server.
+
+### Coding Worker
+
+- Implements exactly one bounded batch at a time.
+- Does not self-approve its own work.
+- Reports what changed, what was tested, and what was intentionally not touched.
+
+### Reviewer / Operator
+
+- Reads the diff.
+- Reruns relevant tests.
+- Looks for semantic blockers, not just compile/test success.
+- Rejects batches when the contract is wrong.
+- Writes the next corrective prompt when needed.
+- If accepted, updates docs, commits, pushes, and performs server rollout checks when requested.
+
+## Default Workflow
+
+This is the standard loop.
+
+1. Pick the next bounded batch from `ROAD_TO_PRODUCTION_v2.md`.
+2. Write one explicit batch prompt for the coding worker.
+3. Worker implements only that batch.
+4. Worker returns:
+   - what changed
+   - what files were touched
+   - what tests were run
+   - what was intentionally not touched
+5. Reviewer audits the batch.
+6. If blocked:
+   - reviewer rejects it
+   - reviewer provides an exact follow-up prompt for the missing/correctness issue
+7. If accepted:
+   - reviewer updates docs if needed
+   - reviewer commits only the relevant files
+   - reviewer pushes to `main`
+   - reviewer deploys to the server only if the batch actually needs rollout
+
+## Prompt Style For Coding Batches
+
+Batch prompts should be large enough to move the roadmap, but still bounded.
+
+Each prompt should include:
+
+- the exact roadmap goal
+- the branches or areas that must not be touched
+- hard safety constraints
+- required operator command(s)
+- required test coverage
+- acceptance criteria
+- expected result
+
+Every prompt should explicitly say what is out of scope.
+
+Typical out-of-scope constraints in this repo:
+
+- do not touch restore / gap-fill / snapshot branches unless that is the batch
+- do not touch `scoring_window_days`
+- do not enable `execution.enabled`
+- do not submit real trades on production
+- do not let non-prod evidence override Stage 3 production gate
+
+## Review Standard
+
+Never accept a batch from the worker summary alone.
+
+The reviewer must do all of the following before acceptance:
+
+1. Read the relevant diff.
+2. Rerun the claimed tests.
+3. Inspect the critical semantic paths manually.
+4. Decide whether the implementation matches the contract, not just whether tests pass.
+
+The reviewer should reject for:
+
+- false green conditions
+- stale evidence being treated as current
+- production safety holes
+- hidden config reuse across prod/non-prod boundaries
+- contracts that look good in docs but are not actually enforced in code
+- incomplete rollback semantics
+- missing recency handling
+
+When rejecting a batch:
+
+- list the blockers clearly
+- cite the affected file(s)
+- provide a precise corrective prompt
+
+## Commit And Push Rules
+
+The reviewer commits and pushes accepted batches.
+
+Rules:
+
+- commit only the files belonging to the accepted batch
+- do not accidentally commit unrelated work
+- do not commit scratch directories such as `.tmp/`
+- use short, descriptive commit messages
+
+If unrelated local changes exist, leave them alone unless the user explicitly asks otherwise.
+
+## Server Rollout Rules
+
+Do not deploy every accepted batch.
+
+Roll out only when the batch affects:
+
+- live runtime behavior
+- server-side operators
+- systemd units
+- scheduled jobs
+- production diagnostics needed immediately
+
+Server work should follow this pattern:
+
+1. Check current service state first.
+2. Deploy the specific accepted batch only.
+3. Rebuild only the needed binaries.
+4. If systemd units changed:
+   - copy unit files
+   - `daemon-reload`
+   - restart or re-enable only the affected unit
+5. Verify live behavior after rollout.
+
+For live verification, prefer explicit checks such as:
+
+- `systemctl is-active`
+- `systemctl status --no-pager`
+- `journalctl`
+- disk usage checks
+- archive count / retention checks
+- bounded functional checks against the live binary
+
+## Documentation Rules
+
+Use the project docs as the persistent memory layer.
+
+Primary docs:
+
+- `ROAD_TO_PRODUCTION_v2.md`
+- `DISCOVERY_RUNTIME_RESTORE_PLAN_2026-03-23.md`
+- `ops/server_templates/README.md`
+
+Update them when:
+
+- a roadmap batch is accepted
+- a live operational incident occurs
+- server behavior materially changes
+- an operator command becomes primary, deprecated, or removed
+
+Use them to record facts, not vague status language.
+
+## Project-Specific Decision Hierarchy
+
+The following hierarchy must remain true unless the user explicitly changes the project plan.
+
+1. Stage 3 production discovery truth is the hard gate.
+2. Stage 4 planning-safe execution and policy surfaces do not override Stage 3.
+3. Non-prod drills and devnet evidence do not authorize production activation.
+4. Planning-safe green never means "turn on trading now".
+
+In short:
+
+- prod discovery truth first
+- bounded launch dossier second
+- non-prod rehearsal evidence third
+- manual activation decision only after all of the above
+
+## Current Working Style
+
+The project currently operates like this:
+
+- user asks for the next roadmap step
+- reviewer writes the batch prompt
+- coding worker implements it
+- reviewer audits and accepts/rejects
+- reviewer commits and pushes accepted work
+- server rollout happens only when it is actually needed
+
+This is the expected style for future sessions too.
+
+## Practical Notes
+
+- Keep answers concise and factual.
+- Prefer exact operator surfaces over log archaeology.
+- Prefer explicit bounded contracts over hidden defaults.
+- Prefer one accepted architecture over multiple competing legacy paths.
+- When a batch is accepted but not needed on the server yet, do not roll it out just because it exists.
+
+## If A New Session Starts Elsewhere
+
+A new AI session should:
+
+1. Read this file first.
+2. Read `ROAD_TO_PRODUCTION_v2.md`.
+3. Check the current git status and latest commits.
+4. Continue using the same worker-reviewer workflow.
+5. Avoid changing the process unless the user explicitly asks for a different one.
