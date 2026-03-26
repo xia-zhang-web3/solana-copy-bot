@@ -36,22 +36,22 @@ fn main() -> Result<()> {
 }
 
 #[derive(Debug, Clone)]
-struct Config {
-    review_archive_dir: PathBuf,
-    review_manifest_dir: PathBuf,
-    review_bundle_dir: PathBuf,
-    review_channel_dir: PathBuf,
-    review_channel_name: String,
-    release_archive_dir: PathBuf,
-    release_history_dir: PathBuf,
-    latest_pointer_dir: PathBuf,
-    latest_pointer_name: String,
-    json: bool,
+pub(crate) struct Config {
+    pub(crate) review_archive_dir: PathBuf,
+    pub(crate) review_manifest_dir: PathBuf,
+    pub(crate) review_bundle_dir: PathBuf,
+    pub(crate) review_channel_dir: PathBuf,
+    pub(crate) review_channel_name: String,
+    pub(crate) release_archive_dir: PathBuf,
+    pub(crate) release_history_dir: PathBuf,
+    pub(crate) latest_pointer_dir: PathBuf,
+    pub(crate) latest_pointer_name: String,
+    pub(crate) json: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ArtifactStateVerdict {
+pub(crate) enum ArtifactStateVerdict {
     ArtifactStateCoherent,
     ArtifactStateIncomplete,
     ArtifactStateInvalidArtifactsPresent,
@@ -60,129 +60,129 @@ enum ArtifactStateVerdict {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct CurrentReviewGenerationSummary {
-    channel_verdict: String,
-    channel_reason: String,
-    channel_metadata_path: String,
-    selected_generation_id: Option<String>,
-    decision_packet_generated_at: Option<DateTime<Utc>>,
-    prod_config_fingerprint_sha256: Option<String>,
-    non_prod_config_fingerprint_sha256: Option<String>,
-    manifest_verification_verdict: Option<String>,
-    bundle_verification_verdict: Option<String>,
-    missing_paths: Vec<String>,
-    inconsistencies: Vec<String>,
+pub(crate) struct CurrentReviewGenerationSummary {
+    pub(crate) channel_verdict: String,
+    pub(crate) channel_reason: String,
+    pub(crate) channel_metadata_path: String,
+    pub(crate) selected_generation_id: Option<String>,
+    pub(crate) decision_packet_generated_at: Option<DateTime<Utc>>,
+    pub(crate) prod_config_fingerprint_sha256: Option<String>,
+    pub(crate) non_prod_config_fingerprint_sha256: Option<String>,
+    pub(crate) manifest_verification_verdict: Option<String>,
+    pub(crate) bundle_verification_verdict: Option<String>,
+    pub(crate) missing_paths: Vec<String>,
+    pub(crate) inconsistencies: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct CurrentLatestReleaseSummary {
-    pointer_verdict: String,
-    pointer_reason: String,
-    latest_pointer_path: Option<String>,
-    persisted_release_artifact_path: Option<String>,
-    release_verdict: Option<String>,
-    generation_id: Option<String>,
-    released_at: Option<DateTime<Utc>>,
-    released_at_source: Option<String>,
-    compat_loaded_without_released_at: bool,
-    deterministic_timestamp_available: bool,
-    ordered_history_confident: bool,
-    target_exists: bool,
-    target_matches_identity: bool,
-    missing_paths: Vec<String>,
-    inconsistencies: Vec<String>,
+pub(crate) struct CurrentLatestReleaseSummary {
+    pub(crate) pointer_verdict: String,
+    pub(crate) pointer_reason: String,
+    pub(crate) latest_pointer_path: Option<String>,
+    pub(crate) persisted_release_artifact_path: Option<String>,
+    pub(crate) release_verdict: Option<String>,
+    pub(crate) generation_id: Option<String>,
+    pub(crate) released_at: Option<DateTime<Utc>>,
+    pub(crate) released_at_source: Option<String>,
+    pub(crate) compat_loaded_without_released_at: bool,
+    pub(crate) deterministic_timestamp_available: bool,
+    pub(crate) ordered_history_confident: bool,
+    pub(crate) target_exists: bool,
+    pub(crate) target_matches_identity: bool,
+    pub(crate) missing_paths: Vec<String>,
+    pub(crate) inconsistencies: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct SelectionAlignmentSummary {
-    selections_match: bool,
-    summary: String,
+pub(crate) struct SelectionAlignmentSummary {
+    pub(crate) selections_match: bool,
+    pub(crate) summary: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ReviewProvenanceStateSummary {
-    verdict: String,
-    reason: String,
-    archive_generation_count: usize,
-    manifest_file_count: usize,
-    bundle_manifest_count: usize,
-    complete_generation_count: usize,
-    incomplete_generation_count: usize,
-    invalid_artifact_count: usize,
+pub(crate) struct ReviewProvenanceStateSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) archive_generation_count: usize,
+    pub(crate) manifest_file_count: usize,
+    pub(crate) bundle_manifest_count: usize,
+    pub(crate) complete_generation_count: usize,
+    pub(crate) incomplete_generation_count: usize,
+    pub(crate) invalid_artifact_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ReleaseProvenanceStateSummary {
-    verdict: String,
-    reason: String,
-    archive_release_count: usize,
-    history_release_count: usize,
-    latest_pointer_present: bool,
-    latest_pointer_selected_generation_id: Option<String>,
-    latest_pointer_relation: String,
-    latest_archive_generation_id: Option<String>,
-    latest_history_generation_id: Option<String>,
-    archive_releases_missing_from_history_count: usize,
-    history_releases_missing_from_archive_count: usize,
-    invalid_artifact_count: usize,
-    ambiguous_timestamp_count: usize,
+pub(crate) struct ReleaseProvenanceStateSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) archive_release_count: usize,
+    pub(crate) history_release_count: usize,
+    pub(crate) latest_pointer_present: bool,
+    pub(crate) latest_pointer_selected_generation_id: Option<String>,
+    pub(crate) latest_pointer_relation: String,
+    pub(crate) latest_archive_generation_id: Option<String>,
+    pub(crate) latest_history_generation_id: Option<String>,
+    pub(crate) archive_releases_missing_from_history_count: usize,
+    pub(crate) history_releases_missing_from_archive_count: usize,
+    pub(crate) invalid_artifact_count: usize,
+    pub(crate) ambiguous_timestamp_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct LinkageStateSummary {
-    verdict: String,
-    reason: String,
-    release_artifact_count_examined: usize,
-    linked_generation_count: usize,
-    missing_generation_ref_count: usize,
-    missing_packet_ref_count: usize,
-    missing_runbook_ref_count: usize,
-    invalid_artifact_count: usize,
-    ambiguous_legacy_reference_count: usize,
-    latest_selected_release_linkage_verdict: Option<String>,
-    latest_selected_release_linkage_reason: Option<String>,
-    latest_selected_generation_id: Option<String>,
-    latest_target_exists: bool,
-    latest_target_matches_identity: bool,
-    latest_linked_generation_present: bool,
-    review_channel_selected_generation_id: Option<String>,
-    review_channel_matches_latest_selection: bool,
-    review_channel_divergence_summary: Option<String>,
+pub(crate) struct LinkageStateSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) release_artifact_count_examined: usize,
+    pub(crate) linked_generation_count: usize,
+    pub(crate) missing_generation_ref_count: usize,
+    pub(crate) missing_packet_ref_count: usize,
+    pub(crate) missing_runbook_ref_count: usize,
+    pub(crate) invalid_artifact_count: usize,
+    pub(crate) ambiguous_legacy_reference_count: usize,
+    pub(crate) latest_selected_release_linkage_verdict: Option<String>,
+    pub(crate) latest_selected_release_linkage_reason: Option<String>,
+    pub(crate) latest_selected_generation_id: Option<String>,
+    pub(crate) latest_target_exists: bool,
+    pub(crate) latest_target_matches_identity: bool,
+    pub(crate) latest_linked_generation_present: bool,
+    pub(crate) review_channel_selected_generation_id: Option<String>,
+    pub(crate) review_channel_matches_latest_selection: bool,
+    pub(crate) review_channel_divergence_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ArtifactStateReport {
-    mode: String,
-    verdict: ArtifactStateVerdict,
-    reason: String,
-    review_archive_dir: String,
-    review_manifest_dir: String,
-    review_bundle_dir: String,
-    review_channel_dir: String,
-    review_channel_name: String,
-    release_archive_dir: String,
-    release_history_dir: String,
-    latest_pointer_dir: String,
-    latest_pointer_name: String,
-    current_review_generation: CurrentReviewGenerationSummary,
-    current_latest_release: CurrentLatestReleaseSummary,
-    selection_alignment: SelectionAlignmentSummary,
-    review_provenance: ReviewProvenanceStateSummary,
-    release_provenance: ReleaseProvenanceStateSummary,
-    linkage: LinkageStateSummary,
-    ambiguous_legacy_count: usize,
-    coherent_for_review_operations: bool,
-    artifact_state_only: bool,
-    execution_untouched: bool,
-    activation_authorized: bool,
-    not_authorized_summary: String,
+pub(crate) struct ArtifactStateReport {
+    pub(crate) mode: String,
+    pub(crate) verdict: ArtifactStateVerdict,
+    pub(crate) reason: String,
+    pub(crate) review_archive_dir: String,
+    pub(crate) review_manifest_dir: String,
+    pub(crate) review_bundle_dir: String,
+    pub(crate) review_channel_dir: String,
+    pub(crate) review_channel_name: String,
+    pub(crate) release_archive_dir: String,
+    pub(crate) release_history_dir: String,
+    pub(crate) latest_pointer_dir: String,
+    pub(crate) latest_pointer_name: String,
+    pub(crate) current_review_generation: CurrentReviewGenerationSummary,
+    pub(crate) current_latest_release: CurrentLatestReleaseSummary,
+    pub(crate) selection_alignment: SelectionAlignmentSummary,
+    pub(crate) review_provenance: ReviewProvenanceStateSummary,
+    pub(crate) release_provenance: ReleaseProvenanceStateSummary,
+    pub(crate) linkage: LinkageStateSummary,
+    pub(crate) ambiguous_legacy_count: usize,
+    pub(crate) coherent_for_review_operations: bool,
+    pub(crate) artifact_state_only: bool,
+    pub(crate) execution_untouched: bool,
+    pub(crate) activation_authorized: bool,
+    pub(crate) not_authorized_summary: String,
 }
 
 fn parse_args() -> Result<Option<Config>> {
     parse_args_from(env::args().skip(1))
 }
 
-fn parse_args_from<I>(args: I) -> Result<Option<Config>>
+pub(crate) fn parse_args_from<I>(args: I) -> Result<Option<Config>>
 where
     I: IntoIterator<Item = String>,
 {
@@ -299,7 +299,7 @@ fn parse_name(value: String) -> Result<String> {
 }
 
 fn run(config: Config) -> Result<String> {
-    let report = build_report(&config)?;
+    let report = inspect_state_report(&config)?;
     if config.json {
         Ok(serde_json::to_string_pretty(&report)?)
     } else {
@@ -307,7 +307,7 @@ fn run(config: Config) -> Result<String> {
     }
 }
 
-fn build_report(config: &Config) -> Result<ArtifactStateReport> {
+pub(crate) fn inspect_state_report(config: &Config) -> Result<ArtifactStateReport> {
     let channel_report = activation_artifact_channel::inspect_channel(
         &activation_artifact_channel::Config {
             archive_dir: config.review_archive_dir.clone(),
@@ -571,6 +571,18 @@ fn build_report(config: &Config) -> Result<ArtifactStateReport> {
     })
 }
 
+impl ArtifactStateReport {
+    pub(crate) fn selected_review_generation_id(&self) -> Option<&str> {
+        self.current_review_generation
+            .selected_generation_id
+            .as_deref()
+    }
+
+    pub(crate) fn selected_latest_release_generation_id(&self) -> Option<&str> {
+        self.current_latest_release.generation_id.as_deref()
+    }
+}
+
 fn build_selection_alignment(
     review_generation_id: Option<&str>,
     release_generation_id: Option<&str>,
@@ -678,7 +690,7 @@ mod tests {
     #[test]
     fn fully_aligned_healthy_state_yields_coherent_verdict() {
         let fixture = write_complete_fixture("artifact_state_coherent");
-        let report = build_report(&fixture.config).expect("report");
+        let report = inspect_state_report(&fixture.config).expect("report");
 
         assert_eq!(report.verdict, ArtifactStateVerdict::ArtifactStateCoherent);
         assert!(report.selection_alignment.selections_match);
@@ -717,7 +729,7 @@ mod tests {
             &fixture.config.review_channel_name,
         );
 
-        let report = build_report(&fixture.config).expect("report");
+        let report = inspect_state_report(&fixture.config).expect("report");
 
         assert_eq!(
             report.verdict,
@@ -731,7 +743,7 @@ mod tests {
         let fixture = write_complete_fixture("artifact_state_broken_pointer");
         fs::remove_file(&fixture.release_artifact_path).expect("remove release artifact");
 
-        let report = build_report(&fixture.config).expect("report");
+        let report = inspect_state_report(&fixture.config).expect("report");
 
         assert_eq!(
             report.verdict,
@@ -804,7 +816,7 @@ mod tests {
         );
         fs::remove_file(&release_artifact_path).expect("remove archive target");
 
-        let report = build_report(&Config {
+        let report = inspect_state_report(&Config {
             review_archive_dir,
             review_manifest_dir,
             review_bundle_dir,
@@ -843,7 +855,7 @@ mod tests {
         )
         .expect("remove history release");
 
-        let report = build_report(&fixture.config).expect("report");
+        let report = inspect_state_report(&fixture.config).expect("report");
 
         assert_eq!(
             report.verdict,
@@ -888,7 +900,7 @@ mod tests {
             "artifact_release_published",
         );
 
-        let report = build_report(&fixture.config).expect("report");
+        let report = inspect_state_report(&fixture.config).expect("report");
 
         assert_eq!(
             report.verdict,
@@ -932,7 +944,7 @@ mod tests {
         );
         fs::remove_file(&fixture.release_artifact_path).expect("remove archive release target");
 
-        let report = build_report(&fixture.config).expect("report");
+        let report = inspect_state_report(&fixture.config).expect("report");
 
         assert_eq!(
             report.verdict,

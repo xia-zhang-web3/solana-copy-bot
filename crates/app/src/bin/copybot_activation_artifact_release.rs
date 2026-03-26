@@ -4,10 +4,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use serde_json::json;
 use std::env;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[allow(dead_code)]
 #[path = "copybot_activation_artifact_channel.rs"]
@@ -759,8 +757,10 @@ fn serialize_enum<T: Serialize>(value: &T) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::fs;
     use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn publish_only_release_succeeds() {

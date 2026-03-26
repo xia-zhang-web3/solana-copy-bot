@@ -980,6 +980,71 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not enable execution
    - it does not authorize activation or override the Stage 3 prod gate
 
+## Activation Artifact State Snapshot Publisher
+
+1. Operators can now persist the current end-to-end artifact state into a
+   deterministic snapshot archive instead of manually saving point-in-time
+   console output:
+   - publish one snapshot artifact:
+     `copybot_activation_artifact_state_publish_report --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --publish --review-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --review-manifest-dir /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest --review-bundle-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles --review-channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --release-history-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --json`
+   - publish and update the snapshot latest pointer:
+     `copybot_activation_artifact_state_publish_report --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --publish --persist-latest-pointer --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --review-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --review-manifest-dir /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest --review-bundle-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles --review-channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --release-history-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --json`
+   - inspect or verify the snapshot latest pointer:
+     `copybot_activation_artifact_state_publish_report --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --verify-latest --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --json`
+2. The snapshot artifact is a persisted copy of the accepted
+   `copybot_activation_artifact_state_report` result, not a new evaluation
+   contract:
+   - the state verdict stays explicit
+   - current review generation selection stays explicit
+   - current latest release selection stays explicit
+   - ambiguity and inconsistency remain visible in the persisted artifact
+3. Deterministic archive behavior is conservative:
+   - snapshot files are written under the explicit archive dir only
+   - collisions do not silently overwrite an existing snapshot
+   - latest-pointer metadata is written only when explicitly requested
+   - latest-pointer verification checks that the target snapshot still exists
+     and still parses as a valid persisted state snapshot
+4. This remains artifact-state management only:
+   - it does not rewrite review-generation artifacts
+   - it does not rewrite release artifacts
+   - it does not enable execution
+   - it does not authorize activation
+
+## Activation Artifact State History
+
+1. Operators now also have a first-class history/diff surface over persisted
+   state snapshots:
+   - summary over a snapshot archive:
+     `copybot_activation_artifact_state_history --history-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --json`
+   - compare two persisted snapshots:
+     `copybot_activation_artifact_state_history --compare /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots/state_snapshot__2026-03-26T12-00-00Z__artifact_state_coherent.json /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots/state_snapshot__2026-03-27T12-00-00Z__artifact_state_incomplete.json --json`
+2. History summary answers:
+   - the latest persisted state verdict
+   - how many snapshots were coherent vs incomplete vs inconsistent vs
+     ambiguous
+   - the latest selected review generation and latest selected release
+     generation
+   - whether review/release alignment has remained stable or drifted
+   - whether the persisted snapshot set is too sparse or stale for current
+     operator confidence
+3. Compare mode answers:
+   - state verdict change
+   - review-channel selection change
+   - latest-release selection change
+   - alignment change
+   - review/release provenance drift
+   - linkage drift
+   - ambiguous legacy count drift
+4. Ambiguity remains non-green in the temporal view too:
+   - `artifact_state_ambiguous_legacy_state` does not collapse into a healthy
+     history summary
+   - broken/inconsistent state remains stronger than ambiguity-only concerns
+5. This remains artifact analysis only:
+   - it reads persisted state snapshots instead of rerunning heavy operator
+     flows
+   - it does not rewrite state snapshots or pointer metadata
+   - it does not enable execution or authorize activation
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

@@ -2151,6 +2151,42 @@ Acceptance update (`2026-03-26`, activation artifact end-to-end state report):
 5. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_state_report`
 
+Acceptance update (`2026-03-26`, activation artifact state snapshot archive and history/diff):
+
+1. The repo now also has a deterministic persisted snapshot/archive flow for
+   the accepted end-to-end artifact state:
+   - publish one snapshot artifact:
+     `copybot_activation_artifact_state_publish_report --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --publish --review-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --review-manifest-dir /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest --review-bundle-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles --review-channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --release-history-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --json`
+   - publish and update the state latest pointer:
+     `copybot_activation_artifact_state_publish_report --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --publish --persist-latest-pointer --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --review-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --review-manifest-dir /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest --review-bundle-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles --review-channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --release-history-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --json`
+   - verify the state latest pointer:
+     `copybot_activation_artifact_state_publish_report --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --verify-latest --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --json`
+2. The snapshot publisher is deliberately thin:
+   - it reuses `copybot_activation_artifact_state_report`
+   - it persists the current state verdict and current selections without
+     flattening ambiguity or inconsistency
+   - it refuses silent snapshot collisions and silent pointer overwrites
+3. The repo also now has a first-class temporal surface over those persisted
+   state snapshots:
+   - history summary:
+     `copybot_activation_artifact_state_history --history-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --json`
+   - compare two persisted snapshots:
+     `copybot_activation_artifact_state_history --compare /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots/<older>.json /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots/<newer>.json --json`
+4. Operational meaning:
+   - operators no longer need to manually capture point-in-time state-report
+     output
+   - current-state coherence, incompleteness, inconsistency, and ambiguity can
+     now be reviewed over time
+   - state verdict drift, review/release selection drift, provenance drift, and
+     linkage drift are all explicit in compare mode
+5. This remains artifact-state analysis only:
+   - it does not rewrite review-generation artifacts
+   - it does not rewrite release artifacts
+   - it does not enable execution or authorize activation
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_state_publish_report`
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_state_history`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

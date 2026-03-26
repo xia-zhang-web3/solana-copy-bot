@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const USAGE: &str = "usage: copybot_activation_artifact_archive --archive-dir <path> [--json] [--retention-plan --keep-latest <count> | --retention-apply --keep-latest <count>]";
 const DEFAULT_KEEP_LATEST: usize = 10;
@@ -966,6 +965,7 @@ pub(crate) fn archive_inventory(archive_dir: &Path) -> Result<ArchiveInventory> 
     })
 }
 
+#[allow(dead_code)]
 pub(crate) fn generation_id_from_summary(summary: &ArchiveArtifactGenerationSummary) -> String {
     format!(
         "{}|{}|{}",
@@ -1536,6 +1536,7 @@ fn serialize_enum<T: Serialize>(value: &T) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn empty_archive_is_reported() {
