@@ -1742,6 +1742,41 @@ Acceptance update (`2026-03-26`, activation decision history + diff surface):
 6. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_decision_history_report`
 
+Acceptance update (`2026-03-26`, activation artifact archive index + retention preview):
+
+1. The repo now also has one read-only archive-management surface over
+   exported activation artifacts:
+   - index/report mode:
+     `copybot_activation_artifact_archive --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --json`
+   - retention-plan mode:
+     `copybot_activation_artifact_archive --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --retention-plan --keep-latest 10 --json`
+2. This command is still read-only and planning-safe:
+   - it does not enable `execution.enabled`
+   - it does not mutate config
+   - it does not rerun heavy prod or non-prod logic
+   - it does not delete artifacts in this batch
+   - it does not submit trades
+3. It now gives operators a bounded archive-health and retention-preview
+   surface:
+   - packet/runbook archive indexing and pairing
+   - malformed artifact detection
+   - latest artifact summaries
+   - safe retention preview over the latest N packet-backed generations
+4. Important verdicts:
+   - `archive_health_ok`
+   - `archive_health_missing_pairings`
+   - `archive_health_invalid_artifacts_present`
+   - `archive_retention_plan_ready`
+   - `archive_retention_plan_insufficient_artifacts`
+5. Practical meaning:
+   - operators no longer need to inspect activation artifact archives by hand
+   - future cleanup can be added later on top of an already explicit preview
+     surface instead of starting with direct deletion
+   - this is still archive analysis only and does not authorize production
+     activation or override the Stage 3 prod gate
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_archive`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

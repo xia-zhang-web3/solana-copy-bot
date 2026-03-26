@@ -557,6 +557,40 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    for later review, change comparison, and incident audit trail, but it still
    does not authorize production activation.
 
+## Activation Artifact Archive
+
+1. Operators now also have a read-only archive index and retention-preview
+   surface for exported activation artifacts:
+   - index/report mode:
+     `copybot_activation_artifact_archive --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --json`
+   - retention-plan mode:
+     `copybot_activation_artifact_archive --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --retention-plan --keep-latest 10 --json`
+2. This command stays read-only and maintenance-safe:
+   - it does not enable `execution.enabled`
+   - it does not mutate config
+   - it does not rerun heavy prod or non-prod logic
+   - it does not delete artifacts in this batch
+   - it does not submit trades
+3. Index/report mode answers:
+   - packet/runbook artifact counts
+   - latest packet and latest runbook
+   - missing packet/runbook pairings
+   - malformed artifacts
+   - fingerprint/build/git distribution drift across the archive
+4. Retention-plan mode answers:
+   - which latest packet-backed generations would be kept
+   - which older packet-backed generations would be removed
+   - which orphaned or malformed artifacts need manual review first
+5. Important archive verdicts:
+   - `archive_health_ok`
+   - `archive_health_missing_pairings`
+   - `archive_health_invalid_artifacts_present`
+   - `archive_retention_plan_ready`
+   - `archive_retention_plan_insufficient_artifacts`
+6. This tool previews archive health and retention only. It still does not
+   authorize production activation, and it does not delete anything in this
+   batch.
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`
