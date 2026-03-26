@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const USAGE: &str = "usage: copybot_activation_artifact_archive --archive-dir <path> [--json] [--retention-plan --keep-latest <count>]";
+const USAGE: &str = "usage: copybot_activation_artifact_archive --archive-dir <path> [--json] [--retention-plan --keep-latest <count> | --retention-apply --keep-latest <count>]";
 const DEFAULT_KEEP_LATEST: usize = 10;
 const RUNBOOK_MARKDOWN_TITLE: &str = "# Tiny-Live Activation Runbook";
 
@@ -26,6 +26,7 @@ struct Config {
     archive_dir: PathBuf,
     json: bool,
     retention_plan: bool,
+    retention_apply: bool,
     keep_latest: usize,
 }
 
@@ -37,6 +38,15 @@ enum ArchiveVerdict {
     ArchiveHealthInvalidArtifactsPresent,
     ArchiveRetentionPlanReady,
     ArchiveRetentionPlanInsufficientArtifacts,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ArchiveCleanupVerdict {
+    ArchiveCleanupApplied,
+    ArchiveCleanupBlockedByInvalidArtifacts,
+    ArchiveCleanupNothingToDo,
+    ArchiveCleanupFailedPartial,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -324,7 +334,37 @@ struct ArchiveRetentionPlanReport {
     not_authorized_summary: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Serialize)]
+struct ArtifactRemovalFailure {
+    path: String,
+    error: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ArchiveCleanupApplyReport {
+    mode: String,
+    verdict: ArchiveCleanupVerdict,
+    reason: String,
+    archive_dir: String,
+    keep_latest: usize,
+    generations_to_keep: usize,
+    generations_to_remove: usize,
+    kept_generations: Vec<ArchiveRetentionGenerationPlan>,
+    removed_generations: Vec<ArchiveRetentionGenerationPlan>,
+    removed_file_paths: Vec<String>,
+    failed_removals: Vec<ArtifactRemovalFailure>,
+    invalid_artifact_count: usize,
+    invalid_artifacts: Vec<InvalidArtifact>,
+    orphan_runbook_generations: Vec<ArchiveArtifactGenerationSummary>,
+    packet_generations_missing_runbook: Vec<ArchiveArtifactGenerationSummary>,
+    orphan_markdown_paths: Vec<String>,
+    read_only_archive_analysis: bool,
+    deletes_performed: bool,
+    activation_authorized: bool,
+    not_authorized_summary: String,
+}
+
+#[derive(Debug, Default, Clone)]
 struct ArchiveScan {
     packets: Vec<LoadedPacketArtifact>,
     runbook_json: Vec<LoadedRunbookArtifact>,
@@ -339,6 +379,15 @@ struct GenerationRecord {
     runbook_markdown_paths: Vec<PathBuf>,
 }
 
+#[derive(Debug, Clone)]
+struct RetentionSelection {
+    scan: ArchiveScan,
+    generations: Vec<ArchiveRetentionGenerationPlan>,
+    orphan_runbook_generations: Vec<ArchiveArtifactGenerationSummary>,
+    packet_generations_missing_runbook: Vec<ArchiveArtifactGenerationSummary>,
+    orphan_markdown_paths: Vec<String>,
+}
+
 fn parse_args() -> Result<Option<Config>> {
     parse_args_from(env::args().skip(1))
 }
@@ -351,6 +400,7 @@ where
     let mut archive_dir: Option<PathBuf> = None;
     let mut json = false;
     let mut retention_plan = false;
+    let mut retention_apply = false;
     let mut keep_latest = DEFAULT_KEEP_LATEST;
 
     while let Some(arg) = args.next() {
@@ -363,16 +413,22 @@ where
             }
             "--json" => json = true,
             "--retention-plan" => retention_plan = true,
+            "--retention-apply" => retention_apply = true,
             "--keep-latest" => keep_latest = parse_usize_arg("--keep-latest", args.next())?,
             "--help" | "-h" => return Ok(None),
             other => bail!("unknown argument: {other}"),
         }
     }
 
+    if retention_plan && retention_apply {
+        bail!("--retention-plan and --retention-apply cannot be combined");
+    }
+
     Ok(Some(Config {
         archive_dir: archive_dir.ok_or_else(|| anyhow!("missing required --archive-dir"))?,
         json,
         retention_plan,
+        retention_apply,
         keep_latest: keep_latest.max(1),
     }))
 }
@@ -393,7 +449,15 @@ fn parse_usize_arg(flag: &str, value: Option<String>) -> Result<usize> {
 }
 
 fn run(config: Config) -> Result<String> {
-    if config.retention_plan {
+    if config.retention_apply {
+        let report = apply_retention_plan(&config)?;
+        if config.json {
+            serde_json::to_string_pretty(&report)
+                .context("failed serializing activation artifact cleanup apply json")
+        } else {
+            Ok(render_cleanup_apply_human(&report))
+        }
+    } else if config.retention_plan {
         let report = build_retention_plan_report(&config)?;
         if config.json {
             serde_json::to_string_pretty(&report)
@@ -571,9 +635,81 @@ fn build_index_report(config: &Config) -> Result<ArchiveIndexReport> {
 }
 
 fn build_retention_plan_report(config: &Config) -> Result<ArchiveRetentionPlanReport> {
+    let selection = build_retention_selection(config)?;
+    let packet_backed = selection
+        .generations
+        .iter()
+        .filter(|summary| !summary.decision_packet_paths.is_empty())
+        .collect::<Vec<_>>();
+
+    let verdict = if !selection.scan.invalid_artifacts.is_empty() {
+        ArchiveVerdict::ArchiveHealthInvalidArtifactsPresent
+    } else if packet_backed.is_empty() {
+        ArchiveVerdict::ArchiveRetentionPlanInsufficientArtifacts
+    } else {
+        ArchiveVerdict::ArchiveRetentionPlanReady
+    };
+
+    let reason = match verdict {
+        ArchiveVerdict::ArchiveHealthInvalidArtifactsPresent => format!(
+            "retention preview is blocked by {} invalid artifact(s); review invalid_artifacts first",
+            selection.scan.invalid_artifacts.len()
+        ),
+        ArchiveVerdict::ArchiveRetentionPlanInsufficientArtifacts => {
+            "retention preview has no packet-backed artifact generations to evaluate".to_string()
+        }
+        ArchiveVerdict::ArchiveRetentionPlanReady => format!(
+            "retention preview is ready; keeping the latest {} packet-backed generation(s) would retain {} generation(s) and remove {} generation(s)",
+            config.keep_latest,
+            selection
+                .generations
+                .iter()
+                .filter(|summary| summary.would_keep)
+                .count(),
+            selection
+                .generations
+                .iter()
+                .filter(|summary| !summary.would_keep && !summary.decision_packet_paths.is_empty())
+                .count()
+        ),
+        ArchiveVerdict::ArchiveHealthOk | ArchiveVerdict::ArchiveHealthMissingPairings => unreachable!(),
+    };
+
+    Ok(ArchiveRetentionPlanReport {
+        mode: "retention_plan".to_string(),
+        verdict,
+        reason,
+        archive_dir: config.archive_dir.display().to_string(),
+        keep_latest: config.keep_latest,
+        total_generation_count: selection.generations.len(),
+        generations_to_keep: selection
+            .generations
+            .iter()
+            .filter(|summary| summary.would_keep)
+            .count(),
+        generations_to_remove: selection
+            .generations
+            .iter()
+            .filter(|summary| !summary.would_keep && !summary.decision_packet_paths.is_empty())
+            .count(),
+        generations: selection.generations,
+        orphan_runbook_generations: selection.orphan_runbook_generations,
+        packet_generations_missing_runbook: selection.packet_generations_missing_runbook,
+        orphan_markdown_paths: selection.orphan_markdown_paths,
+        invalid_artifact_count: selection.scan.invalid_artifacts.len(),
+        invalid_artifacts: selection.scan.invalid_artifacts,
+        read_only_archive_analysis: true,
+        deletes_performed: false,
+        activation_authorized: false,
+        not_authorized_summary:
+            "Retention preview only. This command does not delete artifacts, does not authorize activation, and does not override the Stage 3 production gate.".to_string(),
+    })
+}
+
+fn build_retention_selection(config: &Config) -> Result<RetentionSelection> {
     let scan = scan_archive(&config.archive_dir)?;
-    let generations = build_generation_records(&scan);
-    let mut generation_summaries = generation_summaries(&generations);
+    let generation_records = build_generation_records(&scan);
+    let mut generation_summaries = generation_summaries(&generation_records);
     generation_summaries.sort_by(|left, right| {
         left.decision_packet_generated_at
             .cmp(&right.decision_packet_generated_at)
@@ -598,11 +734,17 @@ fn build_retention_plan_report(config: &Config) -> Result<ArchiveRetentionPlanRe
             let has_packet = !summary.decision_packet_paths.is_empty();
             let would_keep = has_packet && keep_keys.contains(&key);
             let reason = if !has_packet {
-                "orphan runbook generation; not part of automatic keep_latest set".to_string()
+                "orphan runbook generation is left untouched by retention apply".to_string()
             } else if would_keep {
-                format!("kept because it is within the latest {} packet-backed generation(s)", config.keep_latest)
+                format!(
+                    "kept because it is within the latest {} packet-backed generation(s)",
+                    config.keep_latest
+                )
             } else {
-                format!("would be removed because it is older than the latest {} packet-backed generation(s)", config.keep_latest)
+                format!(
+                    "selected for removal because it is older than the latest {} packet-backed generation(s)",
+                    config.keep_latest
+                )
             };
             ArchiveRetentionGenerationPlan {
                 decision_packet_generated_at: summary.decision_packet_generated_at,
@@ -619,31 +761,6 @@ fn build_retention_plan_report(config: &Config) -> Result<ArchiveRetentionPlanRe
         })
         .collect::<Vec<_>>();
 
-    let verdict = if !scan.invalid_artifacts.is_empty() {
-        ArchiveVerdict::ArchiveHealthInvalidArtifactsPresent
-    } else if packet_backed.is_empty() {
-        ArchiveVerdict::ArchiveRetentionPlanInsufficientArtifacts
-    } else {
-        ArchiveVerdict::ArchiveRetentionPlanReady
-    };
-
-    let reason = match verdict {
-        ArchiveVerdict::ArchiveHealthInvalidArtifactsPresent => format!(
-            "retention preview is blocked by {} invalid artifact(s); review invalid_artifacts first",
-            scan.invalid_artifacts.len()
-        ),
-        ArchiveVerdict::ArchiveRetentionPlanInsufficientArtifacts => {
-            "retention preview has no packet-backed artifact generations to evaluate".to_string()
-        }
-        ArchiveVerdict::ArchiveRetentionPlanReady => format!(
-            "retention preview is ready; keeping the latest {} packet-backed generation(s) would retain {} generation(s) and remove {} generation(s)",
-            config.keep_latest,
-            generations.iter().filter(|summary| summary.would_keep).count(),
-            generations.iter().filter(|summary| !summary.would_keep && !summary.decision_packet_paths.is_empty()).count()
-        ),
-        ArchiveVerdict::ArchiveHealthOk | ArchiveVerdict::ArchiveHealthMissingPairings => unreachable!(),
-    };
-
     let orphan_runbook_generations = generation_summaries
         .iter()
         .filter(|summary| {
@@ -658,31 +775,175 @@ fn build_retention_plan_report(config: &Config) -> Result<ArchiveRetentionPlanRe
         })
         .cloned()
         .collect::<Vec<_>>();
-    let orphan_markdown_paths_list = orphan_markdown_paths(&scan, &build_generation_records(&scan));
+    let orphan_markdown_paths = orphan_markdown_paths(&scan, &generation_records);
 
-    Ok(ArchiveRetentionPlanReport {
-        mode: "retention_plan".to_string(),
+    Ok(RetentionSelection {
+        scan,
+        generations,
+        orphan_runbook_generations,
+        packet_generations_missing_runbook,
+        orphan_markdown_paths,
+    })
+}
+
+fn apply_retention_plan(config: &Config) -> Result<ArchiveCleanupApplyReport> {
+    let selection = build_retention_selection(config)?;
+    if !selection.scan.invalid_artifacts.is_empty() {
+        return Ok(ArchiveCleanupApplyReport {
+            mode: "retention_apply".to_string(),
+            verdict: ArchiveCleanupVerdict::ArchiveCleanupBlockedByInvalidArtifacts,
+            reason: format!(
+                "cleanup is blocked because {} invalid artifact(s) are present; review or fix them before apply mode",
+                selection.scan.invalid_artifacts.len()
+            ),
+            archive_dir: config.archive_dir.display().to_string(),
+            keep_latest: config.keep_latest,
+            generations_to_keep: selection
+                .generations
+                .iter()
+                .filter(|summary| summary.would_keep)
+                .count(),
+            generations_to_remove: selection
+                .generations
+                .iter()
+                .filter(|summary| !summary.would_keep && !summary.decision_packet_paths.is_empty())
+                .count(),
+            kept_generations: selection
+                .generations
+                .iter()
+                .filter(|summary| summary.would_keep)
+                .cloned()
+                .collect(),
+            removed_generations: selection
+                .generations
+                .iter()
+                .filter(|summary| !summary.would_keep && !summary.decision_packet_paths.is_empty())
+                .cloned()
+                .collect(),
+            removed_file_paths: Vec::new(),
+            failed_removals: Vec::new(),
+            invalid_artifact_count: selection.scan.invalid_artifacts.len(),
+            invalid_artifacts: selection.scan.invalid_artifacts,
+            orphan_runbook_generations: selection.orphan_runbook_generations,
+            packet_generations_missing_runbook: selection.packet_generations_missing_runbook,
+            orphan_markdown_paths: selection.orphan_markdown_paths,
+            read_only_archive_analysis: false,
+            deletes_performed: false,
+            activation_authorized: false,
+            not_authorized_summary:
+                "Cleanup is blocked. This command still does not authorize activation and does not override the Stage 3 production gate.".to_string(),
+        });
+    }
+
+    let kept_generations = selection
+        .generations
+        .iter()
+        .filter(|summary| summary.would_keep)
+        .cloned()
+        .collect::<Vec<_>>();
+    let removed_generations = selection
+        .generations
+        .iter()
+        .filter(|summary| !summary.would_keep && !summary.decision_packet_paths.is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if removed_generations.is_empty() {
+        return Ok(ArchiveCleanupApplyReport {
+            mode: "retention_apply".to_string(),
+            verdict: ArchiveCleanupVerdict::ArchiveCleanupNothingToDo,
+            reason: "cleanup found nothing to remove under the requested keep_latest retention rule".to_string(),
+            archive_dir: config.archive_dir.display().to_string(),
+            keep_latest: config.keep_latest,
+            generations_to_keep: kept_generations.len(),
+            generations_to_remove: 0,
+            kept_generations,
+            removed_generations,
+            removed_file_paths: Vec::new(),
+            failed_removals: Vec::new(),
+            invalid_artifact_count: 0,
+            invalid_artifacts: Vec::new(),
+            orphan_runbook_generations: selection.orphan_runbook_generations,
+            packet_generations_missing_runbook: selection.packet_generations_missing_runbook,
+            orphan_markdown_paths: selection.orphan_markdown_paths,
+            read_only_archive_analysis: false,
+            deletes_performed: false,
+            activation_authorized: false,
+            not_authorized_summary:
+                "Cleanup apply mode touched only archive artifacts and still does not authorize activation.".to_string(),
+        });
+    }
+
+    let archive_root = fs::canonicalize(&config.archive_dir).with_context(|| {
+        format!(
+            "failed canonicalizing archive dir {} before cleanup",
+            config.archive_dir.display()
+        )
+    })?;
+
+    let mut removed_file_paths = Vec::new();
+    let mut failed_removals = Vec::new();
+    for generation in &removed_generations {
+        let removal_targets = generation
+            .decision_packet_paths
+            .iter()
+            .chain(generation.runbook_json_paths.iter())
+            .chain(generation.runbook_markdown_paths.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        for path in removal_targets {
+            let path_buf = PathBuf::from(&path);
+            match remove_archive_artifact_file(&archive_root, &path_buf) {
+                Ok(()) => removed_file_paths.push(path),
+                Err(error) => failed_removals.push(ArtifactRemovalFailure {
+                    path,
+                    error: format!("{error:#}"),
+                }),
+            }
+        }
+    }
+
+    let verdict = if failed_removals.is_empty() {
+        ArchiveCleanupVerdict::ArchiveCleanupApplied
+    } else {
+        ArchiveCleanupVerdict::ArchiveCleanupFailedPartial
+    };
+    let reason = match verdict {
+        ArchiveCleanupVerdict::ArchiveCleanupApplied => format!(
+            "cleanup removed {} artifact file(s) using the same selection logic as retention preview",
+            removed_file_paths.len()
+        ),
+        ArchiveCleanupVerdict::ArchiveCleanupFailedPartial => format!(
+            "cleanup removed {} artifact file(s) but {} removal(s) failed; review failed_removals before re-running",
+            removed_file_paths.len(),
+            failed_removals.len()
+        ),
+        ArchiveCleanupVerdict::ArchiveCleanupBlockedByInvalidArtifacts
+        | ArchiveCleanupVerdict::ArchiveCleanupNothingToDo => unreachable!(),
+    };
+
+    Ok(ArchiveCleanupApplyReport {
+        mode: "retention_apply".to_string(),
         verdict,
         reason,
         archive_dir: config.archive_dir.display().to_string(),
         keep_latest: config.keep_latest,
-        total_generation_count: generations.len(),
-        generations_to_keep: generations.iter().filter(|summary| summary.would_keep).count(),
-        generations_to_remove: generations
-            .iter()
-            .filter(|summary| !summary.would_keep && !summary.decision_packet_paths.is_empty())
-            .count(),
-        generations,
-        orphan_runbook_generations,
-        packet_generations_missing_runbook,
-        orphan_markdown_paths: orphan_markdown_paths_list,
-        invalid_artifact_count: scan.invalid_artifacts.len(),
-        invalid_artifacts: scan.invalid_artifacts,
-        read_only_archive_analysis: true,
-        deletes_performed: false,
+        generations_to_keep: kept_generations.len(),
+        generations_to_remove: removed_generations.len(),
+        kept_generations,
+        removed_generations,
+        removed_file_paths,
+        failed_removals,
+        invalid_artifact_count: 0,
+        invalid_artifacts: Vec::new(),
+        orphan_runbook_generations: selection.orphan_runbook_generations,
+        packet_generations_missing_runbook: selection.packet_generations_missing_runbook,
+        orphan_markdown_paths: selection.orphan_markdown_paths,
+        read_only_archive_analysis: false,
+        deletes_performed: true,
         activation_authorized: false,
         not_authorized_summary:
-            "Retention preview only. This command does not delete artifacts, does not authorize activation, and does not override the Stage 3 production gate.".to_string(),
+            "Cleanup apply mode only prunes exported archive artifacts. It still does not authorize activation and does not override the Stage 3 production gate.".to_string(),
     })
 }
 
@@ -1045,6 +1306,33 @@ where
     values
 }
 
+fn remove_archive_artifact_file(archive_root: &Path, path: &Path) -> Result<()> {
+    let canonical = fs::canonicalize(path).with_context(|| {
+        format!(
+            "failed canonicalizing archive artifact before deletion {}",
+            path.display()
+        )
+    })?;
+    if !canonical.starts_with(archive_root) {
+        bail!(
+            "refusing to delete {} because its canonical target {} is outside archive root {}",
+            path.display(),
+            canonical.display(),
+            archive_root.display()
+        );
+    }
+    if path.extension().and_then(|ext| ext.to_str()) != Some("json")
+        && path.extension().and_then(|ext| ext.to_str()) != Some("md")
+    {
+        bail!(
+            "refusing to delete {} because it is not a recognized artifact file type",
+            path.display()
+        );
+    }
+    fs::remove_file(path)
+        .with_context(|| format!("failed deleting archive artifact {}", path.display()))
+}
+
 fn render_index_human(report: &ArchiveIndexReport) -> String {
     [
         "event=copybot_activation_artifact_archive".to_string(),
@@ -1171,6 +1459,45 @@ fn render_retention_plan_human(report: &ArchiveRetentionPlanReport) -> String {
     .join("\n")
 }
 
+fn render_cleanup_apply_human(report: &ArchiveCleanupApplyReport) -> String {
+    [
+        "event=copybot_activation_artifact_archive".to_string(),
+        "mode=retention_apply".to_string(),
+        format!("verdict={}", serialize_enum(&report.verdict)),
+        format!("reason={}", report.reason),
+        format!("archive_dir={}", report.archive_dir),
+        format!("keep_latest={}", report.keep_latest),
+        format!("generations_to_keep={}", report.generations_to_keep),
+        format!("generations_to_remove={}", report.generations_to_remove),
+        format!(
+            "removed_file_paths={}",
+            report.removed_file_paths.join(" | ")
+        ),
+        format!(
+            "failed_removals={}",
+            report
+                .failed_removals
+                .iter()
+                .map(|failure| format!("{}:{}", failure.path, failure.error))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ),
+        format!("invalid_artifact_count={}", report.invalid_artifact_count),
+        format!(
+            "orphan_markdown_paths={}",
+            report.orphan_markdown_paths.join(" | ")
+        ),
+        format!(
+            "read_only_archive_analysis={}",
+            report.read_only_archive_analysis
+        ),
+        format!("deletes_performed={}", report.deletes_performed),
+        format!("activation_authorized={}", report.activation_authorized),
+        format!("not_authorized_summary={}", report.not_authorized_summary),
+    ]
+    .join("\n")
+}
+
 fn serialize_enum<T: Serialize>(value: &T) -> String {
     serde_json::to_string(value)
         .unwrap_or_default()
@@ -1189,6 +1516,7 @@ mod tests {
             archive_dir: dir,
             json: false,
             retention_plan: false,
+            retention_apply: false,
             keep_latest: DEFAULT_KEEP_LATEST,
         })
         .expect("report");
@@ -1226,6 +1554,7 @@ mod tests {
             archive_dir: dir,
             json: false,
             retention_plan: false,
+            retention_apply: false,
             keep_latest: DEFAULT_KEEP_LATEST,
         })
         .expect("report");
@@ -1246,6 +1575,7 @@ mod tests {
             archive_dir: dir,
             json: false,
             retention_plan: false,
+            retention_apply: false,
             keep_latest: DEFAULT_KEEP_LATEST,
         })
         .expect("report");
@@ -1272,6 +1602,7 @@ mod tests {
             archive_dir: dir,
             json: false,
             retention_plan: false,
+            retention_apply: false,
             keep_latest: DEFAULT_KEEP_LATEST,
         })
         .expect("report");
@@ -1328,6 +1659,7 @@ mod tests {
             archive_dir: dir,
             json: false,
             retention_plan: true,
+            retention_apply: false,
             keep_latest: 1,
         })
         .expect("report");
@@ -1364,12 +1696,224 @@ mod tests {
             archive_dir: dir,
             json: false,
             retention_plan: true,
+            retention_apply: false,
             keep_latest: 1,
         })
         .expect("report");
 
         let after = fs::read_to_string(&path).expect("after");
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn apply_mode_removes_exact_preview_targets_and_keeps_latest() {
+        let dir = temp_dir("activation_archive_apply");
+        let packet_old = sample_packet(
+            "2026-03-26T10:00:00Z",
+            "prod_fp_old",
+            "non_prod_fp_old",
+            DecisionPacketVerdict::DecisionPacketBlocked,
+        );
+        let runbook_old = sample_runbook(
+            "2026-03-26T10:05:00Z",
+            "2026-03-26T10:00:00Z",
+            "prod_fp_old",
+            "non_prod_fp_old",
+            ActivationRunbookVerdict::RunbookBlocked,
+        );
+        let packet_new = sample_packet(
+            "2026-03-26T12:00:00Z",
+            "prod_fp_new",
+            "non_prod_fp_new",
+            DecisionPacketVerdict::DecisionPacketDiscussionReadyButNotAuthorized,
+        );
+        let runbook_new = sample_runbook(
+            "2026-03-26T12:05:00Z",
+            "2026-03-26T12:00:00Z",
+            "prod_fp_new",
+            "non_prod_fp_new",
+            ActivationRunbookVerdict::RunbookDiscussionReadyButNotAuthorized,
+        );
+        let packet_old_path = dir.join("packet-old.json");
+        let runbook_old_path = dir.join("runbook-old.json");
+        let runbook_old_md_path = dir.join("runbook-old.md");
+        let packet_new_path = dir.join("packet-new.json");
+        let runbook_new_path = dir.join("runbook-new.json");
+        let runbook_new_md_path = dir.join("runbook-new.md");
+        write_json(&packet_old_path, &packet_old);
+        write_json(&runbook_old_path, &runbook_old);
+        fs::write(
+            &runbook_old_md_path,
+            format!("{RUNBOOK_MARKDOWN_TITLE}\n\nold"),
+        )
+        .expect("write old md");
+        write_json(&packet_new_path, &packet_new);
+        write_json(&runbook_new_path, &runbook_new);
+        fs::write(
+            &runbook_new_md_path,
+            format!("{RUNBOOK_MARKDOWN_TITLE}\n\nnew"),
+        )
+        .expect("write new md");
+
+        let preview = build_retention_plan_report(&Config {
+            archive_dir: dir.clone(),
+            json: false,
+            retention_plan: true,
+            retention_apply: false,
+            keep_latest: 1,
+        })
+        .expect("preview");
+        let preview_remove = preview
+            .generations
+            .iter()
+            .filter(|summary| !summary.would_keep && !summary.decision_packet_paths.is_empty())
+            .flat_map(|summary| {
+                summary
+                    .decision_packet_paths
+                    .iter()
+                    .chain(summary.runbook_json_paths.iter())
+                    .chain(summary.runbook_markdown_paths.iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .collect::<BTreeSet<_>>();
+
+        let apply = apply_retention_plan(&Config {
+            archive_dir: dir.clone(),
+            json: false,
+            retention_plan: false,
+            retention_apply: true,
+            keep_latest: 1,
+        })
+        .expect("apply");
+
+        assert_eq!(apply.verdict, ArchiveCleanupVerdict::ArchiveCleanupApplied);
+        assert_eq!(
+            apply
+                .removed_file_paths
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            preview_remove
+        );
+        assert!(!packet_old_path.exists());
+        assert!(!runbook_old_path.exists());
+        assert!(!runbook_old_md_path.exists());
+        assert!(packet_new_path.exists());
+        assert!(runbook_new_path.exists());
+        assert!(runbook_new_md_path.exists());
+    }
+
+    #[test]
+    fn invalid_artifacts_block_cleanup_by_default() {
+        let dir = temp_dir("activation_archive_apply_invalid");
+        let packet = sample_packet(
+            "2026-03-26T12:00:00Z",
+            "prod_fp_a",
+            "non_prod_fp_a",
+            DecisionPacketVerdict::DecisionPacketBlocked,
+        );
+        let packet_path = dir.join("packet-1.json");
+        write_json(&packet_path, &packet);
+        fs::write(dir.join("broken.json"), "{broken").expect("write invalid");
+
+        let apply = apply_retention_plan(&Config {
+            archive_dir: dir.clone(),
+            json: false,
+            retention_plan: false,
+            retention_apply: true,
+            keep_latest: 1,
+        })
+        .expect("apply");
+
+        assert_eq!(
+            apply.verdict,
+            ArchiveCleanupVerdict::ArchiveCleanupBlockedByInvalidArtifacts
+        );
+        assert!(packet_path.exists());
+        assert_eq!(apply.removed_file_paths.len(), 0);
+    }
+
+    #[test]
+    fn apply_mode_handles_nothing_to_do_explicitly() {
+        let dir = temp_dir("activation_archive_apply_nothing");
+        let packet = sample_packet(
+            "2026-03-26T12:00:00Z",
+            "prod_fp_a",
+            "non_prod_fp_a",
+            DecisionPacketVerdict::DecisionPacketDiscussionReadyButNotAuthorized,
+        );
+        let packet_path = dir.join("packet-1.json");
+        write_json(&packet_path, &packet);
+
+        let apply = apply_retention_plan(&Config {
+            archive_dir: dir.clone(),
+            json: false,
+            retention_plan: false,
+            retention_apply: true,
+            keep_latest: 1,
+        })
+        .expect("apply");
+
+        assert_eq!(
+            apply.verdict,
+            ArchiveCleanupVerdict::ArchiveCleanupNothingToDo
+        );
+        assert!(packet_path.exists());
+        assert_eq!(apply.removed_file_paths.len(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_file_outside_archive_dir_can_be_deleted() {
+        use std::os::unix::fs::symlink;
+
+        let outside_dir = temp_dir("activation_archive_outside_target");
+        let outside_packet_path = outside_dir.join("packet-outside.json");
+        write_json(
+            &outside_packet_path,
+            &sample_packet(
+                "2026-03-26T10:00:00Z",
+                "prod_fp_old",
+                "non_prod_fp_old",
+                DecisionPacketVerdict::DecisionPacketBlocked,
+            ),
+        );
+
+        let dir = temp_dir("activation_archive_apply_symlink");
+        let packet_new = sample_packet(
+            "2026-03-26T12:00:00Z",
+            "prod_fp_new",
+            "non_prod_fp_new",
+            DecisionPacketVerdict::DecisionPacketDiscussionReadyButNotAuthorized,
+        );
+        let runbook_new = sample_runbook(
+            "2026-03-26T12:05:00Z",
+            "2026-03-26T12:00:00Z",
+            "prod_fp_new",
+            "non_prod_fp_new",
+            ActivationRunbookVerdict::RunbookDiscussionReadyButNotAuthorized,
+        );
+        let symlink_path = dir.join("packet-old.json");
+        symlink(&outside_packet_path, &symlink_path).expect("symlink");
+        write_json(&dir.join("packet-new.json"), &packet_new);
+        write_json(&dir.join("runbook-new.json"), &runbook_new);
+
+        let apply = apply_retention_plan(&Config {
+            archive_dir: dir.clone(),
+            json: false,
+            retention_plan: false,
+            retention_apply: true,
+            keep_latest: 1,
+        })
+        .expect("apply");
+
+        assert_eq!(
+            apply.verdict,
+            ArchiveCleanupVerdict::ArchiveCleanupFailedPartial
+        );
+        assert!(outside_packet_path.exists());
+        assert!(symlink_path.exists());
     }
 
     fn sample_packet(

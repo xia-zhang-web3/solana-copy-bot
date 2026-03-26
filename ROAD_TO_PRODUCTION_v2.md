@@ -1777,6 +1777,35 @@ Acceptance update (`2026-03-26`, activation artifact archive index + retention p
 6. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_archive`
 
+Acceptance update (`2026-03-26`, activation artifact archive retention apply executor):
+
+1. The same activation artifact archive surface now also has a bounded cleanup
+   executor built on the already accepted preview logic:
+   - preview:
+     `copybot_activation_artifact_archive --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --retention-plan --keep-latest 10 --json`
+   - apply:
+     `copybot_activation_artifact_archive --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --retention-apply --keep-latest 10 --json`
+2. Cleanup semantics are conservative by default:
+   - invalid or malformed artifacts block cleanup
+   - orphan runbook generations and orphan markdown are left untouched
+   - only packet-backed generations outside the latest `keep-latest` set are
+     removed
+   - apply mode never touches files outside the requested archive dir
+3. Important cleanup verdicts:
+   - `archive_cleanup_applied`
+   - `archive_cleanup_blocked_by_invalid_artifacts`
+   - `archive_cleanup_nothing_to_do`
+   - `archive_cleanup_failed_partial`
+4. Practical meaning:
+   - operators can now preview and then apply bounded archive cleanup through
+     one first-class tool instead of manual file deletion
+   - cleanup uses the exact same generation-selection logic as preview, so the
+     plan and the apply step cannot silently diverge
+   - this is still archive maintenance only and does not authorize production
+     activation or override the Stage 3 prod gate
+5. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_archive`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

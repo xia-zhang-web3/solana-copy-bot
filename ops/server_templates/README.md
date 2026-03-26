@@ -560,16 +560,21 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 ## Activation Artifact Archive
 
 1. Operators now also have a read-only archive index and retention-preview
-   surface for exported activation artifacts:
+   surface for exported activation artifacts, plus a bounded cleanup apply
+   mode built on the same preview logic:
    - index/report mode:
      `copybot_activation_artifact_archive --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --json`
    - retention-plan mode:
      `copybot_activation_artifact_archive --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --retention-plan --keep-latest 10 --json`
-2. This command stays read-only and maintenance-safe:
+   - retention-apply mode:
+     `copybot_activation_artifact_archive --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --retention-apply --keep-latest 10 --json`
+2. This command stays maintenance-safe:
    - it does not enable `execution.enabled`
    - it does not mutate config
    - it does not rerun heavy prod or non-prod logic
-   - it does not delete artifacts in this batch
+   - it only deletes archive artifact files selected by the exact same
+     generation-selection logic used by retention preview
+   - it never touches files outside the requested archive dir
    - it does not submit trades
 3. Index/report mode answers:
    - packet/runbook artifact counts
@@ -581,15 +586,24 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - which latest packet-backed generations would be kept
    - which older packet-backed generations would be removed
    - which orphaned or malformed artifacts need manual review first
-5. Important archive verdicts:
+5. Retention-apply mode is conservative by default:
+   - cleanup is blocked if invalid or malformed artifacts are present
+   - orphan runbook generations and orphan markdown are left untouched
+   - only packet-backed generations outside `keep-latest` are removed
+   - output lists kept generations, removed generations, and exact file paths
+     removed
+6. Important archive verdicts:
    - `archive_health_ok`
    - `archive_health_missing_pairings`
    - `archive_health_invalid_artifacts_present`
    - `archive_retention_plan_ready`
    - `archive_retention_plan_insufficient_artifacts`
-6. This tool previews archive health and retention only. It still does not
-   authorize production activation, and it does not delete anything in this
-   batch.
+   - `archive_cleanup_applied`
+   - `archive_cleanup_blocked_by_invalid_artifacts`
+   - `archive_cleanup_nothing_to_do`
+   - `archive_cleanup_failed_partial`
+7. This tool only manages exported activation artifacts. It still does not
+   authorize production activation and does not override the Stage 3 prod gate.
 
 ## Server target paths
 
