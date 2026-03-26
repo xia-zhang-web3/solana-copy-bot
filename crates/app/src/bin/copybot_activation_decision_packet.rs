@@ -12,7 +12,7 @@ use url::Url;
 
 #[allow(dead_code)]
 #[path = "copybot_activation_checklist_report.rs"]
-mod activation_checklist_report;
+pub(crate) mod activation_checklist_report;
 
 const USAGE: &str = "usage: copybot_activation_decision_packet --config <prod-path> --non-prod-config <path> [--json] [--output <path>] [--note <text>] [--now <rfc3339>] [--stage3-limit <count>] [--stage3-recent-horizon-seconds <seconds>] [--rehearsal-limit <count>] [--rehearsal-recent-horizon-seconds <seconds>] [--min-recent-acceptable-rehearsals <count>] [--non-prod-limit <count>] [--non-prod-dress-recent-horizon-seconds <seconds>] [--non-prod-activation-recent-horizon-seconds <seconds>] [--non-prod-min-recent-green-dress <count>] [--non-prod-min-recent-green-activation <count>]";
 
@@ -31,68 +31,68 @@ fn main() -> Result<()> {
 }
 
 #[derive(Debug, Clone)]
-struct Config {
-    config_path: PathBuf,
-    non_prod_config_path: PathBuf,
-    json: bool,
-    output_path: Option<PathBuf>,
-    note: Option<String>,
-    now: DateTime<Utc>,
-    stage3_limit: usize,
-    stage3_recent_horizon_seconds: Option<u64>,
-    rehearsal_limit: usize,
-    rehearsal_recent_horizon_seconds: u64,
-    min_recent_acceptable_rehearsals: usize,
-    non_prod_limit: usize,
-    non_prod_dress_recent_horizon_seconds: u64,
-    non_prod_activation_recent_horizon_seconds: u64,
-    non_prod_min_recent_green_dress: usize,
-    non_prod_min_recent_green_activation: usize,
+pub(crate) struct Config {
+    pub(crate) config_path: PathBuf,
+    pub(crate) non_prod_config_path: PathBuf,
+    pub(crate) json: bool,
+    pub(crate) output_path: Option<PathBuf>,
+    pub(crate) note: Option<String>,
+    pub(crate) now: DateTime<Utc>,
+    pub(crate) stage3_limit: usize,
+    pub(crate) stage3_recent_horizon_seconds: Option<u64>,
+    pub(crate) rehearsal_limit: usize,
+    pub(crate) rehearsal_recent_horizon_seconds: u64,
+    pub(crate) min_recent_acceptable_rehearsals: usize,
+    pub(crate) non_prod_limit: usize,
+    pub(crate) non_prod_dress_recent_horizon_seconds: u64,
+    pub(crate) non_prod_activation_recent_horizon_seconds: u64,
+    pub(crate) non_prod_min_recent_green_dress: usize,
+    pub(crate) non_prod_min_recent_green_activation: usize,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ActivationDecisionPacketVerdict {
+pub(crate) enum ActivationDecisionPacketVerdict {
     DecisionPacketBlocked,
     DecisionPacketDiscussionReadyButNotAuthorized,
     DecisionPacketRefusedForProfileMismatch,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ConfigFingerprintSummary {
-    scope: String,
-    sha256: String,
-    secrets_excluded: bool,
-    sensitive_urls_redacted_before_hashing: bool,
+pub(crate) struct ConfigFingerprintSummary {
+    pub(crate) scope: String,
+    pub(crate) sha256: String,
+    pub(crate) secrets_excluded: bool,
+    pub(crate) sensitive_urls_redacted_before_hashing: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ActivationDecisionPacket {
-    generated_at: DateTime<Utc>,
-    packet_version: String,
-    build_version: String,
-    git_commit: Option<String>,
-    prod_config_path: String,
-    non_prod_config_path: String,
-    operator_note: Option<String>,
-    execution_enabled: bool,
-    read_only_packet: bool,
-    activation_authorized: bool,
-    discussion_ready_only: bool,
-    prod_stage3_remains_hard_gate: bool,
-    non_prod_evidence_is_secondary: bool,
-    verdict: ActivationDecisionPacketVerdict,
-    reason: String,
-    blockers: Vec<String>,
-    warnings: Vec<String>,
-    checklist_verdict: String,
-    checklist_reason: String,
-    prod_config_fingerprint: ConfigFingerprintSummary,
-    non_prod_config_fingerprint: ConfigFingerprintSummary,
-    prod_pre_activation_gate: activation_checklist_report::ProdPreActivationGateSummary,
-    launch_dossier: activation_checklist_report::LaunchDossierSummary,
-    tiny_live_guardrails: activation_checklist_report::GuardrailSummary,
-    non_prod_readiness: activation_checklist_report::NonProdReadinessSummary,
+pub(crate) struct ActivationDecisionPacket {
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) packet_version: String,
+    pub(crate) build_version: String,
+    pub(crate) git_commit: Option<String>,
+    pub(crate) prod_config_path: String,
+    pub(crate) non_prod_config_path: String,
+    pub(crate) operator_note: Option<String>,
+    pub(crate) execution_enabled: bool,
+    pub(crate) read_only_packet: bool,
+    pub(crate) activation_authorized: bool,
+    pub(crate) discussion_ready_only: bool,
+    pub(crate) prod_stage3_remains_hard_gate: bool,
+    pub(crate) non_prod_evidence_is_secondary: bool,
+    pub(crate) verdict: ActivationDecisionPacketVerdict,
+    pub(crate) reason: String,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) checklist_verdict: String,
+    pub(crate) checklist_reason: String,
+    pub(crate) prod_config_fingerprint: ConfigFingerprintSummary,
+    pub(crate) non_prod_config_fingerprint: ConfigFingerprintSummary,
+    pub(crate) prod_pre_activation_gate: activation_checklist_report::ProdPreActivationGateSummary,
+    pub(crate) launch_dossier: activation_checklist_report::LaunchDossierSummary,
+    pub(crate) tiny_live_guardrails: activation_checklist_report::GuardrailSummary,
+    pub(crate) non_prod_readiness: activation_checklist_report::NonProdReadinessSummary,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -297,7 +297,9 @@ async fn run(config: Config) -> Result<String> {
     }
 }
 
-async fn evaluate_activation_decision_packet(config: &Config) -> Result<ActivationDecisionPacket> {
+pub(crate) async fn evaluate_activation_decision_packet(
+    config: &Config,
+) -> Result<ActivationDecisionPacket> {
     let checklist_report = activation_checklist_report::evaluate_activation_checklist_report(
         &activation_checklist_report::Config {
             config_path: config.config_path.clone(),
@@ -550,7 +552,7 @@ fn write_output(path: &Path, contents: &str) -> Result<()> {
     })
 }
 
-fn render_human(packet: &ActivationDecisionPacket) -> String {
+pub(crate) fn render_human(packet: &ActivationDecisionPacket) -> String {
     [
         "event=copybot_activation_decision_packet".to_string(),
         format!("generated_at={}", packet.generated_at.to_rfc3339()),

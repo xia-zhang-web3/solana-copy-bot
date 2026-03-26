@@ -1674,6 +1674,37 @@ Acceptance update (`2026-03-26`, activation decision packet export):
    - `cargo test -p copybot-app --bin copybot_activation_decision_packet`
    - `cargo test -p copybot-app --bin copybot_activation_checklist_report`
 
+Acceptance update (`2026-03-26`, activation runbook generator):
+
+1. The repo now also has one final planning-only operator handoff surface:
+   - `copybot_activation_runbook --config /etc/solana-copy-bot/live.server.toml --non-prod-config /etc/solana-copy-bot/devnet.server.toml --json --output /var/www/solana-copy-bot/state/activation_runbook/latest.json --markdown-output /var/www/solana-copy-bot/state/activation_runbook/latest.md`
+2. This command is still read-only and planning-safe:
+   - it does not enable `execution.enabled`
+   - it does not mutate live config
+   - it does not restart services
+   - it does not rerun heavy drills by default
+   - it does not submit trades
+3. It reuses the accepted decision packet and launch dossier rather than
+   inventing another decision layer, and produces a human-usable handoff
+   artifact with:
+   - preflight checks and explicit blockers
+   - exact bounded activation overlay steps
+   - post-change verification commands
+   - rollback triggers and rollback procedure
+   - explicit not-authorized disclaimer
+4. Important runbook verdicts:
+   - `runbook_blocked`
+   - `runbook_discussion_ready_but_not_authorized`
+   - `runbook_refused_for_profile_mismatch`
+5. Practical meaning:
+   - operators can now export both an archival decision packet and a
+     human-usable runbook from the same accepted planning truth
+   - even a discussion-ready runbook still does not authorize production
+     activation and does not override the Stage 3 prod gate
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_runbook`
+   - `cargo test -p copybot-app --bin copybot_activation_decision_packet`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

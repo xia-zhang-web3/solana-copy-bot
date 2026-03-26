@@ -489,6 +489,38 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    archival decision artifact for later manual review, change discussion, and
    incident/postmortem comparison.
 
+## Activation Runbook
+
+1. Operators now also have a final planning-only handoff/runbook generator:
+   - `copybot_activation_runbook --config /etc/solana-copy-bot/live.server.toml --non-prod-config /etc/solana-copy-bot/devnet.server.toml --json --output /var/www/solana-copy-bot/state/activation_runbook/latest.json --markdown-output /var/www/solana-copy-bot/state/activation_runbook/latest.md`
+2. This command stays read-only and planning-safe:
+   - it does not enable `execution.enabled`
+   - it does not mutate live config
+   - it does not restart services
+   - it does not rerun heavy drills by default
+   - it does not submit trades
+3. It reuses the accepted activation decision packet and launch dossier
+   instead of inventing another approval layer:
+   - `copybot_activation_decision_packet`
+   - `copybot_tiny_live_activation_plan`
+4. The exported runbook is meant for later manual handoff/review and includes:
+   - current state and preflight checks
+   - explicit stop-here conditions
+   - bounded activation candidate steps
+   - post-change verification commands
+   - rollback triggers and rollback procedure
+   - explicit not-authorized disclaimer
+5. Important runbook verdicts:
+   - `runbook_blocked`
+   - `runbook_discussion_ready_but_not_authorized`
+   - `runbook_refused_for_profile_mismatch`
+6. Difference from the decision packet:
+   - the decision packet is the archival summary artifact
+   - the runbook is the human-usable ordered handoff package built from that
+     packet and the accepted launch dossier
+7. A discussion-ready runbook is still not activation authorization. It is a
+   planning-only operator handoff for a later explicit manual change review.
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

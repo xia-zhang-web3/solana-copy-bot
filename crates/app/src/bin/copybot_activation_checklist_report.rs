@@ -20,7 +20,7 @@ mod pre_activation_gate_report;
 mod tiny_live_activation_plan;
 #[allow(dead_code)]
 #[path = "copybot_tiny_live_guardrail_audit.rs"]
-mod tiny_live_guardrail_audit;
+pub(crate) mod tiny_live_guardrail_audit;
 
 const USAGE: &str = "usage: copybot_activation_checklist_report --config <prod-path> --non-prod-config <path> [--json] [--now <rfc3339>] [--stage3-limit <count>] [--stage3-recent-horizon-seconds <seconds>] [--rehearsal-limit <count>] [--rehearsal-recent-horizon-seconds <seconds>] [--min-recent-acceptable-rehearsals <count>] [--non-prod-limit <count>] [--non-prod-dress-recent-horizon-seconds <seconds>] [--non-prod-activation-recent-horizon-seconds <seconds>] [--non-prod-min-recent-green-dress <count>] [--non-prod-min-recent-green-activation <count>]";
 #[allow(dead_code)]

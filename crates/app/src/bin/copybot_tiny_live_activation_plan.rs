@@ -11,13 +11,13 @@ use std::path::{Path, PathBuf};
 
 #[allow(dead_code)]
 #[path = "copybot_pre_activation_gate_report.rs"]
-mod pre_activation_gate_report;
+pub(crate) mod pre_activation_gate_report;
 #[allow(dead_code)]
 #[path = "copybot_tiny_live_guardrail_audit.rs"]
-mod tiny_live_guardrail_audit;
+pub(crate) mod tiny_live_guardrail_audit;
 #[allow(dead_code)]
 #[path = "copybot_tiny_live_policy_audit.rs"]
-mod tiny_live_policy_audit;
+pub(crate) mod tiny_live_policy_audit;
 
 const USAGE: &str = "usage: copybot_tiny_live_activation_plan --config <path> [--json] [--output <path>] [--now <rfc3339>] [--stage3-limit <count>] [--stage3-recent-horizon-seconds <seconds>] [--rehearsal-limit <count>] [--rehearsal-recent-horizon-seconds <seconds>] [--min-recent-acceptable-rehearsals <count>]";
 pub(crate) const DEFAULT_REHEARSAL_HISTORY_LIMIT: usize = 10;
