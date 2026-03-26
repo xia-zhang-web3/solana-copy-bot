@@ -735,6 +735,47 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    glue layer that turns the accepted artifact chain into one bounded review
    generation without touching production execution state.
 
+## Activation Artifact Channel
+
+1. Operators now also have an explicit channel/latest-pointer manager for the
+   current review generation:
+   - report:
+     `copybot_activation_artifact_channel --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --report --json`
+   - promote:
+     `copybot_activation_artifact_channel --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --promote --generation 2026-03-26T12:00:00+00:00|prod_fp|non_prod_fp --allow-overwrite --json`
+   - verify:
+     `copybot_activation_artifact_channel --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --verify --json`
+2. The channel surface writes only explicit metadata under `--channel-dir`:
+   - default channel name is `current_review`
+   - channel state is stored as JSON metadata rather than hidden symlink
+     conventions
+   - archive generations themselves are never rewritten by this command
+3. Promote mode is bounded and conservative:
+   - it refuses to point at a non-existent packet-backed generation
+   - it refuses to promote over invalid archive state
+   - it does not silently overwrite existing channel metadata unless
+     `--allow-overwrite` is passed
+   - optional `--manifest-path` and `--bundle-path` references are verified
+     before channel metadata is written
+4. Verify mode answers:
+   - whether the channel points to an existing archive generation
+   - whether referenced packet/runbook paths still exist
+   - whether optional manifest or bundle references still verify
+   - whether channel metadata is internally consistent with archive lineage
+5. Important channel verdicts:
+   - `artifact_channel_ok`
+   - `artifact_channel_missing_target`
+   - `artifact_channel_inconsistent`
+   - `artifact_channel_promoted`
+   - `artifact_channel_refused_without_overwrite`
+   - `artifact_channel_invalid_metadata`
+6. This surface is artifact-channel management only:
+   - it does not enable `execution.enabled`
+   - it does not mutate live config
+   - it does not rerun heavy prod or non-prod logic
+   - it does not authorize production activation or override the Stage 3 prod
+     gate
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

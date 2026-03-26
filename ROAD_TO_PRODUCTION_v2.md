@@ -1943,6 +1943,50 @@ Acceptance update (`2026-03-26`, activation artifact publish pipeline):
 7. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_publish`
 
+Acceptance update (`2026-03-26`, activation artifact channel/latest-pointer manager):
+
+1. The repo now also has an explicit channel/latest-pointer surface over
+   published activation artifacts:
+   - report:
+     `copybot_activation_artifact_channel --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --report --json`
+   - promote:
+     `copybot_activation_artifact_channel --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --promote --generation 2026-03-26T12:00:00+00:00|prod_fp|non_prod_fp --allow-overwrite --json`
+   - verify:
+     `copybot_activation_artifact_channel --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --verify --json`
+2. Channel state is explicit JSON metadata under `--channel-dir`:
+   - default channel name is `current_review`
+   - selected generation identity is recorded by decision-packet timestamp plus
+     prod/non-prod config fingerprints
+   - packet/runbook paths and optional manifest/bundle references are stored as
+     explicit metadata rather than hidden pointer conventions
+3. Promote mode is bounded and conservative:
+   - it refuses to point at a non-existent packet-backed generation
+   - it refuses to point through invalid archive state
+   - it does not silently overwrite existing channel metadata without
+     `--allow-overwrite`
+   - it does not rewrite archive generations or delete anything
+4. Verify mode now detects:
+   - missing target generations
+   - missing packet/runbook files
+   - invalid channel metadata
+   - manifest/bundle reference drift when those references are present
+5. Important channel verdicts:
+   - `artifact_channel_ok`
+   - `artifact_channel_missing_target`
+   - `artifact_channel_inconsistent`
+   - `artifact_channel_promoted`
+   - `artifact_channel_refused_without_overwrite`
+   - `artifact_channel_invalid_metadata`
+6. Practical meaning:
+   - operators no longer need to edit JSON by hand to declare which review
+     generation is the current/latest one under discussion
+   - channel verify now gives one explicit trust check over that latest review
+     pointer without touching production execution state
+   - this is still artifact management only and does not authorize production
+     activation or override the Stage 3 prod gate
+7. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_channel`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

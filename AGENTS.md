@@ -214,6 +214,78 @@ This is the expected style for future sessions too.
 - Prefer one accepted architecture over multiple competing legacy paths.
 - When a batch is accepted but not needed on the server yet, do not roll it out just because it exists.
 
+## Current Server Facts
+
+Snapshot as of `2026-03-26`.
+
+### Live Server
+
+- Current host is `52.28.0.218`.
+- Main service is healthy:
+  - `solana-copy-bot.service = active`
+  - `copybot-discovery-recent-raw-snapshot.timer = active/enabled`
+  - `copybot-discovery-runtime-export.timer = active`
+
+### Disk And Snapshot Path
+
+- `/var/www/solana-copy-bot/state` is currently bounded, not re-inflating.
+- Observed live slice:
+  - `215G used / 252G avail / 47%`
+  - `state/discovery_restore/recent_raw = 181G`
+  - archive count holds at `24`
+- The snapshot timer is currently healthy after the retention/timeout fix:
+  - recent runs finish and return to `waiting`
+  - the old archive-growth incident was fixed by staged promotion plus full-set retention
+
+### Raw Window Progress
+
+- `discovery_recent_raw.db` currently covers approximately:
+  - `2026-03-24 12:07:11 UTC`
+  - through `2026-03-26 12:56:24 UTC`
+- That is about `2d 0h 49m` of raw coverage.
+- With `scoring_window_days = 5`, the remaining time to a full raw window is about:
+  - `2d 23h 11m`
+- Operationally: this is closer to `3 days remaining`, not `2.5 days`.
+
+### Discovery Ingestion
+
+- Swap ingestion is alive.
+- Example live growth sample observed on the server:
+  - `rowid 16234032 -> 16235713`
+  - over about `19s`
+  - i.e. `+1681` rows
+- Discovery cycles continue to complete normally.
+
+### Stage 3 Current Interpretation
+
+- Stage 3 is still blocked.
+- This is not currently a disk/runtime crash issue.
+- It is a semantic gate issue caused by insufficient raw coverage.
+
+- Important observed fact:
+  - the latest persisted `discovery_wallet_freshness_history` capture is still
+    `2026-03-25 18:59:01 UTC`
+  - no newer captures have been written since then
+
+- Root cause interpretation from code + logs:
+  - in-band Stage 3 captures are only persisted when `publish_due` and
+    `runtime_mode == Healthy`
+  - at `2026-03-25 19:00 UTC`, the runtime rolled into a new metrics bucket,
+    invalidated the cached healthy summary, recomputed truth, and switched to
+    `fail_closed`
+  - the scoring source became
+    `raw_window_incomplete_no_recent_published_universe`
+  - once in `fail_closed`, the capture path stops by design
+
+- Practical implication:
+  - waiting for more raw coverage is still necessary
+  - after the raw window becomes complete and runtime returns to `Healthy`, the
+    service will still need fresh captures to accumulate again before Stage 3
+    can go green
+  - do not interpret the current stale capture table as a broken writer until
+    raw coverage is complete and the runtime has had time to resume fresh
+    healthy captures
+
 ## If A New Session Starts Elsewhere
 
 A new AI session should:
