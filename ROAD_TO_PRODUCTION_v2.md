@@ -2075,6 +2075,29 @@ Acceptance update (`2026-03-26`, activation release artifact archive publisher):
 5. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_release_publish_report`
 
+Acceptance update (`2026-03-26`, activation release provenance report):
+
+1. The repo now also has a provenance-oriented surface for the release side:
+   - `copybot_activation_artifact_release_provenance_report --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --history-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --json`
+2. The new surface correlates three release-side inputs without rerunning heavy
+   prod/non-prod logic:
+   - persisted release artifacts in the deterministic release archive
+   - latest-pointer metadata and target verification
+   - release history inputs from a history dir or explicit release artifact set
+3. Operational meaning:
+   - operators no longer need to mentally stitch together release archive,
+     latest pointer, and release history coverage
+   - dangling latest pointers, missing history coverage, malformed release
+     artifacts, and legacy timestamp ambiguity are surfaced explicitly
+   - ambiguous legacy timestamp lineage does not get a false clean-green
+     provenance verdict
+4. This remains release artifact analysis only:
+   - it does not mutate release archive contents
+   - it does not rewrite latest-pointer metadata
+   - it does not enable execution or authorize activation
+5. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_release_provenance_report`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

@@ -883,6 +883,36 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not mutate live config
    - it does not authorize activation or override the Stage 3 prod gate
 
+## Activation Artifact Release Provenance Report
+
+1. Operators now also have a provenance-oriented surface for the release side:
+   - release provenance report:
+     `copybot_activation_artifact_release_provenance_report --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --history-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --json`
+2. The report correlates three release-side inputs without rerunning publish or
+   heavy prod/non-prod logic:
+   - persisted release artifacts in the deterministic release archive
+   - latest-pointer metadata plus target verification
+   - release history inputs from a history dir or explicit release artifact
+     paths
+3. Release provenance completeness means:
+   - archive releases are covered by the history surface
+   - latest pointer resolves to an existing release artifact and matches its
+     recorded identity
+   - release-side lineage is not dangling or silently inconsistent
+4. Legacy timestamp ambiguity remains explicit:
+   - compat-loaded release artifacts without stored `released_at` are surfaced
+     honestly
+   - if ordering still depends on ambiguous legacy timestamps, the provenance
+     report does not return a clean green verdict
+5. Latest pointer participates directly in provenance:
+   - the report shows which release artifact it selects
+   - whether it matches the latest archive/history release
+   - whether it is behind, ahead of history, missing, or inconsistent
+6. This is release artifact analysis only:
+   - it does not rewrite release archive artifacts
+   - it does not rewrite latest-pointer metadata
+   - it does not enable execution or authorize activation
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

@@ -1,4 +1,5 @@
 #![recursion_limit = "256"]
+#![allow(unused_attributes)]
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -18,7 +19,7 @@ mod activation_artifact_release_history;
 
 const USAGE: &str = "usage: copybot_activation_artifact_release_publish_report --release-archive-dir <path> [--json] [--pointer-name <name>] (--publish [release args...] [--persist-latest-pointer --latest-pointer-dir <path> [--allow-latest-pointer-overwrite]] | --report-latest --latest-pointer-dir <path> | --verify-latest --latest-pointer-dir <path>)";
 const RELEASE_POINTER_VERSION: &str = "1";
-const DEFAULT_LATEST_POINTER_NAME: &str = "latest_release";
+pub(crate) const DEFAULT_LATEST_POINTER_NAME: &str = "latest_release";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -56,7 +57,7 @@ enum Mode {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ArtifactReleaseReportPublisherVerdict {
+pub(crate) enum ArtifactReleaseReportPublisherVerdict {
     ArtifactReleaseReportPublished,
     ArtifactReleaseReportPublishedAndPointedLatest,
     ArtifactReleaseReportPointerBlocked,
@@ -97,37 +98,40 @@ struct PersistedReleaseArtifact {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ArtifactReleasePublishReport {
-    mode: String,
-    verdict: ArtifactReleaseReportPublisherVerdict,
-    reason: String,
-    release_archive_dir: String,
-    persisted_release_artifact_path: Option<String>,
-    persisted_release_artifact_exists: bool,
-    persisted_release_artifact_file_name: Option<String>,
-    release_verdict: Option<String>,
-    release_reason: Option<String>,
-    generation_id: Option<String>,
-    released_at: Option<DateTime<Utc>>,
-    released_at_source: Option<activation_artifact_release_history::ReleaseTimestampSource>,
-    compat_loaded_without_released_at: bool,
-    deterministic_timestamp_available: bool,
-    ordered_history_confident: bool,
-    latest_pointer_attempted: bool,
-    latest_pointer_updated: bool,
-    latest_pointer_dir: Option<String>,
-    latest_pointer_name: String,
-    latest_pointer_path: Option<String>,
-    latest_pointer_exists: bool,
-    latest_pointer_overwrite_used: bool,
-    latest_pointer_target_exists: bool,
-    latest_pointer_target_matches_identity: bool,
-    verification_attempted: bool,
-    missing_paths: Vec<String>,
-    inconsistencies: Vec<String>,
-    execution_untouched: bool,
-    activation_authorized: bool,
-    not_authorized_summary: String,
+pub(crate) struct ArtifactReleasePublishReport {
+    pub(crate) mode: String,
+    pub(crate) verdict: ArtifactReleaseReportPublisherVerdict,
+    pub(crate) reason: String,
+    pub(crate) release_archive_dir: String,
+    pub(crate) persisted_release_artifact_path: Option<String>,
+    pub(crate) persisted_release_artifact_exists: bool,
+    pub(crate) persisted_release_artifact_file_name: Option<String>,
+    pub(crate) release_verdict: Option<String>,
+    pub(crate) release_reason: Option<String>,
+    pub(crate) generation_id: Option<String>,
+    pub(crate) released_at: Option<DateTime<Utc>>,
+    pub(crate) released_at_source:
+        Option<activation_artifact_release_history::ReleaseTimestampSource>,
+    pub(crate) compat_loaded_without_released_at: bool,
+    pub(crate) deterministic_timestamp_available: bool,
+    pub(crate) ordered_history_confident: bool,
+    pub(crate) latest_pointer_attempted: bool,
+    pub(crate) latest_pointer_updated: bool,
+    pub(crate) latest_pointer_dir: Option<String>,
+    pub(crate) latest_pointer_name: String,
+    pub(crate) latest_pointer_path: Option<String>,
+    pub(crate) latest_pointer_source_release_archive_dir: Option<String>,
+    pub(crate) latest_pointer_pointed_at: Option<DateTime<Utc>>,
+    pub(crate) latest_pointer_exists: bool,
+    pub(crate) latest_pointer_overwrite_used: bool,
+    pub(crate) latest_pointer_target_exists: bool,
+    pub(crate) latest_pointer_target_matches_identity: bool,
+    pub(crate) verification_attempted: bool,
+    pub(crate) missing_paths: Vec<String>,
+    pub(crate) inconsistencies: Vec<String>,
+    pub(crate) execution_untouched: bool,
+    pub(crate) activation_authorized: bool,
+    pub(crate) not_authorized_summary: String,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -868,6 +872,27 @@ fn inspect_latest_pointer(
     ))
 }
 
+#[allow(dead_code)]
+pub(crate) fn inspect_latest_pointer_report(
+    release_archive_dir: &Path,
+    latest_pointer_dir: &Path,
+    pointer_name: &str,
+    verification_attempted: bool,
+) -> Result<ArtifactReleasePublishReport> {
+    let config = Config {
+        release_archive_dir: release_archive_dir.to_path_buf(),
+        latest_pointer_dir: Some(latest_pointer_dir.to_path_buf()),
+        pointer_name: parse_pointer_name(pointer_name.to_string())?,
+        json: false,
+        mode: if verification_attempted {
+            Mode::VerifyLatest
+        } else {
+            Mode::ReportLatest
+        },
+    };
+    inspect_latest_pointer(&config, verification_attempted)
+}
+
 fn build_report(
     mode: &str,
     verdict: ArtifactReleaseReportPublisherVerdict,
@@ -917,6 +942,8 @@ fn build_report(
             .latest_pointer_dir
             .as_ref()
             .map(|dir| latest_pointer_path(dir, &config.pointer_name).display().to_string()),
+        latest_pointer_source_release_archive_dir: None,
+        latest_pointer_pointed_at: None,
         latest_pointer_exists: config
             .latest_pointer_dir
             .as_ref()
@@ -986,6 +1013,8 @@ fn build_report_from_pointer_metadata(
             .map(|path| path.display().to_string()),
         latest_pointer_name: config.pointer_name.clone(),
         latest_pointer_path: Some(metadata_path.display().to_string()),
+        latest_pointer_source_release_archive_dir: Some(metadata.source_release_archive_dir.clone()),
+        latest_pointer_pointed_at: Some(metadata.pointed_at),
         latest_pointer_exists: metadata_path.exists(),
         latest_pointer_overwrite_used: false,
         latest_pointer_target_exists: Path::new(&metadata.selected_release_artifact_path).exists(),
@@ -1135,6 +1164,20 @@ fn render_human(report: &ArtifactReleasePublishReport) -> String {
                 .unwrap_or_else(|| "null".to_string())
         ),
         format!(
+            "latest_pointer_source_release_archive_dir={}",
+            report
+                .latest_pointer_source_release_archive_dir
+                .clone()
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "latest_pointer_pointed_at={}",
+            report
+                .latest_pointer_pointed_at
+                .map(|value| value.to_rfc3339())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
             "latest_pointer_target_matches_identity={}",
             report.latest_pointer_target_matches_identity
         ),
@@ -1265,6 +1308,7 @@ mod tests {
             ArtifactReleaseReportPublisherVerdict::ArtifactReleaseReportVerifyOk
         );
         assert!(verify.latest_pointer_target_matches_identity);
+        fs::remove_dir_all(&release_archive_abs).expect("cleanup relative archive dir");
     }
 
     #[test]
