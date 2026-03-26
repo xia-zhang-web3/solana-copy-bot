@@ -99,30 +99,37 @@ pub(crate) struct ArtifactStateSnapshotArtifact {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct StateLatestPointerMetadata {
-    pointer_version: String,
-    pointer_name: String,
-    source_state_archive_dir: String,
-    selected_snapshot_path: String,
-    selected_snapshot_file_name: String,
-    snapshot_mode: String,
-    snapshotted_at: DateTime<Utc>,
-    snapshot_verdict: String,
-    snapshot_reason: String,
-    selected_review_generation_id: Option<String>,
-    selected_latest_release_generation_id: Option<String>,
-    selection_alignment_matches: bool,
-    coherent_for_review_operations: bool,
-    ambiguous_legacy_count: usize,
-    pointed_at: DateTime<Utc>,
-    build_version: String,
-    git_commit: Option<String>,
+pub(crate) struct StateLatestPointerMetadata {
+    pub(crate) pointer_version: String,
+    pub(crate) pointer_name: String,
+    pub(crate) source_state_archive_dir: String,
+    pub(crate) selected_snapshot_path: String,
+    pub(crate) selected_snapshot_file_name: String,
+    pub(crate) snapshot_mode: String,
+    pub(crate) snapshotted_at: DateTime<Utc>,
+    pub(crate) snapshot_verdict: String,
+    pub(crate) snapshot_reason: String,
+    pub(crate) selected_review_generation_id: Option<String>,
+    pub(crate) selected_latest_release_generation_id: Option<String>,
+    pub(crate) selection_alignment_matches: bool,
+    pub(crate) coherent_for_review_operations: bool,
+    pub(crate) ambiguous_legacy_count: usize,
+    pub(crate) pointed_at: DateTime<Utc>,
+    pub(crate) build_version: String,
+    pub(crate) git_commit: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct PersistedStateSnapshot {
     path: PathBuf,
     canonical_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct LoadedStateLatestPointerMetadata {
+    pub(crate) path: PathBuf,
+    pub(crate) metadata: StateLatestPointerMetadata,
 }
 
 #[derive(Debug, Clone)]
@@ -940,6 +947,7 @@ fn inspect_latest_pointer(
     .with_pointer_metadata(Some(&metadata), true))
 }
 
+#[allow(dead_code)]
 pub(crate) fn inspect_latest_pointer_report(
     state_archive_dir: &Path,
     latest_pointer_dir: &Path,
@@ -1001,6 +1009,33 @@ pub(crate) fn inspect_state_snapshot_artifact(path: &Path) -> Result<LoadedState
 
 fn latest_pointer_path(latest_pointer_dir: &Path, pointer_name: &str) -> PathBuf {
     latest_pointer_dir.join(format!("{pointer_name}.json"))
+}
+
+#[allow(dead_code)]
+pub(crate) fn inspect_latest_pointer_metadata(
+    latest_pointer_dir: &Path,
+    pointer_name: &str,
+) -> Result<Option<LoadedStateLatestPointerMetadata>> {
+    let metadata_path = latest_pointer_path(latest_pointer_dir, pointer_name);
+    if !metadata_path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&metadata_path).with_context(|| {
+        format!(
+            "failed reading snapshot latest pointer metadata {}",
+            metadata_path.display()
+        )
+    })?;
+    let metadata: StateLatestPointerMetadata = serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "failed parsing snapshot latest pointer metadata json {}",
+            metadata_path.display()
+        )
+    })?;
+    Ok(Some(LoadedStateLatestPointerMetadata {
+        path: metadata_path,
+        metadata,
+    }))
 }
 
 fn state_snapshot_file_name(snapshot: &ArtifactStateSnapshotArtifact) -> String {

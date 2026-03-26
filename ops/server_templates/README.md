@@ -1045,6 +1045,28 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not rewrite state snapshots or pointer metadata
    - it does not enable execution or authorize activation
 
+## Activation Artifact State Snapshot Provenance
+
+1. Operators now also have a provenance-oriented surface for the persisted
+   state-snapshot layer itself:
+   - audit snapshot archive + latest pointer + history coverage:
+     `copybot_activation_artifact_state_provenance_report --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --history-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --json`
+2. Provenance completeness means:
+   - persisted state snapshots exist in the archive
+   - the snapshot latest pointer resolves to a real persisted snapshot
+   - the history surface covers the same snapshot lineage
+   - archive/history/pointer lineage does not drift away from itself
+3. Ambiguity and non-green state snapshots stay explicit:
+   - ambiguous current-state snapshots do not get flattened into a healthy
+     provenance verdict
+   - if the latest pointer or history depends on ambiguous or otherwise
+     non-green snapshots, the provenance result stays non-green
+4. This remains artifact analysis only:
+   - it does not rewrite state snapshots
+   - it does not rewrite snapshot latest-pointer metadata
+   - it does not enable execution
+   - it does not authorize activation or override the Stage 3 prod gate
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

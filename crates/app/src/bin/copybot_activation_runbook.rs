@@ -3,11 +3,10 @@ use chrono::{DateTime, Utc};
 use copybot_config::load_from_path;
 use copybot_discovery::wallet_freshness_audit::DEFAULT_HISTORY_CAPTURE_LIMIT;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[allow(dead_code)]
 #[path = "copybot_activation_decision_packet.rs"]
@@ -1104,6 +1103,8 @@ fn serialize_enum<T: Serialize>(value: &T) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn blocked_decision_packet_yields_blocked_runbook() {

@@ -9,7 +9,6 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[allow(dead_code)]
 #[path = "copybot_activation_artifact_archive.rs"]
@@ -779,6 +778,7 @@ fn serialize_enum<T: Serialize>(value: &T) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn manifest_generation_succeeds_for_valid_archive() {

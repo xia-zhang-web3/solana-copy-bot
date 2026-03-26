@@ -2187,6 +2187,30 @@ Acceptance update (`2026-03-26`, activation artifact state snapshot archive and 
    - `cargo test -p copybot-app --bin copybot_activation_artifact_state_publish_report`
    - `cargo test -p copybot-app --bin copybot_activation_artifact_state_history`
 
+Acceptance update (`2026-03-26`, activation artifact state snapshot provenance):
+
+1. The repo now also has a provenance-oriented audit surface over the persisted
+   state-snapshot layer:
+   - `copybot_activation_artifact_state_provenance_report --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --history-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --json`
+2. The new surface is intentionally thin and read-only:
+   - it reuses persisted state snapshot parsing and snapshot latest-pointer
+     verification instead of re-running heavy prod/non-prod logic
+   - it correlates archive lineage, latest-pointer selection, and history
+     coverage for the same persisted snapshot identities
+3. Operational meaning:
+   - operators no longer need to manually stitch together snapshot archive
+     contents, latest-pointer metadata, and state history inputs
+   - dangling pointer targets, missing history coverage, and inconsistent
+     snapshot lineage are surfaced directly
+   - ambiguous or otherwise non-green state snapshots cannot appear as clean
+     provenance
+4. This remains artifact analysis only:
+   - it does not rewrite the state snapshot archive
+   - it does not rewrite snapshot latest-pointer metadata
+   - it does not enable execution or authorize activation
+5. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_state_provenance_report`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored
