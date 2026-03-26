@@ -2324,6 +2324,37 @@ Acceptance update (`2026-03-26`, activation artifact state snapshot bundle prove
 5. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_state_bundle_provenance_report`
 
+Acceptance update (`2026-03-26`, activation artifact state snapshot bundle archive publisher):
+
+1. The repo now also has a deterministic persisted archive flow for
+   state-snapshot bundles themselves:
+   - publish one selected snapshot bundle into the archive:
+     `copybot_activation_artifact_state_bundle_publish_report --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --publish --snapshot state_snapshot__2026-03-26T12-00-00Z__artifact_state_coherent.json --json`
+   - publish and update the current/latest archived bundle pointer:
+     `copybot_activation_artifact_state_bundle_publish_report --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --publish --snapshot state_snapshot__2026-03-26T12-00-00Z__artifact_state_coherent.json --persist-latest-pointer --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --json`
+   - report or verify the current/latest archived bundle pointer:
+     `copybot_activation_artifact_state_bundle_publish_report --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --report-latest --json`
+     `copybot_activation_artifact_state_bundle_publish_report --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --verify-latest --json`
+2. The archive/pointer layer is intentionally conservative:
+   - archived bundle directory naming is deterministic from the selected
+     persisted snapshot identity
+   - publish refuses to silently overwrite an existing archived bundle
+   - latest-pointer metadata is written only under the explicit pointer dir,
+     and overwrite still requires an explicit flag
+3. Operational meaning:
+   - operators can now promote one exported state-snapshot bundle from ad hoc
+     output into a deterministic bundle archive
+   - latest-pointer verify/report checks pointer metadata, bundle existence,
+     bundle integrity, and target identity against the requested archive root
+   - the selected snapshot's underlying `state_verdict`, reason, and ambiguity
+     remain explicit instead of being upgraded by bundling
+4. This remains artifact handling only:
+   - it does not rewrite the state snapshot archive
+   - it does not rewrite existing bundle contents
+   - it does not enable execution or authorize activation
+5. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_state_bundle_publish_report`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

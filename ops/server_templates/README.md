@@ -1182,6 +1182,39 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not enable execution
    - it does not authorize activation or override the Stage 3 prod gate
 
+## Activation Artifact State Snapshot Bundle Archive Publisher
+
+1. Operators now also have a deterministic archive/pointer surface for
+   persisted state-snapshot bundles themselves:
+   - publish one selected snapshot bundle into the bundle archive:
+     `copybot_activation_artifact_state_bundle_publish_report --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --publish --snapshot state_snapshot__2026-03-26T12-00-00Z__artifact_state_coherent.json --json`
+   - publish and update the current/latest bundle pointer:
+     `copybot_activation_artifact_state_bundle_publish_report --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --publish --snapshot state_snapshot__2026-03-26T12-00-00Z__artifact_state_coherent.json --persist-latest-pointer --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --json`
+   - report or verify the current/latest archived bundle pointer:
+     `copybot_activation_artifact_state_bundle_publish_report --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --report-latest --json`
+     `copybot_activation_artifact_state_bundle_publish_report --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --verify-latest --json`
+2. The archive layout is intentionally deterministic and conservative:
+   - one archived bundle directory is derived from the selected persisted state
+     snapshot file name
+   - publish refuses to silently overwrite an existing archived bundle on
+     collision
+   - latest-pointer metadata is written only under the explicit
+     `--bundle-latest-pointer-dir`, and overwrite still requires an explicit
+     flag
+3. Current/latest bundle verification is intentionally separate from snapshot
+   state health:
+   - verify/report latest checks pointer metadata, bundle existence, bundle
+     integrity, and pointer-target identity
+   - it also preserves the selected snapshot's original
+     `state_verdict`/reason/ambiguity fields
+   - an archived bundle can be integrity-clean while still preserving an
+     ambiguous or otherwise non-green snapshot truth
+4. This remains artifact handling only:
+   - it does not rewrite the state snapshot archive
+   - it does not rewrite existing bundle contents
+   - it does not enable execution
+   - it does not authorize activation or override the Stage 3 prod gate
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`
