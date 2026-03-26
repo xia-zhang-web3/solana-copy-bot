@@ -251,6 +251,28 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 6. A green drill means the accepted bounded launch dossier remained internally
    coherent under non-production rehearsal. It still does not authorize
    production activation and it does not override the Stage 3 production gate.
+
+## Devnet Consolidated Readiness
+
+1. Stage 4 non-production evidence now also has a consolidated read-only report:
+   - `copybot_devnet_readiness_report --config /etc/solana-copy-bot/devnet.server.toml --json`
+2. The command is non-prod only and refuses production-like `system.env`
+   profiles. It does not rerun drills, mutate config, restart services, or
+   submit trades.
+3. It summarizes the persisted recent-history truth from:
+   - `copybot_devnet_dress_rehearsal`
+   - `copybot_devnet_activation_drill`
+4. Important top-level verdicts:
+   - `devnet_readiness_green`
+   - `devnet_readiness_insufficient_recent_evidence`
+   - `devnet_readiness_blocked_by_dress_rehearsal_history`
+   - `devnet_readiness_blocked_by_activation_drill_history`
+   - `devnet_readiness_stale_history`
+   - `devnet_readiness_refused_for_prod_profile`
+5. A green readiness report means recent non-prod dress-rehearsal evidence and
+   recent non-prod activation-drill evidence are both fresh and acceptable.
+   It still does not authorize production activation and it does not override
+   the Stage 3 production gate.
    - `ops/server_templates/executor.env.example`
    - `ops/server_templates/copybot-execution-mock-upstream.service`
 

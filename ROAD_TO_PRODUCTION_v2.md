@@ -1580,6 +1580,32 @@ Acceptance update (`2026-03-26`, devnet activation-and-rollback drill package):
 6. Checks:
    - `cargo test -p copybot-app --bin copybot_devnet_activation_drill`
 
+Acceptance update (`2026-03-26`, consolidated devnet readiness report):
+
+1. Stage 4 non-production evidence now also has a single consolidated read-only
+   operator surface:
+   - `copybot_devnet_readiness_report --config /etc/solana-copy-bot/devnet.server.toml --json`
+2. The command is non-prod only, reuses persisted drill history, and does not
+   rerun heavy rehearsal logic by default.
+3. It summarizes two accepted evidence layers together:
+   - recent `copybot_devnet_dress_rehearsal` history
+   - recent `copybot_devnet_activation_drill` history
+4. Important top-level verdicts:
+   - `devnet_readiness_green`
+   - `devnet_readiness_insufficient_recent_evidence`
+   - `devnet_readiness_blocked_by_dress_rehearsal_history`
+   - `devnet_readiness_blocked_by_activation_drill_history`
+   - `devnet_readiness_stale_history`
+   - `devnet_readiness_refused_for_prod_profile`
+5. Practical meaning:
+   - operators no longer need to manually join separate non-prod history
+     surfaces
+   - stale or missing non-prod evidence can no longer look green by accident
+   - a green non-prod readiness report still does not authorize production
+     activation and does not override the Stage 3 gate
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_devnet_readiness_report`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored
