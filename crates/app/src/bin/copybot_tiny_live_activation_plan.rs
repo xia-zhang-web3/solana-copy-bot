@@ -13,6 +13,9 @@ use std::path::{Path, PathBuf};
 #[path = "copybot_pre_activation_gate_report.rs"]
 mod pre_activation_gate_report;
 #[allow(dead_code)]
+#[path = "copybot_tiny_live_guardrail_audit.rs"]
+mod tiny_live_guardrail_audit;
+#[allow(dead_code)]
 #[path = "copybot_tiny_live_policy_audit.rs"]
 mod tiny_live_policy_audit;
 
@@ -56,6 +59,7 @@ enum TinyLiveActivationPlanVerdict {
     ActivationPlanReadyWhenStageGateAllows,
     BlockedByPreActivationGate,
     BlockedByPolicyContract,
+    BlockedByGuardrailContract,
     ActivationOverlayIncomplete,
     RollbackPlanIncomplete,
     ServiceRestartContractIncomplete,
@@ -80,6 +84,18 @@ struct PolicyAuditSummary {
     blocker_count: usize,
     first_blocker: Option<String>,
     warnings_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GuardrailAuditSummary {
+    verdict: String,
+    reason: String,
+    bounded: bool,
+    tiny_live_guardrails_enabled: bool,
+    first_blocker: Option<String>,
+    blocker_count: usize,
+    warnings_count: usize,
+    rollback_triggers: Vec<tiny_live_guardrail_audit::RollbackTriggerSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -152,6 +168,7 @@ struct TinyLiveActivationPlanReport {
     drift_findings: Vec<String>,
     pre_activation_gate: ActivationPlanGateSummary,
     tiny_live_policy: PolicyAuditSummary,
+    tiny_live_guardrails: GuardrailAuditSummary,
     activation_overlay_complete: bool,
     rollback_plan_complete: bool,
     service_restart_contract_complete: bool,
@@ -281,11 +298,16 @@ async fn run(config: Config) -> Result<String> {
     .await?;
     let tiny_live_policy =
         tiny_live_policy_audit::evaluate_tiny_live_policy(&config.config_path, &loaded_config)?;
+    let tiny_live_guardrails = tiny_live_guardrail_audit::evaluate_tiny_live_guardrails(
+        &config.config_path,
+        &loaded_config,
+    )?;
     let report = build_activation_plan_report(
         &config,
         &loaded_config,
         pre_activation_gate,
         tiny_live_policy,
+        tiny_live_guardrails,
     );
     let json_output = serde_json::to_string_pretty(&report)
         .context("failed serializing tiny-live activation plan json")?;
@@ -320,6 +342,7 @@ fn build_activation_plan_report(
     loaded_config: &AppConfig,
     pre_activation_gate: pre_activation_gate_report::PreActivationGateReport,
     tiny_live_policy: tiny_live_policy_audit::TinyLivePolicyAuditReport,
+    tiny_live_guardrails: tiny_live_guardrail_audit::TinyLiveGuardrailAuditReport,
 ) -> TinyLiveActivationPlanReport {
     let overlay = build_overlay_plan(loaded_config, &tiny_live_policy);
     let service_restart_contract = build_service_restart_contract();
@@ -329,6 +352,7 @@ fn build_activation_plan_report(
     let (verdict, reason, mut blockers) = derive_plan_verdict(
         &pre_activation_gate,
         &tiny_live_policy,
+        &tiny_live_guardrails,
         &overlay,
         rollback_plan_complete,
         service_restart_contract.complete,
@@ -376,6 +400,16 @@ fn build_activation_plan_report(
             first_blocker: tiny_live_policy.blockers.first().cloned(),
             warnings_count: tiny_live_policy.warnings.len(),
         },
+        tiny_live_guardrails: GuardrailAuditSummary {
+            verdict: serialize_enum(&tiny_live_guardrails.verdict),
+            reason: tiny_live_guardrails.reason,
+            bounded: tiny_live_guardrails.current_config_bounded_for_later_tiny_live_monitoring,
+            tiny_live_guardrails_enabled: tiny_live_guardrails.tiny_live_guardrails_enabled,
+            first_blocker: tiny_live_guardrails.blockers.first().cloned(),
+            blocker_count: tiny_live_guardrails.blockers.len(),
+            warnings_count: tiny_live_guardrails.warnings.len(),
+            rollback_triggers: tiny_live_guardrails.rollback_triggers,
+        },
         activation_overlay_complete: overlay.complete,
         rollback_plan_complete,
         service_restart_contract_complete: service_restart_contract.complete,
@@ -391,6 +425,7 @@ fn build_activation_plan_report(
 fn derive_plan_verdict(
     pre_activation_gate: &pre_activation_gate_report::PreActivationGateReport,
     tiny_live_policy: &tiny_live_policy_audit::TinyLivePolicyAuditReport,
+    tiny_live_guardrails: &tiny_live_guardrail_audit::TinyLiveGuardrailAuditReport,
     overlay: &OverlayBuildResult,
     rollback_plan_complete: bool,
     service_restart_contract_complete: bool,
@@ -425,6 +460,19 @@ fn derive_plan_verdict(
                 tiny_live_policy.reason
             ),
             vec![format!("tiny_live_policy: {}", tiny_live_policy.reason)],
+        );
+    }
+    if !tiny_live_guardrails.current_config_bounded_for_later_tiny_live_monitoring {
+        return (
+            TinyLiveActivationPlanVerdict::BlockedByGuardrailContract,
+            format!(
+                "tiny-live guardrail envelope is not bounded enough yet: {}",
+                tiny_live_guardrails.reason
+            ),
+            vec![format!(
+                "tiny_live_guardrails: {}",
+                tiny_live_guardrails.reason
+            )],
         );
     }
     if !overlay.complete {
@@ -1098,6 +1146,30 @@ fn render_human(report: &TinyLiveActivationPlanReport) -> String {
         ),
         format!("tiny_live_policy_reason={}", report.tiny_live_policy.reason),
         format!(
+            "tiny_live_guardrail_verdict={}",
+            report.tiny_live_guardrails.verdict
+        ),
+        format!(
+            "tiny_live_guardrail_reason={}",
+            report.tiny_live_guardrails.reason
+        ),
+        format!(
+            "tiny_live_guardrails_bounded={}",
+            report.tiny_live_guardrails.bounded
+        ),
+        format!(
+            "tiny_live_guardrails_enabled={}",
+            report.tiny_live_guardrails.tiny_live_guardrails_enabled
+        ),
+        format!(
+            "tiny_live_guardrail_first_blocker={}",
+            report
+                .tiny_live_guardrails
+                .first_blocker
+                .clone()
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
             "activation_overlay_complete={}",
             report.activation_overlay_complete
         ),
@@ -1111,6 +1183,16 @@ fn render_human(report: &TinyLiveActivationPlanReport) -> String {
             report.activation_overlay_change_count
         ),
         format!("drift_findings={}", report.drift_findings.join(" | ")),
+        format!(
+            "rollback_trigger_summary={}",
+            report
+                .tiny_live_guardrails
+                .rollback_triggers
+                .iter()
+                .map(render_guardrail_trigger_summary)
+                .collect::<Vec<_>>()
+                .join(" ; ")
+        ),
         format!(
             "activation_overlay_changes={}",
             report
@@ -1159,6 +1241,37 @@ fn render_human(report: &TinyLiveActivationPlanReport) -> String {
     .join("\n")
 }
 
+fn render_guardrail_trigger_summary(
+    trigger: &tiny_live_guardrail_audit::RollbackTriggerSummary,
+) -> String {
+    format!(
+        "{}(kind={},rate_pct={},window_seconds={},sol={},count={},evaluation_window_seconds={},action={})",
+        trigger.trigger,
+        trigger.threshold_kind,
+        trigger
+            .threshold_rate_pct
+            .map(|value| format!("{value:.4}"))
+            .unwrap_or_else(|| "null".to_string()),
+        trigger
+            .threshold_seconds
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        trigger
+            .threshold_sol
+            .map(|value| format!("{value:.6}"))
+            .unwrap_or_else(|| "null".to_string()),
+        trigger
+            .threshold_count
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        trigger
+            .evaluation_window_seconds
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        trigger.action,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1176,6 +1289,7 @@ mod tests {
                 "stage3 blocked",
             ),
             bounded_policy_report(),
+            bounded_guardrail_report(),
         );
 
         assert_eq!(
@@ -1195,6 +1309,7 @@ mod tests {
                 "green",
             ),
             bounded_policy_report(),
+            bounded_guardrail_report(),
         );
 
         assert_eq!(
@@ -1224,6 +1339,7 @@ mod tests {
                 "green",
             ),
             bounded_policy_report(),
+            bounded_guardrail_report(),
         );
 
         assert_eq!(
@@ -1247,6 +1363,7 @@ mod tests {
                 "green",
             ),
             bounded_policy_report(),
+            bounded_guardrail_report(),
         );
 
         assert!(report.rollback_plan_complete);
@@ -1270,6 +1387,7 @@ mod tests {
                 "green",
             ),
             bounded_policy_report(),
+            bounded_guardrail_report(),
         );
 
         assert!(!config.execution.enabled);
@@ -1287,6 +1405,7 @@ mod tests {
                 WalletFreshnessHistoryVerdict::ValidatedCurrent.as_str(),
             ),
             bounded_policy_report(),
+            bounded_guardrail_report(),
         );
 
         assert_eq!(
@@ -1295,6 +1414,82 @@ mod tests {
         );
         assert!(report.planning_safe_only);
         assert!(!report.activation_permission_granted);
+    }
+
+    #[test]
+    fn policy_non_green_blocks_before_guardrails() {
+        let config = bounded_config();
+        let report = build_activation_plan_report(
+            &test_config(),
+            &config,
+            pre_activation_report(
+                pre_activation_gate_report::PreActivationGateVerdict::PreActivationGatesGreen,
+                "green",
+            ),
+            policy_report(
+                tiny_live_policy_audit::TinyLivePolicyVerdict::TinyLivePolicyTooOpen,
+                "policy too open",
+                false,
+            ),
+            guardrail_report(
+                tiny_live_guardrail_audit::TinyLiveGuardrailVerdict::TinyLiveGuardrailsTooOpen,
+                "guardrails too open",
+                false,
+            ),
+        );
+
+        assert_eq!(
+            report.verdict,
+            TinyLiveActivationPlanVerdict::BlockedByPolicyContract
+        );
+    }
+
+    #[test]
+    fn guardrail_non_green_with_gate_and_policy_green_blocks_plan() {
+        let config = bounded_config();
+        let report = build_activation_plan_report(
+            &test_config(),
+            &config,
+            pre_activation_report(
+                pre_activation_gate_report::PreActivationGateVerdict::PreActivationGatesGreen,
+                "green",
+            ),
+            bounded_policy_report(),
+            guardrail_report(
+                tiny_live_guardrail_audit::TinyLiveGuardrailVerdict::TinyLiveGuardrailsTooOpen,
+                "connectivity rollback window too wide",
+                false,
+            ),
+        );
+
+        assert_eq!(
+            report.verdict,
+            TinyLiveActivationPlanVerdict::BlockedByGuardrailContract
+        );
+        assert!(report.reason.contains("guardrail"));
+    }
+
+    #[test]
+    fn ready_plan_includes_guardrail_rollback_trigger_summary() {
+        let config = bounded_config();
+        let report = build_activation_plan_report(
+            &test_config(),
+            &config,
+            pre_activation_report(
+                pre_activation_gate_report::PreActivationGateVerdict::PreActivationGatesGreen,
+                "green",
+            ),
+            bounded_policy_report(),
+            bounded_guardrail_report(),
+        );
+
+        assert!(report.tiny_live_guardrails.bounded);
+        assert!(!report.tiny_live_guardrails.rollback_triggers.is_empty());
+        assert!(report
+            .tiny_live_guardrails
+            .rollback_triggers
+            .iter()
+            .any(|trigger| trigger.trigger == "consecutive_hard_failures"));
     }
 
     fn test_config() -> Config {
@@ -1383,6 +1578,18 @@ mod tests {
     }
 
     fn bounded_policy_report() -> tiny_live_policy_audit::TinyLivePolicyAuditReport {
+        policy_report(
+            tiny_live_policy_audit::TinyLivePolicyVerdict::TinyLivePolicyBounded,
+            "bounded",
+            true,
+        )
+    }
+
+    fn policy_report(
+        verdict: tiny_live_policy_audit::TinyLivePolicyVerdict,
+        reason: &str,
+        bounded: bool,
+    ) -> tiny_live_policy_audit::TinyLivePolicyAuditReport {
         tiny_live_policy_audit::TinyLivePolicyAuditReport {
             generated_at: ts("2026-03-26T12:00:00Z"),
             config_path: "/tmp/live.server.toml".to_string(),
@@ -1393,11 +1600,15 @@ mod tests {
             mode_compatible: true,
             execution_policy_contract_valid: true,
             execution_route_contract_valid: true,
-            current_config_bounded_for_later_tiny_live_discussion: true,
-            suitable_only_for_paper_or_dry_run: false,
-            verdict: tiny_live_policy_audit::TinyLivePolicyVerdict::TinyLivePolicyBounded,
-            reason: "bounded".to_string(),
-            blockers: Vec::new(),
+            current_config_bounded_for_later_tiny_live_discussion: bounded,
+            suitable_only_for_paper_or_dry_run: !bounded,
+            verdict,
+            reason: reason.to_string(),
+            blockers: if bounded {
+                Vec::new()
+            } else {
+                vec![reason.to_string()]
+            },
             warnings: vec!["execution.enabled=false".to_string()],
             tiny_live_policy_enabled: true,
             current_default_route: "jito".to_string(),
@@ -1435,6 +1646,86 @@ mod tests {
                 policy_max_compute_unit_price_micro_lamports: Some(1_500),
                 compute_unit_price_within_bound: true,
             }],
+        }
+    }
+
+    fn bounded_guardrail_report() -> tiny_live_guardrail_audit::TinyLiveGuardrailAuditReport {
+        guardrail_report(
+            tiny_live_guardrail_audit::TinyLiveGuardrailVerdict::TinyLiveGuardrailsBounded,
+            "guardrails bounded",
+            true,
+        )
+    }
+
+    fn guardrail_report(
+        verdict: tiny_live_guardrail_audit::TinyLiveGuardrailVerdict,
+        reason: &str,
+        bounded: bool,
+    ) -> tiny_live_guardrail_audit::TinyLiveGuardrailAuditReport {
+        tiny_live_guardrail_audit::TinyLiveGuardrailAuditReport {
+            generated_at: ts("2026-03-26T12:00:00Z"),
+            config_path: "/tmp/live.server.toml".to_string(),
+            execution_enabled: false,
+            planning_safe_only: true,
+            activation_permission_granted: false,
+            stage3_gate_not_evaluated: true,
+            current_execution_mode: "adapter_submit_confirm".to_string(),
+            mode_compatible: true,
+            tiny_live_policy_verdict: "tiny_live_policy_bounded".to_string(),
+            tiny_live_policy_reason: "bounded".to_string(),
+            tiny_live_policy_bounded: true,
+            tiny_live_guardrails_enabled: true,
+            monitoring_contract_complete: bounded,
+            rollback_contract_complete: bounded,
+            current_config_bounded_for_later_tiny_live_monitoring: bounded,
+            verdict,
+            reason: reason.to_string(),
+            blockers: if bounded {
+                Vec::new()
+            } else {
+                vec![reason.to_string()]
+            },
+            warnings: vec!["execution.enabled=false".to_string()],
+            evaluation_window_seconds: 900,
+            max_execution_error_rate_pct: 5.0,
+            max_adapter_contract_failure_rate_pct: 1.0,
+            max_policy_echo_mismatch_rate_pct: 1.0,
+            max_fee_or_slippage_breach_rate_pct: 5.0,
+            max_connectivity_degraded_window_seconds: 120,
+            max_daily_realized_loss_sol: 0.05,
+            max_consecutive_hard_failures: 3,
+            reference_envelope: tiny_live_guardrail_audit::GuardrailReferenceEnvelope {
+                max_evaluation_window_seconds: 900,
+                max_execution_error_rate_pct: 5.0,
+                max_adapter_contract_failure_rate_pct: 1.0,
+                max_policy_echo_mismatch_rate_pct: 1.0,
+                max_fee_or_slippage_breach_rate_pct: 5.0,
+                max_connectivity_degraded_window_seconds: 180,
+                max_daily_realized_loss_sol: 0.05,
+                max_consecutive_hard_failures: 3,
+            },
+            rollback_triggers: vec![
+                tiny_live_guardrail_audit::RollbackTriggerSummary {
+                    trigger: "execution_error_rate".to_string(),
+                    threshold_kind: "rate_pct".to_string(),
+                    threshold_rate_pct: Some(5.0),
+                    threshold_seconds: None,
+                    threshold_sol: None,
+                    threshold_count: None,
+                    evaluation_window_seconds: Some(900),
+                    action: "mandatory_rollback".to_string(),
+                },
+                tiny_live_guardrail_audit::RollbackTriggerSummary {
+                    trigger: "consecutive_hard_failures".to_string(),
+                    threshold_kind: "count".to_string(),
+                    threshold_rate_pct: None,
+                    threshold_seconds: None,
+                    threshold_sol: None,
+                    threshold_count: Some(3),
+                    evaluation_window_seconds: None,
+                    action: "mandatory_rollback".to_string(),
+                },
+            ],
         }
     }
 

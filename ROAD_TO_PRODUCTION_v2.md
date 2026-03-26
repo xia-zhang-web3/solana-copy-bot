@@ -1480,21 +1480,25 @@ Acceptance update (`2026-03-26`, tiny-live activation plan package):
    activation checklist:
    - `copybot_pre_activation_gate_report`
    - `copybot_tiny_live_policy_audit`
+   - `copybot_tiny_live_guardrail_audit`
    - current execution/risk/shadow config truth
 3. It renders an explicit bounded future activation overlay plus an explicit
-   rollback delta back to the current safe state. It does not enable
-   `execution.enabled`, write the live config, restart services, or submit
-   trades.
+   rollback delta back to the current safe state, plus the future
+   rollback-trigger envelope from the accepted guardrail audit. It does not
+   enable `execution.enabled`, write the live config, restart services, or
+   submit trades.
 4. Important top-level verdicts:
    - `activation_plan_ready_when_stage_gate_allows`
    - `blocked_by_pre_activation_gate`
    - `blocked_by_policy_contract`
+   - `blocked_by_guardrail_contract`
    - `activation_overlay_incomplete`
    - `rollback_plan_incomplete`
    - `service_restart_contract_incomplete`
 5. Checks:
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_plan`
    - `cargo test -p copybot-app --bin copybot_pre_activation_gate_report`
+   - `cargo test -p copybot-app --bin copybot_tiny_live_guardrail_audit`
 
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 

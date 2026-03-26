@@ -315,22 +315,26 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    decision path:
    - `copybot_pre_activation_gate_report`
    - `copybot_tiny_live_policy_audit`
+   - `copybot_tiny_live_guardrail_audit`
    - current execution/risk/shadow config truth
 4. The report renders:
    - the current safe execution state
    - the future bounded activation overlay
    - the explicit rollback delta back to safe mode
    - the service restart contract for activation and rollback
+   - the future rollback-trigger and monitoring-threshold envelope
 5. Important top-level verdicts:
    - `activation_plan_ready_when_stage_gate_allows`
    - `blocked_by_pre_activation_gate`
    - `blocked_by_policy_contract`
+   - `blocked_by_guardrail_contract`
    - `activation_overlay_incomplete`
    - `rollback_plan_incomplete`
    - `service_restart_contract_incomplete`
 6. `activation_plan_ready_when_stage_gate_allows` means the later tiny-live
-   config delta and rollback delta are already explicit. It still does not
-   authorize activation, and it does not override Stage 3.
+   config delta, rollback delta, and rollback-trigger envelope are already
+   explicit. It still does not authorize activation, and it does not override
+   Stage 3.
 7. If `--output <path>` is provided, the command writes the full JSON planning
    artifact to disk without mutating the live config.
 
