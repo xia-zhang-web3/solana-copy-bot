@@ -1841,6 +1841,39 @@ Acceptance update (`2026-03-26`, activation artifact manifest generator + verifi
 6. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_manifest`
 
+Acceptance update (`2026-03-26`, activation artifact bundle export + verifier):
+
+1. The repo now also has a portable review/transfer layer for exactly one
+   selected packet-backed activation artifact generation:
+   - export:
+     `copybot_activation_artifact_bundle --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --export-bundle --generation 2026-03-26T12:00:00Z --output /var/www/solana-copy-bot/state/activation_artifacts/bundles/review-2026-03-26T12-00-00Z --json`
+   - verify:
+     `copybot_activation_artifact_bundle --verify-bundle /var/www/solana-copy-bot/state/activation_artifacts/bundles/review-2026-03-26T12-00-00Z --json`
+2. Export semantics are explicit and bounded:
+   - exactly one packet-backed generation is selected by timestamp or full
+     generation id
+   - only that generation's decision packet, runbook json, and runbook
+     markdown are copied into the bundle
+   - the bundle carries its own metadata and SHA-256 file hash coverage
+3. Verify mode now detects:
+   - malformed bundle metadata
+   - missing or tampered bundled files
+   - unexpected extra bundled files
+   - generation identity / membership drift inside the bundle
+4. Important bundle verdicts:
+   - `artifact_bundle_exported`
+   - `artifact_bundle_verified`
+   - `artifact_bundle_invalid`
+   - `artifact_bundle_drift_detected`
+   - `artifact_bundle_generation_not_found`
+5. Practical meaning:
+   - operators can now export one bounded activation generation as a portable
+     review bundle and verify it elsewhere without copying the whole archive
+   - this still does not enable production execution, authorize activation, or
+     override the Stage 3 prod gate
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_bundle`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

@@ -640,6 +640,40 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not authorize production activation or override the Stage 3 prod
      gate
 
+## Activation Artifact Bundle
+
+1. Operators now also have a portable bundle layer for one selected
+   packet-backed activation artifact generation:
+   - export:
+     `copybot_activation_artifact_bundle --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --export-bundle --generation 2026-03-26T12:00:00Z --output /var/www/solana-copy-bot/state/activation_artifacts/bundles/review-2026-03-26T12-00-00Z --json`
+   - verify:
+     `copybot_activation_artifact_bundle --verify-bundle /var/www/solana-copy-bot/state/activation_artifacts/bundles/review-2026-03-26T12-00-00Z --json`
+2. Export mode stays bounded and explicit:
+   - it exports exactly one packet-backed generation selected by timestamp or
+     full generation id
+   - it includes only that generation's decision packet json, runbook json,
+     and runbook markdown when present
+   - it writes a self-contained bundle manifest with generation identity,
+     bundled file membership, and SHA-256 hashes
+3. Verify mode checks:
+   - bundle manifest structure
+   - missing or tampered bundled files
+   - unexpected extra bundled files
+   - generation identity / membership mismatches inside the bundle
+4. Important bundle verdicts:
+   - `artifact_bundle_exported`
+   - `artifact_bundle_verified`
+   - `artifact_bundle_invalid`
+   - `artifact_bundle_drift_detected`
+   - `artifact_bundle_generation_not_found`
+5. This surface is artifact handling only:
+   - it does not enable `execution.enabled`
+   - it does not mutate config
+   - it does not rerun heavy prod or non-prod logic
+   - it does not modify existing archive artifacts
+   - it does not authorize production activation or override the Stage 3 prod
+     gate
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`
