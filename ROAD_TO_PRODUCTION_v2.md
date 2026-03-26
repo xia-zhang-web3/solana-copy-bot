@@ -2296,6 +2296,34 @@ Acceptance update (`2026-03-26`, activation artifact state snapshot bundle):
 5. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_state_bundle`
 
+Acceptance update (`2026-03-26`, activation artifact state snapshot bundle provenance):
+
+1. The repo now also has a provenance-oriented surface over persisted state
+   snapshots, history inputs, the state latest pointer, and exported
+   state-snapshot bundles:
+   - `copybot_activation_artifact_state_bundle_provenance_report --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --history-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --bundle-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle --json`
+2. The new provenance surface is intentionally thin:
+   - it reuses persisted state snapshot parsing and snapshot latest-pointer
+     inspection
+   - it reuses accepted state-snapshot bundle verification instead of adding a
+     separate bundle parser
+   - it correlates bundle coverage back to persisted snapshot identities
+     without rerunning heavy current-state assembly
+3. Operational meaning:
+   - operators can now see which persisted snapshots have history coverage,
+     bundle coverage, and current latest-pointer coverage in one report
+   - bundles that reference snapshots missing from the persisted archive are
+     surfaced as inconsistent lineage
+   - ambiguous or otherwise non-green bundled snapshots remain explicit and
+     cannot appear as clean green provenance
+4. This remains artifact analysis only:
+   - it does not rewrite the state snapshot archive
+   - it does not rewrite snapshot latest-pointer metadata
+   - it does not rewrite bundle contents
+   - it does not enable execution or authorize activation
+5. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_state_bundle_provenance_report`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

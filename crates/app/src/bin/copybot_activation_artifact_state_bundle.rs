@@ -18,7 +18,7 @@ mod activation_artifact_state_publish_report;
 const USAGE: &str = "usage: copybot_activation_artifact_state_bundle [--json] (--state-archive-dir <path> --export-bundle --snapshot <path|file-name|snapshotted-at> --output <dir> | --verify-bundle <path>)";
 const BUNDLE_VERSION: &str = "1";
 const HASH_ALGORITHM: &str = "sha256";
-const BUNDLE_MANIFEST_FILENAME: &str = "state_snapshot_bundle_manifest.json";
+pub(crate) const BUNDLE_MANIFEST_FILENAME: &str = "state_snapshot_bundle_manifest.json";
 const BUNDLE_ARTIFACTS_DIR: &str = "artifacts";
 
 fn main() -> Result<()> {
@@ -127,12 +127,32 @@ struct ExportReport {
     not_authorized_summary: String,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct StateSnapshotBundleExportSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) state_archive_dir: String,
+    pub(crate) snapshot_selector: String,
+    pub(crate) selected_snapshot_path: Option<String>,
+    pub(crate) selected_snapshot_file_name: Option<String>,
+    pub(crate) snapshotted_at: Option<DateTime<Utc>>,
+    pub(crate) state_verdict: Option<String>,
+    pub(crate) state_reason: Option<String>,
+    pub(crate) selected_review_generation_id: Option<String>,
+    pub(crate) selected_latest_release_generation_id: Option<String>,
+    pub(crate) ambiguous_legacy_count: Option<usize>,
+    pub(crate) coherent_for_review_operations: Option<bool>,
+    pub(crate) output_path: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct VerifyReport {
     mode: String,
     verdict: ArtifactStateBundleVerdict,
     reason: String,
     bundle_path: String,
+    source_state_archive_dir: Option<String>,
     selected_snapshot_path: Option<String>,
     selected_snapshot_file_name: Option<String>,
     snapshotted_at: Option<DateTime<Utc>>,
@@ -151,6 +171,28 @@ struct VerifyReport {
     execution_untouched: bool,
     activation_authorized: bool,
     not_authorized_summary: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct StateSnapshotBundleSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) bundle_path: String,
+    pub(crate) source_state_archive_dir: Option<String>,
+    pub(crate) selected_snapshot_path: Option<String>,
+    pub(crate) selected_snapshot_file_name: Option<String>,
+    pub(crate) snapshotted_at: Option<DateTime<Utc>>,
+    pub(crate) selected_snapshot_state_verdict: Option<String>,
+    pub(crate) selected_snapshot_state_reason: Option<String>,
+    pub(crate) selected_review_generation_id: Option<String>,
+    pub(crate) selected_latest_release_generation_id: Option<String>,
+    pub(crate) ambiguous_legacy_count: Option<usize>,
+    pub(crate) coherent_for_review_operations: Option<bool>,
+    pub(crate) missing_files: Vec<String>,
+    pub(crate) changed_files: Vec<String>,
+    pub(crate) unexpected_files: Vec<String>,
+    pub(crate) metadata_mismatches: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -266,6 +308,74 @@ fn run(config: Config) -> Result<String> {
             }
         }
     }
+}
+
+#[allow(dead_code)]
+pub(crate) fn inspect_state_snapshot_bundle(
+    bundle_path: &Path,
+) -> Result<StateSnapshotBundleSummary> {
+    let report = verify_bundle(bundle_path)?;
+    Ok(StateSnapshotBundleSummary {
+        verdict: serialize_enum(&report.verdict),
+        reason: report.reason,
+        bundle_path: report.bundle_path,
+        source_state_archive_dir: report.source_state_archive_dir,
+        selected_snapshot_path: report.selected_snapshot_path,
+        selected_snapshot_file_name: report.selected_snapshot_file_name,
+        snapshotted_at: report.snapshotted_at,
+        selected_snapshot_state_verdict: report.selected_snapshot_state_verdict,
+        selected_snapshot_state_reason: report.selected_snapshot_state_reason,
+        selected_review_generation_id: report.selected_review_generation_id,
+        selected_latest_release_generation_id: report.selected_latest_release_generation_id,
+        ambiguous_legacy_count: report.ambiguous_legacy_count,
+        coherent_for_review_operations: report.coherent_for_review_operations,
+        missing_files: report.missing_files,
+        changed_files: report.changed_files,
+        unexpected_files: report.unexpected_files,
+        metadata_mismatches: report.metadata_mismatches,
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn export_state_snapshot_bundle(
+    state_archive_dir: &Path,
+    snapshot_selector: &str,
+    output_dir: &Path,
+) -> Result<StateSnapshotBundleExportSummary> {
+    let report = export_bundle(state_archive_dir, snapshot_selector, output_dir)?;
+    Ok(StateSnapshotBundleExportSummary {
+        verdict: serialize_enum(&report.verdict),
+        reason: report.reason,
+        state_archive_dir: report.state_archive_dir,
+        snapshot_selector: report.snapshot_selector,
+        selected_snapshot_path: report.selected_snapshot_path,
+        selected_snapshot_file_name: report.selected_snapshot_file_name,
+        snapshotted_at: report.snapshotted_at,
+        state_verdict: report.state_verdict,
+        state_reason: report.state_reason,
+        selected_review_generation_id: report.selected_review_generation_id,
+        selected_latest_release_generation_id: report.selected_latest_release_generation_id,
+        ambiguous_legacy_count: report.ambiguous_legacy_count,
+        coherent_for_review_operations: report.coherent_for_review_operations,
+        output_path: report.output_path,
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn collect_state_snapshot_bundle_paths(
+    bundle_dir: Option<&Path>,
+    explicit_paths: &[PathBuf],
+) -> Result<Vec<PathBuf>> {
+    let mut paths = BTreeSet::new();
+    if let Some(bundle_dir) = bundle_dir {
+        if bundle_dir.exists() {
+            collect_bundle_manifest_paths(bundle_dir, &mut paths)?;
+        }
+    }
+    for path in explicit_paths {
+        paths.insert(path.clone());
+    }
+    Ok(paths.into_iter().collect())
 }
 
 fn export_bundle(
@@ -457,6 +567,7 @@ fn verify_bundle(bundle_path: &Path) -> Result<VerifyReport> {
                 None,
                 None,
                 None,
+                None,
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
@@ -479,6 +590,7 @@ fn verify_bundle(bundle_path: &Path) -> Result<VerifyReport> {
                 None,
                 None,
                 None,
+                None,
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
@@ -492,6 +604,7 @@ fn verify_bundle(bundle_path: &Path) -> Result<VerifyReport> {
         return Ok(invalid_verify_report(
             &bundle_root,
             "state snapshot bundle manifest has empty bundle_version".to_string(),
+            Some(manifest.source_state_archive_dir),
             Some(manifest.selected_snapshot_source_path),
             Some(manifest.selected_snapshot_file_name),
             Some(manifest.snapshotted_at),
@@ -514,6 +627,7 @@ fn verify_bundle(bundle_path: &Path) -> Result<VerifyReport> {
                 "state snapshot bundle manifest hash_algorithm `{}` is unsupported; expected `{HASH_ALGORITHM}`",
                 manifest.hash_algorithm
             ),
+            Some(manifest.source_state_archive_dir),
             Some(manifest.selected_snapshot_source_path),
             Some(manifest.selected_snapshot_file_name),
             Some(manifest.snapshotted_at),
@@ -537,6 +651,7 @@ fn verify_bundle(bundle_path: &Path) -> Result<VerifyReport> {
                 manifest.file_count,
                 manifest.files.len()
             ),
+            Some(manifest.source_state_archive_dir),
             Some(manifest.selected_snapshot_source_path),
             Some(manifest.selected_snapshot_file_name),
             Some(manifest.snapshotted_at),
@@ -559,6 +674,7 @@ fn verify_bundle(bundle_path: &Path) -> Result<VerifyReport> {
             &bundle_root,
             "state snapshot bundle manifest must describe exactly one bundled state snapshot artifact"
                 .to_string(),
+            Some(manifest.source_state_archive_dir),
             Some(manifest.selected_snapshot_source_path),
             Some(manifest.selected_snapshot_file_name),
             Some(manifest.snapshotted_at),
@@ -582,6 +698,7 @@ fn verify_bundle(bundle_path: &Path) -> Result<VerifyReport> {
             verdict: ArtifactStateBundleVerdict::ArtifactStateBundleDriftDetected,
             reason: "state snapshot bundle artifacts directory is missing".to_string(),
             bundle_path: bundle_root.display().to_string(),
+            source_state_archive_dir: Some(manifest.source_state_archive_dir),
             selected_snapshot_path: Some(manifest.selected_snapshot_source_path),
             selected_snapshot_file_name: Some(manifest.selected_snapshot_file_name),
             snapshotted_at: Some(manifest.snapshotted_at),
@@ -777,6 +894,7 @@ fn verify_bundle(bundle_path: &Path) -> Result<VerifyReport> {
         verdict,
         reason,
         bundle_path: bundle_root.display().to_string(),
+        source_state_archive_dir: Some(manifest.source_state_archive_dir),
         selected_snapshot_path: Some(manifest.selected_snapshot_source_path),
         selected_snapshot_file_name: Some(manifest.selected_snapshot_file_name),
         snapshotted_at: Some(manifest.snapshotted_at),
@@ -803,6 +921,7 @@ fn verify_bundle(bundle_path: &Path) -> Result<VerifyReport> {
 fn invalid_verify_report(
     bundle_root: &Path,
     reason: String,
+    source_state_archive_dir: Option<String>,
     selected_snapshot_path: Option<String>,
     selected_snapshot_file_name: Option<String>,
     snapshotted_at: Option<DateTime<Utc>>,
@@ -822,6 +941,7 @@ fn invalid_verify_report(
         verdict: ArtifactStateBundleVerdict::ArtifactStateBundleInvalid,
         reason,
         bundle_path: bundle_root.display().to_string(),
+        source_state_archive_dir,
         selected_snapshot_path,
         selected_snapshot_file_name,
         snapshotted_at,
@@ -1077,6 +1197,28 @@ fn collect_bundle_artifact_paths(root: &Path) -> Result<Vec<PathBuf>> {
     }
     files.sort();
     Ok(files)
+}
+
+fn collect_bundle_manifest_paths(root: &Path, paths: &mut BTreeSet<PathBuf>) -> Result<()> {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = fs::read_dir(&dir)
+            .with_context(|| format!("failed reading bundle dir {}", dir.display()))?;
+        for entry in entries {
+            let entry =
+                entry.with_context(|| format!("failed reading entry in {}", dir.display()))?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.is_file()
+                && path.file_name().and_then(|value| value.to_str())
+                    == Some(BUNDLE_MANIFEST_FILENAME)
+            {
+                paths.insert(path);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn relative_display_path(root: &Path, path: &Path) -> Result<String> {

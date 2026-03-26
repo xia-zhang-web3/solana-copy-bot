@@ -1156,6 +1156,32 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not enable execution
    - it does not authorize activation or override the Stage 3 prod gate
 
+## Activation Artifact State Snapshot Bundle Provenance
+
+1. Operators now also have a provenance-oriented surface over the persisted
+   state snapshot bundle layer:
+   - audit archive + history + latest pointer + exported bundles together:
+     `copybot_activation_artifact_state_bundle_provenance_report --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --history-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --bundle-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle --json`
+2. Bundle provenance completeness means:
+   - persisted state snapshots exist in the archive
+   - history covers the same snapshot lineage
+   - exported bundles resolve back to those persisted snapshots
+   - the latest-pointer-selected snapshot, if supplied, still has honest
+     bundle coverage
+3. Bundle integrity is still distinct from snapshot health:
+   - an ambiguous or otherwise non-green bundled snapshot stays explicit in
+     provenance output
+   - the latest pointer can be structurally valid and still keep provenance
+     non-green if it selects an ambiguous/non-green snapshot
+   - bundle coverage that exists only for stale snapshots is reported as
+     incomplete provenance, not as a healthy current state
+4. This remains artifact analysis only:
+   - it does not rewrite state snapshots
+   - it does not rewrite latest-pointer metadata
+   - it does not rewrite bundle contents
+   - it does not enable execution
+   - it does not authorize activation or override the Stage 3 prod gate
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`
