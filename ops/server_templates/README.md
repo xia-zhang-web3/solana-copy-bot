@@ -1130,6 +1130,32 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not enable execution
    - it does not authorize activation or override the Stage 3 prod gate
 
+## Activation Artifact State Snapshot Bundle
+
+1. Operators now also have a portable bundle layer for one selected persisted
+   state snapshot:
+   - export one bundled snapshot:
+     `copybot_activation_artifact_state_bundle --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --export-bundle --snapshot state_snapshot__2026-03-26T12-00-00Z__artifact_state_coherent.json --output /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/current --json`
+   - verify a transferred bundle:
+     `copybot_activation_artifact_state_bundle --verify-bundle /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/current --json`
+2. Export mode is deliberately bounded:
+   - it selects exactly one persisted state snapshot by path, file name, or
+     `snapshotted_at`
+   - it writes one self-contained bundle directory plus a bundle manifest with
+     snapshot identity and file hashes
+   - it does not export unrelated snapshots
+3. Bundle integrity is intentionally separate from snapshot health:
+   - verify mode checks structure, hashes, and snapshot identity metadata
+   - ambiguous or otherwise non-green snapshot state stays explicit in bundle
+     metadata and verify output
+   - a bundle can verify cleanly while still preserving a non-green
+     `state_verdict`
+4. This remains artifact handling only:
+   - it does not rewrite the state snapshot archive
+   - it does not rewrite latest-pointer metadata
+   - it does not enable execution
+   - it does not authorize activation or override the Stage 3 prod gate
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

@@ -2268,6 +2268,34 @@ Acceptance update (`2026-03-26`, activation artifact state snapshot archive mana
 5. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_state_archive`
 
+Acceptance update (`2026-03-26`, activation artifact state snapshot bundle):
+
+1. The repo now also has a portable, verifiable bundle layer for one selected
+   persisted state snapshot:
+   - export one bundled snapshot:
+     `copybot_activation_artifact_state_bundle --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --export-bundle --snapshot state_snapshot__2026-03-26T12-00-00Z__artifact_state_coherent.json --output /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/current --json`
+   - verify a bundled snapshot elsewhere:
+     `copybot_activation_artifact_state_bundle --verify-bundle /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/current --json`
+2. The new bundle surface is intentionally thin:
+   - it reuses persisted state snapshot parsing instead of rerunning heavy
+     current-state assembly
+   - it packages exactly one persisted snapshot plus a bounded bundle manifest
+   - it refuses to silently overwrite existing bundle contents
+3. Operational meaning:
+   - operators can now transfer one persisted state snapshot as a reviewable
+     bounded artifact
+   - bundle verification checks structure, hashes, and selected snapshot
+     identity metadata
+   - ambiguous or otherwise non-green state snapshots remain explicit in
+     bundle metadata and verify output instead of being flattened into a
+     healthy state verdict
+4. This remains artifact handling only:
+   - it does not rewrite the state snapshot archive
+   - it does not rewrite state latest-pointer metadata
+   - it does not enable execution or authorize activation
+5. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_state_bundle`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored
