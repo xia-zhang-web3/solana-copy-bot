@@ -118,6 +118,61 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 12. `execution.enabled = false` remains unchanged. In-band Stage 3 capture and
    the manual/debug command both collect evidence only; neither implies
    execution activation.
+13. There is one production-critical operator caveat for the bounded raw
+    snapshot sidecar used by Stage 3:
+   - if `copybot-discovery-recent-raw-snapshot.service` repeatedly reports
+     `state=deferred`
+   - and `latest_surface_action=deferred_due_to_attempt_budget`
+   - and `terminal_reason=attempt_duration_budget_exhausted`
+   then the usable bounded `recent_raw` surface is stalled even if live swap
+   ingest is still running
+14. In that incident shape, Stage 3 will not recover by waiting for “more days”
+    alone. Operators must inspect:
+   - `source_db_bytes`
+   - `source_page_count`
+   - `backup_copied_page_count`
+   - `backup_remaining_page_count`
+   - `last_batch_completed_at`
+   - `covered_through_cursor.ts_utc`
+15. Current live incident pattern observed on `2026-03-26`:
+   - source raw DB had grown beyond `11G`
+   - adaptive snapshot policy stayed capped at `pages_per_step=1024` and
+     `max_attempt_duration=120000ms`
+   - each scheduled attempt copied about `2.0M / 2.72M` pages, then returned
+     `Deferred`
+   - the old healthy `latest.sqlite` surface was intentionally retained, so
+     usable raw coverage froze at the last successful promotion instead of
+     advancing toward 5 days
+16. The bounded snapshot path now preserves one hidden staged snapshot between
+    deferred runs instead of restarting from zero on every timer tick:
+   - a deferred run may still return
+     `latest_surface_action=deferred_due_to_attempt_budget`
+   - but operators must now also inspect:
+     - `staged_progress_resumed`
+     - `staged_progress_preserved_for_retry`
+     - `staged_progress_advanced`
+     - `staged_row_count_before_attempt`
+     - `staged_row_count_after_attempt`
+     - `staged_snapshot_path`
+17. Operator interpretation for the fixed convergence contract:
+   - `state=deferred` plus
+     `staged_progress_preserved_for_retry=true` and
+     `staged_progress_advanced=true`
+     means the bounded snapshot is still time-bounded but useful forward
+     progress was preserved for the next scheduled run
+   - `state=deferred` plus
+     `staged_progress_preserved_for_retry=true` and
+     `staged_progress_advanced=false`
+     means the service resumed an older staged snapshot but made no new bounded
+     progress this run and should be treated as a real stall
+   - `state=written` plus `archive_promoted=true` means the resumed staged
+     frontier completed and a newer `latest.sqlite` was promoted again
+18. The staged snapshot remains bounded:
+   - only one staged snapshot + metadata pair is preserved inside the explicit
+     recent-raw snapshot dir
+   - successful promotion removes that staged pair
+   - archive retention still prunes rotated snapshots without touching the
+     protected current staged pair during deferred convergence
 
 ## Stage 4 Execution Readiness Audit
 

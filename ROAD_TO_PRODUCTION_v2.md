@@ -4569,3 +4569,60 @@ Their useful conclusions are already absorbed here:
   - aggregate/watchdog dead code and related warnings remain and should be removed or explicitly parked before Stage 2 cleanup
 - Next action:
   - trim or quarantine obsolete aggregate/bootstrap runtime code paths and then move to Stage 2 publication contract hardening
+
+Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
+
+1. The primary Stage 3 path is currently blocked by a live bounded snapshot
+   incident, not by passive “we still need three more days” waiting:
+   - live swap ingest is still running
+   - the bounded `recent_raw` snapshot surface required for the usable 5-day
+     window is no longer advancing
+2. Current promoted bounded snapshot frontier on the production host:
+   - `covered_since = 2026-03-24T12:07:11.775090344Z`
+   - `covered_through = 2026-03-26T07:33:59.609580569Z`
+   - `last_batch_completed_at = 2026-03-26T07:35:10.023741560Z`
+3. Current Stage 3 evidence state:
+   - `discovery_wallet_freshness_report` returns
+     `verdict=insufficient_evidence`
+   - `reason=no_recent_wallet_freshness_captures_within_horizon`
+   - latest persisted capture remains `2026-03-25T18:59:01Z`
+4. Root cause from live logs plus code:
+   - `copybot-discovery-recent-raw-snapshot.service` is repeatedly returning:
+     - `state=deferred`
+     - `latest_surface_action=deferred_due_to_attempt_budget`
+     - `terminal_reason=attempt_duration_budget_exhausted`
+   - the source raw DB continues to grow past `11G`, but the adaptive snapshot
+     policy for huge sources remains capped at:
+     - `pages_per_step = 1024`
+     - `max_attempt_duration = 120000ms`
+   - each run copies only about `2.0M` pages out of about `2.72M`, then keeps
+     the old healthy `latest.sqlite` instead of promoting a newer bounded surface
+5. Operational meaning:
+   - this is a production-critical blocker on the main readiness path
+   - Stage 3 will not recover by waiting alone while the bounded snapshot keeps
+     timing out
+   - shadow-trading readiness is blocked until the bounded snapshot policy/path
+     is fixed so `latest.sqlite` can advance again
+6. Accepted emergency fix contract for this incident:
+   - scheduled bounded recent-raw snapshot attempts now preserve one staged
+     snapshot inside the explicit snapshot dir
+   - later scheduled runs resume from that staged frontier instead of
+     restarting from zero
+   - a deferred run can still honestly return
+     `terminal_reason=attempt_duration_budget_exhausted`, but operators must
+     distinguish:
+     - preserved forward progress:
+       `staged_progress_preserved_for_retry=true` and
+       `staged_progress_advanced=true`
+     - no-progress stall:
+       `staged_progress_preserved_for_retry=true` and
+       `staged_progress_advanced=false`
+     - completed promotion:
+       `state=written` and `archive_promoted=true`
+7. The fix does not weaken Stage 3 semantics:
+   - `latest.sqlite` is still promoted only after the bounded snapshot is fully
+     complete
+   - deferred runs keep the older healthy latest surface only while preserved
+     staged progress continues to converge
+   - no execution state is touched and this remains a discovery-side artifact
+     liveness repair only

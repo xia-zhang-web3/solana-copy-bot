@@ -8639,6 +8639,49 @@ mod tests {
     }
 
     #[test]
+    fn observed_swap_since_with_budget_streams_oldest_rows_in_order() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("observed-swap-since-budget.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let base = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        for (idx, signature) in ["sig-a", "sig-b", "sig-c"].into_iter().enumerate() {
+            assert!(store.insert_observed_swap(&SwapEvent {
+                signature: signature.to_string(),
+                wallet: "wallet-since-budget".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: format!("token-{signature}"),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                slot: 10 + idx as u64,
+                ts_utc: base + Duration::seconds(idx as i64),
+                exact_amounts: None,
+            })?);
+        }
+
+        let mut seen = Vec::new();
+        let page = store.for_each_observed_swap_since_with_budget(
+            base,
+            2,
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+            |swap| {
+                seen.push(swap.signature);
+                Ok(())
+            },
+        )?;
+        assert_eq!(page.rows_seen, 2);
+        assert!(!page.time_budget_exhausted);
+        assert_eq!(seen, vec!["sig-a".to_string(), "sig-b".to_string()]);
+        Ok(())
+    }
+
+    #[test]
     fn observed_buy_mint_page_query_returns_distinct_mints_and_resumes_by_token() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("observed-buy-mint-page-query.db");

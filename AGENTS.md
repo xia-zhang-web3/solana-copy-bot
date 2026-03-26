@@ -230,22 +230,26 @@ Snapshot as of `2026-03-26`.
 
 - `/var/www/solana-copy-bot/state` is currently bounded, not re-inflating.
 - Observed live slice:
-  - `215G used / 252G avail / 47%`
-  - `state/discovery_restore/recent_raw = 181G`
-  - archive count holds at `24`
-- The snapshot timer is currently healthy after the retention/timeout fix:
-  - recent runs finish and return to `waiting`
-  - the old archive-growth incident was fixed by staged promotion plus full-set retention
+  - `220G used / 247G avail / 48%`
+  - `state/discovery_restore/recent_raw = 183G`
+  - archive count is currently `0` because no fresh archive promotion has happened since the stall
+- The snapshot timer itself is still alive, but the bounded `recent_raw` surface is
+  now in an emergency stalled state:
+  - recent runs return `state=deferred`
+  - `latest_surface_action=deferred_due_to_attempt_budget`
+  - `terminal_reason=attempt_duration_budget_exhausted`
+  - `latest.sqlite` remains frozen at the last successful promotion instead of advancing with source DB growth
 
 ### Raw Window Progress
 
-- `discovery_recent_raw.db` currently covers approximately:
-  - `2026-03-24 12:07:11 UTC`
-  - through `2026-03-26 12:56:24 UTC`
-- That is about `2d 0h 49m` of raw coverage.
-- With `scoring_window_days = 5`, the remaining time to a full raw window is about:
-  - `2d 23h 11m`
-- Operationally: this is closer to `3 days remaining`, not `2.5 days`.
+- The current promoted bounded snapshot is frozen at:
+  - `covered_since = 2026-03-24 12:07:11 UTC`
+  - `covered_through = 2026-03-26 07:33:59 UTC`
+  - `last_batch_completed_at = 2026-03-26 07:35:10 UTC`
+- That is only about `1d 19h 27m` of usable bounded raw coverage.
+- This is not a normal “keep waiting 3 more days” state anymore.
+- The usable 5-day accumulation path is operationally blocked because the snapshot
+  service no longer promotes a newer `latest.sqlite`.
 
 ### Discovery Ingestion
 
@@ -259,8 +263,9 @@ Snapshot as of `2026-03-26`.
 ### Stage 3 Current Interpretation
 
 - Stage 3 is still blocked.
-- This is not currently a disk/runtime crash issue.
-- It is a semantic gate issue caused by insufficient raw coverage.
+- This is now a production-critical blocker on the primary path.
+- The runtime itself is still alive, but the bounded `recent_raw` accumulation path
+  is stalled, so waiting alone will not close Stage 3.
 
 - Important observed fact:
   - the latest persisted `discovery_wallet_freshness_history` capture is still
@@ -275,16 +280,26 @@ Snapshot as of `2026-03-26`.
     `fail_closed`
   - the scoring source became
     `raw_window_incomplete_no_recent_published_universe`
-  - once in `fail_closed`, the capture path stops by design
+  - separately, the standalone bounded raw snapshot service now repeatedly times
+    out before it can finish cloning the growing source DB:
+    - source DB grew to about `11.6G`
+    - adaptive policy caps at `pages_per_step = 1024`
+    - adaptive policy caps at `max_attempt_duration = 120000ms`
+    - each attempt copies about `2.0M` pages out of about `2.72M` total, then
+      returns `Deferred`
+    - the old healthy `latest` surface is retained by design, so usable bounded
+      raw coverage never advances
+  - practical result: live swap ingest continues, but the 5-day bounded raw
+    surface required for Stage 3 does not progress
 
 - Practical implication:
-  - waiting for more raw coverage is still necessary
-  - after the raw window becomes complete and runtime returns to `Healthy`, the
-    service will still need fresh captures to accumulate again before Stage 3
+  - do not describe the server as “just waiting for 3 more days”; that is now false
+  - shadow-trading readiness is blocked on the stalled bounded snapshot path
+  - after the snapshot path is fixed and usable raw coverage can progress again,
+    runtime will still need fresh healthy captures to accumulate before Stage 3
     can go green
-  - do not interpret the current stale capture table as a broken writer until
-    raw coverage is complete and the runtime has had time to resume fresh
-    healthy captures
+  - current operator priority is to fix the bounded snapshot stall, not to wait
+    passively for raw coverage
 
 ## If A New Session Starts Elsewhere
 

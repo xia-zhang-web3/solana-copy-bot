@@ -8,15 +8,16 @@ use copybot_discovery::runtime_restore_ops::{
     JOURNAL_SNAPSHOT_ARCHIVE_SUFFIX,
 };
 use copybot_storage::{
-    DiscoveryRuntimeCursor, RecentRawJournalStateRow, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
-    SqliteSnapshotSourceMetrics, SqliteSnapshotSummary, SqliteStore,
+    DiscoveryRuntimeCursor, RecentRawJournalStateRow, SqliteSnapshotDeferredReason,
+    SqliteSnapshotOutcome, SqliteSnapshotPolicy, SqliteSnapshotSourceMetrics,
+    SqliteSnapshotSummary, SqliteStore,
 };
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH};
 
 const USAGE: &str = "usage: discovery_recent_raw_snapshot --config <path> [--journal-db-path <path>] (--output <path> | --scheduled) [--force] [--json] [--now <rfc3339>]";
 const SNAPSHOT_SMALL_SOURCE_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
@@ -35,6 +36,7 @@ const SNAPSHOT_SMALL_MAX_ATTEMPT_DURATION_MS: u64 = 45_000;
 const SNAPSHOT_MEDIUM_MAX_ATTEMPT_DURATION_MS: u64 = 60_000;
 const SNAPSHOT_LARGE_MAX_ATTEMPT_DURATION_MS: u64 = 90_000;
 const SNAPSHOT_HUGE_MAX_ATTEMPT_DURATION_MS: u64 = 120_000;
+const SNAPSHOT_RESUME_ROW_BATCH_MULTIPLIER: usize = 8;
 const STAGED_ARCHIVE_SNAPSHOT_SUFFIX: &str = ".archive-staged";
 const STAGED_ARCHIVE_METADATA_SUFFIX: &str = ".archive-staged.json";
 
@@ -86,6 +88,8 @@ struct SnapshotOutput {
     snapshot_path: String,
     metadata_path: String,
     archive_path: Option<String>,
+    staged_snapshot_path: Option<String>,
+    staged_metadata_path: Option<String>,
     cadence_minutes: Option<u64>,
     retention: Option<usize>,
     pruned_snapshot_paths: Vec<String>,
@@ -93,6 +97,13 @@ struct SnapshotOutput {
     archive_promoted: bool,
     archive_set_count_before: Option<usize>,
     archive_set_count_after: Option<usize>,
+    staged_progress_resumed: bool,
+    staged_progress_preserved_for_retry: bool,
+    staged_progress_advanced: bool,
+    staged_row_count_before_attempt: Option<usize>,
+    staged_row_count_after_attempt: Option<usize>,
+    staged_covered_through_cursor_before_attempt: Option<DiscoveryRuntimeCursor>,
+    staged_covered_through_cursor_after_attempt: Option<DiscoveryRuntimeCursor>,
     source_db_bytes: u64,
     source_wal_bytes: u64,
     source_total_bytes: u64,
@@ -154,7 +165,6 @@ enum LatestSurfaceAction {
     RewroteLatestMetadataFromArchive,
     RewroteLatestMetadataFromLatestSqlite,
     RecreatedLatestSurfaceFromSource,
-    DeferredDueToRetryableBusy,
     DeferredDueToAttemptBudget,
     UnchangedDueToRetryableBusy,
     UnchangedDueToAttemptBudget,
@@ -174,7 +184,6 @@ impl LatestSurfaceAction {
                 "rewrote_latest_metadata_from_latest_sqlite"
             }
             Self::RecreatedLatestSurfaceFromSource => "recreated_latest_surface_from_source",
-            Self::DeferredDueToRetryableBusy => "deferred_due_to_retryable_busy",
             Self::DeferredDueToAttemptBudget => "deferred_due_to_attempt_budget",
             Self::UnchangedDueToRetryableBusy => "unchanged_due_to_retryable_busy",
             Self::UnchangedDueToAttemptBudget => "unchanged_due_to_attempt_budget",
@@ -275,6 +284,41 @@ impl SnapshotArchiveMaintenance {
 struct SnapshotOutputContext {
     archive_promoted: bool,
     archive_maintenance: SnapshotArchiveMaintenance,
+    staged_progress: StagedSnapshotProgress,
+    attempt_duration_ms_override: Option<u64>,
+    terminal_reason_override: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct StagedSnapshotProgress {
+    staged_snapshot_path: Option<PathBuf>,
+    staged_metadata_path: Option<PathBuf>,
+    resumed_from_existing_stage: bool,
+    preserved_for_retry: bool,
+    advanced_during_attempt: bool,
+    row_count_before_attempt: Option<usize>,
+    row_count_after_attempt: Option<usize>,
+    covered_through_cursor_before_attempt: Option<DiscoveryRuntimeCursor>,
+    covered_through_cursor_after_attempt: Option<DiscoveryRuntimeCursor>,
+}
+
+#[derive(Debug, Clone)]
+struct StagedSnapshotAttempt {
+    manifest: RecentRawJournalSnapshotManifest,
+    progress: StagedSnapshotProgress,
+    attempt_duration_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+enum StagedSnapshotAttemptResult {
+    Completed(StagedSnapshotAttempt),
+    Deferred(StagedSnapshotAttempt),
+    HardFailure {
+        manifest: Option<RecentRawJournalSnapshotManifest>,
+        progress: StagedSnapshotProgress,
+        attempt_duration_ms: u64,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -341,29 +385,6 @@ fn state_exit_code(output: &SnapshotOutput) -> i32 {
         "deferred" => SnapshotState::Deferred.exit_code(),
         "hard_failure" => SnapshotState::HardFailure.exit_code(),
         _ => 1,
-    }
-}
-
-fn scheduled_contention_contract(
-    latest_surface_status: LatestSurfaceStatus,
-    force: bool,
-    reason: &str,
-) -> (SnapshotState, LatestSurfaceAction, Option<String>) {
-    if !force && latest_surface_status == LatestSurfaceStatus::Healthy {
-        (
-            SnapshotState::Deferred,
-            LatestSurfaceAction::DeferredDueToRetryableBusy,
-            Some(format!(
-                "healthy_latest_surface_retained_after_retryable_{}",
-                reason
-            )),
-        )
-    } else {
-        (
-            SnapshotState::RetryableBusy,
-            LatestSurfaceAction::UnchangedDueToRetryableBusy,
-            None,
-        )
     }
 }
 
@@ -463,6 +484,22 @@ fn snapshot_context(source_db_path: &Path, source_store: &SqliteStore) -> Result
         policy: adaptive_snapshot_policy(&source_stats),
         source_stats,
     })
+}
+
+fn discovery_runtime_cursor_cmp(
+    left: &DiscoveryRuntimeCursor,
+    right: &DiscoveryRuntimeCursor,
+) -> std::cmp::Ordering {
+    left.ts_utc
+        .cmp(&right.ts_utc)
+        .then_with(|| left.slot.cmp(&right.slot))
+        .then_with(|| left.signature.cmp(&right.signature))
+}
+
+fn snapshot_resume_batch_size(policy: &SqliteSnapshotPolicy) -> usize {
+    (policy.pages_per_step.max(1) as usize)
+        .saturating_mul(SNAPSHOT_RESUME_ROW_BATCH_MULTIPLIER)
+        .max(1)
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -722,6 +759,10 @@ fn run_scheduled(
 ) -> Result<SnapshotOutput> {
     let snapshot_dir =
         resolve_relative_to_config(&config.config_path, Path::new(configured_snapshot_dir));
+    let staged_paths = vec![
+        staged_snapshot_archive_path(&snapshot_dir),
+        staged_snapshot_metadata_path(&snapshot_dir),
+    ];
     let latest_snapshot_path = journal_snapshot_latest_path(&snapshot_dir);
     let latest_metadata_path = journal_snapshot_latest_metadata_path(&snapshot_dir);
     let cadence = Duration::minutes(cadence_minutes.max(1) as i64);
@@ -745,7 +786,7 @@ fn run_scheduled(
 
     if !config.force && latest_surface.status == LatestSurfaceStatus::Healthy && !latest_is_due {
         let archive_maintenance =
-            enforce_snapshot_archive_retention(&snapshot_dir, retention, &[])?;
+            enforce_snapshot_archive_retention(&snapshot_dir, retention, &staged_paths)?;
         let manifest = latest_surface
             .manifest
             .as_ref()
@@ -770,6 +811,7 @@ fn run_scheduled(
             SnapshotOutputContext {
                 archive_promoted: false,
                 archive_maintenance,
+                ..SnapshotOutputContext::default()
             },
         ));
     }
@@ -783,7 +825,7 @@ fn run_scheduled(
             latest_surface.clone(),
         )? {
             let archive_maintenance =
-                enforce_snapshot_archive_retention(&snapshot_dir, retention, &[])?;
+                enforce_snapshot_archive_retention(&snapshot_dir, retention, &staged_paths)?;
             return Ok(render_output(
                 SnapshotState::SelfHealedLatestSurface,
                 latest_surface.status,
@@ -804,12 +846,14 @@ fn run_scheduled(
                 SnapshotOutputContext {
                     archive_promoted: false,
                     archive_maintenance,
+                    ..SnapshotOutputContext::default()
                 },
             ));
         }
     }
 
-    let archive_maintenance = enforce_snapshot_archive_retention(&snapshot_dir, retention, &[])?;
+    let archive_maintenance =
+        enforce_snapshot_archive_retention(&snapshot_dir, retention, &staged_paths)?;
 
     let action = if latest_surface.status == LatestSurfaceStatus::Healthy {
         LatestSurfaceAction::RefreshedFromSource
@@ -830,7 +874,6 @@ fn run_scheduled(
         &snapshot_dir,
         snapshot_context,
         latest_surface.manifest.as_ref(),
-        config.force,
         archive_maintenance,
     )
 }
@@ -974,50 +1017,28 @@ fn write_fresh_scheduled_snapshot(
     snapshot_dir: &Path,
     snapshot_context: &SnapshotContext,
     latest_manifest: Option<&RecentRawJournalSnapshotManifest>,
-    force: bool,
     mut archive_maintenance: SnapshotArchiveMaintenance,
 ) -> Result<SnapshotOutput> {
     let archive_path = journal_snapshot_archive_path(snapshot_dir, now);
     let archive_metadata_path = journal_snapshot_metadata_path(&archive_path);
-    let staged_archive_path = staged_snapshot_archive_path(snapshot_dir, now);
-    let staged_archive_metadata_path = staged_snapshot_metadata_path(&staged_archive_path);
-    let (manifest, summary) = match write_snapshot_with_policy(
+    let staged_archive_path = staged_snapshot_archive_path(snapshot_dir);
+    let staged_archive_metadata_path = staged_snapshot_metadata_path(snapshot_dir);
+    let staged_preserve_paths = vec![
+        staged_archive_path.clone(),
+        staged_archive_metadata_path.clone(),
+    ];
+    let staged_attempt = match resume_staged_snapshot_with_policy(
         source_db_path,
         source_store,
-        &staged_archive_path,
+        snapshot_dir,
         now,
         &snapshot_context.policy,
     ) {
-        Ok(result) => result,
-        Err(SnapshotWriteError::RetryableBusy { summary }) => {
-            let reason = summary_reason(&summary);
-            let (state, latest_action, deferred_reason) =
-                scheduled_contention_contract(latest_surface_status, force, &reason);
-            return Ok(render_output(
-                state,
-                latest_surface_status,
-                latest_action,
-                snapshot_context,
-                config_path,
-                source_db_path,
-                latest_snapshot_path,
-                latest_metadata_path,
-                None,
-                Some(cadence_minutes),
-                Some(retention),
-                latest_manifest,
-                Some(&summary),
-                Some(reason),
-                deferred_reason,
-                None,
-                SnapshotOutputContext {
-                    archive_promoted: false,
-                    archive_maintenance,
-                },
-            ));
-        }
-        Err(SnapshotWriteError::Deferred { summary }) => {
-            let reason = deferred_summary_reason(&summary);
+        StagedSnapshotAttemptResult::Completed(attempt) => attempt,
+        StagedSnapshotAttemptResult::Deferred(attempt) => {
+            let reason = SqliteSnapshotDeferredReason::AttemptDurationBudgetExceeded
+                .as_str()
+                .to_string();
             let (latest_action, deferred_reason) =
                 scheduled_duration_budget_contract(latest_surface_status, &reason);
             return Ok(render_output(
@@ -1033,17 +1054,25 @@ fn write_fresh_scheduled_snapshot(
                 Some(cadence_minutes),
                 Some(retention),
                 latest_manifest,
-                Some(&summary),
+                None,
                 None,
                 deferred_reason,
                 None,
                 SnapshotOutputContext {
                     archive_promoted: false,
                     archive_maintenance,
+                    staged_progress: attempt.progress,
+                    attempt_duration_ms_override: Some(attempt.attempt_duration_ms),
+                    terminal_reason_override: Some(reason),
                 },
             ));
         }
-        Err(SnapshotWriteError::HardFailure { summary, reason }) => {
+        StagedSnapshotAttemptResult::HardFailure {
+            manifest,
+            progress,
+            attempt_duration_ms,
+            reason,
+        } => {
             return Ok(render_output(
                 SnapshotState::HardFailure,
                 latest_surface_status,
@@ -1056,51 +1085,22 @@ fn write_fresh_scheduled_snapshot(
                 None,
                 Some(cadence_minutes),
                 Some(retention),
-                latest_manifest,
-                summary.as_ref(),
+                manifest.as_ref().or(latest_manifest),
+                None,
                 None,
                 None,
                 Some(reason),
                 SnapshotOutputContext {
                     archive_promoted: false,
                     archive_maintenance,
+                    staged_progress: progress,
+                    attempt_duration_ms_override: Some(attempt_duration_ms),
+                    terminal_reason_override: None,
                 },
             ));
         }
     };
-    if let Err(error) = write_json_atomic(&staged_archive_metadata_path, &manifest)
-        .with_context(|| format!("failed writing {}", staged_archive_metadata_path.display()))
-    {
-        let _ = remove_snapshot_set(&staged_archive_path);
-        let _ = remove_file_if_exists(&staged_archive_metadata_path);
-        return Ok(render_output(
-            SnapshotState::HardFailure,
-            latest_surface_status,
-            LatestSurfaceAction::UnchangedDueToHardFailure,
-            snapshot_context,
-            config_path,
-            source_db_path,
-            latest_snapshot_path,
-            latest_metadata_path,
-            Some(&archive_path),
-            Some(cadence_minutes),
-            Some(retention),
-            Some(&manifest),
-            Some(&summary),
-            None,
-            None,
-            Some(error.to_string()),
-            SnapshotOutputContext {
-                archive_promoted: false,
-                archive_maintenance,
-            },
-        ));
-    }
 
-    let staged_preserve_paths = vec![
-        staged_archive_path.clone(),
-        staged_archive_metadata_path.clone(),
-    ];
     match enforce_snapshot_archive_retention(
         snapshot_dir,
         retention.saturating_sub(1),
@@ -1115,8 +1115,6 @@ fn write_fresh_scheduled_snapshot(
             );
         }
         Err(error) => {
-            let _ = remove_snapshot_set(&staged_archive_path);
-            let _ = remove_file_if_exists(&staged_archive_metadata_path);
             return Ok(render_output(
                 SnapshotState::HardFailure,
                 latest_surface_status,
@@ -1129,14 +1127,17 @@ fn write_fresh_scheduled_snapshot(
                 Some(&archive_path),
                 Some(cadence_minutes),
                 Some(retention),
-                Some(&manifest),
-                Some(&summary),
+                Some(&staged_attempt.manifest),
+                None,
                 None,
                 None,
                 Some(error.to_string()),
                 SnapshotOutputContext {
                     archive_promoted: false,
                     archive_maintenance,
+                    staged_progress: staged_attempt.progress.clone(),
+                    attempt_duration_ms_override: Some(staged_attempt.attempt_duration_ms),
+                    terminal_reason_override: None,
                 },
             ));
         }
@@ -1145,8 +1146,6 @@ fn write_fresh_scheduled_snapshot(
     if let Err(error) = link_or_copy_atomic(&staged_archive_path, latest_snapshot_path)
         .with_context(|| format!("failed updating {}", latest_snapshot_path.display()))
     {
-        let _ = remove_snapshot_set(&staged_archive_path);
-        let _ = remove_file_if_exists(&staged_archive_metadata_path);
         return Ok(render_output(
             SnapshotState::HardFailure,
             latest_surface_status,
@@ -1159,22 +1158,88 @@ fn write_fresh_scheduled_snapshot(
             Some(&archive_path),
             Some(cadence_minutes),
             Some(retention),
-            Some(&manifest),
-            Some(&summary),
+            Some(&staged_attempt.manifest),
+            None,
             None,
             None,
             Some(error.to_string()),
             SnapshotOutputContext {
                 archive_promoted: false,
                 archive_maintenance,
+                staged_progress: staged_attempt.progress.clone(),
+                attempt_duration_ms_override: Some(staged_attempt.attempt_duration_ms),
+                terminal_reason_override: None,
             },
         ));
     }
-    if let Err(error) = write_json_atomic(latest_metadata_path, &manifest)
+    if let Err(error) = invoke_post_snapshot_publish_hook(latest_snapshot_path) {
+        return Ok(render_output(
+            SnapshotState::HardFailure,
+            latest_surface_status,
+            LatestSurfaceAction::UnchangedDueToHardFailure,
+            snapshot_context,
+            config_path,
+            source_db_path,
+            latest_snapshot_path,
+            latest_metadata_path,
+            Some(&archive_path),
+            Some(cadence_minutes),
+            Some(retention),
+            Some(&staged_attempt.manifest),
+            None,
+            None,
+            None,
+            Some(format!(
+                "failed running post-snapshot publish hook for {}: {error}",
+                latest_snapshot_path.display()
+            )),
+            SnapshotOutputContext {
+                archive_promoted: false,
+                archive_maintenance,
+                staged_progress: staged_attempt.progress.clone(),
+                attempt_duration_ms_override: Some(staged_attempt.attempt_duration_ms),
+                terminal_reason_override: None,
+            },
+        ));
+    }
+
+    let latest_manifest = match manifest_for_snapshot(source_db_path, latest_snapshot_path, now) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            return Ok(render_output(
+                SnapshotState::HardFailure,
+                latest_surface_status,
+                LatestSurfaceAction::UnchangedDueToHardFailure,
+                snapshot_context,
+                config_path,
+                source_db_path,
+                latest_snapshot_path,
+                latest_metadata_path,
+                Some(&archive_path),
+                Some(cadence_minutes),
+                Some(retention),
+                Some(&staged_attempt.manifest),
+                None,
+                None,
+                None,
+                Some(format!(
+                    "failed building latest recent_raw snapshot manifest from {}: {error}",
+                    latest_snapshot_path.display()
+                )),
+                SnapshotOutputContext {
+                    archive_promoted: false,
+                    archive_maintenance,
+                    staged_progress: staged_attempt.progress.clone(),
+                    attempt_duration_ms_override: Some(staged_attempt.attempt_duration_ms),
+                    terminal_reason_override: None,
+                },
+            ));
+        }
+    };
+
+    if let Err(error) = write_json_atomic(latest_metadata_path, &latest_manifest)
         .with_context(|| format!("failed writing {}", latest_metadata_path.display()))
     {
-        let _ = remove_snapshot_set(&staged_archive_path);
-        let _ = remove_file_if_exists(&staged_archive_metadata_path);
         return Ok(render_output(
             SnapshotState::HardFailure,
             latest_surface_status,
@@ -1187,20 +1252,22 @@ fn write_fresh_scheduled_snapshot(
             Some(&archive_path),
             Some(cadence_minutes),
             Some(retention),
-            Some(&manifest),
-            Some(&summary),
+            Some(&latest_manifest),
+            None,
             None,
             None,
             Some(error.to_string()),
             SnapshotOutputContext {
                 archive_promoted: false,
                 archive_maintenance,
+                staged_progress: staged_attempt.progress.clone(),
+                attempt_duration_ms_override: Some(staged_attempt.attempt_duration_ms),
+                terminal_reason_override: None,
             },
         ));
     }
+
     if let Err(error) = invoke_pre_archive_promotion_hook(&staged_archive_path) {
-        let _ = remove_snapshot_set(&staged_archive_path);
-        let _ = remove_file_if_exists(&staged_archive_metadata_path);
         return Ok(render_output(
             SnapshotState::HardFailure,
             latest_surface_status,
@@ -1213,8 +1280,8 @@ fn write_fresh_scheduled_snapshot(
             Some(&archive_path),
             Some(cadence_minutes),
             Some(retention),
-            Some(&manifest),
-            Some(&summary),
+            Some(&latest_manifest),
+            None,
             None,
             None,
             Some(format!(
@@ -1224,22 +1291,16 @@ fn write_fresh_scheduled_snapshot(
             SnapshotOutputContext {
                 archive_promoted: false,
                 archive_maintenance,
+                staged_progress: staged_attempt.progress.clone(),
+                attempt_duration_ms_override: Some(staged_attempt.attempt_duration_ms),
+                terminal_reason_override: None,
             },
         ));
     }
 
-    if let Err(error) = fs::rename(&staged_archive_metadata_path, &archive_metadata_path)
-        .with_context(|| {
-            format!(
-                "failed renaming {} to {}",
-                staged_archive_metadata_path.display(),
-                archive_metadata_path.display()
-            )
-        })
+    if let Err(error) = link_or_copy_atomic(&staged_archive_path, &archive_path)
+        .with_context(|| format!("failed promoting {}", archive_path.display()))
     {
-        let _ = remove_snapshot_set(&staged_archive_path);
-        let _ = remove_file_if_exists(&archive_metadata_path);
-        let _ = remove_file_if_exists(&staged_archive_metadata_path);
         return Ok(render_output(
             SnapshotState::HardFailure,
             latest_surface_status,
@@ -1252,27 +1313,57 @@ fn write_fresh_scheduled_snapshot(
             Some(&archive_path),
             Some(cadence_minutes),
             Some(retention),
-            Some(&manifest),
-            Some(&summary),
+            Some(&latest_manifest),
+            None,
             None,
             None,
             Some(error.to_string()),
             SnapshotOutputContext {
                 archive_promoted: false,
                 archive_maintenance,
+                staged_progress: staged_attempt.progress.clone(),
+                attempt_duration_ms_override: Some(staged_attempt.attempt_duration_ms),
+                terminal_reason_override: None,
             },
         ));
     }
-    if let Err(error) = fs::rename(&staged_archive_path, &archive_path).with_context(|| {
-        format!(
-            "failed renaming {} to {}",
-            staged_archive_path.display(),
-            archive_path.display()
-        )
-    }) {
-        let _ = remove_file_if_exists(&archive_metadata_path);
-        let _ = remove_snapshot_set(&staged_archive_path);
-        let _ = remove_file_if_exists(&staged_archive_metadata_path);
+
+    let archive_manifest = match manifest_for_snapshot(source_db_path, &archive_path, now) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            return Ok(render_output(
+                SnapshotState::HardFailure,
+                latest_surface_status,
+                LatestSurfaceAction::UnchangedDueToHardFailure,
+                snapshot_context,
+                config_path,
+                source_db_path,
+                latest_snapshot_path,
+                latest_metadata_path,
+                Some(&archive_path),
+                Some(cadence_minutes),
+                Some(retention),
+                Some(&latest_manifest),
+                None,
+                None,
+                None,
+                Some(format!(
+                    "failed building archive recent_raw snapshot manifest from {}: {error}",
+                    archive_path.display()
+                )),
+                SnapshotOutputContext {
+                    archive_promoted: false,
+                    archive_maintenance,
+                    staged_progress: staged_attempt.progress.clone(),
+                    attempt_duration_ms_override: Some(staged_attempt.attempt_duration_ms),
+                    terminal_reason_override: None,
+                },
+            ));
+        }
+    };
+    if let Err(error) = write_json_atomic(&archive_metadata_path, &archive_manifest)
+        .with_context(|| format!("failed writing {}", archive_metadata_path.display()))
+    {
         return Ok(render_output(
             SnapshotState::HardFailure,
             latest_surface_status,
@@ -1285,17 +1376,27 @@ fn write_fresh_scheduled_snapshot(
             Some(&archive_path),
             Some(cadence_minutes),
             Some(retention),
-            Some(&manifest),
-            Some(&summary),
+            Some(&archive_manifest),
+            None,
             None,
             None,
             Some(error.to_string()),
             SnapshotOutputContext {
                 archive_promoted: false,
                 archive_maintenance,
+                staged_progress: staged_attempt.progress.clone(),
+                attempt_duration_ms_override: Some(staged_attempt.attempt_duration_ms),
+                terminal_reason_override: None,
             },
         ));
     }
+
+    archive_maintenance
+        .cleanup_removed_paths
+        .extend(remove_staged_snapshot_artifacts(
+            &staged_archive_path,
+            &staged_archive_metadata_path,
+        )?);
     archive_maintenance.archive_set_count_after =
         Some(list_archive_snapshot_paths(snapshot_dir)?.len());
 
@@ -1311,14 +1412,17 @@ fn write_fresh_scheduled_snapshot(
         Some(&archive_path),
         Some(cadence_minutes),
         Some(retention),
-        Some(&manifest),
-        Some(&summary),
+        Some(&archive_manifest),
+        None,
         None,
         None,
         None,
         SnapshotOutputContext {
             archive_promoted: true,
             archive_maintenance,
+            staged_progress: staged_attempt.progress,
+            attempt_duration_ms_override: Some(staged_attempt.attempt_duration_ms),
+            terminal_reason_override: Some("written".to_string()),
         },
     ))
 }
@@ -1356,21 +1460,16 @@ fn newest_snapshot_archive(snapshot_dir: &Path) -> Option<PathBuf> {
     archives.into_iter().next()
 }
 
-fn staged_snapshot_archive_path(snapshot_dir: &Path, now: DateTime<Utc>) -> PathBuf {
-    let final_archive_path = journal_snapshot_archive_path(snapshot_dir, now);
-    let file_name = final_archive_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("discovery_recent_raw.sqlite");
-    final_archive_path.with_file_name(format!(".{file_name}{STAGED_ARCHIVE_SNAPSHOT_SUFFIX}"))
+fn staged_snapshot_archive_path(snapshot_dir: &Path) -> PathBuf {
+    snapshot_dir.join(format!(
+        ".{JOURNAL_SNAPSHOT_ARCHIVE_PREFIX}staged{JOURNAL_SNAPSHOT_ARCHIVE_SUFFIX}{STAGED_ARCHIVE_SNAPSHOT_SUFFIX}"
+    ))
 }
 
-fn staged_snapshot_metadata_path(staged_snapshot_path: &Path) -> PathBuf {
-    let file_name = staged_snapshot_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("discovery_recent_raw.sqlite");
-    staged_snapshot_path.with_file_name(format!("{file_name}{STAGED_ARCHIVE_METADATA_SUFFIX}"))
+fn staged_snapshot_metadata_path(snapshot_dir: &Path) -> PathBuf {
+    snapshot_dir.join(format!(
+        ".{JOURNAL_SNAPSHOT_ARCHIVE_PREFIX}staged{JOURNAL_SNAPSHOT_ARCHIVE_SUFFIX}{STAGED_ARCHIVE_METADATA_SUFFIX}"
+    ))
 }
 
 fn sqlite_snapshot_wal_path(snapshot_path: &Path) -> PathBuf {
@@ -1406,6 +1505,82 @@ fn remove_snapshot_set(snapshot_path: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(removed_paths)
+}
+
+fn remove_staged_snapshot_artifacts(
+    staged_snapshot_path: &Path,
+    staged_metadata_path: &Path,
+) -> Result<Vec<PathBuf>> {
+    let mut removed_paths = Vec::new();
+    for path in [
+        staged_snapshot_path.to_path_buf(),
+        staged_metadata_path.to_path_buf(),
+        sqlite_snapshot_wal_path(staged_snapshot_path),
+        sqlite_snapshot_shm_path(staged_snapshot_path),
+    ] {
+        if remove_file_if_exists(&path)? {
+            removed_paths.push(path);
+        }
+    }
+    Ok(removed_paths)
+}
+
+fn load_existing_staged_manifest(
+    source_db_path: &Path,
+    staged_snapshot_path: &Path,
+    staged_metadata_path: &Path,
+) -> Result<Option<RecentRawJournalSnapshotManifest>> {
+    if !staged_snapshot_path.exists() {
+        let _ = remove_file_if_exists(staged_metadata_path)?;
+        return Ok(None);
+    }
+    let created_at = match load_json::<RecentRawJournalSnapshotManifest>(staged_metadata_path) {
+        Ok(manifest) => manifest.created_at,
+        Err(_) => infer_created_at(staged_snapshot_path)?,
+    };
+    manifest_for_snapshot(source_db_path, staged_snapshot_path, created_at).map(Some)
+}
+
+fn source_window_outran_staged_progress(
+    source_state: &RecentRawJournalStateRow,
+    staged_manifest: &RecentRawJournalSnapshotManifest,
+) -> bool {
+    if source_state.row_count == 0 {
+        return staged_manifest.row_count > 0;
+    }
+    if let (Some(source_since), Some(staged_since)) =
+        (source_state.covered_since, staged_manifest.covered_since)
+    {
+        if source_since > staged_since {
+            return true;
+        }
+    }
+    if let (Some(source_cursor), Some(staged_cursor)) = (
+        source_state.covered_through_cursor.as_ref(),
+        staged_manifest.covered_through_cursor.as_ref(),
+    ) {
+        return discovery_runtime_cursor_cmp(source_cursor, staged_cursor)
+            == std::cmp::Ordering::Less;
+    }
+    false
+}
+
+fn staged_manifest_for_state(
+    source_db_path: &Path,
+    staged_snapshot_path: &Path,
+    created_at: DateTime<Utc>,
+    state: &RecentRawJournalStateRow,
+) -> Result<RecentRawJournalSnapshotManifest> {
+    let snapshot_bytes = fs::metadata(staged_snapshot_path)
+        .with_context(|| format!("failed stat {}", staged_snapshot_path.display()))?
+        .len();
+    Ok(snapshot_manifest(
+        created_at,
+        source_db_path,
+        staged_snapshot_path,
+        state,
+        snapshot_bytes,
+    ))
 }
 
 fn list_archive_snapshot_paths(snapshot_dir: &Path) -> Result<Vec<PathBuf>> {
@@ -1584,6 +1759,8 @@ thread_local! {
         std::cell::RefCell::new(None);
     static PRE_ARCHIVE_PROMOTION_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&Path) -> Result<()>>>> =
         std::cell::RefCell::new(None);
+    static RESUMABLE_SNAPSHOT_PROGRESS_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(usize, usize) -> bool>>> =
+        std::cell::RefCell::new(None);
 }
 
 #[cfg(test)]
@@ -1596,6 +1773,9 @@ impl Drop for SnapshotPublishHookGuard {
             slot.borrow_mut().take();
         });
         PRE_ARCHIVE_PROMOTION_HOOK.with(|slot| {
+            slot.borrow_mut().take();
+        });
+        RESUMABLE_SNAPSHOT_PROGRESS_HOOK.with(|slot| {
             slot.borrow_mut().take();
         });
     }
@@ -1631,6 +1811,22 @@ where
 }
 
 #[cfg(test)]
+fn install_resumable_snapshot_progress_hook<F>(hook: F) -> SnapshotPublishHookGuard
+where
+    F: FnMut(usize, usize) -> bool + 'static,
+{
+    RESUMABLE_SNAPSHOT_PROGRESS_HOOK.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        assert!(
+            slot.is_none(),
+            "resumable snapshot progress hook already installed"
+        );
+        *slot = Some(Box::new(hook));
+    });
+    SnapshotPublishHookGuard
+}
+
+#[cfg(test)]
 fn invoke_post_snapshot_publish_hook(snapshot_path: &Path) -> Result<()> {
     let hook = POST_SNAPSHOT_PUBLISH_HOOK.with(|slot| slot.borrow_mut().take());
     if let Some(mut hook) = hook {
@@ -1656,6 +1852,372 @@ fn invoke_pre_archive_promotion_hook(snapshot_path: &Path) -> Result<()> {
 #[cfg(not(test))]
 fn invoke_pre_archive_promotion_hook(_snapshot_path: &Path) -> Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+fn resumable_snapshot_progress_hook_requests_budget_exhaustion(
+    completed_batches: usize,
+    staged_row_count: usize,
+) -> bool {
+    RESUMABLE_SNAPSHOT_PROGRESS_HOOK.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        slot.as_mut()
+            .is_some_and(|hook| hook(completed_batches, staged_row_count))
+    })
+}
+
+#[cfg(not(test))]
+fn resumable_snapshot_progress_hook_requests_budget_exhaustion(
+    _completed_batches: usize,
+    _staged_row_count: usize,
+) -> bool {
+    false
+}
+
+fn snapshot_attempt_deadline(max_attempt_duration: Option<StdDuration>) -> Option<Instant> {
+    max_attempt_duration.map(|budget| Instant::now() + budget)
+}
+
+// Preserve the staged snapshot across deferred runs so the bounded scheduled path keeps advancing
+// on live-size journals instead of restarting from zero on every timer tick.
+fn resume_staged_snapshot_with_policy(
+    source_db_path: &Path,
+    source_store: &SqliteStore,
+    snapshot_dir: &Path,
+    now: DateTime<Utc>,
+    snapshot_policy: &SqliteSnapshotPolicy,
+) -> StagedSnapshotAttemptResult {
+    let staged_snapshot_path = staged_snapshot_archive_path(snapshot_dir);
+    let staged_metadata_path = staged_snapshot_metadata_path(snapshot_dir);
+    let mut progress = StagedSnapshotProgress {
+        staged_snapshot_path: Some(staged_snapshot_path.clone()),
+        staged_metadata_path: Some(staged_metadata_path.clone()),
+        ..StagedSnapshotProgress::default()
+    };
+
+    if let Err(error) = fs::create_dir_all(snapshot_dir)
+        .with_context(|| format!("failed creating {}", snapshot_dir.display()))
+    {
+        return StagedSnapshotAttemptResult::HardFailure {
+            manifest: None,
+            progress,
+            attempt_duration_ms: 0,
+            reason: error.to_string(),
+        };
+    }
+
+    let source_state = match source_store.recent_raw_journal_state_read_only() {
+        Ok(state) => state,
+        Err(error) => {
+            return StagedSnapshotAttemptResult::HardFailure {
+                manifest: None,
+                progress,
+                attempt_duration_ms: 0,
+                reason: format!("failed reading source recent_raw journal state: {error}"),
+            };
+        }
+    };
+
+    let mut existing_manifest = match load_existing_staged_manifest(
+        source_db_path,
+        &staged_snapshot_path,
+        &staged_metadata_path,
+    ) {
+        Ok(existing_manifest) => existing_manifest,
+        Err(error) => {
+            return StagedSnapshotAttemptResult::HardFailure {
+                manifest: None,
+                progress,
+                attempt_duration_ms: 0,
+                reason: format!(
+                    "failed reading staged recent_raw snapshot progress from {}: {error}",
+                    staged_snapshot_path.display()
+                ),
+            };
+        }
+    };
+
+    if existing_manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.source_db_path != source_db_path.display().to_string())
+    {
+        match remove_staged_snapshot_artifacts(&staged_snapshot_path, &staged_metadata_path) {
+            Ok(_) => {
+                existing_manifest = None;
+            }
+            Err(error) => {
+                return StagedSnapshotAttemptResult::HardFailure {
+                    manifest: None,
+                    progress,
+                    attempt_duration_ms: 0,
+                    reason: format!(
+                        "failed resetting staged recent_raw snapshot progress in {} after source path changed: {error}",
+                        snapshot_dir.display()
+                    ),
+                };
+            }
+        }
+    }
+
+    if existing_manifest
+        .as_ref()
+        .is_some_and(|manifest| source_window_outran_staged_progress(&source_state, manifest))
+    {
+        match remove_staged_snapshot_artifacts(&staged_snapshot_path, &staged_metadata_path) {
+            Ok(_) => {
+                existing_manifest = None;
+            }
+            Err(error) => {
+                return StagedSnapshotAttemptResult::HardFailure {
+                    manifest: None,
+                    progress,
+                    attempt_duration_ms: 0,
+                    reason: format!(
+                        "failed resetting stale staged recent_raw snapshot progress in {}: {error}",
+                        snapshot_dir.display()
+                    ),
+                };
+            }
+        }
+    }
+
+    let staged_created_at = existing_manifest
+        .as_ref()
+        .map(|manifest| manifest.created_at)
+        .unwrap_or(now);
+    let staged_store = match SqliteStore::open(&staged_snapshot_path) {
+        Ok(store) => store,
+        Err(error) => {
+            return StagedSnapshotAttemptResult::HardFailure {
+                manifest: existing_manifest,
+                progress,
+                attempt_duration_ms: 0,
+                reason: format!(
+                    "failed opening staged recent_raw snapshot {}: {error}",
+                    staged_snapshot_path.display()
+                ),
+            };
+        }
+    };
+    if let Err(error) = staged_store.ensure_recent_raw_journal_tables() {
+        return StagedSnapshotAttemptResult::HardFailure {
+            manifest: existing_manifest,
+            progress,
+            attempt_duration_ms: 0,
+            reason: format!(
+                "failed ensuring staged recent_raw snapshot tables in {}: {error}",
+                staged_snapshot_path.display()
+            ),
+        };
+    }
+
+    let before_state = match staged_store.recent_raw_journal_state() {
+        Ok(state) => state,
+        Err(error) => {
+            return StagedSnapshotAttemptResult::HardFailure {
+                manifest: existing_manifest,
+                progress,
+                attempt_duration_ms: 0,
+                reason: format!(
+                    "failed reading staged recent_raw snapshot state from {}: {error}",
+                    staged_snapshot_path.display()
+                ),
+            };
+        }
+    };
+    progress.row_count_before_attempt = Some(before_state.row_count);
+    progress.covered_through_cursor_before_attempt = before_state.covered_through_cursor.clone();
+    progress.resumed_from_existing_stage = before_state.row_count > 0;
+
+    let deadline = snapshot_attempt_deadline(snapshot_policy.max_attempt_duration);
+    let started = Instant::now();
+    let batch_limit = snapshot_resume_batch_size(snapshot_policy);
+    let mut completed_batches = 0usize;
+    let mut current_state = before_state.clone();
+    let mut budget_exhausted = false;
+
+    while source_state.row_count > current_state.row_count {
+        let deadline =
+            deadline.unwrap_or_else(|| Instant::now() + StdDuration::from_secs(24 * 60 * 60));
+        if Instant::now() >= deadline {
+            budget_exhausted = true;
+            break;
+        }
+
+        let mut batch = Vec::with_capacity(batch_limit);
+        let page = if let Some(cursor) = current_state.covered_through_cursor.as_ref() {
+            source_store.for_each_observed_swap_after_cursor_with_budget(
+                cursor.ts_utc,
+                cursor.slot,
+                &cursor.signature,
+                batch_limit,
+                deadline,
+                |swap| {
+                    batch.push(swap);
+                    Ok(())
+                },
+            )
+        } else if let Some(covered_since) = source_state.covered_since {
+            source_store.for_each_observed_swap_since_with_budget(
+                covered_since,
+                batch_limit,
+                deadline,
+                |swap| {
+                    batch.push(swap);
+                    Ok(())
+                },
+            )
+        } else {
+            break;
+        };
+        let page = match page {
+            Ok(page) => page,
+            Err(error) => {
+                let attempt_duration_ms =
+                    started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                let manifest = staged_manifest_for_state(
+                    source_db_path,
+                    &staged_snapshot_path,
+                    staged_created_at,
+                    &current_state,
+                )
+                .ok();
+                return StagedSnapshotAttemptResult::HardFailure {
+                    manifest,
+                    progress,
+                    attempt_duration_ms,
+                    reason: format!(
+                        "failed loading bounded recent_raw source rows into staged snapshot {}: {error}",
+                        staged_snapshot_path.display()
+                    ),
+                };
+            }
+        };
+
+        if batch.is_empty() {
+            if page.time_budget_exhausted {
+                budget_exhausted = true;
+            }
+            break;
+        }
+
+        if let Err(error) = staged_store.insert_recent_raw_journal_batch(&batch, now) {
+            let attempt_duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+            let manifest = staged_manifest_for_state(
+                source_db_path,
+                &staged_snapshot_path,
+                staged_created_at,
+                &current_state,
+            )
+            .ok();
+            return StagedSnapshotAttemptResult::HardFailure {
+                manifest,
+                progress,
+                attempt_duration_ms,
+                reason: format!(
+                    "failed persisting bounded recent_raw batch into staged snapshot {}: {error}",
+                    staged_snapshot_path.display()
+                ),
+            };
+        }
+
+        current_state = match staged_store.recent_raw_journal_state() {
+            Ok(state) => state,
+            Err(error) => {
+                let attempt_duration_ms =
+                    started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                let manifest = staged_manifest_for_state(
+                    source_db_path,
+                    &staged_snapshot_path,
+                    staged_created_at,
+                    &before_state,
+                )
+                .ok();
+                return StagedSnapshotAttemptResult::HardFailure {
+                    manifest,
+                    progress,
+                    attempt_duration_ms,
+                    reason: format!(
+                        "failed refreshing staged recent_raw snapshot state from {}: {error}",
+                        staged_snapshot_path.display()
+                    ),
+                };
+            }
+        };
+        completed_batches = completed_batches.saturating_add(1);
+        progress.advanced_during_attempt |= current_state.row_count > before_state.row_count
+            || current_state.covered_through_cursor != before_state.covered_through_cursor;
+
+        if resumable_snapshot_progress_hook_requests_budget_exhaustion(
+            completed_batches,
+            current_state.row_count,
+        ) {
+            budget_exhausted = true;
+            break;
+        }
+        if page.time_budget_exhausted || Instant::now() >= deadline {
+            budget_exhausted = true;
+            break;
+        }
+        if page.rows_seen < batch_limit {
+            break;
+        }
+    }
+
+    progress.row_count_after_attempt = Some(current_state.row_count);
+    progress.covered_through_cursor_after_attempt = current_state.covered_through_cursor.clone();
+
+    let manifest = match staged_manifest_for_state(
+        source_db_path,
+        &staged_snapshot_path,
+        staged_created_at,
+        &current_state,
+    ) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            return StagedSnapshotAttemptResult::HardFailure {
+                manifest: existing_manifest,
+                progress,
+                attempt_duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                reason: format!(
+                    "failed building staged recent_raw snapshot manifest from {}: {error}",
+                    staged_snapshot_path.display()
+                ),
+            };
+        }
+    };
+
+    if current_state.row_count > 0 || progress.resumed_from_existing_stage {
+        if let Err(error) = write_json_atomic(&staged_metadata_path, &manifest)
+            .with_context(|| format!("failed writing {}", staged_metadata_path.display()))
+        {
+            return StagedSnapshotAttemptResult::HardFailure {
+                manifest: Some(manifest),
+                progress,
+                attempt_duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                reason: error.to_string(),
+            };
+        }
+    }
+
+    if budget_exhausted {
+        progress.preserved_for_retry =
+            progress.resumed_from_existing_stage || current_state.row_count > 0;
+        if !progress.preserved_for_retry {
+            let _ = remove_staged_snapshot_artifacts(&staged_snapshot_path, &staged_metadata_path);
+        }
+        return StagedSnapshotAttemptResult::Deferred(StagedSnapshotAttempt {
+            manifest,
+            progress,
+            attempt_duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        });
+    }
+
+    StagedSnapshotAttemptResult::Completed(StagedSnapshotAttempt {
+        manifest,
+        progress,
+        attempt_duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+    })
 }
 
 fn write_snapshot_with_policy(
@@ -1815,6 +2377,16 @@ fn render_output(
         snapshot_path: snapshot_path.display().to_string(),
         metadata_path: metadata_path.display().to_string(),
         archive_path: archive_path.map(|path| path.display().to_string()),
+        staged_snapshot_path: output_context
+            .staged_progress
+            .staged_snapshot_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        staged_metadata_path: output_context
+            .staged_progress
+            .staged_metadata_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
         cadence_minutes,
         retention,
         pruned_snapshot_paths: output_context
@@ -1832,6 +2404,19 @@ fn render_output(
         archive_promoted: output_context.archive_promoted,
         archive_set_count_before: output_context.archive_maintenance.archive_set_count_before,
         archive_set_count_after: output_context.archive_maintenance.archive_set_count_after,
+        staged_progress_resumed: output_context.staged_progress.resumed_from_existing_stage,
+        staged_progress_preserved_for_retry: output_context.staged_progress.preserved_for_retry,
+        staged_progress_advanced: output_context.staged_progress.advanced_during_attempt,
+        staged_row_count_before_attempt: output_context.staged_progress.row_count_before_attempt,
+        staged_row_count_after_attempt: output_context.staged_progress.row_count_after_attempt,
+        staged_covered_through_cursor_before_attempt: output_context
+            .staged_progress
+            .covered_through_cursor_before_attempt
+            .clone(),
+        staged_covered_through_cursor_after_attempt: output_context
+            .staged_progress
+            .covered_through_cursor_after_attempt
+            .clone(),
         source_db_bytes: snapshot_context.source_stats.source_db_bytes,
         source_wal_bytes: snapshot_context.source_stats.source_wal_bytes,
         source_total_bytes: snapshot_context.source_stats.source_total_bytes(),
@@ -1846,8 +2431,9 @@ fn render_output(
         snapshot_max_attempt_duration_ms: snapshot_policy_max_attempt_duration_ms(
             &snapshot_context.policy,
         ),
-        attempt_duration_ms: snapshot_summary
-            .map(|summary| summary.duration_ms)
+        attempt_duration_ms: output_context
+            .attempt_duration_ms_override
+            .or_else(|| snapshot_summary.map(|summary| summary.duration_ms))
             .unwrap_or(0),
         backup_step_count: snapshot_summary
             .map(|summary| summary.backup_step_count)
@@ -1864,7 +2450,9 @@ fn render_output(
         backup_total_page_count: snapshot_summary.map(|summary| summary.total_page_count),
         backup_remaining_page_count: snapshot_summary.map(|summary| summary.remaining_page_count),
         backup_copied_page_count: snapshot_summary.map(|summary| summary.copied_page_count),
-        terminal_reason: snapshot_terminal_reason(state, snapshot_summary),
+        terminal_reason: output_context
+            .terminal_reason_override
+            .or_else(|| snapshot_terminal_reason(state, snapshot_summary)),
         retryable_reason,
         deferred_reason,
         hard_failure_reason,
@@ -1891,6 +2479,14 @@ fn render_human(output: &SnapshotOutput) -> String {
         format!(
             "archive_path={}",
             output.archive_path.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "staged_snapshot_path={}",
+            output.staged_snapshot_path.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "staged_metadata_path={}",
+            output.staged_metadata_path.as_deref().unwrap_or("null")
         ),
         format!(
             "cadence_minutes={}",
@@ -1924,6 +2520,55 @@ fn render_human(output: &SnapshotOutput) -> String {
             output
                 .archive_set_count_after
                 .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!("staged_progress_resumed={}", output.staged_progress_resumed),
+        format!(
+            "staged_progress_preserved_for_retry={}",
+            output.staged_progress_preserved_for_retry
+        ),
+        format!(
+            "staged_progress_advanced={}",
+            output.staged_progress_advanced
+        ),
+        format!(
+            "staged_row_count_before_attempt={}",
+            output
+                .staged_row_count_before_attempt
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "staged_row_count_after_attempt={}",
+            output
+                .staged_row_count_after_attempt
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "staged_covered_through_cursor_before_attempt={}",
+            output
+                .staged_covered_through_cursor_before_attempt
+                .as_ref()
+                .map(|cursor| format!(
+                    "{}/{}/{}",
+                    cursor.ts_utc.to_rfc3339(),
+                    cursor.slot,
+                    cursor.signature
+                ))
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "staged_covered_through_cursor_after_attempt={}",
+            output
+                .staged_covered_through_cursor_after_attempt
+                .as_ref()
+                .map(|cursor| format!(
+                    "{}/{}/{}",
+                    cursor.ts_utc.to_rfc3339(),
+                    cursor.slot,
+                    cursor.signature
+                ))
                 .unwrap_or_else(|| "null".to_string())
         ),
         format!("source_db_bytes={}", output.source_db_bytes),
@@ -2040,7 +2685,8 @@ fn render_human(output: &SnapshotOutput) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        adaptive_snapshot_policy, install_pre_archive_promotion_hook, parse_args_from, run,
+        adaptive_snapshot_policy, install_pre_archive_promotion_hook,
+        install_resumable_snapshot_progress_hook, parse_args_from, run,
         run_with_snapshot_policy_override, Config, RecentRawJournalSnapshotManifest,
         SnapshotSourceStats, SqliteStore,
     };
@@ -2080,39 +2726,6 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_contention_contract_defers_when_latest_surface_is_healthy() {
-        let (state, action, deferred_reason) = super::scheduled_contention_contract(
-            super::LatestSurfaceStatus::Healthy,
-            false,
-            "busy",
-        );
-        assert_eq!(state, super::SnapshotState::Deferred);
-        assert_eq!(
-            action,
-            super::LatestSurfaceAction::DeferredDueToRetryableBusy
-        );
-        assert_eq!(
-            deferred_reason.as_deref(),
-            Some("healthy_latest_surface_retained_after_retryable_busy")
-        );
-    }
-
-    #[test]
-    fn scheduled_contention_contract_returns_retryable_busy_without_healthy_latest_surface() {
-        let (state, action, deferred_reason) = super::scheduled_contention_contract(
-            super::LatestSurfaceStatus::MissingBoth,
-            false,
-            "locked",
-        );
-        assert_eq!(state, super::SnapshotState::RetryableBusy);
-        assert_eq!(
-            action,
-            super::LatestSurfaceAction::UnchangedDueToRetryableBusy
-        );
-        assert!(deferred_reason.is_none());
-    }
-
-    #[test]
     fn snapshot_state_exit_codes_keep_transient_contention_distinct_from_hard_failure() {
         assert_eq!(super::SnapshotState::Deferred.exit_code(), 75);
         assert_eq!(super::SnapshotState::RetryableBusy.exit_code(), 75);
@@ -2148,7 +2761,18 @@ mod tests {
     ) -> Result<()> {
         let fixture = make_fixture("recent-raw-snapshot-budget")?;
         let now = parse_ts("2026-03-23T12:00:00Z")?;
-        seed_recent_raw_journal_many(&fixture.journal_store, now, 256)?;
+        seed_recent_raw_journal_range(
+            &fixture.journal_store,
+            now - Duration::minutes(30),
+            10,
+            "sig-budget",
+            512,
+            now,
+        )?;
+        let _guard =
+            install_resumable_snapshot_progress_hook(|completed_batches, _staged_row_count| {
+                completed_batches >= 1
+            });
 
         let deferred = run_with_snapshot_policy_override(
             Config {
@@ -2162,10 +2786,10 @@ mod tests {
             },
             Some(copybot_storage::SqliteSnapshotPolicy {
                 busy_timeout: StdDuration::from_millis(1),
-                pages_per_step: 1,
+                pages_per_step: 8,
                 pause_between_steps: StdDuration::from_millis(0),
                 retry_backoff_ms: vec![1, 1],
-                max_attempt_duration: Some(StdDuration::ZERO),
+                max_attempt_duration: Some(StdDuration::from_millis(1)),
                 pin_source_snapshot: true,
             }),
         )?;
@@ -2180,16 +2804,166 @@ mod tests {
             output["latest_surface_action"],
             "unchanged_due_to_attempt_budget"
         );
-        assert_eq!(output["snapshot_pages_per_step"], 1);
-        assert_eq!(output["snapshot_max_attempt_duration_ms"], 0);
+        assert_eq!(output["snapshot_pages_per_step"], 8);
+        assert_eq!(output["staged_progress_preserved_for_retry"], true);
+        assert_eq!(output["staged_progress_advanced"], true);
         assert!(
-            output["backup_total_page_count"]
+            output["staged_row_count_after_attempt"]
                 .as_u64()
                 .unwrap_or_default()
-                > output["backup_copied_page_count"]
+                > output["staged_row_count_before_attempt"]
                     .as_u64()
                     .unwrap_or_default(),
-            "bounded deferred outcome must expose unfinished backup progress"
+            "bounded deferred outcome must expose preserved staged forward progress"
+        );
+        assert_eq!(staged_artifact_count(&fixture.snapshot_dir())?, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduled_run_resumes_preserved_staged_progress_and_eventually_replaces_stale_latest(
+    ) -> Result<()> {
+        let fixture = make_fixture("recent-raw-snapshot-resume-incident")?;
+        let initial_now = parse_ts("2026-03-23T12:00:00Z")?;
+        seed_recent_raw_journal_range(
+            &fixture.journal_store,
+            initial_now - Duration::minutes(5),
+            10,
+            "sig-initial",
+            32,
+            initial_now,
+        )?;
+        run(Config {
+            config_path: fixture.config_path.clone(),
+            journal_db_path: Some(fixture.journal_db_path.clone()),
+            output_path: None,
+            scheduled: true,
+            force: true,
+            json: false,
+            now: initial_now,
+        })?;
+
+        let latest_manifest_path = fixture.snapshot_dir().join("latest.json");
+        let stale_latest_manifest: RecentRawJournalSnapshotManifest =
+            load_json(&latest_manifest_path)?;
+        seed_recent_raw_journal_range(
+            &fixture.journal_store,
+            initial_now + Duration::minutes(1),
+            1_000,
+            "sig-incident",
+            4096,
+            initial_now + Duration::minutes(1),
+        )?;
+
+        let mut forced_budget_exhaustions = 0usize;
+        let _guard = install_resumable_snapshot_progress_hook(move |completed_batches, _rows| {
+            if forced_budget_exhaustions < 2 && completed_batches >= 2 {
+                forced_budget_exhaustions += 1;
+                true
+            } else {
+                false
+            }
+        });
+        let policy = Some(copybot_storage::SqliteSnapshotPolicy {
+            busy_timeout: StdDuration::from_millis(1),
+            pages_per_step: 64,
+            pause_between_steps: StdDuration::from_millis(0),
+            retry_backoff_ms: vec![1, 1],
+            max_attempt_duration: Some(StdDuration::from_secs(5)),
+            pin_source_snapshot: true,
+        });
+
+        let first_deferred = run_with_snapshot_policy_override(
+            Config {
+                config_path: fixture.config_path.clone(),
+                journal_db_path: Some(fixture.journal_db_path.clone()),
+                output_path: None,
+                scheduled: true,
+                force: false,
+                json: true,
+                now: initial_now + Duration::minutes(15),
+            },
+            policy.clone(),
+        )?;
+        let first_output: Value = serde_json::from_str(&first_deferred.rendered_output)?;
+        assert_eq!(first_output["state"], "deferred");
+        assert_eq!(first_output["latest_surface_status"], "healthy");
+        assert_eq!(
+            first_output["latest_surface_action"],
+            "deferred_due_to_attempt_budget"
+        );
+        assert_eq!(first_output["staged_progress_resumed"], false);
+        assert_eq!(first_output["staged_progress_preserved_for_retry"], true);
+        assert_eq!(first_output["staged_progress_advanced"], true);
+        let first_staged_rows = first_output["staged_row_count_after_attempt"]
+            .as_u64()
+            .context("first deferred staged row count must be present")?;
+        assert!(first_staged_rows > stale_latest_manifest.row_count as u64);
+        assert_eq!(staged_artifact_count(&fixture.snapshot_dir())?, 2);
+
+        let second_deferred = run_with_snapshot_policy_override(
+            Config {
+                config_path: fixture.config_path.clone(),
+                journal_db_path: Some(fixture.journal_db_path.clone()),
+                output_path: None,
+                scheduled: true,
+                force: false,
+                json: true,
+                now: initial_now + Duration::minutes(20),
+            },
+            policy.clone(),
+        )?;
+        let second_output: Value = serde_json::from_str(&second_deferred.rendered_output)?;
+        assert_eq!(second_output["state"], "deferred");
+        assert_eq!(second_output["staged_progress_resumed"], true);
+        assert_eq!(second_output["staged_progress_preserved_for_retry"], true);
+        assert_eq!(second_output["staged_progress_advanced"], true);
+        assert_eq!(
+            second_output["staged_row_count_before_attempt"].as_u64(),
+            Some(first_staged_rows)
+        );
+        let second_staged_rows = second_output["staged_row_count_after_attempt"]
+            .as_u64()
+            .context("second deferred staged row count must be present")?;
+        assert!(second_staged_rows > first_staged_rows);
+        assert_eq!(staged_artifact_count(&fixture.snapshot_dir())?, 2);
+
+        let completed = run_with_snapshot_policy_override(
+            Config {
+                config_path: fixture.config_path.clone(),
+                journal_db_path: Some(fixture.journal_db_path.clone()),
+                output_path: None,
+                scheduled: true,
+                force: false,
+                json: true,
+                now: initial_now + Duration::minutes(25),
+            },
+            policy,
+        )?;
+        assert_eq!(completed.exit_code, 0);
+        let completed_output: Value = serde_json::from_str(&completed.rendered_output)?;
+        assert_eq!(completed_output["state"], "written");
+        assert_eq!(completed_output["archive_promoted"], true);
+        assert_eq!(completed_output["staged_progress_resumed"], true);
+        assert_eq!(staged_artifact_count(&fixture.snapshot_dir())?, 0);
+
+        let promoted_latest_manifest: RecentRawJournalSnapshotManifest =
+            load_json(&latest_manifest_path)?;
+        assert!(
+            promoted_latest_manifest.row_count > stale_latest_manifest.row_count,
+            "resumed completion must replace the stale latest surface with newer bounded coverage"
+        );
+        assert_ne!(
+            promoted_latest_manifest.covered_through_cursor,
+            stale_latest_manifest.covered_through_cursor
+        );
+        assert_eq!(
+            promoted_latest_manifest.row_count,
+            fixture.journal_store.recent_raw_journal_state()?.row_count
+        );
+        assert!(
+            archive_count(&fixture.snapshot_dir())? <= 2,
+            "archive retention must remain bounded after resumed completion"
         );
         Ok(())
     }
@@ -2775,6 +3549,26 @@ mod tests {
         Ok(())
     }
 
+    fn seed_recent_raw_journal_range(
+        store: &SqliteStore,
+        start: DateTime<Utc>,
+        slot_start: u64,
+        signature_prefix: &str,
+        count: usize,
+        completed_at: DateTime<Utc>,
+    ) -> Result<()> {
+        let mut swaps = Vec::with_capacity(count);
+        for idx in 0..count {
+            swaps.push(make_swap(
+                &format!("{signature_prefix}-{idx:05}"),
+                start + Duration::seconds(idx as i64),
+                slot_start + idx as u64,
+            ));
+        }
+        store.insert_recent_raw_journal_batch(&swaps, completed_at)?;
+        Ok(())
+    }
+
     fn load_snapshot_state(snapshot_path: &std::path::Path) -> Result<RecentRawJournalStateRow> {
         let snapshot_store = SqliteStore::open_read_only(snapshot_path)?;
         snapshot_store.recent_raw_journal_state_read_only()
@@ -2831,6 +3625,22 @@ mod tests {
                     .and_then(|name| name.to_str())
                     .is_some_and(|name| {
                         name.starts_with("discovery_recent_raw_") && name.ends_with(".sqlite")
+                    })
+            })
+            .count())
+    }
+
+    fn staged_artifact_count(snapshot_dir: &Path) -> Result<usize> {
+        Ok(std::fs::read_dir(snapshot_dir)?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(".discovery_recent_raw_")
+                            && (name.ends_with(super::STAGED_ARCHIVE_SNAPSHOT_SUFFIX)
+                                || name.ends_with(super::STAGED_ARCHIVE_METADATA_SUFFIX))
                     })
             })
             .count())
