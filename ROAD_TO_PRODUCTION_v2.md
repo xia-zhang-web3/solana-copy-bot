@@ -1806,6 +1806,41 @@ Acceptance update (`2026-03-26`, activation artifact archive retention apply exe
 5. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_archive`
 
+Acceptance update (`2026-03-26`, activation artifact manifest generator + verifier):
+
+1. The repo now also has an explicit integrity layer over exported activation
+   artifacts:
+   - generate:
+     `copybot_activation_artifact_manifest --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --generate-manifest --output /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest/latest.json --json`
+   - verify:
+     `copybot_activation_artifact_manifest --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --verify-manifest /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest/latest.json --json`
+2. Manifest contents are explicit and bounded:
+   - artifact paths are stored relative to the archive root
+   - packet/runbook artifact hashes use SHA-256
+   - generation identity is anchored by decision-packet timestamp plus
+     prod/non-prod config fingerprints
+   - manifest metadata carries generation count, file count, and tool/build
+     version for later review
+3. Verify mode now detects:
+   - missing artifact files
+   - changed artifact hashes
+   - unexpected extra recognized artifact files
+   - generation membership drift
+   - malformed manifest or invalid current archive state
+4. Important manifest verdicts:
+   - `artifact_manifest_generated`
+   - `artifact_manifest_verified`
+   - `artifact_manifest_drift_detected`
+   - `artifact_manifest_invalid`
+   - `artifact_manifest_missing_files`
+5. Practical meaning:
+   - operators can now snapshot activation artifact integrity and later verify
+     archive drift/corruption explicitly instead of relying on ad hoc parsing
+   - this still does not enable production execution, authorize activation, or
+     override the Stage 3 prod gate
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_manifest`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

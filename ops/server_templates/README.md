@@ -605,6 +605,41 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 7. This tool only manages exported activation artifacts. It still does not
    authorize production activation and does not override the Stage 3 prod gate.
 
+## Activation Artifact Manifest
+
+1. Operators now also have an explicit manifest/integrity surface for exported
+   activation artifacts:
+   - generate:
+     `copybot_activation_artifact_manifest --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --generate-manifest --output /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest/latest.json --json`
+   - verify:
+     `copybot_activation_artifact_manifest --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --verify-manifest /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest/latest.json --json`
+2. Generate mode records:
+   - packet/runbook generation membership
+   - artifact paths relative to the archive root
+   - SHA-256 hashes for packet/runbook artifacts
+   - generation identity via decision-packet timestamp plus prod/non-prod
+     config fingerprints
+   - manifest creation time and tool/build version
+3. Verify mode checks:
+   - missing artifact files
+   - changed artifact hashes
+   - unexpected extra recognized artifact files
+   - generation membership drift
+   - invalid or malformed archive artifacts that block trust in the result
+4. Important manifest verdicts:
+   - `artifact_manifest_generated`
+   - `artifact_manifest_verified`
+   - `artifact_manifest_drift_detected`
+   - `artifact_manifest_invalid`
+   - `artifact_manifest_missing_files`
+5. This surface is archive integrity only:
+   - it does not enable `execution.enabled`
+   - it does not mutate config
+   - it does not rerun heavy prod or non-prod logic
+   - it only writes the manifest file explicitly requested by the operator
+   - it does not authorize production activation or override the Stage 3 prod
+     gate
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

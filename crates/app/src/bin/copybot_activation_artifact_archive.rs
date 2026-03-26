@@ -235,23 +235,23 @@ struct LoadedMarkdownArtifact {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct InvalidArtifact {
-    path: String,
-    error: String,
+pub(crate) struct InvalidArtifact {
+    pub(crate) path: String,
+    pub(crate) error: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ArchiveArtifactGenerationSummary {
-    decision_packet_generated_at: DateTime<Utc>,
-    prod_config_fingerprint_sha256: String,
-    non_prod_config_fingerprint_sha256: String,
-    decision_packet_paths: Vec<String>,
-    runbook_json_paths: Vec<String>,
-    runbook_markdown_paths: Vec<String>,
-    latest_packet_verdict: Option<String>,
-    latest_runbook_verdict: Option<String>,
-    build_versions: Vec<String>,
-    git_commits: Vec<String>,
+pub(crate) struct ArchiveArtifactGenerationSummary {
+    pub(crate) decision_packet_generated_at: DateTime<Utc>,
+    pub(crate) prod_config_fingerprint_sha256: String,
+    pub(crate) non_prod_config_fingerprint_sha256: String,
+    pub(crate) decision_packet_paths: Vec<String>,
+    pub(crate) runbook_json_paths: Vec<String>,
+    pub(crate) runbook_markdown_paths: Vec<String>,
+    pub(crate) latest_packet_verdict: Option<String>,
+    pub(crate) latest_runbook_verdict: Option<String>,
+    pub(crate) build_versions: Vec<String>,
+    pub(crate) git_commits: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -386,6 +386,14 @@ struct RetentionSelection {
     orphan_runbook_generations: Vec<ArchiveArtifactGenerationSummary>,
     packet_generations_missing_runbook: Vec<ArchiveArtifactGenerationSummary>,
     orphan_markdown_paths: Vec<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct ArchiveInventory {
+    pub(crate) generation_summaries: Vec<ArchiveArtifactGenerationSummary>,
+    pub(crate) invalid_artifacts: Vec<InvalidArtifact>,
+    pub(crate) orphan_markdown_paths: Vec<String>,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -944,6 +952,17 @@ fn apply_retention_plan(config: &Config) -> Result<ArchiveCleanupApplyReport> {
         activation_authorized: false,
         not_authorized_summary:
             "Cleanup apply mode only prunes exported archive artifacts. It still does not authorize activation and does not override the Stage 3 production gate.".to_string(),
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn archive_inventory(archive_dir: &Path) -> Result<ArchiveInventory> {
+    let scan = scan_archive(archive_dir)?;
+    let generations = build_generation_records(&scan);
+    Ok(ArchiveInventory {
+        generation_summaries: generation_summaries(&generations),
+        invalid_artifacts: scan.invalid_artifacts.clone(),
+        orphan_markdown_paths: orphan_markdown_paths(&scan, &generations),
     })
 }
 
