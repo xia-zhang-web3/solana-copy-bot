@@ -702,6 +702,39 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not authorize production activation or override the Stage 3 prod
      gate
 
+## Activation Artifact Publish
+
+1. Operators now also have a one-shot publish pipeline for one complete review
+   generation:
+   `copybot_activation_artifact_publish --config /etc/solana-copy-bot/live.server.toml --non-prod-config /etc/solana-copy-bot/devnet.server.toml --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --manifest-output /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest/latest.json --bundle-output-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles/review-2026-03-26T12-00-00Z --json`
+2. This command stays artifact-writing only and bounded:
+   - it does not enable `execution.enabled`
+   - it does not mutate live config
+   - it does not restart services
+   - it does not delete or rewrite unrelated archive generations
+   - it does not submit trades
+3. In one pass it reuses the accepted packet, runbook, manifest, and bundle
+   surfaces to:
+   - create one decision packet
+   - create one runbook json and markdown artifact
+   - place them into a deterministic archive generation directory
+   - optionally write a fresh archive manifest snapshot
+   - optionally export a portable review bundle for that exact generation
+4. Path safety is conservative:
+   - it writes only under explicitly provided output paths
+   - generation directory naming is deterministic from packet timestamp plus
+     prod/non-prod config fingerprints
+   - existing generation directories are not overwritten silently
+5. Important publish verdicts:
+   - `artifact_publish_succeeded`
+   - `artifact_publish_blocked_by_checklist`
+   - `artifact_publish_blocked_by_invalid_archive_state`
+   - `artifact_publish_partial_manifest_skipped`
+   - `artifact_publish_failed`
+6. This command is still not activation authorization. It is the operator-safe
+   glue layer that turns the accepted artifact chain into one bounded review
+   generation without touching production execution state.
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

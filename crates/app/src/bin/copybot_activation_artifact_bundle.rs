@@ -52,7 +52,7 @@ enum Mode {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ArtifactBundleVerdict {
+pub(crate) enum ArtifactBundleVerdict {
     ArtifactBundleExported,
     ArtifactBundleVerified,
     ArtifactBundleInvalid,
@@ -100,41 +100,41 @@ struct ActivationArtifactBundleManifest {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ExportReport {
-    mode: String,
-    verdict: ArtifactBundleVerdict,
-    reason: String,
-    archive_dir: String,
-    output_path: String,
-    generation_selector: String,
-    selected_generation_id: Option<String>,
-    bundled_file_count: usize,
-    bundled_file_paths: Vec<String>,
-    hash_coverage_count: usize,
-    read_only_archive_artifacts: bool,
-    execution_untouched: bool,
-    activation_authorized: bool,
-    not_authorized_summary: String,
+pub(crate) struct ExportReport {
+    pub(crate) mode: String,
+    pub(crate) verdict: ArtifactBundleVerdict,
+    pub(crate) reason: String,
+    pub(crate) archive_dir: String,
+    pub(crate) output_path: String,
+    pub(crate) generation_selector: String,
+    pub(crate) selected_generation_id: Option<String>,
+    pub(crate) bundled_file_count: usize,
+    pub(crate) bundled_file_paths: Vec<String>,
+    pub(crate) hash_coverage_count: usize,
+    pub(crate) read_only_archive_artifacts: bool,
+    pub(crate) execution_untouched: bool,
+    pub(crate) activation_authorized: bool,
+    pub(crate) not_authorized_summary: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct VerifyReport {
-    mode: String,
-    verdict: ArtifactBundleVerdict,
-    reason: String,
-    bundle_path: String,
-    generation_id: Option<String>,
-    file_count: usize,
-    missing_files: Vec<String>,
-    changed_files: Vec<String>,
-    unexpected_files: Vec<String>,
-    metadata_mismatches: Vec<String>,
-    invalid_artifact_count: usize,
-    invalid_artifacts: Vec<activation_artifact_archive::InvalidArtifact>,
-    read_only_bundle_analysis: bool,
-    execution_untouched: bool,
-    activation_authorized: bool,
-    not_authorized_summary: String,
+pub(crate) struct VerifyReport {
+    pub(crate) mode: String,
+    pub(crate) verdict: ArtifactBundleVerdict,
+    pub(crate) reason: String,
+    pub(crate) bundle_path: String,
+    pub(crate) generation_id: Option<String>,
+    pub(crate) file_count: usize,
+    pub(crate) missing_files: Vec<String>,
+    pub(crate) changed_files: Vec<String>,
+    pub(crate) unexpected_files: Vec<String>,
+    pub(crate) metadata_mismatches: Vec<String>,
+    pub(crate) invalid_artifact_count: usize,
+    pub(crate) invalid_artifacts: Vec<activation_artifact_archive::InvalidArtifact>,
+    pub(crate) read_only_bundle_analysis: bool,
+    pub(crate) execution_untouched: bool,
+    pub(crate) activation_authorized: bool,
+    pub(crate) not_authorized_summary: String,
 }
 
 #[derive(Debug, Clone)]
@@ -251,7 +251,7 @@ fn run(config: Config) -> Result<String> {
     }
 }
 
-fn export_bundle(
+pub(crate) fn export_bundle(
     archive_dir: &Path,
     generation_selector: &str,
     output_dir: &Path,
@@ -405,7 +405,7 @@ fn export_bundle(
     })
 }
 
-fn verify_bundle(bundle_path: &Path) -> Result<VerifyReport> {
+pub(crate) fn verify_bundle(bundle_path: &Path) -> Result<VerifyReport> {
     let bundle_root = resolve_bundle_root(bundle_path)?;
     let manifest_path = bundle_root.join(BUNDLE_MANIFEST_FILENAME);
     let raw_manifest = match fs::read_to_string(&manifest_path) {

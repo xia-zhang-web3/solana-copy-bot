@@ -44,7 +44,7 @@ enum Mode {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ArtifactManifestVerdict {
+pub(crate) enum ArtifactManifestVerdict {
     ArtifactManifestGenerated,
     ArtifactManifestVerified,
     ArtifactManifestDriftDetected,
@@ -110,44 +110,44 @@ struct ArchiveSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct GenerateReport {
-    mode: String,
-    verdict: ArtifactManifestVerdict,
-    reason: String,
-    archive_dir: String,
-    manifest_path: String,
-    generation_count: usize,
-    file_count: usize,
-    hash_coverage_count: usize,
-    invalid_artifact_count: usize,
-    invalid_artifacts: Vec<activation_artifact_archive::InvalidArtifact>,
-    read_only_archive_artifacts: bool,
-    execution_untouched: bool,
-    activation_authorized: bool,
-    not_authorized_summary: String,
+pub(crate) struct GenerateReport {
+    pub(crate) mode: String,
+    pub(crate) verdict: ArtifactManifestVerdict,
+    pub(crate) reason: String,
+    pub(crate) archive_dir: String,
+    pub(crate) manifest_path: String,
+    pub(crate) generation_count: usize,
+    pub(crate) file_count: usize,
+    pub(crate) hash_coverage_count: usize,
+    pub(crate) invalid_artifact_count: usize,
+    pub(crate) invalid_artifacts: Vec<activation_artifact_archive::InvalidArtifact>,
+    pub(crate) read_only_archive_artifacts: bool,
+    pub(crate) execution_untouched: bool,
+    pub(crate) activation_authorized: bool,
+    pub(crate) not_authorized_summary: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct VerifyReport {
-    mode: String,
-    verdict: ArtifactManifestVerdict,
-    reason: String,
-    archive_dir: String,
-    manifest_path: String,
-    manifest_generation_count: usize,
-    current_generation_count: usize,
-    manifest_file_count: usize,
-    current_file_count: usize,
-    missing_files: Vec<String>,
-    changed_files: Vec<String>,
-    unexpected_files: Vec<String>,
-    generation_drift: Vec<String>,
-    invalid_artifact_count: usize,
-    invalid_artifacts: Vec<activation_artifact_archive::InvalidArtifact>,
-    read_only_archive_analysis: bool,
-    execution_untouched: bool,
-    activation_authorized: bool,
-    not_authorized_summary: String,
+pub(crate) struct VerifyReport {
+    pub(crate) mode: String,
+    pub(crate) verdict: ArtifactManifestVerdict,
+    pub(crate) reason: String,
+    pub(crate) archive_dir: String,
+    pub(crate) manifest_path: String,
+    pub(crate) manifest_generation_count: usize,
+    pub(crate) current_generation_count: usize,
+    pub(crate) manifest_file_count: usize,
+    pub(crate) current_file_count: usize,
+    pub(crate) missing_files: Vec<String>,
+    pub(crate) changed_files: Vec<String>,
+    pub(crate) unexpected_files: Vec<String>,
+    pub(crate) generation_drift: Vec<String>,
+    pub(crate) invalid_artifact_count: usize,
+    pub(crate) invalid_artifacts: Vec<activation_artifact_archive::InvalidArtifact>,
+    pub(crate) read_only_archive_analysis: bool,
+    pub(crate) execution_untouched: bool,
+    pub(crate) activation_authorized: bool,
+    pub(crate) not_authorized_summary: String,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -237,7 +237,7 @@ fn run(config: Config) -> Result<String> {
     }
 }
 
-fn generate_manifest(archive_dir: &Path, output_path: &Path) -> Result<GenerateReport> {
+pub(crate) fn generate_manifest(archive_dir: &Path, output_path: &Path) -> Result<GenerateReport> {
     let snapshot = build_archive_snapshot(archive_dir)?;
     if !snapshot.invalid_artifacts.is_empty() {
         return Ok(GenerateReport {
@@ -299,7 +299,7 @@ fn generate_manifest(archive_dir: &Path, output_path: &Path) -> Result<GenerateR
     })
 }
 
-fn verify_manifest(archive_dir: &Path, manifest_path: &Path) -> Result<VerifyReport> {
+pub(crate) fn verify_manifest(archive_dir: &Path, manifest_path: &Path) -> Result<VerifyReport> {
     let raw_manifest = match fs::read_to_string(manifest_path) {
         Ok(raw) => raw,
         Err(error) => {

@@ -1905,6 +1905,44 @@ Acceptance update (`2026-03-26`, activation artifact provenance report):
 6. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_provenance_report`
 
+Acceptance update (`2026-03-26`, activation artifact publish pipeline):
+
+1. The repo now also has a one-shot publish pipeline for one complete review
+   generation:
+   `copybot_activation_artifact_publish --config /etc/solana-copy-bot/live.server.toml --non-prod-config /etc/solana-copy-bot/devnet.server.toml --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --manifest-output /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest/latest.json --bundle-output-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles/review-2026-03-26T12-00-00Z --json`
+2. This command is still bounded and planning-safe:
+   - it does not enable `execution.enabled`
+   - it does not mutate live config
+   - it does not restart services
+   - it does not delete or rewrite unrelated archive generations
+   - it does not submit trades
+3. In one pass it now reuses the accepted artifact chain to:
+   - export one decision packet
+   - export one runbook json and markdown artifact
+   - place them into a deterministic archive generation directory
+   - optionally write a fresh archive manifest snapshot
+   - optionally export a portable review bundle for that exact generation
+4. Path safety is explicit:
+   - generation directory naming is deterministic from packet timestamp plus
+     prod/non-prod config fingerprints
+   - existing generation targets are not silently overwritten
+   - archive publish is blocked if the current archive state is already
+     invalid
+5. Important publish verdicts:
+   - `artifact_publish_succeeded`
+   - `artifact_publish_blocked_by_checklist`
+   - `artifact_publish_blocked_by_invalid_archive_state`
+   - `artifact_publish_partial_manifest_skipped`
+   - `artifact_publish_failed`
+6. Practical meaning:
+   - operators no longer need to hand-orchestrate packet export, runbook
+     export, archive placement, manifest snapshotting, and optional bundle
+     export as separate steps
+   - this is still artifact publication only and does not authorize
+     production activation or override the Stage 3 prod gate
+7. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_publish`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

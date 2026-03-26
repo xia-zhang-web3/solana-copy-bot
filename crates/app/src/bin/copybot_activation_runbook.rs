@@ -35,28 +35,28 @@ fn main() -> Result<()> {
 }
 
 #[derive(Debug, Clone)]
-struct Config {
-    config_path: PathBuf,
-    non_prod_config_path: PathBuf,
-    json: bool,
-    output_path: Option<PathBuf>,
-    markdown_output_path: Option<PathBuf>,
-    now: DateTime<Utc>,
-    stage3_limit: usize,
-    stage3_recent_horizon_seconds: Option<u64>,
-    rehearsal_limit: usize,
-    rehearsal_recent_horizon_seconds: u64,
-    min_recent_acceptable_rehearsals: usize,
-    non_prod_limit: usize,
-    non_prod_dress_recent_horizon_seconds: u64,
-    non_prod_activation_recent_horizon_seconds: u64,
-    non_prod_min_recent_green_dress: usize,
-    non_prod_min_recent_green_activation: usize,
+pub(crate) struct Config {
+    pub(crate) config_path: PathBuf,
+    pub(crate) non_prod_config_path: PathBuf,
+    pub(crate) json: bool,
+    pub(crate) output_path: Option<PathBuf>,
+    pub(crate) markdown_output_path: Option<PathBuf>,
+    pub(crate) now: DateTime<Utc>,
+    pub(crate) stage3_limit: usize,
+    pub(crate) stage3_recent_horizon_seconds: Option<u64>,
+    pub(crate) rehearsal_limit: usize,
+    pub(crate) rehearsal_recent_horizon_seconds: u64,
+    pub(crate) min_recent_acceptable_rehearsals: usize,
+    pub(crate) non_prod_limit: usize,
+    pub(crate) non_prod_dress_recent_horizon_seconds: u64,
+    pub(crate) non_prod_activation_recent_horizon_seconds: u64,
+    pub(crate) non_prod_min_recent_green_dress: usize,
+    pub(crate) non_prod_min_recent_green_activation: usize,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ActivationRunbookVerdict {
+pub(crate) enum ActivationRunbookVerdict {
     RunbookBlocked,
     RunbookDiscussionReadyButNotAuthorized,
     RunbookRefusedForProfileMismatch,
@@ -120,7 +120,7 @@ struct RunbookRollbackSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ActivationRunbook {
+pub(crate) struct ActivationRunbook {
     generated_at: DateTime<Utc>,
     runbook_version: String,
     prod_config_path: String,
@@ -304,6 +304,29 @@ fn parse_usize_arg(flag: &str, value: Option<String>) -> Result<usize> {
 }
 
 async fn run(config: Config) -> Result<String> {
+    let runbook = evaluate_activation_runbook(&config).await?;
+    let json_output =
+        serde_json::to_string_pretty(&runbook).context("failed serializing activation runbook")?;
+    if let Some(output_path) = &config.output_path {
+        write_output(output_path, &json_output, "activation runbook json")?;
+    }
+    if let Some(markdown_output_path) = &config.markdown_output_path {
+        let markdown = render_markdown(&runbook);
+        write_output(
+            markdown_output_path,
+            &markdown,
+            "activation runbook markdown",
+        )?;
+    }
+
+    if config.json {
+        Ok(json_output)
+    } else {
+        Ok(render_human(&runbook))
+    }
+}
+
+pub(crate) async fn evaluate_activation_runbook(config: &Config) -> Result<ActivationRunbook> {
     let packet = activation_decision_packet::evaluate_activation_decision_packet(
         &activation_decision_packet::Config {
             config_path: config.config_path.clone(),
@@ -343,29 +366,10 @@ async fn run(config: Config) -> Result<String> {
         &loaded_config,
     )
     .await?;
-    let runbook = build_runbook(&config, packet, activation_plan);
-    let json_output =
-        serde_json::to_string_pretty(&runbook).context("failed serializing activation runbook")?;
-    if let Some(output_path) = &config.output_path {
-        write_output(output_path, &json_output, "activation runbook json")?;
-    }
-    if let Some(markdown_output_path) = &config.markdown_output_path {
-        let markdown = render_markdown(&runbook);
-        write_output(
-            markdown_output_path,
-            &markdown,
-            "activation runbook markdown",
-        )?;
-    }
-
-    if config.json {
-        Ok(json_output)
-    } else {
-        Ok(render_human(&runbook))
-    }
+    Ok(build_runbook(config, packet, activation_plan))
 }
 
-fn build_runbook(
+pub(crate) fn build_runbook(
     config: &Config,
     packet: activation_decision_packet::ActivationDecisionPacket,
     activation_plan: tiny_live_activation_plan::TinyLiveActivationPlanReport,
@@ -1020,7 +1024,7 @@ fn render_human(runbook: &ActivationRunbook) -> String {
     .join("\n")
 }
 
-fn render_markdown(runbook: &ActivationRunbook) -> String {
+pub(crate) fn render_markdown(runbook: &ActivationRunbook) -> String {
     let mut lines = vec![
         "# Tiny-Live Activation Runbook".to_string(),
         String::new(),
