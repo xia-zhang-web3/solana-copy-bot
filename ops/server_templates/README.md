@@ -839,6 +839,50 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not mutate archive or channel metadata
    - it does not authorize activation or override the Stage 3 prod gate
 
+## Activation Artifact Release Archive Publisher
+
+1. Operators now also have a first-class deterministic archive/pointer surface
+   for release artifacts themselves:
+   - publish one persisted release artifact:
+     `copybot_activation_artifact_release_publish_report --publish --config /etc/solana-copy-bot/live.server.toml --non-prod-config /etc/solana-copy-bot/devnet.server.toml --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --json`
+   - publish and update latest release pointer:
+     `copybot_activation_artifact_release_publish_report --publish --config /etc/solana-copy-bot/live.server.toml --non-prod-config /etc/solana-copy-bot/devnet.server.toml --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --persist-latest-pointer --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --allow-latest-pointer-overwrite --json`
+   - verify latest release pointer:
+     `copybot_activation_artifact_release_publish_report --verify-latest --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --json`
+2. The release archive layout is deterministic and bounded:
+   - one persisted release artifact file is written under explicit
+     `--release-archive-dir`
+   - filename is derived from `released_at` plus release verdict
+   - collisions refuse overwrite rather than replacing an existing release
+     artifact silently
+3. Latest release pointer behavior is explicit:
+   - pointer metadata is stored separately under explicit `--latest-pointer-dir`
+   - it records target release artifact path, released-at source, verdict, and
+     generation identity
+   - pointer replacement requires explicit `--allow-latest-pointer-overwrite`
+4. Legacy timestamp ambiguity stays visible:
+   - compat-loaded release artifacts without stored `released_at` are surfaced
+     explicitly
+   - if a legacy target lacks both `released_at` and a deterministic generation
+     timestamp, verify mode reports that the pointer is not suitable for ordered
+     history confidence
+   - `copybot_activation_artifact_release_history --history-dir <release-archive-dir>`
+     can read the same persisted release archive directly
+5. Important publisher verdicts:
+   - `artifact_release_report_published`
+   - `artifact_release_report_published_and_pointed_latest`
+   - `artifact_release_report_pointer_blocked`
+   - `artifact_release_report_failed`
+   - `artifact_release_report_verify_ok`
+   - `artifact_release_report_verify_missing_target`
+   - `artifact_release_report_verify_ambiguous_timestamp`
+   - `artifact_release_report_invalid_metadata`
+6. This remains artifact/release management only:
+   - it does not modify review generations
+   - it does not enable `execution.enabled`
+   - it does not mutate live config
+   - it does not authorize activation or override the Stage 3 prod gate
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

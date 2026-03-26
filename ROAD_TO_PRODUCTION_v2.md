@@ -2045,6 +2045,36 @@ Acceptance update (`2026-03-26`, activation artifact release history ledger):
 5. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_release_history`
 
+Acceptance update (`2026-03-26`, activation release artifact archive publisher):
+
+1. The repo now also has a deterministic persisted archive flow for release
+   artifacts themselves:
+   - publish one persisted release artifact:
+     `copybot_activation_artifact_release_publish_report --publish --config /etc/solana-copy-bot/live.server.toml --non-prod-config /etc/solana-copy-bot/devnet.server.toml --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --json`
+   - publish plus update latest pointer:
+     `copybot_activation_artifact_release_publish_report --publish --config /etc/solana-copy-bot/live.server.toml --non-prod-config /etc/solana-copy-bot/devnet.server.toml --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --persist-latest-pointer --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --allow-latest-pointer-overwrite --json`
+   - verify latest pointer:
+     `copybot_activation_artifact_release_publish_report --verify-latest --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --json`
+2. The new surface is built on the accepted release and release-history logic
+   instead of inventing another release parser:
+   - persisted release artifacts are valid inputs for
+     `copybot_activation_artifact_release_history`
+   - latest pointer verification reuses the same backward-compatible release
+     artifact parsing contract
+3. Operational meaning:
+   - operators no longer need ad hoc paths or ad hoc latest metadata for release
+     JSON outputs
+   - latest release pointer is explicit, verifiable, and overwrite-safe
+   - legacy artifacts with missing deterministic timestamps are surfaced
+     honestly rather than hidden behind a false healthy pointer
+4. This remains artifact/release management only:
+   - it does not change review-generation archive contents
+   - it does not enable execution
+   - it does not mutate live config
+   - it does not authorize activation or override the Stage 3 prod gate
+5. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_release_publish_report`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

@@ -1,4 +1,5 @@
 #![recursion_limit = "256"]
+#![allow(unused_attributes)]
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
@@ -63,9 +64,9 @@ enum ChannelPromotionProgression {
     MixedHistory,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ReleaseTimestampSource {
+pub(crate) enum ReleaseTimestampSource {
     ReleasedAt,
     GenerationIdentity,
     GenerationDirectory,
@@ -74,7 +75,7 @@ enum ReleaseTimestampSource {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ArtifactReleaseVerdict {
+pub(crate) enum ArtifactReleaseVerdict {
     ArtifactReleasePublished,
     ArtifactReleasePublishedAndPromoted,
     ArtifactReleasePublishFailed,
@@ -83,42 +84,42 @@ enum ArtifactReleaseVerdict {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ArtifactReleaseArtifact {
-    mode: String,
+pub(crate) struct ArtifactReleaseArtifact {
+    pub(crate) mode: String,
     #[serde(default)]
-    released_at: Option<DateTime<Utc>>,
-    verdict: ArtifactReleaseVerdict,
-    reason: String,
-    config_path: String,
-    non_prod_config_path: String,
-    archive_dir: String,
-    generation_id: Option<String>,
-    generation_directory: Option<String>,
-    packet_path: Option<String>,
-    runbook_json_path: Option<String>,
-    runbook_markdown_path: Option<String>,
-    manifest_path: Option<String>,
-    bundle_path: Option<String>,
-    decision_packet_verdict: Option<String>,
-    checklist_verdict: Option<String>,
-    publish_verdict: Option<String>,
-    publish_reason: Option<String>,
-    generation_published: bool,
-    manifest_generated: bool,
-    bundle_exported: bool,
-    channel_promotion_attempted: bool,
-    channel_promotion_happened: bool,
-    channel_verify_attempted: bool,
-    channel_name: Option<String>,
-    channel_dir: Option<String>,
-    channel_metadata_path: Option<String>,
-    channel_promote_verdict: Option<String>,
-    channel_promote_reason: Option<String>,
-    channel_verify_verdict: Option<String>,
-    channel_verify_reason: Option<String>,
-    execution_untouched: bool,
-    activation_authorized: bool,
-    not_authorized_summary: String,
+    pub(crate) released_at: Option<DateTime<Utc>>,
+    pub(crate) verdict: ArtifactReleaseVerdict,
+    pub(crate) reason: String,
+    pub(crate) config_path: String,
+    pub(crate) non_prod_config_path: String,
+    pub(crate) archive_dir: String,
+    pub(crate) generation_id: Option<String>,
+    pub(crate) generation_directory: Option<String>,
+    pub(crate) packet_path: Option<String>,
+    pub(crate) runbook_json_path: Option<String>,
+    pub(crate) runbook_markdown_path: Option<String>,
+    pub(crate) manifest_path: Option<String>,
+    pub(crate) bundle_path: Option<String>,
+    pub(crate) decision_packet_verdict: Option<String>,
+    pub(crate) checklist_verdict: Option<String>,
+    pub(crate) publish_verdict: Option<String>,
+    pub(crate) publish_reason: Option<String>,
+    pub(crate) generation_published: bool,
+    pub(crate) manifest_generated: bool,
+    pub(crate) bundle_exported: bool,
+    pub(crate) channel_promotion_attempted: bool,
+    pub(crate) channel_promotion_happened: bool,
+    pub(crate) channel_verify_attempted: bool,
+    pub(crate) channel_name: Option<String>,
+    pub(crate) channel_dir: Option<String>,
+    pub(crate) channel_metadata_path: Option<String>,
+    pub(crate) channel_promote_verdict: Option<String>,
+    pub(crate) channel_promote_reason: Option<String>,
+    pub(crate) channel_verify_verdict: Option<String>,
+    pub(crate) channel_verify_reason: Option<String>,
+    pub(crate) execution_untouched: bool,
+    pub(crate) activation_authorized: bool,
+    pub(crate) not_authorized_summary: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -128,11 +129,11 @@ struct InvalidArtifact {
 }
 
 #[derive(Debug, Clone)]
-struct LoadedRelease {
-    path: PathBuf,
-    artifact: ArtifactReleaseArtifact,
-    effective_released_at: Option<DateTime<Utc>>,
-    released_at_source: ReleaseTimestampSource,
+pub(crate) struct LoadedRelease {
+    pub(crate) path: PathBuf,
+    pub(crate) artifact: ArtifactReleaseArtifact,
+    pub(crate) effective_released_at: Option<DateTime<Utc>>,
+    pub(crate) released_at_source: ReleaseTimestampSource,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -531,8 +532,8 @@ fn build_history_report(config: &Config) -> Result<ArtifactReleaseHistorySummary
 }
 
 fn build_compare_report(older: &Path, newer: &Path) -> Result<ArtifactReleaseHistoryDiffReport> {
-    let older_result = load_single_artifact(older);
-    let newer_result = load_single_artifact(newer);
+    let older_result = inspect_release_artifact(older);
+    let newer_result = inspect_release_artifact(newer);
     let mut invalid_artifacts = Vec::new();
     let older_loaded = match older_result {
         Ok(artifact) => Some(artifact),
@@ -714,7 +715,7 @@ fn load_artifacts(paths: &[PathBuf]) -> (Vec<LoadedRelease>, Vec<InvalidArtifact
     let mut valid = Vec::new();
     let mut invalid = Vec::new();
     for path in paths {
-        match load_single_artifact(path) {
+        match inspect_release_artifact(path) {
             Ok(artifact) => valid.push(artifact),
             Err(error) => invalid.push(InvalidArtifact {
                 path: path.display().to_string(),
@@ -725,7 +726,7 @@ fn load_artifacts(paths: &[PathBuf]) -> (Vec<LoadedRelease>, Vec<InvalidArtifact
     (valid, invalid)
 }
 
-fn load_single_artifact(path: &Path) -> Result<LoadedRelease> {
+pub(crate) fn inspect_release_artifact(path: &Path) -> Result<LoadedRelease> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed reading release artifact {}", path.display()))?;
     let artifact: ArtifactReleaseArtifact = serde_json::from_str(&raw)

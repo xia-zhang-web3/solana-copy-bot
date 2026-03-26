@@ -33,18 +33,18 @@ fn main() -> Result<()> {
 }
 
 #[derive(Debug, Clone)]
-struct Config {
-    publish: activation_artifact_publish::Config,
-    json: bool,
-    promote_channel: bool,
-    channel_dir: Option<PathBuf>,
-    channel_name: String,
-    allow_channel_overwrite: bool,
+pub(crate) struct Config {
+    pub(crate) publish: activation_artifact_publish::Config,
+    pub(crate) json: bool,
+    pub(crate) promote_channel: bool,
+    pub(crate) channel_dir: Option<PathBuf>,
+    pub(crate) channel_name: String,
+    pub(crate) allow_channel_overwrite: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ArtifactReleaseVerdict {
+pub(crate) enum ArtifactReleaseVerdict {
     ArtifactReleasePublished,
     ArtifactReleasePublishedAndPromoted,
     ArtifactReleasePublishFailed,
@@ -53,48 +53,48 @@ enum ArtifactReleaseVerdict {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ArtifactReleaseReport {
-    mode: String,
-    released_at: DateTime<Utc>,
-    verdict: ArtifactReleaseVerdict,
-    reason: String,
-    config_path: String,
-    non_prod_config_path: String,
-    archive_dir: String,
-    generation_id: Option<String>,
-    generation_directory: Option<String>,
-    packet_path: Option<String>,
-    runbook_json_path: Option<String>,
-    runbook_markdown_path: Option<String>,
-    manifest_path: Option<String>,
-    bundle_path: Option<String>,
-    decision_packet_verdict: Option<String>,
-    checklist_verdict: Option<String>,
-    publish_verdict: Option<String>,
-    publish_reason: Option<String>,
-    generation_published: bool,
-    manifest_generated: bool,
-    bundle_exported: bool,
-    channel_promotion_attempted: bool,
-    channel_promotion_happened: bool,
-    channel_verify_attempted: bool,
-    channel_name: Option<String>,
-    channel_dir: Option<String>,
-    channel_metadata_path: Option<String>,
-    channel_promote_verdict: Option<String>,
-    channel_promote_reason: Option<String>,
-    channel_verify_verdict: Option<String>,
-    channel_verify_reason: Option<String>,
-    execution_untouched: bool,
-    activation_authorized: bool,
-    not_authorized_summary: String,
+pub(crate) struct ArtifactReleaseReport {
+    pub(crate) mode: String,
+    pub(crate) released_at: DateTime<Utc>,
+    pub(crate) verdict: ArtifactReleaseVerdict,
+    pub(crate) reason: String,
+    pub(crate) config_path: String,
+    pub(crate) non_prod_config_path: String,
+    pub(crate) archive_dir: String,
+    pub(crate) generation_id: Option<String>,
+    pub(crate) generation_directory: Option<String>,
+    pub(crate) packet_path: Option<String>,
+    pub(crate) runbook_json_path: Option<String>,
+    pub(crate) runbook_markdown_path: Option<String>,
+    pub(crate) manifest_path: Option<String>,
+    pub(crate) bundle_path: Option<String>,
+    pub(crate) decision_packet_verdict: Option<String>,
+    pub(crate) checklist_verdict: Option<String>,
+    pub(crate) publish_verdict: Option<String>,
+    pub(crate) publish_reason: Option<String>,
+    pub(crate) generation_published: bool,
+    pub(crate) manifest_generated: bool,
+    pub(crate) bundle_exported: bool,
+    pub(crate) channel_promotion_attempted: bool,
+    pub(crate) channel_promotion_happened: bool,
+    pub(crate) channel_verify_attempted: bool,
+    pub(crate) channel_name: Option<String>,
+    pub(crate) channel_dir: Option<String>,
+    pub(crate) channel_metadata_path: Option<String>,
+    pub(crate) channel_promote_verdict: Option<String>,
+    pub(crate) channel_promote_reason: Option<String>,
+    pub(crate) channel_verify_verdict: Option<String>,
+    pub(crate) channel_verify_reason: Option<String>,
+    pub(crate) execution_untouched: bool,
+    pub(crate) activation_authorized: bool,
+    pub(crate) not_authorized_summary: String,
 }
 
 fn parse_args() -> Result<Option<Config>> {
     parse_args_from(env::args().skip(1))
 }
 
-fn parse_args_from<I>(args: I) -> Result<Option<Config>>
+pub(crate) fn parse_args_from<I>(args: I) -> Result<Option<Config>>
 where
     I: IntoIterator<Item = String>,
 {
@@ -308,7 +308,7 @@ async fn run(config: Config) -> Result<String> {
     }
 }
 
-async fn evaluate_release(config: &Config) -> ArtifactReleaseReport {
+pub(crate) async fn evaluate_release(config: &Config) -> ArtifactReleaseReport {
     let publish_report = match activation_artifact_publish::evaluate_publish(&config.publish).await
     {
         Ok(report) => report,
