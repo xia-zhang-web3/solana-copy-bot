@@ -1606,6 +1606,42 @@ Acceptance update (`2026-03-26`, consolidated devnet readiness report):
 6. Checks:
    - `cargo test -p copybot-app --bin copybot_devnet_readiness_report`
 
+Acceptance update (`2026-03-26`, final activation checklist report):
+
+1. The repo now also has one final production-facing synthesis surface for
+   later tiny-live discussions:
+   - `copybot_activation_checklist_report --config /etc/solana-copy-bot/live.server.toml --non-prod-config /etc/solana-copy-bot/devnet.server.toml --json`
+2. This command is still read-only and planning-safe:
+   - it does not enable `execution.enabled`
+   - it does not mutate live config
+   - it does not restart services
+   - it does not rerun heavy drills by default
+   - it does not submit trades
+3. It reuses accepted surfaces instead of inventing yet another activation
+   decision path:
+   - `copybot_pre_activation_gate_report`
+   - `copybot_tiny_live_activation_plan`
+   - `copybot_tiny_live_guardrail_audit`
+   - `copybot_devnet_readiness_report`
+4. Important top-level verdicts:
+   - `activation_checklist_blocked_by_prod_stage3`
+   - `activation_checklist_blocked_by_prod_gate`
+   - `activation_checklist_blocked_by_launch_dossier`
+   - `activation_checklist_blocked_by_non_prod_readiness`
+   - `activation_checklist_discussion_ready_but_not_authorized`
+   - `activation_checklist_refused_for_prod_profile_mismatch`
+5. Practical meaning:
+   - operators no longer need to manually stitch prod and non-prod evidence
+     together before future activation discussion
+   - stale or blocked non-prod evidence can no longer look discussion-ready by
+     accident
+   - even a discussion-ready verdict still does not authorize production
+     activation and does not override the Stage 3 prod gate
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_checklist_report`
+   - `cargo test -p copybot-app --bin copybot_devnet_readiness_report`
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_plan`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

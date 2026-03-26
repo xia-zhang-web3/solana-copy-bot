@@ -427,6 +427,38 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    and operator-readable. It still does not authorize activation and does not
    override Stage 3.
 
+## Final Activation Checklist
+
+1. Operators now also have one final production-facing synthesis surface:
+   - `copybot_activation_checklist_report --config /etc/solana-copy-bot/live.server.toml --non-prod-config /etc/solana-copy-bot/devnet.server.toml --json`
+2. This command stays read-only and planning-safe:
+   - it does not enable `execution.enabled`
+   - it does not mutate config
+   - it does not restart services
+   - it does not rerun heavy drills by default
+   - it does not submit trades
+3. It consolidates accepted prod and non-prod truth into one operator-visible
+   checklist:
+   - `copybot_pre_activation_gate_report`
+   - `copybot_tiny_live_activation_plan`
+   - `copybot_tiny_live_guardrail_audit`
+   - `copybot_devnet_readiness_report`
+4. Important top-level verdicts:
+   - `activation_checklist_blocked_by_prod_stage3`
+   - `activation_checklist_blocked_by_prod_gate`
+   - `activation_checklist_blocked_by_launch_dossier`
+   - `activation_checklist_blocked_by_non_prod_readiness`
+   - `activation_checklist_discussion_ready_but_not_authorized`
+   - `activation_checklist_refused_for_prod_profile_mismatch`
+5. `activation_checklist_discussion_ready_but_not_authorized` means the
+   production planning-safe gate, bounded launch dossier, bounded guardrails,
+   and recent non-prod readiness evidence are all green enough for later
+   manual discussion.
+6. It still does not mean:
+   - production activation is authorized
+   - Stage 3 can be skipped later
+   - non-prod evidence overrides production truth
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

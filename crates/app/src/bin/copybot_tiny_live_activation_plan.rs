@@ -344,7 +344,7 @@ fn write_output(path: &Path, contents: &str) -> Result<()> {
     })
 }
 
-fn build_activation_plan_report(
+pub(crate) fn build_activation_plan_report(
     config: &Config,
     loaded_config: &AppConfig,
     pre_activation_gate: pre_activation_gate_report::PreActivationGateReport,

@@ -19,11 +19,11 @@ mod execution_dry_run_rehearsal;
 
 const USAGE: &str = "usage: copybot_devnet_readiness_report --config <path> [--limit <n>] [--dress-recent-horizon-seconds <seconds>] [--activation-recent-horizon-seconds <seconds>] [--min-recent-green-dress <count>] [--min-recent-green-activation <count>] [--json]";
 const TARGET_ENVIRONMENT: &str = "devnet_readiness";
-const DEFAULT_HISTORY_LIMIT: usize = 10;
-const DEFAULT_DRESS_RECENT_HORIZON_SECONDS: u64 = 86_400;
-const DEFAULT_ACTIVATION_RECENT_HORIZON_SECONDS: u64 = 86_400;
-const DEFAULT_MIN_RECENT_GREEN_DRESS: usize = 1;
-const DEFAULT_MIN_RECENT_GREEN_ACTIVATION: usize = 1;
+pub(crate) const DEFAULT_HISTORY_LIMIT: usize = 10;
+pub(crate) const DEFAULT_DRESS_RECENT_HORIZON_SECONDS: u64 = 86_400;
+pub(crate) const DEFAULT_ACTIVATION_RECENT_HORIZON_SECONDS: u64 = 86_400;
+pub(crate) const DEFAULT_MIN_RECENT_GREEN_DRESS: usize = 1;
+pub(crate) const DEFAULT_MIN_RECENT_GREEN_ACTIVATION: usize = 1;
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -36,19 +36,19 @@ fn main() -> Result<()> {
 }
 
 #[derive(Debug, Clone)]
-struct Config {
-    config_path: PathBuf,
-    limit: usize,
-    dress_recent_horizon_seconds: u64,
-    activation_recent_horizon_seconds: u64,
-    min_recent_green_dress: usize,
-    min_recent_green_activation: usize,
-    json: bool,
+pub(crate) struct Config {
+    pub(crate) config_path: PathBuf,
+    pub(crate) limit: usize,
+    pub(crate) dress_recent_horizon_seconds: u64,
+    pub(crate) activation_recent_horizon_seconds: u64,
+    pub(crate) min_recent_green_dress: usize,
+    pub(crate) min_recent_green_activation: usize,
+    pub(crate) json: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum DevnetReadinessVerdict {
+pub(crate) enum DevnetReadinessVerdict {
     DevnetReadinessGreen,
     DevnetReadinessInsufficientRecentEvidence,
     DevnetReadinessBlockedByDressRehearsalHistory,
@@ -66,75 +66,81 @@ enum SourceEvidenceVerdict {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct DressRehearsalHistorySummary {
-    verdict: String,
-    reason: String,
-    records_loaded: usize,
-    recent_records_within_horizon: usize,
-    recent_horizon_seconds: u64,
-    latest_record_age_seconds: Option<u64>,
-    stale_records_excluded_from_verdict: bool,
-    stale_records_excluded_count: usize,
-    recent_green_count: usize,
-    recent_blocked_count: usize,
-    latest_recent_verdict: Option<String>,
-    verdict_counts: BTreeMap<String, usize>,
+pub(crate) struct DressRehearsalHistorySummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) records_loaded: usize,
+    pub(crate) recent_records_within_horizon: usize,
+    pub(crate) recent_horizon_seconds: u64,
+    pub(crate) latest_record_age_seconds: Option<u64>,
+    pub(crate) stale_records_excluded_from_verdict: bool,
+    pub(crate) stale_records_excluded_count: usize,
+    pub(crate) recent_green_count: usize,
+    pub(crate) recent_blocked_count: usize,
+    pub(crate) latest_recent_verdict: Option<String>,
+    pub(crate) verdict_counts: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ActivationDrillHistorySummary {
-    verdict: String,
-    reason: String,
-    records_loaded: usize,
-    recent_records_within_horizon: usize,
-    recent_horizon_seconds: u64,
-    latest_record_age_seconds: Option<u64>,
-    stale_records_excluded_from_verdict: bool,
-    stale_records_excluded_count: usize,
-    recent_green_count: usize,
-    recent_blocked_count: usize,
-    recent_rollback_success_count: usize,
-    recent_rollback_failure_count: usize,
-    recent_internal_consistency_count: usize,
-    latest_recent_verdict: Option<String>,
-    verdict_counts: BTreeMap<String, usize>,
+pub(crate) struct ActivationDrillHistorySummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) records_loaded: usize,
+    pub(crate) recent_records_within_horizon: usize,
+    pub(crate) recent_horizon_seconds: u64,
+    pub(crate) latest_record_age_seconds: Option<u64>,
+    pub(crate) stale_records_excluded_from_verdict: bool,
+    pub(crate) stale_records_excluded_count: usize,
+    pub(crate) recent_green_count: usize,
+    pub(crate) recent_blocked_count: usize,
+    pub(crate) recent_rollback_success_count: usize,
+    pub(crate) recent_rollback_failure_count: usize,
+    pub(crate) recent_internal_consistency_count: usize,
+    pub(crate) latest_recent_verdict: Option<String>,
+    pub(crate) verdict_counts: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct DevnetReadinessReport {
-    generated_at: DateTime<Utc>,
-    config_path: String,
-    db_path: String,
-    target_environment: String,
-    config_env: String,
-    prod_profile_refused: bool,
-    non_prod_only: bool,
-    production_unchanged: bool,
-    planning_safe_for_production: bool,
-    prod_stage3_not_overridden: bool,
-    execution_enabled: bool,
-    verdict: DevnetReadinessVerdict,
-    reason: String,
-    blockers: Vec<String>,
-    warnings: Vec<String>,
-    dress_rehearsal_history: DressRehearsalHistorySummary,
-    activation_drill_history: ActivationDrillHistorySummary,
+pub(crate) struct DevnetReadinessReport {
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) config_path: String,
+    pub(crate) db_path: String,
+    pub(crate) target_environment: String,
+    pub(crate) config_env: String,
+    pub(crate) prod_profile_refused: bool,
+    pub(crate) non_prod_only: bool,
+    pub(crate) production_unchanged: bool,
+    pub(crate) planning_safe_for_production: bool,
+    pub(crate) prod_stage3_not_overridden: bool,
+    pub(crate) execution_enabled: bool,
+    pub(crate) verdict: DevnetReadinessVerdict,
+    pub(crate) reason: String,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) dress_rehearsal_history: DressRehearsalHistorySummary,
+    pub(crate) activation_drill_history: ActivationDrillHistorySummary,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct DevnetReadinessRefusalReport {
-    generated_at: DateTime<Utc>,
-    config_path: String,
-    db_path: String,
-    target_environment: String,
-    config_env: String,
-    prod_profile_refused: bool,
-    non_prod_only: bool,
-    production_unchanged: bool,
-    planning_safe_for_production: bool,
-    prod_stage3_not_overridden: bool,
-    verdict: DevnetReadinessVerdict,
-    reason: String,
+pub(crate) struct DevnetReadinessRefusalReport {
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) config_path: String,
+    pub(crate) db_path: String,
+    pub(crate) target_environment: String,
+    pub(crate) config_env: String,
+    pub(crate) prod_profile_refused: bool,
+    pub(crate) non_prod_only: bool,
+    pub(crate) production_unchanged: bool,
+    pub(crate) planning_safe_for_production: bool,
+    pub(crate) prod_stage3_not_overridden: bool,
+    pub(crate) verdict: DevnetReadinessVerdict,
+    pub(crate) reason: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum DevnetReadinessEvaluation {
+    Report(DevnetReadinessReport),
+    Refusal(DevnetReadinessRefusalReport),
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -214,6 +220,30 @@ fn parse_u64_arg(flag: &str, value: Option<String>) -> Result<u64> {
 }
 
 fn run(config: Config) -> Result<String> {
+    match evaluate_devnet_readiness_report(&config, Utc::now())? {
+        DevnetReadinessEvaluation::Report(report) => {
+            if config.json {
+                serde_json::to_string_pretty(&report)
+                    .context("failed serializing devnet readiness json")
+            } else {
+                Ok(render_human(&report))
+            }
+        }
+        DevnetReadinessEvaluation::Refusal(report) => {
+            if config.json {
+                serde_json::to_string_pretty(&report)
+                    .context("failed serializing devnet readiness refusal json")
+            } else {
+                Ok(render_refusal_human(&report))
+            }
+        }
+    }
+}
+
+pub(crate) fn evaluate_devnet_readiness_report(
+    config: &Config,
+    now: DateTime<Utc>,
+) -> Result<DevnetReadinessEvaluation> {
     let loaded_config = load_from_path(&config.config_path)
         .with_context(|| format!("failed loading config {}", config.config_path.display()))?;
     let db_path = execution_dry_run_rehearsal::resolve_db_path(
@@ -222,29 +252,25 @@ fn run(config: Config) -> Result<String> {
     );
 
     if devnet_dress_rehearsal::is_production_like_env(loaded_config.system.env.as_str()) {
-        let report = DevnetReadinessRefusalReport {
-            generated_at: Utc::now(),
-            config_path: config.config_path.display().to_string(),
-            db_path: db_path.display().to_string(),
-            target_environment: TARGET_ENVIRONMENT.to_string(),
-            config_env: loaded_config.system.env.clone(),
-            prod_profile_refused: true,
-            non_prod_only: true,
-            production_unchanged: true,
-            planning_safe_for_production: true,
-            prod_stage3_not_overridden: true,
-            verdict: DevnetReadinessVerdict::DevnetReadinessRefusedForProdProfile,
-            reason: format!(
-                "copybot_devnet_readiness_report refuses production-like system.env={}",
-                loaded_config.system.env
-            ),
-        };
-        return if config.json {
-            serde_json::to_string_pretty(&report)
-                .context("failed serializing devnet readiness refusal json")
-        } else {
-            Ok(render_refusal_human(&report))
-        };
+        return Ok(DevnetReadinessEvaluation::Refusal(
+            DevnetReadinessRefusalReport {
+                generated_at: now,
+                config_path: config.config_path.display().to_string(),
+                db_path: db_path.display().to_string(),
+                target_environment: TARGET_ENVIRONMENT.to_string(),
+                config_env: loaded_config.system.env.clone(),
+                prod_profile_refused: true,
+                non_prod_only: true,
+                production_unchanged: true,
+                planning_safe_for_production: true,
+                prod_stage3_not_overridden: true,
+                verdict: DevnetReadinessVerdict::DevnetReadinessRefusedForProdProfile,
+                reason: format!(
+                    "copybot_devnet_readiness_report refuses production-like system.env={}",
+                    loaded_config.system.env
+                ),
+            },
+        ));
     }
 
     let store = SqliteStore::open(&db_path).with_context(|| {
@@ -253,12 +279,8 @@ fn run(config: Config) -> Result<String> {
             db_path.display()
         )
     })?;
-    let report = build_report(&store, &config, &loaded_config, &db_path, Utc::now())?;
-    if config.json {
-        serde_json::to_string_pretty(&report).context("failed serializing devnet readiness json")
-    } else {
-        Ok(render_human(&report))
-    }
+    let report = build_report(&store, config, &loaded_config, &db_path, now)?;
+    Ok(DevnetReadinessEvaluation::Report(report))
 }
 
 fn build_report(
