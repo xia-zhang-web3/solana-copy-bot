@@ -49,7 +49,7 @@ struct Config {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum DevnetDressRehearsalVerdict {
+pub(crate) enum DevnetDressRehearsalVerdict {
     DevnetRehearsalGreen,
     DevnetRehearsalGreenWithBusinessReject,
     DevnetRehearsalBlockedByConnectivity,
@@ -61,71 +61,72 @@ enum DevnetDressRehearsalVerdict {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct RehearsalIntent {
-    route: String,
-    token: String,
-    notional_sol: f64,
-    side: String,
+pub(crate) struct RehearsalIntent {
+    pub(crate) route: String,
+    pub(crate) token: String,
+    pub(crate) notional_sol: f64,
+    pub(crate) side: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ExecutionReadinessSummary {
-    verdict: String,
-    reason: String,
-    config_valid: bool,
-    connectivity_valid: bool,
-    adapter_contract_valid: bool,
-    signer_contract_valid: bool,
-    policy_contract_valid: bool,
-    route_contract_valid: bool,
-    ready_for_dry_run: bool,
+pub(crate) struct ExecutionReadinessSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) config_valid: bool,
+    pub(crate) connectivity_valid: bool,
+    pub(crate) adapter_contract_valid: bool,
+    pub(crate) signer_contract_valid: bool,
+    pub(crate) policy_contract_valid: bool,
+    pub(crate) route_contract_valid: bool,
+    pub(crate) ready_for_dry_run: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct TinyLivePolicySummary {
-    verdict: String,
-    reason: String,
-    bounded: bool,
-    enabled: bool,
-    blocker_count: usize,
-    first_blocker: Option<String>,
+pub(crate) struct TinyLivePolicySummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) bounded: bool,
+    pub(crate) enabled: bool,
+    pub(crate) blocker_count: usize,
+    pub(crate) first_blocker: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct DryRunSummary {
-    verdict: String,
-    reason: String,
-    ready_for_dry_run: bool,
-    would_be_admissible_for_later_tiny_live: bool,
-    connectivity_valid: bool,
-    adapter_contract_valid: bool,
-    policy_echo_present: bool,
+pub(crate) struct DryRunSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) ready_for_dry_run: bool,
+    pub(crate) would_be_admissible_for_later_tiny_live: bool,
+    pub(crate) connectivity_valid: bool,
+    pub(crate) adapter_contract_valid: bool,
+    pub(crate) policy_echo_present: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct DevnetDressRehearsalReport {
-    generated_at: DateTime<Utc>,
-    rehearsal_id: Option<i64>,
-    config_path: String,
-    db_path: String,
-    target_environment: String,
-    config_env: String,
-    prod_profile_refused: bool,
-    production_unchanged: bool,
-    planning_safe_for_production: bool,
-    stage3_gate_not_evaluated: bool,
-    execution_enabled: bool,
-    verdict: DevnetDressRehearsalVerdict,
-    reason: String,
-    blockers: Vec<String>,
-    warnings: Vec<String>,
-    intent: RehearsalIntent,
-    readiness: Option<ExecutionReadinessSummary>,
-    tiny_live_policy: Option<TinyLivePolicySummary>,
-    dry_run: Option<DryRunSummary>,
-    readiness_audit: Option<execution_readiness_audit::ExecutionReadinessAuditReport>,
-    tiny_live_policy_audit: Option<tiny_live_policy_audit::TinyLivePolicyAuditReport>,
-    dry_run_rehearsal: Option<execution_dry_run_rehearsal::ExecutionDryRunRehearsalReport>,
+pub(crate) struct DevnetDressRehearsalReport {
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) rehearsal_id: Option<i64>,
+    pub(crate) config_path: String,
+    pub(crate) db_path: String,
+    pub(crate) target_environment: String,
+    pub(crate) config_env: String,
+    pub(crate) prod_profile_refused: bool,
+    pub(crate) production_unchanged: bool,
+    pub(crate) planning_safe_for_production: bool,
+    pub(crate) stage3_gate_not_evaluated: bool,
+    pub(crate) execution_enabled: bool,
+    pub(crate) verdict: DevnetDressRehearsalVerdict,
+    pub(crate) reason: String,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) intent: RehearsalIntent,
+    pub(crate) readiness: Option<ExecutionReadinessSummary>,
+    pub(crate) tiny_live_policy: Option<TinyLivePolicySummary>,
+    pub(crate) dry_run: Option<DryRunSummary>,
+    pub(crate) readiness_audit: Option<execution_readiness_audit::ExecutionReadinessAuditReport>,
+    pub(crate) tiny_live_policy_audit: Option<tiny_live_policy_audit::TinyLivePolicyAuditReport>,
+    pub(crate) dry_run_rehearsal:
+        Option<execution_dry_run_rehearsal::ExecutionDryRunRehearsalReport>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -337,7 +338,7 @@ fn render_history_mode_output(
     }
 }
 
-async fn evaluate_devnet_dress_rehearsal(
+pub(crate) async fn evaluate_devnet_dress_rehearsal(
     config_path: &Path,
     db_path: &Path,
     loaded_config: &AppConfig,
@@ -666,7 +667,7 @@ fn adapter_endpoint_identity(endpoint: &str) -> Result<String> {
     Ok(format!("{scheme}://{host}:{port}{path}"))
 }
 
-fn is_production_like_env(env: &str) -> bool {
+pub(crate) fn is_production_like_env(env: &str) -> bool {
     let env_norm = env.trim().to_ascii_lowercase();
     matches!(env_norm.as_str(), "prod" | "production")
         || env_norm.starts_with("prod-")

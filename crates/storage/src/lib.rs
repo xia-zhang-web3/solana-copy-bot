@@ -50,6 +50,7 @@ static SQLITE_BUSY_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
 mod discovery;
 mod discovery_scoring;
 mod discovery_scoring_builder;
+mod execution_devnet_activation_drill;
 mod execution_devnet_dress_rehearsal;
 mod execution_orders;
 mod execution_rehearsal;
@@ -937,6 +938,77 @@ pub struct ExecutionDevnetDressRehearsalRow {
     pub blockers: Vec<String>,
     pub warnings: Vec<String>,
     pub rehearsal_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecutionDevnetActivationDrillWrite {
+    pub drilled_at: DateTime<Utc>,
+    pub target_environment: String,
+    pub config_env: String,
+    pub source_config_path: String,
+    pub execution_enabled_source: bool,
+    pub route: String,
+    pub token: String,
+    pub side: String,
+    pub notional_sol: f64,
+    pub launch_dossier_verdict: String,
+    pub launch_dossier_reason: String,
+    pub pre_activation_gate_verdict: String,
+    pub pre_activation_gate_reason: String,
+    pub tiny_live_policy_verdict: String,
+    pub tiny_live_guardrail_verdict: String,
+    pub tiny_live_policy_bounded: bool,
+    pub tiny_live_guardrails_bounded: bool,
+    pub activation_overlay_change_count: usize,
+    pub rollback_overlay_change_count: usize,
+    pub activation_drill_verdict: String,
+    pub activation_drill_reason: String,
+    pub activation_rehearsal_verdict: Option<String>,
+    pub activation_rehearsal_reason: Option<String>,
+    pub rollback_drill_verdict: String,
+    pub rollback_drill_reason: String,
+    pub activated_config_policy_bounded: bool,
+    pub activated_config_guardrails_bounded: bool,
+    pub rollback_restores_safe_mode: bool,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+    pub drill_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecutionDevnetActivationDrillRow {
+    pub drill_id: i64,
+    pub drilled_at: DateTime<Utc>,
+    pub target_environment: String,
+    pub config_env: String,
+    pub source_config_path: String,
+    pub execution_enabled_source: bool,
+    pub route: String,
+    pub token: String,
+    pub side: String,
+    pub notional_sol: f64,
+    pub launch_dossier_verdict: String,
+    pub launch_dossier_reason: String,
+    pub pre_activation_gate_verdict: String,
+    pub pre_activation_gate_reason: String,
+    pub tiny_live_policy_verdict: String,
+    pub tiny_live_guardrail_verdict: String,
+    pub tiny_live_policy_bounded: bool,
+    pub tiny_live_guardrails_bounded: bool,
+    pub activation_overlay_change_count: usize,
+    pub rollback_overlay_change_count: usize,
+    pub activation_drill_verdict: String,
+    pub activation_drill_reason: String,
+    pub activation_rehearsal_verdict: Option<String>,
+    pub activation_rehearsal_reason: Option<String>,
+    pub rollback_drill_verdict: String,
+    pub rollback_drill_reason: String,
+    pub activated_config_policy_bounded: bool,
+    pub activated_config_guardrails_bounded: bool,
+    pub rollback_restores_safe_mode: bool,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+    pub drill_json: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

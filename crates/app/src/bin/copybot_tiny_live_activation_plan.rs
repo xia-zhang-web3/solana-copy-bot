@@ -20,9 +20,9 @@ mod tiny_live_guardrail_audit;
 mod tiny_live_policy_audit;
 
 const USAGE: &str = "usage: copybot_tiny_live_activation_plan --config <path> [--json] [--output <path>] [--now <rfc3339>] [--stage3-limit <count>] [--stage3-recent-horizon-seconds <seconds>] [--rehearsal-limit <count>] [--rehearsal-recent-horizon-seconds <seconds>] [--min-recent-acceptable-rehearsals <count>]";
-const DEFAULT_REHEARSAL_HISTORY_LIMIT: usize = 10;
-const DEFAULT_REHEARSAL_RECENT_HORIZON_SECONDS: u64 = 86_400;
-const DEFAULT_MIN_RECENT_ACCEPTABLE_REHEARSALS: usize = 2;
+pub(crate) const DEFAULT_REHEARSAL_HISTORY_LIMIT: usize = 10;
+pub(crate) const DEFAULT_REHEARSAL_RECENT_HORIZON_SECONDS: u64 = 86_400;
+pub(crate) const DEFAULT_MIN_RECENT_ACCEPTABLE_REHEARSALS: usize = 2;
 const TARGET_EXECUTION_MODE: &str = "adapter_submit_confirm";
 const TARGET_SERVICE_NAME: &str = "solana-copy-bot.service";
 
@@ -41,21 +41,21 @@ fn main() -> Result<()> {
 }
 
 #[derive(Debug, Clone)]
-struct Config {
-    config_path: PathBuf,
-    json: bool,
-    output_path: Option<PathBuf>,
-    now: DateTime<Utc>,
-    stage3_limit: usize,
-    stage3_recent_horizon_seconds: Option<u64>,
-    rehearsal_limit: usize,
-    rehearsal_recent_horizon_seconds: u64,
-    min_recent_acceptable_rehearsals: usize,
+pub(crate) struct Config {
+    pub(crate) config_path: PathBuf,
+    pub(crate) json: bool,
+    pub(crate) output_path: Option<PathBuf>,
+    pub(crate) now: DateTime<Utc>,
+    pub(crate) stage3_limit: usize,
+    pub(crate) stage3_recent_horizon_seconds: Option<u64>,
+    pub(crate) rehearsal_limit: usize,
+    pub(crate) rehearsal_recent_horizon_seconds: u64,
+    pub(crate) min_recent_acceptable_rehearsals: usize,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum TinyLiveActivationPlanVerdict {
+pub(crate) enum TinyLiveActivationPlanVerdict {
     ActivationPlanReadyWhenStageGateAllows,
     BlockedByPreActivationGate,
     BlockedByPolicyContract,
@@ -66,118 +66,118 @@ enum TinyLiveActivationPlanVerdict {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ActivationPlanGateSummary {
-    verdict: String,
-    reason: String,
-    planning_green: bool,
-    blockers: Vec<String>,
-    execution_enabled: bool,
-    stage3_is_primary_gate: bool,
+pub(crate) struct ActivationPlanGateSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) planning_green: bool,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) execution_enabled: bool,
+    pub(crate) stage3_is_primary_gate: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct PolicyAuditSummary {
-    verdict: String,
-    reason: String,
-    bounded: bool,
-    tiny_live_policy_enabled: bool,
-    blocker_count: usize,
-    first_blocker: Option<String>,
-    warnings_count: usize,
+pub(crate) struct PolicyAuditSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) bounded: bool,
+    pub(crate) tiny_live_policy_enabled: bool,
+    pub(crate) blocker_count: usize,
+    pub(crate) first_blocker: Option<String>,
+    pub(crate) warnings_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct GuardrailAuditSummary {
-    verdict: String,
-    reason: String,
-    bounded: bool,
-    tiny_live_guardrails_enabled: bool,
-    first_blocker: Option<String>,
-    blocker_count: usize,
-    warnings_count: usize,
-    rollback_triggers: Vec<tiny_live_guardrail_audit::RollbackTriggerSummary>,
+pub(crate) struct GuardrailAuditSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) bounded: bool,
+    pub(crate) tiny_live_guardrails_enabled: bool,
+    pub(crate) first_blocker: Option<String>,
+    pub(crate) blocker_count: usize,
+    pub(crate) warnings_count: usize,
+    pub(crate) rollback_triggers: Vec<tiny_live_guardrail_audit::RollbackTriggerSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ActivationPlanFieldDelta {
-    field: String,
-    current_value: Value,
-    activation_value: Value,
-    rollback_value: Value,
-    reason: String,
-    source: String,
+pub(crate) struct ActivationPlanFieldDelta {
+    pub(crate) field: String,
+    pub(crate) current_value: Value,
+    pub(crate) activation_value: Value,
+    pub(crate) rollback_value: Value,
+    pub(crate) reason: String,
+    pub(crate) source: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct UnchangedFieldSummary {
-    field: String,
-    value: Value,
-    reason: String,
+pub(crate) struct UnchangedFieldSummary {
+    pub(crate) field: String,
+    pub(crate) value: Value,
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct RouteEnvelopeRow {
-    route: String,
-    compute_unit_limit: u32,
-    slippage_bps: f64,
-    tip_lamports: u64,
-    compute_unit_price_micro_lamports: u64,
+pub(crate) struct RouteEnvelopeRow {
+    pub(crate) route: String,
+    pub(crate) compute_unit_limit: u32,
+    pub(crate) slippage_bps: f64,
+    pub(crate) tip_lamports: u64,
+    pub(crate) compute_unit_price_micro_lamports: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct EffectiveTinyLiveContract {
-    execution_mode: String,
-    execution_enabled_target: bool,
-    default_route: String,
-    allowed_routes: Vec<String>,
-    route_order: Vec<String>,
-    policy_echo_required: bool,
-    shadow_copy_notional_sol: f64,
-    risk_max_position_sol: f64,
-    execution_batch_size: u32,
-    risk_max_concurrent_positions: u32,
-    risk_daily_loss_limit_pct: f64,
-    pretrade_max_fee_overhead_bps: u32,
-    pretrade_max_priority_fee_lamports: u64,
-    route_envelope: Vec<RouteEnvelopeRow>,
+pub(crate) struct EffectiveTinyLiveContract {
+    pub(crate) execution_mode: String,
+    pub(crate) execution_enabled_target: bool,
+    pub(crate) default_route: String,
+    pub(crate) allowed_routes: Vec<String>,
+    pub(crate) route_order: Vec<String>,
+    pub(crate) policy_echo_required: bool,
+    pub(crate) shadow_copy_notional_sol: f64,
+    pub(crate) risk_max_position_sol: f64,
+    pub(crate) execution_batch_size: u32,
+    pub(crate) risk_max_concurrent_positions: u32,
+    pub(crate) risk_daily_loss_limit_pct: f64,
+    pub(crate) pretrade_max_fee_overhead_bps: u32,
+    pub(crate) pretrade_max_priority_fee_lamports: u64,
+    pub(crate) route_envelope: Vec<RouteEnvelopeRow>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ServiceRestartContract {
-    complete: bool,
-    activation_restart_required: bool,
-    rollback_restart_required: bool,
-    activation_services: Vec<String>,
-    rollback_services: Vec<String>,
-    activation_steps: Vec<String>,
-    rollback_steps: Vec<String>,
+pub(crate) struct ServiceRestartContract {
+    pub(crate) complete: bool,
+    pub(crate) activation_restart_required: bool,
+    pub(crate) rollback_restart_required: bool,
+    pub(crate) activation_services: Vec<String>,
+    pub(crate) rollback_services: Vec<String>,
+    pub(crate) activation_steps: Vec<String>,
+    pub(crate) rollback_steps: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct TinyLiveActivationPlanReport {
-    generated_at: DateTime<Utc>,
-    config_path: String,
-    output_path: Option<String>,
-    planning_safe_only: bool,
-    activation_permission_granted: bool,
-    execution_enabled_current: bool,
-    current_execution_mode: String,
-    verdict: TinyLiveActivationPlanVerdict,
-    reason: String,
-    blockers: Vec<String>,
-    drift_findings: Vec<String>,
-    pre_activation_gate: ActivationPlanGateSummary,
-    tiny_live_policy: PolicyAuditSummary,
-    tiny_live_guardrails: GuardrailAuditSummary,
-    activation_overlay_complete: bool,
-    rollback_plan_complete: bool,
-    service_restart_contract_complete: bool,
-    activation_overlay_change_count: usize,
-    rollback_overlay_change_count: usize,
-    activation_overlay_changes: Vec<ActivationPlanFieldDelta>,
-    unchanged_fields: Vec<UnchangedFieldSummary>,
-    effective_tiny_live_contract: Option<EffectiveTinyLiveContract>,
-    service_restart_contract: ServiceRestartContract,
+pub(crate) struct TinyLiveActivationPlanReport {
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) config_path: String,
+    pub(crate) output_path: Option<String>,
+    pub(crate) planning_safe_only: bool,
+    pub(crate) activation_permission_granted: bool,
+    pub(crate) execution_enabled_current: bool,
+    pub(crate) current_execution_mode: String,
+    pub(crate) verdict: TinyLiveActivationPlanVerdict,
+    pub(crate) reason: String,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) drift_findings: Vec<String>,
+    pub(crate) pre_activation_gate: ActivationPlanGateSummary,
+    pub(crate) tiny_live_policy: PolicyAuditSummary,
+    pub(crate) tiny_live_guardrails: GuardrailAuditSummary,
+    pub(crate) activation_overlay_complete: bool,
+    pub(crate) rollback_plan_complete: bool,
+    pub(crate) service_restart_contract_complete: bool,
+    pub(crate) activation_overlay_change_count: usize,
+    pub(crate) rollback_overlay_change_count: usize,
+    pub(crate) activation_overlay_changes: Vec<ActivationPlanFieldDelta>,
+    pub(crate) unchanged_fields: Vec<UnchangedFieldSummary>,
+    pub(crate) effective_tiny_live_contract: Option<EffectiveTinyLiveContract>,
+    pub(crate) service_restart_contract: ServiceRestartContract,
 }
 
 #[derive(Debug, Clone)]
@@ -286,6 +286,23 @@ fn parse_usize_arg(flag: &str, value: Option<String>) -> Result<usize> {
 async fn run(config: Config) -> Result<String> {
     let loaded_config = load_from_path(&config.config_path)
         .with_context(|| format!("failed loading config {}", config.config_path.display()))?;
+    let report = evaluate_tiny_live_activation_plan(&config, &loaded_config).await?;
+    let json_output = serde_json::to_string_pretty(&report)
+        .context("failed serializing tiny-live activation plan json")?;
+    if let Some(output_path) = &config.output_path {
+        write_output(output_path, &json_output)?;
+    }
+    if config.json {
+        Ok(json_output)
+    } else {
+        Ok(render_human(&report))
+    }
+}
+
+pub(crate) async fn evaluate_tiny_live_activation_plan(
+    config: &Config,
+    loaded_config: &AppConfig,
+) -> Result<TinyLiveActivationPlanReport> {
     let pre_activation_gate = pre_activation_gate_report::evaluate_pre_activation_gate_report(
         &config.config_path,
         config.now,
@@ -297,28 +314,18 @@ async fn run(config: Config) -> Result<String> {
     )
     .await?;
     let tiny_live_policy =
-        tiny_live_policy_audit::evaluate_tiny_live_policy(&config.config_path, &loaded_config)?;
+        tiny_live_policy_audit::evaluate_tiny_live_policy(&config.config_path, loaded_config)?;
     let tiny_live_guardrails = tiny_live_guardrail_audit::evaluate_tiny_live_guardrails(
         &config.config_path,
-        &loaded_config,
+        loaded_config,
     )?;
-    let report = build_activation_plan_report(
-        &config,
-        &loaded_config,
+    Ok(build_activation_plan_report(
+        config,
+        loaded_config,
         pre_activation_gate,
         tiny_live_policy,
         tiny_live_guardrails,
-    );
-    let json_output = serde_json::to_string_pretty(&report)
-        .context("failed serializing tiny-live activation plan json")?;
-    if let Some(output_path) = &config.output_path {
-        write_output(output_path, &json_output)?;
-    }
-    if config.json {
-        Ok(json_output)
-    } else {
-        Ok(render_human(&report))
-    }
+    ))
 }
 
 fn write_output(path: &Path, contents: &str) -> Result<()> {
@@ -1107,7 +1114,7 @@ fn serialize_enum<T: Serialize>(value: &T) -> String {
         .to_string()
 }
 
-fn render_human(report: &TinyLiveActivationPlanReport) -> String {
+pub(crate) fn render_human(report: &TinyLiveActivationPlanReport) -> String {
     [
         "event=copybot_tiny_live_activation_plan".to_string(),
         format!("generated_at={}", report.generated_at.to_rfc3339()),

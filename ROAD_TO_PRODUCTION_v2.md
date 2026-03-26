@@ -1552,6 +1552,34 @@ Acceptance update (`2026-03-25`, devnet dress-rehearsal package):
    - a green devnet dress rehearsal still does not authorize production
      activation and does not override the Stage 3 gate
 
+Acceptance update (`2026-03-26`, devnet activation-and-rollback drill package):
+
+1. Stage 4 now also has a first-class non-production drill over the accepted
+   bounded launch dossier:
+   - run and persist one drill:
+     `copybot_devnet_activation_drill --config /etc/solana-copy-bot/devnet.server.toml --route jito --token So11111111111111111111111111111111111111112 --notional-sol 0.01 --json`
+   - inspect recent persisted drill history:
+     `copybot_devnet_activation_drill --config /etc/solana-copy-bot/devnet.server.toml --history --limit 10 --json`
+2. The drill stays hard-guarded against production-like profiles and does not
+   touch production activation state.
+3. It reuses the accepted bounded launch dossier instead of inventing another
+   activation checklist:
+   - `copybot_tiny_live_activation_plan`
+   - `copybot_devnet_dress_rehearsal`
+   - `copybot_tiny_live_guardrail_audit`
+4. It applies the activation overlay only to a derived non-prod config, then
+   validates the rollback overlay back to the original safe-mode contract and
+   persists explicit activation/rollback drill history with environment labels.
+5. Important verdicts:
+   - `devnet_activation_drill_green`
+   - `devnet_activation_drill_blocked_by_launch_dossier`
+   - `devnet_activation_drill_blocked_by_non_prod_contract`
+   - `devnet_activation_drill_blocked_by_guardrails`
+   - `devnet_rollback_drill_failed`
+   - `devnet_activation_drill_refused_for_prod_profile`
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_devnet_activation_drill`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

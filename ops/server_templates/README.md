@@ -218,6 +218,39 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    production activation, and it does not override Stage 3.
 7. For a safe non-live contour, keep using the existing executor and mock
    upstream templates:
+
+## Devnet Activation/Rollback Drill
+
+1. Stage 4 now also has a non-production drill over the accepted tiny-live
+   launch dossier:
+   - run and persist one activation/rollback drill:
+     `copybot_devnet_activation_drill --config /etc/solana-copy-bot/devnet.server.toml --route jito --token So11111111111111111111111111111111111111112 --notional-sol 0.01 --json`
+   - inspect recent persisted drill history:
+     `copybot_devnet_activation_drill --config /etc/solana-copy-bot/devnet.server.toml --history --limit 10 --json`
+2. This command is also non-prod only:
+   - it refuses production-like `system.env`
+   - it does not enable production execution
+   - it does not write `/etc/solana-copy-bot/live.server.toml`
+   - it does not submit real trades on production
+3. The drill reuses accepted Stage 4 truth instead of inventing a parallel
+   activation path:
+   - `copybot_tiny_live_activation_plan`
+   - `copybot_devnet_dress_rehearsal`
+   - `copybot_tiny_live_guardrail_audit`
+4. It rehearses both sides of the accepted dossier on a derived non-prod config:
+   - activation overlay applied in-memory only
+   - rollback overlay applied back to that derived config
+   - persisted verdicts for both activation drill and rollback drill
+5. Important top-level verdicts:
+   - `devnet_activation_drill_green`
+   - `devnet_activation_drill_blocked_by_launch_dossier`
+   - `devnet_activation_drill_blocked_by_non_prod_contract`
+   - `devnet_activation_drill_blocked_by_guardrails`
+   - `devnet_rollback_drill_failed`
+   - `devnet_activation_drill_refused_for_prod_profile`
+6. A green drill means the accepted bounded launch dossier remained internally
+   coherent under non-production rehearsal. It still does not authorize
+   production activation and it does not override the Stage 3 production gate.
    - `ops/server_templates/executor.env.example`
    - `ops/server_templates/copybot-execution-mock-upstream.service`
 
