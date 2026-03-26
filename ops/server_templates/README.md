@@ -302,6 +302,38 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    block is the source of truth for the future tiny-live envelope; the audit
    does not rely on hidden defaults in code.
 
+## Tiny-Live Activation Plan
+
+1. Operators now also have a planning-only tiny-live activation package:
+   - `copybot_tiny_live_activation_plan --config /etc/solana-copy-bot/live.server.toml --json`
+2. This command stays strictly pre-activation:
+   - it does not enable `execution.enabled`
+   - it does not write into `/etc/solana-copy-bot/live.server.toml`
+   - it does not restart services
+   - it does not submit trades
+3. It reuses the accepted Stage 4 truth surfaces instead of inventing a second
+   decision path:
+   - `copybot_pre_activation_gate_report`
+   - `copybot_tiny_live_policy_audit`
+   - current execution/risk/shadow config truth
+4. The report renders:
+   - the current safe execution state
+   - the future bounded activation overlay
+   - the explicit rollback delta back to safe mode
+   - the service restart contract for activation and rollback
+5. Important top-level verdicts:
+   - `activation_plan_ready_when_stage_gate_allows`
+   - `blocked_by_pre_activation_gate`
+   - `blocked_by_policy_contract`
+   - `activation_overlay_incomplete`
+   - `rollback_plan_incomplete`
+   - `service_restart_contract_incomplete`
+6. `activation_plan_ready_when_stage_gate_allows` means the later tiny-live
+   config delta and rollback delta are already explicit. It still does not
+   authorize activation, and it does not override Stage 3.
+7. If `--output <path>` is provided, the command writes the full JSON planning
+   artifact to disk without mutating the live config.
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

@@ -40,7 +40,7 @@ fn main() -> Result<()> {
 }
 
 #[derive(Debug, Clone)]
-struct Config {
+pub(crate) struct Config {
     config_path: PathBuf,
     json: bool,
     now: DateTime<Utc>,
@@ -53,7 +53,7 @@ struct Config {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum PreActivationGateVerdict {
+pub(crate) enum PreActivationGateVerdict {
     PreActivationGatesGreen,
     BlockedByStage3,
     BlockedByStage4Readiness,
@@ -64,7 +64,7 @@ enum PreActivationGateVerdict {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum DryRunHistoryVerdict {
+pub(crate) enum DryRunHistoryVerdict {
     SufficientRecentRehearsalEvidence,
     NoPersistedRehearsals,
     StaleRehearsalsOnly,
@@ -73,81 +73,81 @@ enum DryRunHistoryVerdict {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct Stage3GateSummary {
-    verdict: String,
-    reason: String,
-    stage3_green: bool,
-    captures_loaded: usize,
-    captures_within_recent_horizon: usize,
-    recent_horizon_seconds: u64,
-    latest_capture_age_seconds: Option<u64>,
-    stale_captures_excluded_from_verdict: bool,
-    exact_published_current_match_count: usize,
-    exact_active_current_match_count: usize,
-    rotation_evidence_capture_count: usize,
-    shadow_signal_present_capture_count: usize,
+pub(crate) struct Stage3GateSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) stage3_green: bool,
+    pub(crate) captures_loaded: usize,
+    pub(crate) captures_within_recent_horizon: usize,
+    pub(crate) recent_horizon_seconds: u64,
+    pub(crate) latest_capture_age_seconds: Option<u64>,
+    pub(crate) stale_captures_excluded_from_verdict: bool,
+    pub(crate) exact_published_current_match_count: usize,
+    pub(crate) exact_active_current_match_count: usize,
+    pub(crate) rotation_evidence_capture_count: usize,
+    pub(crate) shadow_signal_present_capture_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct Stage4ReadinessSummary {
-    verdict: String,
-    reason: String,
-    config_valid: bool,
-    connectivity_valid: bool,
-    adapter_contract_valid: bool,
-    signer_contract_valid: bool,
-    policy_contract_valid: bool,
-    route_contract_valid: bool,
-    ready_for_dry_run: bool,
-    blocked_for_activation: bool,
+pub(crate) struct Stage4ReadinessSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) config_valid: bool,
+    pub(crate) connectivity_valid: bool,
+    pub(crate) adapter_contract_valid: bool,
+    pub(crate) signer_contract_valid: bool,
+    pub(crate) policy_contract_valid: bool,
+    pub(crate) route_contract_valid: bool,
+    pub(crate) ready_for_dry_run: bool,
+    pub(crate) blocked_for_activation: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct DryRunHistorySummary {
-    verdict: DryRunHistoryVerdict,
-    reason: String,
-    records_loaded: usize,
-    recent_rehearsals_within_horizon: usize,
-    recent_horizon_seconds: u64,
-    latest_rehearsal_age_seconds: Option<u64>,
-    stale_rehearsals_excluded_from_verdict: bool,
-    stale_rehearsals_excluded_count: usize,
-    acceptable_recent_rehearsal_count: usize,
-    recent_hard_blocker_count: usize,
-    latest_recent_verdict: Option<String>,
-    verdict_counts: BTreeMap<String, usize>,
+pub(crate) struct DryRunHistorySummary {
+    pub(crate) verdict: DryRunHistoryVerdict,
+    pub(crate) reason: String,
+    pub(crate) records_loaded: usize,
+    pub(crate) recent_rehearsals_within_horizon: usize,
+    pub(crate) recent_horizon_seconds: u64,
+    pub(crate) latest_rehearsal_age_seconds: Option<u64>,
+    pub(crate) stale_rehearsals_excluded_from_verdict: bool,
+    pub(crate) stale_rehearsals_excluded_count: usize,
+    pub(crate) acceptable_recent_rehearsal_count: usize,
+    pub(crate) recent_hard_blocker_count: usize,
+    pub(crate) latest_recent_verdict: Option<String>,
+    pub(crate) verdict_counts: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct TinyLivePolicySummary {
-    verdict: String,
-    reason: String,
-    tiny_live_policy_bounded: bool,
-    tiny_live_policy_enabled: bool,
-    blocker_count: usize,
-    first_blocker: Option<String>,
-    warnings_count: usize,
-    mode_compatible: bool,
-    execution_policy_contract_valid: bool,
-    execution_route_contract_valid: bool,
+pub(crate) struct TinyLivePolicySummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) tiny_live_policy_bounded: bool,
+    pub(crate) tiny_live_policy_enabled: bool,
+    pub(crate) blocker_count: usize,
+    pub(crate) first_blocker: Option<String>,
+    pub(crate) warnings_count: usize,
+    pub(crate) mode_compatible: bool,
+    pub(crate) execution_policy_contract_valid: bool,
+    pub(crate) execution_route_contract_valid: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct PreActivationGateReport {
-    generated_at: DateTime<Utc>,
-    config_path: String,
-    db_path: String,
-    execution_enabled: bool,
-    planning_safe_only: bool,
-    activation_permission_granted: bool,
-    stage3_is_primary_gate: bool,
-    verdict: PreActivationGateVerdict,
-    reason: String,
-    blockers: Vec<String>,
-    stage3: Stage3GateSummary,
-    stage4_readiness: Stage4ReadinessSummary,
-    stage4_dry_run_history: DryRunHistorySummary,
-    tiny_live_policy: TinyLivePolicySummary,
+pub(crate) struct PreActivationGateReport {
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) config_path: String,
+    pub(crate) db_path: String,
+    pub(crate) execution_enabled: bool,
+    pub(crate) planning_safe_only: bool,
+    pub(crate) activation_permission_granted: bool,
+    pub(crate) stage3_is_primary_gate: bool,
+    pub(crate) verdict: PreActivationGateVerdict,
+    pub(crate) reason: String,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) stage3: Stage3GateSummary,
+    pub(crate) stage4_readiness: Stage4ReadinessSummary,
+    pub(crate) stage4_dry_run_history: DryRunHistorySummary,
+    pub(crate) tiny_live_policy: TinyLivePolicySummary,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -239,19 +239,49 @@ fn parse_usize_arg(flag: &str, value: Option<String>) -> Result<usize> {
 }
 
 async fn run(config: Config) -> Result<String> {
-    let loaded_config = load_from_path(&config.config_path)
-        .with_context(|| format!("failed loading config {}", config.config_path.display()))?;
-    let db_path = resolve_db_path(&config.config_path, &loaded_config.sqlite.path);
-    let store = SqliteStore::open(&db_path)
-        .with_context(|| format!("failed opening sqlite db {}", db_path.display()))?;
-    let report =
-        build_pre_activation_gate_report(&config, &loaded_config, &store, &db_path).await?;
+    let report = evaluate_pre_activation_gate_report(
+        &config.config_path,
+        config.now,
+        config.stage3_limit,
+        config.stage3_recent_horizon_seconds,
+        config.rehearsal_limit,
+        config.rehearsal_recent_horizon_seconds,
+        config.min_recent_acceptable_rehearsals,
+    )
+    .await?;
     if config.json {
         serde_json::to_string_pretty(&report)
             .context("failed serializing pre-activation gate report json")
     } else {
         Ok(render_human(&report))
     }
+}
+
+pub(crate) async fn evaluate_pre_activation_gate_report(
+    config_path: &Path,
+    now: DateTime<Utc>,
+    stage3_limit: usize,
+    stage3_recent_horizon_seconds: Option<u64>,
+    rehearsal_limit: usize,
+    rehearsal_recent_horizon_seconds: u64,
+    min_recent_acceptable_rehearsals: usize,
+) -> Result<PreActivationGateReport> {
+    let loaded_config = load_from_path(config_path)
+        .with_context(|| format!("failed loading config {}", config_path.display()))?;
+    let db_path = resolve_db_path(config_path, &loaded_config.sqlite.path);
+    let store = SqliteStore::open(&db_path)
+        .with_context(|| format!("failed opening sqlite db {}", db_path.display()))?;
+    let config = Config {
+        config_path: config_path.to_path_buf(),
+        json: false,
+        now,
+        stage3_limit,
+        stage3_recent_horizon_seconds,
+        rehearsal_limit,
+        rehearsal_recent_horizon_seconds,
+        min_recent_acceptable_rehearsals,
+    };
+    build_pre_activation_gate_report(&config, &loaded_config, &store, &db_path).await
 }
 
 async fn build_pre_activation_gate_report(
@@ -618,7 +648,7 @@ fn resolve_db_path(config_path: &Path, sqlite_path: &str) -> PathBuf {
     }
 }
 
-fn render_human(report: &PreActivationGateReport) -> String {
+pub(crate) fn render_human(report: &PreActivationGateReport) -> String {
     [
         "event=copybot_pre_activation_gate_report".to_string(),
         format!("generated_at={}", report.generated_at.to_rfc3339()),
