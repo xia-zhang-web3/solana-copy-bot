@@ -674,6 +674,34 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not authorize production activation or override the Stage 3 prod
      gate
 
+## Activation Artifact Provenance
+
+1. Operators now also have one provenance-oriented report across archive,
+   manifests, and bundles:
+   `copybot_activation_artifact_provenance_report --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --manifest-dir /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest --bundle-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles --json`
+2. This report correlates lineage by generation identity:
+   - decision-packet timestamp
+   - prod config fingerprint
+   - non-prod config fingerprint
+3. It answers:
+   - which packet-backed generations exist in the archive
+   - which generations have manifest coverage
+   - which generations have bundle coverage
+   - which manifests or bundles refer to missing archive generations
+   - where malformed lineage artifacts block trust
+4. Important provenance verdicts:
+   - `artifact_provenance_complete`
+   - `artifact_provenance_incomplete`
+   - `artifact_provenance_invalid_artifacts_present`
+   - `artifact_provenance_inconsistent_lineage`
+5. This surface is lineage/reporting only:
+   - it does not enable `execution.enabled`
+   - it does not mutate config
+   - it does not modify archive, manifest, or bundle artifacts
+   - it does not rerun heavy prod or non-prod logic
+   - it does not authorize production activation or override the Stage 3 prod
+     gate
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

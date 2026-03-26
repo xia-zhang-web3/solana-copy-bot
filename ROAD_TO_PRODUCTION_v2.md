@@ -1874,6 +1874,37 @@ Acceptance update (`2026-03-26`, activation artifact bundle export + verifier):
 6. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_bundle`
 
+Acceptance update (`2026-03-26`, activation artifact provenance report):
+
+1. The repo now also has a final provenance-oriented surface across the three
+   accepted artifact layers:
+   - archive generations
+   - manifest files
+   - bundle manifests
+   Command:
+   `copybot_activation_artifact_provenance_report --archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --manifest-dir /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest --bundle-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles --json`
+2. Lineage is correlated by the accepted generation identity:
+   - decision-packet timestamp
+   - prod config fingerprint
+   - non-prod config fingerprint
+3. The report now makes it explicit:
+   - which archive generations have manifest coverage
+   - which archive generations have bundle coverage
+   - which manifest or bundle references point to missing archive generations
+   - which malformed lineage artifacts block a trustworthy provenance result
+4. Important provenance verdicts:
+   - `artifact_provenance_complete`
+   - `artifact_provenance_incomplete`
+   - `artifact_provenance_invalid_artifacts_present`
+   - `artifact_provenance_inconsistent_lineage`
+5. Practical meaning:
+   - operators no longer need to mentally stitch together archive, manifest,
+     and bundle worlds by hand
+   - this is still artifact lineage only and does not authorize production
+     activation or override the Stage 3 prod gate
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_provenance_report`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored
