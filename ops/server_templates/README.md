@@ -521,6 +521,42 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 7. A discussion-ready runbook is still not activation authorization. It is a
    planning-only operator handoff for a later explicit manual change review.
 
+## Activation Decision History
+
+1. Operators now also have a final artifact-analysis surface over exported
+   decision packets:
+   - history summary:
+     `copybot_activation_decision_history_report --history-dir /var/www/solana-copy-bot/state/activation_decision_packet/archive --json`
+   - diff mode:
+     `copybot_activation_decision_history_report --compare /var/www/solana-copy-bot/state/activation_decision_packet/archive/older.json /var/www/solana-copy-bot/state/activation_decision_packet/archive/newer.json --json`
+2. This command stays read-only and archival-only:
+   - it does not enable `execution.enabled`
+   - it does not mutate config
+   - it does not mutate packet artifacts
+   - it does not rerun heavy prod or non-prod drills by default
+   - it does not submit trades
+3. History mode answers:
+   - latest verdict and recent verdict progression
+   - blocked vs discussion-ready packet counts
+   - latest prod gate / non-prod readiness summaries
+   - whether prod or non-prod config fingerprints changed over time
+   - whether blockers are narrowing or widening
+4. Diff mode answers:
+   - checklist verdict change
+   - blockers and warnings added/removed
+   - prod gate / launch dossier / guardrail / non-prod readiness changes
+   - prod and non-prod config fingerprint changes
+   - build/git drift when present
+5. Important history verdicts:
+   - `decision_history_latest_blocked`
+   - `decision_history_latest_discussion_ready`
+   - `decision_history_insufficient_packets`
+   - `decision_history_compare_ready`
+   - `decision_history_invalid_artifact`
+6. This tool analyzes previously exported packet artifacts only. It is useful
+   for later review, change comparison, and incident audit trail, but it still
+   does not authorize production activation.
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

@@ -1705,6 +1705,43 @@ Acceptance update (`2026-03-26`, activation runbook generator):
    - `cargo test -p copybot-app --bin copybot_activation_runbook`
    - `cargo test -p copybot-app --bin copybot_activation_decision_packet`
 
+Acceptance update (`2026-03-26`, activation decision history + diff surface):
+
+1. The repo now also has one final artifact-analysis surface over exported
+   activation decision packets:
+   - history mode:
+     `copybot_activation_decision_history_report --history-dir /var/www/solana-copy-bot/state/activation_decision_packet/archive --json`
+   - diff mode:
+     `copybot_activation_decision_history_report --compare /var/www/solana-copy-bot/state/activation_decision_packet/archive/older.json /var/www/solana-copy-bot/state/activation_decision_packet/archive/newer.json --json`
+2. This command is still read-only and planning-safe:
+   - it does not enable `execution.enabled`
+   - it does not mutate config
+   - it does not mutate packet artifacts
+   - it does not rerun heavy prod or non-prod drills by default
+   - it does not submit trades
+3. It works from exported decision-packet artifacts rather than re-running the
+   underlying readiness logic, and now answers:
+   - latest verdict progression over time
+   - blocked vs discussion-ready packet counts
+   - blocker additions/removals between packets
+   - prod/non-prod config fingerprint drift
+   - invalid artifact detection that cannot yield false green history
+4. Important verdicts:
+   - `decision_history_latest_blocked`
+   - `decision_history_latest_discussion_ready`
+   - `decision_history_insufficient_packets`
+   - `decision_history_compare_ready`
+   - `decision_history_invalid_artifact`
+5. Practical meaning:
+   - operators no longer need to diff packet JSON files by hand to understand
+     readiness progression
+   - malformed artifacts are now surfaced explicitly instead of being able to
+     hide behind a false green latest packet
+   - this is still artifact analysis only and does not authorize production
+     activation or override the Stage 3 prod gate
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_decision_history_report`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored
