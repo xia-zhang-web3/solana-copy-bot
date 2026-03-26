@@ -966,6 +966,15 @@ pub(crate) fn archive_inventory(archive_dir: &Path) -> Result<ArchiveInventory> 
     })
 }
 
+pub(crate) fn generation_id_from_summary(summary: &ArchiveArtifactGenerationSummary) -> String {
+    format!(
+        "{}|{}|{}",
+        summary.decision_packet_generated_at.to_rfc3339(),
+        summary.prod_config_fingerprint_sha256,
+        summary.non_prod_config_fingerprint_sha256
+    )
+}
+
 fn scan_archive(archive_dir: &Path) -> Result<ArchiveScan> {
     let mut scan = ArchiveScan::default();
     for path in collect_archive_files(archive_dir)? {

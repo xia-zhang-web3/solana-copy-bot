@@ -1193,6 +1193,9 @@ fn render_human(report: &ArtifactReleasePublishReport) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn publish_one_release_artifact_into_deterministic_archive_layout() {
@@ -1274,13 +1277,14 @@ mod tests {
 
     #[test]
     fn relative_archive_path_pointer_verifies_when_checked_via_absolute_path() {
-        let cwd = std::env::current_dir().expect("cwd");
-        let release_archive_abs = cwd.join(format!(
+        let repo_root = stable_repo_root();
+        let _guard = WorkingDirectoryGuard::change_to(&repo_root);
+        let release_archive_abs = repo_root.join(format!(
             "target/release_report_relative_archive_{}",
             unique_suffix()
         ));
         let release_archive_rel = release_archive_abs
-            .strip_prefix(&cwd)
+            .strip_prefix(&repo_root)
             .expect("relative archive path")
             .to_path_buf();
         let latest_pointer_dir = temp_dir("release_report_relative_pointer");
@@ -1606,5 +1610,57 @@ mod tests {
         let path = std::env::temp_dir().join(format!("{}_{}", prefix, nanos));
         fs::create_dir_all(&path).expect("create temp dir");
         path
+    }
+
+    fn cwd_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct WorkingDirectoryGuard {
+        previous: PathBuf,
+        _lock: MutexGuard<'static, ()>,
+        process_lock_dir: PathBuf,
+    }
+
+    impl WorkingDirectoryGuard {
+        fn change_to(path: &Path) -> Self {
+            let lock = cwd_lock().lock().expect("lock cwd");
+            let process_lock_dir = acquire_process_cwd_lock_dir();
+            let previous = env::current_dir().expect("current dir");
+            env::set_current_dir(path).expect("set current dir");
+            Self {
+                previous,
+                _lock: lock,
+                process_lock_dir,
+            }
+        }
+    }
+
+    impl Drop for WorkingDirectoryGuard {
+        fn drop(&mut self) {
+            env::set_current_dir(&self.previous).expect("restore current dir");
+            let _ = fs::remove_dir(&self.process_lock_dir);
+        }
+    }
+
+    fn acquire_process_cwd_lock_dir() -> PathBuf {
+        let path = env::temp_dir().join("copybot_activation_artifact_channel_cwd_lock");
+        loop {
+            match fs::create_dir(&path) {
+                Ok(()) => return path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("create cwd lock dir: {error}"),
+            }
+        }
+    }
+
+    fn stable_repo_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("canonical repo root")
     }
 }

@@ -371,7 +371,10 @@ pub(crate) fn inspect_channel(
     let selected = inventory
         .generation_summaries
         .iter()
-        .find(|summary| generation_id_from_summary(summary) == metadata.selected_generation_id)
+        .find(|summary| {
+            activation_artifact_archive::generation_id_from_summary(summary)
+                == metadata.selected_generation_id
+        })
         .cloned();
 
     if archive_invalid_artifact_count > 0 {
@@ -407,7 +410,7 @@ pub(crate) fn inspect_channel(
         }
     };
 
-    let expected_generation_id = generation_id_from_summary(&selected);
+    let expected_generation_id = activation_artifact_archive::generation_id_from_summary(&selected);
     if expected_generation_id != metadata.selected_generation_id {
         inconsistencies.push(format!(
             "channel metadata selected_generation_id `{}` does not match archive generation id `{expected_generation_id}`",
@@ -1100,13 +1103,12 @@ fn resolve_generation(
         return Ok(None);
     }
 
-    if let Some(exact) = candidates
-        .iter()
-        .find(|summary| generation_id_from_summary(summary) == selector)
-    {
+    if let Some(exact) = candidates.iter().find(|summary| {
+        activation_artifact_archive::generation_id_from_summary(summary) == selector
+    }) {
         return Ok(Some(SelectedGeneration {
             summary: exact.clone(),
-            generation_id: generation_id_from_summary(exact),
+            generation_id: activation_artifact_archive::generation_id_from_summary(exact),
         }));
     }
 
@@ -1127,20 +1129,9 @@ fn resolve_generation(
         .into_iter()
         .next()
         .map(|summary| SelectedGeneration {
-            generation_id: generation_id_from_summary(&summary),
+            generation_id: activation_artifact_archive::generation_id_from_summary(&summary),
             summary,
         }))
-}
-
-fn generation_id_from_summary(
-    summary: &activation_artifact_archive::ArchiveArtifactGenerationSummary,
-) -> String {
-    format!(
-        "{}|{}|{}",
-        summary.decision_packet_generated_at.to_rfc3339(),
-        summary.prod_config_fingerprint_sha256,
-        summary.non_prod_config_fingerprint_sha256
-    )
 }
 
 fn channel_metadata_path(channel_dir: &Path, channel_name: &str) -> PathBuf {
@@ -1299,6 +1290,8 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn report_mode_over_empty_channel_dir() {
@@ -2006,16 +1999,19 @@ mod tests {
     struct WorkingDirectoryGuard {
         previous: PathBuf,
         _lock: MutexGuard<'static, ()>,
+        process_lock_dir: PathBuf,
     }
 
     impl WorkingDirectoryGuard {
         fn change_to(path: &Path) -> Self {
             let lock = cwd_lock().lock().expect("lock cwd");
+            let process_lock_dir = acquire_process_cwd_lock_dir();
             let previous = env::current_dir().expect("current dir");
             env::set_current_dir(path).expect("set current dir");
             Self {
                 previous,
                 _lock: lock,
+                process_lock_dir,
             }
         }
     }
@@ -2023,6 +2019,20 @@ mod tests {
     impl Drop for WorkingDirectoryGuard {
         fn drop(&mut self) {
             env::set_current_dir(&self.previous).expect("restore current dir");
+            let _ = fs::remove_dir(&self.process_lock_dir);
+        }
+    }
+
+    fn acquire_process_cwd_lock_dir() -> PathBuf {
+        let path = env::temp_dir().join("copybot_activation_artifact_channel_cwd_lock");
+        loop {
+            match fs::create_dir(&path) {
+                Ok(()) => return path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("create cwd lock dir: {error}"),
+            }
         }
     }
 }

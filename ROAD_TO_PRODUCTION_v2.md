@@ -2098,6 +2098,31 @@ Acceptance update (`2026-03-26`, activation release provenance report):
 5. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_release_provenance_report`
 
+Acceptance update (`2026-03-26`, activation release-to-review linkage report):
+
+1. The repo now also has an explicit linkage surface between persisted release
+   artifacts and the persisted review-generation archive:
+   - `copybot_activation_artifact_linkage_report --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --review-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --review-channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --json`
+2. The new surface correlates persisted release artifacts, the persisted
+   review-generation archive, the latest release pointer, and the optional
+   current review channel without rerunning heavy prod/non-prod logic.
+3. Operational meaning:
+   - operators no longer need to mentally stitch release-side JSON and
+     review-generation archive state together
+   - missing generation refs, missing packet/runbook refs, dangling latest
+     release pointers, and release-vs-review channel divergence are surfaced
+     explicitly
+   - older release artifacts with weak linkage context do not get a false clean
+     green; ambiguous legacy linkage is reported honestly
+4. This remains artifact analysis only:
+   - it does not rewrite release artifacts or review generations
+   - it does not rewrite latest-pointer or review-channel metadata
+   - it does not enable execution or authorize activation
+5. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_linkage_report`
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_channel`
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_release_publish_report`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

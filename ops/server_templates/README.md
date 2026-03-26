@@ -913,6 +913,40 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not rewrite latest-pointer metadata
    - it does not enable execution or authorize activation
 
+## Activation Artifact Linkage Report
+
+1. Operators now also have an explicit linkage surface between persisted
+   release artifacts and the persisted review-generation archive:
+   - release archive plus latest release pointer plus optional current review
+     channel:
+     `copybot_activation_artifact_linkage_report --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --review-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --review-channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --json`
+   - explicit release artifact set instead of a release archive:
+     `copybot_activation_artifact_linkage_report --release-artifact /var/www/solana-copy-bot/state/activation_artifacts/releases/release__2026-03-26T12-00-00Z__artifact_release_published.json --review-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --json`
+2. Linkage completeness means:
+   - each examined release artifact resolves to an existing persisted review
+     generation
+   - referenced decision packet and runbook files still exist and belong to the
+     expected generation
+   - the latest release pointer, if supplied, still resolves to a release
+     artifact whose linked review generation is present
+   - the current review channel, if supplied, does not silently diverge from
+     the release-side latest selection
+3. Legacy linkage ambiguity remains explicit:
+   - older release artifacts with weak linkage context do not get a clean green
+     verdict unless they still resolve deterministically
+   - missing generation refs, missing packet/runbook refs, or refs outside the
+     review archive are surfaced directly in the report
+4. Important linkage verdicts:
+   - `artifact_linkage_complete`
+   - `artifact_linkage_incomplete`
+   - `artifact_linkage_invalid_artifacts_present`
+   - `artifact_linkage_inconsistent`
+   - `artifact_linkage_ambiguous_legacy_reference`
+5. This remains artifact analysis only:
+   - it does not rewrite release artifacts or review generations
+   - it does not rewrite latest-pointer or review-channel metadata
+   - it does not enable execution or authorize activation
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`
