@@ -7,11 +7,14 @@ use copybot_discovery::{
     },
     DiscoveryService,
 };
-use copybot_storage::{ExecutionDryRunRehearsalRow, ExecutionDryRunRehearsalWrite, SqliteStore};
+use copybot_storage::{ExecutionDryRunRehearsalRow, SqliteStore};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+use copybot_storage::ExecutionDryRunRehearsalWrite;
 
 #[allow(dead_code)]
 #[path = "copybot_execution_readiness_audit.rs"]

@@ -2211,6 +2211,34 @@ Acceptance update (`2026-03-26`, activation artifact state snapshot provenance):
 5. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_state_provenance_report`
 
+Acceptance update (`2026-03-26`, activation artifact state snapshot linkage):
+
+1. The repo now also has an explicit linkage surface from persisted state
+   snapshots back to the current underlying review/release artifact chain:
+   - `copybot_activation_artifact_state_linkage_report --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --review-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --review-manifest-dir /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest --review-bundle-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles --review-channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --release-history-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --json`
+2. The new report is intentionally thin:
+   - it reuses persisted state snapshot parsing and snapshot latest-pointer
+     verification
+   - it reuses the accepted current artifact-state report for live
+     review/release selection truth
+   - it checks persisted snapshot selections against the current underlying
+     review/release artifact chain instead of inventing a separate planner
+3. Operational meaning:
+   - operators no longer need to manually stitch together persisted state
+     snapshots, the current review channel, the current latest release
+     pointer, and the live review/release archives
+   - missing selected review generations, missing selected latest release
+     generations, and stale snapshot selections are surfaced directly
+   - ambiguous or otherwise non-green persisted state snapshots cannot appear
+     as clean linkage
+4. This remains artifact analysis only:
+   - it does not rewrite state snapshots
+   - it does not rewrite review or release artifacts
+   - it does not rewrite pointer or channel metadata
+   - it does not enable execution or authorize activation
+5. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_state_linkage_report`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

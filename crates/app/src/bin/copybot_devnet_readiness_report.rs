@@ -2,13 +2,15 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::{load_from_path, AppConfig};
 use copybot_storage::{
-    ExecutionDevnetActivationDrillRow, ExecutionDevnetActivationDrillWrite,
-    ExecutionDevnetDressRehearsalRow, ExecutionDevnetDressRehearsalWrite, SqliteStore,
+    ExecutionDevnetActivationDrillRow, ExecutionDevnetDressRehearsalRow, SqliteStore,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+use copybot_storage::{ExecutionDevnetActivationDrillWrite, ExecutionDevnetDressRehearsalWrite};
 
 #[allow(dead_code)]
 #[path = "copybot_devnet_dress_rehearsal.rs"]

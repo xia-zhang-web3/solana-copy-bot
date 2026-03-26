@@ -1067,6 +1067,39 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not enable execution
    - it does not authorize activation or override the Stage 3 prod gate
 
+## Activation Artifact State Snapshot Linkage
+
+1. Operators now also have a direct linkage audit from persisted state
+   snapshots back to the current underlying review/release artifact chain:
+   - `copybot_activation_artifact_state_linkage_report --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --review-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --review-manifest-dir /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest --review-bundle-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles --review-channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --release-history-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --json`
+2. State-snapshot linkage means:
+   - each persisted snapshot’s selected review generation still resolves in the
+     current review archive
+   - each persisted snapshot’s selected latest release generation still
+     resolves in the current release archive/history inputs
+   - the state snapshot latest pointer, if supplied, still resolves to a
+     snapshot whose summarized selections remain valid now
+   - persisted snapshots that summarize ambiguous or otherwise non-green state
+     do not get flattened into clean linkage
+3. The report keeps drift against current reality explicit:
+   - it shows when persisted selections no longer match the current review
+     channel
+   - it shows when persisted selections no longer match the current latest
+     release selection
+   - it keeps missing review/release generation references visible in
+     aggregate counters
+4. Important linkage verdicts:
+   - `artifact_state_linkage_complete`
+   - `artifact_state_linkage_incomplete`
+   - `artifact_state_linkage_invalid_artifacts_present`
+   - `artifact_state_linkage_inconsistent`
+   - `artifact_state_linkage_ambiguous_legacy_state`
+5. This remains artifact analysis only:
+   - it does not rewrite state snapshots
+   - it does not rewrite review or release artifacts
+   - it does not rewrite pointer or channel metadata
+   - it does not enable execution or authorize activation
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

@@ -3,11 +3,13 @@ use chrono::{DateTime, Utc};
 use copybot_config::{load_from_path, AppConfig};
 use copybot_storage::{ExecutionDevnetDressRehearsalWrite, SqliteStore};
 use serde::Serialize;
-use serde_json::json;
 use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
 use url::Url;
+
+#[cfg(test)]
+use serde_json::json;
 
 #[allow(dead_code)]
 #[path = "copybot_execution_dry_run_rehearsal.rs"]
