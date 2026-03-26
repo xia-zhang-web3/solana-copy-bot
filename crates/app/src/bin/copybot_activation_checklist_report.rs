@@ -23,6 +23,30 @@ mod tiny_live_activation_plan;
 mod tiny_live_guardrail_audit;
 
 const USAGE: &str = "usage: copybot_activation_checklist_report --config <prod-path> --non-prod-config <path> [--json] [--now <rfc3339>] [--stage3-limit <count>] [--stage3-recent-horizon-seconds <seconds>] [--rehearsal-limit <count>] [--rehearsal-recent-horizon-seconds <seconds>] [--min-recent-acceptable-rehearsals <count>] [--non-prod-limit <count>] [--non-prod-dress-recent-horizon-seconds <seconds>] [--non-prod-activation-recent-horizon-seconds <seconds>] [--non-prod-min-recent-green-dress <count>] [--non-prod-min-recent-green-activation <count>]";
+#[allow(dead_code)]
+pub(crate) const DEFAULT_REHEARSAL_HISTORY_LIMIT: usize =
+    tiny_live_activation_plan::DEFAULT_REHEARSAL_HISTORY_LIMIT;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_REHEARSAL_RECENT_HORIZON_SECONDS: u64 =
+    tiny_live_activation_plan::DEFAULT_REHEARSAL_RECENT_HORIZON_SECONDS;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_MIN_RECENT_ACCEPTABLE_REHEARSALS: usize =
+    tiny_live_activation_plan::DEFAULT_MIN_RECENT_ACCEPTABLE_REHEARSALS;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_NON_PROD_HISTORY_LIMIT: usize =
+    devnet_readiness_report::DEFAULT_HISTORY_LIMIT;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_NON_PROD_DRESS_RECENT_HORIZON_SECONDS: u64 =
+    devnet_readiness_report::DEFAULT_DRESS_RECENT_HORIZON_SECONDS;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_NON_PROD_ACTIVATION_RECENT_HORIZON_SECONDS: u64 =
+    devnet_readiness_report::DEFAULT_ACTIVATION_RECENT_HORIZON_SECONDS;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_NON_PROD_MIN_RECENT_GREEN_DRESS: usize =
+    devnet_readiness_report::DEFAULT_MIN_RECENT_GREEN_DRESS;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_NON_PROD_MIN_RECENT_GREEN_ACTIVATION: usize =
+    devnet_readiness_report::DEFAULT_MIN_RECENT_GREEN_ACTIVATION;
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -39,26 +63,26 @@ fn main() -> Result<()> {
 }
 
 #[derive(Debug, Clone)]
-struct Config {
-    config_path: PathBuf,
-    non_prod_config_path: PathBuf,
-    json: bool,
-    now: DateTime<Utc>,
-    stage3_limit: usize,
-    stage3_recent_horizon_seconds: Option<u64>,
-    rehearsal_limit: usize,
-    rehearsal_recent_horizon_seconds: u64,
-    min_recent_acceptable_rehearsals: usize,
-    non_prod_limit: usize,
-    non_prod_dress_recent_horizon_seconds: u64,
-    non_prod_activation_recent_horizon_seconds: u64,
-    non_prod_min_recent_green_dress: usize,
-    non_prod_min_recent_green_activation: usize,
+pub(crate) struct Config {
+    pub(crate) config_path: PathBuf,
+    pub(crate) non_prod_config_path: PathBuf,
+    pub(crate) json: bool,
+    pub(crate) now: DateTime<Utc>,
+    pub(crate) stage3_limit: usize,
+    pub(crate) stage3_recent_horizon_seconds: Option<u64>,
+    pub(crate) rehearsal_limit: usize,
+    pub(crate) rehearsal_recent_horizon_seconds: u64,
+    pub(crate) min_recent_acceptable_rehearsals: usize,
+    pub(crate) non_prod_limit: usize,
+    pub(crate) non_prod_dress_recent_horizon_seconds: u64,
+    pub(crate) non_prod_activation_recent_horizon_seconds: u64,
+    pub(crate) non_prod_min_recent_green_dress: usize,
+    pub(crate) non_prod_min_recent_green_activation: usize,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ActivationChecklistVerdict {
+pub(crate) enum ActivationChecklistVerdict {
     ActivationChecklistBlockedByProdStage3,
     ActivationChecklistBlockedByProdGate,
     ActivationChecklistBlockedByLaunchDossier,
@@ -68,87 +92,87 @@ enum ActivationChecklistVerdict {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ProdPreActivationGateSummary {
-    verdict: String,
-    reason: String,
-    planning_green: bool,
-    blocked_by_stage3: bool,
-    stage3_verdict: String,
-    stage3_reason: String,
-    stage3_captures_within_recent_horizon: usize,
-    stage3_latest_capture_age_seconds: Option<u64>,
-    stage4_readiness_verdict: String,
-    stage4_rehearsal_history_verdict: String,
-    tiny_live_policy_verdict: String,
-    blockers: Vec<String>,
+pub(crate) struct ProdPreActivationGateSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) planning_green: bool,
+    pub(crate) blocked_by_stage3: bool,
+    pub(crate) stage3_verdict: String,
+    pub(crate) stage3_reason: String,
+    pub(crate) stage3_captures_within_recent_horizon: usize,
+    pub(crate) stage3_latest_capture_age_seconds: Option<u64>,
+    pub(crate) stage4_readiness_verdict: String,
+    pub(crate) stage4_rehearsal_history_verdict: String,
+    pub(crate) tiny_live_policy_verdict: String,
+    pub(crate) blockers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct LaunchDossierSummary {
-    verdict: String,
-    reason: String,
-    ready_when_stage_gate_allows: bool,
-    activation_overlay_complete: bool,
-    rollback_plan_complete: bool,
-    service_restart_contract_complete: bool,
-    activation_overlay_change_count: usize,
-    rollback_overlay_change_count: usize,
-    drift_finding_count: usize,
-    blocker_count: usize,
-    first_blocker: Option<String>,
+pub(crate) struct LaunchDossierSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) ready_when_stage_gate_allows: bool,
+    pub(crate) activation_overlay_complete: bool,
+    pub(crate) rollback_plan_complete: bool,
+    pub(crate) service_restart_contract_complete: bool,
+    pub(crate) activation_overlay_change_count: usize,
+    pub(crate) rollback_overlay_change_count: usize,
+    pub(crate) drift_finding_count: usize,
+    pub(crate) blocker_count: usize,
+    pub(crate) first_blocker: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct GuardrailSummary {
-    verdict: String,
-    reason: String,
-    bounded: bool,
-    enabled: bool,
-    blocker_count: usize,
-    first_blocker: Option<String>,
-    rollback_trigger_count: usize,
-    rollback_triggers: Vec<tiny_live_guardrail_audit::RollbackTriggerSummary>,
+pub(crate) struct GuardrailSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) bounded: bool,
+    pub(crate) enabled: bool,
+    pub(crate) blocker_count: usize,
+    pub(crate) first_blocker: Option<String>,
+    pub(crate) rollback_trigger_count: usize,
+    pub(crate) rollback_triggers: Vec<tiny_live_guardrail_audit::RollbackTriggerSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct NonProdReadinessSummary {
-    verdict: String,
-    reason: String,
-    green: bool,
-    prod_profile_refused: bool,
-    config_env: String,
-    blockers: Vec<String>,
-    warnings: Vec<String>,
-    dress_latest_record_age_seconds: Option<u64>,
-    dress_recent_green_count: usize,
-    activation_latest_record_age_seconds: Option<u64>,
-    activation_recent_green_count: usize,
-    activation_recent_rollback_success_count: usize,
-    activation_recent_internal_consistency_count: usize,
-    stale_evidence_excluded: bool,
+pub(crate) struct NonProdReadinessSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) green: bool,
+    pub(crate) prod_profile_refused: bool,
+    pub(crate) config_env: String,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) dress_latest_record_age_seconds: Option<u64>,
+    pub(crate) dress_recent_green_count: usize,
+    pub(crate) activation_latest_record_age_seconds: Option<u64>,
+    pub(crate) activation_recent_green_count: usize,
+    pub(crate) activation_recent_rollback_success_count: usize,
+    pub(crate) activation_recent_internal_consistency_count: usize,
+    pub(crate) stale_evidence_excluded: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ActivationChecklistReport {
-    generated_at: DateTime<Utc>,
-    prod_config_path: String,
-    non_prod_config_path: String,
-    prod_config_env: String,
-    non_prod_config_env: String,
-    execution_enabled: bool,
-    planning_safe_only: bool,
-    activation_authorized: bool,
-    discussion_ready_only: bool,
-    prod_stage3_remains_hard_gate: bool,
-    non_prod_evidence_is_secondary: bool,
-    verdict: ActivationChecklistVerdict,
-    reason: String,
-    blockers: Vec<String>,
-    warnings: Vec<String>,
-    prod_pre_activation_gate: ProdPreActivationGateSummary,
-    launch_dossier: LaunchDossierSummary,
-    tiny_live_guardrails: GuardrailSummary,
-    non_prod_readiness: NonProdReadinessSummary,
+pub(crate) struct ActivationChecklistReport {
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) prod_config_path: String,
+    pub(crate) non_prod_config_path: String,
+    pub(crate) prod_config_env: String,
+    pub(crate) non_prod_config_env: String,
+    pub(crate) execution_enabled: bool,
+    pub(crate) planning_safe_only: bool,
+    pub(crate) activation_authorized: bool,
+    pub(crate) discussion_ready_only: bool,
+    pub(crate) prod_stage3_remains_hard_gate: bool,
+    pub(crate) non_prod_evidence_is_secondary: bool,
+    pub(crate) verdict: ActivationChecklistVerdict,
+    pub(crate) reason: String,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) prod_pre_activation_gate: ProdPreActivationGateSummary,
+    pub(crate) launch_dossier: LaunchDossierSummary,
+    pub(crate) tiny_live_guardrails: GuardrailSummary,
+    pub(crate) non_prod_readiness: NonProdReadinessSummary,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -294,7 +318,7 @@ async fn run(config: Config) -> Result<String> {
     }
 }
 
-async fn evaluate_activation_checklist_report(
+pub(crate) async fn evaluate_activation_checklist_report(
     config: &Config,
 ) -> Result<ActivationChecklistReport> {
     let prod_loaded_config = load_from_path(&config.config_path)
@@ -681,7 +705,7 @@ fn derive_top_level_verdict(
     )
 }
 
-fn render_human(report: &ActivationChecklistReport) -> String {
+pub(crate) fn render_human(report: &ActivationChecklistReport) -> String {
     [
         "event=copybot_activation_checklist_report".to_string(),
         format!("generated_at={}", report.generated_at.to_rfc3339()),

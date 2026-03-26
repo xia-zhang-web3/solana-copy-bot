@@ -459,6 +459,36 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - Stage 3 can be skipped later
    - non-prod evidence overrides production truth
 
+## Activation Decision Packet
+
+1. Operators now also have a final archival-ready export surface:
+   - `copybot_activation_decision_packet --config /etc/solana-copy-bot/live.server.toml --non-prod-config /etc/solana-copy-bot/devnet.server.toml --json --output /var/www/solana-copy-bot/state/activation_decision_packet/latest.json`
+2. This command stays read-only and planning-safe:
+   - it does not enable `execution.enabled`
+   - it does not mutate live config
+   - it does not restart services
+   - it does not rerun heavy drills by default
+   - it does not submit trades
+3. It reuses the accepted final checklist instead of inventing another
+   decision layer:
+   - `copybot_activation_checklist_report`
+   - current prod and non-prod config truth only for fingerprinting and
+     packet metadata
+4. The packet includes:
+   - final checklist verdict, blockers, warnings, and nested summaries
+   - prod and non-prod config paths
+   - execution state
+   - optional operator note
+   - build/git metadata when available
+   - redacted config fingerprints suitable for later change review
+5. Important packet verdicts:
+   - `decision_packet_blocked`
+   - `decision_packet_discussion_ready_but_not_authorized`
+   - `decision_packet_refused_for_profile_mismatch`
+6. A discussion-ready packet is still not activation authorization. It is an
+   archival decision artifact for later manual review, change discussion, and
+   incident/postmortem comparison.
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`
