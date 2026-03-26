@@ -102,6 +102,19 @@ struct ProvenanceReport {
     not_authorized_summary: String,
 }
 
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct ArtifactProvenanceSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) archive_generation_count: usize,
+    pub(crate) manifest_file_count: usize,
+    pub(crate) bundle_manifest_count: usize,
+    pub(crate) complete_generation_count: usize,
+    pub(crate) incomplete_generation_count: usize,
+    pub(crate) invalid_artifact_count: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 struct GenerationIdentity {
     decision_packet_generated_at: DateTime<Utc>,
@@ -251,6 +264,30 @@ fn run(config: Config) -> Result<String> {
     } else {
         Ok(render_human(&report))
     }
+}
+
+#[allow(dead_code)]
+pub(crate) fn inspect_provenance_summary(
+    archive_dir: &Path,
+    manifest_dir: &Path,
+    bundle_dir: &Path,
+) -> Result<ArtifactProvenanceSummary> {
+    let report = build_report(&Config {
+        archive_dir: archive_dir.to_path_buf(),
+        manifest_dir: manifest_dir.to_path_buf(),
+        bundle_dir: bundle_dir.to_path_buf(),
+        json: false,
+    })?;
+    Ok(ArtifactProvenanceSummary {
+        verdict: serialize_enum(&report.verdict),
+        reason: report.reason,
+        archive_generation_count: report.archive_generation_count,
+        manifest_file_count: report.manifest_file_count,
+        bundle_manifest_count: report.bundle_manifest_count,
+        complete_generation_count: report.complete_generation_count,
+        incomplete_generation_count: report.incomplete_generation_count,
+        invalid_artifact_count: report.invalid_artifact_count,
+    })
 }
 
 fn build_report(config: &Config) -> Result<ProvenanceReport> {

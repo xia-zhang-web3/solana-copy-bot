@@ -947,6 +947,39 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not rewrite latest-pointer or review-channel metadata
    - it does not enable execution or authorize activation
 
+## Activation Artifact State Report
+
+1. Operators now also have one final end-to-end current-state surface over the
+   persisted artifact chain:
+   `copybot_activation_artifact_state_report --review-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --review-manifest-dir /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest --review-bundle-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles --review-channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --release-history-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --json`
+2. The new surface reuses accepted artifact reports instead of inventing a new
+   parser:
+   - current review selection from `copybot_activation_artifact_channel`
+   - latest release selection from
+     `copybot_activation_artifact_release_publish_report`
+   - review-side provenance from `copybot_activation_artifact_provenance_report`
+   - release-side provenance from
+     `copybot_activation_artifact_release_provenance_report`
+   - current release-to-review linkage from
+     `copybot_activation_artifact_linkage_report`
+3. `artifact_state_coherent` means:
+   - the current review channel selects a valid persisted review generation
+   - the latest release pointer selects a valid persisted release artifact
+   - review-side provenance is healthy enough
+   - release-side provenance is healthy enough
+   - current review and latest release selections agree on generation identity
+   - no ambiguous legacy timestamp/reference state is degrading confidence
+4. Legacy ambiguity remains explicit:
+   - compat-loaded release artifacts without deterministic timestamp confidence
+     do not get a false clean-green current-state verdict
+   - if current/latest confidence depends on ambiguous legacy release state, the
+     report returns `artifact_state_ambiguous_legacy_state`
+5. This remains artifact analysis only:
+   - it does not rewrite archive contents
+   - it does not rewrite review-channel or latest-pointer metadata
+   - it does not enable execution
+   - it does not authorize activation or override the Stage 3 prod gate
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

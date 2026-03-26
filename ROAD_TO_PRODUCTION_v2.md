@@ -2123,6 +2123,34 @@ Acceptance update (`2026-03-26`, activation release-to-review linkage report):
    - `cargo test -p copybot-app --bin copybot_activation_artifact_channel`
    - `cargo test -p copybot-app --bin copybot_activation_artifact_release_publish_report`
 
+Acceptance update (`2026-03-26`, activation artifact end-to-end state report):
+
+1. The repo now also has one final current-state artifact surface over the
+   review-generation side, release side, and their current linkage:
+   - `copybot_activation_artifact_state_report --review-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --review-manifest-dir /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest --review-bundle-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles --review-channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --release-history-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --json`
+2. The new surface is a thin synthesis over already accepted artifact reports:
+   - review current selection from `copybot_activation_artifact_channel`
+   - latest release selection from
+     `copybot_activation_artifact_release_publish_report`
+   - review-side provenance from `copybot_activation_artifact_provenance_report`
+   - release-side provenance from
+     `copybot_activation_artifact_release_provenance_report`
+   - current release-to-review linkage from
+     `copybot_activation_artifact_linkage_report`
+3. Operational meaning:
+   - operators no longer need to mentally stitch together review channel,
+     latest release pointer, provenance health, and current linkage state
+   - divergence between current review and latest release selections is surfaced
+     directly
+   - legacy ambiguous release state is surfaced honestly instead of appearing as
+     a clean green current state
+4. This remains artifact-state analysis only:
+   - it does not rewrite archive contents
+   - it does not rewrite review-channel or latest-pointer metadata
+   - it does not enable execution or authorize activation
+5. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_state_report`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

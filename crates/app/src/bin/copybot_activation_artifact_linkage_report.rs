@@ -191,6 +191,31 @@ struct ArtifactLinkageReport {
     not_authorized_summary: String,
 }
 
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct ArtifactLinkageSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) release_artifact_count_examined: usize,
+    pub(crate) linked_generation_count: usize,
+    pub(crate) missing_generation_ref_count: usize,
+    pub(crate) missing_packet_ref_count: usize,
+    pub(crate) missing_runbook_ref_count: usize,
+    pub(crate) invalid_artifact_count: usize,
+    pub(crate) ambiguous_legacy_reference_count: usize,
+    pub(crate) latest_pointer_requested: bool,
+    pub(crate) latest_selected_release_linkage_verdict: Option<String>,
+    pub(crate) latest_selected_release_linkage_reason: Option<String>,
+    pub(crate) latest_selected_generation_id: Option<String>,
+    pub(crate) latest_target_exists: bool,
+    pub(crate) latest_target_matches_identity: bool,
+    pub(crate) latest_linked_generation_present: bool,
+    pub(crate) review_channel_requested: bool,
+    pub(crate) review_channel_selected_generation_id: Option<String>,
+    pub(crate) review_channel_matches_latest_selection: bool,
+    pub(crate) review_channel_divergence_summary: Option<String>,
+}
+
 fn parse_args() -> Result<Option<Config>> {
     parse_args_from(env::args().skip(1))
 }
@@ -317,6 +342,60 @@ fn run(config: Config) -> Result<String> {
     } else {
         Ok(render_human(&report))
     }
+}
+
+#[allow(dead_code)]
+pub(crate) fn inspect_linkage_summary(
+    release_archive_dir: Option<&Path>,
+    release_artifact_paths: &[PathBuf],
+    review_archive_dir: &Path,
+    latest_pointer_dir: Option<&Path>,
+    latest_pointer_name: &str,
+    review_channel_dir: Option<&Path>,
+    review_channel_name: &str,
+) -> Result<ArtifactLinkageSummary> {
+    let report = build_report(&Config {
+        release_archive_dir: release_archive_dir.map(|path| path.to_path_buf()),
+        release_artifact_paths: release_artifact_paths.to_vec(),
+        review_archive_dir: review_archive_dir.to_path_buf(),
+        latest_pointer_dir: latest_pointer_dir.map(|path| path.to_path_buf()),
+        latest_pointer_name: latest_pointer_name.to_string(),
+        review_channel_dir: review_channel_dir.map(|path| path.to_path_buf()),
+        review_channel_name: review_channel_name.to_string(),
+        json: false,
+    })?;
+    Ok(ArtifactLinkageSummary {
+        verdict: serialize_enum(&report.verdict),
+        reason: report.reason,
+        release_artifact_count_examined: report.release_artifact_count_examined,
+        linked_generation_count: report.linked_generation_count,
+        missing_generation_ref_count: report.missing_generation_ref_count,
+        missing_packet_ref_count: report.missing_packet_ref_count,
+        missing_runbook_ref_count: report.missing_runbook_ref_count,
+        invalid_artifact_count: report.invalid_artifact_count,
+        ambiguous_legacy_reference_count: report.ambiguous_legacy_reference_count,
+        latest_pointer_requested: report.latest_release_pointer.requested,
+        latest_selected_release_linkage_verdict: report
+            .latest_release_pointer
+            .selected_release_linkage_verdict
+            .as_ref()
+            .map(serialize_enum),
+        latest_selected_release_linkage_reason: report
+            .latest_release_pointer
+            .selected_release_linkage_reason,
+        latest_selected_generation_id: report.latest_release_pointer.selected_generation_id,
+        latest_target_exists: report.latest_release_pointer.target_exists,
+        latest_target_matches_identity: report.latest_release_pointer.target_matches_identity,
+        latest_linked_generation_present: report.latest_release_pointer.linked_generation_present,
+        review_channel_requested: report.review_generation_channel.requested,
+        review_channel_selected_generation_id: report
+            .review_generation_channel
+            .selected_generation_id,
+        review_channel_matches_latest_selection: report
+            .review_generation_channel
+            .matches_latest_release_selection,
+        review_channel_divergence_summary: report.review_generation_channel.divergence_summary,
+    })
 }
 
 fn build_report(config: &Config) -> Result<ArtifactLinkageReport> {

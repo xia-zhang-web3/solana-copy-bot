@@ -152,6 +152,24 @@ struct ReleaseProvenanceReport {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct ReleaseProvenanceSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) archive_release_count: usize,
+    pub(crate) history_release_count: usize,
+    pub(crate) latest_pointer_present: bool,
+    pub(crate) latest_pointer_selected_generation_id: Option<String>,
+    pub(crate) latest_pointer_relation: String,
+    pub(crate) latest_archive_generation_id: Option<String>,
+    pub(crate) latest_history_generation_id: Option<String>,
+    pub(crate) archive_releases_missing_from_history_count: usize,
+    pub(crate) history_releases_missing_from_archive_count: usize,
+    pub(crate) invalid_artifact_count: usize,
+    pub(crate) ambiguous_timestamp_count: usize,
+}
+
+#[derive(Debug, Clone)]
 struct ReleaseSurfaceRecord {
     loaded: activation_artifact_release_history::LoadedRelease,
     identity_key: String,
@@ -247,6 +265,41 @@ fn run(config: Config) -> Result<String> {
     } else {
         Ok(render_human(&report))
     }
+}
+
+#[allow(dead_code)]
+pub(crate) fn inspect_release_provenance_summary(
+    release_archive_dir: &Path,
+    latest_pointer_dir: &Path,
+    history_dir: Option<&Path>,
+    history_release_paths: &[PathBuf],
+    pointer_name: &str,
+) -> Result<ReleaseProvenanceSummary> {
+    let report = build_report(&Config {
+        release_archive_dir: release_archive_dir.to_path_buf(),
+        latest_pointer_dir: latest_pointer_dir.to_path_buf(),
+        history_dir: history_dir.map(|path| path.to_path_buf()),
+        history_release_paths: history_release_paths.to_vec(),
+        pointer_name: pointer_name.to_string(),
+        json: false,
+    })?;
+    Ok(ReleaseProvenanceSummary {
+        verdict: serialize_enum(&report.verdict),
+        reason: report.reason,
+        archive_release_count: report.archive_release_count,
+        history_release_count: report.history_release_count,
+        latest_pointer_present: report.latest_pointer_present,
+        latest_pointer_selected_generation_id: report.latest_pointer_selected_generation_id,
+        latest_pointer_relation: serialize_enum(&report.latest_pointer_relation),
+        latest_archive_generation_id: report.latest_archive_generation_id,
+        latest_history_generation_id: report.latest_history_generation_id,
+        archive_releases_missing_from_history_count: report
+            .archive_releases_missing_from_history_count,
+        history_releases_missing_from_archive_count: report
+            .history_releases_missing_from_archive_count,
+        invalid_artifact_count: report.invalid_artifact_count,
+        ambiguous_timestamp_count: report.ambiguous_timestamp_count,
+    })
 }
 
 fn build_report(config: &Config) -> Result<ReleaseProvenanceReport> {
