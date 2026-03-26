@@ -808,6 +808,37 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not override the Stage 3 prod gate
    - it does not change live trading state
 
+## Activation Artifact Release History
+
+1. Operators now also have a first-class history and diff surface over exported
+   release artifacts:
+   - history summary:
+     `copybot_activation_artifact_release_history --history-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --json`
+   - compare two release artifacts:
+     `copybot_activation_artifact_release_history --compare /var/www/solana-copy-bot/state/activation_artifacts/releases/release-older.json /var/www/solana-copy-bot/state/activation_artifacts/releases/release-newer.json --json`
+2. The history surface answers:
+   - when releases happened
+   - whether the latest release was publish-only or published-and-promoted
+   - whether channel promotion is progressing or repeatedly blocked
+   - how the current review generation changed over time
+3. The compare surface answers:
+   - release verdict drift
+   - generation drift
+   - packet/runbook/manifest/bundle path drift
+   - channel promotion and channel target drift
+   - whether the newer release narrowed or widened blockers
+4. Important history verdicts:
+   - `artifact_release_history_latest_published`
+   - `artifact_release_history_latest_published_and_promoted`
+   - `artifact_release_history_latest_blocked`
+   - `artifact_release_history_insufficient_artifacts`
+   - `artifact_release_history_compare_ready`
+   - `artifact_release_history_invalid_artifact`
+5. This is artifact/release analysis only:
+   - it does not rerun heavy prod or non-prod logic
+   - it does not mutate archive or channel metadata
+   - it does not authorize activation or override the Stage 3 prod gate
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

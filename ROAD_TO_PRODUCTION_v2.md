@@ -2021,6 +2021,30 @@ Acceptance update (`2026-03-26`, activation artifact release flow):
 6. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_release`
 
+Acceptance update (`2026-03-26`, activation artifact release history ledger):
+
+1. The repo now also has one read-only history and diff surface over exported
+   activation artifact release reports:
+   - history summary:
+     `copybot_activation_artifact_release_history --history-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --json`
+   - compare mode:
+     `copybot_activation_artifact_release_history --compare /var/www/solana-copy-bot/state/activation_artifacts/releases/release-older.json /var/www/solana-copy-bot/state/activation_artifacts/releases/release-newer.json --json`
+2. The new surface is built on persisted release artifacts rather than rerunning
+   publish, channel, checklist, or drill flows:
+   - it summarizes publish-only vs published-and-promoted releases
+   - it shows when channel promotion stayed blocked
+   - it shows how the current review generation changed over time
+3. Invalid or malformed release artifacts stay blocking:
+   - they are surfaced explicitly as invalid inputs
+   - they do not yield false healthy release history
+4. Practical meaning:
+   - operators no longer need to diff release JSON by hand to understand
+     publish/promote progression
+   - this is still artifact/release analysis only and does not authorize
+     activation or override the Stage 3 prod gate
+5. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_release_history`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

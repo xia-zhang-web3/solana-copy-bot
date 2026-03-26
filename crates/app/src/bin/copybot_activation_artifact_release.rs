@@ -55,6 +55,7 @@ enum ArtifactReleaseVerdict {
 #[derive(Debug, Clone, Serialize)]
 struct ArtifactReleaseReport {
     mode: String,
+    released_at: DateTime<Utc>,
     verdict: ArtifactReleaseVerdict,
     reason: String,
     config_path: String,
@@ -532,6 +533,7 @@ fn build_release_report(
 
     ArtifactReleaseReport {
         mode: "artifact_release".to_string(),
+        released_at: config.publish.now,
         verdict,
         reason,
         config_path: config.publish.config_path.display().to_string(),
@@ -608,6 +610,7 @@ fn render_human(report: &ArtifactReleaseReport) -> String {
     [
         "event=copybot_activation_artifact_release".to_string(),
         format!("verdict={}", serialize_enum(&report.verdict)),
+        format!("released_at={}", report.released_at.to_rfc3339()),
         format!("reason={}", report.reason),
         format!("config_path={}", report.config_path),
         format!("non_prod_config_path={}", report.non_prod_config_path),
