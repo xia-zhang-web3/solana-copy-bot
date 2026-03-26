@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 mod activation_artifact_state_publish_report;
 
 const USAGE: &str = "usage: copybot_activation_artifact_state_history (--history-dir <path> [--snapshot <path>]... [--latest] [--limit <count>] [--recent-horizon-seconds <seconds>] [--snapshot-latest-pointer-dir <path>] [--pointer-name <name>] | --compare <older> <newer>) [--json]";
-const DEFAULT_HISTORY_LIMIT: usize = 10;
-const DEFAULT_RECENT_HORIZON_SECONDS: u64 = 7 * 24 * 60 * 60;
+pub(crate) const DEFAULT_HISTORY_LIMIT: usize = 10;
+pub(crate) const DEFAULT_RECENT_HORIZON_SECONDS: u64 = 7 * 24 * 60 * 60;
 const DEFAULT_MIN_SNAPSHOTS_FOR_CONFIDENCE: usize = 2;
 
 fn main() -> Result<()> {
@@ -100,6 +100,62 @@ struct StateLatestPointerSummary {
     matches_latest_snapshot: bool,
     selected_review_generation_id: Option<String>,
     selected_latest_release_generation_id: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct StateHistorySnapshotSummary {
+    pub(crate) path: String,
+    pub(crate) snapshotted_at: DateTime<Utc>,
+    pub(crate) state_verdict: String,
+    pub(crate) state_reason: String,
+    pub(crate) selected_review_generation_id: Option<String>,
+    pub(crate) selected_latest_release_generation_id: Option<String>,
+    pub(crate) selection_alignment_matches: bool,
+    pub(crate) selection_alignment_summary: String,
+    pub(crate) review_provenance_verdict: String,
+    pub(crate) release_provenance_verdict: String,
+    pub(crate) linkage_verdict: String,
+    pub(crate) ambiguous_legacy_count: usize,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct StateHistoryPointerSummary {
+    pub(crate) pointer_present: bool,
+    pub(crate) pointer_verdict: String,
+    pub(crate) pointer_reason: String,
+    pub(crate) pointer_path: Option<String>,
+    pub(crate) selected_snapshot_path: Option<String>,
+    pub(crate) matches_latest_snapshot: bool,
+    pub(crate) selected_review_generation_id: Option<String>,
+    pub(crate) selected_latest_release_generation_id: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct ArtifactStateHistoryArchiveSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) history_dir: Option<String>,
+    pub(crate) snapshot_paths_examined: Vec<String>,
+    pub(crate) latest_only_requested: bool,
+    pub(crate) limit: usize,
+    pub(crate) recent_horizon_seconds: u64,
+    pub(crate) minimum_snapshots_for_confidence: usize,
+    pub(crate) snapshots_loaded: usize,
+    pub(crate) invalid_artifact_count: usize,
+    pub(crate) coherent_count: usize,
+    pub(crate) incomplete_count: usize,
+    pub(crate) inconsistent_count: usize,
+    pub(crate) ambiguous_count: usize,
+    pub(crate) latest_snapshot: Option<StateHistorySnapshotSummary>,
+    pub(crate) latest_snapshot_age_seconds: Option<u64>,
+    pub(crate) latest_snapshot_stale_for_operational_confidence: bool,
+    pub(crate) history_sparse_for_operational_confidence: bool,
+    pub(crate) latest_selected_review_generation_id: Option<String>,
+    pub(crate) latest_selected_latest_release_generation_id: Option<String>,
+    pub(crate) latest_pointer_summary: Option<StateHistoryPointerSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -296,6 +352,82 @@ fn run(config: Config) -> Result<String> {
         }
     };
     Ok(output)
+}
+
+#[allow(dead_code)]
+pub(crate) fn inspect_state_history_summary(
+    history_dir: Option<PathBuf>,
+    snapshot_paths: Vec<PathBuf>,
+    latest: bool,
+    limit: usize,
+    recent_horizon_seconds: u64,
+    latest_pointer_dir: Option<PathBuf>,
+    pointer_name: String,
+) -> Result<ArtifactStateHistoryArchiveSummary> {
+    let report = build_summary_report(&Config {
+        history_dir,
+        snapshot_paths,
+        compare: None,
+        latest,
+        limit,
+        recent_horizon_seconds,
+        latest_pointer_dir,
+        pointer_name,
+        json: false,
+    })?;
+    Ok(ArtifactStateHistoryArchiveSummary {
+        verdict: serialize_enum(&report.verdict),
+        reason: report.reason,
+        history_dir: report.history_dir,
+        snapshot_paths_examined: report.snapshot_paths_examined,
+        latest_only_requested: report.latest_only_requested,
+        limit: report.limit,
+        recent_horizon_seconds: report.recent_horizon_seconds,
+        minimum_snapshots_for_confidence: report.minimum_snapshots_for_confidence,
+        snapshots_loaded: report.snapshots_loaded,
+        invalid_artifact_count: report.invalid_artifact_count,
+        coherent_count: report.coherent_count,
+        incomplete_count: report.incomplete_count,
+        inconsistent_count: report.inconsistent_count,
+        ambiguous_count: report.ambiguous_count,
+        latest_snapshot: report
+            .latest_snapshot
+            .map(|summary| StateHistorySnapshotSummary {
+                path: summary.path,
+                snapshotted_at: summary.snapshotted_at,
+                state_verdict: summary.state_verdict,
+                state_reason: summary.state_reason,
+                selected_review_generation_id: summary.selected_review_generation_id,
+                selected_latest_release_generation_id: summary
+                    .selected_latest_release_generation_id,
+                selection_alignment_matches: summary.selection_alignment_matches,
+                selection_alignment_summary: summary.selection_alignment_summary,
+                review_provenance_verdict: summary.review_provenance_verdict,
+                release_provenance_verdict: summary.release_provenance_verdict,
+                linkage_verdict: summary.linkage_verdict,
+                ambiguous_legacy_count: summary.ambiguous_legacy_count,
+            }),
+        latest_snapshot_age_seconds: report.latest_snapshot_age_seconds,
+        latest_snapshot_stale_for_operational_confidence: report
+            .latest_snapshot_stale_for_operational_confidence,
+        history_sparse_for_operational_confidence: report.history_sparse_for_operational_confidence,
+        latest_selected_review_generation_id: report.latest_selected_review_generation_id,
+        latest_selected_latest_release_generation_id: report
+            .latest_selected_latest_release_generation_id,
+        latest_pointer_summary: report.latest_pointer_summary.map(|summary| {
+            StateHistoryPointerSummary {
+                pointer_present: summary.pointer_present,
+                pointer_verdict: summary.pointer_verdict,
+                pointer_reason: summary.pointer_reason,
+                pointer_path: summary.pointer_path,
+                selected_snapshot_path: summary.selected_snapshot_path,
+                matches_latest_snapshot: summary.matches_latest_snapshot,
+                selected_review_generation_id: summary.selected_review_generation_id,
+                selected_latest_release_generation_id: summary
+                    .selected_latest_release_generation_id,
+            }
+        }),
+    })
 }
 
 fn build_summary_report(config: &Config) -> Result<ArtifactStateHistorySummaryReport> {

@@ -1100,6 +1100,36 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not rewrite pointer or channel metadata
    - it does not enable execution or authorize activation
 
+## Activation Artifact State Snapshot Archive Manager
+
+1. Operators now also have a first-class archive-management surface for
+   persisted state snapshots:
+   - report/archive health:
+     `copybot_activation_artifact_state_archive --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --report --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --json`
+   - retention preview:
+     `copybot_activation_artifact_state_archive --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --retention-plan --keep-latest 10 --json`
+   - bounded retention apply:
+     `copybot_activation_artifact_state_archive --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --retention-apply --keep-latest 10 --json`
+2. Report mode answers:
+   - how many persisted state snapshots exist
+   - the latest snapshot verdict and whether coverage is sparse or stale
+   - whether malformed snapshot artifacts are present
+   - whether a supplied snapshot latest pointer is valid and which snapshot it
+     protects
+3. Retention preview/apply are deliberately conservative:
+   - preview and apply use the exact same keep/remove selection logic
+   - a valid snapshot latest pointer target is protected from deletion
+   - malformed snapshots block cleanup by default
+   - dangling or invalid latest-pointer metadata is surfaced explicitly instead
+     of being silently ignored
+   - cleanup never rewrites snapshot contents and never rewrites latest-pointer
+     metadata in this batch
+4. This remains archive management only:
+   - it does not rewrite review-generation artifacts
+   - it does not rewrite release artifacts
+   - it does not enable execution
+   - it does not authorize activation or override the Stage 3 prod gate
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

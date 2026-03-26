@@ -2239,6 +2239,35 @@ Acceptance update (`2026-03-26`, activation artifact state snapshot linkage):
 5. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_state_linkage_report`
 
+Acceptance update (`2026-03-26`, activation artifact state snapshot archive manager):
+
+1. The repo now also has a first-class archive-management surface for persisted
+   state snapshots:
+   - archive report:
+     `copybot_activation_artifact_state_archive --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --report --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --json`
+   - retention preview:
+     `copybot_activation_artifact_state_archive --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --retention-plan --keep-latest 10 --json`
+   - bounded cleanup apply:
+     `copybot_activation_artifact_state_archive --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --retention-apply --keep-latest 10 --json`
+2. The manager is intentionally thin:
+   - it reuses persisted state snapshot parsing, state history summary logic,
+     and snapshot latest-pointer verification
+   - it does not invent a second state-snapshot parser
+   - preview and apply use the same keep/remove selection contract
+3. Operational meaning:
+   - operators can now see coherent vs non-green snapshot mix, latest snapshot
+     state, malformed snapshot presence, and pointer-protected snapshots in one
+     place
+   - a valid snapshot latest pointer target is protected from deletion
+   - malformed snapshots or dangling/invalid latest pointers are surfaced
+     explicitly and block cleanup by default
+4. This remains archive management only:
+   - it does not rewrite review-generation artifacts
+   - it does not rewrite release artifacts
+   - it does not enable execution or authorize activation
+5. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_state_archive`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

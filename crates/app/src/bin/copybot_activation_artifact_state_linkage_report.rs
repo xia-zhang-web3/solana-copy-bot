@@ -347,8 +347,8 @@ fn run(config: Config) -> Result<String> {
 }
 
 fn build_report(config: &Config) -> Result<ArtifactStateLinkageReport> {
-    let state_report =
-        activation_artifact_state_report::inspect_state_report(&activation_artifact_state_report::Config {
+    let state_report = activation_artifact_state_report::inspect_state_report(
+        &activation_artifact_state_report::Config {
             review_archive_dir: config.review_archive_dir.clone(),
             review_manifest_dir: config.review_manifest_dir.clone(),
             review_bundle_dir: config.review_bundle_dir.clone(),
@@ -359,7 +359,8 @@ fn build_report(config: &Config) -> Result<ArtifactStateLinkageReport> {
             latest_pointer_dir: config.latest_pointer_dir.clone(),
             latest_pointer_name: config.latest_pointer_name.clone(),
             json: false,
-        })?;
+        },
+    )?;
 
     let review_generation_ids = load_review_generation_ids(&config.review_archive_dir)?;
     let release_generation_ids =
@@ -642,7 +643,9 @@ fn load_release_generation_ids(
     Ok(generation_ids)
 }
 
-fn load_state_snapshot_records(config: &Config) -> Result<(Vec<StateSnapshotRecord>, Vec<LinkageIssue>)> {
+fn load_state_snapshot_records(
+    config: &Config,
+) -> Result<(Vec<StateSnapshotRecord>, Vec<LinkageIssue>)> {
     let mut records = Vec::new();
     let mut invalid_artifacts = Vec::new();
     let mut seen = BTreeSet::new();
@@ -713,12 +716,13 @@ fn inspect_snapshot_latest_pointer(
         bail!("--snapshot-latest-pointer-dir requires --state-archive-dir");
     };
 
-    let loaded_metadata = activation_artifact_state_publish_report::inspect_latest_pointer_metadata(
-        pointer_dir,
-        &config.snapshot_pointer_name,
-    )
-    .ok()
-    .flatten();
+    let loaded_metadata =
+        activation_artifact_state_publish_report::inspect_latest_pointer_metadata(
+            pointer_dir,
+            &config.snapshot_pointer_name,
+        )
+        .ok()
+        .flatten();
     let inspected = activation_artifact_state_publish_report::inspect_latest_pointer_report(
         state_archive_dir,
         pointer_dir,
@@ -726,18 +730,19 @@ fn inspect_snapshot_latest_pointer(
         true,
     )?;
     let pointer_path = inspected.latest_pointer_path.clone();
-    let selected_snapshot_path = inspected
-        .persisted_state_snapshot_path
-        .clone()
-        .or_else(|| {
-            loaded_metadata
-                .as_ref()
-                .map(|metadata| metadata.metadata.selected_snapshot_path.clone())
-        });
+    let selected_snapshot_path = inspected.persisted_state_snapshot_path.clone().or_else(|| {
+        loaded_metadata
+            .as_ref()
+            .map(|metadata| metadata.metadata.selected_snapshot_path.clone())
+    });
     let selected_summary = selected_snapshot_path
         .as_ref()
         .and_then(|path| canonicalize_existing_path(Path::new(path)))
-        .and_then(|path| summaries_by_path.get(path.to_string_lossy().as_ref()).cloned())
+        .and_then(|path| {
+            summaries_by_path
+                .get(path.to_string_lossy().as_ref())
+                .cloned()
+        })
         .or_else(|| {
             selected_snapshot_path
                 .as_ref()
@@ -745,13 +750,17 @@ fn inspect_snapshot_latest_pointer(
         })
         .or_else(|| {
             selected_snapshot_path.as_ref().and_then(|path| {
-                let loaded = activation_artifact_state_publish_report::inspect_state_snapshot_artifact(
-                    Path::new(path),
-                )
-                .ok()?;
+                let loaded =
+                    activation_artifact_state_publish_report::inspect_state_snapshot_artifact(
+                        Path::new(path),
+                    )
+                    .ok()?;
                 Some(summarize_snapshot_linkage(
                     &StateSnapshotRecord {
-                        identity_key: snapshot_identity_key(&loaded.artifact, &loaded.canonical_path),
+                        identity_key: snapshot_identity_key(
+                            &loaded.artifact,
+                            &loaded.canonical_path,
+                        ),
                         loaded,
                     },
                     review_generation_ids,
@@ -825,12 +834,12 @@ fn summarize_snapshot_linkage(
         .is_some_and(|generation_id| release_generation_ids.contains(generation_id));
     let resolves_live_review_release_generations =
         selected_review_generation_present_now && selected_latest_release_generation_present_now;
-    let matches_current_review_channel_selection =
-        artifact.selected_review_generation_id
-            == state_report.current_review_generation.selected_generation_id;
-    let matches_current_latest_release_selection =
-        artifact.selected_latest_release_generation_id
-            == state_report.current_latest_release.generation_id;
+    let matches_current_review_channel_selection = artifact.selected_review_generation_id
+        == state_report
+            .current_review_generation
+            .selected_generation_id;
+    let matches_current_latest_release_selection = artifact.selected_latest_release_generation_id
+        == state_report.current_latest_release.generation_id;
 
     let mut incomplete_reasons = Vec::new();
     let mut inconsistencies = Vec::new();
@@ -854,14 +863,17 @@ fn summarize_snapshot_linkage(
         _ => {}
     }
 
-    if !artifact.coherent_for_review_operations && artifact.state_verdict == "artifact_state_coherent"
+    if !artifact.coherent_for_review_operations
+        && artifact.state_verdict == "artifact_state_coherent"
     {
         inconsistencies.push(
             "persisted state snapshot claims coherent state_verdict but is not coherent for review operations"
                 .to_string(),
         );
     }
-    if artifact.ambiguous_legacy_count > 0 && artifact.state_verdict != "artifact_state_ambiguous_legacy_state" {
+    if artifact.ambiguous_legacy_count > 0
+        && artifact.state_verdict != "artifact_state_ambiguous_legacy_state"
+    {
         ambiguities.push(format!(
             "persisted state snapshot carries {} ambiguous legacy conditions",
             artifact.ambiguous_legacy_count
@@ -959,7 +971,9 @@ fn summarize_snapshot_linkage(
         linkage_verdict,
         linkage_reason,
         selected_review_generation_id: artifact.selected_review_generation_id.clone(),
-        selected_latest_release_generation_id: artifact.selected_latest_release_generation_id.clone(),
+        selected_latest_release_generation_id: artifact
+            .selected_latest_release_generation_id
+            .clone(),
         selection_alignment_matches: artifact.selection_alignment_matches,
         selection_alignment_summary: artifact.selection_alignment_summary.clone(),
         coherent_for_review_operations: artifact.coherent_for_review_operations,
@@ -1264,9 +1278,14 @@ mod tests {
             report.verdict,
             ArtifactStateLinkageVerdict::ArtifactStateLinkageInconsistent
         );
-        assert!(report.reason.contains("target snapshot artifact is missing"));
+        assert!(report
+            .reason
+            .contains("target snapshot artifact is missing"));
         assert_eq!(
-            report.current_state_snapshot_latest_pointer.pointer_verdict.as_deref(),
+            report
+                .current_state_snapshot_latest_pointer
+                .pointer_verdict
+                .as_deref(),
             Some("artifact_state_snapshot_verify_missing_target")
         );
         assert_eq!(
@@ -1320,7 +1339,9 @@ mod tests {
             report.verdict,
             ArtifactStateLinkageVerdict::ArtifactStateLinkageInconsistent
         );
-        assert!(report.reason.contains("target snapshot artifact is missing"));
+        assert!(report
+            .reason
+            .contains("target snapshot artifact is missing"));
         assert_eq!(
             report.representative_snapshot_linkage_verdict,
             Some(PersistedStateSnapshotLinkageVerdict::Complete)
@@ -1329,7 +1350,11 @@ mod tests {
             report
                 .representative_snapshot_path
                 .as_deref()
-                .map(|path| Path::new(path).file_name().expect("file").to_string_lossy().into_owned()),
+                .map(|path| Path::new(path)
+                    .file_name()
+                    .expect("file")
+                    .to_string_lossy()
+                    .into_owned()),
             Some("newer_snapshot.json".to_string())
         );
     }
@@ -1524,8 +1549,7 @@ mod tests {
             release_history_dir: "/tmp/release_history".to_string(),
             latest_release_pointer_dir: "/tmp/release_pointer".to_string(),
             latest_release_pointer_name:
-                activation_artifact_release_publish_report::DEFAULT_LATEST_POINTER_NAME
-                    .to_string(),
+                activation_artifact_release_publish_report::DEFAULT_LATEST_POINTER_NAME.to_string(),
             selected_review_generation_id: Some(selected_review_generation_id.to_string()),
             selected_latest_release_generation_id: Some(
                 selected_latest_release_generation_id.to_string(),
