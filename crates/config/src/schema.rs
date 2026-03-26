@@ -19,6 +19,7 @@ pub struct AppConfig {
     pub shadow: ShadowConfig,
     pub execution: ExecutionConfig,
     pub tiny_live_policy: TinyLivePolicyConfig,
+    pub tiny_live_guardrails: TinyLiveGuardrailsConfig,
     pub risk: RiskConfig,
 }
 
@@ -119,6 +120,20 @@ pub struct TinyLivePolicyConfig {
     pub max_route_compute_unit_price_micro_lamports: BTreeMap<String, u64>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct TinyLiveGuardrailsConfig {
+    pub enabled: bool,
+    pub evaluation_window_seconds: u64,
+    pub max_execution_error_rate_pct: f64,
+    pub max_adapter_contract_failure_rate_pct: f64,
+    pub max_policy_echo_mismatch_rate_pct: f64,
+    pub max_fee_or_slippage_breach_rate_pct: f64,
+    pub max_connectivity_degraded_window_seconds: u64,
+    pub max_daily_realized_loss_sol: f64,
+    pub max_consecutive_hard_failures: u32,
+}
+
 impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
@@ -189,6 +204,22 @@ impl Default for TinyLivePolicyConfig {
             max_route_slippage_bps: BTreeMap::new(),
             max_route_tip_lamports: BTreeMap::new(),
             max_route_compute_unit_price_micro_lamports: BTreeMap::new(),
+        }
+    }
+}
+
+impl Default for TinyLiveGuardrailsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            evaluation_window_seconds: 0,
+            max_execution_error_rate_pct: 0.0,
+            max_adapter_contract_failure_rate_pct: 0.0,
+            max_policy_echo_mismatch_rate_pct: 0.0,
+            max_fee_or_slippage_breach_rate_pct: 0.0,
+            max_connectivity_degraded_window_seconds: 0,
+            max_daily_realized_loss_sol: 0.0,
+            max_consecutive_hard_failures: 0,
         }
     }
 }

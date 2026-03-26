@@ -1496,6 +1496,26 @@ Acceptance update (`2026-03-26`, tiny-live activation plan package):
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_plan`
    - `cargo test -p copybot-app --bin copybot_pre_activation_gate_report`
 
+Acceptance update (`2026-03-26`, tiny-live guardrail package):
+
+1. Stage 4 preparation now also has a planning-only guardrail surface:
+   - `copybot_tiny_live_guardrail_audit --config /etc/solana-copy-bot/live.server.toml --json`
+2. This command defines the future post-activation rollback/monitoring
+   envelope explicitly without enabling execution or sending trades.
+3. It is intentionally separate from the bounded tiny-live activation policy:
+   - policy answers what bounded future activation envelope is acceptable
+   - guardrails answer which live failure/degradation conditions must force
+     rollback
+4. Important verdicts:
+   - `tiny_live_guardrails_bounded`
+   - `tiny_live_guardrails_incomplete`
+   - `tiny_live_guardrails_too_open`
+   - `tiny_live_guardrails_rollback_contract_incomplete`
+   - `tiny_live_guardrails_monitoring_contract_incomplete`
+5. Checks:
+   - `cargo test -p copybot-config --lib`
+   - `cargo test -p copybot-app --bin copybot_tiny_live_guardrail_audit`
+
 Acceptance update (`2026-03-25`, devnet dress-rehearsal package):
 
 1. Stage 4 now also has a first-class non-production dress-rehearsal surface:

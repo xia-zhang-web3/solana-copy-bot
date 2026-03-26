@@ -493,6 +493,17 @@ fn live_server_template_exposes_recent_raw_gap_fill_contract() {
         config.tiny_live_policy.max_pretrade_priority_fee_lamports,
         2000
     );
+    assert!(config.tiny_live_guardrails.enabled);
+    assert_eq!(config.tiny_live_guardrails.evaluation_window_seconds, 900);
+    assert!((config.tiny_live_guardrails.max_execution_error_rate_pct - 5.0).abs() <= f64::EPSILON);
+    assert_eq!(
+        config
+            .tiny_live_guardrails
+            .max_connectivity_degraded_window_seconds,
+        120
+    );
+    assert!((config.tiny_live_guardrails.max_daily_realized_loss_sol - 0.05).abs() <= f64::EPSILON);
+    assert_eq!(config.tiny_live_guardrails.max_consecutive_hard_failures, 3);
 }
 
 #[test]
@@ -546,6 +557,36 @@ metric_snapshot_interval_seconds = 1800
                 .to_string();
             assert!(
                 err.contains("tiny_live_policy.max_trade_notional_sol"),
+                "unexpected error: {err}"
+            );
+        },
+    );
+}
+
+#[test]
+fn load_from_path_rejects_invalid_tiny_live_guardrail_bounds() {
+    with_temp_config_file(
+        r#"
+[tiny_live_guardrails]
+enabled = true
+evaluation_window_seconds = 900
+max_execution_error_rate_pct = 0.0
+max_adapter_contract_failure_rate_pct = 1.0
+max_policy_echo_mismatch_rate_pct = 1.0
+max_fee_or_slippage_breach_rate_pct = 5.0
+max_connectivity_degraded_window_seconds = 120
+max_daily_realized_loss_sol = 0.05
+max_consecutive_hard_failures = 3
+
+[discovery]
+metric_snapshot_interval_seconds = 1800
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("invalid tiny-live guardrail bounds must fail")
+                .to_string();
+            assert!(
+                err.contains("tiny_live_guardrails.max_execution_error_rate_pct"),
                 "unexpected error: {err}"
             );
         },

@@ -806,6 +806,7 @@ fn validate_loaded_config(config: &AppConfig) -> Result<()> {
     validate_discovery_aggregate_activation_config(config)?;
     validate_execution_exact_sizing_config(config)?;
     validate_tiny_live_policy_config(config)?;
+    validate_tiny_live_guardrails_config(config)?;
     validate_history_retention_config(config)?;
     Ok(())
 }
@@ -1492,6 +1493,67 @@ fn validate_tiny_live_policy_config(config: &AppConfig) -> Result<()> {
                 value
             ));
         }
+    }
+
+    Ok(())
+}
+
+fn validate_tiny_live_guardrails_config(config: &AppConfig) -> Result<()> {
+    let guardrails = &config.tiny_live_guardrails;
+    if !guardrails.enabled {
+        return Ok(());
+    }
+
+    if guardrails.evaluation_window_seconds == 0 {
+        return Err(anyhow!(
+            "tiny_live_guardrails.evaluation_window_seconds ({}) must be >= 1 when tiny_live_guardrails.enabled = true",
+            guardrails.evaluation_window_seconds
+        ));
+    }
+    for (name, value) in [
+        (
+            "max_execution_error_rate_pct",
+            guardrails.max_execution_error_rate_pct,
+        ),
+        (
+            "max_adapter_contract_failure_rate_pct",
+            guardrails.max_adapter_contract_failure_rate_pct,
+        ),
+        (
+            "max_policy_echo_mismatch_rate_pct",
+            guardrails.max_policy_echo_mismatch_rate_pct,
+        ),
+        (
+            "max_fee_or_slippage_breach_rate_pct",
+            guardrails.max_fee_or_slippage_breach_rate_pct,
+        ),
+    ] {
+        if !value.is_finite() || value <= 0.0 || value > 100.0 {
+            return Err(anyhow!(
+                "tiny_live_guardrails.{name} ({value}) must be finite and between 0 and 100 when tiny_live_guardrails.enabled = true"
+            ));
+        }
+    }
+
+    if guardrails.max_connectivity_degraded_window_seconds == 0 {
+        return Err(anyhow!(
+            "tiny_live_guardrails.max_connectivity_degraded_window_seconds ({}) must be >= 1 when tiny_live_guardrails.enabled = true",
+            guardrails.max_connectivity_degraded_window_seconds
+        ));
+    }
+    if !guardrails.max_daily_realized_loss_sol.is_finite()
+        || guardrails.max_daily_realized_loss_sol <= 0.0
+    {
+        return Err(anyhow!(
+            "tiny_live_guardrails.max_daily_realized_loss_sol ({}) must be finite and > 0 when tiny_live_guardrails.enabled = true",
+            guardrails.max_daily_realized_loss_sol
+        ));
+    }
+    if guardrails.max_consecutive_hard_failures == 0 {
+        return Err(anyhow!(
+            "tiny_live_guardrails.max_consecutive_hard_failures ({}) must be >= 1 when tiny_live_guardrails.enabled = true",
+            guardrails.max_consecutive_hard_failures
+        ));
     }
 
     Ok(())

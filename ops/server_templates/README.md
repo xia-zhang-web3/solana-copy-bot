@@ -334,6 +334,40 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 7. If `--output <path>` is provided, the command writes the full JSON planning
    artifact to disk without mutating the live config.
 
+## Tiny-Live Guardrail Audit
+
+1. Operators now also have a planning-only tiny-live guardrail audit:
+   - `copybot_tiny_live_guardrail_audit --config /etc/solana-copy-bot/live.server.toml --json`
+2. This command stays read-only and pre-activation only:
+   - it does not enable `execution.enabled`
+   - it does not write the live config
+   - it does not restart services
+   - it does not submit trades
+3. Guardrails are intentionally separate from the tiny-live activation envelope:
+   - `copybot_tiny_live_policy_audit` answers whether the future activation
+     envelope is bounded
+   - `copybot_tiny_live_guardrail_audit` answers whether future stop conditions
+     and rollback triggers are explicit and bounded
+4. Important top-level verdicts:
+   - `tiny_live_guardrails_bounded`
+   - `tiny_live_guardrails_incomplete`
+   - `tiny_live_guardrails_too_open`
+   - `tiny_live_guardrails_rollback_contract_incomplete`
+   - `tiny_live_guardrails_monitoring_contract_incomplete`
+5. Important fields:
+   - `evaluation_window_seconds`
+   - `max_execution_error_rate_pct`
+   - `max_adapter_contract_failure_rate_pct`
+   - `max_policy_echo_mismatch_rate_pct`
+   - `max_fee_or_slippage_breach_rate_pct`
+   - `max_connectivity_degraded_window_seconds`
+   - `max_daily_realized_loss_sol`
+   - `max_consecutive_hard_failures`
+   - `rollback_triggers`
+6. A bounded verdict means the future tiny-live rollback envelope is explicit
+   and operator-readable. It still does not authorize activation and does not
+   override Stage 3.
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

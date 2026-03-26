@@ -290,6 +290,20 @@ max_route_slippage_bps = { jito = 50.0 }
 max_route_tip_lamports = { jito = 10000 }
 max_route_compute_unit_price_micro_lamports = { jito = 1500 }
 
+[tiny_live_guardrails]
+# This is an explicit post-activation rollback/monitoring envelope for later
+# tiny-live discussion. It does not enable trading by itself. The audit command
+# checks whether future stop conditions are bounded and operator-readable.
+enabled = true
+evaluation_window_seconds = 900
+max_execution_error_rate_pct = 5.0
+max_adapter_contract_failure_rate_pct = 1.0
+max_policy_echo_mismatch_rate_pct = 1.0
+max_fee_or_slippage_breach_rate_pct = 5.0
+max_connectivity_degraded_window_seconds = 120
+max_daily_realized_loss_sol = 0.05
+max_consecutive_hard_failures = 3
+
 [risk]
 # Tiny-live defaults from Stage E (ROAD_TO_PRODUCTION.md).
 max_position_sol = 0.10
