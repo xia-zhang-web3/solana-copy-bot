@@ -2387,6 +2387,35 @@ Acceptance update (`2026-03-27`, activation artifact state snapshot bundle archi
 5. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_state_bundle_archive`
 
+Acceptance update (`2026-03-27`, activation artifact state snapshot bundle archive provenance):
+
+1. The repo now also has a provenance-oriented surface over deterministic
+   archived bundles, the latest bundle pointer, and the current persisted
+   state-snapshot surfaces:
+   - `copybot_activation_artifact_state_bundle_archive_provenance_report --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --history-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --json`
+2. The new provenance layer is intentionally thin:
+   - it reuses accepted archived-bundle verification and latest-pointer
+     inspection instead of inventing another bundle parser
+   - it reuses persisted state-snapshot parsing and current snapshot-pointer
+     inspection instead of rerunning heavy current-state assembly
+   - it correlates archived bundle coverage back to the current snapshot
+     archive root and snapshot path identity, not only a loose tuple identity
+3. Operational meaning:
+   - operators can now see which archived bundles verify cleanly, which
+     current snapshots have archived-bundle coverage, and whether the latest
+     bundle pointer still resolves to valid current snapshot lineage
+   - archived bundles that reference snapshots missing from the current state
+     archive are surfaced as inconsistent lineage
+   - ambiguous or otherwise non-green archived bundles remain explicit and do
+     not yield false green provenance
+4. This remains artifact analysis only:
+   - it does not rewrite the state snapshot archive
+   - it does not rewrite archived bundle contents
+   - it does not rewrite latest bundle pointer metadata
+   - it does not enable execution or authorize activation
+5. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_state_bundle_archive_provenance_report`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored

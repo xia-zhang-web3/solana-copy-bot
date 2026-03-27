@@ -1328,6 +1328,32 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not enable execution
    - it does not authorize activation or override the Stage 3 prod gate
 
+## Activation Artifact State Snapshot Bundle Archive Provenance
+
+1. Operators now also have a provenance-oriented surface over deterministic
+   archived bundles, the latest bundle pointer, and the current persisted
+   state-snapshot surfaces:
+   - `copybot_activation_artifact_state_bundle_archive_provenance_report --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --history-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --json`
+2. Archived-bundle provenance completeness means:
+   - deterministic archived bundles verify cleanly
+   - the latest bundle pointer resolves to a real archived bundle
+   - those archived bundles still resolve back to the current persisted state
+     snapshot archive and history context
+   - current snapshot truth is not missing archived-bundle coverage
+3. Integrity-green archived bundles still do not upgrade snapshot truth:
+   - archived bundles over ambiguous or otherwise non-green snapshots remain
+     explicit and keep provenance non-green or explicitly ambiguous
+   - a valid latest bundle pointer can still leave provenance non-green if it
+     selects a stale, foreign, or non-green snapshot bundle
+   - bundle archive coverage is checked against the current snapshot archive
+     root, not just a loose snapshot identity tuple
+4. This remains artifact analysis only:
+   - it does not rewrite the state snapshot archive
+   - it does not rewrite archived bundle contents
+   - it does not rewrite latest bundle pointer metadata
+   - it does not enable execution
+   - it does not authorize activation or override the Stage 3 prod gate
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`
