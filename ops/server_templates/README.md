@@ -826,6 +826,58 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `tiny_live_service_control_wrapper_verify_invalid`
    - `tiny_live_service_control_wrapper_install_refused`
 
+## Tiny-Live Install Target
+
+1. The repo now also owns one deterministic live-target install / verify
+   contract for the tiny-live activation surface itself:
+   - review the bounded install target plan:
+     `copybot_tiny_live_activation_install_target --install-root / --target-service solana-copy-bot.service --backend-command systemctl --activation-config-source /tmp/tiny-live.activation.toml --rollback-config-source /tmp/tiny-live.rollback.toml --plan-install-target --json`
+   - render an operator-facing install script without hand-written shell:
+     `copybot_tiny_live_activation_install_target --install-root / --target-service solana-copy-bot.service --backend-command systemctl --activation-config-source /tmp/tiny-live.activation.toml --rollback-config-source /tmp/tiny-live.rollback.toml --render-install-script --output /tmp/tiny-live.install-target.sh --json`
+   - verify an existing install target under an explicit root / prefix:
+     `copybot_tiny_live_activation_install_target --install-root / --target-service solana-copy-bot.service --backend-command systemctl --verify-install-target --json`
+   - install the deterministic wrapper + activation assets + dirs into the same bounded root:
+     `copybot_tiny_live_activation_install_target --install-root / --target-service solana-copy-bot.service --backend-command systemctl --activation-config-source /tmp/tiny-live.activation.toml --rollback-config-source /tmp/tiny-live.rollback.toml --install-target --json`
+2. The install target contract is explicit and root-bounded:
+   - wrapper path:
+     `<install-root>/usr/local/bin/copybot-live-service-control`
+   - target config path:
+     `<install-root>/etc/solana-copy-bot/live.server.toml`
+   - installed activation assets:
+     `<install-root>/var/lib/solana-copy-bot/tiny-live/rendered.activation.toml`
+     and
+     `<install-root>/var/lib/solana-copy-bot/tiny-live/rendered.rollback.toml`
+   - runtime / backup / session dirs:
+     `<install-root>/var/lib/solana-copy-bot/tiny-live/runtime`,
+     `<install-root>/var/lib/solana-copy-bot/tiny-live/backups`,
+     and
+     `<install-root>/var/lib/solana-copy-bot/tiny-live/sessions`
+   - install metadata:
+     `<install-root>/var/lib/solana-copy-bot/tiny-live/install-target.json`
+3. `--verify-install-target` is real contract verification, not a string echo:
+   - the wrapper must still match the repo-managed wrapper content / version /
+     supported-actions contract
+   - the installed activation + rollback artifacts must still verify cleanly and
+     must still point back to the deterministic target config path
+   - the current target config fingerprint must still match the installed
+     rendered-artifact source fingerprint
+   - runtime / backup / session dirs must exist under the explicit root
+   - path mismatches or escapes outside the explicit root are rejected sharply
+4. This install-target package stays non-authorizing:
+   - it does not enable production execution by itself
+   - it does not weaken Stage 3 as the hard gate
+   - tests only use fake roots in temp directories and do not touch the real
+     prod config or unit
+5. Important install-target verdicts:
+   - `tiny_live_install_target_plan_ready`
+   - `tiny_live_install_target_script_rendered`
+   - `tiny_live_install_target_verify_ok`
+   - `tiny_live_install_target_verify_invalid`
+   - `tiny_live_install_target_install_completed`
+   - `tiny_live_install_target_install_refused`
+   - `tiny_live_install_target_wrapper_invalid`
+   - `tiny_live_install_target_path_mismatch`
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

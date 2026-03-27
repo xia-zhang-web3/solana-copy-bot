@@ -2173,6 +2173,27 @@ pub(crate) fn load_backup_proof_for_watch(
     Ok(metadata)
 }
 
+#[allow(dead_code)]
+pub(crate) fn load_validated_artifact_pair_for_live_target(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+) -> Result<(
+    tiny_live_activation_execute::LoadedRenderedConfigArtifact,
+    tiny_live_activation_execute::LoadedRenderedConfigArtifact,
+)> {
+    let pair =
+        load_validated_artifact_pair_from_paths(activation_config_path, rollback_config_path)
+            .map_err(|failure| anyhow!(failure.reason))?;
+    Ok((pair.activation, pair.rollback))
+}
+
+#[allow(dead_code)]
+pub(crate) fn validate_target_service_name_for_live_target(
+    target_service_name: &str,
+) -> Result<()> {
+    validate_target_service_name(target_service_name).map_err(|failure| anyhow!(failure.reason))
+}
+
 pub(crate) fn runtime_paths(runtime_dir: &Path) -> LiveRuntimePaths {
     LiveRuntimePaths {
         runtime_dir: runtime_dir.to_path_buf(),

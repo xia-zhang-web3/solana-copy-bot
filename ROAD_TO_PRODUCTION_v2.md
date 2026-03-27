@@ -1954,6 +1954,57 @@ Acceptance update (`2026-03-27`, repo-managed tiny-live service-control wrapper 
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_cutover`
    - `cargo check -p copybot-app --bin copybot_live_service_control_wrapper --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_watch --bin copybot_tiny_live_activation_cutover`
 
+Acceptance update (`2026-03-27`, repo-managed tiny-live install-target package):
+
+1. Stage 4 now also has one deterministic install / verify contract for the
+   live-target tiny-live activation surface itself:
+   - `copybot_tiny_live_activation_install_target --install-root / --target-service solana-copy-bot.service --backend-command systemctl --activation-config-source /tmp/tiny-live.activation.toml --rollback-config-source /tmp/tiny-live.rollback.toml --plan-install-target --json`
+   - `copybot_tiny_live_activation_install_target --install-root / --target-service solana-copy-bot.service --backend-command systemctl --activation-config-source /tmp/tiny-live.activation.toml --rollback-config-source /tmp/tiny-live.rollback.toml --render-install-script --output /tmp/tiny-live.install-target.sh --json`
+   - `copybot_tiny_live_activation_install_target --install-root / --target-service solana-copy-bot.service --backend-command systemctl --verify-install-target --json`
+   - `copybot_tiny_live_activation_install_target --install-root / --target-service solana-copy-bot.service --backend-command systemctl --activation-config-source /tmp/tiny-live.activation.toml --rollback-config-source /tmp/tiny-live.rollback.toml --install-target --json`
+2. The install target contract ties one explicit root / prefix to the accepted
+   live-target surfaces:
+   - wrapper path:
+     `<install-root>/usr/local/bin/copybot-live-service-control`
+   - target config path:
+     `<install-root>/etc/solana-copy-bot/live.server.toml`
+   - installed activation assets:
+     `<install-root>/var/lib/solana-copy-bot/tiny-live/rendered.activation.toml`
+     and
+     `<install-root>/var/lib/solana-copy-bot/tiny-live/rendered.rollback.toml`
+   - runtime / backup / session dirs:
+     `<install-root>/var/lib/solana-copy-bot/tiny-live/runtime`,
+     `<install-root>/var/lib/solana-copy-bot/tiny-live/backups`,
+     and
+     `<install-root>/var/lib/solana-copy-bot/tiny-live/sessions`
+   - install metadata:
+     `<install-root>/var/lib/solana-copy-bot/tiny-live/install-target.json`
+3. `--verify-install-target` is real contract verification:
+   - the wrapper file must still match the repo-managed wrapper contract
+   - the installed activation + rollback artifacts must still verify cleanly
+     and must still point back to the deterministic target config path
+   - the current target config fingerprint must still align with the installed
+     rendered-artifact source fingerprint
+   - runtime / backup / session dirs must exist under the explicit root
+   - path mismatches or escapes outside the explicit root are rejected sharply
+4. This batch remains non-authorizing:
+   - it does not enable production execution
+   - it does not weaken Stage 3 as the hard gate
+   - tests only exercise fake roots in temp directories and do not touch the
+     real prod config or unit
+5. Important install-target verdicts:
+   - `tiny_live_install_target_plan_ready`
+   - `tiny_live_install_target_script_rendered`
+   - `tiny_live_install_target_verify_ok`
+   - `tiny_live_install_target_verify_invalid`
+   - `tiny_live_install_target_install_completed`
+   - `tiny_live_install_target_install_refused`
+   - `tiny_live_install_target_wrapper_invalid`
+   - `tiny_live_install_target_path_mismatch`
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_install_target`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_install_target --bin copybot_live_service_control_wrapper --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_watch --bin copybot_tiny_live_activation_cutover`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
