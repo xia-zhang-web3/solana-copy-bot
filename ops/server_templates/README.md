@@ -1354,6 +1354,35 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not enable execution
    - it does not authorize activation or override the Stage 3 prod gate
 
+## Activation Artifact State Snapshot Bundle Archive History
+
+1. Operators now also have a first-class history/diff surface over
+   deterministic archived bundles:
+   - summarize archived-bundle progression:
+     `copybot_activation_artifact_state_bundle_archive_history --history --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --json`
+   - compare two archived bundles directly:
+     `copybot_activation_artifact_state_bundle_archive_history --compare /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive/state_snapshot_bundle__state_snapshot__2026-03-26T12-00-00Z__artifact_state_incomplete /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive/state_snapshot_bundle__state_snapshot__2026-03-27T12-00-00Z__artifact_state_coherent --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --json`
+2. History summary keeps archive ordering and pointer context explicit:
+   - it shows the latest archived bundle by deterministic archive naming
+   - it counts coherent vs incomplete vs inconsistent vs ambiguous embedded
+     snapshot truth across archived bundles
+   - if the latest bundle pointer is supplied, it shows whether that pointer
+     still matches latest-by-archive or is intentionally/stale selecting an
+     older bundle
+3. Compare mode keeps integrity distinct from snapshot truth:
+   - it shows snapshot verdict drift, reason drift, selected review/release id
+     drift, ambiguity drift, and `coherent_for_review_operations` drift
+   - it does not flatten an integrity-clean archived bundle into coherent
+     activation state automatically
+   - ambiguous or otherwise non-green archived bundles remain explicit in both
+     summary and compare output
+4. This remains artifact analysis only:
+   - it does not rewrite the state snapshot archive
+   - it does not rewrite archived bundle contents
+   - it does not rewrite latest bundle pointer metadata
+   - it does not enable execution
+   - it does not authorize activation or override the Stage 3 prod gate
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`

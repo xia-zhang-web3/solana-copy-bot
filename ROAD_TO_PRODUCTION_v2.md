@@ -2416,6 +2416,34 @@ Acceptance update (`2026-03-27`, activation artifact state snapshot bundle archi
 5. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_state_bundle_archive_provenance_report`
 
+Acceptance update (`2026-03-27`, activation artifact state snapshot bundle archive history):
+
+1. The repo now also has a first-class history/diff surface over deterministic
+   archived bundles:
+   - history summary:
+     `copybot_activation_artifact_state_bundle_archive_history --history --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --json`
+   - compare two archived bundles:
+     `copybot_activation_artifact_state_bundle_archive_history --compare /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive/state_snapshot_bundle__state_snapshot__2026-03-26T12-00-00Z__artifact_state_incomplete /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive/state_snapshot_bundle__state_snapshot__2026-03-27T12-00-00Z__artifact_state_coherent --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --json`
+2. The new temporal layer is intentionally thin:
+   - it reuses accepted archived-bundle verification instead of inventing a
+     second bundle parser
+   - it reuses accepted latest bundle pointer inspection for optional pointer
+     context
+   - it keeps deterministic archived-bundle ordering as the summary baseline
+3. Operational meaning:
+   - operators can now see how archived-bundle truth progressed over time
+   - summary mode keeps latest-by-archive and latest-by-pointer relationship
+     explicit, including stale or non-green pointer-selected bundles
+   - compare mode preserves the distinction between integrity-clean archived
+     bundles and coherent snapshot state
+4. This remains artifact analysis only:
+   - it does not rewrite the state snapshot archive
+   - it does not rewrite archived bundle contents
+   - it does not rewrite latest bundle pointer metadata
+   - it does not enable execution or authorize activation
+5. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_state_bundle_archive_history`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored
