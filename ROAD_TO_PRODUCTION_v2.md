@@ -1660,6 +1660,54 @@ Acceptance update (`2026-03-27`, bounded tiny-live activation executor package):
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_plan`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_execute --bin copybot_tiny_live_activation_plan --bin copybot_activation_runbook --bin copybot_pre_activation_gate_report`
 
+Acceptance update (`2026-03-27`, bounded tiny-live apply rehearsal package):
+
+1. Stage 4 preparation now also has an explicit isolated apply/rollback
+   rehearsal path on top of the rendered activation artifacts:
+   - `copybot_tiny_live_activation_apply --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --plan --json`
+   - `copybot_tiny_live_activation_apply --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --render-apply-script --output /tmp/tiny-live.apply.sh --json`
+   - `copybot_tiny_live_activation_apply --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --render-rollback-script --output /tmp/tiny-live.rollback.sh --json`
+   - `copybot_tiny_live_activation_apply --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --apply-temp-run --json`
+   - `copybot_tiny_live_activation_apply --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --verify-temp-run --json`
+   - `copybot_tiny_live_activation_apply --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --rollback-temp-run --json`
+2. This package reuses the accepted rendered-artifact truth from
+   `copybot_tiny_live_activation_execute` rather than inventing another
+   executor contract.
+3. The rehearsal path is deliberately bounded and isolated:
+   - `--runtime-dir` must stay under the system temp root
+   - pid/log/status/session artifacts stay inside that runtime dir
+   - rendered scripts target only the public temp rehearsal modes
+   - it does not mutate `/etc/solana-copy-bot/live.server.toml`
+   - it does not restart the real prod service
+   - it does not enable production execution
+4. Post-start verification is real but bounded:
+   - it checks the rendered activation/rollback artifact pair
+   - it checks runtime pid/log/status artifacts
+   - it verifies the temp worker is using the expected rendered config pair
+   - rollback leaves explicit disabled-posture evidence with
+     `execution.enabled=false`
+5. Stage 3 remains the hard gate:
+   - this package rehearses temp apply/rollback mechanics only
+   - it does not authorize production activation
+   - it does not weaken the consolidated pre-activation gate
+6. Important rehearsal verdicts:
+   - `tiny_live_activation_apply_plan_ready`
+   - `tiny_live_activation_apply_script_rendered`
+   - `tiny_live_activation_apply_refused_by_stage3`
+   - `tiny_live_activation_apply_refused_by_pre_activation_gate`
+   - `tiny_live_activation_apply_refused_by_invalid_rendered_artifact`
+   - `tiny_live_activation_apply_refused_by_unsafe_runtime_dir`
+   - `tiny_live_activation_temp_run_started`
+   - `tiny_live_activation_temp_run_verify_ok`
+   - `tiny_live_activation_temp_run_verify_failed`
+   - `tiny_live_rollback_apply_script_rendered`
+   - `tiny_live_rollback_temp_run_completed`
+   - `tiny_live_rollback_temp_run_verify_failed`
+7. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_apply`
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_execute`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_execute --bin copybot_tiny_live_activation_apply --bin copybot_tiny_live_activation_plan --bin copybot_activation_runbook --bin copybot_pre_activation_gate_report`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:

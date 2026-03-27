@@ -503,6 +503,57 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `tiny_live_activation_plan_ready`
    - `tiny_live_activation_rendered`
    - `tiny_live_activation_refused_by_stage3`
+
+## Tiny-Live Apply Rehearsal
+
+1. Operators now also have an isolated apply/rollback rehearsal harness on top
+   of the rendered tiny-live artifacts:
+   - review the bounded rehearsal contract:
+     `copybot_tiny_live_activation_apply --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --plan --json`
+   - render an operator-facing temp apply script:
+     `copybot_tiny_live_activation_apply --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --render-apply-script --output /tmp/tiny-live.apply.sh --json`
+   - render an operator-facing temp rollback script:
+     `copybot_tiny_live_activation_apply --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --render-rollback-script --output /tmp/tiny-live.rollback.sh --json`
+   - launch the isolated temp rehearsal run:
+     `copybot_tiny_live_activation_apply --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --apply-temp-run --json`
+   - verify the temp runtime state:
+     `copybot_tiny_live_activation_apply --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --verify-temp-run --json`
+   - stop the temp rehearsal run and prove rollback:
+     `copybot_tiny_live_activation_apply --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --rollback-temp-run --json`
+2. This harness reuses the accepted render/verify contract from
+   `copybot_tiny_live_activation_execute`; it does not introduce a second
+   planner or a second rendered-artifact schema.
+3. The rehearsal contract is explicitly isolated and non-authorizing:
+   - `--runtime-dir` must be an explicit temp path
+   - runtime artifacts stay under that dir only
+   - the public scripts call `--apply-temp-run` / `--rollback-temp-run`, not a
+     hidden prod target
+   - it does not write `/etc/solana-copy-bot/live.server.toml`
+   - it does not touch `solana-copy-bot.service`
+   - it does not submit trades
+4. Temp apply writes bounded runtime evidence under the runtime dir:
+   - session metadata
+   - pid file
+   - log file
+   - activation status artifact
+   - rollback status artifact after rollback
+5. Stage 3 still remains the hard gate for production activation:
+   - a green temp rehearsal only proves isolated mechanics
+   - it does not authorize production activation
+   - it does not weaken the existing pre-activation gate
+6. Important rehearsal verdicts:
+   - `tiny_live_activation_apply_plan_ready`
+   - `tiny_live_activation_apply_script_rendered`
+   - `tiny_live_activation_apply_refused_by_stage3`
+   - `tiny_live_activation_apply_refused_by_pre_activation_gate`
+   - `tiny_live_activation_apply_refused_by_invalid_rendered_artifact`
+   - `tiny_live_activation_apply_refused_by_unsafe_runtime_dir`
+   - `tiny_live_activation_temp_run_started`
+   - `tiny_live_activation_temp_run_verify_ok`
+   - `tiny_live_activation_temp_run_verify_failed`
+   - `tiny_live_rollback_apply_script_rendered`
+   - `tiny_live_rollback_temp_run_completed`
+   - `tiny_live_rollback_temp_run_verify_failed`
    - `tiny_live_activation_refused_by_pre_activation_gate`
    - `tiny_live_activation_refused_by_config_drift`
    - `tiny_live_activation_verify_ok`

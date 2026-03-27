@@ -18,7 +18,7 @@ pub(crate) mod activation_decision_packet;
 pub(crate) mod tiny_live_activation_plan;
 
 const USAGE: &str = "usage: copybot_tiny_live_activation_execute --config <path> (--plan | --render-activation-config --output <path> | --render-rollback-config --output <path> | --verify-rendered-config) [--json] [--expected-source-fingerprint <sha256>] [--now <rfc3339>] [--stage3-limit <count>] [--stage3-recent-horizon-seconds <seconds>] [--rehearsal-limit <count>] [--rehearsal-recent-horizon-seconds <seconds>] [--min-recent-acceptable-rehearsals <count>]";
-const FINGERPRINT_SCOPE: &str = "prod_execution_policy_guardrails";
+pub(crate) const FINGERPRINT_SCOPE: &str = "prod_execution_policy_guardrails";
 const METADATA_VERSION: &str = "1";
 const METADATA_SUFFIX: &str = ".tiny_live_activation_execute.metadata.json";
 
@@ -61,7 +61,7 @@ enum Mode {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum RenderKind {
+pub(crate) enum RenderKind {
     Activation,
     Rollback,
 }
@@ -85,48 +85,58 @@ enum TinyLiveActivationExecuteVerdict {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct FieldExpectation {
-    field: String,
-    source_value: Value,
-    target_value: Value,
-    reason: String,
-    source: String,
+pub(crate) struct FieldExpectation {
+    pub(crate) field: String,
+    pub(crate) source_value: Value,
+    pub(crate) target_value: Value,
+    pub(crate) reason: String,
+    pub(crate) source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct RenderedConfigMetadata {
-    metadata_version: String,
-    render_kind: RenderKind,
-    generated_at: DateTime<Utc>,
-    input_config_path: String,
-    output_config_path: String,
-    source_config_fingerprint_scope: String,
-    source_config_fingerprint_sha256: String,
-    expected_source_fingerprint_sha256: Option<String>,
-    rendered_config_sha256: String,
-    pre_activation_gate_verdict: String,
-    pre_activation_gate_reason: String,
-    activation_plan_verdict: String,
-    activation_plan_reason: String,
-    activation_overlay_complete: bool,
-    rollback_plan_complete: bool,
-    service_restart_contract_complete: bool,
-    field_expectations: Vec<FieldExpectation>,
-    execution_untouched_by_batch: bool,
-    activation_authorized: bool,
-    not_authorized_summary: String,
+pub(crate) struct RenderedConfigMetadata {
+    pub(crate) metadata_version: String,
+    pub(crate) render_kind: RenderKind,
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) input_config_path: String,
+    pub(crate) output_config_path: String,
+    pub(crate) source_config_fingerprint_scope: String,
+    pub(crate) source_config_fingerprint_sha256: String,
+    pub(crate) expected_source_fingerprint_sha256: Option<String>,
+    pub(crate) rendered_config_sha256: String,
+    pub(crate) pre_activation_gate_verdict: String,
+    pub(crate) pre_activation_gate_reason: String,
+    pub(crate) activation_plan_verdict: String,
+    pub(crate) activation_plan_reason: String,
+    pub(crate) activation_overlay_complete: bool,
+    pub(crate) rollback_plan_complete: bool,
+    pub(crate) service_restart_contract_complete: bool,
+    pub(crate) field_expectations: Vec<FieldExpectation>,
+    pub(crate) execution_untouched_by_batch: bool,
+    pub(crate) activation_authorized: bool,
+    pub(crate) not_authorized_summary: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct VerificationSummary {
-    render_kind: RenderKind,
-    metadata_path: String,
-    rendered_config_sha256: String,
-    file_hash_matches_metadata: bool,
-    source_config_path_present: bool,
-    source_config_fingerprint_matches_current: Option<bool>,
-    metadata_mismatches: Vec<String>,
-    field_mismatches: Vec<String>,
+pub(crate) struct VerificationSummary {
+    pub(crate) render_kind: RenderKind,
+    pub(crate) metadata_path: String,
+    pub(crate) rendered_config_sha256: String,
+    pub(crate) file_hash_matches_metadata: bool,
+    pub(crate) source_config_path_present: bool,
+    pub(crate) source_config_fingerprint_matches_current: Option<bool>,
+    pub(crate) metadata_mismatches: Vec<String>,
+    pub(crate) field_mismatches: Vec<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct LoadedRenderedConfigArtifact {
+    pub(crate) rendered_config_path: PathBuf,
+    pub(crate) metadata_path: PathBuf,
+    pub(crate) metadata: RenderedConfigMetadata,
+    pub(crate) rendered_config: AppConfig,
+    pub(crate) verification: VerificationSummary,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -339,7 +349,111 @@ async fn build_render_report(config: &Config, render_kind: RenderKind) -> Result
 }
 
 fn build_verify_report(config: &Config) -> Result<ExecuteReport> {
-    let metadata_path = metadata_path_for_config(&config.config_path);
+    let inspected = inspect_rendered_config_artifact_relaxed(&config.config_path)?;
+    let verdict = match inspected.metadata.render_kind {
+        RenderKind::Activation => {
+            if inspected.verification.metadata_mismatches.is_empty()
+                && inspected.verification.field_mismatches.is_empty()
+            {
+                TinyLiveActivationExecuteVerdict::TinyLiveActivationVerifyOk
+            } else {
+                TinyLiveActivationExecuteVerdict::TinyLiveActivationVerifyInvalid
+            }
+        }
+        RenderKind::Rollback => {
+            if inspected.verification.metadata_mismatches.is_empty()
+                && inspected.verification.field_mismatches.is_empty()
+            {
+                TinyLiveActivationExecuteVerdict::TinyLiveRollbackVerifyOk
+            } else {
+                TinyLiveActivationExecuteVerdict::TinyLiveRollbackVerifyInvalid
+            }
+        }
+    };
+    let reason = if inspected.verification.metadata_mismatches.is_empty()
+        && inspected.verification.field_mismatches.is_empty()
+    {
+        match inspected.metadata.render_kind {
+            RenderKind::Activation => {
+                "rendered activation config matches its bounded overlay metadata".to_string()
+            }
+            RenderKind::Rollback => {
+                "rendered rollback config matches its bounded overlay metadata".to_string()
+            }
+        }
+    } else {
+        inspected
+            .verification
+            .metadata_mismatches
+            .first()
+            .cloned()
+            .or_else(|| inspected.verification.field_mismatches.first().cloned())
+            .unwrap_or_else(|| "rendered config failed verification".to_string())
+    };
+    Ok(ExecuteReport {
+        generated_at: Utc::now(),
+        mode: "verify_rendered_config".to_string(),
+        verdict,
+        reason,
+        input_config_path: config.config_path.display().to_string(),
+        output_config_path: Some(config.config_path.display().to_string()),
+        metadata_path: Some(inspected.metadata_path.display().to_string()),
+        render_kind: Some(inspected.metadata.render_kind),
+        pre_activation_gate_verdict: Some(inspected.metadata.pre_activation_gate_verdict.clone()),
+        pre_activation_gate_reason: Some(inspected.metadata.pre_activation_gate_reason.clone()),
+        activation_plan_verdict: Some(inspected.metadata.activation_plan_verdict.clone()),
+        activation_plan_reason: Some(inspected.metadata.activation_plan_reason.clone()),
+        source_config_fingerprint_scope: Some(inspected.metadata.source_config_fingerprint_scope.clone()),
+        source_config_fingerprint_sha256: Some(inspected.metadata.source_config_fingerprint_sha256.clone()),
+        expected_source_fingerprint_sha256: inspected.metadata.expected_source_fingerprint_sha256.clone(),
+        overlay_field_count: inspected.metadata.field_expectations.len(),
+        applied_change_count: inspected
+            .metadata
+            .field_expectations
+            .iter()
+            .filter(|field| field.source_value != field.target_value)
+            .count(),
+        changed_fields: inspected.metadata.field_expectations.clone(),
+        service_restart_contract_complete: Some(inspected.metadata.service_restart_contract_complete),
+        rollback_summary: Some(match inspected.metadata.render_kind {
+            RenderKind::Activation => {
+                "rollback remains a separately rendered safe config artifact".to_string()
+            }
+            RenderKind::Rollback => {
+                "rendered rollback config must guarantee execution.enabled=false and the current bounded safe posture"
+                    .to_string()
+            }
+        }),
+        verification: Some(inspected.verification),
+        activation_authorized: false,
+        explicit_statement:
+            "verification checks rendered-config integrity and bounded overlay truth only; it does not authorize production activation by itself"
+                .to_string(),
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn inspect_rendered_config_artifact(
+    path: &Path,
+) -> Result<LoadedRenderedConfigArtifact> {
+    let inspected = inspect_rendered_config_artifact_relaxed(path)?;
+    if !inspected.verification.metadata_mismatches.is_empty()
+        || !inspected.verification.field_mismatches.is_empty()
+    {
+        let message = inspected
+            .verification
+            .metadata_mismatches
+            .first()
+            .cloned()
+            .or_else(|| inspected.verification.field_mismatches.first().cloned())
+            .unwrap_or_else(|| "rendered config artifact is invalid".to_string());
+        bail!("{message}");
+    }
+    Ok(inspected)
+}
+
+fn inspect_rendered_config_artifact_relaxed(path: &Path) -> Result<LoadedRenderedConfigArtifact> {
+    let metadata_path = metadata_path_for_rendered_config(path);
     let metadata_contents = fs::read_to_string(&metadata_path).with_context(|| {
         format!(
             "failed reading tiny-live activation metadata {}",
@@ -356,20 +470,12 @@ fn build_verify_report(config: &Config) -> Result<ExecuteReport> {
         );
     }
 
-    let rendered_bytes = fs::read(&config.config_path).with_context(|| {
-        format!(
-            "failed reading rendered config {}",
-            config.config_path.display()
-        )
-    })?;
+    let rendered_bytes = fs::read(path)
+        .with_context(|| format!("failed reading rendered config {}", path.display()))?;
     let rendered_config_sha256 = sha256_hex(&rendered_bytes);
     let file_hash_matches_metadata = rendered_config_sha256 == metadata.rendered_config_sha256;
-    let rendered_config = load_from_path(&config.config_path).with_context(|| {
-        format!(
-            "failed parsing rendered config {}",
-            config.config_path.display()
-        )
-    })?;
+    let rendered_config = load_from_path(path)
+        .with_context(|| format!("failed parsing rendered config {}", path.display()))?;
     let field_mismatches =
         collect_field_expectation_mismatches(&rendered_config, &metadata.field_expectations)?;
     let mut metadata_mismatches = Vec::new();
@@ -416,73 +522,15 @@ fn build_verify_report(config: &Config) -> Result<ExecuteReport> {
         ));
     }
 
-    let verdict = match metadata.render_kind {
-        RenderKind::Activation => {
-            if metadata_mismatches.is_empty() && field_mismatches.is_empty() {
-                TinyLiveActivationExecuteVerdict::TinyLiveActivationVerifyOk
-            } else {
-                TinyLiveActivationExecuteVerdict::TinyLiveActivationVerifyInvalid
-            }
-        }
-        RenderKind::Rollback => {
-            if metadata_mismatches.is_empty() && field_mismatches.is_empty() {
-                TinyLiveActivationExecuteVerdict::TinyLiveRollbackVerifyOk
-            } else {
-                TinyLiveActivationExecuteVerdict::TinyLiveRollbackVerifyInvalid
-            }
-        }
-    };
-    let reason = if metadata_mismatches.is_empty() && field_mismatches.is_empty() {
-        match metadata.render_kind {
-            RenderKind::Activation => {
-                "rendered activation config matches its bounded overlay metadata".to_string()
-            }
-            RenderKind::Rollback => {
-                "rendered rollback config matches its bounded overlay metadata".to_string()
-            }
-        }
-    } else {
-        metadata_mismatches
-            .first()
-            .cloned()
-            .or_else(|| field_mismatches.first().cloned())
-            .unwrap_or_else(|| "rendered config failed verification".to_string())
-    };
-    Ok(ExecuteReport {
-        generated_at: Utc::now(),
-        mode: "verify_rendered_config".to_string(),
-        verdict,
-        reason,
-        input_config_path: config.config_path.display().to_string(),
-        output_config_path: Some(config.config_path.display().to_string()),
-        metadata_path: Some(metadata_path.display().to_string()),
-        render_kind: Some(metadata.render_kind),
-        pre_activation_gate_verdict: Some(metadata.pre_activation_gate_verdict.clone()),
-        pre_activation_gate_reason: Some(metadata.pre_activation_gate_reason.clone()),
-        activation_plan_verdict: Some(metadata.activation_plan_verdict.clone()),
-        activation_plan_reason: Some(metadata.activation_plan_reason.clone()),
-        source_config_fingerprint_scope: Some(metadata.source_config_fingerprint_scope.clone()),
-        source_config_fingerprint_sha256: Some(metadata.source_config_fingerprint_sha256.clone()),
-        expected_source_fingerprint_sha256: metadata.expected_source_fingerprint_sha256.clone(),
-        overlay_field_count: metadata.field_expectations.len(),
-        applied_change_count: metadata
-            .field_expectations
-            .iter()
-            .filter(|field| field.source_value != field.target_value)
-            .count(),
-        changed_fields: metadata.field_expectations.clone(),
-        service_restart_contract_complete: Some(metadata.service_restart_contract_complete),
-        rollback_summary: Some(match metadata.render_kind {
-            RenderKind::Activation => {
-                "rollback remains a separately rendered safe config artifact".to_string()
-            }
-            RenderKind::Rollback => {
-                "rendered rollback config must guarantee execution.enabled=false and the current bounded safe posture"
-                    .to_string()
-            }
-        }),
-        verification: Some(VerificationSummary {
-            render_kind: metadata.render_kind,
+    let render_kind = metadata.render_kind;
+
+    Ok(LoadedRenderedConfigArtifact {
+        rendered_config_path: path.to_path_buf(),
+        metadata_path: metadata_path.clone(),
+        metadata,
+        rendered_config,
+        verification: VerificationSummary {
+            render_kind,
             metadata_path: metadata_path.display().to_string(),
             rendered_config_sha256,
             file_hash_matches_metadata,
@@ -490,11 +538,7 @@ fn build_verify_report(config: &Config) -> Result<ExecuteReport> {
             source_config_fingerprint_matches_current,
             metadata_mismatches,
             field_mismatches,
-        }),
-        activation_authorized: false,
-        explicit_statement:
-            "verification checks rendered-config integrity and bounded overlay truth only; it does not authorize production activation by itself"
-                .to_string(),
+        },
     })
 }
 
@@ -590,7 +634,7 @@ fn refusal_report(
         metadata_path: config
             .output_path
             .as_ref()
-            .map(|path| metadata_path_for_config(path).display().to_string()),
+            .map(|path| metadata_path_for_rendered_config(path).display().to_string()),
         render_kind: Some(render_kind),
         pre_activation_gate_verdict: Some(context.plan.pre_activation_gate.verdict.clone()),
         pre_activation_gate_reason: Some(context.plan.pre_activation_gate.reason.clone()),
@@ -864,7 +908,7 @@ fn ensure_new_output_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn metadata_path_for_config(path: &Path) -> PathBuf {
+pub(crate) fn metadata_path_for_rendered_config(path: &Path) -> PathBuf {
     let suffix = format!(
         "{}{}",
         path.file_name()
@@ -965,7 +1009,7 @@ fn render_with_context(
         .output_path
         .as_ref()
         .ok_or_else(|| anyhow!("render modes require --output"))?;
-    let metadata_path = metadata_path_for_config(output_path);
+    let metadata_path = metadata_path_for_rendered_config(output_path);
     ensure_new_output_path(output_path)?;
     ensure_new_output_path(&metadata_path)?;
 
@@ -1278,7 +1322,7 @@ mod tests {
             load_from_path(&config_path).unwrap().execution.enabled,
             loaded_config.execution.enabled
         );
-        assert!(metadata_path_for_config(&output_path).exists());
+        assert!(metadata_path_for_rendered_config(&output_path).exists());
     }
 
     #[test]
