@@ -12,6 +12,9 @@ use std::time::{Duration, Instant};
 #[path = "copybot_activation_decision_packet.rs"]
 pub(crate) mod activation_decision_packet;
 #[allow(dead_code)]
+#[path = "../live_service_control_wrapper_contract.rs"]
+pub(crate) mod live_service_control_wrapper_contract;
+#[allow(dead_code)]
 #[path = "copybot_tiny_live_activation_apply.rs"]
 pub(crate) mod tiny_live_activation_apply;
 #[allow(dead_code)]
@@ -171,6 +174,8 @@ pub(crate) struct LiveWatchVerificationSummary {
     service_status_fresh: Option<bool>,
     service_status_age_ms: Option<u64>,
     max_service_status_staleness_ms: u64,
+    service_control_wrapper_verification:
+        Option<tiny_live_activation_live_execute::ServiceControlWrapperVerificationSummary>,
     mismatches: Vec<String>,
 }
 
@@ -386,6 +391,20 @@ fn build_plan_watch_report(config: &Config) -> Result<WatchReport> {
             ))
         }
     };
+    if let Some(path) = &config.service_control_command_path {
+        if let Err(error) =
+            tiny_live_activation_live_execute::inspect_service_control_wrapper_contract_for_live_target(path)
+        {
+            return Ok(invalid_report(
+                config,
+                "plan_watch",
+                error.to_string(),
+                Some(&context),
+                None,
+                None,
+            ));
+        }
+    }
     Ok(WatchReport {
         generated_at: Utc::now(),
         mode: "plan_watch".to_string(),
@@ -1150,6 +1169,9 @@ fn verify_live_contract(
         service_status_fresh,
         service_status_age_ms,
         max_service_status_staleness_ms,
+        service_control_wrapper_verification: Some(
+            target.service_control_wrapper_verification.clone(),
+        ),
         mismatches,
     })
 }
@@ -1992,6 +2014,40 @@ fn render_human(report: &WatchReport) -> String {
             "max_service_status_staleness_ms={}",
             verification.max_service_status_staleness_ms
         ));
+        if let Some(wrapper) = &verification.service_control_wrapper_verification {
+            lines.push(format!(
+                "service_control_wrapper_verified={}",
+                wrapper.mismatches.is_empty()
+            ));
+            lines.push(format!(
+                "service_control_wrapper_exact_content_matches_expected={}",
+                wrapper.exact_content_matches_expected
+            ));
+            if let Some(value) = &wrapper.wrapper_version {
+                lines.push(format!("service_control_wrapper_version={value}"));
+            }
+            if let Some(value) = &wrapper.status_schema_version {
+                lines.push(format!(
+                    "service_control_wrapper_status_schema_version={value}"
+                ));
+            }
+            if let Some(value) = wrapper.timeout_ms {
+                lines.push(format!("service_control_wrapper_timeout_ms={value}"));
+            }
+            if let Some(value) = &wrapper.backend_command {
+                lines.push(format!("service_control_wrapper_backend_command={value}"));
+            }
+            if !wrapper.supported_actions.is_empty() {
+                lines.push(format!(
+                    "service_control_wrapper_supported_actions={}",
+                    wrapper.supported_actions.join(",")
+                ));
+            }
+            if !wrapper.mismatches.is_empty() {
+                lines.push("service_control_wrapper_mismatches:".to_string());
+                lines.extend(wrapper.mismatches.iter().map(|entry| format!("  {entry}")));
+            }
+        }
         if !verification.mismatches.is_empty() {
             lines.push("live_watch_mismatches:".to_string());
             lines.extend(
@@ -2529,6 +2585,25 @@ mod tests {
         );
         let report = verify_watch_target_report(&fixture.watch_config()).expect("verify");
         assert_eq!(report.verdict, TinyLiveWatchVerdict::TinyLiveWatchVerifyOk);
+        assert!(report
+            .live_watch_verification
+            .as_ref()
+            .and_then(|value| value.service_control_wrapper_verification.as_ref())
+            .map(|value| value.mismatches.is_empty())
+            .unwrap_or(false));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plan_watch_rejects_non_wrapper_service_control_command() {
+        let fixture = live_fixture("tiny_live_watch_plan_non_wrapper");
+        write_non_wrapper_service_control_command(&fixture.service_control_command_path);
+        let report = build_plan_watch_report(&fixture.watch_config()).expect("plan");
+        assert_eq!(
+            report.verdict,
+            TinyLiveWatchVerdict::TinyLiveWatchVerifyInvalid
+        );
+        assert!(report.reason.contains("repo-managed wrapper contract"));
     }
 
     #[test]
@@ -2999,7 +3074,26 @@ mod tests {
     }
 
     fn write_fake_service_control_command(path: &Path) {
-        fs::write(path, "#!/usr/bin/env bash\nexit 0\n").unwrap();
+        let backend_path = path.with_extension("backend.sh");
+        fs::write(
+            &backend_path,
+            "#!/usr/bin/env bash\nset -euo pipefail\ncmd=\"${1:-}\"\ncase \"$cmd\" in\n  restart) exit 0 ;;\n  show) printf 'active\\nrunning\\n' ;;\n  *) exit 2 ;;\nesac\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&backend_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&backend_path, perms).unwrap();
+        live_service_control_wrapper_contract::render_wrapper_script(
+            path,
+            &backend_path.display().to_string(),
+            live_service_control_wrapper_contract::DEFAULT_TIMEOUT_MS,
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    fn write_non_wrapper_service_control_command(path: &Path) {
+        fs::write(path, "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n").unwrap();
         let mut perms = fs::metadata(path).unwrap().permissions();
         perms.set_mode(0o755);
         fs::set_permissions(path, perms).unwrap();

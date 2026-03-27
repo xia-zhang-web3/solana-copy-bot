@@ -15,6 +15,9 @@ use std::time::{Duration, Instant};
 #[path = "copybot_activation_decision_packet.rs"]
 pub(crate) mod activation_decision_packet;
 #[allow(dead_code)]
+#[path = "../live_service_control_wrapper_contract.rs"]
+pub(crate) mod live_service_control_wrapper_contract;
+#[allow(dead_code)]
 #[path = "copybot_pre_activation_gate_report.rs"]
 pub(crate) mod pre_activation_gate_report;
 #[allow(dead_code)]
@@ -97,7 +100,11 @@ struct ValidatedArtifactPair {
 pub(crate) struct TargetContract {
     pub(crate) current_bytes: Vec<u8>,
     pub(crate) current_fingerprint: activation_decision_packet::ConfigFingerprintSummary,
+    pub(crate) service_control_wrapper_verification: ServiceControlWrapperVerificationSummary,
 }
+
+pub(crate) type ServiceControlWrapperVerificationSummary =
+    live_service_control_wrapper_contract::WrapperVerificationSummary;
 
 #[derive(Debug, Clone)]
 struct CurrentGateTruth {
@@ -184,6 +191,8 @@ pub(crate) struct LiveTargetVerificationSummary {
     pub(crate) status_restart_successful: Option<bool>,
     pub(crate) observed_execution_enabled: Option<bool>,
     pub(crate) observed_config_fingerprint_sha256: Option<String>,
+    pub(crate) service_control_wrapper_verification:
+        Option<ServiceControlWrapperVerificationSummary>,
     pub(crate) mismatches: Vec<String>,
 }
 
@@ -547,6 +556,9 @@ fn build_plan_live_report(config: &Config) -> Result<LiveExecuteReport> {
             status_restart_successful: None,
             observed_execution_enabled: None,
             observed_config_fingerprint_sha256: None,
+            service_control_wrapper_verification: Some(
+                target.service_control_wrapper_verification.clone(),
+            ),
             mismatches: Vec::new(),
         }),
         activation_authorized: false,
@@ -673,6 +685,9 @@ fn backup_current_config_report(config: &Config) -> Result<LiveExecuteReport> {
             status_restart_successful: None,
             observed_execution_enabled: None,
             observed_config_fingerprint_sha256: None,
+            service_control_wrapper_verification: Some(
+                target.service_control_wrapper_verification.clone(),
+            ),
             mismatches: Vec::new(),
         }),
         activation_authorized: false,
@@ -851,6 +866,9 @@ fn verify_live_target_report(config: &Config) -> Result<LiveExecuteReport> {
         status_restart_successful: None,
         observed_execution_enabled: None,
         observed_config_fingerprint_sha256: None,
+        service_control_wrapper_verification: Some(
+            target.service_control_wrapper_verification.clone(),
+        ),
         mismatches: mismatches.clone(),
     };
     Ok(LiveExecuteReport {
@@ -1007,6 +1025,7 @@ fn apply_live_report(config: &Config) -> Result<LiveExecuteReport> {
         ServiceAction::Activation,
         &expected_activation_fingerprint.sha256,
         true,
+        target.service_control_wrapper_verification.clone(),
     )?;
     if apply_verification.mismatches.is_empty() {
         return Ok(LiveExecuteReport {
@@ -1054,7 +1073,12 @@ fn apply_live_report(config: &Config) -> Result<LiveExecuteReport> {
 
     // If the bounded restart receipt is not trustworthy, restore the paired safe rollback posture
     // immediately instead of leaving the target config half-activated.
-    let rollback_verification = perform_rollback(config, &pair, &runtime_paths)?;
+    let rollback_verification = perform_rollback(
+        config,
+        &pair,
+        &runtime_paths,
+        target.service_control_wrapper_verification.clone(),
+    )?;
     let (verdict, reason) = if rollback_verification.mismatches.is_empty() {
         (
             TinyLiveLiveExecuteVerdict::TinyLiveLiveApplyRolledBack,
@@ -1168,7 +1192,12 @@ fn rollback_live_report(config: &Config) -> Result<LiveExecuteReport> {
         &runtime_paths.session_path,
         &serde_json::to_string_pretty(&session)?,
     )?;
-    let verification = perform_rollback(config, &pair, &runtime_paths)?;
+    let verification = perform_rollback(
+        config,
+        &pair,
+        &runtime_paths,
+        target.service_control_wrapper_verification.clone(),
+    )?;
     let verdict = if verification.mismatches.is_empty() {
         TinyLiveLiveExecuteVerdict::TinyLiveLiveRollbackCompleted
     } else {
@@ -1230,6 +1259,7 @@ fn perform_rollback(
     config: &Config,
     pair: &ValidatedArtifactPair,
     runtime_paths: &LiveRuntimePaths,
+    service_control_wrapper_verification: ServiceControlWrapperVerificationSummary,
 ) -> Result<LiveTargetVerificationSummary> {
     let current_bytes = fs::read(&config.target_config_path).unwrap_or_default();
     atomic_replace_file_from_path(
@@ -1247,6 +1277,7 @@ fn perform_rollback(
         ServiceAction::Rollback,
         &rollback_fingerprint.sha256,
         false,
+        service_control_wrapper_verification,
     )
 }
 
@@ -1429,6 +1460,8 @@ fn inspect_target_contract(
             ));
         }
     }
+    let service_control_wrapper_verification =
+        verify_service_control_wrapper_contract(&config.service_control_command_path)?;
     if !target_path_matches_artifacts(config, pair) {
         return Err(ContractFailure::new(
             ContractFailureKind::UnsafeTarget,
@@ -1474,7 +1507,40 @@ fn inspect_target_contract(
     Ok(TargetContract {
         current_bytes,
         current_fingerprint,
+        service_control_wrapper_verification,
     })
+}
+
+fn verify_service_control_wrapper_contract(
+    path: &Path,
+) -> std::result::Result<ServiceControlWrapperVerificationSummary, ContractFailure> {
+    let summary = live_service_control_wrapper_contract::verify_wrapper(path).map_err(|error| {
+        ContractFailure::new(
+            ContractFailureKind::UnsafeTarget,
+            format!(
+                "service control command {} does not match the repo-managed wrapper contract: {error:#}",
+                path.display()
+            ),
+        )
+    })?;
+    if !summary.mismatches.is_empty() {
+        return Err(ContractFailure::new(
+            ContractFailureKind::UnsafeTarget,
+            format!(
+                "service control command {} does not match the repo-managed wrapper contract: {}",
+                path.display(),
+                summary.mismatches.join("; ")
+            ),
+        ));
+    }
+    Ok(summary)
+}
+
+#[allow(dead_code)]
+pub(crate) fn inspect_service_control_wrapper_contract_for_live_target(
+    path: &Path,
+) -> Result<ServiceControlWrapperVerificationSummary> {
+    verify_service_control_wrapper_contract(path).map_err(|failure| anyhow!(failure.reason))
 }
 
 #[allow(dead_code)]
@@ -2146,6 +2212,7 @@ fn execute_service_action_and_verify(
     action: ServiceAction,
     expected_fingerprint_sha256: &str,
     expected_execution_enabled: bool,
+    service_control_wrapper_verification: ServiceControlWrapperVerificationSummary,
 ) -> Result<LiveTargetVerificationSummary> {
     let status_path = match action {
         ServiceAction::Activation => &runtime_paths.apply_status_path,
@@ -2223,6 +2290,7 @@ fn execute_service_action_and_verify(
         status_restart_successful,
         observed_execution_enabled,
         observed_config_fingerprint_sha256,
+        service_control_wrapper_verification: Some(service_control_wrapper_verification),
         mismatches,
     })
 }
@@ -2831,6 +2899,43 @@ fn render_human(report: &LiveExecuteReport) -> String {
                 "service_status_observed_config_fingerprint_sha256={value}"
             ));
         }
+        if let Some(wrapper) = &verification.service_control_wrapper_verification {
+            lines.push(format!(
+                "service_control_wrapper_verified={}",
+                wrapper.mismatches.is_empty()
+            ));
+            lines.push(format!(
+                "service_control_wrapper_exact_content_matches_expected={}",
+                wrapper.exact_content_matches_expected
+            ));
+            if let Some(value) = &wrapper.wrapper_version {
+                lines.push(format!("service_control_wrapper_version={value}"));
+            }
+            if let Some(value) = &wrapper.status_schema_version {
+                lines.push(format!(
+                    "service_control_wrapper_status_schema_version={value}"
+                ));
+            }
+            if let Some(value) = wrapper.timeout_ms {
+                lines.push(format!("service_control_wrapper_timeout_ms={value}"));
+            }
+            if let Some(value) = wrapper.executable {
+                lines.push(format!("service_control_wrapper_executable={value}"));
+            }
+            if let Some(value) = &wrapper.backend_command {
+                lines.push(format!("service_control_wrapper_backend_command={value}"));
+            }
+            if !wrapper.supported_actions.is_empty() {
+                lines.push(format!(
+                    "service_control_wrapper_supported_actions={}",
+                    wrapper.supported_actions.join(",")
+                ));
+            }
+            if !wrapper.mismatches.is_empty() {
+                lines.push("service_control_wrapper_mismatches:".to_string());
+                lines.extend(wrapper.mismatches.iter().map(|entry| format!("  {entry}")));
+            }
+        }
         if !verification.mismatches.is_empty() {
             lines.push("live_verification_mismatches:".to_string());
             lines.extend(
@@ -3037,6 +3142,17 @@ mod tests {
         );
         assert!(report.apply_command_summary.is_some());
         assert!(report.rollback_command_summary.is_some());
+        assert!(report
+            .live_verification
+            .as_ref()
+            .and_then(|value| value.service_control_wrapper_verification.as_ref())
+            .is_some());
+        assert!(report
+            .live_verification
+            .as_ref()
+            .and_then(|value| value.service_control_wrapper_verification.as_ref())
+            .map(|value| value.mismatches.is_empty())
+            .unwrap_or(false));
     }
 
     #[test]
@@ -3157,6 +3273,12 @@ mod tests {
             report.verdict,
             TinyLiveLiveExecuteVerdict::TinyLiveLiveVerifyOk
         );
+        assert!(report
+            .live_verification
+            .as_ref()
+            .and_then(|value| value.service_control_wrapper_verification.as_ref())
+            .map(|value| value.mismatches.is_empty())
+            .unwrap_or(false));
         assert_eq!(
             report
                 .live_verification
@@ -3174,6 +3296,27 @@ mod tests {
             verified.verdict,
             TinyLiveLiveExecuteVerdict::TinyLiveLiveVerifyOk
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_wrapper_service_control_command_is_refused_by_live_plan_and_verify() {
+        let fixture = live_fixture("tiny_live_live_execute_non_wrapper", GateState::Green);
+        write_non_wrapper_service_control_command(&fixture.config.service_control_command_path);
+
+        let plan = build_plan_live_report(&fixture.config).expect("plan");
+        assert_eq!(
+            plan.verdict,
+            TinyLiveLiveExecuteVerdict::TinyLiveLiveApplyRefusedByUnsafeTarget
+        );
+        assert!(plan.reason.contains("repo-managed wrapper contract"));
+
+        let verify = verify_live_target_report(&fixture.config).expect("verify");
+        assert_eq!(
+            verify.verdict,
+            TinyLiveLiveExecuteVerdict::TinyLiveLiveVerifyInvalid
+        );
+        assert!(verify.reason.contains("repo-managed wrapper contract"));
     }
 
     #[test]
@@ -3784,56 +3927,48 @@ mod tests {
 
     #[cfg(unix)]
     fn write_fake_service_control_command(path: &Path) {
+        let backend_path = path.with_extension("backend.sh");
         let script = r#"#!/usr/bin/env bash
 set -euo pipefail
-action=""
-service_name=""
-target_config=""
-status_path=""
-runtime_dir=""
-expected_fingerprint=""
-expected_enabled=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --action) action="$2"; shift 2 ;;
-    --service-name) service_name="$2"; shift 2 ;;
-    --target-config) target_config="$2"; shift 2 ;;
-    --status-path) status_path="$2"; shift 2 ;;
-    --runtime-dir) runtime_dir="$2"; shift 2 ;;
-    --expected-config-fingerprint) expected_fingerprint="$2"; shift 2 ;;
-    --expected-execution-enabled) expected_enabled="$2"; shift 2 ;;
-    *) echo "unexpected arg $1" >&2; exit 2 ;;
-  esac
-done
-if [[ "$action" == "activation" && -f "$runtime_dir/force_apply_exit_failure" ]]; then
-  echo "forced activation failure" >&2
-  exit 7
-fi
-observed_enabled="$expected_enabled"
-observed_fingerprint="$expected_fingerprint"
-if [[ "$action" == "activation" && -f "$runtime_dir/force_apply_status_mismatch" ]]; then
-  observed_enabled="false"
-  observed_fingerprint="mismatch"
-fi
-tmp_status="${status_path}.tmp.$$"
-cat > "$tmp_status" <<JSON
-{
-  "status_version": "1",
-  "action": "$action",
-  "observed_at": "2026-03-27T12:00:00Z",
-  "service_name": "$service_name",
-  "target_config_path": "$target_config",
-  "expected_config_fingerprint_sha256": "$expected_fingerprint",
-  "observed_config_fingerprint_sha256": "$observed_fingerprint",
-  "expected_execution_enabled": ${expected_enabled},
-  "observed_execution_enabled": ${observed_enabled},
-  "restart_successful": true,
-  "note": "fake service control"
-}
-JSON
-mv "$tmp_status" "$status_path"
+cmd="${1:-}"
+service="${2:-}"
+runtime_dir="${COPYBOT_LIVE_SERVICE_CONTROL_RUNTIME_DIR:-}"
+action="${COPYBOT_LIVE_SERVICE_CONTROL_ACTION:-}"
+mkdir -p "$runtime_dir"
+case "$cmd" in
+  restart)
+    if [[ "$action" == "activation" && -f "$runtime_dir/force_apply_exit_failure" ]]; then
+      echo "forced activation failure" >&2
+      exit 7
+    fi
+    echo "restart:$service:$action" >> "$runtime_dir/backend.log"
+    ;;
+  show)
+    echo "show:$service:$action" >> "$runtime_dir/backend.log"
+    printf 'active\nrunning\n'
+    ;;
+  *)
+    echo "unexpected backend command $cmd" >&2
+    exit 2
+    ;;
+esac
 "#;
-        fs::write(path, script).unwrap();
+        fs::write(&backend_path, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&backend_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&backend_path, perms).unwrap();
+        live_service_control_wrapper_contract::render_wrapper_script(
+            path,
+            &backend_path.display().to_string(),
+            live_service_control_wrapper_contract::DEFAULT_TIMEOUT_MS,
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    fn write_non_wrapper_service_control_command(path: &Path) {
+        fs::write(path, "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         let mut perms = fs::metadata(path).unwrap().permissions();
         perms.set_mode(0o755);

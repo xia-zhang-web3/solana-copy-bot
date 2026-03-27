@@ -792,6 +792,40 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `tiny_live_live_cutover_failed_before_apply`
    - `tiny_live_live_cutover_failed_during_watch`
 
+## Tiny-Live Service-Control Wrapper
+
+1. The repo now also owns the bounded service-control wrapper contract that the
+   live executor / watch / cutover path depends on:
+   - render the wrapper to an explicit path without hand-written shell:
+     `copybot_live_service_control_wrapper --render-wrapper --output /usr/local/bin/copybot-live-service-control --json`
+   - install the same deterministic wrapper contract to an explicit path:
+     `copybot_live_service_control_wrapper --install-wrapper --output /usr/local/bin/copybot-live-service-control --json`
+   - verify an existing wrapper at path still matches the repo-managed contract:
+     `copybot_live_service_control_wrapper --verify-wrapper --path /usr/local/bin/copybot-live-service-control --json`
+2. The wrapper contract is explicit and tightly bounded:
+   - it accepts only an explicit service name and refuses unsafe names
+   - it supports bounded `status`, bounded `restart`, and explicit
+     `rollback-status`, plus the existing `activation` / `rollback`
+     compatibility actions that live execute already expects
+   - it emits the deterministic JSON status schema that
+     `copybot_tiny_live_activation_live_execute`,
+     `copybot_tiny_live_activation_watch`, and
+     `copybot_tiny_live_activation_cutover` already verify
+   - it keeps a bounded timeout contract instead of depending on an opaque ad
+     hoc external shell command
+3. Live execute / watch / cutover should now point `--service-control-command`
+   at this rendered wrapper path rather than a hand-maintained external helper.
+4. This wrapper package still does not authorize production activation:
+   - rendering or verifying the wrapper is not permission to enable prod
+     execution
+   - Stage 3 remains the hard gate for any future production-facing activation
+   - tests only use fake backends in temp directories, not the real prod unit
+5. Important wrapper verdicts:
+   - `tiny_live_service_control_wrapper_rendered`
+   - `tiny_live_service_control_wrapper_verify_ok`
+   - `tiny_live_service_control_wrapper_verify_invalid`
+   - `tiny_live_service_control_wrapper_install_refused`
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

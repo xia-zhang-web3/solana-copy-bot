@@ -7,6 +7,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[allow(dead_code)]
+#[path = "../live_service_control_wrapper_contract.rs"]
+pub(crate) mod live_service_control_wrapper_contract;
+#[allow(dead_code)]
 #[path = "copybot_tiny_live_activation_execute.rs"]
 pub(crate) mod tiny_live_activation_execute;
 #[allow(dead_code)]
@@ -194,6 +197,8 @@ struct CutoverReport {
     guardrail_verdict_used: Option<String>,
     guardrail_reason_used: Option<String>,
     backup_proof_present: Option<bool>,
+    service_control_wrapper_verification:
+        Option<tiny_live_activation_live_execute::ServiceControlWrapperVerificationSummary>,
     verification_mismatches: Vec<String>,
     activation_authorized: bool,
     explicit_statement: String,
@@ -1211,6 +1216,11 @@ fn base_report(
             .live_verification
             .as_ref()
             .and_then(|value| value.backup_proof_present),
+        service_control_wrapper_verification: bundle
+            .live_verify
+            .live_verification
+            .as_ref()
+            .and_then(|value| value.service_control_wrapper_verification.clone()),
         verification_mismatches: Vec::new(),
         activation_authorized: false,
         explicit_statement:
@@ -1603,6 +1613,30 @@ fn render_human(report: &CutoverReport) -> String {
     if let Some(value) = report.backup_proof_present {
         lines.push(format!("backup_proof_present={value}"));
     }
+    if let Some(wrapper) = &report.service_control_wrapper_verification {
+        lines.push(format!(
+            "service_control_wrapper_verified={}",
+            wrapper.mismatches.is_empty()
+        ));
+        lines.push(format!(
+            "service_control_wrapper_exact_content_matches_expected={}",
+            wrapper.exact_content_matches_expected
+        ));
+        if let Some(value) = &wrapper.wrapper_version {
+            lines.push(format!("service_control_wrapper_version={value}"));
+        }
+        if let Some(value) = &wrapper.status_schema_version {
+            lines.push(format!(
+                "service_control_wrapper_status_schema_version={value}"
+            ));
+        }
+        if let Some(value) = wrapper.timeout_ms {
+            lines.push(format!("service_control_wrapper_timeout_ms={value}"));
+        }
+        if let Some(value) = &wrapper.backend_command {
+            lines.push(format!("service_control_wrapper_backend_command={value}"));
+        }
+    }
     if let Some(value) = &report.cutover_session_path {
         lines.push(format!("cutover_session_path={value}"));
     }
@@ -1818,6 +1852,19 @@ mod tests {
             report.verdict,
             TinyLiveCutoverVerdict::TinyLiveLiveCutoverRefusedByStage3
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plan_live_cutover_refuses_non_wrapper_service_control_command() {
+        let fixture = live_fixture("tiny_live_cutover_non_wrapper", GateState::Green, true);
+        write_non_wrapper_service_control_command(&fixture.config.service_control_command_path);
+        let report = plan_live_cutover_report(&fixture.config).expect("plan live cutover");
+        assert_eq!(
+            report.verdict,
+            TinyLiveCutoverVerdict::TinyLiveLiveCutoverRefusedByInvalidTarget
+        );
+        assert!(report.reason.contains("repo-managed wrapper contract"));
     }
 
     #[test]
@@ -2553,61 +2600,48 @@ mod tests {
 
     #[cfg(unix)]
     fn write_fake_service_control_command(path: &Path) {
+        let backend_path = path.with_extension("backend.sh");
         let script = r#"#!/usr/bin/env bash
 set -euo pipefail
-action=""
-service_name=""
-target_config=""
-status_path=""
-runtime_dir=""
-expected_fingerprint=""
-expected_enabled=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --action) action="$2"; shift 2 ;;
-    --service-name) service_name="$2"; shift 2 ;;
-    --target-config) target_config="$2"; shift 2 ;;
-    --status-path) status_path="$2"; shift 2 ;;
-    --runtime-dir) runtime_dir="$2"; shift 2 ;;
-    --expected-config-fingerprint) expected_fingerprint="$2"; shift 2 ;;
-    --expected-execution-enabled) expected_enabled="$2"; shift 2 ;;
-    *) echo "unexpected arg $1" >&2; exit 2 ;;
-  esac
-done
-if [[ "$action" == "activation" && -f "$runtime_dir/force_apply_exit_failure" ]]; then
-  echo "forced activation failure" >&2
-  exit 7
-fi
-observed_enabled="$expected_enabled"
-observed_fingerprint="$expected_fingerprint"
-if [[ "$action" == "activation" && -f "$runtime_dir/force_apply_status_mismatch" ]]; then
-  observed_enabled="false"
-  observed_fingerprint="mismatch"
-fi
-if [[ "$action" == "rollback" && -f "$runtime_dir/force_rollback_status_mismatch" ]]; then
-  observed_enabled="true"
-  observed_fingerprint="mismatch"
-fi
-observed_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-tmp_status="${status_path}.tmp.$$"
-cat > "$tmp_status" <<JSON
-{
-  "status_version": "1",
-  "action": "$action",
-  "observed_at": "$observed_at",
-  "service_name": "$service_name",
-  "target_config_path": "$target_config",
-  "expected_config_fingerprint_sha256": "$expected_fingerprint",
-  "observed_config_fingerprint_sha256": "$observed_fingerprint",
-  "expected_execution_enabled": ${expected_enabled},
-  "observed_execution_enabled": ${observed_enabled},
-  "restart_successful": true,
-  "note": "fake service control"
-}
-JSON
-mv "$tmp_status" "$status_path"
+cmd="${1:-}"
+service="${2:-}"
+runtime_dir="${COPYBOT_LIVE_SERVICE_CONTROL_RUNTIME_DIR:-}"
+action="${COPYBOT_LIVE_SERVICE_CONTROL_ACTION:-}"
+mkdir -p "$runtime_dir"
+case "$cmd" in
+  restart)
+    if [[ "$action" == "activation" && -f "$runtime_dir/force_apply_exit_failure" ]]; then
+      echo "forced activation failure" >&2
+      exit 7
+    fi
+    echo "restart:$service:$action" >> "$runtime_dir/backend.log"
+    ;;
+  show)
+    echo "show:$service:$action" >> "$runtime_dir/backend.log"
+    printf 'active\nrunning\n'
+    ;;
+  *)
+    echo "unexpected backend command $cmd" >&2
+    exit 2
+    ;;
+esac
 "#;
-        fs::write(path, script).unwrap();
+        fs::write(&backend_path, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&backend_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&backend_path, perms).unwrap();
+        live_service_control_wrapper_contract::render_wrapper_script(
+            path,
+            &backend_path.display().to_string(),
+            live_service_control_wrapper_contract::DEFAULT_TIMEOUT_MS,
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    fn write_non_wrapper_service_control_command(path: &Path) {
+        fs::write(path, "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         let mut perms = fs::metadata(path).unwrap().permissions();
         perms.set_mode(0o755);

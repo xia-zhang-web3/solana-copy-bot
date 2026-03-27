@@ -1911,6 +1911,49 @@ Acceptance update (`2026-03-27`, bounded tiny-live live cutover package):
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_cutover`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_cutover --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_watch --bin copybot_tiny_live_activation_drill`
 
+Acceptance update (`2026-03-27`, repo-managed tiny-live service-control wrapper package):
+
+1. Stage 4 now also has one repo-managed bounded service-control wrapper
+   contract instead of depending on an opaque external helper command:
+   - `copybot_live_service_control_wrapper --render-wrapper --output /usr/local/bin/copybot-live-service-control --json`
+   - `copybot_live_service_control_wrapper --install-wrapper --output /usr/local/bin/copybot-live-service-control --json`
+   - `copybot_live_service_control_wrapper --verify-wrapper --path /usr/local/bin/copybot-live-service-control --json`
+2. The wrapper contract stays compatible with the accepted live-target path:
+   - `copybot_tiny_live_activation_live_execute`
+   - `copybot_tiny_live_activation_watch`
+   - `copybot_tiny_live_activation_cutover`
+   all still consume the same bounded runtime schema, but `--service-control-command`
+   can now point to one deterministic repo-managed wrapper instead of hand-built
+   shell archaeology.
+3. The wrapper contract is tightly bounded and inspectable:
+   - only an explicit target service name is accepted
+   - unsafe service names are refused
+   - bounded `status`, bounded `restart`, and explicit `rollback-status` are
+     supported, along with the existing `activation` / `rollback` compatibility
+     actions already used by the live executor
+   - the wrapper emits deterministic JSON status payloads matching the live
+     execute / watch expectations
+   - wrapper version, supported actions, backend command, and timeout contract
+     are all machine-verifiable
+4. This batch remains non-authorizing:
+   - rendering or verifying the wrapper is not permission to enable prod
+     execution
+   - Stage 3 remains the hard gate for any future production-facing live apply
+     or cutover
+   - tests only exercise fake backends in temp directories and do not restart
+     the real prod unit
+5. Important wrapper verdicts:
+   - `tiny_live_service_control_wrapper_rendered`
+   - `tiny_live_service_control_wrapper_verify_ok`
+   - `tiny_live_service_control_wrapper_verify_invalid`
+   - `tiny_live_service_control_wrapper_install_refused`
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_live_service_control_wrapper`
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_live_execute`
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_watch`
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_cutover`
+   - `cargo check -p copybot-app --bin copybot_live_service_control_wrapper --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_watch --bin copybot_tiny_live_activation_cutover`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
