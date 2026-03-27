@@ -1,7 +1,7 @@
 # ROAD TO PRODUCTION v2
 
 Date: 2026-03-17
-Status: Active historical roadmap with 2026-03-24 live bootstrap-degraded addendum
+Status: Active historical roadmap with 2026-03-27 production-readiness and live Stage 3 accumulation addendum
 
 ## 0. Why v2 exists
 
@@ -45,6 +45,54 @@ What is no longer valid as the current runtime-recovery plan:
 This addendum exists because the old wording in section `2.4 Current verdict`
 can otherwise mislead a reader into thinking the historical aggregate replay
 investigation is still the active restore plan, which it is not.
+
+## 1A. Current production-readiness status (`2026-03-27`)
+
+1. This file, not the old lettered `ROAD_TO_PRODUCTION.md`, is the active
+   source of truth for current development ordering until Stage 3 is green on
+   live data again.
+2. The business goal remains unchanged:
+   - get to a production-ready, bounded, reviewable path for real-money shadow
+     trading
+   - artifact/report tooling is supporting infrastructure around that goal, not
+     the goal by itself
+3. Current strategic truth:
+   - Stage 3 code surfaces are landed
+   - Stage 4 planning/preflight surfaces are largely landed
+   - the current blocker is operational, not conceptual: prod still does not
+     have a fully accumulated and freshly promoted bounded `recent_raw` window
+4. Current live status from the `2026-03-27 07:40 UTC` production slice:
+   - production host is on commit `9387c65`
+   - the `recent_raw` livelock hotfix is deployed
+   - the promoted bounded snapshot is still stale at:
+     - `covered_since = 2026-03-24T12:07:11Z`
+     - `covered_through = 2026-03-26T07:33:59Z`
+   - the hidden staged snapshot is advancing again and has already reached:
+     - `covered_through = 2026-03-26T21:20:49Z`
+     - `staged_progress_resumed = true`
+     - `staged_progress_advanced = true`
+   - `discovery_wallet_freshness_report` still returns
+     `insufficient_evidence`, so Stage 3 remains blocked
+5. Practical implication:
+   - Stage 3 is not blocked because Stage 3 code is missing
+   - Stage 3 is blocked because the live bounded raw window has not yet
+     accumulated and promoted enough recent evidence
+   - without backfill or rule changes, the earliest honest five-day threshold
+     from the current `covered_since` is `2026-03-29T12:07:11Z`
+6. What to write next while Stage 3 accumulates:
+   - do incident-driven hardening only if the live `recent_raw` recovery path
+     regresses again
+   - do not keep expanding artifact/report symmetry unless a missing operator
+     surface is directly blocking a production decision
+   - the next production-moving code should be a bounded activation executor
+     plus a bounded rollback / kill-switch executor, because Stage 4 already
+     has extensive planning/readiness surfaces but still lacks the real
+     controlled activation path
+7. "Production-ready" in this roadmap means all of the following:
+   - Stage 3 recent live truth is green
+   - Stage 4 readiness / rehearsal evidence is green
+   - bounded activation and rollback execution code exists and is verified
+   - only then is real-money enablement discussion legitimate
 
 ## 2. Current factual state
 
@@ -701,7 +749,43 @@ Recommended operational posture now:
   - rollout `423fd51` validated the next step: `fresh_scan / time_budget` catch-up is now live, runtime re-entered `Replay` for the first time in this fix series, and overnight replay survived later bucket rollover and returned quickly to `Replay`; the remaining limiter is now replay wallet-stats prepass throughput before SOL-leg replay and healthy publication
   - rollout `371403c` validated that folding replay wallet-stats `active_days` into the main summary query does not regress startup, replay re-entry, or exact carry-forward from `Replay`, but it still did not materially improve replay wallet-stats enough to finish the prepass before rollover; Stage 1 remained blocked before SOL-leg replay, and the next operational experiment is hourly live buckets via `c6e0af8`
 
-### 2.6 Live data scale (observed)
+### 2.6 Current production-readiness slice (updated 2026-03-27)
+
+- Live runtime repo / deployed build: `9387c65`
+- Current bounded `recent_raw` truth:
+  - promoted `latest.json` is still the old one from
+    `2026-03-26T07:35:11Z`
+  - current promoted frontier remains:
+    - `covered_since = 2026-03-24T12:07:11.775090344Z`
+    - `covered_through = 2026-03-26T07:33:59.609580569Z`
+    - `last_batch_completed_at = 2026-03-26T07:35:10.023741560Z`
+  - hidden staged snapshot now proves the livelock fix is working:
+    - `created_at = 2026-03-26T22:12:34Z`
+    - `covered_since = 2026-03-24T12:07:11.775090344Z`
+    - `covered_through = 2026-03-26T21:20:49Z`
+    - `last_batch_completed_at = 2026-03-27T07:34:10Z`
+    - `staged_progress_resumed = true`
+    - `staged_progress_preserved_for_retry = true`
+    - `staged_progress_advanced = true`
+- Current Stage 3 truth:
+  - `discovery_wallet_freshness_report` still returns:
+    - `verdict = insufficient_evidence`
+    - `reason = no_recent_wallet_freshness_captures_within_horizon`
+  - therefore Stage 3 remains blocked even though its code surfaces are already
+    landed
+- Current roadmap interpretation:
+  - the emergency `recent_raw` livelock is no longer the active code blocker
+  - the live system is now recovering by preserved staged progress rather than
+    resetting to zero
+  - the main software question is no longer "which new report should exist next"
+  - the main software question is "what execution-side code is still missing
+    once Stage 3 finally goes green"
+- Current answer to that software question:
+  - more artifact/report symmetry is now secondary
+  - the next production-moving implementation target is a bounded activation
+    executor with a bounded rollback contract
+
+### 2.7 Live data scale (observed)
 
 - `live_copybot.db`: ~140 GB
 - `live_copybot.db-wal`: ranged from `0` during the stopped-service cold clone up to ~`2.0 GB` during later live runtime
@@ -1274,20 +1358,35 @@ Acceptance update (`2026-03-25`):
       `discovery_wallet_freshness_capture --config <live.server.toml> --recent-cycles 1 --shadow-evidence-lookback-seconds 960 --json`
     - this Stage 3 evidence path still does not change `execution.enabled`,
       restore, gap-fill, snapshot, or scoring behavior
-14. Live rollout status for the in-band Stage 3 path (`2026-03-25`):
+14. Current live status (`2026-03-27`):
+    - Stage 3 code closure is not the current blocker; the blocker is live
+      evidence accumulation and promotion
+    - the `recent_raw` livelock incident was fixed in `9387c65` and deployed on
+      prod
+    - the bounded snapshot path is now making preserved staged progress again,
+      but the promoted `latest` surface is still stale
+    - Stage 3 therefore remains blocked on real data accumulation and
+      promotion, not on missing Stage 3 code
+15. Practical rule while Stage 3 is still accumulating:
+    - do not treat more Stage 3 report symmetry as the default next task
+    - only write additional Stage 3 code if it directly protects the live
+      accumulation path or closes a concrete operator blind spot
+    - otherwise keep the focus on the next true production-moving gap after
+      Stage 3, which is bounded activation / rollback execution
+16. Live rollout status for the in-band Stage 3 path (`2026-03-25`):
     - commit `b279c4e` was rolled out to the live server
     - the primary Stage 3 accumulation path is now the in-band refresh /
       publication cycle inside `solana-copy-bot.service`
     - the old standalone wallet-freshness capture timer/service are no longer
       part of the primary accumulation architecture
-15. The rollout exposed a separate operational issue on the live host:
+17. The rollout exposed a separate operational issue on the live host:
     - `/var/www/solana-copy-bot/state` had reached `100%` usage
     - the immediate failure mode was SQLite WAL startup failure on
       `sqlite_pragma_journal_mode_wal`
     - root cause was archive growth under
       `/var/www/solana-copy-bot/state/discovery_restore/recent_raw`
       rather than the Stage 3 in-band capture logic itself
-16. Emergency operator action taken on the live server:
+18. Emergency operator action taken on the live server:
     - recent-raw archive history was pruned while preserving the `latest`
       snapshot surface and a short tail of recent archives
     - the live runtime DB surface was restored and `solana-copy-bot.service`
@@ -1299,7 +1398,7 @@ Acceptance update (`2026-03-25`):
       names, enforces full `{sqlite,json,wal,shm}` retention on every scheduled
       invocation, and raises the service outer timeout to `10min` so systemd no
       longer kills the finalize/prune phase mid-run
-17. Current Stage 3 live status after recovery:
+19. Current Stage 3 live status after recovery:
     - `discovery_wallet_freshness_report --config /etc/solana-copy-bot/live.server.toml --json --limit 10`
       now shows that in-band evidence is accumulating on the live path:
       - `captures_loaded = 7`
@@ -1314,7 +1413,7 @@ Acceptance update (`2026-03-25`):
     - this means the Stage 3 plumbing is now live and honest, but discovery
       truth itself is still fail-closed / incomplete until the raw window fully
       covers the required scoring horizon
-18. Stage 3 evidence footprint and interference check (`2026-03-25`):
+20. Stage 3 evidence footprint and interference check (`2026-03-25`):
     - persisted Stage 3 evidence is currently tiny relative to the live runtime
       DB:
       - `discovery_wallet_freshness_history` row count: `7`
@@ -1417,6 +1516,26 @@ Acceptance update (`2026-03-25`, Stage 4 dry-run rehearsal trail):
      now accumulate execution-side dry-run rehearsal evidence without ad-hoc
      shell archaeology
    - good rehearsal history still does not override the Stage 3 discovery gate
+
+Strategic update (`2026-03-27`):
+
+1. Stage 4 now has a large planning/readiness surface area, but most of it is
+   still deliberately read-only or planning-safe.
+2. That means Stage 4 is no longer primarily blocked on "yet another report".
+3. The next production-moving implementation target, while Stage 3 continues to
+   accumulate its required live evidence, is:
+   - a bounded activation executor that can apply the approved tiny-live
+     activation overlay safely
+   - a bounded rollback / kill-switch executor that can return the system to
+     the current safe disabled posture
+   - post-start verification around that activation/rollback path
+4. Those execution-side pieces can be written while Stage 3 is still
+   accumulating, but they must remain unable to bypass a non-green Stage 3.
+5. Therefore:
+   - more artifact/report symmetry is now optional unless it removes a concrete
+     operator blocker
+   - bounded activation / rollback execution is the more important remaining
+     software gap before real production readiness can be claimed
 
 Acceptance update (`2026-03-25`, consolidated pre-activation gate):
 
@@ -2477,7 +2596,9 @@ The old `ROAD_TO_PRODUCTION.md` (git HEAD version) contains detailed Stages C.5 
 - **Stage G** — Controlled live stabilization (7-14 days), reconcile discipline
 - **Stage H** — Standard live handover, on-call ownership, runbook completeness
 
-These become relevant after Stage 3 here is done. Until then they are parked.
+These become relevant only after Stage 3 here is actually green on live data.
+Until then they are parked behind this v2 roadmap and should not replace it as
+the active development order.
 
 ## 9. Legacy documents removed from active planning
 
@@ -4658,6 +4779,34 @@ Their useful conclusions are already absorbed here:
   - aggregate/watchdog dead code and related warnings remain and should be removed or explicitly parked before Stage 2 cleanup
 - Next action:
   - trim or quarantine obsolete aggregate/bootstrap runtime code paths and then move to Stage 2 publication contract hardening
+
+Acceptance update, archived state-bundle linkage report (`2026-03-27`):
+
+1. The repo now has an explicit linkage surface from deterministic archived
+   state bundles back to the current underlying review/release artifact chain:
+   - `copybot_activation_artifact_state_bundle_archive_linkage_report`
+2. The new report correlates:
+   - deterministic archived bundle archive contents
+   - optional latest archived-bundle pointer metadata
+   - current persisted state snapshot archive and optional snapshot latest
+     pointer context
+   - current review archive/channel truth
+   - current release archive/history/latest-pointer truth
+3. The linkage contract is explicit and non-green when needed:
+   - archived bundles whose selected review generation no longer exists are
+     surfaced as non-green
+   - archived bundles whose selected latest release generation no longer exists
+     are surfaced as non-green
+   - archived bundles that no longer match the current review channel or latest
+     release pointer are surfaced explicitly as drifted
+   - latest archived-bundle pointer selection is used as the representative
+     current bundle when it resolves cleanly, so pointer-selected stale or
+     broken linkage cannot hide behind a newer clean archived bundle
+4. Integrity-green archived bundles still do not imply coherent live linkage:
+   - ambiguous or otherwise non-green bundled snapshot truth remains explicit
+   - malformed archived bundles still yield invalid-artifact verdicts
+   - the report remains artifact analysis only and does not enable execution or
+     authorize activation
 
 Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
 

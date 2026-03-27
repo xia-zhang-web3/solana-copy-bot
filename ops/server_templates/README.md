@@ -1383,6 +1383,33 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not enable execution
    - it does not authorize activation or override the Stage 3 prod gate
 
+## Activation Artifact State Snapshot Bundle Archive Linkage
+
+1. Operators now also have an explicit linkage surface from deterministic
+   archived bundles back to the current underlying review/release artifact
+   chain:
+   - `copybot_activation_artifact_state_bundle_archive_linkage_report --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --state-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshots --snapshot-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_latest --review-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/archive --review-manifest-dir /var/www/solana-copy-bot/state/activation_artifacts/archive_manifest --review-bundle-dir /var/www/solana-copy-bot/state/activation_artifacts/bundles --review-channel-dir /var/www/solana-copy-bot/state/activation_artifacts/channel --release-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --release-history-dir /var/www/solana-copy-bot/state/activation_artifacts/releases --latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/release_latest --json`
+2. Archived-bundle linkage means more than bundle integrity:
+   - each archived bundle is checked to see whether its selected review
+     generation still exists in the current review archive
+   - each archived bundle is checked to see whether its selected latest release
+     generation still exists in the current release archive/history surface
+   - the report also shows whether archived bundles still agree with the
+     current review channel and current latest release pointer
+3. Latest bundle pointer context stays explicit:
+   - if the latest bundle pointer selects an archived bundle with stale or
+     broken underlying linkage, the report stays non-green and says so
+   - if the pointer selects an ambiguous or otherwise non-green archived bundle,
+     that truth remains explicit
+   - integrity-green archived bundles still do not automatically imply coherent
+     live linkage
+4. This remains artifact handling/analysis only:
+   - it does not rewrite archived bundles
+   - it does not rewrite bundle pointer metadata
+   - it does not rewrite the current state snapshot archive
+   - it does not enable execution
+   - it does not authorize activation or override the Stage 3 prod gate
+
 ## Server target paths
 
 1. `/etc/solana-copy-bot/live.server.toml`
