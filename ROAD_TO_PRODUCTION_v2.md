@@ -1748,6 +1748,55 @@ Acceptance update (`2026-03-27`, bounded live-target tiny-live executor package)
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_live_execute`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_apply --bin copybot_tiny_live_activation_execute --bin copybot_activation_runbook --bin copybot_pre_activation_gate_report`
 
+Acceptance update (`2026-03-27`, bounded tiny-live post-activation watch package):
+
+1. Stage 4 now also has a bounded first-window supervision path on top of the
+   accepted live-target activation/rollback contract:
+   - `copybot_tiny_live_activation_watch --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --plan-watch --json`
+   - `copybot_tiny_live_activation_watch --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --render-watch-script --output /tmp/tiny-live.watch.sh --json`
+   - `copybot_tiny_live_activation_watch --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /var/tmp/copybot-live-activation --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --backup-dir /var/tmp/copybot-live-backups --verify-watch-target --json`
+   - `copybot_tiny_live_activation_watch --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --watch-temp-run --json`
+   - `copybot_tiny_live_activation_watch --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /var/tmp/copybot-live-activation --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --backup-dir /var/tmp/copybot-live-backups --watch-live-target --json`
+2. This package reuses accepted truth instead of inventing another activation
+   or rollback-trigger schema:
+   - rendered activation + rollback artifacts from
+     `copybot_tiny_live_activation_execute`
+   - temp rehearsal runtime/session verification from
+     `copybot_tiny_live_activation_apply`
+   - live-target contract, backup proof, and status artifacts from
+     `copybot_tiny_live_activation_live_execute`
+   - bounded rollback-trigger thresholds from
+     `copybot_tiny_live_guardrail_audit`
+3. The watch contract is explicit and bounded:
+   - the watch window is finite and configurable
+   - the decision is explicit: `keep_running` vs `rollback_now`
+   - bounded-but-degraded evidence stays distinct from an actual rollback
+     trigger
+   - missing/stale observation or status evidence can still force a non-green
+     result
+4. Temp watch remains isolated and live watch remains non-authorizing:
+   - temp mode only accepts explicit temp runtime dirs
+   - neither mode mutates `/etc/solana-copy-bot/live.server.toml` in tests
+   - neither mode restarts the real prod service in tests
+   - this batch adds post-activation supervision only; it does not authorize
+     production activation by itself
+5. Stage 3 remains the hard gate:
+   - a green watch plan or green watch verdict is not production authorization
+   - the watch layer is coupled to the accepted activation/rollback contract,
+     not a new activation entrypoint
+6. Important watch verdicts:
+   - `tiny_live_watch_plan_ready`
+   - `tiny_live_watch_script_rendered`
+   - `tiny_live_watch_verify_ok`
+   - `tiny_live_watch_verify_invalid`
+   - `tiny_live_watch_temp_continue`
+   - `tiny_live_watch_temp_rollback_triggered`
+   - `tiny_live_watch_live_continue`
+   - `tiny_live_watch_live_rollback_triggered`
+7. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_watch`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_watch --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_apply --bin copybot_tiny_live_guardrail_audit`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:

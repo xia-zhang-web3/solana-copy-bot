@@ -77,14 +77,14 @@ struct ValidatedArtifactPair {
 }
 
 #[derive(Debug, Clone)]
-struct RuntimePaths {
-    runtime_dir: PathBuf,
-    session_path: PathBuf,
-    pid_path: PathBuf,
-    log_path: PathBuf,
-    status_path: PathBuf,
-    stop_request_path: PathBuf,
-    rollback_status_path: PathBuf,
+pub(crate) struct RuntimePaths {
+    pub(crate) runtime_dir: PathBuf,
+    pub(crate) session_path: PathBuf,
+    pub(crate) pid_path: PathBuf,
+    pub(crate) log_path: PathBuf,
+    pub(crate) status_path: PathBuf,
+    pub(crate) stop_request_path: PathBuf,
+    pub(crate) rollback_status_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -101,78 +101,78 @@ struct WorkerLaunch {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TempRunSession {
-    session_version: String,
-    planned_at: DateTime<Utc>,
-    runtime_dir: String,
-    activation_config_path: String,
-    rollback_config_path: String,
-    activation_metadata_path: String,
-    rollback_metadata_path: String,
-    source_config_path: String,
-    source_config_fingerprint_sha256: String,
-    activation_pre_activation_gate_verdict: String,
-    activation_pre_activation_gate_reason: String,
-    activation_plan_verdict: String,
-    activation_plan_reason: String,
-    startup_timeout_ms: u64,
-    rollback_timeout_ms: u64,
-    pid_path: String,
-    log_path: String,
-    status_path: String,
-    stop_request_path: String,
-    rollback_status_path: String,
-    apply_command_summary: String,
-    verify_command_summary: String,
-    rollback_command_summary: String,
-    explicit_statement: String,
+pub(crate) struct TempRunSession {
+    pub(crate) session_version: String,
+    pub(crate) planned_at: DateTime<Utc>,
+    pub(crate) runtime_dir: String,
+    pub(crate) activation_config_path: String,
+    pub(crate) rollback_config_path: String,
+    pub(crate) activation_metadata_path: String,
+    pub(crate) rollback_metadata_path: String,
+    pub(crate) source_config_path: String,
+    pub(crate) source_config_fingerprint_sha256: String,
+    pub(crate) activation_pre_activation_gate_verdict: String,
+    pub(crate) activation_pre_activation_gate_reason: String,
+    pub(crate) activation_plan_verdict: String,
+    pub(crate) activation_plan_reason: String,
+    pub(crate) startup_timeout_ms: u64,
+    pub(crate) rollback_timeout_ms: u64,
+    pub(crate) pid_path: String,
+    pub(crate) log_path: String,
+    pub(crate) status_path: String,
+    pub(crate) stop_request_path: String,
+    pub(crate) rollback_status_path: String,
+    pub(crate) apply_command_summary: String,
+    pub(crate) verify_command_summary: String,
+    pub(crate) rollback_command_summary: String,
+    pub(crate) explicit_statement: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TempRunStatus {
-    status_version: String,
-    state: String,
-    started_at: DateTime<Utc>,
-    last_heartbeat_at: DateTime<Utc>,
-    stopped_at: Option<DateTime<Utc>>,
-    pid: u32,
-    runtime_dir: String,
-    command_summary: String,
-    activation_config_path: String,
-    rollback_config_path: String,
-    activation_metadata_path: String,
-    rollback_metadata_path: String,
-    source_config_fingerprint_sha256: String,
-    execution_enabled_in_activation_config: bool,
-    execution_enabled_in_rollback_config: bool,
-    activation_authorized: bool,
-    note: String,
+pub(crate) struct TempRunStatus {
+    pub(crate) status_version: String,
+    pub(crate) state: String,
+    pub(crate) started_at: DateTime<Utc>,
+    pub(crate) last_heartbeat_at: DateTime<Utc>,
+    pub(crate) stopped_at: Option<DateTime<Utc>>,
+    pub(crate) pid: u32,
+    pub(crate) runtime_dir: String,
+    pub(crate) command_summary: String,
+    pub(crate) activation_config_path: String,
+    pub(crate) rollback_config_path: String,
+    pub(crate) activation_metadata_path: String,
+    pub(crate) rollback_metadata_path: String,
+    pub(crate) source_config_fingerprint_sha256: String,
+    pub(crate) execution_enabled_in_activation_config: bool,
+    pub(crate) execution_enabled_in_rollback_config: bool,
+    pub(crate) activation_authorized: bool,
+    pub(crate) note: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct RollbackStatus {
-    status_version: String,
-    rolled_back_at: DateTime<Utc>,
-    runtime_dir: String,
-    activation_config_path: String,
-    rollback_config_path: String,
-    source_config_fingerprint_sha256: String,
-    activation_process_stopped: bool,
-    rollback_execution_enabled: bool,
-    note: String,
+pub(crate) struct RollbackStatus {
+    pub(crate) status_version: String,
+    pub(crate) rolled_back_at: DateTime<Utc>,
+    pub(crate) runtime_dir: String,
+    pub(crate) activation_config_path: String,
+    pub(crate) rollback_config_path: String,
+    pub(crate) source_config_fingerprint_sha256: String,
+    pub(crate) activation_process_stopped: bool,
+    pub(crate) rollback_execution_enabled: bool,
+    pub(crate) note: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct TempRunVerificationSummary {
-    pid_file_present: bool,
-    log_file_present: bool,
-    status_file_present: bool,
-    rollback_status_present: bool,
-    process_running: bool,
-    heartbeat_fresh: bool,
-    status_state: Option<String>,
-    pid: Option<u32>,
-    mismatches: Vec<String>,
+pub(crate) struct TempRunVerificationSummary {
+    pub(crate) pid_file_present: bool,
+    pub(crate) log_file_present: bool,
+    pub(crate) status_file_present: bool,
+    pub(crate) rollback_status_present: bool,
+    pub(crate) process_running: bool,
+    pub(crate) heartbeat_fresh: bool,
+    pub(crate) status_state: Option<String>,
+    pub(crate) pid: Option<u32>,
+    pub(crate) mismatches: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -921,7 +921,7 @@ fn validate_pair_consistency(
     Ok(())
 }
 
-fn validate_runtime_dir(runtime_dir: &Path) -> Result<()> {
+pub(crate) fn validate_runtime_dir(runtime_dir: &Path) -> Result<()> {
     if !runtime_dir.is_absolute() {
         bail!("runtime dir must be an absolute temp path");
     }
@@ -1033,7 +1033,7 @@ fn validate_runtime_dir_descendant_symlinks(
     Ok(())
 }
 
-fn runtime_paths(runtime_dir: &Path) -> RuntimePaths {
+pub(crate) fn runtime_paths(runtime_dir: &Path) -> RuntimePaths {
     RuntimePaths {
         runtime_dir: runtime_dir.to_path_buf(),
         session_path: runtime_dir.join("tiny_live_apply_session.json"),
@@ -1179,7 +1179,7 @@ fn wait_for_started_runtime(
     }
 }
 
-fn verify_temp_runtime(
+pub(crate) fn verify_temp_runtime(
     paths: &RuntimePaths,
     session: &TempRunSession,
 ) -> Result<TempRunVerificationSummary> {
@@ -1450,7 +1450,7 @@ fn process_is_alive(pid: u32) -> bool {
     }
 }
 
-fn load_session(path: &Path) -> Result<TempRunSession> {
+pub(crate) fn load_session(path: &Path) -> Result<TempRunSession> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed reading temp apply session {}", path.display()))?;
     serde_json::from_str(&raw)

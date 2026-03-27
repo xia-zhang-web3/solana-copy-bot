@@ -94,9 +94,9 @@ struct ValidatedArtifactPair {
 }
 
 #[derive(Debug, Clone)]
-struct TargetContract {
-    current_bytes: Vec<u8>,
-    current_fingerprint: activation_decision_packet::ConfigFingerprintSummary,
+pub(crate) struct TargetContract {
+    pub(crate) current_bytes: Vec<u8>,
+    pub(crate) current_fingerprint: activation_decision_packet::ConfigFingerprintSummary,
 }
 
 #[derive(Debug, Clone)]
@@ -105,12 +105,12 @@ struct CurrentGateTruth {
 }
 
 #[derive(Debug, Clone)]
-struct LiveRuntimePaths {
-    runtime_dir: PathBuf,
-    session_path: PathBuf,
-    apply_status_path: PathBuf,
-    rollback_status_path: PathBuf,
-    log_path: PathBuf,
+pub(crate) struct LiveRuntimePaths {
+    pub(crate) runtime_dir: PathBuf,
+    pub(crate) session_path: PathBuf,
+    pub(crate) apply_status_path: PathBuf,
+    pub(crate) rollback_status_path: PathBuf,
+    pub(crate) log_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -120,20 +120,20 @@ struct BackupPaths {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct LiveBackupMetadata {
-    metadata_version: String,
-    created_at: DateTime<Utc>,
-    target_service_name: String,
-    target_config_path: String,
-    backed_up_config_path: String,
-    source_config_fingerprint_scope: String,
-    source_config_fingerprint_sha256: String,
-    backed_up_config_sha256: String,
-    activation_config_path: String,
-    activation_metadata_path: String,
-    rollback_config_path: String,
-    rollback_metadata_path: String,
-    explicit_statement: String,
+pub(crate) struct LiveBackupMetadata {
+    pub(crate) metadata_version: String,
+    pub(crate) created_at: DateTime<Utc>,
+    pub(crate) target_service_name: String,
+    pub(crate) target_config_path: String,
+    pub(crate) backed_up_config_path: String,
+    pub(crate) source_config_fingerprint_scope: String,
+    pub(crate) source_config_fingerprint_sha256: String,
+    pub(crate) backed_up_config_sha256: String,
+    pub(crate) activation_config_path: String,
+    pub(crate) activation_metadata_path: String,
+    pub(crate) rollback_config_path: String,
+    pub(crate) rollback_metadata_path: String,
+    pub(crate) explicit_statement: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,18 +161,18 @@ struct LiveSession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct LiveServiceStatus {
-    status_version: String,
-    action: String,
-    observed_at: DateTime<Utc>,
-    service_name: String,
-    target_config_path: String,
-    expected_config_fingerprint_sha256: String,
-    observed_config_fingerprint_sha256: String,
-    expected_execution_enabled: bool,
-    observed_execution_enabled: bool,
-    restart_successful: bool,
-    note: String,
+pub(crate) struct LiveServiceStatus {
+    pub(crate) status_version: String,
+    pub(crate) action: String,
+    pub(crate) observed_at: DateTime<Utc>,
+    pub(crate) service_name: String,
+    pub(crate) target_config_path: String,
+    pub(crate) expected_config_fingerprint_sha256: String,
+    pub(crate) observed_config_fingerprint_sha256: String,
+    pub(crate) expected_execution_enabled: bool,
+    pub(crate) observed_execution_enabled: bool,
+    pub(crate) restart_successful: bool,
+    pub(crate) note: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1253,30 +1253,38 @@ fn perform_rollback(
 fn load_validated_artifact_pair(
     config: &Config,
 ) -> std::result::Result<ValidatedArtifactPair, ContractFailure> {
-    let activation = tiny_live_activation_execute::inspect_rendered_config_artifact(
+    load_validated_artifact_pair_from_paths(
         &config.activation_config_path,
-    )
-    .map_err(|error| {
-        ContractFailure::new(
-            ContractFailureKind::InvalidArtifact,
-            format!(
-                "activation rendered artifact {} is invalid: {error:#}",
-                config.activation_config_path.display()
-            ),
-        )
-    })?;
-    let rollback = tiny_live_activation_execute::inspect_rendered_config_artifact(
         &config.rollback_config_path,
     )
-    .map_err(|error| {
-        ContractFailure::new(
-            ContractFailureKind::InvalidArtifact,
-            format!(
-                "rollback rendered artifact {} is invalid: {error:#}",
-                config.rollback_config_path.display()
-            ),
-        )
-    })?;
+}
+
+fn load_validated_artifact_pair_from_paths(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+) -> std::result::Result<ValidatedArtifactPair, ContractFailure> {
+    let activation =
+        tiny_live_activation_execute::inspect_rendered_config_artifact(activation_config_path)
+            .map_err(|error| {
+                ContractFailure::new(
+                    ContractFailureKind::InvalidArtifact,
+                    format!(
+                        "activation rendered artifact {} is invalid: {error:#}",
+                        activation_config_path.display()
+                    ),
+                )
+            })?;
+    let rollback =
+        tiny_live_activation_execute::inspect_rendered_config_artifact(rollback_config_path)
+            .map_err(|error| {
+                ContractFailure::new(
+                    ContractFailureKind::InvalidArtifact,
+                    format!(
+                        "rollback rendered artifact {} is invalid: {error:#}",
+                        rollback_config_path.display()
+                    ),
+                )
+            })?;
     validate_pair_consistency(&activation, &rollback)?;
     Ok(ValidatedArtifactPair {
         activation,
@@ -1467,6 +1475,36 @@ fn inspect_target_contract(
         current_bytes,
         current_fingerprint,
     })
+}
+
+#[allow(dead_code)]
+pub(crate) fn inspect_target_contract_for_watch(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    target_config_path: &Path,
+    target_service_name: &str,
+    service_control_command_path: &Path,
+    runtime_dir: &Path,
+    backup_dir: &Path,
+) -> Result<TargetContract> {
+    let pair =
+        load_validated_artifact_pair_from_paths(activation_config_path, rollback_config_path)
+            .map_err(|failure| anyhow!(failure.reason))?;
+    let config = Config {
+        mode: Mode::VerifyLiveTarget,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        target_config_path: target_config_path.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        service_control_command_path: service_control_command_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        backup_dir: backup_dir.to_path_buf(),
+        output_path: None,
+        json: false,
+        startup_timeout_ms: DEFAULT_STARTUP_TIMEOUT_MS,
+        rollback_timeout_ms: DEFAULT_ROLLBACK_TIMEOUT_MS,
+    };
+    inspect_target_contract(&config, &pair).map_err(|failure| anyhow!(failure.reason))
 }
 
 fn inspect_current_live_gate(
@@ -1842,6 +1880,30 @@ fn backup_artifact_paths(config: &Config, target: &TargetContract) -> Result<Bac
     })
 }
 
+#[allow(dead_code)]
+pub(crate) fn backup_artifact_paths_for_watch(
+    target_config_path: &Path,
+    target_service_name: &str,
+    backup_dir: &Path,
+    target_fingerprint_sha256: &str,
+) -> (PathBuf, PathBuf) {
+    let config_name = sanitize_file_component(
+        target_config_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("live.server.toml"),
+    );
+    let service_name = sanitize_file_component(target_service_name);
+    let base = format!(
+        "tiny_live_live_backup__{}__{}__{}",
+        service_name, config_name, target_fingerprint_sha256
+    );
+    (
+        backup_dir.join(format!("{base}.toml")),
+        backup_dir.join(format!("{base}.metadata.json")),
+    )
+}
+
 fn load_backup_proof(
     config: &Config,
     backup_paths: &BackupPaths,
@@ -1946,7 +2008,106 @@ fn load_backup_proof(
     Ok(metadata)
 }
 
-fn runtime_paths(runtime_dir: &Path) -> LiveRuntimePaths {
+#[allow(dead_code)]
+pub(crate) fn load_backup_proof_for_watch(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    target_config_path: &Path,
+    target_service_name: &str,
+    service_control_command_path: &Path,
+    runtime_dir: &Path,
+    backup_dir: &Path,
+) -> Result<LiveBackupMetadata> {
+    let pair =
+        load_validated_artifact_pair_from_paths(activation_config_path, rollback_config_path)
+            .map_err(|failure| anyhow!(failure.reason))?;
+    validate_target_service_name(target_service_name).map_err(|failure| anyhow!(failure.reason))?;
+    validate_existing_file_path(
+        target_config_path,
+        "target live config",
+        PathKind::File,
+        true,
+    )
+    .map_err(|failure| anyhow!(failure.reason))?;
+    validate_existing_file_path(
+        service_control_command_path,
+        "service control command",
+        PathKind::File,
+        true,
+    )
+    .map_err(|failure| anyhow!(failure.reason))?;
+    validate_directory_path(runtime_dir, "live runtime dir")
+        .map_err(|failure| anyhow!(failure.reason))?;
+    validate_directory_path(backup_dir, "live backup dir")
+        .map_err(|failure| anyhow!(failure.reason))?;
+    let (backup_config_path, backup_metadata_path) = backup_artifact_paths_for_watch(
+        target_config_path,
+        target_service_name,
+        backup_dir,
+        &pair.activation.metadata.source_config_fingerprint_sha256,
+    );
+    if !backup_metadata_path.exists() || !backup_config_path.exists() {
+        bail!(
+            "matching live-target backup proof is missing under {}; run --backup-current-config before activation apply",
+            backup_dir.display()
+        );
+    }
+    let raw = fs::read_to_string(&backup_metadata_path).with_context(|| {
+        format!(
+            "failed reading live-target backup metadata {}",
+            backup_metadata_path.display()
+        )
+    })?;
+    let metadata: LiveBackupMetadata = serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "failed parsing live-target backup metadata {}",
+            backup_metadata_path.display()
+        )
+    })?;
+    if metadata.metadata_version != BACKUP_METADATA_VERSION {
+        bail!(
+            "unsupported live-target backup metadata version {}",
+            metadata.metadata_version
+        );
+    }
+    if metadata.target_config_path != target_config_path.display().to_string() {
+        bail!("backup metadata target_config_path does not match the explicit live target");
+    }
+    if metadata.target_service_name != target_service_name {
+        bail!("backup metadata target_service_name does not match the explicit live target");
+    }
+    if metadata.source_config_fingerprint_sha256
+        != pair.activation.metadata.source_config_fingerprint_sha256
+    {
+        bail!(
+            "backup metadata source fingerprint {} does not match rendered artifact source fingerprint {}",
+            metadata.source_config_fingerprint_sha256,
+            pair.activation.metadata.source_config_fingerprint_sha256
+        );
+    }
+    if metadata.activation_config_path != activation_config_path.display().to_string()
+        || metadata.rollback_config_path != rollback_config_path.display().to_string()
+    {
+        bail!("backup metadata does not point back to the same activation/rollback artifact pair");
+    }
+    if metadata.activation_metadata_path != pair.activation.metadata_path.display().to_string()
+        || metadata.rollback_metadata_path != pair.rollback.metadata_path.display().to_string()
+    {
+        bail!("backup metadata does not point back to the same activation/rollback metadata pair");
+    }
+    let backup_bytes = fs::read(&backup_config_path).with_context(|| {
+        format!(
+            "failed reading live-target backup {}",
+            backup_config_path.display()
+        )
+    })?;
+    if sha256_hex(&backup_bytes) != metadata.backed_up_config_sha256 {
+        bail!("backup config sha256 does not match backup metadata");
+    }
+    Ok(metadata)
+}
+
+pub(crate) fn runtime_paths(runtime_dir: &Path) -> LiveRuntimePaths {
     LiveRuntimePaths {
         runtime_dir: runtime_dir.to_path_buf(),
         session_path: runtime_dir.join("tiny_live_live_execute.session.json"),
@@ -2141,11 +2302,72 @@ fn wait_for_child(child: &mut Child, timeout_ms: u64) -> Result<bool> {
     }
 }
 
-fn load_live_service_status(path: &Path) -> Result<LiveServiceStatus> {
+pub(crate) fn load_live_service_status(path: &Path) -> Result<LiveServiceStatus> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed reading live-target status {}", path.display()))?;
     serde_json::from_str(&raw)
         .with_context(|| format!("failed parsing live-target status {}", path.display()))
+}
+
+#[allow(dead_code)]
+pub(crate) fn verify_live_service_status_for_watch(
+    status: &LiveServiceStatus,
+    action: &str,
+    target_config_path: &Path,
+    target_service_name: &str,
+    expected_fingerprint_sha256: &str,
+    expected_execution_enabled: bool,
+) -> Vec<String> {
+    let mut mismatches = Vec::new();
+    if status.status_version != STATUS_VERSION {
+        mismatches.push(format!(
+            "service status version must be {}, found {}",
+            STATUS_VERSION, status.status_version
+        ));
+    }
+    if status.action != action {
+        mismatches.push(format!(
+            "service status action must be {}, found {}",
+            action, status.action
+        ));
+    }
+    if status.service_name != target_service_name {
+        mismatches
+            .push("service status service_name does not match the explicit target".to_string());
+    }
+    if status.target_config_path != target_config_path.display().to_string() {
+        mismatches.push(
+            "service status target_config_path does not match the explicit target".to_string(),
+        );
+    }
+    if status.expected_config_fingerprint_sha256 != expected_fingerprint_sha256 {
+        mismatches.push(
+            "service status expected_config_fingerprint_sha256 does not match the bounded contract"
+                .to_string(),
+        );
+    }
+    if status.observed_config_fingerprint_sha256 != expected_fingerprint_sha256 {
+        mismatches.push(
+            "service status observed_config_fingerprint_sha256 does not match the expected target fingerprint"
+                .to_string(),
+        );
+    }
+    if status.expected_execution_enabled != expected_execution_enabled {
+        mismatches.push(
+            "service status expected_execution_enabled does not match the bounded contract"
+                .to_string(),
+        );
+    }
+    if status.observed_execution_enabled != expected_execution_enabled {
+        mismatches.push(
+            "service status observed_execution_enabled does not match the expected target posture"
+                .to_string(),
+        );
+    }
+    if !status.restart_successful {
+        mismatches.push("service status restart_successful must be true".to_string());
+    }
+    mismatches
 }
 
 fn verify_service_status(

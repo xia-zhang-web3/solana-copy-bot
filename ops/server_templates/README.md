@@ -616,6 +616,61 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    remaining non-green must continue to block any future production-facing
    activation apply step.
 
+## Tiny-Live Post-Activation Watch
+
+1. Operators now also have a bounded first-window supervisor on top of the
+   accepted live-target activation/rollback contract:
+   - review the watch contract:
+     `copybot_tiny_live_activation_watch --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --plan-watch --json`
+   - render an operator-facing watch wrapper:
+     `copybot_tiny_live_activation_watch --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --render-watch-script --output /tmp/tiny-live.watch.sh --json`
+   - verify the live-target watch inputs and current bounded status:
+     `copybot_tiny_live_activation_watch --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /var/tmp/copybot-live-activation --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --backup-dir /var/tmp/copybot-live-backups --verify-watch-target --json`
+   - watch an isolated temp rehearsal runtime:
+     `copybot_tiny_live_activation_watch --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --watch-temp-run --json`
+   - watch the bounded live-target contract after startup:
+     `copybot_tiny_live_activation_watch --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /var/tmp/copybot-live-activation --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --backup-dir /var/tmp/copybot-live-backups --watch-live-target --json`
+2. This watch layer deliberately reuses accepted truth instead of inventing a
+   second activation or rollback-trigger schema:
+   - rendered activation + rollback artifacts from
+     `copybot_tiny_live_activation_execute`
+   - temp rehearsal runtime/session verification from
+     `copybot_tiny_live_activation_apply`
+   - live-target contract, backup proof, and bounded status artifacts from
+     `copybot_tiny_live_activation_live_execute`
+   - rollback-trigger thresholds from `copybot_tiny_live_guardrail_audit`
+3. The watch contract is explicit and bounded:
+   - `--watch-window-seconds`, `--sample-cadence-ms`, and
+     `--max-observation-staleness-ms` control a finite watch loop
+   - the observed evidence comes from a bounded JSON observation artifact under
+     the runtime dir plus the existing activation status / backup proof surfaces
+   - results are explicit: `keep_running` vs `rollback_now`
+   - bounded-but-degraded evidence is surfaced separately from an explicit
+     rollback trigger
+4. Temp watch remains isolated:
+   - it only accepts explicit temp runtime dirs
+   - it never touches `/etc/solana-copy-bot/live.server.toml`
+   - it never touches `solana-copy-bot.service`
+   - it does not submit trades
+5. Live-target watch remains non-authorizing:
+   - it can classify the first tiny-live window as continue vs rollback-triggered
+   - it still does not authorize production activation by itself
+   - Stage 3 remains the hard gate for any real production-facing activation
+6. Integrity-green status is not enough by itself:
+   - the watch layer also checks current target fingerprint, execution posture,
+     bounded service status freshness, and rollback-trigger metrics
+   - missing or stale observation/status artifacts can force a non-green or
+     rollback-triggered result even if rendered artifacts remain valid
+7. Important watch verdicts:
+   - `tiny_live_watch_plan_ready`
+   - `tiny_live_watch_script_rendered`
+   - `tiny_live_watch_verify_ok`
+   - `tiny_live_watch_verify_invalid`
+   - `tiny_live_watch_temp_continue`
+   - `tiny_live_watch_temp_rollback_triggered`
+   - `tiny_live_watch_live_continue`
+   - `tiny_live_watch_live_rollback_triggered`
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:
