@@ -65,9 +65,9 @@ enum Mode {
     RollbackLive,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum TinyLiveLiveExecuteVerdict {
+pub(crate) enum TinyLiveLiveExecuteVerdict {
     TinyLiveLivePlanReady,
     TinyLiveLiveBackupCreated,
     TinyLiveLiveBackupRefused,
@@ -175,52 +175,52 @@ pub(crate) struct LiveServiceStatus {
     pub(crate) note: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct LiveTargetVerificationSummary {
-    target_config_path_matches_rendered_source: bool,
-    current_target_fingerprint_matches_rendered_source: Option<bool>,
-    backup_proof_present: Option<bool>,
-    status_artifact_present: bool,
-    status_restart_successful: Option<bool>,
-    observed_execution_enabled: Option<bool>,
-    observed_config_fingerprint_sha256: Option<String>,
-    mismatches: Vec<String>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LiveTargetVerificationSummary {
+    pub(crate) target_config_path_matches_rendered_source: bool,
+    pub(crate) current_target_fingerprint_matches_rendered_source: Option<bool>,
+    pub(crate) backup_proof_present: Option<bool>,
+    pub(crate) status_artifact_present: bool,
+    pub(crate) status_restart_successful: Option<bool>,
+    pub(crate) observed_execution_enabled: Option<bool>,
+    pub(crate) observed_config_fingerprint_sha256: Option<String>,
+    pub(crate) mismatches: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct LiveExecuteReport {
-    generated_at: DateTime<Utc>,
-    mode: String,
-    verdict: TinyLiveLiveExecuteVerdict,
-    reason: String,
-    activation_config_path: String,
-    rollback_config_path: String,
-    activation_metadata_path: Option<String>,
-    rollback_metadata_path: Option<String>,
-    target_config_path: String,
-    target_service_name: String,
-    service_control_command_path: String,
-    runtime_dir: String,
-    backup_dir: String,
-    backup_config_path: Option<String>,
-    backup_metadata_path: Option<String>,
-    pre_activation_gate_verdict_used: Option<String>,
-    pre_activation_gate_reason_used: Option<String>,
-    current_pre_activation_gate_verdict: Option<String>,
-    current_pre_activation_gate_reason: Option<String>,
-    activation_plan_verdict_used: Option<String>,
-    activation_plan_reason_used: Option<String>,
-    current_target_fingerprint_scope: Option<String>,
-    current_target_fingerprint_sha256: Option<String>,
-    rendered_source_fingerprint_sha256: Option<String>,
-    changed_fields: Vec<tiny_live_activation_execute::FieldExpectation>,
-    backup_command_summary: Option<String>,
-    apply_command_summary: Option<String>,
-    verify_command_summary: Option<String>,
-    rollback_command_summary: Option<String>,
-    live_verification: Option<LiveTargetVerificationSummary>,
-    activation_authorized: bool,
-    explicit_statement: String,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LiveExecuteReport {
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) mode: String,
+    pub(crate) verdict: TinyLiveLiveExecuteVerdict,
+    pub(crate) reason: String,
+    pub(crate) activation_config_path: String,
+    pub(crate) rollback_config_path: String,
+    pub(crate) activation_metadata_path: Option<String>,
+    pub(crate) rollback_metadata_path: Option<String>,
+    pub(crate) target_config_path: String,
+    pub(crate) target_service_name: String,
+    pub(crate) service_control_command_path: String,
+    pub(crate) runtime_dir: String,
+    pub(crate) backup_dir: String,
+    pub(crate) backup_config_path: Option<String>,
+    pub(crate) backup_metadata_path: Option<String>,
+    pub(crate) pre_activation_gate_verdict_used: Option<String>,
+    pub(crate) pre_activation_gate_reason_used: Option<String>,
+    pub(crate) current_pre_activation_gate_verdict: Option<String>,
+    pub(crate) current_pre_activation_gate_reason: Option<String>,
+    pub(crate) activation_plan_verdict_used: Option<String>,
+    pub(crate) activation_plan_reason_used: Option<String>,
+    pub(crate) current_target_fingerprint_scope: Option<String>,
+    pub(crate) current_target_fingerprint_sha256: Option<String>,
+    pub(crate) rendered_source_fingerprint_sha256: Option<String>,
+    pub(crate) changed_fields: Vec<tiny_live_activation_execute::FieldExpectation>,
+    pub(crate) backup_command_summary: Option<String>,
+    pub(crate) apply_command_summary: Option<String>,
+    pub(crate) verify_command_summary: Option<String>,
+    pub(crate) rollback_command_summary: Option<String>,
+    pub(crate) live_verification: Option<LiveTargetVerificationSummary>,
+    pub(crate) activation_authorized: bool,
+    pub(crate) explicit_statement: String,
 }
 
 #[derive(Debug, Clone)]
@@ -2844,6 +2844,33 @@ fn render_human(report: &LiveExecuteReport) -> String {
     lines.push("activation_authorized=false".to_string());
     lines.push(report.explicit_statement.clone());
     lines.join("\n")
+}
+
+pub(crate) fn build_plan_live_report_for_drill(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    target_config_path: &Path,
+    target_service_name: &str,
+    service_control_command_path: &Path,
+    runtime_dir: &Path,
+    backup_dir: &Path,
+    startup_timeout_ms: u64,
+    rollback_timeout_ms: u64,
+) -> Result<LiveExecuteReport> {
+    build_plan_live_report(&Config {
+        mode: Mode::PlanLive,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        target_config_path: target_config_path.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        service_control_command_path: service_control_command_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        backup_dir: backup_dir.to_path_buf(),
+        output_path: None,
+        json: false,
+        startup_timeout_ms,
+        rollback_timeout_ms,
+    })
 }
 
 fn serialize_enum<T: Serialize>(value: &T) -> String {

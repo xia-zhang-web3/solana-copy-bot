@@ -1797,6 +1797,60 @@ Acceptance update (`2026-03-27`, bounded tiny-live post-activation watch package
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_watch`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_watch --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_apply --bin copybot_tiny_live_guardrail_audit`
 
+Acceptance update (`2026-03-27`, bounded tiny-live activation drill package):
+
+1. Stage 4 now also has one bounded drill/orchestration layer over the accepted
+   activation apply/watch/live-executor primitives:
+   - `copybot_tiny_live_activation_drill --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --plan-drill --json`
+   - `copybot_tiny_live_activation_drill --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --render-drill-script --output /tmp/tiny-live.drill.sh --json`
+   - `copybot_tiny_live_activation_drill --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --run-temp-drill --json`
+   - `copybot_tiny_live_activation_drill --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --verify-temp-drill --json`
+   - `copybot_tiny_live_activation_drill --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /var/tmp/copybot-live-activation --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --backup-dir /var/tmp/copybot-live-backups --plan-live-drill --json`
+2. This package deliberately reuses accepted truth instead of inventing another
+   activation schema:
+   - rendered activation + rollback artifacts from
+     `copybot_tiny_live_activation_execute`
+   - temp apply / rollback flow from `copybot_tiny_live_activation_apply`
+   - live-target contract + backup/verify flow from
+     `copybot_tiny_live_activation_live_execute`
+   - bounded first-window watch flow from `copybot_tiny_live_activation_watch`
+3. Temp drill mode is explicit and deterministic:
+   - it verifies the rendered artifacts first
+   - it runs temp apply
+   - it runs bounded watch
+   - it either keeps running or triggers rollback immediately
+   - the final result is explicit:
+     `completed_keep_running`, `completed_with_rollback`,
+     `failed_before_apply`, or `failed_during_watch`
+4. `--verify-temp-drill` validates real evidence rather than replaying a plan:
+   - drill session + status artifacts must exist and align
+   - step sequencing must be coherent
+   - apply/watch/rollback reports must match the executed rendered artifacts
+   - rollback outcomes must prove bounded disabled posture
+5. Live drill planning exists but remains hard-gated and non-authorizing:
+   - it renders the exact backup / verify / apply / watch / rollback contract
+   - current non-green Stage 3 / pre-activation truth still blocks any future
+     production-facing live drill run
+   - temp drill success is still not production authorization
+6. Important drill verdicts:
+   - `tiny_live_drill_plan_ready`
+   - `tiny_live_drill_script_rendered`
+   - `tiny_live_temp_drill_completed_keep_running`
+   - `tiny_live_temp_drill_completed_with_rollback`
+   - `tiny_live_temp_drill_failed_before_apply`
+   - `tiny_live_temp_drill_failed_during_watch`
+   - `tiny_live_temp_drill_verify_ok`
+   - `tiny_live_temp_drill_verify_invalid`
+   - `tiny_live_live_drill_plan_ready`
+   - `tiny_live_live_drill_refused_by_stage3`
+   - `tiny_live_live_drill_refused_by_pre_activation_gate`
+7. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_drill`
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_apply`
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_watch`
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_live_execute`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_drill --bin copybot_tiny_live_activation_apply --bin copybot_tiny_live_activation_watch --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_plan --bin copybot_activation_runbook`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:

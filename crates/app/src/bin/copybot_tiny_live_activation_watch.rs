@@ -67,9 +67,9 @@ enum Mode {
     WatchLiveTarget,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum TinyLiveWatchVerdict {
+pub(crate) enum TinyLiveWatchVerdict {
     TinyLiveWatchPlanReady,
     TinyLiveWatchScriptRendered,
     TinyLiveWatchVerifyOk,
@@ -137,8 +137,8 @@ struct WatchObservation {
     note: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct ObservationEvaluationSummary {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ObservationEvaluationSummary {
     observation_path: String,
     observation_present: bool,
     observation_fresh: Option<bool>,
@@ -161,8 +161,8 @@ struct ObservationEvaluationSummary {
     rollback_triggers: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct LiveWatchVerificationSummary {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LiveWatchVerificationSummary {
     service_status_artifact_present: bool,
     backup_proof_present: bool,
     current_target_fingerprint_sha256: Option<String>,
@@ -174,42 +174,43 @@ struct LiveWatchVerificationSummary {
     mismatches: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct WatchReport {
-    generated_at: DateTime<Utc>,
-    mode: String,
-    verdict: TinyLiveWatchVerdict,
-    reason: String,
-    activation_config_path: String,
-    rollback_config_path: String,
-    activation_metadata_path: Option<String>,
-    rollback_metadata_path: Option<String>,
-    runtime_dir: String,
-    target_config_path: Option<String>,
-    target_service_name: Option<String>,
-    service_control_command_path: Option<String>,
-    backup_dir: Option<String>,
-    watch_window_seconds: u64,
-    sample_cadence_ms: u64,
-    max_observation_staleness_ms: u64,
-    watch_target_kind: Option<String>,
-    decision: Option<String>,
-    bounded_but_degraded: bool,
-    pre_activation_gate_verdict_used: Option<String>,
-    pre_activation_gate_reason_used: Option<String>,
-    activation_plan_verdict_used: Option<String>,
-    activation_plan_reason_used: Option<String>,
-    guardrail_verdict_used: Option<String>,
-    guardrail_reason_used: Option<String>,
-    expected_rollback_triggers: Vec<String>,
-    verify_watch_command_summary: Option<String>,
-    watch_temp_command_summary: Option<String>,
-    watch_live_command_summary: Option<String>,
-    temp_runtime_verification: Option<tiny_live_activation_apply::TempRunVerificationSummary>,
-    live_watch_verification: Option<LiveWatchVerificationSummary>,
-    observation_evaluation: Option<ObservationEvaluationSummary>,
-    activation_authorized: bool,
-    explicit_statement: String,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct WatchReport {
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) mode: String,
+    pub(crate) verdict: TinyLiveWatchVerdict,
+    pub(crate) reason: String,
+    pub(crate) activation_config_path: String,
+    pub(crate) rollback_config_path: String,
+    pub(crate) activation_metadata_path: Option<String>,
+    pub(crate) rollback_metadata_path: Option<String>,
+    pub(crate) runtime_dir: String,
+    pub(crate) target_config_path: Option<String>,
+    pub(crate) target_service_name: Option<String>,
+    pub(crate) service_control_command_path: Option<String>,
+    pub(crate) backup_dir: Option<String>,
+    pub(crate) watch_window_seconds: u64,
+    pub(crate) sample_cadence_ms: u64,
+    pub(crate) max_observation_staleness_ms: u64,
+    pub(crate) watch_target_kind: Option<String>,
+    pub(crate) decision: Option<String>,
+    pub(crate) bounded_but_degraded: bool,
+    pub(crate) pre_activation_gate_verdict_used: Option<String>,
+    pub(crate) pre_activation_gate_reason_used: Option<String>,
+    pub(crate) activation_plan_verdict_used: Option<String>,
+    pub(crate) activation_plan_reason_used: Option<String>,
+    pub(crate) guardrail_verdict_used: Option<String>,
+    pub(crate) guardrail_reason_used: Option<String>,
+    pub(crate) expected_rollback_triggers: Vec<String>,
+    pub(crate) verify_watch_command_summary: Option<String>,
+    pub(crate) watch_temp_command_summary: Option<String>,
+    pub(crate) watch_live_command_summary: Option<String>,
+    pub(crate) temp_runtime_verification:
+        Option<tiny_live_activation_apply::TempRunVerificationSummary>,
+    pub(crate) live_watch_verification: Option<LiveWatchVerificationSummary>,
+    pub(crate) observation_evaluation: Option<ObservationEvaluationSummary>,
+    pub(crate) activation_authorized: bool,
+    pub(crate) explicit_statement: String,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -2081,6 +2082,122 @@ fn render_human(report: &WatchReport) -> String {
     lines.push("activation_authorized=false".to_string());
     lines.push(report.explicit_statement.clone());
     lines.join("\n")
+}
+
+pub(crate) fn build_plan_watch_report_for_drill(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    runtime_dir: &Path,
+    target_config_path: Option<&Path>,
+    target_service_name: Option<&str>,
+    service_control_command_path: Option<&Path>,
+    backup_dir: Option<&Path>,
+    watch_window_seconds: Option<u64>,
+    sample_cadence_ms: u64,
+    max_observation_staleness_ms: Option<u64>,
+) -> Result<WatchReport> {
+    build_plan_watch_report(&Config {
+        mode: Mode::PlanWatch,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        target_config_path: target_config_path.map(Path::to_path_buf),
+        target_service_name: target_service_name.map(str::to_string),
+        service_control_command_path: service_control_command_path.map(Path::to_path_buf),
+        backup_dir: backup_dir.map(Path::to_path_buf),
+        output_path: None,
+        watch_window_seconds,
+        sample_cadence_ms,
+        max_observation_staleness_ms,
+        json: false,
+    })
+}
+
+pub(crate) fn verify_watch_target_report_for_drill(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    runtime_dir: &Path,
+    target_config_path: &Path,
+    target_service_name: &str,
+    service_control_command_path: &Path,
+    backup_dir: &Path,
+    watch_window_seconds: Option<u64>,
+    sample_cadence_ms: u64,
+    max_observation_staleness_ms: Option<u64>,
+) -> Result<WatchReport> {
+    verify_watch_target_report(&Config {
+        mode: Mode::VerifyWatchTarget,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        target_config_path: Some(target_config_path.to_path_buf()),
+        target_service_name: Some(target_service_name.to_string()),
+        service_control_command_path: Some(service_control_command_path.to_path_buf()),
+        backup_dir: Some(backup_dir.to_path_buf()),
+        output_path: None,
+        watch_window_seconds,
+        sample_cadence_ms,
+        max_observation_staleness_ms,
+        json: false,
+    })
+}
+
+pub(crate) fn watch_temp_run_report_for_drill(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    runtime_dir: &Path,
+    watch_window_seconds: Option<u64>,
+    sample_cadence_ms: u64,
+    max_observation_staleness_ms: Option<u64>,
+) -> Result<WatchReport> {
+    watch_temp_run_report(&Config {
+        mode: Mode::WatchTempRun,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        target_config_path: None,
+        target_service_name: None,
+        service_control_command_path: None,
+        backup_dir: None,
+        output_path: None,
+        watch_window_seconds,
+        sample_cadence_ms,
+        max_observation_staleness_ms,
+        json: false,
+    })
+}
+
+pub(crate) fn watch_live_target_report_for_drill(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    runtime_dir: &Path,
+    target_config_path: &Path,
+    target_service_name: &str,
+    service_control_command_path: &Path,
+    backup_dir: &Path,
+    watch_window_seconds: Option<u64>,
+    sample_cadence_ms: u64,
+    max_observation_staleness_ms: Option<u64>,
+) -> Result<WatchReport> {
+    watch_live_target_report(&Config {
+        mode: Mode::WatchLiveTarget,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        target_config_path: Some(target_config_path.to_path_buf()),
+        target_service_name: Some(target_service_name.to_string()),
+        service_control_command_path: Some(service_control_command_path.to_path_buf()),
+        backup_dir: Some(backup_dir.to_path_buf()),
+        output_path: None,
+        watch_window_seconds,
+        sample_cadence_ms,
+        max_observation_staleness_ms,
+        json: false,
+    })
+}
+
+pub(crate) fn observation_path_for_drill(runtime_dir: &Path) -> PathBuf {
+    observation_path(runtime_dir)
 }
 
 fn serialize_enum<T: Serialize>(value: &T) -> String {

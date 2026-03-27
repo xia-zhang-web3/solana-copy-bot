@@ -53,9 +53,9 @@ enum Mode {
     InternalTempRunWorker,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum TinyLiveActivationApplyVerdict {
+pub(crate) enum TinyLiveActivationApplyVerdict {
     TinyLiveActivationApplyPlanReady,
     TinyLiveActivationApplyScriptRendered,
     TinyLiveActivationApplyRefusedByStage3,
@@ -162,7 +162,7 @@ pub(crate) struct RollbackStatus {
     pub(crate) note: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct TempRunVerificationSummary {
     pub(crate) pid_file_present: bool,
     pub(crate) log_file_present: bool,
@@ -175,24 +175,24 @@ pub(crate) struct TempRunVerificationSummary {
     pub(crate) mismatches: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct ApplyReport {
-    generated_at: DateTime<Utc>,
-    mode: String,
-    verdict: TinyLiveActivationApplyVerdict,
-    reason: String,
-    activation_config_path: String,
-    rollback_config_path: String,
-    runtime_dir: String,
-    startup_timeout_ms: u64,
-    rollback_timeout_ms: u64,
-    activation_metadata_path: Option<String>,
-    rollback_metadata_path: Option<String>,
-    apply_command_summary: Option<String>,
-    verify_command_summary: Option<String>,
-    rollback_command_summary: Option<String>,
-    temp_run_verification: Option<TempRunVerificationSummary>,
-    explicit_statement: String,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ApplyReport {
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) mode: String,
+    pub(crate) verdict: TinyLiveActivationApplyVerdict,
+    pub(crate) reason: String,
+    pub(crate) activation_config_path: String,
+    pub(crate) rollback_config_path: String,
+    pub(crate) runtime_dir: String,
+    pub(crate) startup_timeout_ms: u64,
+    pub(crate) rollback_timeout_ms: u64,
+    pub(crate) activation_metadata_path: Option<String>,
+    pub(crate) rollback_metadata_path: Option<String>,
+    pub(crate) apply_command_summary: Option<String>,
+    pub(crate) verify_command_summary: Option<String>,
+    pub(crate) rollback_command_summary: Option<String>,
+    pub(crate) temp_run_verification: Option<TempRunVerificationSummary>,
+    pub(crate) explicit_statement: String,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -1409,6 +1409,132 @@ fn verify_rollback_runtime(
     })
 }
 
+pub(crate) fn plan_temp_apply_for_drill(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    runtime_dir: &Path,
+    startup_timeout_ms: u64,
+    rollback_timeout_ms: u64,
+) -> Result<ApplyReport> {
+    build_plan_report(&Config {
+        mode: Mode::Plan,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        output_path: None,
+        startup_timeout_ms,
+        rollback_timeout_ms,
+        json: false,
+    })
+}
+
+pub(crate) fn apply_temp_run_for_drill(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    runtime_dir: &Path,
+    startup_timeout_ms: u64,
+    rollback_timeout_ms: u64,
+) -> Result<ApplyReport> {
+    apply_temp_run(&Config {
+        mode: Mode::ApplyTempRun,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        output_path: None,
+        startup_timeout_ms,
+        rollback_timeout_ms,
+        json: false,
+    })
+}
+
+pub(crate) fn verify_temp_run_for_drill(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    runtime_dir: &Path,
+    startup_timeout_ms: u64,
+    rollback_timeout_ms: u64,
+) -> Result<ApplyReport> {
+    verify_temp_run(&Config {
+        mode: Mode::VerifyTempRun,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        output_path: None,
+        startup_timeout_ms,
+        rollback_timeout_ms,
+        json: false,
+    })
+}
+
+pub(crate) fn rollback_temp_run_for_drill(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    runtime_dir: &Path,
+    startup_timeout_ms: u64,
+    rollback_timeout_ms: u64,
+) -> Result<ApplyReport> {
+    rollback_temp_run(&Config {
+        mode: Mode::RollbackTempRun,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        output_path: None,
+        startup_timeout_ms,
+        rollback_timeout_ms,
+        json: false,
+    })
+}
+
+pub(crate) fn verify_rollback_runtime_for_drill(
+    paths: &RuntimePaths,
+    session: &TempRunSession,
+    rollback_status: &RollbackStatus,
+) -> Result<TempRunVerificationSummary> {
+    verify_rollback_runtime(paths, session, rollback_status)
+}
+
+pub(crate) fn run_internal_temp_run_worker_for_drill(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    runtime_dir: &Path,
+    startup_timeout_ms: u64,
+    rollback_timeout_ms: u64,
+) -> Result<ApplyReport> {
+    run_internal_temp_run_worker(&Config {
+        mode: Mode::InternalTempRunWorker,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        output_path: None,
+        startup_timeout_ms,
+        rollback_timeout_ms,
+        json: false,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn apply_temp_run_with_test_worker_for_drill(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    runtime_dir: &Path,
+    startup_timeout_ms: u64,
+    rollback_timeout_ms: u64,
+) -> Result<ApplyReport> {
+    apply_temp_run_with_spawner(
+        &Config {
+            mode: Mode::ApplyTempRun,
+            activation_config_path: activation_config_path.to_path_buf(),
+            rollback_config_path: rollback_config_path.to_path_buf(),
+            runtime_dir: runtime_dir.to_path_buf(),
+            output_path: None,
+            startup_timeout_ms,
+            rollback_timeout_ms,
+            json: false,
+        },
+        |request| spawn_test_script_worker(request),
+    )
+}
+
 fn read_pid(path: &Path) -> Result<u32> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed reading pid file {}", path.display()))?;
@@ -1448,6 +1574,48 @@ fn process_is_alive(pid: u32) -> bool {
         let _ = pid;
         false
     }
+}
+
+#[cfg(test)]
+fn spawn_test_script_worker(request: &WorkerLaunchRequest) -> Result<WorkerLaunch> {
+    let status_path = runtime_paths(&request.runtime_dir).status_path;
+    let stop_request_path = runtime_paths(&request.runtime_dir).stop_request_path;
+    let activation = tiny_live_activation_execute::inspect_rendered_config_artifact(
+        &request.activation_config_path,
+    )?;
+    let script_path = request.runtime_dir.join("worker.sh");
+    let script = format!(
+        "#!/usr/bin/env bash\nset -euo pipefail\nruntime_dir=\"$1\"\nactivation_config=\"$2\"\nrollback_config=\"$3\"\nstatus_path=\"{}\"\nstop_path=\"{}\"\nwhile true; do\n  now=$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")\n  tmp_status=\"${{status_path}}.tmp.$$\"\n  cat > \"$tmp_status\" <<JSON\n{{\n  \"status_version\": \"1\",\n  \"state\": \"$( [ -f \"$stop_path\" ] && echo activation_stopped || echo activation_running )\",\n  \"started_at\": \"$now\",\n  \"last_heartbeat_at\": \"$now\",\n  \"stopped_at\": null,\n  \"pid\": $$,\n  \"runtime_dir\": \"$runtime_dir\",\n  \"command_summary\": \"test-worker\",\n  \"activation_config_path\": \"$activation_config\",\n  \"rollback_config_path\": \"$rollback_config\",\n  \"activation_metadata_path\": \"{}\",\n  \"rollback_metadata_path\": \"{}\",\n  \"source_config_fingerprint_sha256\": \"{}\",\n  \"execution_enabled_in_activation_config\": true,\n  \"execution_enabled_in_rollback_config\": false,\n  \"activation_authorized\": false,\n  \"note\": \"test worker\"\n}}\nJSON\n  mv \"$tmp_status\" \"$status_path\"\n  if [ -f \"$stop_path\" ]; then\n    exit 0\n  fi\n  sleep 0.2\ndone\n",
+        status_path.display(),
+        stop_request_path.display(),
+        tiny_live_activation_execute::metadata_path_for_rendered_config(
+            &request.activation_config_path
+        )
+        .display(),
+        tiny_live_activation_execute::metadata_path_for_rendered_config(
+            &request.rollback_config_path
+        )
+        .display(),
+        activation.metadata.source_config_fingerprint_sha256,
+    );
+    fs::write(&script_path, script)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms)?;
+    }
+    let stdout = fs::File::create(&request.log_path)?;
+    let stderr = stdout.try_clone()?;
+    let child = Command::new(&script_path)
+        .arg(&request.runtime_dir)
+        .arg(&request.activation_config_path)
+        .arg(&request.rollback_config_path)
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()?;
+    Ok(WorkerLaunch { child })
 }
 
 pub(crate) fn load_session(path: &Path) -> Result<TempRunSession> {

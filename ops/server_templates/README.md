@@ -671,6 +671,69 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `tiny_live_watch_live_continue`
    - `tiny_live_watch_live_rollback_triggered`
 
+## Tiny-Live Activation Drill
+
+1. Operators now also have one bounded orchestration layer over the accepted
+   tiny-live apply/watch/live-executor primitives:
+   - review the end-to-end temp drill contract:
+     `copybot_tiny_live_activation_drill --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --plan-drill --json`
+   - render an operator-facing temp drill wrapper:
+     `copybot_tiny_live_activation_drill --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --render-drill-script --output /tmp/tiny-live.drill.sh --json`
+   - run the full bounded temp drill:
+     `copybot_tiny_live_activation_drill --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --run-temp-drill --json`
+   - verify the persisted drill evidence and final posture:
+     `copybot_tiny_live_activation_drill --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /tmp/tiny-live-runtime --verify-temp-drill --json`
+   - review the live-target drill contract without authorizing production activation:
+     `copybot_tiny_live_activation_drill --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /var/tmp/copybot-live-activation --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --backup-dir /var/tmp/copybot-live-backups --plan-live-drill --json`
+2. This drill layer deliberately reuses the already accepted activation
+   contracts instead of inventing a second schema:
+   - rendered activation + rollback artifacts from
+     `copybot_tiny_live_activation_execute`
+   - temp apply / rollback mechanics from
+     `copybot_tiny_live_activation_apply`
+   - live-target backup / verify contract from
+     `copybot_tiny_live_activation_live_execute`
+   - bounded first-window supervision from
+     `copybot_tiny_live_activation_watch`
+3. Temp drill mode is explicit and fully bounded:
+   - it verifies the rendered artifact pair first
+   - it runs temp apply
+   - it watches the bounded first window
+   - it classifies the result explicitly as
+     `completed_keep_running`, `completed_with_rollback`,
+     `failed_before_apply`, or `failed_during_watch`
+   - if watch evidence says `rollback_now`, it runs the accepted rollback path
+     immediately and persists rollback proof
+4. `--verify-temp-drill` is real evidence validation, not a string echo:
+   - it checks drill session + status artifacts
+   - it checks step sequencing and persisted apply/watch/rollback reports
+   - it confirms the final posture is explainable
+   - if rollback happened, it proves bounded disabled posture
+5. Live drill planning is explicit but still non-authorizing:
+   - it shows the exact backup / verify / apply / watch / rollback command
+     summaries that would be used later
+   - it still depends on the current bounded live-target contract and current
+     pre-activation truth
+   - Stage 3 remaining non-green still blocks any future production-facing run
+6. This batch does not authorize production activation:
+   - temp drill success is not permission to touch the real live target
+   - live drill planning is not permission to apply on production
+   - it does not mutate `/etc/solana-copy-bot/live.server.toml`
+   - it does not restart `solana-copy-bot.service`
+   - it does not submit trades
+7. Important drill verdicts:
+   - `tiny_live_drill_plan_ready`
+   - `tiny_live_drill_script_rendered`
+   - `tiny_live_temp_drill_completed_keep_running`
+   - `tiny_live_temp_drill_completed_with_rollback`
+   - `tiny_live_temp_drill_failed_before_apply`
+   - `tiny_live_temp_drill_failed_during_watch`
+   - `tiny_live_temp_drill_verify_ok`
+   - `tiny_live_temp_drill_verify_invalid`
+   - `tiny_live_live_drill_plan_ready`
+   - `tiny_live_live_drill_refused_by_stage3`
+   - `tiny_live_live_drill_refused_by_pre_activation_gate`
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:
