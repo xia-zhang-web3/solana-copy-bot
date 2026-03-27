@@ -878,6 +878,49 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `tiny_live_install_target_wrapper_invalid`
    - `tiny_live_install_target_path_mismatch`
 
+## Tiny-Live Activation Package
+
+1. The repo now also exports one deterministic tiny-live activation package over
+   the accepted rendered artifacts, wrapper contract, install-target contract,
+   and live cutover summaries:
+   - review the package plan:
+     `copybot_tiny_live_activation_package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --activation-config-source /tmp/tiny-live.activation.toml --rollback-config-source /tmp/tiny-live.rollback.toml --plan-package --json`
+   - export one immutable package dir:
+     `copybot_tiny_live_activation_package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --activation-config-source /tmp/tiny-live.activation.toml --rollback-config-source /tmp/tiny-live.rollback.toml --output-dir /tmp/tiny-live.package --export-package --json`
+   - verify an existing exported package dir:
+     `copybot_tiny_live_activation_package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --package-dir /tmp/tiny-live.package --verify-package --json`
+2. The package contents are explicit and deterministic:
+   - rendered activation config + metadata
+   - rendered rollback config + metadata
+   - repo-managed live service-control wrapper
+   - packaged wrapper verification truth
+   - packaged install-target contract summary
+   - live execute / watch / cutover command summaries
+   - one package manifest with file hashes, versions, and a non-authorizing
+     statement
+3. `--verify-package` is real contract verification:
+   - packaged activation + rollback artifacts must still pass the accepted
+     rendered-artifact verifier
+   - the packaged wrapper must still match the repo-managed wrapper contract
+   - the packaged install-target contract must still align with the deterministic
+     live-target layout
+   - packaged file hashes must still match the manifest
+   - manifest file references must stay inside the package dir
+4. This package remains non-authorizing:
+   - exporting or verifying the package does not enable production execution
+   - Stage 3 remains the hard gate for any future live activation or cutover
+   - tests only use temp dirs and fake roots; they do not touch the real prod
+     config or unit
+5. Important package verdicts:
+   - `tiny_live_activation_package_plan_ready`
+   - `tiny_live_activation_package_exported`
+   - `tiny_live_activation_package_verify_ok`
+   - `tiny_live_activation_package_verify_invalid`
+   - `tiny_live_activation_package_export_refused`
+   - `tiny_live_activation_package_hash_mismatch`
+   - `tiny_live_activation_package_wrapper_invalid`
+   - `tiny_live_activation_package_install_contract_invalid`
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

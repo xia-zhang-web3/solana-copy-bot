@@ -89,7 +89,7 @@ struct InstallTargetPaths {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct InstallTargetMetadata {
+pub(crate) struct InstallTargetMetadata {
     metadata_version: String,
     installed_at: DateTime<Utc>,
     install_root: String,
@@ -109,7 +109,7 @@ struct InstallTargetMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct InstallTargetVerificationSummary {
+pub(crate) struct InstallTargetVerificationSummary {
     wrapper_present: bool,
     wrapper_verified: Option<bool>,
     install_metadata_present: bool,
@@ -169,6 +169,28 @@ struct InstallCommandSummaries {
     live_execute_verify_command_summary: String,
     watch_live_command_summary: String,
     cutover_plan_command_summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct InstallTargetPackageSummary {
+    pub(crate) install_root: String,
+    pub(crate) wrapper_path: String,
+    pub(crate) target_config_path: String,
+    pub(crate) target_service_name: String,
+    pub(crate) backend_command: String,
+    pub(crate) wrapper_timeout_ms: u64,
+    pub(crate) installed_activation_config_path: String,
+    pub(crate) installed_activation_metadata_path: String,
+    pub(crate) installed_rollback_config_path: String,
+    pub(crate) installed_rollback_metadata_path: String,
+    pub(crate) runtime_dir: String,
+    pub(crate) backup_dir: String,
+    pub(crate) session_dir: String,
+    pub(crate) install_metadata_path: String,
+    pub(crate) live_execute_verify_command_summary: String,
+    pub(crate) watch_live_command_summary: String,
+    pub(crate) cutover_plan_command_summary: String,
+    pub(crate) explicit_statement: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1123,6 +1145,199 @@ fn build_command_summaries(config: &Config, paths: &InstallTargetPaths) -> Insta
             shell_single_quote(&paths.backup_dir.display().to_string()),
             shell_single_quote(&paths.session_dir.display().to_string())
         ),
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn build_install_target_package_summary(
+    install_root: &Path,
+    target_service_name: &str,
+    backend_command: &str,
+    wrapper_timeout_ms: u64,
+    activation_config_source_path: &Path,
+    rollback_config_source_path: &Path,
+) -> Result<InstallTargetPackageSummary> {
+    let config = Config {
+        mode: Mode::PlanInstallTarget,
+        install_root: install_root.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        backend_command: backend_command.to_string(),
+        wrapper_timeout_ms,
+        activation_config_source_path: Some(activation_config_source_path.to_path_buf()),
+        rollback_config_source_path: Some(rollback_config_source_path.to_path_buf()),
+        output_path: None,
+        json: false,
+    };
+    let report = plan_install_target_report(&config)?;
+    Ok(install_target_package_summary_from_report(&report))
+}
+
+#[allow(dead_code)]
+pub(crate) fn verify_install_target_package_summary(
+    summary: &InstallTargetPackageSummary,
+) -> Vec<String> {
+    let mut mismatches = Vec::new();
+    let install_root = PathBuf::from(&summary.install_root);
+    let paths = derive_paths(&install_root);
+    for (label, actual, expected) in [
+        (
+            "wrapper_path",
+            summary.wrapper_path.as_str(),
+            paths.wrapper_path.display().to_string().as_str(),
+        ),
+        (
+            "target_config_path",
+            summary.target_config_path.as_str(),
+            paths.target_config_path.display().to_string().as_str(),
+        ),
+        (
+            "installed_activation_config_path",
+            summary.installed_activation_config_path.as_str(),
+            paths.activation_config_path.display().to_string().as_str(),
+        ),
+        (
+            "installed_activation_metadata_path",
+            summary.installed_activation_metadata_path.as_str(),
+            paths
+                .activation_metadata_path
+                .display()
+                .to_string()
+                .as_str(),
+        ),
+        (
+            "installed_rollback_config_path",
+            summary.installed_rollback_config_path.as_str(),
+            paths.rollback_config_path.display().to_string().as_str(),
+        ),
+        (
+            "installed_rollback_metadata_path",
+            summary.installed_rollback_metadata_path.as_str(),
+            paths.rollback_metadata_path.display().to_string().as_str(),
+        ),
+        (
+            "runtime_dir",
+            summary.runtime_dir.as_str(),
+            paths.runtime_dir.display().to_string().as_str(),
+        ),
+        (
+            "backup_dir",
+            summary.backup_dir.as_str(),
+            paths.backup_dir.display().to_string().as_str(),
+        ),
+        (
+            "session_dir",
+            summary.session_dir.as_str(),
+            paths.session_dir.display().to_string().as_str(),
+        ),
+        (
+            "install_metadata_path",
+            summary.install_metadata_path.as_str(),
+            paths.install_metadata_path.display().to_string().as_str(),
+        ),
+    ] {
+        if actual != expected {
+            mismatches.push(format!(
+                "install target package summary mismatch for {label}: expected {expected}, found {actual}"
+            ));
+        }
+    }
+    if summary.target_service_name.is_empty() {
+        mismatches.push("install target package summary target_service_name is empty".to_string());
+    }
+    if summary.backend_command.is_empty() {
+        mismatches.push("install target package summary backend_command is empty".to_string());
+    }
+    if summary.wrapper_timeout_ms == 0 {
+        mismatches.push(
+            "install target package summary wrapper_timeout_ms must be greater than zero"
+                .to_string(),
+        );
+    }
+    if summary.live_execute_verify_command_summary.is_empty() {
+        mismatches.push(
+            "install target package summary live_execute_verify_command_summary is empty"
+                .to_string(),
+        );
+    }
+    if summary.watch_live_command_summary.is_empty() {
+        mismatches
+            .push("install target package summary watch_live_command_summary is empty".to_string());
+    }
+    if summary.cutover_plan_command_summary.is_empty() {
+        mismatches.push(
+            "install target package summary cutover_plan_command_summary is empty".to_string(),
+        );
+    }
+    if !summary
+        .live_execute_verify_command_summary
+        .contains(&summary.installed_activation_config_path)
+        || !summary
+            .live_execute_verify_command_summary
+            .contains(&summary.installed_rollback_config_path)
+        || !summary
+            .live_execute_verify_command_summary
+            .contains(&summary.wrapper_path)
+    {
+        mismatches.push(
+            "install target package summary live_execute_verify_command_summary does not match the deterministic installed paths"
+                .to_string(),
+        );
+    }
+    if !summary
+        .watch_live_command_summary
+        .contains(&summary.runtime_dir)
+        || !summary
+            .watch_live_command_summary
+            .contains(&summary.backup_dir)
+        || !summary
+            .watch_live_command_summary
+            .contains(&summary.wrapper_path)
+    {
+        mismatches.push(
+            "install target package summary watch_live_command_summary does not match the deterministic installed paths"
+                .to_string(),
+        );
+    }
+    if !summary
+        .cutover_plan_command_summary
+        .contains(&summary.session_dir)
+        || !summary
+            .cutover_plan_command_summary
+            .contains(&summary.backup_dir)
+        || !summary
+            .cutover_plan_command_summary
+            .contains(&summary.wrapper_path)
+    {
+        mismatches.push(
+            "install target package summary cutover_plan_command_summary does not match the deterministic installed paths"
+                .to_string(),
+        );
+    }
+    mismatches
+}
+
+fn install_target_package_summary_from_report(
+    report: &InstallTargetReport,
+) -> InstallTargetPackageSummary {
+    InstallTargetPackageSummary {
+        install_root: report.install_root.clone(),
+        wrapper_path: report.wrapper_path.clone(),
+        target_config_path: report.target_config_path.clone(),
+        target_service_name: report.target_service_name.clone(),
+        backend_command: report.backend_command.clone(),
+        wrapper_timeout_ms: report.wrapper_timeout_ms,
+        installed_activation_config_path: report.installed_activation_config_path.clone(),
+        installed_activation_metadata_path: report.installed_activation_metadata_path.clone(),
+        installed_rollback_config_path: report.installed_rollback_config_path.clone(),
+        installed_rollback_metadata_path: report.installed_rollback_metadata_path.clone(),
+        runtime_dir: report.runtime_dir.clone(),
+        backup_dir: report.backup_dir.clone(),
+        session_dir: report.session_dir.clone(),
+        install_metadata_path: report.install_metadata_path.clone(),
+        live_execute_verify_command_summary: report.live_execute_verify_command_summary.clone(),
+        watch_live_command_summary: report.watch_live_command_summary.clone(),
+        cutover_plan_command_summary: report.cutover_plan_command_summary.clone(),
+        explicit_statement: report.explicit_statement.clone(),
     }
 }
 

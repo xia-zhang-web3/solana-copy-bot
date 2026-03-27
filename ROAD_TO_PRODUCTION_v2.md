@@ -2005,6 +2005,47 @@ Acceptance update (`2026-03-27`, repo-managed tiny-live install-target package):
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_install_target`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_install_target --bin copybot_live_service_control_wrapper --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_watch --bin copybot_tiny_live_activation_cutover`
 
+Acceptance update (`2026-03-27`, repo-managed tiny-live activation package):
+
+1. Stage 4 now also has one deterministic activation package/export + verify
+   surface over the accepted tiny-live live-target contracts:
+   - `copybot_tiny_live_activation_package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --activation-config-source /tmp/tiny-live.activation.toml --rollback-config-source /tmp/tiny-live.rollback.toml --plan-package --json`
+   - `copybot_tiny_live_activation_package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --activation-config-source /tmp/tiny-live.activation.toml --rollback-config-source /tmp/tiny-live.rollback.toml --output-dir /tmp/tiny-live.package --export-package --json`
+   - `copybot_tiny_live_activation_package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --package-dir /tmp/tiny-live.package --verify-package --json`
+2. The exported package captures exactly the already accepted contracts rather
+   than inventing a second activation schema:
+   - rendered activation config + metadata
+   - rendered rollback config + metadata
+   - repo-managed service-control wrapper + packaged wrapper verification truth
+   - install-target layout contract summary
+   - live execute / watch / cutover command summaries
+   - one manifest with deterministic file hashes and versioned package metadata
+3. `--verify-package` is real contract verification:
+   - activation + rollback artifacts must still pass the accepted rendered
+     artifact verifier
+   - the packaged wrapper must still match the repo-managed wrapper contract
+   - the packaged install-target summary must still match the deterministic
+     live-target layout contract
+   - packaged hashes must still match the manifest
+   - package file references must stay under the package dir
+4. This batch remains non-authorizing:
+   - exporting or verifying the package does not enable production execution
+   - it does not weaken Stage 3 as the hard gate
+   - tests only use temp dirs and fake roots; they do not touch the real prod
+     config or unit
+5. Important package verdicts:
+   - `tiny_live_activation_package_plan_ready`
+   - `tiny_live_activation_package_exported`
+   - `tiny_live_activation_package_verify_ok`
+   - `tiny_live_activation_package_verify_invalid`
+   - `tiny_live_activation_package_export_refused`
+   - `tiny_live_activation_package_hash_mismatch`
+   - `tiny_live_activation_package_wrapper_invalid`
+   - `tiny_live_activation_package_install_contract_invalid`
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package --bin copybot_tiny_live_activation_install_target --bin copybot_live_service_control_wrapper --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_cutover`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
