@@ -16,7 +16,7 @@ mod activation_artifact_state_bundle;
 
 const USAGE: &str = "usage: copybot_activation_artifact_state_bundle_publish_report --bundle-archive-dir <path> [--json] [--pointer-name <name>] (--publish --state-archive-dir <path> --snapshot <path|file-name|snapshotted-at> [--persist-latest-pointer --bundle-latest-pointer-dir <path> [--allow-latest-pointer-overwrite]] | --report-latest --bundle-latest-pointer-dir <path> | --verify-latest --bundle-latest-pointer-dir <path>)";
 const BUNDLE_POINTER_VERSION: &str = "1";
-const DEFAULT_BUNDLE_POINTER_NAME: &str = "latest_state_snapshot_bundle";
+pub(crate) const DEFAULT_BUNDLE_POINTER_NAME: &str = "latest_state_snapshot_bundle";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -51,7 +51,7 @@ enum Mode {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ArtifactStateBundleReportVerdict {
+pub(crate) enum ArtifactStateBundleReportVerdict {
     ArtifactStateBundleReportPublished,
     ArtifactStateBundleReportPublishedAndPointedLatest,
     ArtifactStateBundleReportPointerBlocked,
@@ -62,25 +62,25 @@ enum ArtifactStateBundleReportVerdict {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct StateBundleLatestPointerMetadata {
-    pointer_version: String,
-    pointer_name: String,
-    source_bundle_archive_dir: String,
-    selected_bundle_path: String,
-    selected_bundle_dir_name: String,
-    source_state_archive_dir: String,
-    selected_snapshot_source_path: String,
-    selected_snapshot_file_name: String,
-    snapshotted_at: DateTime<Utc>,
-    snapshot_state_verdict: String,
-    snapshot_state_reason: String,
-    selected_review_generation_id: Option<String>,
-    selected_latest_release_generation_id: Option<String>,
-    ambiguous_legacy_count: usize,
-    coherent_for_review_operations: bool,
-    pointed_at: DateTime<Utc>,
-    build_version: String,
-    git_commit: Option<String>,
+pub(crate) struct StateBundleLatestPointerMetadata {
+    pub(crate) pointer_version: String,
+    pub(crate) pointer_name: String,
+    pub(crate) source_bundle_archive_dir: String,
+    pub(crate) selected_bundle_path: String,
+    pub(crate) selected_bundle_dir_name: String,
+    pub(crate) source_state_archive_dir: String,
+    pub(crate) selected_snapshot_source_path: String,
+    pub(crate) selected_snapshot_file_name: String,
+    pub(crate) snapshotted_at: DateTime<Utc>,
+    pub(crate) snapshot_state_verdict: String,
+    pub(crate) snapshot_state_reason: String,
+    pub(crate) selected_review_generation_id: Option<String>,
+    pub(crate) selected_latest_release_generation_id: Option<String>,
+    pub(crate) ambiguous_legacy_count: usize,
+    pub(crate) coherent_for_review_operations: bool,
+    pub(crate) pointed_at: DateTime<Utc>,
+    pub(crate) build_version: String,
+    pub(crate) git_commit: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,44 +91,51 @@ struct PersistedStateSnapshotBundle {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ArtifactStateBundlePublishReport {
-    mode: String,
-    verdict: ArtifactStateBundleReportVerdict,
-    reason: String,
-    state_archive_dir: Option<String>,
-    bundle_archive_dir: String,
-    persisted_bundle_path: Option<String>,
-    persisted_bundle_exists: bool,
-    persisted_bundle_dir_name: Option<String>,
-    bundle_integrity_verdict: Option<String>,
-    bundle_integrity_reason: Option<String>,
-    source_state_archive_dir: Option<String>,
-    selected_snapshot_path: Option<String>,
-    selected_snapshot_file_name: Option<String>,
-    snapshotted_at: Option<DateTime<Utc>>,
-    selected_snapshot_state_verdict: Option<String>,
-    selected_snapshot_state_reason: Option<String>,
-    selected_review_generation_id: Option<String>,
-    selected_latest_release_generation_id: Option<String>,
-    ambiguous_legacy_count: Option<usize>,
-    coherent_for_review_operations: Option<bool>,
-    latest_pointer_attempted: bool,
-    latest_pointer_updated: bool,
-    latest_pointer_dir: Option<String>,
-    latest_pointer_name: String,
-    latest_pointer_path: Option<String>,
-    latest_pointer_source_bundle_archive_dir: Option<String>,
-    latest_pointer_pointed_at: Option<DateTime<Utc>>,
-    latest_pointer_exists: bool,
-    latest_pointer_overwrite_used: bool,
-    latest_pointer_target_exists: bool,
-    latest_pointer_target_matches_identity: bool,
-    verification_attempted: bool,
-    missing_paths: Vec<String>,
-    inconsistencies: Vec<String>,
-    execution_untouched: bool,
-    activation_authorized: bool,
-    not_authorized_summary: String,
+pub(crate) struct ArtifactStateBundlePublishReport {
+    pub(crate) mode: String,
+    pub(crate) verdict: ArtifactStateBundleReportVerdict,
+    pub(crate) reason: String,
+    pub(crate) state_archive_dir: Option<String>,
+    pub(crate) bundle_archive_dir: String,
+    pub(crate) persisted_bundle_path: Option<String>,
+    pub(crate) persisted_bundle_exists: bool,
+    pub(crate) persisted_bundle_dir_name: Option<String>,
+    pub(crate) bundle_integrity_verdict: Option<String>,
+    pub(crate) bundle_integrity_reason: Option<String>,
+    pub(crate) source_state_archive_dir: Option<String>,
+    pub(crate) selected_snapshot_path: Option<String>,
+    pub(crate) selected_snapshot_file_name: Option<String>,
+    pub(crate) snapshotted_at: Option<DateTime<Utc>>,
+    pub(crate) selected_snapshot_state_verdict: Option<String>,
+    pub(crate) selected_snapshot_state_reason: Option<String>,
+    pub(crate) selected_review_generation_id: Option<String>,
+    pub(crate) selected_latest_release_generation_id: Option<String>,
+    pub(crate) ambiguous_legacy_count: Option<usize>,
+    pub(crate) coherent_for_review_operations: Option<bool>,
+    pub(crate) latest_pointer_attempted: bool,
+    pub(crate) latest_pointer_updated: bool,
+    pub(crate) latest_pointer_dir: Option<String>,
+    pub(crate) latest_pointer_name: String,
+    pub(crate) latest_pointer_path: Option<String>,
+    pub(crate) latest_pointer_source_bundle_archive_dir: Option<String>,
+    pub(crate) latest_pointer_pointed_at: Option<DateTime<Utc>>,
+    pub(crate) latest_pointer_exists: bool,
+    pub(crate) latest_pointer_overwrite_used: bool,
+    pub(crate) latest_pointer_target_exists: bool,
+    pub(crate) latest_pointer_target_matches_identity: bool,
+    pub(crate) verification_attempted: bool,
+    pub(crate) missing_paths: Vec<String>,
+    pub(crate) inconsistencies: Vec<String>,
+    pub(crate) execution_untouched: bool,
+    pub(crate) activation_authorized: bool,
+    pub(crate) not_authorized_summary: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct LoadedStateBundleLatestPointerMetadata {
+    pub(crate) path: PathBuf,
+    pub(crate) metadata: StateBundleLatestPointerMetadata,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -300,6 +307,67 @@ fn run(config: Config) -> Result<String> {
     } else {
         Ok(render_human(&report))
     }
+}
+
+#[allow(dead_code)]
+pub(crate) fn inspect_latest_bundle_pointer_report(
+    bundle_archive_dir: &Path,
+    latest_pointer_dir: &Path,
+    pointer_name: &str,
+    verification_attempted: bool,
+) -> Result<ArtifactStateBundlePublishReport> {
+    let config = Config {
+        bundle_archive_dir: bundle_archive_dir.to_path_buf(),
+        latest_pointer_dir: Some(latest_pointer_dir.to_path_buf()),
+        pointer_name: parse_pointer_name(pointer_name.to_string())?,
+        json: false,
+        mode: if verification_attempted {
+            Mode::VerifyLatest
+        } else {
+            Mode::ReportLatest
+        },
+    };
+    inspect_latest_pointer(&config, verification_attempted)
+}
+
+#[allow(dead_code)]
+pub(crate) fn inspect_latest_bundle_pointer_metadata(
+    latest_pointer_dir: &Path,
+    pointer_name: &str,
+) -> Result<Option<LoadedStateBundleLatestPointerMetadata>> {
+    let pointer_name = parse_pointer_name(pointer_name.to_string())?;
+    let metadata_path = latest_pointer_path(latest_pointer_dir, &pointer_name);
+    if !metadata_path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&metadata_path).with_context(|| {
+        format!(
+            "failed reading state snapshot bundle latest pointer metadata {}",
+            metadata_path.display()
+        )
+    })?;
+    let metadata: StateBundleLatestPointerMetadata =
+        serde_json::from_str(&raw).with_context(|| {
+            format!(
+                "failed parsing state snapshot bundle latest pointer metadata {}",
+                metadata_path.display()
+            )
+        })?;
+    Ok(Some(LoadedStateBundleLatestPointerMetadata {
+        path: metadata_path,
+        metadata,
+    }))
+}
+
+#[allow(dead_code)]
+pub(crate) fn latest_state_bundle_pointer_path(
+    latest_pointer_dir: &Path,
+    pointer_name: &str,
+) -> Result<PathBuf> {
+    Ok(latest_pointer_path(
+        latest_pointer_dir,
+        &parse_pointer_name(pointer_name.to_string())?,
+    ))
 }
 
 fn publish_bundle_report(

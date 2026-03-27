@@ -216,7 +216,7 @@ This is the expected style for future sessions too.
 
 ## Current Server Facts
 
-Snapshot as of `2026-03-26`.
+Snapshot as of `2026-03-27`.
 
 ### Live Server
 
@@ -233,12 +233,24 @@ Snapshot as of `2026-03-26`.
   - `220G used / 247G avail / 48%`
   - `state/discovery_restore/recent_raw = 183G`
   - archive count is currently `0` because no fresh archive promotion has happened since the stall
-- The snapshot timer itself is still alive, but the bounded `recent_raw` surface is
-  now in an emergency stalled state:
-  - recent runs return `state=deferred`
-  - `latest_surface_action=deferred_due_to_attempt_budget`
-  - `terminal_reason=attempt_duration_budget_exhausted`
-  - `latest.sqlite` remains frozen at the last successful promotion instead of advancing with source DB growth
+- Emergency livelock fix `9387c65` is now deployed on the production host.
+- The bounded `recent_raw` path is no longer resetting to zero on each timer tick:
+  - first post-rollout run returned:
+    - `state=deferred`
+    - `staged_progress_resumed=false`
+    - `staged_progress_preserved_for_retry=true`
+    - `staged_progress_advanced=true`
+    - `staged_row_count_after_attempt=483328`
+  - second post-rollout run returned:
+    - `state=deferred`
+    - `staged_progress_resumed=true`
+    - `staged_progress_preserved_for_retry=true`
+    - `staged_progress_advanced=true`
+    - `staged_row_count_before_attempt=483328`
+    - `staged_row_count_after_attempt=753664`
+- Current interpretation:
+  - the snapshot path is now recovering via preserved staged progress
+  - but `latest.sqlite` is still frozen at the old promoted frontier until a full resumed completion promotes a newer bounded snapshot
 
 ### Raw Window Progress
 
@@ -247,9 +259,15 @@ Snapshot as of `2026-03-26`.
   - `covered_through = 2026-03-26 07:33:59 UTC`
   - `last_batch_completed_at = 2026-03-26 07:35:10 UTC`
 - That is only about `1d 19h 27m` of usable bounded raw coverage.
-- This is not a normal “keep waiting 3 more days” state anymore.
-- The usable 5-day accumulation path is operationally blocked because the snapshot
-  service no longer promotes a newer `latest.sqlite`.
+- The staged snapshot now shows resumed forward progress:
+  - `created_at = 2026-03-26 22:12:34 UTC`
+  - `row_count = 753664`
+  - `covered_through = 2026-03-24 14:31:41 UTC`
+  - `last_batch_completed_at = 2026-03-26 22:15:40 UTC`
+- This is no longer a dead “reset every run” state.
+- But it is also not yet green:
+  - usable 5-day accumulation has not completed
+  - `latest.sqlite` has not been replaced yet
 
 ### Discovery Ingestion
 
@@ -264,8 +282,10 @@ Snapshot as of `2026-03-26`.
 
 - Stage 3 is still blocked.
 - This is now a production-critical blocker on the primary path.
-- The runtime itself is still alive, but the bounded `recent_raw` accumulation path
-  is stalled, so waiting alone will not close Stage 3.
+- The runtime itself is still alive.
+- The bounded `recent_raw` accumulation path is now making preserved progress after
+  rollout, but Stage 3 remains blocked until that staged progress completes and a
+  newer `latest.sqlite` is promoted.
 
 - Important observed fact:
   - the latest persisted `discovery_wallet_freshness_history` capture is still
@@ -293,13 +313,15 @@ Snapshot as of `2026-03-26`.
     surface required for Stage 3 does not progress
 
 - Practical implication:
-  - do not describe the server as “just waiting for 3 more days”; that is now false
-  - shadow-trading readiness is blocked on the stalled bounded snapshot path
-  - after the snapshot path is fixed and usable raw coverage can progress again,
-    runtime will still need fresh healthy captures to accumulate before Stage 3
-    can go green
-  - current operator priority is to fix the bounded snapshot stall, not to wait
-    passively for raw coverage
+  - do not describe the server as “already healthy”; that is also false
+  - the dead livelock was fixed, and the bounded snapshot is progressing again
+  - shadow-trading readiness is still blocked until the resumed staged snapshot
+    finishes and Stage 3 can start collecting fresh healthy evidence again
+  - current operator priority is to watch for:
+    - continued `staged_progress_advanced=true`
+    - eventual `state=written`
+    - `archive_promoted=true`
+    - a newer `latest.sqlite` frontier
 
 ## If A New Session Starts Elsewhere
 

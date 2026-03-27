@@ -2355,6 +2355,38 @@ Acceptance update (`2026-03-26`, activation artifact state snapshot bundle archi
 5. Checks:
    - `cargo test -p copybot-app --bin copybot_activation_artifact_state_bundle_publish_report`
 
+Acceptance update (`2026-03-27`, activation artifact state snapshot bundle archive manager):
+
+1. The repo now also has a first-class archive-management surface for
+   archived state-snapshot bundles:
+   - inspect archive health:
+     `copybot_activation_artifact_state_bundle_archive --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --report --json`
+   - preview retention with latest-pointer protection:
+     `copybot_activation_artifact_state_bundle_archive --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --retention-plan --keep-latest 5 --json`
+   - apply the exact same bounded retention plan:
+     `copybot_activation_artifact_state_bundle_archive --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --retention-apply --keep-latest 5 --json`
+2. The manager is intentionally conservative:
+   - it reuses accepted bundle verification and latest-pointer inspection
+     instead of adding another bundle parser
+   - a valid latest bundle pointer target is protected from cleanup
+   - invalid or drifted archived bundles are surfaced explicitly and block
+     cleanup until reviewed
+   - cleanup deletes only archived bundle directories under the explicit
+     bundle archive root and never rewrites pointer metadata in this batch
+3. Operational meaning:
+   - operators can now see how many archived bundles verify cleanly vs are
+     invalid/drifted
+   - archive report preserves the bundled snapshot's original
+     `state_verdict`/reason/ambiguity instead of upgrading it
+   - if the latest bundle pointer selects an ambiguous or otherwise non-green
+     snapshot bundle, report mode stays non-green and says so explicitly
+4. This remains artifact handling only:
+   - it does not rewrite the state snapshot archive
+   - it does not rewrite existing archived bundle contents
+   - it does not enable execution or authorize activation
+5. Checks:
+   - `cargo test -p copybot-app --bin copybot_activation_artifact_state_bundle_archive`
+
 Exit criteria:
 
 1. trustworthy wallet selection is already restored
@@ -4626,3 +4658,26 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
      staged progress continues to converge
    - no execution state is touched and this remains a discovery-side artifact
      liveness repair only
+8. Post-rollout live status on the production host after deploying commit
+   `9387c65`:
+   - the server is now running the emergency fix
+   - first post-rollout bounded attempt returned:
+     - `state=deferred`
+     - `staged_progress_resumed=false`
+     - `staged_progress_preserved_for_retry=true`
+     - `staged_progress_advanced=true`
+     - `staged_row_count_after_attempt=483328`
+   - second post-rollout bounded attempt returned:
+     - `state=deferred`
+     - `staged_progress_resumed=true`
+     - `staged_progress_preserved_for_retry=true`
+     - `staged_progress_advanced=true`
+     - `staged_row_count_before_attempt=483328`
+     - `staged_row_count_after_attempt=753664`
+9. Operational interpretation of the post-rollout status:
+   - the old reset-to-zero livelock is gone
+   - the bounded snapshot path is now converging across timer ticks
+   - but the promoted `latest.sqlite` frontier is still stale until a resumed
+     completion reaches `state=written` and `archive_promoted=true`
+   - therefore Stage 3 remains blocked tonight, but the recovery path is now
+     active again instead of deadlocked

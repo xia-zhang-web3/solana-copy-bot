@@ -173,6 +173,33 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - successful promotion removes that staged pair
    - archive retention still prunes rotated snapshots without touching the
      protected current staged pair during deferred convergence
+19. Current post-rollout production status on `2026-03-26 22:15 UTC`:
+   - the emergency livelock fix has already been deployed
+   - the bounded snapshot path is no longer restarting from zero on each timer tick
+   - first observed resumed attempts on the production host showed:
+     - first post-rollout run:
+       - `state=deferred`
+       - `staged_progress_resumed=false`
+       - `staged_progress_preserved_for_retry=true`
+       - `staged_progress_advanced=true`
+       - `staged_row_count_after_attempt=483328`
+     - second post-rollout run:
+       - `state=deferred`
+       - `staged_progress_resumed=true`
+       - `staged_progress_preserved_for_retry=true`
+       - `staged_progress_advanced=true`
+       - `staged_row_count_before_attempt=483328`
+       - `staged_row_count_after_attempt=753664`
+20. Operator meaning of that live status:
+   - the liveness bug is fixed in production
+   - the current state is now “recovering via bounded preserved progress”, not
+     “dead stall”
+   - Stage 3 is still blocked until a full resumed completion promotes a newer
+     `latest.sqlite`
+   - the next healthy milestone to watch for is:
+     - `state=written`
+     - `archive_promoted=true`
+     - a newer `covered_through_cursor.ts_utc` in `latest.json`
 
 ## Stage 4 Execution Readiness Audit
 
@@ -1267,6 +1294,37 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 4. This remains artifact handling only:
    - it does not rewrite the state snapshot archive
    - it does not rewrite existing bundle contents
+   - it does not enable execution
+   - it does not authorize activation or override the Stage 3 prod gate
+
+## Activation Artifact State Snapshot Bundle Archive Manager
+
+1. Operators now also have a first-class archive-management surface for
+   archived state-snapshot bundles:
+   - inspect archive health:
+     `copybot_activation_artifact_state_bundle_archive --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --report --json`
+   - preview retention with latest-pointer protection:
+     `copybot_activation_artifact_state_bundle_archive --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --retention-plan --keep-latest 5 --json`
+   - boundedly apply the exact same retention plan:
+     `copybot_activation_artifact_state_bundle_archive --bundle-archive-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/archive --bundle-latest-pointer-dir /var/www/solana-copy-bot/state/activation_artifacts/state_snapshot_bundle/latest --retention-apply --keep-latest 5 --json`
+2. Archive management is intentionally conservative:
+   - report mode counts clean vs invalid/drifted archived bundles and shows the
+     latest archived bundle by deterministic archive ordering
+   - retention preview and apply use the exact same selection logic
+   - a valid latest bundle pointer target is protected from cleanup
+   - dangling or invalid latest bundle pointer metadata stays explicit and
+     blocks cleanup instead of being ignored
+3. Bundle integrity is still distinct from artifact-state health:
+   - archived bundles can verify cleanly while still preserving incomplete,
+     inconsistent, or ambiguous snapshot truth
+   - if the latest bundle pointer selects a non-green snapshot bundle, report
+     mode stays non-green and shows that selected snapshot verdict/reason
+   - malformed or drifted bundles are surfaced explicitly and block cleanup
+     until reviewed
+4. This remains artifact handling only:
+   - it never rewrites the state snapshot archive
+   - it never rewrites existing archived bundle contents
+   - it never rewrites latest bundle pointer metadata in this batch
    - it does not enable execution
    - it does not authorize activation or override the Stage 3 prod gate
 

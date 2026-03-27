@@ -11,6 +11,36 @@ that must accumulate the usable 5-day raw window is no longer advancing.
 
 This is not a “wait another 3 days” situation.
 
+## Post-Rollout Update
+
+Emergency fix `9387c65` has now been deployed on the production host.
+
+This incident is no longer in the original dead-livelock state where every
+scheduled attempt restarted from zero.
+
+Current status after rollout:
+
+- the first post-rollout run returned:
+  - `state=deferred`
+  - `staged_progress_resumed=false`
+  - `staged_progress_preserved_for_retry=true`
+  - `staged_progress_advanced=true`
+  - `staged_row_count_after_attempt=483328`
+- the second post-rollout run returned:
+  - `state=deferred`
+  - `staged_progress_resumed=true`
+  - `staged_progress_preserved_for_retry=true`
+  - `staged_progress_advanced=true`
+  - `staged_row_count_before_attempt=483328`
+  - `staged_row_count_after_attempt=753664`
+- the staged snapshot frontier is now advancing:
+  - `covered_through = 2026-03-24T14:31:41.647165715Z`
+  - `last_batch_completed_at = 2026-03-26T22:15:40.610302175Z`
+
+The incident severity is still high because Stage 3 remains blocked, but the
+system is now in a recovering bounded-progress state rather than a dead reset
+loop.
+
 ## Live Facts
 
 - `solana-copy-bot.service = active`
@@ -97,3 +127,13 @@ The correct next step is to fix the bounded `recent_raw` snapshot policy/path so
 that a fresh `latest.sqlite` can complete and promote again. Waiting for “day 4”
 or “day 5” by itself will not resolve the blocker while the snapshot service
 keeps returning `attempt_duration_budget_exhausted`.
+
+Update after rollout:
+
+- the emergency code fix has already been deployed
+- the correct overnight posture is now to monitor resumed staged progress, not to
+  invent another emergency code patch blindly
+- the next required live milestone is:
+  - `state=written`
+  - `archive_promoted=true`
+  - a newer promoted `latest.sqlite` frontier
