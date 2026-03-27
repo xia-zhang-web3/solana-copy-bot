@@ -24,9 +24,9 @@ mod execution_readiness_audit;
 mod tiny_live_policy_audit;
 
 const USAGE: &str = "usage: copybot_pre_activation_gate_report --config <path> [--json] [--now <rfc3339>] [--stage3-limit <count>] [--stage3-recent-horizon-seconds <seconds>] [--rehearsal-limit <count>] [--rehearsal-recent-horizon-seconds <seconds>] [--min-recent-acceptable-rehearsals <count>]";
-const DEFAULT_REHEARSAL_HISTORY_LIMIT: usize = 10;
-const DEFAULT_REHEARSAL_RECENT_HORIZON_SECONDS: u64 = 86_400;
-const DEFAULT_MIN_RECENT_ACCEPTABLE_REHEARSALS: usize = 2;
+pub(crate) const DEFAULT_REHEARSAL_HISTORY_LIMIT: usize = 10;
+pub(crate) const DEFAULT_REHEARSAL_RECENT_HORIZON_SECONDS: u64 = 86_400;
+pub(crate) const DEFAULT_MIN_RECENT_ACCEPTABLE_REHEARSALS: usize = 2;
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {

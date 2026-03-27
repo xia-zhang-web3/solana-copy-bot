@@ -1708,6 +1708,46 @@ Acceptance update (`2026-03-27`, bounded tiny-live apply rehearsal package):
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_execute`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_execute --bin copybot_tiny_live_activation_apply --bin copybot_tiny_live_activation_plan --bin copybot_activation_runbook --bin copybot_pre_activation_gate_report`
 
+Acceptance update (`2026-03-27`, bounded live-target tiny-live executor package):
+
+1. Stage 4 now also has the real live-target activation/rollback contract on top
+   of the accepted rendered artifacts:
+   - `copybot_tiny_live_activation_live_execute --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --runtime-dir /var/tmp/copybot-live-activation --backup-dir /var/tmp/copybot-live-backups --plan-live --json`
+   - `copybot_tiny_live_activation_live_execute --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --runtime-dir /var/tmp/copybot-live-activation --backup-dir /var/tmp/copybot-live-backups --backup-current-config --json`
+   - `copybot_tiny_live_activation_live_execute --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --runtime-dir /var/tmp/copybot-live-activation --backup-dir /var/tmp/copybot-live-backups --verify-live-target --json`
+   - `copybot_tiny_live_activation_live_execute --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --runtime-dir /var/tmp/copybot-live-activation --backup-dir /var/tmp/copybot-live-backups --render-live-apply-script --output /tmp/tiny-live.live-apply.sh --json`
+   - `copybot_tiny_live_activation_live_execute --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --runtime-dir /var/tmp/copybot-live-activation --backup-dir /var/tmp/copybot-live-backups --render-live-rollback-script --output /tmp/tiny-live.live-rollback.sh --json`
+2. This package deliberately reuses accepted truth instead of inventing another
+   planner or artifact schema:
+   - rendered activation + rollback artifacts from
+     `copybot_tiny_live_activation_execute`
+   - bounded activation/rollback pairing rules from
+     `copybot_tiny_live_activation_apply`
+   - source-config fingerprint truth from
+     `copybot_activation_decision_packet`
+3. The live-target contract is explicit and bounded:
+   - target config path, target service name, runtime dir, backup dir, and the
+     service-control wrapper are all required inputs
+   - backup artifacts are deterministic and cannot be overwritten silently
+   - live-target drift is refused if the current target fingerprint no longer
+     matches the rendered artifact source fingerprint
+   - rollback always re-applies the bounded rollback artifact and verifies
+     `execution.enabled=false`
+4. Stage 3 remains the hard gate:
+   - `--apply-live` still refuses when the rendered artifact pair carries a
+     non-green Stage 3 or pre-activation verdict
+   - a successful backup or temp rehearsal is still not enough
+   - this batch builds the live-target executor path but does not authorize or
+     perform real prod activation on the real server now
+5. Post-start verification is explicit and testable:
+   - the service-control wrapper must emit a bounded status artifact
+   - the executor verifies action, target config path, observed fingerprint,
+     observed `execution.enabled`, and restart success
+   - failed apply verification triggers bounded rollback automatically
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_live_execute`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_apply --bin copybot_tiny_live_activation_execute --bin copybot_activation_runbook --bin copybot_pre_activation_gate_report`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:

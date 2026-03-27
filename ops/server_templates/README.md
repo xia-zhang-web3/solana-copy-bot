@@ -543,6 +543,50 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - it does not weaken the existing pre-activation gate
 6. Important rehearsal verdicts:
    - `tiny_live_activation_apply_plan_ready`
+
+## Tiny-Live Live-Target Executor
+
+1. Operators now also have an explicit live-target activation/rollback contract
+   on top of the rendered tiny-live artifacts:
+   - review the bounded live-target contract:
+     `copybot_tiny_live_activation_live_execute --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --runtime-dir /var/tmp/copybot-live-activation --backup-dir /var/tmp/copybot-live-backups --plan-live --json`
+   - create a deterministic backup of the current target config:
+     `copybot_tiny_live_activation_live_execute --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --runtime-dir /var/tmp/copybot-live-activation --backup-dir /var/tmp/copybot-live-backups --backup-current-config --json`
+   - verify the live target plus rendered artifact pair:
+     `copybot_tiny_live_activation_live_execute --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --runtime-dir /var/tmp/copybot-live-activation --backup-dir /var/tmp/copybot-live-backups --verify-live-target --json`
+   - render operator-facing live apply / rollback scripts:
+     `copybot_tiny_live_activation_live_execute --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --runtime-dir /var/tmp/copybot-live-activation --backup-dir /var/tmp/copybot-live-backups --render-live-apply-script --output /tmp/tiny-live.live-apply.sh --json`
+     `copybot_tiny_live_activation_live_execute --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --runtime-dir /var/tmp/copybot-live-activation --backup-dir /var/tmp/copybot-live-backups --render-live-rollback-script --output /tmp/tiny-live.live-rollback.sh --json`
+2. This package reuses the accepted rendered-artifact contract instead of
+   inventing a second live activation schema:
+   - rendered activation + rollback configs and sidecar metadata from
+     `copybot_tiny_live_activation_execute`
+   - bounded activation/rollback pairing rules from
+     `copybot_tiny_live_activation_apply`
+   - the same source-config fingerprint contract from
+     `copybot_activation_decision_packet`
+3. The live-target contract is explicit and conservative:
+   - target config path, service name, runtime dir, backup dir, and service
+     control command must all be provided explicitly
+   - the rendered artifact pair must point back to the same target config path
+   - live drift is refused when the current target fingerprint no longer matches
+     the rendered artifact source fingerprint
+   - deterministic backup metadata is required before `--apply-live`
+   - the service-control wrapper must write a bounded status artifact that proves
+     which action was attempted and what config fingerprint/execution posture it
+     observed
+4. Stage 3 still remains the hard gate:
+   - `--apply-live` refuses when the rendered artifact pair still carries a
+     non-green Stage 3 or pre-activation verdict
+   - a valid backup or a successful temp rehearsal is still not enough
+   - a successful `--verify-live-target` is still not production authorization
+5. Safety remains explicit in this batch:
+   - the repo now has the real live-target executor contract, but this batch
+     still does not authorize or perform real prod activation
+   - tests use only fake target configs and fake service-control wrappers in
+     temp directories
+   - rollback always re-applies the explicit bounded rollback artifact and
+     verifies `execution.enabled=false`
    - `tiny_live_activation_apply_script_rendered`
    - `tiny_live_activation_apply_refused_by_stage3`
    - `tiny_live_activation_apply_refused_by_pre_activation_gate`
