@@ -2846,6 +2846,7 @@ fn render_human(report: &LiveExecuteReport) -> String {
     lines.join("\n")
 }
 
+#[allow(dead_code)]
 pub(crate) fn build_plan_live_report_for_drill(
     activation_config_path: &Path,
     rollback_config_path: &Path,
@@ -2859,6 +2860,118 @@ pub(crate) fn build_plan_live_report_for_drill(
 ) -> Result<LiveExecuteReport> {
     build_plan_live_report(&Config {
         mode: Mode::PlanLive,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        target_config_path: target_config_path.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        service_control_command_path: service_control_command_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        backup_dir: backup_dir.to_path_buf(),
+        output_path: None,
+        json: false,
+        startup_timeout_ms,
+        rollback_timeout_ms,
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn backup_current_config_report_for_cutover(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    target_config_path: &Path,
+    target_service_name: &str,
+    service_control_command_path: &Path,
+    runtime_dir: &Path,
+    backup_dir: &Path,
+    startup_timeout_ms: u64,
+    rollback_timeout_ms: u64,
+) -> Result<LiveExecuteReport> {
+    backup_current_config_report(&Config {
+        mode: Mode::BackupCurrentConfig,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        target_config_path: target_config_path.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        service_control_command_path: service_control_command_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        backup_dir: backup_dir.to_path_buf(),
+        output_path: None,
+        json: false,
+        startup_timeout_ms,
+        rollback_timeout_ms,
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn verify_live_target_report_for_cutover(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    target_config_path: &Path,
+    target_service_name: &str,
+    service_control_command_path: &Path,
+    runtime_dir: &Path,
+    backup_dir: &Path,
+    startup_timeout_ms: u64,
+    rollback_timeout_ms: u64,
+) -> Result<LiveExecuteReport> {
+    verify_live_target_report(&Config {
+        mode: Mode::VerifyLiveTarget,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        target_config_path: target_config_path.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        service_control_command_path: service_control_command_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        backup_dir: backup_dir.to_path_buf(),
+        output_path: None,
+        json: false,
+        startup_timeout_ms,
+        rollback_timeout_ms,
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn apply_live_report_for_cutover(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    target_config_path: &Path,
+    target_service_name: &str,
+    service_control_command_path: &Path,
+    runtime_dir: &Path,
+    backup_dir: &Path,
+    startup_timeout_ms: u64,
+    rollback_timeout_ms: u64,
+) -> Result<LiveExecuteReport> {
+    apply_live_report(&Config {
+        mode: Mode::ApplyLive,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        target_config_path: target_config_path.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        service_control_command_path: service_control_command_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        backup_dir: backup_dir.to_path_buf(),
+        output_path: None,
+        json: false,
+        startup_timeout_ms,
+        rollback_timeout_ms,
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn rollback_live_report_for_cutover(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    target_config_path: &Path,
+    target_service_name: &str,
+    service_control_command_path: &Path,
+    runtime_dir: &Path,
+    backup_dir: &Path,
+    startup_timeout_ms: u64,
+    rollback_timeout_ms: u64,
+) -> Result<LiveExecuteReport> {
+    rollback_live_report(&Config {
+        mode: Mode::RollbackLive,
         activation_config_path: activation_config_path.to_path_buf(),
         rollback_config_path: rollback_config_path.to_path_buf(),
         target_config_path: target_config_path.to_path_buf(),

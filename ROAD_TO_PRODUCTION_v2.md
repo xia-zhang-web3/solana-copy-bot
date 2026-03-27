@@ -1851,6 +1851,66 @@ Acceptance update (`2026-03-27`, bounded tiny-live activation drill package):
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_live_execute`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_drill --bin copybot_tiny_live_activation_apply --bin copybot_tiny_live_activation_watch --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_plan --bin copybot_activation_runbook`
 
+Acceptance update (`2026-03-27`, bounded tiny-live live cutover package):
+
+1. Stage 4 now also has one bounded live cutover orchestration layer over the
+   accepted live-target primitives:
+   - `copybot_tiny_live_activation_cutover --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /var/tmp/copybot-live-activation --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --backup-dir /var/tmp/copybot-live-backups --plan-cutover --json`
+   - `copybot_tiny_live_activation_cutover --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /var/tmp/copybot-live-activation --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --backup-dir /var/tmp/copybot-live-backups --render-cutover-script --output /tmp/tiny-live.cutover.sh --json`
+   - `copybot_tiny_live_activation_cutover --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /var/tmp/copybot-live-activation --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --backup-dir /var/tmp/copybot-live-backups --verify-cutover-target --json`
+   - `copybot_tiny_live_activation_cutover --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /var/tmp/copybot-live-activation --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --backup-dir /var/tmp/copybot-live-backups --plan-live-cutover --json`
+   - `copybot_tiny_live_activation_cutover --activation-config /tmp/tiny-live.activation.toml --rollback-config /tmp/tiny-live.rollback.toml --runtime-dir /var/tmp/copybot-live-activation --target-config /etc/solana-copy-bot/live.server.toml --target-service solana-copy-bot.service --service-control-command /usr/local/bin/copybot-live-service-control --backup-dir /var/tmp/copybot-live-backups --session-dir /var/tmp/copybot-live-cutover-session --verify-cutover-session --json`
+2. This package deliberately reuses accepted truth instead of inventing a new
+   activation or watch schema:
+   - rendered activation + rollback artifacts from
+     `copybot_tiny_live_activation_execute`
+   - bounded live-target backup/apply/rollback flow from
+     `copybot_tiny_live_activation_live_execute`
+   - bounded watch-live flow from `copybot_tiny_live_activation_watch`
+   - sequencing and explicit result classification from
+     `copybot_tiny_live_activation_drill`
+3. The live cutover contract is explicit and deterministic:
+   - verify artifacts
+   - verify current gate truth
+   - verify target contract
+   - verify backup proof
+   - apply live activation
+   - watch the first bounded window
+   - rollback deterministically when watch evidence breaches the accepted
+     envelope
+   - persist a final cutover session/status artifact with explicit
+     `keep_running`, `rollback_completed`, or failure classification
+4. `--verify-cutover-target` and `--verify-cutover-session` validate real
+   evidence instead of replaying a plan:
+   - current live gate truth must align with the bounded contract
+   - backup/apply/watch/rollback evidence must be coherent
+   - final posture must remain explainable
+   - if rollback occurred, `execution.enabled=false` must be provable
+5. Live cutover remains hard-gated and non-authorizing in this batch:
+   - current Stage 3 / pre-activation truth still blocks any real live
+     cutover run
+   - green planning is not authorization
+   - green session verification is not authorization
+   - this batch builds the live cutover orchestration contract only; it does
+     not authorize or perform real production activation now
+6. Important cutover verdicts:
+   - `tiny_live_cutover_plan_ready`
+   - `tiny_live_cutover_script_rendered`
+   - `tiny_live_cutover_verify_ok`
+   - `tiny_live_cutover_verify_invalid`
+   - `tiny_live_live_cutover_plan_ready`
+   - `tiny_live_live_cutover_refused_by_stage3`
+   - `tiny_live_live_cutover_refused_by_pre_activation_gate`
+   - `tiny_live_live_cutover_refused_by_invalid_target`
+   - `tiny_live_live_cutover_refused_by_missing_backup`
+   - `tiny_live_live_cutover_completed_keep_running`
+   - `tiny_live_live_cutover_completed_with_rollback`
+   - `tiny_live_live_cutover_failed_before_apply`
+   - `tiny_live_live_cutover_failed_during_watch`
+7. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_cutover`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_cutover --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_watch --bin copybot_tiny_live_activation_drill`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:

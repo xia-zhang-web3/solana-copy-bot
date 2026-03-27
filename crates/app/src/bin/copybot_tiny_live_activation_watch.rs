@@ -2084,6 +2084,7 @@ fn render_human(report: &WatchReport) -> String {
     lines.join("\n")
 }
 
+#[allow(dead_code)]
 pub(crate) fn build_plan_watch_report_for_drill(
     activation_config_path: &Path,
     rollback_config_path: &Path,
@@ -2113,6 +2114,7 @@ pub(crate) fn build_plan_watch_report_for_drill(
     })
 }
 
+#[allow(dead_code)]
 pub(crate) fn verify_watch_target_report_for_drill(
     activation_config_path: &Path,
     rollback_config_path: &Path,
@@ -2142,6 +2144,7 @@ pub(crate) fn verify_watch_target_report_for_drill(
     })
 }
 
+#[allow(dead_code)]
 pub(crate) fn watch_temp_run_report_for_drill(
     activation_config_path: &Path,
     rollback_config_path: &Path,
@@ -2167,6 +2170,7 @@ pub(crate) fn watch_temp_run_report_for_drill(
     })
 }
 
+#[allow(dead_code)]
 pub(crate) fn watch_live_target_report_for_drill(
     activation_config_path: &Path,
     rollback_config_path: &Path,
@@ -2196,6 +2200,7 @@ pub(crate) fn watch_live_target_report_for_drill(
     })
 }
 
+#[allow(dead_code)]
 pub(crate) fn observation_path_for_drill(runtime_dir: &Path) -> PathBuf {
     observation_path(runtime_dir)
 }
