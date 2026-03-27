@@ -1619,6 +1619,47 @@ Acceptance update (`2026-03-26`, tiny-live activation plan package):
    - `cargo test -p copybot-app --bin copybot_pre_activation_gate_report`
    - `cargo test -p copybot-app --bin copybot_tiny_live_guardrail_audit`
 
+Acceptance update (`2026-03-27`, bounded tiny-live activation executor package):
+
+1. Stage 4 now also has a real bounded activation/rollback executor path:
+   - `copybot_tiny_live_activation_execute --config /etc/solana-copy-bot/live.server.toml --plan --json`
+   - `copybot_tiny_live_activation_execute --config /etc/solana-copy-bot/live.server.toml --render-activation-config --output /tmp/tiny-live.activation.toml --expected-source-fingerprint <sha256> --json`
+   - `copybot_tiny_live_activation_execute --config /etc/solana-copy-bot/live.server.toml --render-rollback-config --output /tmp/tiny-live.rollback.toml --expected-source-fingerprint <sha256> --json`
+   - `copybot_tiny_live_activation_execute --config /tmp/tiny-live.activation.toml --verify-rendered-config --json`
+2. This package reuses the accepted planning truth instead of adding yet another
+   planner:
+   - `copybot_pre_activation_gate_report`
+   - `copybot_tiny_live_activation_plan`
+   - the bounded policy / guardrail contract already embedded in that plan
+3. The executor remains deliberately bounded in this batch:
+   - it renders explicit temp configs only
+   - it verifies those rendered configs plus sidecar metadata
+   - it does not mutate `/etc/solana-copy-bot/live.server.toml`
+   - it does not restart services
+   - it does not enable production execution
+4. Stage 3 remains the hard gate:
+   - activation render refuses production-facing output when Stage 3 is non-green
+   - pre-activation-gate non-green still blocks activation render
+   - rendered config integrity green is not production authorization
+5. Rollback render is deterministic and explicit:
+   - it derives from the same bounded activation truth
+   - it always forces `execution.enabled=false`
+   - it stays verifiable through the same sidecar contract
+6. Important executor verdicts:
+   - `tiny_live_activation_plan_ready`
+   - `tiny_live_activation_rendered`
+   - `tiny_live_activation_refused_by_stage3`
+   - `tiny_live_activation_refused_by_pre_activation_gate`
+   - `tiny_live_activation_refused_by_config_drift`
+   - `tiny_live_activation_verify_ok`
+   - `tiny_live_activation_verify_invalid`
+   - `tiny_live_rollback_rendered`
+   - `tiny_live_rollback_verify_ok`
+7. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_execute`
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_plan`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_execute --bin copybot_tiny_live_activation_plan --bin copybot_activation_runbook --bin copybot_pre_activation_gate_report`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:

@@ -190,6 +190,13 @@ struct OverlayBuildResult {
     effective_contract: Option<EffectiveTinyLiveContract>,
 }
 
+#[allow(unused)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OverlayTarget {
+    Activation,
+    Rollback,
+}
+
 fn parse_args() -> Result<Option<Config>> {
     parse_args_from(env::args().skip(1))
 }
@@ -951,6 +958,130 @@ fn build_service_restart_contract() -> ServiceRestartContract {
     }
 }
 
+#[allow(unused)]
+pub(crate) fn apply_overlay_from_plan(
+    mut config: AppConfig,
+    changes: &[ActivationPlanFieldDelta],
+    target: OverlayTarget,
+) -> Result<AppConfig> {
+    for change in changes {
+        let value = match target {
+            OverlayTarget::Activation => &change.activation_value,
+            OverlayTarget::Rollback => &change.rollback_value,
+        };
+        apply_field_delta(&mut config, change.field.as_str(), value)
+            .with_context(|| format!("failed applying field {}", change.field))?;
+    }
+    Ok(config)
+}
+
+#[allow(unused)]
+pub(crate) fn apply_field_delta(config: &mut AppConfig, field: &str, value: &Value) -> Result<()> {
+    match field {
+        "execution.enabled" => config.execution.enabled = parse_bool_value(value, field)?,
+        "execution.mode" => config.execution.mode = parse_string_value(value, field)?,
+        "execution.default_route" => {
+            config.execution.default_route = parse_string_value(value, field)?
+        }
+        "execution.submit_allowed_routes" => {
+            config.execution.submit_allowed_routes = parse_vec_string_value(value, field)?
+        }
+        "execution.submit_route_order" => {
+            config.execution.submit_route_order = parse_vec_string_value(value, field)?
+        }
+        "execution.submit_adapter_require_policy_echo" => {
+            config.execution.submit_adapter_require_policy_echo = parse_bool_value(value, field)?
+        }
+        "shadow.copy_notional_sol" => {
+            config.shadow.copy_notional_sol = parse_f64_value(value, field)?
+        }
+        "risk.max_position_sol" => config.risk.max_position_sol = parse_f64_value(value, field)?,
+        "execution.batch_size" => config.execution.batch_size = parse_u32_value(value, field)?,
+        "risk.max_concurrent_positions" => {
+            config.risk.max_concurrent_positions = parse_u32_value(value, field)?
+        }
+        "risk.daily_loss_limit_pct" => {
+            config.risk.daily_loss_limit_pct = parse_f64_value(value, field)?
+        }
+        "execution.pretrade_max_fee_overhead_bps" => {
+            config.execution.pretrade_max_fee_overhead_bps = parse_u32_value(value, field)?
+        }
+        "execution.pretrade_max_priority_fee_lamports" => {
+            config.execution.pretrade_max_priority_fee_lamports = parse_u64_value(value, field)?
+        }
+        "execution.submit_route_max_slippage_bps" => {
+            config.execution.submit_route_max_slippage_bps =
+                serde_json::from_value(value.clone())
+                    .with_context(|| format!("invalid route->f64 map for {field}"))?
+        }
+        "execution.submit_route_tip_lamports" => {
+            config.execution.submit_route_tip_lamports = serde_json::from_value(value.clone())
+                .with_context(|| format!("invalid route->u64 map for {field}"))?
+        }
+        "execution.submit_route_compute_unit_price_micro_lamports" => {
+            config
+                .execution
+                .submit_route_compute_unit_price_micro_lamports =
+                serde_json::from_value(value.clone())
+                    .with_context(|| format!("invalid route->u64 map for {field}"))?
+        }
+        "execution.submit_route_compute_unit_limit" => {
+            config.execution.submit_route_compute_unit_limit = serde_json::from_value(value.clone())
+                .with_context(|| format!("invalid route->u32 map for {field}"))?
+        }
+        other => bail!("unsupported activation-plan overlay field {other}"),
+    }
+    Ok(())
+}
+
+#[allow(unused)]
+pub(crate) fn overlay_field_value(config: &AppConfig, field: &str) -> Result<Value> {
+    match field {
+        "execution.enabled" => Ok(json!(config.execution.enabled)),
+        "execution.mode" => Ok(json!(normalize_mode(config.execution.mode.as_str()))),
+        "execution.default_route" => Ok(json!(normalize_route(
+            config.execution.default_route.as_str()
+        ))),
+        "execution.submit_allowed_routes" => Ok(json!(normalize_routes(
+            &config.execution.submit_allowed_routes
+        ))),
+        "execution.submit_route_order" => Ok(json!(normalize_routes(
+            &config.execution.submit_route_order
+        ))),
+        "execution.submit_adapter_require_policy_echo" => {
+            Ok(json!(config.execution.submit_adapter_require_policy_echo))
+        }
+        "shadow.copy_notional_sol" => Ok(json!(config.shadow.copy_notional_sol)),
+        "risk.max_position_sol" => Ok(json!(config.risk.max_position_sol)),
+        "execution.batch_size" => Ok(json!(config.execution.batch_size)),
+        "risk.max_concurrent_positions" => Ok(json!(config.risk.max_concurrent_positions)),
+        "risk.daily_loss_limit_pct" => Ok(json!(config.risk.daily_loss_limit_pct)),
+        "execution.pretrade_max_fee_overhead_bps" => {
+            Ok(json!(config.execution.pretrade_max_fee_overhead_bps))
+        }
+        "execution.pretrade_max_priority_fee_lamports" => {
+            Ok(json!(config.execution.pretrade_max_priority_fee_lamports))
+        }
+        "execution.submit_route_max_slippage_bps" => Ok(json!(normalize_route_map_f64(
+            &config.execution.submit_route_max_slippage_bps
+        ))),
+        "execution.submit_route_tip_lamports" => Ok(json!(normalize_route_map_u64(
+            &config.execution.submit_route_tip_lamports
+        ))),
+        "execution.submit_route_compute_unit_price_micro_lamports" => {
+            Ok(json!(normalize_route_map_u64(
+                &config
+                    .execution
+                    .submit_route_compute_unit_price_micro_lamports
+            )))
+        }
+        "execution.submit_route_compute_unit_limit" => Ok(json!(normalize_route_map_u32(
+            &config.execution.submit_route_compute_unit_limit
+        ))),
+        other => bail!("unsupported activation-plan overlay field {other}"),
+    }
+}
+
 fn derive_candidate_route_order(
     policy_allowed_routes: &[String],
     current_route_order: &[String],
@@ -1054,6 +1185,48 @@ fn lookup_route_u32(map: &BTreeMap<String, u32>, route: &str) -> Option<u32> {
     map.iter()
         .find(|(candidate, _)| candidate.trim().eq_ignore_ascii_case(route))
         .map(|(_, value)| *value)
+}
+
+#[allow(unused)]
+fn parse_string_value(value: &Value, field: &str) -> Result<String> {
+    value
+        .as_str()
+        .map(|raw| raw.to_string())
+        .ok_or_else(|| anyhow!("{field} must be a string"))
+}
+
+#[allow(unused)]
+fn parse_bool_value(value: &Value, field: &str) -> Result<bool> {
+    value
+        .as_bool()
+        .ok_or_else(|| anyhow!("{field} must be a bool"))
+}
+
+#[allow(unused)]
+fn parse_f64_value(value: &Value, field: &str) -> Result<f64> {
+    value
+        .as_f64()
+        .ok_or_else(|| anyhow!("{field} must be an f64"))
+}
+
+#[allow(unused)]
+fn parse_u32_value(value: &Value, field: &str) -> Result<u32> {
+    let raw = value
+        .as_u64()
+        .ok_or_else(|| anyhow!("{field} must be a u32-compatible integer"))?;
+    u32::try_from(raw).with_context(|| format!("{field} exceeds u32"))
+}
+
+#[allow(unused)]
+fn parse_u64_value(value: &Value, field: &str) -> Result<u64> {
+    value
+        .as_u64()
+        .ok_or_else(|| anyhow!("{field} must be a u64"))
+}
+
+#[allow(unused)]
+fn parse_vec_string_value(value: &Value, field: &str) -> Result<Vec<String>> {
+    serde_json::from_value(value.clone()).with_context(|| format!("{field} must be a string array"))
 }
 
 fn normalize_route(value: &str) -> String {

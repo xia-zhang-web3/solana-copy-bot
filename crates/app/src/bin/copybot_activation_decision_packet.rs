@@ -386,7 +386,10 @@ fn build_decision_packet(
     }
 }
 
-fn build_config_fingerprint(scope: &str, config: &AppConfig) -> Result<ConfigFingerprintSummary> {
+pub(crate) fn build_config_fingerprint(
+    scope: &str,
+    config: &AppConfig,
+) -> Result<ConfigFingerprintSummary> {
     let projection = FingerprintProjection {
         system_env: config.system.env.clone(),
         execution_enabled: config.execution.enabled,

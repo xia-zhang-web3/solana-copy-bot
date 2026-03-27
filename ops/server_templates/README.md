@@ -475,6 +475,52 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
 7. If `--output <path>` is provided, the command writes the full JSON planning
    artifact to disk without mutating the live config.
 
+## Tiny-Live Activation Executor
+
+1. Operators now also have a bounded activation/rollback executor path:
+   - review current executor truth:
+     `copybot_tiny_live_activation_execute --config /etc/solana-copy-bot/live.server.toml --plan --json`
+   - render a bounded activation candidate into an explicit temp path:
+     `copybot_tiny_live_activation_execute --config /etc/solana-copy-bot/live.server.toml --render-activation-config --output /tmp/tiny-live.activation.toml --expected-source-fingerprint <sha256> --json`
+   - render a bounded rollback candidate into an explicit temp path:
+     `copybot_tiny_live_activation_execute --config /etc/solana-copy-bot/live.server.toml --render-rollback-config --output /tmp/tiny-live.rollback.toml --expected-source-fingerprint <sha256> --json`
+   - verify a rendered config plus its sidecar metadata:
+     `copybot_tiny_live_activation_execute --config /tmp/tiny-live.activation.toml --verify-rendered-config --json`
+2. This command is the next production-moving step because it turns accepted
+   planning truth into a deterministic render/verify executor path without
+   mutating the real live server config in this batch.
+3. The command still remains bounded and non-authorizing:
+   - it does not write `/etc/solana-copy-bot/live.server.toml`
+   - it does not restart services
+   - it does not submit trades
+   - it does not bypass Stage 3 or the consolidated pre-activation gate
+4. Activation render reuses the accepted planning truth instead of inventing a
+   second planner:
+   - `copybot_pre_activation_gate_report`
+   - `copybot_tiny_live_activation_plan`
+   - the bounded tiny-live policy / guardrail truth embedded in that plan
+5. Important executor verdicts:
+   - `tiny_live_activation_plan_ready`
+   - `tiny_live_activation_rendered`
+   - `tiny_live_activation_refused_by_stage3`
+   - `tiny_live_activation_refused_by_pre_activation_gate`
+   - `tiny_live_activation_refused_by_config_drift`
+   - `tiny_live_activation_verify_ok`
+   - `tiny_live_activation_verify_invalid`
+   - `tiny_live_rollback_rendered`
+   - `tiny_live_rollback_verify_ok`
+6. The rendered artifacts include only the bounded overlay fields plus a sidecar
+   metadata file:
+   - input config fingerprint
+   - exact rendered field expectations
+   - pre-activation gate verdict used
+   - activation-plan verdict used
+7. Rollback render is deterministic and explicitly forces `execution.enabled=false`
+   even if the source config has already drifted into an activated posture.
+8. A rendered or verified config is still not production authorization. Stage 3
+   remaining non-green must continue to block any future production-facing
+   activation apply step.
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:
