@@ -1095,7 +1095,79 @@ pub(crate) fn run_live_cutover_for_rehearsal(
 }
 
 #[allow(dead_code)]
+pub(crate) fn run_live_cutover_for_package_inputs_actual(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    runtime_dir: &Path,
+    target_config_path: &Path,
+    target_service_name: &str,
+    service_control_command_path: &Path,
+    backup_dir: &Path,
+    session_dir: &Path,
+    startup_timeout_ms: u64,
+    rollback_timeout_ms: u64,
+    watch_window_seconds: Option<u64>,
+    sample_cadence_ms: u64,
+    max_observation_staleness_ms: Option<u64>,
+) -> Result<CutoverRehearsalStep> {
+    let config = rehearsal_config(
+        Mode::RunLiveCutover,
+        activation_config_path,
+        rollback_config_path,
+        runtime_dir,
+        target_config_path,
+        target_service_name,
+        service_control_command_path,
+        backup_dir,
+        session_dir,
+        startup_timeout_ms,
+        rollback_timeout_ms,
+        watch_window_seconds,
+        sample_cadence_ms,
+        max_observation_staleness_ms,
+    );
+    let report = run_live_cutover_report(&config)?;
+    cutover_rehearsal_step_from_report(&report)
+}
+
+#[allow(dead_code)]
 pub(crate) fn verify_live_cutover_session_for_rehearsal(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    runtime_dir: &Path,
+    target_config_path: &Path,
+    target_service_name: &str,
+    service_control_command_path: &Path,
+    backup_dir: &Path,
+    session_dir: &Path,
+    startup_timeout_ms: u64,
+    rollback_timeout_ms: u64,
+    watch_window_seconds: Option<u64>,
+    sample_cadence_ms: u64,
+    max_observation_staleness_ms: Option<u64>,
+) -> Result<CutoverRehearsalStep> {
+    let config = rehearsal_config(
+        Mode::VerifyCutoverSession,
+        activation_config_path,
+        rollback_config_path,
+        runtime_dir,
+        target_config_path,
+        target_service_name,
+        service_control_command_path,
+        backup_dir,
+        session_dir,
+        startup_timeout_ms,
+        rollback_timeout_ms,
+        watch_window_seconds,
+        sample_cadence_ms,
+        max_observation_staleness_ms,
+    );
+    let report = verify_cutover_session_report(&config)?;
+    cutover_rehearsal_step_from_report(&report)
+}
+
+#[allow(dead_code)]
+pub(crate) fn verify_live_cutover_session_for_package_inputs_actual(
     activation_config_path: &Path,
     rollback_config_path: &Path,
     runtime_dir: &Path,

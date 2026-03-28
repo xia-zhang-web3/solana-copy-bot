@@ -474,7 +474,9 @@ fn plan_package_cutover_report(config: &Config) -> Result<PackageDeployReport> {
         Path::new(&summary.session_dir),
     )?;
     let verdict = match cutover.verdict.as_str() {
-        "tiny_live_live_cutover_plan_ready" => {
+        "tiny_live_cutover_plan_ready"
+        | "tiny_live_live_cutover_plan_ready"
+        | "tiny_live_live_cutover_refused_by_missing_backup" => {
             TinyLivePackageDeployVerdict::TinyLivePackageCutoverPlanReady
         }
         "tiny_live_live_cutover_refused_by_stage3" => {

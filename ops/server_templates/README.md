@@ -1256,6 +1256,54 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `tiny_live_package_live_envelope_verify_ok`
    - `tiny_live_package_live_envelope_verify_invalid`
 
+## Tiny-Live Package Live Cutover
+
+1. The repo now also has one first-class package-native real live cutover
+   controller over the actual live target contract:
+   - review the Stage-3-gated live cutover plan:
+     `copybot_tiny_live_activation_package_live_cutover --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-live-package-cutover --json`
+   - render an operator-facing live cutover script:
+     `copybot_tiny_live_activation_package_live_cutover --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --render-live-package-cutover-script --output /tmp/tiny-live.package-live-cutover.sh --json`
+   - run the real live cutover controller against the explicit live target
+     contract:
+     `copybot_tiny_live_activation_package_live_cutover --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-live-cutover-session --run-live-package-cutover --json`
+   - verify a persisted live cutover session later:
+     `copybot_tiny_live_activation_package_live_cutover --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-live-cutover-session --verify-live-package-cutover --json`
+2. `--package-dir` remains the sole immutable handoff input:
+   - the controller sequence is fixed:
+     verify package -> verify installed live target -> verify installed
+     wrapper/package binding -> evaluate current Stage 3 / pre-activation
+     truth -> create or validate real bounded backup proof -> apply packaged
+     activation payload -> run bounded restart/watch -> rollback on failure ->
+     persist session/status
+   - no fresh wrapper render or direct activation/rollback source paths
+     outside the package participate in the session
+3. The architectural controller is complete, but current real-host usage still
+   refuses today:
+   - Stage 3 and the current pre-activation gate remain the hard
+     authorization boundary
+   - green plan or green verify does not authorize activation
+   - on the current real host in this batch, `--run-live-package-cutover`
+     remains expected to refuse while the current gate truth is non-green
+4. Safety stays hard:
+   - no hidden authorization path
+   - no real-trade submission path is introduced here
+   - rollback must prove exact backed-up bytes and `execution.enabled=false`
+     if a later authorized run degrades
+5. Important live cutover verdicts:
+   - `tiny_live_package_live_cutover_plan_ready`
+   - `tiny_live_package_live_cutover_script_rendered`
+   - `tiny_live_package_live_cutover_refused_by_stage3`
+   - `tiny_live_package_live_cutover_refused_by_pre_activation_gate`
+   - `tiny_live_package_live_cutover_refused_by_invalid_target`
+   - `tiny_live_package_live_cutover_completed_keep_running`
+   - `tiny_live_package_live_cutover_completed_with_rollback`
+   - `tiny_live_package_live_cutover_completed_backup_failed`
+   - `tiny_live_package_live_cutover_completed_apply_failed`
+   - `tiny_live_package_live_cutover_completed_watch_failed`
+   - `tiny_live_package_live_cutover_verify_ok`
+   - `tiny_live_package_live_cutover_verify_invalid`
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

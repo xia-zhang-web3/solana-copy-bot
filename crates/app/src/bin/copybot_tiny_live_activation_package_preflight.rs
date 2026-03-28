@@ -2255,11 +2255,12 @@ fn validate_service_status_report_contract(
                 .to_string(),
         );
     }
-    if report.service_status_age_ms != Some(age_ms(raw_status.observed_at)) {
-        mismatches.push(
-            "service status report age_ms does not match the deterministic raw service status artifact"
-                .to_string(),
-        );
+    let current_age_ms = age_ms(raw_status.observed_at);
+    if current_age_ms > config.service_status_max_staleness_ms as i64 {
+        mismatches.push(format!(
+            "service status report is now stale: age_ms={} exceeds max_service_status_staleness_ms={}",
+            current_age_ms, config.service_status_max_staleness_ms
+        ));
     }
     if report.max_service_status_staleness_ms != config.service_status_max_staleness_ms {
         mismatches.push(format!(

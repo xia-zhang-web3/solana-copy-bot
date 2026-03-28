@@ -2375,6 +2375,57 @@ Acceptance update (`2026-03-28`, package-native tiny-live live-target byte-ident
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_live_envelope`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_live_envelope --bin copybot_tiny_live_activation_package_live_transaction --bin copybot_tiny_live_activation_package_shadow_cutover --bin copybot_tiny_live_activation_package_capability --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_cutover`
 
+Acceptance update (`2026-03-28`, package-native Stage-3-authorized real live cutover controller):
+
+1. Stage 4 now also has one first-class package-native real live cutover
+   controller over the actual live target contract:
+   - `copybot_tiny_live_activation_package_live_cutover --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-live-package-cutover --json`
+   - `copybot_tiny_live_activation_package_live_cutover --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --render-live-package-cutover-script --output /tmp/tiny-live.package-live-cutover.sh --json`
+   - `copybot_tiny_live_activation_package_live_cutover --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-live-cutover-session --run-live-package-cutover --json`
+   - `copybot_tiny_live_activation_package_live_cutover --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-live-cutover-session --verify-live-package-cutover --json`
+2. `--package-dir` remains the sole immutable handoff input:
+   - the controller sequence is fixed:
+     verify package -> verify installed live target -> verify installed
+     wrapper/package binding -> evaluate current Stage 3 / pre-activation
+     truth -> create or validate real bounded backup proof -> apply packaged
+     activation payload -> run bounded restart/watch -> rollback on failure ->
+     persist session/status
+   - the run may read only the immutable package, the explicit live target
+     contract, the explicit session dir, and current host evidence
+   - no fresh wrapper render or direct activation/rollback source paths
+     outside the package participate in the controller
+3. This closes the remaining architectural gap after the byte-identical live
+   envelope session:
+   - operators now have one deterministic final activation controller
+     contract instead of hand-stitching package verify, gate evaluation,
+     backup, apply, watch, and rollback commands
+   - the controller is architecturally complete, but the current real host
+     still honestly refuses because Stage 3 / pre-activation truth is
+     non-green in this batch
+   - green plan or green verify remains non-authorizing
+4. Safety stays hard:
+   - no hidden authorization path
+   - no weakening of Stage 3 as the hard gate
+   - rollback must prove exact backed-up bytes and `execution.enabled=false`
+     when rollback succeeds
+   - no real trades are sent
+5. Important live cutover verdicts:
+   - `tiny_live_package_live_cutover_plan_ready`
+   - `tiny_live_package_live_cutover_script_rendered`
+   - `tiny_live_package_live_cutover_refused_by_stage3`
+   - `tiny_live_package_live_cutover_refused_by_pre_activation_gate`
+   - `tiny_live_package_live_cutover_refused_by_invalid_target`
+   - `tiny_live_package_live_cutover_completed_keep_running`
+   - `tiny_live_package_live_cutover_completed_with_rollback`
+   - `tiny_live_package_live_cutover_completed_backup_failed`
+   - `tiny_live_package_live_cutover_completed_apply_failed`
+   - `tiny_live_package_live_cutover_completed_watch_failed`
+   - `tiny_live_package_live_cutover_verify_ok`
+   - `tiny_live_package_live_cutover_verify_invalid`
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_live_cutover`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_live_cutover --bin copybot_tiny_live_activation_package_deploy --bin copybot_tiny_live_activation_cutover --bin copybot_tiny_live_activation_package_preflight --bin copybot_tiny_live_activation_live_execute`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
