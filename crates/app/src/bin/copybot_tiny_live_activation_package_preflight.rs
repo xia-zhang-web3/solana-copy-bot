@@ -25,7 +25,7 @@ const USAGE: &str = "usage: copybot_tiny_live_activation_package_preflight --pac
 const PREFLIGHT_SESSION_VERSION: &str = "1";
 const PREFLIGHT_STATUS_VERSION: &str = "1";
 const SERVICE_STATUS_REPORT_VERSION: &str = "1";
-const DEFAULT_SERVICE_STATUS_MAX_STALENESS_MS: u64 = 60_000;
+pub(crate) const DEFAULT_SERVICE_STATUS_MAX_STALENESS_MS: u64 = 60_000;
 const DEFAULT_STATUS_COMMAND_TIMEOUT_MS: u64 = 15_000;
 
 fn main() -> Result<()> {
@@ -423,6 +423,88 @@ fn run(config: Config) -> Result<String> {
     } else {
         Ok(render_human_report(&report))
     }
+}
+
+#[allow(dead_code)]
+pub(crate) struct PackagePreflightCapabilityStep {
+    pub(crate) report_json: serde_json::Value,
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) result: Option<String>,
+    pub(crate) current_pre_activation_gate_verdict: Option<String>,
+    pub(crate) current_pre_activation_gate_reason: Option<String>,
+    pub(crate) service_status_observed_at: Option<DateTime<Utc>>,
+    pub(crate) activation_authorized: bool,
+}
+
+#[allow(dead_code)]
+pub(crate) fn run_live_package_preflight_for_capability(
+    package_dir: &Path,
+    install_root: &Path,
+    target_service_name: &str,
+    backend_command: &str,
+    wrapper_timeout_ms: u64,
+    service_status_max_staleness_ms: u64,
+    session_dir: &Path,
+    after_service_status_hook: Option<&dyn Fn(&Path) -> Result<()>>,
+) -> Result<PackagePreflightCapabilityStep> {
+    let config = Config {
+        mode: Mode::RunLivePackagePreflight,
+        package_dir: package_dir.to_path_buf(),
+        install_root: install_root.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        backend_command: backend_command.to_string(),
+        wrapper_timeout_ms,
+        service_status_max_staleness_ms,
+        session_dir: Some(session_dir.to_path_buf()),
+        output_path: None,
+        json: true,
+    };
+    let report = run_live_package_preflight_report_with_hook(&config, after_service_status_hook)?;
+    package_preflight_capability_step(report)
+}
+
+#[allow(dead_code)]
+pub(crate) fn verify_live_package_preflight_for_capability(
+    package_dir: &Path,
+    install_root: &Path,
+    target_service_name: &str,
+    backend_command: &str,
+    wrapper_timeout_ms: u64,
+    service_status_max_staleness_ms: u64,
+    session_dir: &Path,
+) -> Result<PackagePreflightCapabilityStep> {
+    let config = Config {
+        mode: Mode::VerifyLivePackagePreflight,
+        package_dir: package_dir.to_path_buf(),
+        install_root: install_root.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        backend_command: backend_command.to_string(),
+        wrapper_timeout_ms,
+        service_status_max_staleness_ms,
+        session_dir: Some(session_dir.to_path_buf()),
+        output_path: None,
+        json: true,
+    };
+    let report = verify_live_package_preflight_report(&config)?;
+    package_preflight_capability_step(report)
+}
+
+fn package_preflight_capability_step(
+    report: PackagePreflightReport,
+) -> Result<PackagePreflightCapabilityStep> {
+    Ok(PackagePreflightCapabilityStep {
+        report_json: serde_json::to_value(&report)?,
+        verdict: serialize_enum(&report.verdict),
+        reason: report.reason.clone(),
+        generated_at: report.generated_at,
+        result: report.result.clone(),
+        current_pre_activation_gate_verdict: report.current_pre_activation_gate_verdict.clone(),
+        current_pre_activation_gate_reason: report.current_pre_activation_gate_reason.clone(),
+        service_status_observed_at: report.service_status_observed_at,
+        activation_authorized: report.activation_authorized,
+    })
 }
 
 fn plan_live_package_preflight_report(config: &Config) -> Result<PackagePreflightReport> {
@@ -2383,7 +2465,6 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::thread;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn coherent_package_and_matching_fake_live_target_yield_green_preflight() {
@@ -3183,13 +3264,25 @@ max_consecutive_hard_failures = 3
     }
 
     fn temp_dir(label: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("{label}_{unique}"));
-        fs::create_dir_all(&path).unwrap();
-        path
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        loop {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "{label}_{}_{}_{}",
+                std::process::id(),
+                unique,
+                counter
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("failed creating temp dir {}: {error}", path.display()),
+            }
+        }
     }
 
     fn ts(value: &str) -> DateTime<Utc> {

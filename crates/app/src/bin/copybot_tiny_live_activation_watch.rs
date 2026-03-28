@@ -2296,8 +2296,6 @@ mod tests {
     use chrono::Duration as ChronoDuration;
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::PermissionsExt;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     #[test]
     fn healthy_temp_watch_yields_continue_verdict() {
         let fixture = temp_fixture("tiny_live_watch_temp_green");
@@ -3190,13 +3188,25 @@ max_consecutive_hard_failures = 3
     }
 
     fn temp_dir(label: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("{label}_{unique}"));
-        fs::create_dir_all(&path).unwrap();
-        path
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        loop {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "{label}_{}_{}_{}",
+                std::process::id(),
+                unique,
+                counter
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("failed creating temp dir {}: {error}", path.display()),
+            }
+        }
     }
 
     fn ts(value: &str) -> DateTime<Utc> {

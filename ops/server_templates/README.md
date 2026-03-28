@@ -1055,6 +1055,53 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `tiny_live_package_preflight_verify_ok`
    - `tiny_live_package_preflight_verify_invalid`
 
+## Tiny-Live Package Capability
+
+1. The repo now also supports one first-class live-host capability/probe
+   session over the accepted package / install-target / preflight / cutover
+   contracts:
+   - review the bounded capability plan:
+     `copybot_tiny_live_activation_package_capability --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-live-package-capability --json`
+   - render an operator-facing capability script without manual command
+     stitching:
+     `copybot_tiny_live_activation_package_capability --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --render-live-package-capability-script --output /tmp/tiny-live.package-capability.sh --json`
+   - run the deterministic live-host capability session against the explicit
+     host contract:
+     `copybot_tiny_live_activation_package_capability --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-capability-session --run-live-package-capability --json`
+   - verify a persisted capability session later:
+     `copybot_tiny_live_activation_package_capability --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-capability-session --verify-live-package-capability --json`
+2. `--package-dir` remains the sole immutable handoff input:
+   - the capability session first reuses the same package-native live preflight
+     chain:
+     verify package -> verify installed target -> verify installed
+     wrapper/package binding -> verify bounded service status
+   - then it proves host-side cutover operability with bounded temp probes for
+     the managed backup dir, the explicit session dir, and sibling temp files
+     next to the target config parent
+   - no fresh wrapper render, no direct activation/rollback source paths
+     outside the package, no config overwrite, and no service restart
+3. This closes the remaining residual risk after read-only preflight:
+   - operators now get one deterministic session proving the host can support
+     bounded package-native cutover mechanics, not only read-only contract
+     coherence
+   - session verification binds the nested preflight evidence plus the bounded
+     filesystem probe evidence to one deterministic session dir
+   - capability success remains non-authorizing and still reflects current
+     Stage 3 / pre-activation truth
+4. Important capability verdicts:
+   - `tiny_live_package_capability_plan_ready`
+   - `tiny_live_package_capability_script_rendered`
+   - `tiny_live_package_capability_completed_ready_for_cutover_when_gate_allows`
+   - `tiny_live_package_capability_completed_install_target_missing`
+   - `tiny_live_package_capability_completed_install_target_drifted`
+   - `tiny_live_package_capability_completed_filesystem_probe_failed`
+   - `tiny_live_package_capability_completed_service_probe_failed`
+   - `tiny_live_package_capability_completed_cutover_blocked_by_gate`
+   - `tiny_live_package_capability_failed_during_package_verify`
+   - `tiny_live_package_capability_failed_during_live_target_verify`
+   - `tiny_live_package_capability_verify_ok`
+   - `tiny_live_package_capability_verify_invalid`
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:
