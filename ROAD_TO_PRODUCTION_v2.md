@@ -2323,6 +2323,58 @@ Acceptance update (`2026-03-28`, package-native tiny-live live-target dry transa
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_live_transaction`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_live_transaction --bin copybot_tiny_live_activation_package_shadow_cutover --bin copybot_tiny_live_activation_package_capability --bin copybot_tiny_live_activation_package_preflight --bin copybot_tiny_live_activation_package_deploy --bin copybot_tiny_live_activation_install_target --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_cutover`
 
+Acceptance update (`2026-03-28`, package-native tiny-live live-target byte-identical envelope session):
+
+1. Stage 4 now also has one first-class package-native byte-identical live
+   envelope session over the actual live target contract:
+   - `copybot_tiny_live_activation_package_live_envelope --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-live-package-envelope --json`
+   - `copybot_tiny_live_activation_package_live_envelope --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --render-live-package-envelope-script --output /tmp/tiny-live.package-live-envelope.sh --json`
+   - `copybot_tiny_live_activation_package_live_envelope --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-live-envelope-session --run-live-package-envelope --json`
+   - `copybot_tiny_live_activation_package_live_envelope --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-live-envelope-session --verify-live-package-envelope --json`
+2. `--package-dir` remains the sole immutable handoff input:
+   - the session sequence is fixed:
+     verify package -> verify installed live target -> verify installed
+     wrapper/package binding -> verify bounded service status -> create real
+     bounded backup proof -> prove a byte-identical rollback payload against
+     the current live target bytes -> run bounded restart/watch/rollback
+     envelope -> persist session/status
+   - the run may read only the immutable package, the explicit live target
+     contract, the explicit session dir, and current host evidence
+   - only bounded backup artifacts, bounded session artifacts, and bounded
+     temp transaction artifacts may be written
+3. This closes the remaining residual risk after the dry transaction session:
+   - operators now have one deterministic actual-host session that proves the
+     real restart/watch/rollback envelope over the installed wrapper/backend,
+     while the effective target config contents remain byte-identical before
+     and after the session
+   - the session fails closed if byte-identical proof cannot be made sharply
+     or if rollback cannot prove exact backed-up bytes plus
+     `execution.enabled=false`
+   - readiness surfaced here remains non-authorizing and still reflects the
+     current Stage 3 / pre-activation gate truth
+4. Safety stays hard:
+   - no production execution enablement
+   - no hidden activation path
+   - no lasting change to the effective contents of the actual target config
+   - no real trades
+5. Important live envelope verdicts:
+   - `tiny_live_package_live_envelope_plan_ready`
+   - `tiny_live_package_live_envelope_script_rendered`
+   - `tiny_live_package_live_envelope_completed_keep_running`
+   - `tiny_live_package_live_envelope_completed_with_rollback`
+   - `tiny_live_package_live_envelope_completed_byte_identical_proof_failed`
+   - `tiny_live_package_live_envelope_completed_backup_failed`
+   - `tiny_live_package_live_envelope_completed_restart_failed`
+   - `tiny_live_package_live_envelope_completed_watch_failed`
+   - `tiny_live_package_live_envelope_completed_service_probe_failed`
+   - `tiny_live_package_live_envelope_failed_during_package_verify`
+   - `tiny_live_package_live_envelope_failed_during_live_target_verify`
+   - `tiny_live_package_live_envelope_verify_ok`
+   - `tiny_live_package_live_envelope_verify_invalid`
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_live_envelope`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_live_envelope --bin copybot_tiny_live_activation_package_live_transaction --bin copybot_tiny_live_activation_package_shadow_cutover --bin copybot_tiny_live_activation_package_capability --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_cutover`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:

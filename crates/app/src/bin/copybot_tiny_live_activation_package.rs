@@ -1552,7 +1552,10 @@ fn temp_validation_dir(label: &str) -> PathBuf {
         match fs::create_dir(&path) {
             Ok(()) => return path,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => panic!("failed creating temp validation dir {}: {error}", path.display()),
+            Err(error) => panic!(
+                "failed creating temp validation dir {}: {error}",
+                path.display()
+            ),
         }
     }
     panic!("failed to allocate unique temp validation dir for {label}");

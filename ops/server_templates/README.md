@@ -1203,6 +1203,59 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `tiny_live_package_live_transaction_verify_ok`
    - `tiny_live_package_live_transaction_verify_invalid`
 
+## Tiny-Live Package Live Envelope
+
+1. The repo now also supports one first-class package-native byte-identical
+   live envelope session over the actual live target contract:
+   - review the bounded live envelope plan:
+     `copybot_tiny_live_activation_package_live_envelope --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-live-package-envelope --json`
+   - render an operator-facing live envelope script:
+     `copybot_tiny_live_activation_package_live_envelope --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --render-live-package-envelope-script --output /tmp/tiny-live.package-live-envelope.sh --json`
+   - run the bounded live envelope session against the actual installed live
+     target while keeping the effective config byte-identical:
+     `copybot_tiny_live_activation_package_live_envelope --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-live-envelope-session --run-live-package-envelope --json`
+   - verify a persisted live envelope session later:
+     `copybot_tiny_live_activation_package_live_envelope --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-live-envelope-session --verify-live-package-envelope --json`
+2. `--package-dir` remains the sole immutable handoff input:
+   - the run sequence is fixed:
+     verify package -> verify installed live target -> verify installed
+     wrapper/package binding -> verify bounded service status -> create real
+     bounded backup proof -> prove byte-identical rollback payload bytes
+     against the current target config -> run bounded restart/watch/rollback
+     envelope -> persist session/status
+   - no fresh wrapper render or direct activation/rollback source paths
+     outside the package participate in the session
+   - only bounded backup artifacts, bounded session artifacts, and bounded
+     temp transaction artifacts may be written
+3. This closes the remaining residual risk after the live dry transaction
+   session:
+   - operators now get one deterministic actual-host session proving the real
+     restart/watch/rollback envelope over the installed wrapper/backend while
+     the effective target config bytes remain unchanged
+   - byte-identical proof must be sharp before any restart step; otherwise the
+     session fails closed
+   - readiness surfaced here remains non-authorizing and still reflects the
+     current Stage 3 / pre-activation gate truth
+4. Safety stays hard:
+   - no production execution enablement
+   - no hidden activation path
+   - no lasting change to the effective contents of the actual target config
+   - no real trades
+5. Important live envelope verdicts:
+   - `tiny_live_package_live_envelope_plan_ready`
+   - `tiny_live_package_live_envelope_script_rendered`
+   - `tiny_live_package_live_envelope_completed_keep_running`
+   - `tiny_live_package_live_envelope_completed_with_rollback`
+   - `tiny_live_package_live_envelope_completed_byte_identical_proof_failed`
+   - `tiny_live_package_live_envelope_completed_backup_failed`
+   - `tiny_live_package_live_envelope_completed_restart_failed`
+   - `tiny_live_package_live_envelope_completed_watch_failed`
+   - `tiny_live_package_live_envelope_completed_service_probe_failed`
+   - `tiny_live_package_live_envelope_failed_during_package_verify`
+   - `tiny_live_package_live_envelope_failed_during_live_target_verify`
+   - `tiny_live_package_live_envelope_verify_ok`
+   - `tiny_live_package_live_envelope_verify_invalid`
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

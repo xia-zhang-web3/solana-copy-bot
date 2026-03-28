@@ -367,15 +367,19 @@ where
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--package-dir" => {
-                package_dir = Some(PathBuf::from(parse_string_arg("--package-dir", args.next())?))
+                package_dir = Some(PathBuf::from(parse_string_arg(
+                    "--package-dir",
+                    args.next(),
+                )?))
             }
             "--install-root" => {
-                install_root =
-                    Some(PathBuf::from(parse_string_arg("--install-root", args.next())?))
+                install_root = Some(PathBuf::from(parse_string_arg(
+                    "--install-root",
+                    args.next(),
+                )?))
             }
             "--target-service" => {
-                target_service_name =
-                    Some(parse_string_arg("--target-service", args.next())?)
+                target_service_name = Some(parse_string_arg("--target-service", args.next())?)
             }
             "--backend-command" => {
                 backend_command = Some(parse_string_arg("--backend-command", args.next())?)
@@ -388,7 +392,10 @@ where
                     parse_u64_arg("--service-status-max-staleness-ms", args.next())?
             }
             "--session-dir" => {
-                session_dir = Some(PathBuf::from(parse_string_arg("--session-dir", args.next())?))
+                session_dir = Some(PathBuf::from(parse_string_arg(
+                    "--session-dir",
+                    args.next(),
+                )?))
             }
             "--output" => {
                 output_path = Some(PathBuf::from(parse_string_arg("--output", args.next())?))
@@ -520,7 +527,8 @@ fn render_live_package_transaction_script_report(
     config: &Config,
 ) -> Result<PackageLiveTransactionReport> {
     let plan = plan_live_package_transaction_report(config)?;
-    if plan.verdict != TinyLivePackageLiveTransactionVerdict::TinyLivePackageLiveTransactionPlanReady
+    if plan.verdict
+        != TinyLivePackageLiveTransactionVerdict::TinyLivePackageLiveTransactionPlanReady
     {
         return Ok(plan);
     }
@@ -583,7 +591,10 @@ fn run_live_package_transaction_report_with_hooks(
         config.wrapper_timeout_ms,
         tiny_live_activation_package_deploy::RehearsalMode::VerifyPackageDeployTarget,
     )?;
-    persist_json_value(&paths.package_verify_report_path, &package_verify.report_json)?;
+    persist_json_value(
+        &paths.package_verify_report_path,
+        &package_verify.report_json,
+    )?;
     let package_verify_step = Some(step_artifact(
         &paths.package_verify_report_path,
         "verify_package_deploy_target",
@@ -766,12 +777,8 @@ fn run_live_package_transaction_report_with_hooks(
     }
 
     let backup_targets = BackupHookTargets {
-        activation_config_path: PathBuf::from(
-            &live_target_verify.installed_activation_config_path,
-        ),
-        rollback_config_path: PathBuf::from(
-            &live_target_verify.installed_rollback_config_path,
-        ),
+        activation_config_path: PathBuf::from(&live_target_verify.installed_activation_config_path),
+        rollback_config_path: PathBuf::from(&live_target_verify.installed_rollback_config_path),
         target_config_path: PathBuf::from(&live_target_verify.target_config_path),
         installed_wrapper_path: PathBuf::from(&live_target_verify.wrapper_path),
         runtime_dir: PathBuf::from(&live_target_verify.runtime_dir),
@@ -780,17 +787,18 @@ fn run_live_package_transaction_report_with_hooks(
     if let Some(hook) = hooks.before_backup_hook {
         hook(&backup_targets)?;
     }
-    let backup_report = tiny_live_activation_live_execute::backup_current_config_report_for_cutover(
-        &backup_targets.activation_config_path,
-        &backup_targets.rollback_config_path,
-        &backup_targets.target_config_path,
-        &config.target_service_name,
-        &backup_targets.installed_wrapper_path,
-        &backup_targets.runtime_dir,
-        &backup_targets.backup_dir,
-        DEFAULT_STARTUP_TIMEOUT_MS,
-        DEFAULT_ROLLBACK_TIMEOUT_MS,
-    )?;
+    let backup_report =
+        tiny_live_activation_live_execute::backup_current_config_report_for_cutover(
+            &backup_targets.activation_config_path,
+            &backup_targets.rollback_config_path,
+            &backup_targets.target_config_path,
+            &config.target_service_name,
+            &backup_targets.installed_wrapper_path,
+            &backup_targets.runtime_dir,
+            &backup_targets.backup_dir,
+            DEFAULT_STARTUP_TIMEOUT_MS,
+            DEFAULT_ROLLBACK_TIMEOUT_MS,
+        )?;
     persist_json(&paths.backup_report_path, &backup_report)?;
     let backup_proof_step = Some(step_artifact(
         &paths.backup_report_path,
@@ -956,9 +964,7 @@ fn run_live_package_transaction_report_with_hooks(
     ))
 }
 
-fn verify_live_package_transaction_report(
-    config: &Config,
-) -> Result<PackageLiveTransactionReport> {
+fn verify_live_package_transaction_report(config: &Config) -> Result<PackageLiveTransactionReport> {
     let session_dir = config
         .session_dir
         .as_ref()
@@ -1275,18 +1281,14 @@ fn verify_live_package_transaction_report(
         ));
     }
 
-    let stored_backup: tiny_live_activation_live_execute::LiveExecuteReport = load_required_step_json(
-        &status.backup_proof_step,
-        &paths.backup_report_path,
-        "backup_proof_step",
-        &mut mismatches,
-    )?;
-    validate_backup_report_contract(
-        &stored_backup,
-        config,
-        &stored_live_target,
-        &mut mismatches,
-    );
+    let stored_backup: tiny_live_activation_live_execute::LiveExecuteReport =
+        load_required_step_json(
+            &status.backup_proof_step,
+            &paths.backup_report_path,
+            "backup_proof_step",
+            &mut mismatches,
+        )?;
+    validate_backup_report_contract(&stored_backup, config, &stored_live_target, &mut mismatches);
     if let Err(error) = tiny_live_activation_live_execute::load_backup_proof_for_watch(
         Path::new(&stored_live_target.installed_activation_config_path),
         Path::new(&stored_live_target.installed_rollback_config_path),
@@ -1296,16 +1298,13 @@ fn verify_live_package_transaction_report(
         Path::new(&stored_live_target.runtime_dir),
         Path::new(&stored_live_target.backup_dir),
     ) {
-        mismatches.push(format!(
-            "live backup proof is no longer valid: {error}"
-        ));
+        mismatches.push(format!("live backup proof is no longer valid: {error}"));
     }
 
     if status.result == LivePackageTransactionResult::BackupFailed {
         if status.dry_transaction_step.is_some() || status.cutover_plan_step.is_some() {
-            mismatches.push(
-                "dry/cutover steps must be absent when backup proof failed".to_string(),
-            );
+            mismatches
+                .push("dry/cutover steps must be absent when backup proof failed".to_string());
         }
         let verdict = if mismatches.is_empty() {
             TinyLivePackageLiveTransactionVerdict::TinyLivePackageLiveTransactionVerifyOk
@@ -1342,9 +1341,7 @@ fn verify_live_package_transaction_report(
 
     if status.result == LivePackageTransactionResult::DryTransactionFailed {
         if status.cutover_plan_step.is_some() {
-            mismatches.push(
-                "cutover step must be absent when dry transaction failed".to_string(),
-            );
+            mismatches.push("cutover step must be absent when dry transaction failed".to_string());
         }
         let verdict = if mismatches.is_empty() {
             TinyLivePackageLiveTransactionVerdict::TinyLivePackageLiveTransactionVerifyOk
@@ -1439,9 +1436,11 @@ fn verify_installed_wrapper_binding(
         },
     };
     let mut mismatches = wrapper_verification.mismatches.clone();
-    let wrapper_bytes_match_package =
-        compare_file_bytes(&package_contract.wrapper_path, Path::new(&install_target.wrapper_path))
-            .unwrap_or(false);
+    let wrapper_bytes_match_package = compare_file_bytes(
+        &package_contract.wrapper_path,
+        Path::new(&install_target.wrapper_path),
+    )
+    .unwrap_or(false);
     if !wrapper_bytes_match_package {
         mismatches.push(format!(
             "installed wrapper {} does not match packaged wrapper {}",
@@ -1833,7 +1832,12 @@ fn run_service_status_command(
         .create(true)
         .append(true)
         .open(log_path)
-        .with_context(|| format!("failed opening transaction service-status log {}", log_path.display()))?;
+        .with_context(|| {
+            format!(
+                "failed opening transaction service-status log {}",
+                log_path.display()
+            )
+        })?;
     let stderr = log
         .try_clone()
         .with_context(|| "failed cloning transaction service-status log handle")?;
@@ -1892,7 +1896,10 @@ fn validate_live_transaction_session_dir(install_root: &Path, session_dir: &Path
         )?;
     for (label, path) in [
         ("live wrapper path", managed_surface.wrapper_path.as_path()),
-        ("live wrapper parent", managed_surface.wrapper_parent.as_path()),
+        (
+            "live wrapper parent",
+            managed_surface.wrapper_parent.as_path(),
+        ),
         (
             "live target config path",
             managed_surface.target_config_path.as_path(),
@@ -1912,7 +1919,8 @@ fn validate_live_transaction_session_dir(install_root: &Path, session_dir: &Path
 
 fn package_live_transaction_paths(session_dir: &Path) -> PackageLiveTransactionPaths {
     PackageLiveTransactionPaths {
-        session_path: session_dir.join("tiny_live_activation_package_live_transaction.session.json"),
+        session_path: session_dir
+            .join("tiny_live_activation_package_live_transaction.session.json"),
         status_path: session_dir.join("tiny_live_activation_package_live_transaction.status.json"),
         package_verify_report_path: session_dir
             .join("tiny_live_activation_package_live_transaction.package_verify.report.json"),
@@ -2425,7 +2433,10 @@ fn validate_wrapper_binding_report_contract(
     );
     compare_string(
         &report.packaged_activation_config_path,
-        &package_contract.activation_artifact_path.display().to_string(),
+        &package_contract
+            .activation_artifact_path
+            .display()
+            .to_string(),
         "wrapper verify packaged_activation_config_path",
         mismatches,
     );
@@ -2437,7 +2448,10 @@ fn validate_wrapper_binding_report_contract(
     );
     compare_string(
         &report.packaged_rollback_config_path,
-        &package_contract.rollback_artifact_path.display().to_string(),
+        &package_contract
+            .rollback_artifact_path
+            .display()
+            .to_string(),
         "wrapper verify packaged_rollback_config_path",
         mismatches,
     );
@@ -2561,7 +2575,9 @@ fn validate_service_status_report_contract(
         .map_err(|error| anyhow!(error))
         .unwrap();
     if report.expected_config_fingerprint_sha256
-        != installed_activation.metadata.source_config_fingerprint_sha256
+        != installed_activation
+            .metadata
+            .source_config_fingerprint_sha256
     {
         mismatches.push(
             "service status report expected fingerprint does not match the installed activation artifact source fingerprint"
@@ -2576,7 +2592,8 @@ fn validate_service_status_report_contract(
         && report.verification_mismatches.is_empty()
     {
         mismatches.push(
-            "service status report is non-green without explicit verification mismatches".to_string(),
+            "service status report is non-green without explicit verification mismatches"
+                .to_string(),
         );
     }
     let _ = package_contract;
@@ -2920,8 +2937,8 @@ fn sync_dir(path: &Path) -> Result<()> {
 }
 
 fn load_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
-    let raw =
-        fs::read_to_string(path).with_context(|| format!("failed reading json {}", path.display()))?;
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed reading json {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("failed parsing json {}", path.display()))
 }
 
@@ -3091,7 +3108,10 @@ fn render_human_report(report: &PackageLiveTransactionReport) -> String {
         "activation_authorized={}",
         report.activation_authorized
     ));
-    lines.push(format!("package_verify_command_summary={}", report.package_verify_command_summary));
+    lines.push(format!(
+        "package_verify_command_summary={}",
+        report.package_verify_command_summary
+    ));
     lines.push(format!(
         "verify_install_target_command_summary={}",
         report.verify_install_target_command_summary
@@ -3173,7 +3193,9 @@ mod tests {
                 Path::new(&package_contract.install_target_summary.target_config_path),
                 &fixture.config.target_service_name,
                 Path::new(&package_contract.install_target_summary.backup_dir),
-                &installed_activation.metadata.source_config_fingerprint_sha256,
+                &installed_activation
+                    .metadata
+                    .source_config_fingerprint_sha256,
             );
         fs::create_dir_all(backup_config_path.parent().unwrap()).unwrap();
         fs::write(&backup_config_path, "preexisting backup").unwrap();
@@ -3224,7 +3246,9 @@ mod tests {
             fixture.config.wrapper_timeout_ms,
         )
         .unwrap();
-        write_non_wrapper(Path::new(&package_contract.install_target_summary.wrapper_path));
+        write_non_wrapper(Path::new(
+            &package_contract.install_target_summary.wrapper_path,
+        ));
         let report = run_json_report(fixture.config.clone());
         assert_eq!(
             report.verdict,
@@ -3363,9 +3387,7 @@ mod tests {
             GateState::Green,
         );
         run_json_report(fixture.config.clone());
-        let paths = package_live_transaction_paths(
-            fixture.config.session_dir.as_ref().unwrap(),
-        );
+        let paths = package_live_transaction_paths(fixture.config.session_dir.as_ref().unwrap());
         let mut status: PackageLiveTransactionStatus = load_json(&paths.status_path).unwrap();
         let other = fixture.fixture_dir.join("other.report.json");
         persist_json(&other, &serde_json::json!({"fake": true})).unwrap();
@@ -3410,8 +3432,7 @@ mod tests {
     fn transaction_fixture(label: &str, gate_state: GateState) -> TransactionFixture {
         let fixture_dir = temp_dir(label);
         let install_root = fixture_dir.join("live-root");
-        let target_config_path =
-            install_root.join("etc/solana-copy-bot/live.server.toml");
+        let target_config_path = install_root.join("etc/solana-copy-bot/live.server.toml");
         fs::create_dir_all(target_config_path.parent().unwrap()).unwrap();
         let db_path = fixture_dir.join("live.db");
         let rpc_server = MockHttpServer::spawn(
@@ -3476,7 +3497,10 @@ mod tests {
             tiny_live_activation_package_deploy::RehearsalMode::InstallFromPackage,
         )
         .unwrap();
-        assert_eq!(install.verdict, "tiny_live_package_deploy_install_completed");
+        assert_eq!(
+            install.verdict,
+            "tiny_live_package_deploy_install_completed"
+        );
 
         TransactionFixture {
             fixture_dir: fixture_dir.clone(),
@@ -3501,7 +3525,11 @@ mod tests {
     }
 
     fn run_json_report(config: Config) -> PackageLiveTransactionReport {
-        let output = run(Config { json: true, ..config }).expect("run json report");
+        let output = run(Config {
+            json: true,
+            ..config
+        })
+        .expect("run json report");
         serde_json::from_str(&output).expect("parse json report")
     }
 
@@ -4072,7 +4100,10 @@ max_consecutive_hard_failures = 3
                 return None;
             }
             header_bytes.extend_from_slice(&buf[..bytes]);
-            if let Some(pos) = header_bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+            if let Some(pos) = header_bytes
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+            {
                 header_end = pos + 4;
                 break;
             }
@@ -4093,7 +4124,9 @@ max_consecutive_hard_failures = 3
             body.len(),
             body
         );
-        stream.write_all(response.as_bytes()).expect("write response");
+        stream
+            .write_all(response.as_bytes())
+            .expect("write response");
         stream.flush().expect("flush response");
     }
 }

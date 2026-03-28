@@ -3274,7 +3274,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn rollback_restores_execution_enabled_false() {
-        let (fixture, report) = completed_rollback_fixture_for_test("tiny_live_live_execute_rollback");
+        let (fixture, report) =
+            completed_rollback_fixture_for_test("tiny_live_live_execute_rollback");
         assert_eq!(
             report.verdict,
             TinyLiveLiveExecuteVerdict::TinyLiveLiveRollbackCompleted
