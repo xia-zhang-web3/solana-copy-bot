@@ -1037,6 +1037,98 @@ fn install_wrapper(config: &Config, paths: &InstallTargetPaths) -> Result<()> {
     )
 }
 
+fn verify_wrapper_source_contract(
+    wrapper_source_path: &Path,
+    backend_command: &str,
+    wrapper_timeout_ms: u64,
+) -> Result<ServiceControlWrapperVerificationSummary> {
+    let summary = tiny_live_activation_live_execute::live_service_control_wrapper_contract::verify_wrapper(
+        wrapper_source_path,
+    )?;
+    if summary.backend_command.as_deref() != Some(backend_command) {
+        bail!(
+            "packaged wrapper backend_command must be {}, found {}",
+            backend_command,
+            summary
+                .backend_command
+                .clone()
+                .unwrap_or_else(|| "<missing>".to_string())
+        );
+    }
+    if summary.timeout_ms != Some(wrapper_timeout_ms) {
+        bail!(
+            "packaged wrapper timeout_ms must be {}, found {}",
+            wrapper_timeout_ms,
+            summary
+                .timeout_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "<missing>".to_string())
+        );
+    }
+    Ok(summary)
+}
+
+fn install_wrapper_from_source(wrapper_source_path: &Path, destination_path: &Path) -> Result<()> {
+    let bytes = fs::read(wrapper_source_path).with_context(|| {
+        format!(
+            "failed reading packaged wrapper source {}",
+            wrapper_source_path.display()
+        )
+    })?;
+    write_bytes_file(destination_path, &bytes)?;
+    #[cfg(unix)]
+    copy_permissions_from_source(wrapper_source_path, destination_path)?;
+    ensure_installed_wrapper_matches_source(wrapper_source_path, destination_path)?;
+    Ok(())
+}
+
+fn ensure_installed_wrapper_matches_source(
+    wrapper_source_path: &Path,
+    destination_path: &Path,
+) -> Result<()> {
+    let source_bytes = fs::read(wrapper_source_path).with_context(|| {
+        format!(
+            "failed reading packaged wrapper source {}",
+            wrapper_source_path.display()
+        )
+    })?;
+    let installed_bytes = fs::read(destination_path).with_context(|| {
+        format!(
+            "failed reading installed wrapper {}",
+            destination_path.display()
+        )
+    })?;
+    if installed_bytes != source_bytes {
+        bail!(
+            "installed wrapper {} does not match packaged wrapper {}",
+            destination_path.display(),
+            wrapper_source_path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn copy_permissions_from_source(wrapper_source_path: &Path, destination_path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = fs::metadata(wrapper_source_path)
+        .with_context(|| {
+            format!(
+                "failed reading packaged wrapper metadata {}",
+                wrapper_source_path.display()
+            )
+        })?
+        .permissions()
+        .mode();
+    fs::set_permissions(destination_path, fs::Permissions::from_mode(mode)).with_context(|| {
+        format!(
+            "failed setting installed wrapper permissions on {}",
+            destination_path.display()
+        )
+    })
+}
+
 fn install_rendered_artifact(
     source: &LoadedRenderedConfigArtifact,
     destination_path: &Path,
@@ -1169,6 +1261,74 @@ pub(crate) fn build_install_target_package_summary(
         json: false,
     };
     let report = plan_install_target_report(&config)?;
+    Ok(install_target_package_summary_from_report(&report))
+}
+
+#[allow(dead_code)]
+pub(crate) fn install_target_from_source_paths_for_package(
+    install_root: &Path,
+    target_service_name: &str,
+    backend_command: &str,
+    wrapper_timeout_ms: u64,
+    wrapper_source_path: &Path,
+    activation_config_source_path: &Path,
+    rollback_config_source_path: &Path,
+) -> Result<InstallTargetPackageSummary> {
+    let config = Config {
+        mode: Mode::InstallTarget,
+        install_root: install_root.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        backend_command: backend_command.to_string(),
+        wrapper_timeout_ms,
+        activation_config_source_path: Some(activation_config_source_path.to_path_buf()),
+        rollback_config_source_path: Some(rollback_config_source_path.to_path_buf()),
+        output_path: None,
+        json: false,
+    };
+    validate_existing_path(
+        wrapper_source_path,
+        "wrapper source path",
+        PathKind::File,
+        true,
+    )?;
+    let paths = derive_paths(install_root);
+    let source_context = validate_source_install_context(&config, &paths)?;
+    ensure_install_targets_are_new(&paths)?;
+    prepare_install_directories(&paths)?;
+    verify_wrapper_source_contract(
+        wrapper_source_path,
+        backend_command,
+        wrapper_timeout_ms,
+    )?;
+    install_wrapper_from_source(wrapper_source_path, &paths.wrapper_path)?;
+    install_rendered_artifact(&source_context.activation, &paths.activation_config_path)?;
+    install_rendered_artifact(&source_context.rollback, &paths.rollback_config_path)?;
+    write_install_metadata(&config, &paths)?;
+    let verification = inspect_install_target(&config, &paths)?;
+    if !verification.mismatches.is_empty() {
+        bail!(
+            "{}",
+            verification
+                .mismatches
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "install target verification failed after package install".to_string())
+        );
+    }
+    ensure_installed_wrapper_matches_source(wrapper_source_path, &paths.wrapper_path)?;
+    let report = base_report(
+        &config,
+        &paths,
+        TinyLiveInstallTargetVerdict::TinyLiveInstallTargetInstallCompleted,
+        format!(
+            "install target layout rendered under {} and verified against the repo-managed contract using the packaged wrapper artifact",
+            paths.install_root.display()
+        ),
+        Some(build_command_summaries(&config, &paths)),
+        verification.wrapper_verification.clone(),
+        Some(verification),
+        Some(&source_context),
+    );
     Ok(install_target_package_summary_from_report(&report))
 }
 

@@ -921,6 +921,56 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `tiny_live_activation_package_wrapper_invalid`
    - `tiny_live_activation_package_install_contract_invalid`
 
+## Tiny-Live Package Deploy
+
+1. The repo now also supports one package-native deploy/install + cutover
+   planning surface where `--package-dir` is the single immutable handoff
+   input:
+   - review the bounded package deploy plan:
+     `copybot_tiny_live_activation_package_deploy --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-package-deploy --json`
+   - render an operator-facing install script directly from the package:
+     `copybot_tiny_live_activation_package_deploy --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --render-package-deploy-script --output /tmp/tiny-live.package-deploy.sh --json`
+   - verify that the package matches the requested live target contract:
+     `copybot_tiny_live_activation_package_deploy --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --verify-package-deploy-target --json`
+   - derive the bounded live cutover plan directly from the same package:
+     `copybot_tiny_live_activation_package_deploy --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-package-cutover --json`
+   - optionally install the packaged wrapper + activation assets into the same fake or explicit root:
+     `copybot_tiny_live_activation_package_deploy --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --install-from-package --json`
+2. This package-native layer reuses the accepted contracts instead of inventing
+   a second deployment schema:
+   - `copybot_tiny_live_activation_package --verify-package` is the hard entry
+     gate
+   - the wrapper installed by `--install-from-package` is copied from the
+     packaged wrapper artifact itself, not freshly re-rendered from current
+     workspace state
+   - wrapper path, installed activation / rollback paths, runtime dir, backup
+     dir, and session dir are derived from the accepted install-target contract
+   - package cutover planning reuses the accepted live cutover contract over
+     those derived installed paths
+3. `--verify-package-deploy-target` is real contract verification:
+   - the package must still verify green against the requested install root /
+     target service / backend command / wrapper timeout contract
+   - package hashes, wrapper truth, install-target truth, and path binding stay
+     mandatory
+   - wrong-target or tampered packages are rejected sharply
+4. `--plan-package-cutover` stays non-authorizing:
+   - it emits the exact bounded cutover command summary derived from the
+     package plus the requested live target contract
+   - current Stage 3 / pre-activation truth still blocks any future real live
+     cutover
+   - green package deploy planning is not permission to activate prod
+5. Important package-native deploy verdicts:
+   - `tiny_live_package_deploy_plan_ready`
+   - `tiny_live_package_deploy_script_rendered`
+   - `tiny_live_package_deploy_verify_ok`
+   - `tiny_live_package_deploy_verify_invalid`
+   - `tiny_live_package_deploy_install_completed`
+   - `tiny_live_package_deploy_install_refused`
+   - `tiny_live_package_cutover_plan_ready`
+   - `tiny_live_package_cutover_refused_by_stage3`
+   - `tiny_live_package_cutover_refused_by_pre_activation_gate`
+   - `tiny_live_package_cutover_refused_by_invalid_package`
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

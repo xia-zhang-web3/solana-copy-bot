@@ -180,6 +180,26 @@ struct PackageReport {
     explicit_statement: String,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct VerifiedActivationPackageContract {
+    pub(crate) package_dir: PathBuf,
+    pub(crate) manifest_path: PathBuf,
+    pub(crate) activation_artifact_path: PathBuf,
+    pub(crate) activation_metadata_path: PathBuf,
+    pub(crate) rollback_artifact_path: PathBuf,
+    pub(crate) rollback_metadata_path: PathBuf,
+    pub(crate) wrapper_path: PathBuf,
+    pub(crate) wrapper_verification_path: PathBuf,
+    pub(crate) install_target_summary_path: PathBuf,
+    pub(crate) wrapper_verification: ServiceControlWrapperVerificationSummary,
+    pub(crate) install_target_summary: InstallTargetPackageSummary,
+    pub(crate) install_target_command_summary: String,
+    pub(crate) live_execute_verify_command_summary: String,
+    pub(crate) watch_live_command_summary: String,
+    pub(crate) cutover_plan_command_summary: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum PathKind {
     File,
@@ -434,6 +454,94 @@ fn verify_package_report(config: &Config) -> Result<PackageReport> {
         Some(verification),
         manifest.map(|value| value.install_target_command_summary),
     ))
+}
+
+#[allow(dead_code)]
+pub(crate) fn verify_package_contract_for_deploy(
+    package_dir: &Path,
+    install_root: &Path,
+    target_service_name: &str,
+    backend_command: &str,
+    wrapper_timeout_ms: u64,
+) -> Result<VerifiedActivationPackageContract> {
+    let config = Config {
+        mode: Mode::VerifyPackage,
+        install_root: install_root.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        backend_command: backend_command.to_string(),
+        wrapper_timeout_ms,
+        activation_config_source_path: None,
+        rollback_config_source_path: None,
+        output_dir: None,
+        package_dir: Some(package_dir.to_path_buf()),
+        json: false,
+    };
+    validate_existing_path(package_dir, "package dir", PathKind::Directory, true)?;
+    let paths = package_paths(package_dir);
+    let verification = inspect_package(&config, &paths)?;
+    if !verification.mismatches.is_empty() {
+        bail!(
+            "{}",
+            verification
+                .mismatches
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "package verification failed".to_string())
+        );
+    }
+    let manifest = load_manifest(&paths.manifest_path)?;
+    let wrapper_verification =
+        load_wrapper_verification_summary(&paths.wrapper_verification_path)?;
+    let install_target_summary = load_install_target_summary(&paths.install_target_summary_path)?;
+    Ok(VerifiedActivationPackageContract {
+        package_dir: package_dir.to_path_buf(),
+        manifest_path: paths.manifest_path,
+        activation_artifact_path: paths.activation_artifact_path,
+        activation_metadata_path: paths.activation_metadata_path,
+        rollback_artifact_path: paths.rollback_artifact_path,
+        rollback_metadata_path: paths.rollback_metadata_path,
+        wrapper_path: paths.wrapper_path,
+        wrapper_verification_path: paths.wrapper_verification_path,
+        install_target_summary_path: paths.install_target_summary_path,
+        wrapper_verification,
+        install_target_summary,
+        install_target_command_summary: manifest.install_target_command_summary,
+        live_execute_verify_command_summary: manifest.live_execute_verify_command_summary,
+        watch_live_command_summary: manifest.watch_live_command_summary,
+        cutover_plan_command_summary: manifest.cutover_plan_command_summary,
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn export_activation_package_for_deploy(
+    package_dir: &Path,
+    install_root: &Path,
+    target_service_name: &str,
+    backend_command: &str,
+    wrapper_timeout_ms: u64,
+    activation_config_source_path: &Path,
+    rollback_config_source_path: &Path,
+) -> Result<VerifiedActivationPackageContract> {
+    let config = Config {
+        mode: Mode::ExportPackage,
+        install_root: install_root.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        backend_command: backend_command.to_string(),
+        wrapper_timeout_ms,
+        activation_config_source_path: Some(activation_config_source_path.to_path_buf()),
+        rollback_config_source_path: Some(rollback_config_source_path.to_path_buf()),
+        output_dir: Some(package_dir.to_path_buf()),
+        package_dir: None,
+        json: false,
+    };
+    export_package_report(&config)?;
+    verify_package_contract_for_deploy(
+        package_dir,
+        install_root,
+        target_service_name,
+        backend_command,
+        wrapper_timeout_ms,
+    )
 }
 
 #[derive(Debug, Clone)]

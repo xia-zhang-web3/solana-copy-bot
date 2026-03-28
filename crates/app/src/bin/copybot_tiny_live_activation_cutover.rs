@@ -204,6 +204,22 @@ struct CutoverReport {
     explicit_statement: String,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct PackageCutoverPlanSummary {
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) cutover_plan_command_summary: Option<String>,
+    pub(crate) backup_command_summary: Option<String>,
+    pub(crate) verify_command_summary: Option<String>,
+    pub(crate) watch_live_command_summary: Option<String>,
+    pub(crate) rollback_command_summary: Option<String>,
+    pub(crate) current_pre_activation_gate_verdict: Option<String>,
+    pub(crate) current_pre_activation_gate_reason: Option<String>,
+    pub(crate) verification_mismatches: Vec<String>,
+    pub(crate) activation_authorized: bool,
+}
+
 #[derive(Debug, Clone)]
 struct CutoverBundle {
     live_plan: tiny_live_activation_live_execute::LiveExecuteReport,
@@ -925,6 +941,51 @@ fn verify_cutover_session_report(config: &Config) -> Result<CutoverReport> {
     report.rollback_step = status.rollback_step.clone();
     report.verification_mismatches = mismatches;
     Ok(report)
+}
+
+#[allow(dead_code)]
+pub(crate) fn plan_live_cutover_for_package_inputs(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    runtime_dir: &Path,
+    target_config_path: &Path,
+    target_service_name: &str,
+    service_control_command_path: &Path,
+    backup_dir: &Path,
+    session_dir: &Path,
+) -> Result<PackageCutoverPlanSummary> {
+    let config = Config {
+        mode: Mode::PlanLiveCutover,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        target_config_path: target_config_path.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        service_control_command_path: service_control_command_path.to_path_buf(),
+        backup_dir: backup_dir.to_path_buf(),
+        session_dir: Some(session_dir.to_path_buf()),
+        output_path: None,
+        startup_timeout_ms: DEFAULT_STARTUP_TIMEOUT_MS,
+        rollback_timeout_ms: DEFAULT_ROLLBACK_TIMEOUT_MS,
+        watch_window_seconds: None,
+        sample_cadence_ms: DEFAULT_SAMPLE_CADENCE_MS,
+        max_observation_staleness_ms: None,
+        json: false,
+    };
+    let report = plan_live_cutover_report(&config)?;
+    Ok(PackageCutoverPlanSummary {
+        verdict: serialize_enum(&report.verdict),
+        reason: report.reason,
+        cutover_plan_command_summary: Some(command_base_for_script(&config)?),
+        backup_command_summary: report.backup_command_summary,
+        verify_command_summary: report.verify_command_summary,
+        watch_live_command_summary: report.watch_live_command_summary,
+        rollback_command_summary: report.rollback_command_summary,
+        current_pre_activation_gate_verdict: report.current_pre_activation_gate_verdict,
+        current_pre_activation_gate_reason: report.current_pre_activation_gate_reason,
+        verification_mismatches: report.verification_mismatches,
+        activation_authorized: report.activation_authorized,
+    })
 }
 
 fn load_bound_step_json<T: for<'de> Deserialize<'de>>(

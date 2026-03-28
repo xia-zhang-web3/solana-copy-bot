@@ -2046,6 +2046,53 @@ Acceptance update (`2026-03-27`, repo-managed tiny-live activation package):
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package --bin copybot_tiny_live_activation_install_target --bin copybot_live_service_control_wrapper --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_cutover`
 
+Acceptance update (`2026-03-28`, package-native tiny-live activation deploy/cutover planning):
+
+1. Stage 4 now also has one package-native deploy/install + cutover planning
+   surface where `--package-dir` is the single immutable handoff input:
+   - `copybot_tiny_live_activation_package_deploy --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-package-deploy --json`
+   - `copybot_tiny_live_activation_package_deploy --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --render-package-deploy-script --output /tmp/tiny-live.package-deploy.sh --json`
+   - `copybot_tiny_live_activation_package_deploy --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --verify-package-deploy-target --json`
+   - `copybot_tiny_live_activation_package_deploy --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-package-cutover --json`
+   - `copybot_tiny_live_activation_package_deploy --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --install-from-package --json`
+2. This layer deliberately reuses accepted contracts instead of inventing a
+   second deploy schema:
+   - `copybot_tiny_live_activation_package --verify-package` remains the hard
+     entry gate
+   - the packaged wrapper artifact itself is installed verbatim from the
+     package; package-native install does not re-render a fresh wrapper from
+     current repo state
+   - installed wrapper / activation / rollback / runtime / backup / session
+     paths are derived from the accepted install-target contract
+   - live cutover planning reuses the accepted cutover contract over those
+     derived installed paths
+3. `--verify-package-deploy-target` is real contract verification:
+   - the package must verify green against the requested install root / target
+     service / backend command / wrapper timeout contract
+   - package hashes, wrapper truth, install-target truth, and path binding stay
+     mandatory
+   - wrong target contract or tampered package contents are rejected sharply
+4. `--plan-package-cutover` remains hard-gated and non-authorizing:
+   - it emits the bounded live cutover command summary derived from the package
+     plus the requested target contract
+   - current Stage 3 / pre-activation truth still blocks any real live cutover
+     authorization
+   - green package deploy planning is not permission to activate prod
+5. Important package-native deploy verdicts:
+   - `tiny_live_package_deploy_plan_ready`
+   - `tiny_live_package_deploy_script_rendered`
+   - `tiny_live_package_deploy_verify_ok`
+   - `tiny_live_package_deploy_verify_invalid`
+   - `tiny_live_package_deploy_install_completed`
+   - `tiny_live_package_deploy_install_refused`
+   - `tiny_live_package_cutover_plan_ready`
+   - `tiny_live_package_cutover_refused_by_stage3`
+   - `tiny_live_package_cutover_refused_by_pre_activation_gate`
+   - `tiny_live_package_cutover_refused_by_invalid_package`
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_deploy`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_deploy --bin copybot_tiny_live_activation_package --bin copybot_tiny_live_activation_install_target --bin copybot_tiny_live_activation_cutover --bin copybot_tiny_live_activation_live_execute`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
