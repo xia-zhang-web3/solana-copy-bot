@@ -6,22 +6,21 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[allow(dead_code)]
-#[path = "copybot_tiny_live_activation_package.rs"]
-mod tiny_live_activation_package;
+#[path = "copybot_tiny_live_activation_cutover.rs"]
+mod tiny_live_activation_cutover;
 #[allow(dead_code)]
 #[path = "copybot_tiny_live_activation_install_target.rs"]
 mod tiny_live_activation_install_target;
 #[allow(dead_code)]
-#[path = "copybot_tiny_live_activation_cutover.rs"]
-mod tiny_live_activation_cutover;
-#[allow(dead_code)]
 #[path = "copybot_tiny_live_activation_live_execute.rs"]
 mod tiny_live_activation_live_execute;
+#[allow(dead_code)]
+#[path = "copybot_tiny_live_activation_package.rs"]
+mod tiny_live_activation_package;
 
 type VerifiedActivationPackageContract =
     tiny_live_activation_package::VerifiedActivationPackageContract;
-type InstallTargetPackageSummary =
-    tiny_live_activation_install_target::InstallTargetPackageSummary;
+type InstallTargetPackageSummary = tiny_live_activation_install_target::InstallTargetPackageSummary;
 
 const USAGE: &str = "usage: copybot_tiny_live_activation_package_deploy --package-dir <path> --install-root <path> --target-service <name> --backend-command <path-or-name> [--wrapper-timeout-ms <ms>] [--output <path>] [--json] (--plan-package-deploy | --render-package-deploy-script | --verify-package-deploy-target | --plan-package-cutover | --install-from-package)";
 
@@ -54,6 +53,14 @@ enum Mode {
     VerifyPackageDeployTarget,
     PlanPackageCutover,
     InstallFromPackage,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RehearsalMode {
+    VerifyPackageDeployTarget,
+    InstallFromPackage,
+    PlanPackageCutover,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -117,6 +124,27 @@ struct DeployContractContext {
     package: VerifiedActivationPackageContract,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct PackageDeployRehearsalStep {
+    pub(crate) report_json: serde_json::Value,
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) installed_wrapper_path: Option<String>,
+    pub(crate) installed_target_config_path: Option<String>,
+    pub(crate) installed_activation_config_path: Option<String>,
+    pub(crate) installed_activation_metadata_path: Option<String>,
+    pub(crate) installed_rollback_config_path: Option<String>,
+    pub(crate) installed_rollback_metadata_path: Option<String>,
+    pub(crate) runtime_dir: Option<String>,
+    pub(crate) backup_dir: Option<String>,
+    pub(crate) session_dir: Option<String>,
+    pub(crate) current_pre_activation_gate_verdict: Option<String>,
+    pub(crate) current_pre_activation_gate_reason: Option<String>,
+    pub(crate) activation_authorized: bool,
+}
+
 #[derive(Debug, Clone)]
 struct InstallTargetView {
     wrapper_path: String,
@@ -155,10 +183,16 @@ where
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--package-dir" => {
-                package_dir = Some(PathBuf::from(parse_string_arg("--package-dir", args.next())?))
+                package_dir = Some(PathBuf::from(parse_string_arg(
+                    "--package-dir",
+                    args.next(),
+                )?))
             }
             "--install-root" => {
-                install_root = Some(PathBuf::from(parse_string_arg("--install-root", args.next())?))
+                install_root = Some(PathBuf::from(parse_string_arg(
+                    "--install-root",
+                    args.next(),
+                )?))
             }
             "--target-service" => {
                 target_service_name = Some(parse_string_arg("--target-service", args.next())?)
@@ -174,36 +208,28 @@ where
             }
             "--json" => json = true,
             "--plan-package-deploy" => {
-                set_mode(
-                    &mut mode,
-                    Mode::PlanPackageDeploy,
-                    "--plan-package-deploy",
-                )?
+                set_mode(&mut mode, Mode::PlanPackageDeploy, "--plan-package-deploy")?
             }
-            "--render-package-deploy-script" => {
-                set_mode(
-                    &mut mode,
-                    Mode::RenderPackageDeployScript,
-                    "--render-package-deploy-script",
-                )?
-            }
-            "--verify-package-deploy-target" => {
-                set_mode(
-                    &mut mode,
-                    Mode::VerifyPackageDeployTarget,
-                    "--verify-package-deploy-target",
-                )?
-            }
-            "--plan-package-cutover" => {
-                set_mode(
-                    &mut mode,
-                    Mode::PlanPackageCutover,
-                    "--plan-package-cutover",
-                )?
-            }
-            "--install-from-package" => {
-                set_mode(&mut mode, Mode::InstallFromPackage, "--install-from-package")?
-            }
+            "--render-package-deploy-script" => set_mode(
+                &mut mode,
+                Mode::RenderPackageDeployScript,
+                "--render-package-deploy-script",
+            )?,
+            "--verify-package-deploy-target" => set_mode(
+                &mut mode,
+                Mode::VerifyPackageDeployTarget,
+                "--verify-package-deploy-target",
+            )?,
+            "--plan-package-cutover" => set_mode(
+                &mut mode,
+                Mode::PlanPackageCutover,
+                "--plan-package-cutover",
+            )?,
+            "--install-from-package" => set_mode(
+                &mut mode,
+                Mode::InstallFromPackage,
+                "--install-from-package",
+            )?,
             "--help" | "-h" => return Ok(None),
             other => bail!("unrecognized argument: {other}"),
         }
@@ -247,6 +273,52 @@ fn parse_u64_arg(flag: &str, value: Option<String>) -> Result<u64> {
     let raw = parse_string_arg(flag, value)?;
     raw.parse::<u64>()
         .with_context(|| format!("failed parsing {flag} as u64"))
+}
+
+#[allow(dead_code)]
+pub(crate) fn run_mode_for_rehearsal(
+    package_dir: &Path,
+    install_root: &Path,
+    target_service_name: &str,
+    backend_command: &str,
+    wrapper_timeout_ms: u64,
+    mode: RehearsalMode,
+) -> Result<PackageDeployRehearsalStep> {
+    let config = Config {
+        mode: match mode {
+            RehearsalMode::VerifyPackageDeployTarget => Mode::VerifyPackageDeployTarget,
+            RehearsalMode::InstallFromPackage => Mode::InstallFromPackage,
+            RehearsalMode::PlanPackageCutover => Mode::PlanPackageCutover,
+        },
+        package_dir: package_dir.to_path_buf(),
+        install_root: install_root.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        backend_command: backend_command.to_string(),
+        wrapper_timeout_ms,
+        output_path: None,
+        json: true,
+    };
+    let output = run(config)?;
+    let report: PackageDeployReport =
+        serde_json::from_str(&output).context("failed parsing package deploy report")?;
+    Ok(PackageDeployRehearsalStep {
+        report_json: serde_json::to_value(&report)?,
+        verdict: serialize_enum(&report.verdict),
+        reason: report.reason.clone(),
+        generated_at: report.generated_at,
+        installed_wrapper_path: report.installed_wrapper_path.clone(),
+        installed_target_config_path: report.installed_target_config_path.clone(),
+        installed_activation_config_path: report.installed_activation_config_path.clone(),
+        installed_activation_metadata_path: report.installed_activation_metadata_path.clone(),
+        installed_rollback_config_path: report.installed_rollback_config_path.clone(),
+        installed_rollback_metadata_path: report.installed_rollback_metadata_path.clone(),
+        runtime_dir: report.runtime_dir.clone(),
+        backup_dir: report.backup_dir.clone(),
+        session_dir: report.session_dir.clone(),
+        current_pre_activation_gate_verdict: report.current_pre_activation_gate_verdict.clone(),
+        current_pre_activation_gate_reason: report.current_pre_activation_gate_reason.clone(),
+        activation_authorized: report.activation_authorized,
+    })
 }
 
 fn run(config: Config) -> Result<String> {
@@ -364,15 +436,16 @@ fn render_package_deploy_script_report(config: &Config) -> Result<PackageDeployR
 
 fn install_from_package_report(config: &Config) -> Result<PackageDeployReport> {
     let contract = verify_package_contract(config)?;
-    let installed = tiny_live_activation_install_target::install_target_from_source_paths_for_package(
-        &config.install_root,
-        &config.target_service_name,
-        &config.backend_command,
-        config.wrapper_timeout_ms,
-        &contract.package.wrapper_path,
-        &contract.package.activation_artifact_path,
-        &contract.package.rollback_artifact_path,
-    )?;
+    let installed =
+        tiny_live_activation_install_target::install_target_from_source_paths_for_package(
+            &config.install_root,
+            &config.target_service_name,
+            &config.backend_command,
+            config.wrapper_timeout_ms,
+            &contract.package.wrapper_path,
+            &contract.package.activation_artifact_path,
+            &contract.package.rollback_artifact_path,
+        )?;
     Ok(base_report(
         config,
         Some(&contract),
@@ -644,7 +717,10 @@ fn render_human_report(report: &PackageDeployReport) -> String {
     if let Some(value) = &report.current_pre_activation_gate_reason {
         lines.push(format!("current_pre_activation_gate_reason={value}"));
     }
-    lines.push(format!("activation_authorized={}", report.activation_authorized));
+    lines.push(format!(
+        "activation_authorized={}",
+        report.activation_authorized
+    ));
     lines.push(format!("explicit_statement={}", report.explicit_statement));
     lines.join("\n")
 }
@@ -775,7 +851,9 @@ mod tests {
     fn tampered_package_hash_blocks_package_native_deploy() {
         let fixture = deploy_fixture("tiny_live_package_deploy_bad_hash");
         fs::write(
-            fixture.package_dir.join("artifacts/rendered.activation.toml"),
+            fixture
+                .package_dir
+                .join("artifacts/rendered.activation.toml"),
             sample_safe_config_toml(),
         )
         .unwrap();
@@ -837,9 +915,15 @@ mod tests {
         assert!(root
             .join("var/lib/solana-copy-bot/tiny-live/rendered.rollback.toml")
             .exists());
-        assert!(root.join("var/lib/solana-copy-bot/tiny-live/runtime").exists());
-        assert!(root.join("var/lib/solana-copy-bot/tiny-live/backups").exists());
-        assert!(root.join("var/lib/solana-copy-bot/tiny-live/sessions").exists());
+        assert!(root
+            .join("var/lib/solana-copy-bot/tiny-live/runtime")
+            .exists());
+        assert!(root
+            .join("var/lib/solana-copy-bot/tiny-live/backups")
+            .exists());
+        assert!(root
+            .join("var/lib/solana-copy-bot/tiny-live/sessions")
+            .exists());
         let installed_wrapper =
             fs::read(root.join("usr/local/bin/copybot-live-service-control")).unwrap();
         let packaged_wrapper = fs::read(

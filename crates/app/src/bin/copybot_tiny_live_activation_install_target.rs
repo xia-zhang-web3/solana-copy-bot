@@ -60,6 +60,25 @@ enum Mode {
     InstallTarget,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct InstallTargetVerifyStep {
+    pub(crate) report_json: serde_json::Value,
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) install_root: String,
+    pub(crate) wrapper_path: String,
+    pub(crate) target_config_path: String,
+    pub(crate) installed_activation_config_path: String,
+    pub(crate) installed_rollback_config_path: String,
+    pub(crate) runtime_dir: String,
+    pub(crate) backup_dir: String,
+    pub(crate) session_dir: String,
+    pub(crate) verification_mismatches: Vec<String>,
+    pub(crate) activation_authorized: bool,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum TinyLiveInstallTargetVerdict {
@@ -327,6 +346,49 @@ fn parse_u64_arg(flag: &str, value: Option<String>) -> Result<u64> {
     let raw = parse_string_arg(flag, value)?;
     raw.parse::<u64>()
         .with_context(|| format!("failed parsing {flag} as u64"))
+}
+
+#[allow(dead_code)]
+pub(crate) fn verify_install_target_for_rehearsal(
+    install_root: &Path,
+    target_service_name: &str,
+    backend_command: &str,
+    wrapper_timeout_ms: u64,
+) -> Result<InstallTargetVerifyStep> {
+    let config = Config {
+        mode: Mode::VerifyInstallTarget,
+        install_root: install_root.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        backend_command: backend_command.to_string(),
+        wrapper_timeout_ms,
+        activation_config_source_path: None,
+        rollback_config_source_path: None,
+        output_path: None,
+        json: true,
+    };
+    let output = run(config)?;
+    let report: InstallTargetReport =
+        serde_json::from_str(&output).context("failed parsing install target report")?;
+    Ok(InstallTargetVerifyStep {
+        report_json: serde_json::to_value(&report)?,
+        verdict: serialize_enum(&report.verdict),
+        reason: report.reason.clone(),
+        generated_at: report.generated_at,
+        install_root: report.install_root.clone(),
+        wrapper_path: report.wrapper_path.clone(),
+        target_config_path: report.target_config_path.clone(),
+        installed_activation_config_path: report.installed_activation_config_path.clone(),
+        installed_rollback_config_path: report.installed_rollback_config_path.clone(),
+        runtime_dir: report.runtime_dir.clone(),
+        backup_dir: report.backup_dir.clone(),
+        session_dir: report.session_dir.clone(),
+        verification_mismatches: report
+            .verification
+            .as_ref()
+            .map(|value| value.mismatches.clone())
+            .unwrap_or_default(),
+        activation_authorized: report.activation_authorized,
+    })
 }
 
 fn run(config: Config) -> Result<String> {
@@ -1042,9 +1104,10 @@ fn verify_wrapper_source_contract(
     backend_command: &str,
     wrapper_timeout_ms: u64,
 ) -> Result<ServiceControlWrapperVerificationSummary> {
-    let summary = tiny_live_activation_live_execute::live_service_control_wrapper_contract::verify_wrapper(
-        wrapper_source_path,
-    )?;
+    let summary =
+        tiny_live_activation_live_execute::live_service_control_wrapper_contract::verify_wrapper(
+            wrapper_source_path,
+        )?;
     if summary.backend_command.as_deref() != Some(backend_command) {
         bail!(
             "packaged wrapper backend_command must be {}, found {}",
@@ -1295,11 +1358,7 @@ pub(crate) fn install_target_from_source_paths_for_package(
     let source_context = validate_source_install_context(&config, &paths)?;
     ensure_install_targets_are_new(&paths)?;
     prepare_install_directories(&paths)?;
-    verify_wrapper_source_contract(
-        wrapper_source_path,
-        backend_command,
-        wrapper_timeout_ms,
-    )?;
+    verify_wrapper_source_contract(wrapper_source_path, backend_command, wrapper_timeout_ms)?;
     install_wrapper_from_source(wrapper_source_path, &paths.wrapper_path)?;
     install_rendered_artifact(&source_context.activation, &paths.activation_config_path)?;
     install_rendered_artifact(&source_context.rollback, &paths.rollback_config_path)?;
@@ -1308,11 +1367,9 @@ pub(crate) fn install_target_from_source_paths_for_package(
     if !verification.mismatches.is_empty() {
         bail!(
             "{}",
-            verification
-                .mismatches
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "install target verification failed after package install".to_string())
+            verification.mismatches.first().cloned().unwrap_or_else(|| {
+                "install target verification failed after package install".to_string()
+            })
         );
     }
     ensure_installed_wrapper_matches_source(wrapper_source_path, &paths.wrapper_path)?;

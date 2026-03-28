@@ -490,8 +490,7 @@ pub(crate) fn verify_package_contract_for_deploy(
         );
     }
     let manifest = load_manifest(&paths.manifest_path)?;
-    let wrapper_verification =
-        load_wrapper_verification_summary(&paths.wrapper_verification_path)?;
+    let wrapper_verification = load_wrapper_verification_summary(&paths.wrapper_verification_path)?;
     let install_target_summary = load_install_target_summary(&paths.install_target_summary_path)?;
     Ok(VerifiedActivationPackageContract {
         package_dir: package_dir.to_path_buf(),

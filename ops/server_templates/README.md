@@ -971,6 +971,45 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `tiny_live_package_cutover_refused_by_pre_activation_gate`
    - `tiny_live_package_cutover_refused_by_invalid_package`
 
+## Tiny-Live Package Rehearsal
+
+1. The repo now also supports one first-class package-native rehearsal session
+   over the accepted package deploy/install/cutover contracts:
+   - review the bounded rehearsal plan:
+     `copybot_tiny_live_activation_package_rehearsal --package-dir /tmp/tiny-live.package --install-root /tmp/fake-root --target-service solana-copy-bot.service --backend-command systemctl --plan-package-rehearsal --json`
+   - render an operator-facing rehearsal script without manual command stitching:
+     `copybot_tiny_live_activation_package_rehearsal --package-dir /tmp/tiny-live.package --install-root /tmp/fake-root --target-service solana-copy-bot.service --backend-command systemctl --render-package-rehearsal-script --output /tmp/tiny-live.package-rehearsal.sh --json`
+   - run the deterministic fake-root rehearsal session:
+     `copybot_tiny_live_activation_package_rehearsal --package-dir /tmp/tiny-live.package --install-root /tmp/fake-root --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-session --run-package-rehearsal --json`
+   - verify a persisted rehearsal session later:
+     `copybot_tiny_live_activation_package_rehearsal --package-dir /tmp/tiny-live.package --install-root /tmp/fake-root --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-session --verify-package-rehearsal --json`
+2. `--package-dir` remains the sole immutable handoff input:
+   - the run sequence is fixed:
+     verify package -> install from package -> verify installed target -> plan
+     package cutover -> persist session/status evidence
+   - the rehearsal may read only the package, the explicit fake target
+     contract, and the explicit fake root/session paths
+   - no fresh wrapper render or direct activation/rollback source paths outside
+     the package participate in the flow
+3. This is the explicit residual-risk closure after package-native deploy
+   planning:
+   - instead of scattered fake-root harness checks, operators now get one
+     deterministic rehearsal/session artifact
+   - session verification proves deterministic step paths, target-contract
+     coherence, packaged-wrapper install provenance, and cutover-plan evidence
+   - package-cutover planning inside the rehearsal remains non-authorizing and
+     still reflects current Stage 3 / pre-activation truth
+4. Important rehearsal verdicts:
+   - `tiny_live_package_rehearsal_plan_ready`
+   - `tiny_live_package_rehearsal_script_rendered`
+   - `tiny_live_package_rehearsal_completed`
+   - `tiny_live_package_rehearsal_failed_before_install`
+   - `tiny_live_package_rehearsal_failed_during_install`
+   - `tiny_live_package_rehearsal_failed_during_verify`
+   - `tiny_live_package_rehearsal_failed_during_cutover_plan`
+   - `tiny_live_package_rehearsal_verify_ok`
+   - `tiny_live_package_rehearsal_verify_invalid`
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

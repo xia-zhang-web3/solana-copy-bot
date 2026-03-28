@@ -2093,6 +2093,49 @@ Acceptance update (`2026-03-28`, package-native tiny-live activation deploy/cuto
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_deploy`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_deploy --bin copybot_tiny_live_activation_package --bin copybot_tiny_live_activation_install_target --bin copybot_tiny_live_activation_cutover --bin copybot_tiny_live_activation_live_execute`
 
+Acceptance update (`2026-03-28`, package-native tiny-live activation rehearsal session):
+
+1. Stage 4 now also has one first-class package-native rehearsal/session layer
+   over the accepted package deploy/install/cutover contracts:
+   - `copybot_tiny_live_activation_package_rehearsal --package-dir /tmp/tiny-live.package --install-root /tmp/fake-root --target-service solana-copy-bot.service --backend-command systemctl --plan-package-rehearsal --json`
+   - `copybot_tiny_live_activation_package_rehearsal --package-dir /tmp/tiny-live.package --install-root /tmp/fake-root --target-service solana-copy-bot.service --backend-command systemctl --render-package-rehearsal-script --output /tmp/tiny-live.package-rehearsal.sh --json`
+   - `copybot_tiny_live_activation_package_rehearsal --package-dir /tmp/tiny-live.package --install-root /tmp/fake-root --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-session --run-package-rehearsal --json`
+   - `copybot_tiny_live_activation_package_rehearsal --package-dir /tmp/tiny-live.package --install-root /tmp/fake-root --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-session --verify-package-rehearsal --json`
+2. This rehearsal keeps `--package-dir` as the sole immutable handoff input:
+   - the run sequence is deterministic:
+     verify package -> install from package -> verify installed target -> plan
+     package cutover -> persist rehearsal session/status evidence
+   - the run may read only the package, the explicit fake target contract, and
+     the explicit fake root/session paths
+   - no fresh wrapper render or direct activation/rollback source paths outside
+     the package participate in the rehearsal flow
+3. This closes the remaining fake-root/package-harness residual risk
+   explicitly:
+   - operators now have one bounded session artifact instead of stitching
+     scattered fake-root harness commands by hand
+   - session verification proves deterministic step paths, target-contract
+     coherence, packaged-wrapper install provenance, and cutover-plan evidence
+   - non-green package verification, install mismatch, verify-install-target
+     drift, and cutover-plan gate blocks remain explicit
+4. This batch remains non-authorizing:
+   - package rehearsal success is not permission for production activation
+   - Stage 3 / current pre-activation truth still remain the hard gate for any
+     future live cutover
+   - tests only touch fake roots and fake backends in temp directories
+5. Important package rehearsal verdicts:
+   - `tiny_live_package_rehearsal_plan_ready`
+   - `tiny_live_package_rehearsal_script_rendered`
+   - `tiny_live_package_rehearsal_completed`
+   - `tiny_live_package_rehearsal_failed_before_install`
+   - `tiny_live_package_rehearsal_failed_during_install`
+   - `tiny_live_package_rehearsal_failed_during_verify`
+   - `tiny_live_package_rehearsal_failed_during_cutover_plan`
+   - `tiny_live_package_rehearsal_verify_ok`
+   - `tiny_live_package_rehearsal_verify_invalid`
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_rehearsal`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_rehearsal --bin copybot_tiny_live_activation_package_deploy --bin copybot_tiny_live_activation_install_target --bin copybot_tiny_live_activation_package --bin copybot_tiny_live_activation_cutover`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
