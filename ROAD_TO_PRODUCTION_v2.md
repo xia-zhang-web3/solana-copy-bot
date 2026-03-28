@@ -2274,6 +2274,55 @@ Acceptance update (`2026-03-28`, package-native tiny-live shadow cutover rehears
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_shadow_cutover`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_shadow_cutover --bin copybot_tiny_live_activation_package_capability --bin copybot_tiny_live_activation_package_preflight --bin copybot_tiny_live_activation_package_deploy --bin copybot_tiny_live_activation_install_target --bin copybot_tiny_live_activation_cutover --bin copybot_tiny_live_activation_live_execute`
 
+Acceptance update (`2026-03-28`, package-native tiny-live live-target dry transaction session):
+
+1. Stage 4 now also has one first-class package-native dry cutover transaction
+   session over the actual live target contract:
+   - `copybot_tiny_live_activation_package_live_transaction --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-live-package-transaction --json`
+   - `copybot_tiny_live_activation_package_live_transaction --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --render-live-package-transaction-script --output /tmp/tiny-live.package-live-transaction.sh --json`
+   - `copybot_tiny_live_activation_package_live_transaction --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-live-transaction-session --run-live-package-transaction --json`
+   - `copybot_tiny_live_activation_package_live_transaction --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-live-transaction-session --verify-live-package-transaction --json`
+2. `--package-dir` remains the sole immutable handoff input:
+   - the session sequence is fixed:
+     verify package -> verify installed live target -> verify installed
+     wrapper/package binding -> verify bounded service status -> create real
+     bounded backup proof -> run bounded dry target-config transaction
+     rehearsal -> derive cutover readiness -> persist session/status
+   - the run may read only the immutable package, the explicit live target
+     contract, the explicit session dir, and current host evidence
+   - no fresh wrapper render or direct activation/rollback source paths
+     outside the package participate in the session
+3. This closes the remaining residual risk after shadow cutover rehearsal:
+   - operators now have one deterministic actual-host session proving backup
+     creation, target-config transaction prerequisites, and installed
+     wrapper/backend status binding on the real live target contract
+   - the bounded dry transaction stays non-destructive by using sibling temp
+     artifacts next to the target-config path and verifying cleanup explicitly
+   - readiness surfaced here remains non-authorizing and still reflects the
+     current Stage 3 / pre-activation gate truth
+4. Safety stays hard:
+   - no production execution enablement
+   - no service restart
+   - no change to the effective contents of the actual target config
+   - no real trades
+5. Important live transaction verdicts:
+   - `tiny_live_package_live_transaction_plan_ready`
+   - `tiny_live_package_live_transaction_script_rendered`
+   - `tiny_live_package_live_transaction_completed_ready_for_cutover_when_gate_allows`
+   - `tiny_live_package_live_transaction_completed_install_target_missing`
+   - `tiny_live_package_live_transaction_completed_install_target_drifted`
+   - `tiny_live_package_live_transaction_completed_backup_failed`
+   - `tiny_live_package_live_transaction_completed_dry_transaction_failed`
+   - `tiny_live_package_live_transaction_completed_service_probe_failed`
+   - `tiny_live_package_live_transaction_completed_cutover_blocked_by_gate`
+   - `tiny_live_package_live_transaction_failed_during_package_verify`
+   - `tiny_live_package_live_transaction_failed_during_live_target_verify`
+   - `tiny_live_package_live_transaction_verify_ok`
+   - `tiny_live_package_live_transaction_verify_invalid`
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_live_transaction`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_live_transaction --bin copybot_tiny_live_activation_package_shadow_cutover --bin copybot_tiny_live_activation_package_capability --bin copybot_tiny_live_activation_package_preflight --bin copybot_tiny_live_activation_package_deploy --bin copybot_tiny_live_activation_install_target --bin copybot_tiny_live_activation_live_execute --bin copybot_tiny_live_activation_cutover`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:

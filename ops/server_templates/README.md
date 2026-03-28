@@ -1152,6 +1152,57 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `tiny_live_package_shadow_cutover_verify_invalid`
    - `tiny_live_package_shadow_cutover_refused_unsafe_shadow_target`
 
+## Tiny-Live Package Live Transaction
+
+1. The repo now also supports one first-class package-native dry cutover
+   transaction session against the actual live target contract:
+   - review the bounded live transaction plan:
+     `copybot_tiny_live_activation_package_live_transaction --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-live-package-transaction --json`
+   - render an operator-facing live transaction script:
+     `copybot_tiny_live_activation_package_live_transaction --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --render-live-package-transaction-script --output /tmp/tiny-live.package-live-transaction.sh --json`
+   - run the bounded dry transaction session against the actual installed live
+     target without enabling execution or restarting the service:
+     `copybot_tiny_live_activation_package_live_transaction --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-live-transaction-session --run-live-package-transaction --json`
+   - verify a persisted dry transaction session later:
+     `copybot_tiny_live_activation_package_live_transaction --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-live-transaction-session --verify-live-package-transaction --json`
+2. `--package-dir` remains the sole immutable handoff input:
+   - the run sequence is fixed:
+     verify package -> verify installed live target -> verify installed
+     wrapper/package binding -> verify bounded live service status -> create
+     real bounded backup proof -> run bounded dry target-config transaction
+     rehearsal -> derive cutover readiness -> persist session/status
+   - no fresh wrapper render or direct activation/rollback source paths
+     outside the package participate in the session
+   - session artifacts stay under the explicit `--session-dir`; the effective
+     live config contents remain unchanged
+3. This closes the remaining residual risk after shadow cutover rehearsal:
+   - operators now get one deterministic actual-host session proving backup
+     creation, target-config transaction prerequisites, and installed
+     wrapper/backend status binding on the real target contract
+   - the bounded dry transaction uses only sibling temp artifacts next to the
+     real target config path and verifies cleanup explicitly
+   - readiness surfaced here remains non-authorizing and still reflects the
+     current Stage 3 / pre-activation gate truth
+4. Safety stays hard:
+   - no production execution enablement
+   - no service restart
+   - no change to the effective contents of the actual target config
+   - no real trades
+5. Important live transaction verdicts:
+   - `tiny_live_package_live_transaction_plan_ready`
+   - `tiny_live_package_live_transaction_script_rendered`
+   - `tiny_live_package_live_transaction_completed_ready_for_cutover_when_gate_allows`
+   - `tiny_live_package_live_transaction_completed_install_target_missing`
+   - `tiny_live_package_live_transaction_completed_install_target_drifted`
+   - `tiny_live_package_live_transaction_completed_backup_failed`
+   - `tiny_live_package_live_transaction_completed_dry_transaction_failed`
+   - `tiny_live_package_live_transaction_completed_service_probe_failed`
+   - `tiny_live_package_live_transaction_completed_cutover_blocked_by_gate`
+   - `tiny_live_package_live_transaction_failed_during_package_verify`
+   - `tiny_live_package_live_transaction_failed_during_live_target_verify`
+   - `tiny_live_package_live_transaction_verify_ok`
+   - `tiny_live_package_live_transaction_verify_invalid`
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

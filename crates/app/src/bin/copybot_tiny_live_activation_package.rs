@@ -1537,13 +1537,25 @@ fn shell_single_quote(value: &str) -> String {
 }
 
 fn temp_validation_dir(label: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("{label}_{nanos}"));
-    fs::create_dir_all(&path).unwrap();
-    path
+    for attempt in 0..128u32 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "{label}_{}_{}_{}_{}",
+            std::process::id(),
+            nanos,
+            attempt,
+            std::thread::current().name().unwrap_or("unnamed")
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("failed creating temp validation dir {}: {error}", path.display()),
+        }
+    }
+    panic!("failed to allocate unique temp validation dir for {label}");
 }
 
 #[cfg(unix)]
