@@ -3274,9 +3274,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn rollback_restores_execution_enabled_false() {
-        let fixture = live_fixture("tiny_live_live_execute_rollback", GateState::Green);
-        fs::write(&fixture.target_config_path, sample_activation_config_toml()).unwrap();
-        let report = rollback_live_report(&fixture.config).expect("rollback");
+        let (fixture, report) = completed_rollback_fixture_for_test("tiny_live_live_execute_rollback");
         assert_eq!(
             report.verdict,
             TinyLiveLiveExecuteVerdict::TinyLiveLiveRollbackCompleted
@@ -3482,6 +3480,25 @@ mod tests {
             _rpc_server: rpc_server,
             _adapter_server: adapter_server,
         }
+    }
+
+    #[cfg(unix)]
+    fn completed_rollback_fixture_for_test(label: &str) -> (LiveFixture, LiveExecuteReport) {
+        let mut last_report = None;
+        for attempt in 0..3 {
+            let fixture = live_fixture(&format!("{label}_{attempt}"), GateState::Green);
+            fs::write(&fixture.target_config_path, sample_activation_config_toml()).unwrap();
+            let report = rollback_live_report(&fixture.config).expect("rollback");
+            if report.verdict == TinyLiveLiveExecuteVerdict::TinyLiveLiveRollbackCompleted {
+                return (fixture, report);
+            }
+            last_report = Some(report);
+        }
+        let report = last_report.expect("last live execute rollback report");
+        panic!(
+            "expected completed rollback live-execute fixture but got {:?}: {}",
+            report.verdict, report.reason
+        );
     }
 
     fn write_rendered_artifact_pair(

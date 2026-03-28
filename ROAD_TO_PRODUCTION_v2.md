@@ -2229,6 +2229,51 @@ Acceptance update (`2026-03-28`, package-native tiny-live live-host capability s
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_capability`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_capability --bin copybot_tiny_live_activation_package_preflight --bin copybot_tiny_live_activation_package_deploy --bin copybot_tiny_live_activation_install_target --bin copybot_tiny_live_activation_cutover --bin copybot_tiny_live_activation_live_execute`
 
+Acceptance update (`2026-03-28`, package-native tiny-live shadow cutover rehearsal):
+
+1. Stage 4 now also has one first-class package-native shadow cutover
+   rehearsal over a cloned host-side target contract:
+   - `copybot_tiny_live_activation_package_shadow_cutover --package-dir /tmp/tiny-live.package --shadow-install-root /tmp/copybot-shadow-root --live-install-root / --shadow-target-service copybot-shadow.service --backend-command /tmp/copybot-shadow-backend.sh --plan-package-shadow-cutover --json`
+   - `copybot_tiny_live_activation_package_shadow_cutover --package-dir /tmp/tiny-live.package --shadow-install-root /tmp/copybot-shadow-root --live-install-root / --shadow-target-service copybot-shadow.service --backend-command /tmp/copybot-shadow-backend.sh --render-package-shadow-cutover-script --output /tmp/tiny-live.package-shadow-cutover.sh --json`
+   - `copybot_tiny_live_activation_package_shadow_cutover --package-dir /tmp/tiny-live.package --shadow-install-root /tmp/copybot-shadow-root --live-install-root / --shadow-target-service copybot-shadow.service --backend-command /tmp/copybot-shadow-backend.sh --session-dir /tmp/tiny-live.package-shadow-cutover-session --run-package-shadow-cutover --json`
+   - `copybot_tiny_live_activation_package_shadow_cutover --package-dir /tmp/tiny-live.package --shadow-install-root /tmp/copybot-shadow-root --live-install-root / --shadow-target-service copybot-shadow.service --backend-command /tmp/copybot-shadow-backend.sh --session-dir /tmp/tiny-live.package-shadow-cutover-session --verify-package-shadow-cutover --json`
+2. `--package-dir` remains the sole immutable handoff input:
+   - the shadow session sequence is fixed:
+     verify package -> install from package -> verify installed shadow target
+     -> backup -> apply -> watch -> rollback if needed -> persist session/status
+   - the run may read only the package, the explicit shadow target contract,
+     the explicit live root for separation checks, and the explicit session dir
+   - no fresh wrapper render or direct activation/rollback source paths
+     outside the package participate in the rehearsal
+3. This closes the remaining residual risk after live-host capability:
+   - operators now have one deterministic cutover-style execution rehearsal on
+     a cloned host-side layout instead of only read-only/capability proof
+   - session verification proves packaged-wrapper install provenance plus
+     bounded backup/apply/watch/rollback evidence on the shadow target
+   - rollback evidence explicitly proves `execution.enabled=false` on the
+     shadow target when rollback occurs
+4. Safety stays hard:
+   - the command refuses a shadow root that equals or overlaps the live root
+   - it refuses `solana-copy-bot.service` and other prod-like service aliases
+   - it does not write under the real prod install root, restart the real prod
+     service, enable production execution, or send real trades
+   - shadow rehearsal success remains non-authorizing and does not weaken the
+     current Stage 3 / pre-activation gate
+5. Important shadow cutover verdicts:
+   - `tiny_live_package_shadow_cutover_plan_ready`
+   - `tiny_live_package_shadow_cutover_script_rendered`
+   - `tiny_live_package_shadow_cutover_completed_keep_running`
+   - `tiny_live_package_shadow_cutover_completed_with_rollback`
+   - `tiny_live_package_shadow_cutover_failed_before_install`
+   - `tiny_live_package_shadow_cutover_failed_before_apply`
+   - `tiny_live_package_shadow_cutover_failed_during_watch`
+   - `tiny_live_package_shadow_cutover_verify_ok`
+   - `tiny_live_package_shadow_cutover_verify_invalid`
+   - `tiny_live_package_shadow_cutover_refused_unsafe_shadow_target`
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_shadow_cutover`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_shadow_cutover --bin copybot_tiny_live_activation_package_capability --bin copybot_tiny_live_activation_package_preflight --bin copybot_tiny_live_activation_package_deploy --bin copybot_tiny_live_activation_install_target --bin copybot_tiny_live_activation_cutover --bin copybot_tiny_live_activation_live_execute`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:

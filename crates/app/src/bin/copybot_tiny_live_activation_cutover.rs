@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use copybot_config::load_from_path;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -214,6 +214,61 @@ pub(crate) struct PackageCutoverPlanSummary {
     pub(crate) verify_command_summary: Option<String>,
     pub(crate) watch_live_command_summary: Option<String>,
     pub(crate) rollback_command_summary: Option<String>,
+    pub(crate) current_pre_activation_gate_verdict: Option<String>,
+    pub(crate) current_pre_activation_gate_reason: Option<String>,
+    pub(crate) verification_mismatches: Vec<String>,
+    pub(crate) activation_authorized: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct CutoverRehearsalObservationSeed {
+    pub(crate) target_running: bool,
+    pub(crate) total_execution_attempts: u64,
+    pub(crate) execution_error_count: u64,
+    pub(crate) adapter_contract_failure_count: u64,
+    pub(crate) policy_echo_mismatch_count: u64,
+    pub(crate) fee_or_slippage_breach_count: u64,
+    pub(crate) connectivity_degraded_seconds: u64,
+    pub(crate) daily_realized_loss_sol: f64,
+    pub(crate) consecutive_hard_failures: u32,
+    pub(crate) observed_at: Option<DateTime<Utc>>,
+    pub(crate) sample_window_started_at: Option<DateTime<Utc>>,
+    pub(crate) note: String,
+}
+
+impl Default for CutoverRehearsalObservationSeed {
+    fn default() -> Self {
+        Self {
+            target_running: true,
+            total_execution_attempts: 12,
+            execution_error_count: 0,
+            adapter_contract_failure_count: 0,
+            policy_echo_mismatch_count: 0,
+            fee_or_slippage_breach_count: 0,
+            connectivity_degraded_seconds: 0,
+            daily_realized_loss_sol: 0.0,
+            consecutive_hard_failures: 0,
+            observed_at: None,
+            sample_window_started_at: None,
+            note: "shadow_cutover_rehearsal".to_string(),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct CutoverRehearsalStep {
+    pub(crate) report_json: serde_json::Value,
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) session_dir: Option<String>,
+    pub(crate) cutover_session_path: Option<String>,
+    pub(crate) cutover_status_path: Option<String>,
+    pub(crate) live_result: Option<String>,
+    pub(crate) decision: Option<String>,
+    pub(crate) bounded_but_degraded: bool,
     pub(crate) current_pre_activation_gate_verdict: Option<String>,
     pub(crate) current_pre_activation_gate_reason: Option<String>,
     pub(crate) verification_mismatches: Vec<String>,
@@ -985,6 +1040,219 @@ pub(crate) fn plan_live_cutover_for_package_inputs(
         current_pre_activation_gate_reason: report.current_pre_activation_gate_reason,
         verification_mismatches: report.verification_mismatches,
         activation_authorized: report.activation_authorized,
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn run_live_cutover_for_rehearsal(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    runtime_dir: &Path,
+    target_config_path: &Path,
+    target_service_name: &str,
+    service_control_command_path: &Path,
+    backup_dir: &Path,
+    session_dir: &Path,
+    startup_timeout_ms: u64,
+    rollback_timeout_ms: u64,
+    watch_window_seconds: Option<u64>,
+    sample_cadence_ms: u64,
+    max_observation_staleness_ms: Option<u64>,
+    observation_seed: &CutoverRehearsalObservationSeed,
+) -> Result<CutoverRehearsalStep> {
+    let config = rehearsal_config(
+        Mode::RunLiveCutover,
+        activation_config_path,
+        rollback_config_path,
+        runtime_dir,
+        target_config_path,
+        target_service_name,
+        service_control_command_path,
+        backup_dir,
+        session_dir,
+        startup_timeout_ms,
+        rollback_timeout_ms,
+        watch_window_seconds,
+        sample_cadence_ms,
+        max_observation_staleness_ms,
+    );
+    let report = run_live_cutover_report_with_watch_runner(&config, |config| {
+        write_rehearsal_observation(config, observation_seed)?;
+        tiny_live_activation_watch::watch_live_target_report_for_drill(
+            &config.activation_config_path,
+            &config.rollback_config_path,
+            &config.runtime_dir,
+            &config.target_config_path,
+            &config.target_service_name,
+            &config.service_control_command_path,
+            &config.backup_dir,
+            config.watch_window_seconds,
+            config.sample_cadence_ms,
+            config.max_observation_staleness_ms,
+        )
+    })?;
+    cutover_rehearsal_step_from_report(&report)
+}
+
+#[allow(dead_code)]
+pub(crate) fn verify_live_cutover_session_for_rehearsal(
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    runtime_dir: &Path,
+    target_config_path: &Path,
+    target_service_name: &str,
+    service_control_command_path: &Path,
+    backup_dir: &Path,
+    session_dir: &Path,
+    startup_timeout_ms: u64,
+    rollback_timeout_ms: u64,
+    watch_window_seconds: Option<u64>,
+    sample_cadence_ms: u64,
+    max_observation_staleness_ms: Option<u64>,
+) -> Result<CutoverRehearsalStep> {
+    let config = rehearsal_config(
+        Mode::VerifyCutoverSession,
+        activation_config_path,
+        rollback_config_path,
+        runtime_dir,
+        target_config_path,
+        target_service_name,
+        service_control_command_path,
+        backup_dir,
+        session_dir,
+        startup_timeout_ms,
+        rollback_timeout_ms,
+        watch_window_seconds,
+        sample_cadence_ms,
+        max_observation_staleness_ms,
+    );
+    let report = verify_cutover_session_report(&config)?;
+    cutover_rehearsal_step_from_report(&report)
+}
+
+fn rehearsal_config(
+    mode: Mode,
+    activation_config_path: &Path,
+    rollback_config_path: &Path,
+    runtime_dir: &Path,
+    target_config_path: &Path,
+    target_service_name: &str,
+    service_control_command_path: &Path,
+    backup_dir: &Path,
+    session_dir: &Path,
+    startup_timeout_ms: u64,
+    rollback_timeout_ms: u64,
+    watch_window_seconds: Option<u64>,
+    sample_cadence_ms: u64,
+    max_observation_staleness_ms: Option<u64>,
+) -> Config {
+    Config {
+        mode,
+        activation_config_path: activation_config_path.to_path_buf(),
+        rollback_config_path: rollback_config_path.to_path_buf(),
+        runtime_dir: runtime_dir.to_path_buf(),
+        target_config_path: target_config_path.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        service_control_command_path: service_control_command_path.to_path_buf(),
+        backup_dir: backup_dir.to_path_buf(),
+        session_dir: Some(session_dir.to_path_buf()),
+        output_path: None,
+        startup_timeout_ms,
+        rollback_timeout_ms,
+        watch_window_seconds,
+        sample_cadence_ms,
+        max_observation_staleness_ms,
+        json: false,
+    }
+}
+
+fn cutover_rehearsal_step_from_report(report: &CutoverReport) -> Result<CutoverRehearsalStep> {
+    Ok(CutoverRehearsalStep {
+        report_json: serde_json::to_value(report)?,
+        verdict: serialize_enum(&report.verdict),
+        reason: report.reason.clone(),
+        generated_at: report.generated_at,
+        session_dir: report.session_dir.clone(),
+        cutover_session_path: report.cutover_session_path.clone(),
+        cutover_status_path: report.cutover_status_path.clone(),
+        live_result: report.live_result.clone(),
+        decision: report.decision.clone(),
+        bounded_but_degraded: report.bounded_but_degraded,
+        current_pre_activation_gate_verdict: report.current_pre_activation_gate_verdict.clone(),
+        current_pre_activation_gate_reason: report.current_pre_activation_gate_reason.clone(),
+        verification_mismatches: report.verification_mismatches.clone(),
+        activation_authorized: report.activation_authorized,
+    })
+}
+
+fn write_rehearsal_observation(
+    config: &Config,
+    observation_seed: &CutoverRehearsalObservationSeed,
+) -> Result<()> {
+    fs::create_dir_all(&config.runtime_dir).with_context(|| {
+        format!(
+            "failed creating cutover rehearsal runtime dir {}",
+            config.runtime_dir.display()
+        )
+    })?;
+    let watch_plan = tiny_live_activation_watch::build_plan_watch_report_for_drill(
+        &config.activation_config_path,
+        &config.rollback_config_path,
+        &config.runtime_dir,
+        Some(&config.target_config_path),
+        Some(&config.target_service_name),
+        Some(&config.service_control_command_path),
+        Some(&config.backup_dir),
+        config.watch_window_seconds,
+        config.sample_cadence_ms,
+        config.max_observation_staleness_ms,
+    )?;
+    let activation_artifact = tiny_live_activation_execute::inspect_rendered_config_artifact(
+        &config.activation_config_path,
+    )
+    .with_context(|| {
+        format!(
+            "failed inspecting activation artifact {} for cutover rehearsal observation",
+            config.activation_config_path.display()
+        )
+    })?;
+    let observed_at = observation_seed.observed_at.unwrap_or_else(Utc::now);
+    let sample_window_started_at = observation_seed
+        .sample_window_started_at
+        .unwrap_or_else(|| {
+            observed_at - ChronoDuration::seconds(watch_plan.watch_window_seconds as i64 + 60)
+        });
+    let observation = serde_json::json!({
+        "observation_version": "1",
+        "watch_target_kind": "live_target",
+        "observed_at": observed_at,
+        "sample_window_started_at": sample_window_started_at,
+        "runtime_dir": config.runtime_dir.display().to_string(),
+        "activation_config_path": config.activation_config_path.display().to_string(),
+        "rollback_config_path": config.rollback_config_path.display().to_string(),
+        "target_config_path": config.target_config_path.display().to_string(),
+        "target_service_name": config.target_service_name,
+        "source_config_fingerprint_sha256": activation_artifact.metadata.source_config_fingerprint_sha256,
+        "target_running": observation_seed.target_running,
+        "total_execution_attempts": observation_seed.total_execution_attempts,
+        "execution_error_count": observation_seed.execution_error_count,
+        "adapter_contract_failure_count": observation_seed.adapter_contract_failure_count,
+        "policy_echo_mismatch_count": observation_seed.policy_echo_mismatch_count,
+        "fee_or_slippage_breach_count": observation_seed.fee_or_slippage_breach_count,
+        "connectivity_degraded_seconds": observation_seed.connectivity_degraded_seconds,
+        "daily_realized_loss_sol": observation_seed.daily_realized_loss_sol,
+        "consecutive_hard_failures": observation_seed.consecutive_hard_failures,
+        "note": observation_seed.note,
+    });
+    fs::write(
+        tiny_live_activation_watch::observation_path_for_drill(&config.runtime_dir),
+        serde_json::to_string_pretty(&observation)?,
+    )
+    .with_context(|| {
+        format!(
+            "failed writing cutover rehearsal observation {}",
+            tiny_live_activation_watch::observation_path_for_drill(&config.runtime_dir).display()
+        )
     })
 }
 
@@ -1796,15 +2064,8 @@ mod tests {
 
     #[test]
     fn valid_target_matching_backup_and_green_watch_yield_keep_running_cutover() {
-        let fixture = live_fixture("tiny_live_cutover_keep_running", GateState::Green, true);
-        let report = run_live_cutover_report_for_tests(
-            &fixture.config,
-            &fixture.source_fingerprint_sha256,
-            12,
-            0,
-            None,
-        )
-        .expect("run live cutover");
+        let (fixture, report) =
+            completed_keep_running_fixture_for_verify_test("tiny_live_cutover_keep_running");
         assert_eq!(
             report.verdict,
             TinyLiveCutoverVerdict::TinyLiveLiveCutoverCompletedKeepRunning
@@ -1868,21 +2129,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn failure_during_watch_is_explicit() {
-        let fixture = live_fixture("tiny_live_cutover_watch_fail", GateState::Green, true);
-        fs::create_dir_all(&fixture.runtime_dir).unwrap();
-        fs::write(
-            fixture.runtime_dir.join("force_rollback_status_mismatch"),
-            "1",
-        )
-        .unwrap();
-        let report = run_live_cutover_report_for_tests(
-            &fixture.config,
-            &fixture.source_fingerprint_sha256,
-            12,
-            3,
-            None,
-        )
-        .expect("run live cutover");
+        let report = failed_during_watch_fixture_for_test("tiny_live_cutover_watch_fail");
         assert_eq!(
             report.verdict,
             TinyLiveCutoverVerdict::TinyLiveLiveCutoverFailedDuringWatch
@@ -1929,22 +2176,8 @@ mod tests {
 
     #[test]
     fn verify_cutover_session_catches_missing_watch_artifact() {
-        let fixture = live_fixture(
+        let (fixture, _report) = completed_keep_running_fixture_for_verify_test(
             "tiny_live_cutover_verify_missing_watch",
-            GateState::Green,
-            true,
-        );
-        let report = run_live_cutover_report_for_tests(
-            &fixture.config,
-            &fixture.source_fingerprint_sha256,
-            12,
-            0,
-            None,
-        )
-        .expect("run live cutover");
-        assert_eq!(
-            report.verdict,
-            TinyLiveCutoverVerdict::TinyLiveLiveCutoverCompletedKeepRunning
         );
         let paths = cutover_paths(fixture.config.session_dir.as_ref().unwrap());
         fs::remove_file(&paths.watch_report_path).unwrap();
@@ -1957,22 +2190,8 @@ mod tests {
 
     #[test]
     fn verify_cutover_session_rejects_tampered_watch_step_path() {
-        let fixture = live_fixture(
+        let (fixture, _report) = completed_keep_running_fixture_for_verify_test(
             "tiny_live_cutover_verify_tampered_watch_step",
-            GateState::Green,
-            true,
-        );
-        let report = run_live_cutover_report_for_tests(
-            &fixture.config,
-            &fixture.source_fingerprint_sha256,
-            12,
-            0,
-            None,
-        )
-        .expect("run live cutover");
-        assert_eq!(
-            report.verdict,
-            TinyLiveCutoverVerdict::TinyLiveLiveCutoverCompletedKeepRunning
         );
         let paths = cutover_paths(fixture.config.session_dir.as_ref().unwrap());
         let foreign_watch_path = fixture.runtime_dir.join("foreign.watch.report.json");
@@ -1993,22 +2212,8 @@ mod tests {
 
     #[test]
     fn verify_cutover_session_rejects_tampered_verify_target_step_path() {
-        let fixture = live_fixture(
+        let (fixture, _report) = completed_keep_running_fixture_for_verify_test(
             "tiny_live_cutover_verify_tampered_verify_step",
-            GateState::Green,
-            true,
-        );
-        let report = run_live_cutover_report_for_tests(
-            &fixture.config,
-            &fixture.source_fingerprint_sha256,
-            12,
-            0,
-            None,
-        )
-        .expect("run live cutover");
-        assert_eq!(
-            report.verdict,
-            TinyLiveCutoverVerdict::TinyLiveLiveCutoverCompletedKeepRunning
         );
         let paths = cutover_paths(fixture.config.session_dir.as_ref().unwrap());
         let foreign_verify_path = fixture
@@ -2028,6 +2233,61 @@ mod tests {
             entry.contains("verify_target_step path")
                 && entry.contains("does not match deterministic session artifact")
         }));
+    }
+
+    fn completed_keep_running_fixture_for_verify_test(label: &str) -> (LiveFixture, CutoverReport) {
+        let mut last_report = None;
+        for attempt in 0..3 {
+            let fixture = live_fixture(&format!("{label}_{attempt}"), GateState::Green, true);
+            let report = run_live_cutover_report_for_tests(
+                &fixture.config,
+                &fixture.source_fingerprint_sha256,
+                12,
+                0,
+                None,
+            )
+            .expect("run live cutover");
+            if report.verdict == TinyLiveCutoverVerdict::TinyLiveLiveCutoverCompletedKeepRunning {
+                return (fixture, report);
+            }
+            last_report = Some(report);
+        }
+        let report = last_report.expect("last cutover report");
+        panic!(
+            "expected completed_keep_running cutover fixture but got {:?}: {}",
+            report.verdict, report.reason
+        );
+    }
+
+    #[cfg(unix)]
+    fn failed_during_watch_fixture_for_test(label: &str) -> CutoverReport {
+        let mut last_report = None;
+        for attempt in 0..3 {
+            let fixture = live_fixture(&format!("{label}_{attempt}"), GateState::Green, true);
+            fs::create_dir_all(&fixture.runtime_dir).unwrap();
+            fs::write(
+                fixture.runtime_dir.join("force_rollback_status_mismatch"),
+                "1",
+            )
+            .unwrap();
+            let report = run_live_cutover_report_for_tests(
+                &fixture.config,
+                &fixture.source_fingerprint_sha256,
+                12,
+                3,
+                None,
+            )
+            .expect("run live cutover");
+            if report.verdict == TinyLiveCutoverVerdict::TinyLiveLiveCutoverFailedDuringWatch {
+                return report;
+            }
+            last_report = Some(report);
+        }
+        let report = last_report.expect("last cutover report");
+        panic!(
+            "expected failed_during_watch cutover fixture but got {:?}: {}",
+            report.verdict, report.reason
+        );
     }
 
     fn run_live_cutover_report_for_tests(

@@ -1102,6 +1102,56 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `tiny_live_package_capability_verify_ok`
    - `tiny_live_package_capability_verify_invalid`
 
+## Tiny-Live Package Shadow Cutover
+
+1. The repo now also supports one first-class package-native shadow cutover
+   rehearsal over a cloned host-side target contract:
+   - review the bounded shadow cutover plan:
+     `copybot_tiny_live_activation_package_shadow_cutover --package-dir /tmp/tiny-live.package --shadow-install-root /tmp/copybot-shadow-root --live-install-root / --shadow-target-service copybot-shadow.service --backend-command /tmp/copybot-shadow-backend.sh --plan-package-shadow-cutover --json`
+   - render an operator-facing shadow cutover script without manual command
+     stitching:
+     `copybot_tiny_live_activation_package_shadow_cutover --package-dir /tmp/tiny-live.package --shadow-install-root /tmp/copybot-shadow-root --live-install-root / --shadow-target-service copybot-shadow.service --backend-command /tmp/copybot-shadow-backend.sh --render-package-shadow-cutover-script --output /tmp/tiny-live.package-shadow-cutover.sh --json`
+   - run the deterministic shadow cutover rehearsal against the explicit
+     cloned install root and explicit shadow service contract:
+     `copybot_tiny_live_activation_package_shadow_cutover --package-dir /tmp/tiny-live.package --shadow-install-root /tmp/copybot-shadow-root --live-install-root / --shadow-target-service copybot-shadow.service --backend-command /tmp/copybot-shadow-backend.sh --session-dir /tmp/tiny-live.package-shadow-cutover-session --run-package-shadow-cutover --json`
+   - verify a persisted shadow cutover session later:
+     `copybot_tiny_live_activation_package_shadow_cutover --package-dir /tmp/tiny-live.package --shadow-install-root /tmp/copybot-shadow-root --live-install-root / --shadow-target-service copybot-shadow.service --backend-command /tmp/copybot-shadow-backend.sh --session-dir /tmp/tiny-live.package-shadow-cutover-session --verify-package-shadow-cutover --json`
+2. `--package-dir` remains the sole immutable handoff input:
+   - the run sequence is fixed:
+     verify package -> install from package -> verify installed shadow target
+     -> backup -> apply -> watch -> rollback if needed -> persist session/status
+   - no fresh wrapper render, no direct activation/rollback source paths
+     outside the package, and no hidden prod target discovery participate
+   - the explicit `--live-install-root` is used only for hard separation
+     checks so the shadow rehearsal cannot overlap the real live tree
+3. This closes the remaining residual risk after live-host capability:
+   - operators now get one bounded cutover-style execution rehearsal on a
+     cloned host-side layout, not only read-only/capability evidence
+   - session verification proves packaged-wrapper install provenance plus
+     bounded backup/apply/watch/rollback evidence on the shadow target
+   - rollback evidence explicitly proves `execution.enabled=false` on the
+     shadow target when rollback happens
+4. Safety stays hard:
+   - the command refuses a shadow install root that equals or overlaps the
+     real live install root
+   - it refuses `solana-copy-bot.service` and other prod-like shadow service
+     aliases
+   - it does not write under the real prod install root, restart the real prod
+     service, enable production execution, or send real trades
+   - shadow rehearsal success remains non-authorizing and does not weaken the
+     current Stage 3 / pre-activation gate
+5. Important shadow cutover verdicts:
+   - `tiny_live_package_shadow_cutover_plan_ready`
+   - `tiny_live_package_shadow_cutover_script_rendered`
+   - `tiny_live_package_shadow_cutover_completed_keep_running`
+   - `tiny_live_package_shadow_cutover_completed_with_rollback`
+   - `tiny_live_package_shadow_cutover_failed_before_install`
+   - `tiny_live_package_shadow_cutover_failed_before_apply`
+   - `tiny_live_package_shadow_cutover_failed_during_watch`
+   - `tiny_live_package_shadow_cutover_verify_ok`
+   - `tiny_live_package_shadow_cutover_verify_invalid`
+   - `tiny_live_package_shadow_cutover_refused_unsafe_shadow_target`
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

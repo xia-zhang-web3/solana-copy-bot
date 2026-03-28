@@ -107,6 +107,18 @@ struct InstallTargetPaths {
     install_metadata_path: PathBuf,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) struct InstallTargetManagedSurfacePaths {
+    pub(crate) wrapper_path: PathBuf,
+    pub(crate) wrapper_parent: PathBuf,
+    pub(crate) target_config_path: PathBuf,
+    pub(crate) target_config_parent: PathBuf,
+    pub(crate) runtime_dir: PathBuf,
+    pub(crate) backup_dir: PathBuf,
+    pub(crate) session_dir: PathBuf,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct InstallTargetMetadata {
     metadata_version: String,
@@ -1578,6 +1590,40 @@ fn derive_paths(install_root: &Path) -> InstallTargetPaths {
         session_dir: install_root.join(SESSION_DIR_RELATIVE_PATH),
         install_metadata_path: install_root.join(INSTALL_METADATA_RELATIVE_PATH),
     }
+}
+
+#[allow(dead_code)]
+pub(crate) fn derive_install_target_managed_surface_paths(
+    install_root: &Path,
+) -> Result<InstallTargetManagedSurfacePaths> {
+    let paths = derive_paths(install_root);
+    Ok(InstallTargetManagedSurfacePaths {
+        wrapper_parent: paths
+            .wrapper_path
+            .parent()
+            .ok_or_else(|| {
+                anyhow!(
+                    "derived wrapper path {} has no parent",
+                    paths.wrapper_path.display()
+                )
+            })?
+            .to_path_buf(),
+        target_config_parent: paths
+            .target_config_path
+            .parent()
+            .ok_or_else(|| {
+                anyhow!(
+                    "derived target config path {} has no parent",
+                    paths.target_config_path.display()
+                )
+            })?
+            .to_path_buf(),
+        wrapper_path: paths.wrapper_path,
+        target_config_path: paths.target_config_path,
+        runtime_dir: paths.runtime_dir,
+        backup_dir: paths.backup_dir,
+        session_dir: paths.session_dir,
+    })
 }
 
 fn mode_name(mode: Mode) -> &'static str {
