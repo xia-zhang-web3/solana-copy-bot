@@ -1010,6 +1010,51 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `tiny_live_package_rehearsal_verify_ok`
    - `tiny_live_package_rehearsal_verify_invalid`
 
+## Tiny-Live Package Preflight
+
+1. The repo now also supports one first-class read-only live-host preflight
+   session over the accepted package / install-target / cutover contracts:
+   - review the bounded preflight plan:
+     `copybot_tiny_live_activation_package_preflight --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-live-package-preflight --json`
+   - render an operator-facing preflight script without manual command
+     stitching:
+     `copybot_tiny_live_activation_package_preflight --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --render-live-package-preflight-script --output /tmp/tiny-live.package-preflight.sh --json`
+   - run the deterministic read-only preflight session against the explicit
+     live host contract:
+     `copybot_tiny_live_activation_package_preflight --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-preflight-session --run-live-package-preflight --json`
+   - verify a persisted preflight session later:
+     `copybot_tiny_live_activation_package_preflight --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-preflight-session --verify-live-package-preflight --json`
+2. `--package-dir` remains the sole immutable handoff input:
+   - the run sequence is fixed:
+     verify package -> verify installed target -> verify installed
+     wrapper/package binding -> verify bounded service status -> derive package
+     cutover readiness -> persist session/status evidence
+   - the preflight may read only the package, the explicit live target
+     contract, the explicit session dir, and current live host evidence
+   - no fresh wrapper render, no direct activation/rollback source paths
+     outside the package, no service restart, and no config mutation
+3. This is the explicit residual-risk reduction after fake-root package
+   rehearsal:
+   - operators now get one deterministic read-only session over the actual host
+     contract instead of only scattered fake-root/fake-backend coverage
+   - session verification proves deterministic step paths, target-contract
+     coherence, installed-wrapper/package binding, fresh bounded service-status
+     evidence, and cutover-readiness evidence
+   - cutover readiness surfaced inside the preflight remains non-authorizing
+     and still reflects current Stage 3 / pre-activation truth
+4. Important preflight verdicts:
+   - `tiny_live_package_preflight_plan_ready`
+   - `tiny_live_package_preflight_script_rendered`
+   - `tiny_live_package_preflight_completed_ready_for_cutover_planning`
+   - `tiny_live_package_preflight_completed_install_target_missing`
+   - `tiny_live_package_preflight_completed_install_target_drifted`
+   - `tiny_live_package_preflight_completed_cutover_blocked_by_gate`
+   - `tiny_live_package_preflight_failed_during_package_verify`
+   - `tiny_live_package_preflight_failed_during_live_target_verify`
+   - `tiny_live_package_preflight_failed_during_service_status_verify`
+   - `tiny_live_package_preflight_verify_ok`
+   - `tiny_live_package_preflight_verify_invalid`
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

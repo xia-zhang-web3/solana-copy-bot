@@ -2136,6 +2136,52 @@ Acceptance update (`2026-03-28`, package-native tiny-live activation rehearsal s
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_rehearsal`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_rehearsal --bin copybot_tiny_live_activation_package_deploy --bin copybot_tiny_live_activation_install_target --bin copybot_tiny_live_activation_package --bin copybot_tiny_live_activation_cutover`
 
+Acceptance update (`2026-03-28`, package-native tiny-live live-host preflight session):
+
+1. Stage 4 now also has one first-class read-only live-host preflight/session
+   layer over the accepted package / install-target / cutover contracts:
+   - `copybot_tiny_live_activation_package_preflight --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-live-package-preflight --json`
+   - `copybot_tiny_live_activation_package_preflight --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --render-live-package-preflight-script --output /tmp/tiny-live.package-preflight.sh --json`
+   - `copybot_tiny_live_activation_package_preflight --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-preflight-session --run-live-package-preflight --json`
+   - `copybot_tiny_live_activation_package_preflight --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-preflight-session --verify-live-package-preflight --json`
+2. `--package-dir` remains the sole immutable handoff input:
+   - the run sequence is fixed:
+     verify package -> verify installed target -> verify installed
+     wrapper/package binding -> verify bounded service status -> derive package
+     cutover readiness -> persist session/status evidence
+   - the preflight may read only the package, the explicit live target
+     contract, the explicit session dir, and current live host evidence
+   - no fresh wrapper render, no direct activation/rollback source paths
+     outside the package, no service restart, and no config mutation
+3. This directly reduces the remaining fake-root/fake-backend residual risk:
+   - operators now get one deterministic read-only session over the actual host
+     contract instead of only fake-root rehearsal coverage
+   - session verification proves deterministic step paths, target-contract
+     coherence, installed-wrapper/package binding, fresh bounded service-status
+     evidence, and cutover-readiness evidence
+   - cutover readiness inside preflight remains non-authorizing and still
+     reflects current Stage 3 / pre-activation truth
+4. Important preflight verdicts:
+   - `tiny_live_package_preflight_plan_ready`
+   - `tiny_live_package_preflight_script_rendered`
+   - `tiny_live_package_preflight_completed_ready_for_cutover_planning`
+   - `tiny_live_package_preflight_completed_install_target_missing`
+   - `tiny_live_package_preflight_completed_install_target_drifted`
+   - `tiny_live_package_preflight_completed_cutover_blocked_by_gate`
+   - `tiny_live_package_preflight_failed_during_package_verify`
+   - `tiny_live_package_preflight_failed_during_live_target_verify`
+   - `tiny_live_package_preflight_failed_during_service_status_verify`
+   - `tiny_live_package_preflight_verify_ok`
+   - `tiny_live_package_preflight_verify_invalid`
+5. Safety stays hard:
+   - this layer is read-only against the explicit live install root
+   - it does not install the wrapper, mutate config, restart the service, or
+     enable production execution
+   - preflight success is not permission for production cutover or activation
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_preflight`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_preflight --bin copybot_tiny_live_activation_package_rehearsal --bin copybot_tiny_live_activation_package_deploy --bin copybot_tiny_live_activation_install_target --bin copybot_tiny_live_activation_cutover --bin copybot_tiny_live_activation_live_execute`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
