@@ -1,5 +1,26 @@
 # solana-copy-bot
 
+## Emergency Status (`2026-03-29`)
+
+This project must currently be treated as being in an emergency, non-working
+state.
+
+The code written since the start of the project does not currently provide a
+dependable, production-usable system and must not be read as proof that the
+runtime, `recent_raw` bounded window, Stage 3 accumulation, or launch/cutover
+tooling are operational.
+
+Current hard truth:
+
+- the bounded `recent_raw` snapshot/promotion path is failing on the live host
+- the five-day window is not available in a usable promoted surface
+- Stage 3 remains non-green
+- the project therefore counts as operationally broken, not merely
+  "still accumulating"
+
+Until the root cause is found and fixed, treat the repository as incident work
+for a non-functional system, not as a working product.
+
 Phase 0 skeleton for Solana copy bot in Rust:
 - workspace layout,
 - configuration loader,

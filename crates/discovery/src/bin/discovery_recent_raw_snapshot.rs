@@ -8,9 +8,8 @@ use copybot_discovery::runtime_restore_ops::{
     JOURNAL_SNAPSHOT_ARCHIVE_SUFFIX,
 };
 use copybot_storage::{
-    DiscoveryRuntimeCursor, RecentRawJournalStateRow, SqliteSnapshotDeferredReason,
-    SqliteSnapshotOutcome, SqliteSnapshotPolicy, SqliteSnapshotSourceMetrics,
-    SqliteSnapshotSummary, SqliteStore,
+    DiscoveryRuntimeCursor, RecentRawJournalStateRow, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
+    SqliteSnapshotSourceMetrics, SqliteSnapshotSummary, SqliteStore,
 };
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -300,6 +299,7 @@ struct StagedSnapshotProgress {
     row_count_after_attempt: Option<usize>,
     covered_through_cursor_before_attempt: Option<DiscoveryRuntimeCursor>,
     covered_through_cursor_after_attempt: Option<DiscoveryRuntimeCursor>,
+    terminal_phase: Option<StagedSnapshotTerminalPhase>,
 }
 
 #[derive(Debug, Clone)]
@@ -335,6 +335,21 @@ enum SnapshotWriteError {
     },
 }
 
+#[derive(Debug, Clone, Copy)]
+enum StagedSnapshotTerminalPhase {
+    SourceRead,
+    StagedWrite,
+}
+
+impl StagedSnapshotTerminalPhase {
+    fn budget_reason(self) -> &'static str {
+        match self {
+            Self::SourceRead => "source_read_attempt_duration_budget_exhausted",
+            Self::StagedWrite => "staged_write_attempt_duration_budget_exhausted",
+        }
+    }
+}
+
 fn summary_reason(summary: &SqliteSnapshotSummary) -> String {
     summary
         .retry_exhausted_reason
@@ -347,6 +362,14 @@ fn deferred_summary_reason(summary: &SqliteSnapshotSummary) -> String {
         .deferred_reason
         .map(|reason| reason.as_str().to_string())
         .unwrap_or_else(|| "deferred".to_string())
+}
+
+fn staged_attempt_budget_reason(progress: &StagedSnapshotProgress) -> String {
+    progress
+        .terminal_phase
+        .map(StagedSnapshotTerminalPhase::budget_reason)
+        .unwrap_or("attempt_duration_budget_exhausted")
+        .to_string()
 }
 
 fn snapshot_terminal_reason(
@@ -1036,9 +1059,7 @@ fn write_fresh_scheduled_snapshot(
     ) {
         StagedSnapshotAttemptResult::Completed(attempt) => attempt,
         StagedSnapshotAttemptResult::Deferred(attempt) => {
-            let reason = SqliteSnapshotDeferredReason::AttemptDurationBudgetExceeded
-                .as_str()
-                .to_string();
+            let reason = staged_attempt_budget_reason(&attempt.progress);
             let (latest_action, deferred_reason) =
                 scheduled_duration_budget_contract(latest_surface_status, &reason);
             return Ok(render_output(
@@ -1560,7 +1581,35 @@ fn source_window_outran_staged_progress(
         staged_manifest.covered_through_cursor.as_ref(),
     ) {
         return discovery_runtime_cursor_cmp(source_cursor, staged_cursor)
-            == std::cmp::Ordering::Less;
+            == std::cmp::Ordering::Greater;
+    }
+    false
+}
+
+fn reference_surface_outran_staged_progress(
+    reference_manifest: &RecentRawJournalSnapshotManifest,
+    staged_manifest: &RecentRawJournalSnapshotManifest,
+) -> bool {
+    if reference_manifest.row_count == 0 {
+        return staged_manifest.row_count > 0;
+    }
+    if reference_manifest.row_count > staged_manifest.row_count {
+        return true;
+    }
+    if let (Some(reference_since), Some(staged_since)) = (
+        reference_manifest.covered_since,
+        staged_manifest.covered_since,
+    ) {
+        if reference_since > staged_since {
+            return true;
+        }
+    }
+    if let (Some(reference_cursor), Some(staged_cursor)) = (
+        reference_manifest.covered_through_cursor.as_ref(),
+        staged_manifest.covered_through_cursor.as_ref(),
+    ) {
+        return discovery_runtime_cursor_cmp(reference_cursor, staged_cursor)
+            == std::cmp::Ordering::Greater;
     }
     false
 }
@@ -1959,10 +2008,20 @@ fn resume_staged_snapshot_with_policy(
         }
     }
 
-    if existing_manifest
-        .as_ref()
-        .is_some_and(|manifest| source_window_outran_staged_progress(&source_state, manifest))
-    {
+    let latest_surface = assess_latest_surface(
+        &journal_snapshot_latest_path(snapshot_dir),
+        &journal_snapshot_latest_metadata_path(snapshot_dir),
+    )
+    .ok();
+
+    if existing_manifest.as_ref().is_some_and(|manifest| {
+        source_window_outran_staged_progress(&source_state, manifest)
+            && latest_surface.as_ref().is_some_and(|surface| {
+                surface.manifest.as_ref().is_some_and(|latest_manifest| {
+                    reference_surface_outran_staged_progress(latest_manifest, manifest)
+                })
+            })
+    }) {
         match remove_staged_snapshot_artifacts(&staged_snapshot_path, &staged_metadata_path) {
             Ok(_) => {
                 existing_manifest = None;
@@ -2011,7 +2070,7 @@ fn resume_staged_snapshot_with_policy(
         };
     }
 
-    let before_state = match staged_store.recent_raw_journal_state() {
+    let before_state = match staged_store.recent_raw_journal_state_cached() {
         Ok(state) => state,
         Err(error) => {
             return StagedSnapshotAttemptResult::HardFailure {
@@ -2039,6 +2098,7 @@ fn resume_staged_snapshot_with_policy(
     while source_state.row_count > current_state.row_count {
         let deadline =
             deadline.unwrap_or_else(|| Instant::now() + StdDuration::from_secs(24 * 60 * 60));
+        progress.terminal_phase = Some(StagedSnapshotTerminalPhase::SourceRead);
         if Instant::now() >= deadline {
             budget_exhausted = true;
             break;
@@ -2101,27 +2161,34 @@ fn resume_staged_snapshot_with_policy(
             break;
         }
 
-        if let Err(error) = staged_store.insert_recent_raw_journal_batch(&batch, now) {
-            let attempt_duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-            let manifest = staged_manifest_for_state(
-                source_db_path,
-                &staged_snapshot_path,
-                staged_created_at,
-                &current_state,
-            )
-            .ok();
-            return StagedSnapshotAttemptResult::HardFailure {
-                manifest,
-                progress,
-                attempt_duration_ms,
-                reason: format!(
-                    "failed persisting bounded recent_raw batch into staged snapshot {}: {error}",
-                    staged_snapshot_path.display()
-                ),
-            };
-        }
+        progress.terminal_phase = Some(StagedSnapshotTerminalPhase::StagedWrite);
+        let (_write_summary, write_budget_exhausted) = match staged_store
+            .insert_recent_raw_journal_batch_with_deadline(&batch, now, deadline)
+        {
+            Ok(result) => result,
+            Err(error) => {
+                let attempt_duration_ms =
+                    started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                let manifest = staged_manifest_for_state(
+                    source_db_path,
+                    &staged_snapshot_path,
+                    staged_created_at,
+                    &current_state,
+                )
+                .ok();
+                return StagedSnapshotAttemptResult::HardFailure {
+                        manifest,
+                        progress,
+                        attempt_duration_ms,
+                        reason: format!(
+                            "failed persisting bounded recent_raw batch into staged snapshot {}: {error}",
+                            staged_snapshot_path.display()
+                        ),
+                    };
+            }
+        };
 
-        current_state = match staged_store.recent_raw_journal_state() {
+        current_state = match staged_store.recent_raw_journal_state_cached() {
             Ok(state) => state,
             Err(error) => {
                 let attempt_duration_ms =
@@ -2148,6 +2215,10 @@ fn resume_staged_snapshot_with_policy(
         progress.advanced_during_attempt |= current_state.row_count > before_state.row_count
             || current_state.covered_through_cursor != before_state.covered_through_cursor;
 
+        if write_budget_exhausted {
+            budget_exhausted = true;
+            break;
+        }
         if resumable_snapshot_progress_hook_requests_budget_exhaustion(
             completed_batches,
             current_state.row_count,
@@ -2687,13 +2758,13 @@ mod tests {
     use super::{
         adaptive_snapshot_policy, install_pre_archive_promotion_hook,
         install_resumable_snapshot_progress_hook, parse_args_from, run,
-        run_with_snapshot_policy_override, Config, RecentRawJournalSnapshotManifest,
-        SnapshotSourceStats, SqliteStore,
+        run_with_snapshot_policy_override, source_window_outran_staged_progress, Config,
+        RecentRawJournalSnapshotManifest, SnapshotSourceStats, SqliteStore,
     };
     use anyhow::{Context, Result};
     use chrono::{DateTime, Duration, Utc};
     use copybot_core_types::SwapEvent;
-    use copybot_discovery::runtime_restore_ops::load_json;
+    use copybot_discovery::runtime_restore_ops::{load_json, write_json_atomic};
     use copybot_storage::RecentRawJournalStateRow;
     use serde_json::Value;
     use std::path::{Path, PathBuf};
@@ -2757,6 +2828,42 @@ mod tests {
     }
 
     #[test]
+    fn source_window_outran_staged_progress_returns_true_when_source_cursor_is_newer() -> Result<()>
+    {
+        let source_state = RecentRawJournalStateRow {
+            covered_since: Some(parse_ts("2026-03-27T11:43:56Z")?),
+            covered_through_cursor: Some(super::DiscoveryRuntimeCursor {
+                ts_utc: parse_ts("2026-03-29T12:44:48Z")?,
+                slot: 33_206_523,
+                signature: "sig-source-newer".to_string(),
+            }),
+            row_count: 33_206_523,
+            ..RecentRawJournalStateRow::default()
+        };
+        let staged_manifest = RecentRawJournalSnapshotManifest {
+            created_at: parse_ts("2026-03-27T12:00:00Z")?,
+            source_db_path: "/tmp/source.db".to_string(),
+            snapshot_path: "/tmp/staged.sqlite".to_string(),
+            row_count: 22_938_251,
+            covered_since: Some(parse_ts("2026-03-27T11:43:56Z")?),
+            covered_through_cursor: Some(super::DiscoveryRuntimeCursor {
+                ts_utc: parse_ts("2026-03-27T11:43:56Z")?,
+                slot: 22_938_251,
+                signature: "sig-staged-older".to_string(),
+            }),
+            last_batch_completed_at: Some(parse_ts("2026-03-27T11:45:00Z")?),
+            updated_at: Some(parse_ts("2026-03-27T11:45:00Z")?),
+            snapshot_bytes: 1,
+        };
+
+        assert!(source_window_outran_staged_progress(
+            &source_state,
+            &staged_manifest
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn scheduled_run_returns_bounded_deferred_outcome_when_attempt_budget_is_exhausted(
     ) -> Result<()> {
         let fixture = make_fixture("recent-raw-snapshot-budget")?;
@@ -2789,7 +2896,12 @@ mod tests {
                 pages_per_step: 8,
                 pause_between_steps: StdDuration::from_millis(0),
                 retry_backoff_ms: vec![1, 1],
-                max_attempt_duration: Some(StdDuration::from_millis(1)),
+                // Keep a real bounded deadline, but make exhaustion deterministic via the
+                // resumable-progress hook after one committed staged batch. A 1ms wall-clock
+                // budget can expire before the first staged insert under full-bin runs, which
+                // turns this into a flaky zero-progress timeout instead of the intended
+                // preserved-progress deferred contract.
+                max_attempt_duration: Some(StdDuration::from_secs(5)),
                 pin_source_snapshot: true,
             }),
         )?;
@@ -2798,7 +2910,7 @@ mod tests {
         assert_eq!(output["state"], "deferred");
         assert_eq!(
             output["terminal_reason"],
-            "attempt_duration_budget_exhausted"
+            "staged_write_attempt_duration_budget_exhausted"
         );
         assert_eq!(
             output["latest_surface_action"],
@@ -2817,6 +2929,120 @@ mod tests {
             "bounded deferred outcome must expose preserved staged forward progress"
         );
         assert_eq!(staged_artifact_count(&fixture.snapshot_dir())?, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduled_run_resets_outrun_staged_snapshot_instead_of_resuming_it() -> Result<()> {
+        let fixture = make_fixture("recent-raw-snapshot-outrun-stage")?;
+        let initial_now = parse_ts("2026-03-23T12:00:00Z")?;
+        seed_recent_raw_journal_range(
+            &fixture.journal_store,
+            initial_now - Duration::minutes(5),
+            10,
+            "sig-outrun-stage",
+            16,
+            initial_now,
+        )?;
+        run(Config {
+            config_path: fixture.config_path.clone(),
+            journal_db_path: Some(fixture.journal_db_path.clone()),
+            output_path: None,
+            scheduled: true,
+            force: true,
+            json: false,
+            now: initial_now,
+        })?;
+
+        let snapshot_dir = fixture.snapshot_dir();
+        let stale_stage_seed_path = snapshot_dir.join("stale-stage-seed.sqlite");
+        let stale_stage_seed_metadata_path = snapshot_dir.join("stale-stage-seed.json");
+        let initial_latest_snapshot_path = snapshot_dir.join("latest.sqlite");
+        let initial_latest_manifest_path = snapshot_dir.join("latest.json");
+        let initial_latest_manifest: RecentRawJournalSnapshotManifest =
+            load_json(&initial_latest_manifest_path)?;
+        std::fs::copy(&initial_latest_snapshot_path, &stale_stage_seed_path).with_context(
+            || {
+                format!(
+                    "failed copying {} to {}",
+                    initial_latest_snapshot_path.display(),
+                    stale_stage_seed_path.display()
+                )
+            },
+        )?;
+        write_json_atomic(&stale_stage_seed_metadata_path, &initial_latest_manifest)?;
+
+        seed_recent_raw_journal_range(
+            &fixture.journal_store,
+            initial_now + Duration::minutes(1),
+            10_000,
+            "sig-outrun-source",
+            128,
+            initial_now + Duration::minutes(1),
+        )?;
+        run(Config {
+            config_path: fixture.config_path.clone(),
+            journal_db_path: Some(fixture.journal_db_path.clone()),
+            output_path: None,
+            scheduled: true,
+            force: true,
+            json: false,
+            now: initial_now + Duration::minutes(15),
+        })?;
+
+        let staged_snapshot_path = super::staged_snapshot_archive_path(&snapshot_dir);
+        let staged_metadata_path = super::staged_snapshot_metadata_path(&snapshot_dir);
+        std::fs::copy(&stale_stage_seed_path, &staged_snapshot_path).with_context(|| {
+            format!(
+                "failed copying {} to {}",
+                stale_stage_seed_path.display(),
+                staged_snapshot_path.display()
+            )
+        })?;
+        let staged_manifest = super::manifest_for_snapshot(
+            &fixture.journal_db_path,
+            &staged_snapshot_path,
+            initial_latest_manifest.created_at,
+        )?;
+        write_json_atomic(&staged_metadata_path, &staged_manifest)?;
+        let current_source_state = fixture.journal_store.recent_raw_journal_state()?;
+        let current_latest_manifest: RecentRawJournalSnapshotManifest =
+            load_json(&snapshot_dir.join("latest.json"))?;
+        assert!(source_window_outran_staged_progress(
+            &current_source_state,
+            &staged_manifest
+        ));
+        assert!(super::reference_surface_outran_staged_progress(
+            &current_latest_manifest,
+            &staged_manifest
+        ));
+
+        let written = run(Config {
+            config_path: fixture.config_path.clone(),
+            journal_db_path: Some(fixture.journal_db_path.clone()),
+            output_path: None,
+            scheduled: true,
+            force: false,
+            json: true,
+            now: initial_now + Duration::minutes(30),
+        })?;
+        assert_eq!(written.exit_code, 0);
+        let output: Value = serde_json::from_str(&written.rendered_output)?;
+        assert_eq!(output["state"], "written");
+        assert_eq!(
+            output["staged_progress_resumed"],
+            false,
+            "unexpected outrun-stage output: {}",
+            serde_json::to_string_pretty(&output)?
+        );
+        assert_eq!(output["staged_row_count_before_attempt"].as_u64(), Some(0));
+
+        let promoted_latest_manifest: RecentRawJournalSnapshotManifest =
+            load_json(&snapshot_dir.join("latest.json"))?;
+        assert!(
+            promoted_latest_manifest.row_count > staged_manifest.row_count,
+            "outrun staged progress must be reset and replaced with a newer published latest"
+        );
         Ok(())
     }
 

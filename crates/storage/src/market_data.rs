@@ -315,6 +315,94 @@ fn recent_raw_journal_state_query(conn: &Connection) -> Result<RecentRawJournalS
     })
 }
 
+fn recent_raw_journal_state_cached_query(conn: &Connection) -> Result<RecentRawJournalStateRow> {
+    let row = conn
+        .query_row(
+            "SELECT
+                covered_since_ts,
+                covered_through_cursor_ts,
+                covered_through_cursor_slot,
+                covered_through_cursor_signature,
+                row_count,
+                last_batch_rows,
+                last_batch_completed_at,
+                last_pruned_rows,
+                last_pruned_at,
+                updated_at
+             FROM recent_raw_journal_state
+             WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                ))
+            },
+        )
+        .optional()
+        .context("failed reading cached recent raw journal state")?;
+    let Some((
+        covered_since_raw,
+        covered_through_ts_raw,
+        covered_through_slot_raw,
+        covered_through_signature,
+        row_count,
+        last_batch_rows,
+        last_batch_completed_at_raw,
+        last_pruned_rows,
+        last_pruned_at_raw,
+        updated_at_raw,
+    )) = row
+    else {
+        return Ok(RecentRawJournalStateRow::default());
+    };
+    let covered_through_cursor = match (
+        covered_through_ts_raw,
+        covered_through_slot_raw,
+        covered_through_signature,
+    ) {
+        (Some(ts_raw), Some(slot_raw), Some(signature)) => Some(DiscoveryRuntimeCursor {
+            ts_utc: parse_rfc3339_utc(
+                &ts_raw,
+                "recent_raw_journal_state.covered_through_cursor_ts",
+            )?,
+            slot: slot_raw.max(0) as u64,
+            signature,
+        }),
+        _ => None,
+    };
+    Ok(RecentRawJournalStateRow {
+        covered_since: parse_optional_rfc3339_utc(
+            covered_since_raw,
+            "recent_raw_journal_state.covered_since_ts",
+        )?,
+        covered_through_cursor,
+        row_count: row_count.max(0) as usize,
+        last_batch_rows: last_batch_rows.max(0) as usize,
+        last_batch_completed_at: parse_optional_rfc3339_utc(
+            last_batch_completed_at_raw,
+            "recent_raw_journal_state.last_batch_completed_at",
+        )?,
+        last_pruned_rows: last_pruned_rows.max(0) as usize,
+        last_pruned_at: parse_optional_rfc3339_utc(
+            last_pruned_at_raw,
+            "recent_raw_journal_state.last_pruned_at",
+        )?,
+        updated_at: parse_optional_rfc3339_utc(
+            updated_at_raw,
+            "recent_raw_journal_state.updated_at",
+        )?,
+    })
+}
+
 fn upsert_recent_raw_journal_state_on_conn(
     conn: &Connection,
     state: &RecentRawJournalStateRow,
@@ -390,50 +478,76 @@ impl SqliteStore {
         recent_raw_journal_state_query(&self.conn)
     }
 
+    pub fn recent_raw_journal_state_cached(&self) -> Result<RecentRawJournalStateRow> {
+        self.ensure_recent_raw_journal_tables()?;
+        recent_raw_journal_state_cached_query(&self.conn)
+    }
+
     pub fn insert_recent_raw_journal_batch(
         &self,
         swaps: &[SwapEvent],
         completed_at: DateTime<Utc>,
     ) -> Result<RecentRawJournalWriteSummary> {
+        let (summary, _time_budget_exhausted) =
+            self.insert_recent_raw_journal_batch_internal(swaps, completed_at, None)?;
+        Ok(summary)
+    }
+
+    pub fn insert_recent_raw_journal_batch_with_deadline(
+        &self,
+        swaps: &[SwapEvent],
+        completed_at: DateTime<Utc>,
+        deadline: Instant,
+    ) -> Result<(RecentRawJournalWriteSummary, bool)> {
+        self.insert_recent_raw_journal_batch_internal(swaps, completed_at, Some(deadline))
+    }
+
+    fn insert_recent_raw_journal_batch_internal(
+        &self,
+        swaps: &[SwapEvent],
+        completed_at: DateTime<Utc>,
+        deadline: Option<Instant>,
+    ) -> Result<(RecentRawJournalWriteSummary, bool)> {
         self.ensure_recent_raw_journal_tables()?;
         if swaps.is_empty() {
-            let state = self.recent_raw_journal_state()?;
-            return Ok(RecentRawJournalWriteSummary {
-                batch_rows: 0,
-                inserted_rows: 0,
-                covered_since: state.covered_since,
-                covered_through_cursor: state.covered_through_cursor,
-                row_count: state.row_count,
-                last_batch_completed_at: state.last_batch_completed_at,
-            });
+            let state = self.recent_raw_journal_state_cached()?;
+            return Ok((recent_raw_journal_write_summary(&state, 0, 0), false));
         }
 
         self.with_immediate_transaction_retry("recent raw journal batch write", |conn| {
             ensure_recent_raw_journal_tables_on_conn(conn)?;
-            let mut stmt = conn
-                .prepare_cached(
-                    "INSERT OR IGNORE INTO observed_swaps(
-                        signature,
-                        wallet_id,
-                        dex,
-                        token_in,
-                        token_out,
-                        qty_in,
-                        qty_out,
-                        qty_in_raw,
-                        qty_in_decimals,
-                        qty_out_raw,
-                        qty_out_decimals,
-                        slot,
-                        ts
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                )
-                .context("failed to prepare recent raw journal batch insert statement")?;
-
             let mut inserted_rows = 0usize;
-            for swap in swaps {
-                let changed = stmt
-                    .execute(params![
+            let mut processed_rows = 0usize;
+            let mut time_budget_exhausted = false;
+            {
+                let _progress_guard =
+                    deadline.map(|deadline| ProgressHandlerGuard::install(conn, deadline));
+                let mut stmt = conn
+                    .prepare_cached(
+                        "INSERT OR IGNORE INTO observed_swaps(
+                            signature,
+                            wallet_id,
+                            dex,
+                            token_in,
+                            token_out,
+                            qty_in,
+                            qty_out,
+                            qty_in_raw,
+                            qty_in_decimals,
+                            qty_out_raw,
+                            qty_out_decimals,
+                            slot,
+                            ts
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    )
+                    .context("failed to prepare recent raw journal batch insert statement")?;
+
+                for swap in swaps {
+                    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                        time_budget_exhausted = true;
+                        break;
+                    }
+                    let changed = match stmt.execute(params![
                         &swap.signature,
                         &swap.wallet,
                         &swap.dex,
@@ -455,26 +569,39 @@ impl SqliteStore {
                             .map(|value| i64::from(value.amount_out_decimals)),
                         swap.slot as i64,
                         swap.ts_utc.to_rfc3339(),
-                    ])
-                    .context("failed to insert observed swap into recent raw journal batch")?;
-                if changed > 0 {
-                    inserted_rows = inserted_rows.saturating_add(1);
+                    ]) {
+                        Ok(changed) => changed,
+                        Err(error) => {
+                            if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                                time_budget_exhausted = true;
+                                break;
+                            }
+                            return Err(error).context(
+                                "failed to insert observed swap into recent raw journal batch",
+                            );
+                        }
+                    };
+                    processed_rows = processed_rows.saturating_add(1);
+                    if changed > 0 {
+                        inserted_rows = inserted_rows.saturating_add(1);
+                    }
                 }
             }
 
-            let mut state = recent_raw_journal_state_query(conn)?;
-            state.last_batch_rows = inserted_rows;
-            state.last_batch_completed_at = Some(completed_at);
-            state.updated_at = Some(completed_at);
-            upsert_recent_raw_journal_state_on_conn(conn, &state)?;
-            Ok(RecentRawJournalWriteSummary {
-                batch_rows: swaps.len(),
+            let mut state = recent_raw_journal_state_cached_query(conn)?;
+            advance_recent_raw_journal_state_for_batch(
+                &mut state,
+                &swaps[..processed_rows],
                 inserted_rows,
-                covered_since: state.covered_since,
-                covered_through_cursor: state.covered_through_cursor,
-                row_count: state.row_count,
-                last_batch_completed_at: state.last_batch_completed_at,
-            })
+                completed_at,
+            );
+            if processed_rows > 0 {
+                upsert_recent_raw_journal_state_on_conn(conn, &state)?;
+            }
+            Ok((
+                recent_raw_journal_write_summary(&state, processed_rows, inserted_rows),
+                time_budget_exhausted,
+            ))
         })
     }
 
@@ -3065,6 +3192,59 @@ impl SqliteStore {
     }
 }
 
+fn recent_raw_journal_write_summary(
+    state: &RecentRawJournalStateRow,
+    batch_rows: usize,
+    inserted_rows: usize,
+) -> RecentRawJournalWriteSummary {
+    RecentRawJournalWriteSummary {
+        batch_rows,
+        inserted_rows,
+        covered_since: state.covered_since,
+        covered_through_cursor: state.covered_through_cursor.clone(),
+        row_count: state.row_count,
+        last_batch_completed_at: state.last_batch_completed_at,
+    }
+}
+
+fn advance_recent_raw_journal_state_for_batch(
+    state: &mut RecentRawJournalStateRow,
+    processed_swaps: &[SwapEvent],
+    inserted_rows: usize,
+    completed_at: DateTime<Utc>,
+) {
+    if processed_swaps.is_empty() {
+        return;
+    }
+    if inserted_rows > 0 {
+        if let Some(first_swap) = processed_swaps.first() {
+            state.covered_since = Some(match state.covered_since {
+                Some(existing) if existing <= first_swap.ts_utc => existing,
+                _ => first_swap.ts_utc,
+            });
+        }
+        state.row_count = state.row_count.saturating_add(inserted_rows);
+    }
+    if let Some(last_swap) = processed_swaps.last() {
+        let last_cursor = DiscoveryRuntimeCursor {
+            ts_utc: last_swap.ts_utc,
+            slot: last_swap.slot,
+            signature: last_swap.signature.clone(),
+        };
+        let should_advance_cursor = state
+            .covered_through_cursor
+            .as_ref()
+            .map(|cursor| discovery_runtime_cursor_cmp(&last_cursor, cursor).is_gt())
+            .unwrap_or(state.row_count > 0 || inserted_rows > 0);
+        if should_advance_cursor {
+            state.covered_through_cursor = Some(last_cursor);
+        }
+    }
+    state.last_batch_rows = inserted_rows;
+    state.last_batch_completed_at = Some(completed_at);
+    state.updated_at = Some(completed_at);
+}
+
 fn duration_ms_ceil(duration: StdDuration) -> u64 {
     let micros = duration.as_micros();
     if micros == 0 {
@@ -3341,6 +3521,98 @@ mod tests {
             slot,
             ts_utc,
         }
+    }
+
+    #[test]
+    fn recent_raw_journal_batch_write_keeps_cached_state_exact() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("recent-raw-cached-state.db");
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let now = DateTime::parse_from_rfc3339("2026-03-29T12:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let first_batch = vec![
+            swap(
+                "sig-recent-raw-state-a",
+                "wallet-a",
+                now - Duration::minutes(2),
+                SOL_MINT,
+                "TokenRecentRawStateA111111111111111111111111",
+                100,
+            ),
+            swap(
+                "sig-recent-raw-state-b",
+                "wallet-a",
+                now - Duration::minutes(1),
+                SOL_MINT,
+                "TokenRecentRawStateB111111111111111111111111",
+                101,
+            ),
+        ];
+        let first_summary = store.insert_recent_raw_journal_batch(&first_batch, now)?;
+        assert_eq!(first_summary.batch_rows, 2);
+        assert_eq!(first_summary.inserted_rows, 2);
+
+        let second_batch = vec![
+            first_batch[1].clone(),
+            swap(
+                "sig-recent-raw-state-c",
+                "wallet-a",
+                now,
+                SOL_MINT,
+                "TokenRecentRawStateC111111111111111111111111",
+                102,
+            ),
+        ];
+        let second_summary = store.insert_recent_raw_journal_batch(&second_batch, now)?;
+        assert_eq!(second_summary.batch_rows, 2);
+        assert_eq!(second_summary.inserted_rows, 1);
+
+        let cached_state = store.recent_raw_journal_state_cached()?;
+        let scanned_state = store.recent_raw_journal_state()?;
+        assert_eq!(cached_state, scanned_state);
+        assert_eq!(second_summary.row_count, scanned_state.row_count);
+        assert_eq!(
+            second_summary.covered_through_cursor,
+            scanned_state.covered_through_cursor
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_batch_write_with_deadline_returns_bounded_outcome() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("recent-raw-bounded-deadline.db");
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let now = DateTime::parse_from_rfc3339("2026-03-29T12:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let swaps = (0..512)
+            .map(|idx| {
+                swap(
+                    &format!("sig-recent-raw-deadline-{idx:04}"),
+                    "wallet-deadline",
+                    now + Duration::seconds(idx as i64),
+                    SOL_MINT,
+                    "TokenRecentRawDeadline111111111111111111111",
+                    1_000 + idx as u64,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let (summary, time_budget_exhausted) =
+            store.insert_recent_raw_journal_batch_with_deadline(&swaps, now, Instant::now())?;
+        assert!(
+            time_budget_exhausted,
+            "expired deadline must return a bounded outcome instead of hanging in sqlite write path"
+        );
+        assert_eq!(summary.batch_rows, 0);
+
+        let cached_state = store.recent_raw_journal_state_cached()?;
+        let scanned_state = store.recent_raw_journal_state()?;
+        assert_eq!(cached_state, scanned_state);
+        assert_eq!(summary.row_count, scanned_state.row_count);
+        Ok(())
     }
 
     #[test]

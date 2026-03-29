@@ -3,6 +3,28 @@
 Date: 2026-03-17
 Status: Active historical roadmap with 2026-03-27 production-readiness and live Stage 3 accumulation addendum
 
+## Emergency Status (`2026-03-29`)
+
+The project is currently in an emergency state and must be treated as not
+working.
+
+This is no longer an honest "wait a bit longer for five days to accumulate"
+situation. The live `recent_raw` snapshot/promotion pipeline is failing, the
+promoted bounded surface is stale, Stage 3 remains non-green, and the code
+written so far does not currently demonstrate an operational production path.
+
+Repository truth that must now be stated explicitly:
+
+- the project is operationally broken
+- the bounded `recent_raw` / Stage 3 path is not dependable
+- the tooling and activation/controller layers in this repo are not evidence of
+  a working production system while the live bounded raw truth is stalled
+- until root cause is identified and fixed, this project must be described as
+  non-working and under incident response
+
+Any reader who only sees artifact symmetry, activation controllers, launch
+packets, or readiness reports without this banner would be misled.
+
 ## 0. Why v2 exists
 
 МЫ СУКА ОБОССАЛИСЬ С ЭТИМ И УСАДИЛИ ХОЗЯИНА ПРОЕКТА НА ДЕНЬГИ
@@ -93,6 +115,21 @@ investigation is still the active restore plan, which it is not.
    - Stage 4 readiness / rehearsal evidence is green
    - bounded activation and rollback execution code exists and is verified
    - only then is real-money enablement discussion legitimate
+
+## 1B. Current emergency verdict (`2026-03-29`)
+
+1. The current blocker is not "time remaining until the five-day window closes."
+2. The current blocker is that the live `recent_raw` snapshot path is in a
+   failing incident shape:
+   - `copybot-discovery-recent-raw-snapshot.service` is timing out repeatedly
+   - promoted `latest.json` / `latest.sqlite` remain stale
+   - hidden staged state exists but is not producing a healthy promoted surface
+3. Therefore the project must be treated as not working, not as "nearly ready."
+4. This repo currently contains a large amount of activation/readiness/handoff
+   code that is not enough to claim operational usefulness while the bounded raw
+   truth path is still broken.
+5. Until root cause is fixed, all roadmap work must be read through this
+   emergency verdict first.
 
 ## 2. Current factual state
 

@@ -3,6 +3,24 @@
 These files are repository-side templates for the test-server bring-up tracked by `ops/test_server_rollout_6_1_tracker.md`.
 They are synced with the current staging server snapshot (`52.28.0.218`, `2026-03-03`).
 
+## Emergency Status (`2026-03-29`)
+
+The live project must currently be treated as operationally broken.
+
+Do not read these server templates, service files, timers, launch packets, or
+activation/cutover instructions as evidence that the system is working. The
+live bounded `recent_raw` path is in an incident state, the promoted surface is
+stale, and Stage 3 is non-green.
+
+Explicit repository-side truth:
+
+- the project is not currently production-usable
+- the code written so far has not yet delivered a dependable working runtime on
+  the live host
+- the current state is emergency triage, not normal rollout
+- until the `recent_raw` snapshot/promotion failure is root-caused and fixed,
+  all operator docs must be read as incident documents for a non-working system
+
 ## Security note
 
 1. `live.server.toml.example` contains placeholder-only RPC values; populate real credentials only in the server-local copy or via env overrides.
