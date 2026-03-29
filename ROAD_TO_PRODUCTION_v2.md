@@ -2470,6 +2470,52 @@ Acceptance update (`2026-03-28`, package-native live cutover authorization/refus
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_live_authorization`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_live_authorization --bin copybot_tiny_live_activation_package_live_cutover --bin copybot_tiny_live_activation_package_preflight --bin copybot_tiny_live_activation_package --bin copybot_tiny_live_activation_package_deploy --bin copybot_tiny_live_activation_live_execute`
 
+Acceptance update (`2026-03-29`, package-native live launch packet / turn-green handoff artifact):
+
+1. Stage 4 now also has one first-class package-native live launch packet
+   artifact bound to the final authorization and live cutover controller
+   contract:
+   - `copybot_tiny_live_activation_package_launch_packet --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-live-package-launch-packet --json`
+   - `copybot_tiny_live_activation_package_launch_packet --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --render-live-package-launch-packet --output /tmp/tiny-live.package-launch-packet.sh --json`
+   - `copybot_tiny_live_activation_package_launch_packet --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-launch-packet-session --run-live-package-launch-packet --json`
+   - `copybot_tiny_live_activation_package_launch_packet --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-launch-packet-session --verify-live-package-launch-packet --json`
+2. `--package-dir` remains the sole immutable handoff input:
+   - the packet sequence is fixed:
+     verify package -> verify installed live target -> verify installed
+     wrapper/package binding -> evaluate current authorization/refusal truth
+     -> freeze the exact final live cutover controller command summary ->
+     classify today refused vs eligible when green -> persist session/status
+   - no fresh wrapper render or direct activation/rollback source paths
+     outside the package participate in the handoff artifact
+3. This closes the remaining operator-facing ambiguity after the final
+   authorization artifact exists:
+   - operators now get one immutable turn-green handoff packet instead of
+     manually restitching package truth, live target truth, authorization
+     truth, and the final controller command
+   - the packet serializes honest refusal today while also freezing the exact
+     bounded controller contract that becomes runnable when Stage 3 and the
+     pre-activation gate turn green
+   - green plan or green verify remains non-authorizing by itself
+4. Safety stays hard:
+   - Stage 3 and the pre-activation gate remain the hard authorization
+     boundary
+   - no hidden apply or restart path is introduced here
+   - current real-host usage still refuses today because gate truth remains
+     non-green in this batch
+   - no production activation is performed and no real trades are sent
+5. Important live launch-packet verdicts:
+   - `tiny_live_package_launch_packet_plan_ready`
+   - `tiny_live_package_launch_packet_rendered`
+   - `tiny_live_package_launch_packet_refused_by_stage3`
+   - `tiny_live_package_launch_packet_refused_by_pre_activation_gate`
+   - `tiny_live_package_launch_packet_refused_by_invalid_target`
+   - `tiny_live_package_launch_packet_eligible_when_gate_turns_green`
+   - `tiny_live_package_launch_packet_verify_ok`
+   - `tiny_live_package_launch_packet_verify_invalid`
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_launch_packet`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_launch_packet --bin copybot_tiny_live_activation_package_live_authorization --bin copybot_tiny_live_activation_package_live_cutover --bin copybot_tiny_live_activation_package_preflight --bin copybot_tiny_live_activation_package --bin copybot_tiny_live_activation_package_deploy --bin copybot_tiny_live_activation_live_execute`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:

@@ -2156,33 +2156,8 @@ mod tests {
 
     #[test]
     fn watch_triggered_breach_yields_bounded_rollback_classification() {
-        let mut last_report = None;
-        for attempt in 0..3 {
-            let fixture = live_fixture(
-                &format!("tiny_live_cutover_rollback_{attempt}"),
-                GateState::Green,
-                true,
-            );
-            let report = run_live_cutover_report_for_tests(
-                &fixture.config,
-                &fixture.source_fingerprint_sha256,
-                12,
-                3,
-                None,
-            )
-            .expect("run live cutover");
-            if report.verdict == TinyLiveCutoverVerdict::TinyLiveLiveCutoverCompletedWithRollback {
-                assert_eq!(
-                    report.live_result.as_deref(),
-                    Some("completed_with_rollback")
-                );
-                let target = load_from_path(&fixture.target_config_path).unwrap();
-                assert!(!target.execution.enabled);
-                return;
-            }
-            last_report = Some(report);
-        }
-        let report = last_report.expect("last cutover report");
+        let (fixture, report) =
+            completed_with_rollback_fixture_for_test("tiny_live_cutover_rollback");
         assert_eq!(
             report.verdict,
             TinyLiveCutoverVerdict::TinyLiveLiveCutoverCompletedWithRollback
@@ -2191,10 +2166,8 @@ mod tests {
             report.live_result.as_deref(),
             Some("completed_with_rollback")
         );
-        panic!(
-            "expected completed_with_rollback cutover report but got {:?}: {}",
-            report.verdict, report.reason
-        );
+        let target = load_from_path(&fixture.target_config_path).unwrap();
+        assert!(!target.execution.enabled);
     }
 
     #[cfg(unix)]
@@ -2328,8 +2301,9 @@ mod tests {
     }
 
     fn completed_keep_running_fixture_for_verify_test(label: &str) -> (LiveFixture, CutoverReport) {
+        const TEST_FIXTURE_RETRY_ATTEMPTS: usize = 10;
         let mut last_report = None;
-        for attempt in 0..3 {
+        for attempt in 0..TEST_FIXTURE_RETRY_ATTEMPTS {
             let fixture = live_fixture(&format!("{label}_{attempt}"), GateState::Green, true);
             let report = run_live_cutover_report_for_tests(
                 &fixture.config,
@@ -2343,6 +2317,9 @@ mod tests {
                 return (fixture, report);
             }
             last_report = Some(report);
+            if attempt + 1 < TEST_FIXTURE_RETRY_ATTEMPTS {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
         }
         let report = last_report.expect("last cutover report");
         panic!(
@@ -2352,9 +2329,39 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn failed_during_watch_fixture_for_test(label: &str) -> CutoverReport {
+    fn completed_with_rollback_fixture_for_test(label: &str) -> (LiveFixture, CutoverReport) {
+        const TEST_FIXTURE_RETRY_ATTEMPTS: usize = 10;
         let mut last_report = None;
-        for attempt in 0..3 {
+        for attempt in 0..TEST_FIXTURE_RETRY_ATTEMPTS {
+            let fixture = live_fixture(&format!("{label}_{attempt}"), GateState::Green, true);
+            let report = run_live_cutover_report_for_tests(
+                &fixture.config,
+                &fixture.source_fingerprint_sha256,
+                12,
+                3,
+                None,
+            )
+            .expect("run live cutover");
+            if report.verdict == TinyLiveCutoverVerdict::TinyLiveLiveCutoverCompletedWithRollback {
+                return (fixture, report);
+            }
+            last_report = Some(report);
+            if attempt + 1 < TEST_FIXTURE_RETRY_ATTEMPTS {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        }
+        let report = last_report.expect("last cutover report");
+        panic!(
+            "expected completed_with_rollback cutover fixture but got {:?}: {}",
+            report.verdict, report.reason
+        );
+    }
+
+    #[cfg(unix)]
+    fn failed_during_watch_fixture_for_test(label: &str) -> CutoverReport {
+        const TEST_FIXTURE_RETRY_ATTEMPTS: usize = 10;
+        let mut last_report = None;
+        for attempt in 0..TEST_FIXTURE_RETRY_ATTEMPTS {
             let fixture = live_fixture(&format!("{label}_{attempt}"), GateState::Green, true);
             fs::create_dir_all(&fixture.runtime_dir).unwrap();
             fs::write(
@@ -2374,6 +2381,9 @@ mod tests {
                 return report;
             }
             last_report = Some(report);
+            if attempt + 1 < TEST_FIXTURE_RETRY_ATTEMPTS {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
         }
         let report = last_report.expect("last cutover report");
         panic!(

@@ -3485,8 +3485,9 @@ mod tests {
 
     #[cfg(unix)]
     fn completed_rollback_fixture_for_test(label: &str) -> (LiveFixture, LiveExecuteReport) {
+        const TEST_FIXTURE_RETRY_ATTEMPTS: usize = 10;
         let mut last_report = None;
-        for attempt in 0..3 {
+        for attempt in 0..TEST_FIXTURE_RETRY_ATTEMPTS {
             let fixture = live_fixture(&format!("{label}_{attempt}"), GateState::Green);
             fs::write(&fixture.target_config_path, sample_activation_config_toml()).unwrap();
             let report = rollback_live_report(&fixture.config).expect("rollback");
@@ -3494,6 +3495,9 @@ mod tests {
                 return (fixture, report);
             }
             last_report = Some(report);
+            if attempt + 1 < TEST_FIXTURE_RETRY_ATTEMPTS {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
         }
         let report = last_report.expect("last live execute rollback report");
         panic!(

@@ -15,17 +15,18 @@ mod tiny_live_activation_live_execute;
 #[path = "copybot_tiny_live_activation_package.rs"]
 mod tiny_live_activation_package;
 #[allow(dead_code)]
+#[path = "copybot_tiny_live_activation_package_live_authorization.rs"]
+mod tiny_live_activation_package_live_authorization;
+#[allow(dead_code)]
 #[path = "copybot_tiny_live_activation_package_live_cutover.rs"]
 mod tiny_live_activation_package_live_cutover;
 #[allow(dead_code)]
 #[path = "copybot_tiny_live_activation_package_preflight.rs"]
 mod tiny_live_activation_package_preflight;
 
-const USAGE: &str = "usage: copybot_tiny_live_activation_package_live_authorization --package-dir <path> --install-root <path> --target-service <name> --backend-command <path-or-name> [--wrapper-timeout-ms <ms>] [--service-status-max-staleness-ms <ms>] [--session-dir <path>] [--output <path>] [--json] (--plan-live-package-authorization | --render-live-package-authorization-script | --run-live-package-authorization | --verify-live-package-authorization)";
-const AUTHORIZATION_SESSION_VERSION: &str = "1";
-const AUTHORIZATION_STATUS_VERSION: &str = "1";
-const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 10_000;
-const DEFAULT_ROLLBACK_TIMEOUT_MS: u64 = 10_000;
+const USAGE: &str = "usage: copybot_tiny_live_activation_package_launch_packet --package-dir <path> --install-root <path> --target-service <name> --backend-command <path-or-name> [--wrapper-timeout-ms <ms>] [--service-status-max-staleness-ms <ms>] [--session-dir <path>] [--output <path>] [--json] (--plan-live-package-launch-packet | --render-live-package-launch-packet | --run-live-package-launch-packet | --verify-live-package-launch-packet)";
+const LAUNCH_PACKET_SESSION_VERSION: &str = "1";
+const LAUNCH_PACKET_STATUS_VERSION: &str = "1";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -53,36 +54,36 @@ struct Config {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
-    PlanLivePackageAuthorization,
-    RenderLivePackageAuthorizationScript,
-    RunLivePackageAuthorization,
-    VerifyLivePackageAuthorization,
+    PlanLivePackageLaunchPacket,
+    RenderLivePackageLaunchPacket,
+    RunLivePackageLaunchPacket,
+    VerifyLivePackageLaunchPacket,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum TinyLivePackageLiveAuthorizationVerdict {
-    TinyLivePackageLiveAuthorizationPlanReady,
-    TinyLivePackageLiveAuthorizationScriptRendered,
-    TinyLivePackageLiveAuthorizationAuthorizedNow,
-    TinyLivePackageLiveAuthorizationRefusedByStage3,
-    TinyLivePackageLiveAuthorizationRefusedByPreActivationGate,
-    TinyLivePackageLiveAuthorizationRefusedByInvalidTarget,
-    TinyLivePackageLiveAuthorizationVerifyOk,
-    TinyLivePackageLiveAuthorizationVerifyInvalid,
+enum TinyLivePackageLaunchPacketVerdict {
+    TinyLivePackageLaunchPacketPlanReady,
+    TinyLivePackageLaunchPacketRendered,
+    TinyLivePackageLaunchPacketRefusedByStage3,
+    TinyLivePackageLaunchPacketRefusedByPreActivationGate,
+    TinyLivePackageLaunchPacketRefusedByInvalidTarget,
+    TinyLivePackageLaunchPacketEligibleWhenGateTurnsGreen,
+    TinyLivePackageLaunchPacketVerifyOk,
+    TinyLivePackageLaunchPacketVerifyInvalid,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum LivePackageAuthorizationResult {
-    AuthorizedNow,
+enum LivePackageLaunchPacketResult {
+    EligibleWhenGateTurnsGreen,
     RefusedByStage3,
     RefusedByPreActivationGate,
     RefusedByInvalidTarget,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PackageLiveAuthorizationStepArtifact {
+struct PackageLaunchPacketStepArtifact {
     path: String,
     mode: String,
     verdict: String,
@@ -91,7 +92,7 @@ struct PackageLiveAuthorizationStepArtifact {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PackageLiveAuthorizationSession {
+struct PackageLaunchPacketSession {
     session_version: String,
     planned_at: DateTime<Utc>,
     package_dir: String,
@@ -101,42 +102,41 @@ struct PackageLiveAuthorizationSession {
     wrapper_timeout_ms: u64,
     service_status_max_staleness_ms: u64,
     session_dir: String,
-    nested_preflight_session_dir: String,
-    run_preflight_command_summary: String,
-    gate_evaluation_command_summary: String,
-    authorized_live_cutover_command_summary: String,
+    nested_authorization_session_dir: String,
+    run_live_authorization_command_summary: String,
+    frozen_live_cutover_controller_command_summary: String,
     explicit_statement: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PackageLiveAuthorizationStatus {
+struct PackageLaunchPacketStatus {
     status_version: String,
     updated_at: DateTime<Utc>,
     session_dir: String,
-    nested_preflight_session_dir: String,
-    result: LivePackageAuthorizationResult,
+    nested_authorization_session_dir: String,
+    result: LivePackageLaunchPacketResult,
     reason: String,
-    preflight_step: Option<PackageLiveAuthorizationStepArtifact>,
-    gate_step: Option<PackageLiveAuthorizationStepArtifact>,
-    controller_plan_step: Option<PackageLiveAuthorizationStepArtifact>,
+    authorization_result_now: Option<String>,
+    authorization_step: Option<PackageLaunchPacketStepArtifact>,
+    controller_step: Option<PackageLaunchPacketStepArtifact>,
+    operator_next_action_summary: String,
     explicit_statement: String,
 }
 
 #[derive(Debug, Clone)]
-struct PackageLiveAuthorizationPaths {
+struct PackageLaunchPacketPaths {
     session_path: PathBuf,
     status_path: PathBuf,
-    preflight_report_path: PathBuf,
-    gate_report_path: PathBuf,
-    controller_plan_report_path: PathBuf,
-    preflight_session_dir: PathBuf,
+    authorization_report_path: PathBuf,
+    controller_report_path: PathBuf,
+    authorization_session_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PackageLiveAuthorizationReport {
+struct PackageLaunchPacketReport {
     generated_at: DateTime<Utc>,
     mode: String,
-    verdict: TinyLivePackageLiveAuthorizationVerdict,
+    verdict: TinyLivePackageLaunchPacketVerdict,
     reason: String,
     package_dir: String,
     install_root: String,
@@ -145,16 +145,16 @@ struct PackageLiveAuthorizationReport {
     wrapper_timeout_ms: u64,
     service_status_max_staleness_ms: u64,
     session_dir: Option<String>,
-    authorization_session_path: Option<String>,
-    authorization_status_path: Option<String>,
-    nested_preflight_session_dir: Option<String>,
+    launch_packet_session_path: Option<String>,
+    launch_packet_status_path: Option<String>,
+    nested_authorization_session_dir: Option<String>,
     result: Option<String>,
-    preflight_step: Option<PackageLiveAuthorizationStepArtifact>,
-    gate_step: Option<PackageLiveAuthorizationStepArtifact>,
-    controller_plan_step: Option<PackageLiveAuthorizationStepArtifact>,
-    run_preflight_command_summary: String,
-    gate_evaluation_command_summary: String,
-    authorized_live_cutover_command_summary: String,
+    authorization_result_now: Option<String>,
+    authorization_step: Option<PackageLaunchPacketStepArtifact>,
+    controller_step: Option<PackageLaunchPacketStepArtifact>,
+    run_live_authorization_command_summary: String,
+    frozen_live_cutover_controller_command_summary: String,
+    operator_next_action_summary: String,
     current_pre_activation_gate_verdict: Option<String>,
     current_pre_activation_gate_reason: Option<String>,
     verification_mismatches: Vec<String>,
@@ -162,22 +162,8 @@ struct PackageLiveAuthorizationReport {
     explicit_statement: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct PackageLiveAuthorizationLaunchPacketStep {
-    pub(crate) report_json: serde_json::Value,
-    pub(crate) verdict: String,
-    pub(crate) reason: String,
-    pub(crate) generated_at: DateTime<Utc>,
-    pub(crate) result: Option<String>,
-    pub(crate) current_pre_activation_gate_verdict: Option<String>,
-    pub(crate) current_pre_activation_gate_reason: Option<String>,
-    pub(crate) gate_evaluation_command_summary: String,
-    pub(crate) authorized_live_cutover_command_summary: String,
-    pub(crate) activation_authorized: bool,
-}
-
 #[derive(Debug, Deserialize)]
-struct StoredPreflightReportView {
+struct StoredAuthorizationReportView {
     package_dir: String,
     install_root: String,
     target_service_name: String,
@@ -186,88 +172,12 @@ struct StoredPreflightReportView {
     service_status_max_staleness_ms: u64,
     session_dir: Option<String>,
     result: Option<String>,
-    cutover_plan_step: Option<PackageLiveAuthorizationStepArtifact>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ResolvedInstallTargetPaths {
-    wrapper_path: String,
-    target_config_path: String,
-    installed_activation_config_path: String,
-    installed_rollback_config_path: String,
-    runtime_dir: String,
-    backup_dir: String,
-}
-
-#[allow(dead_code)]
-pub(crate) fn run_live_package_authorization_for_launch_packet(
-    package_dir: &Path,
-    install_root: &Path,
-    target_service_name: &str,
-    backend_command: &str,
-    wrapper_timeout_ms: u64,
-    service_status_max_staleness_ms: u64,
-    session_dir: &Path,
-) -> Result<PackageLiveAuthorizationLaunchPacketStep> {
-    let config = Config {
-        mode: Mode::RunLivePackageAuthorization,
-        package_dir: package_dir.to_path_buf(),
-        install_root: install_root.to_path_buf(),
-        target_service_name: target_service_name.to_string(),
-        backend_command: backend_command.to_string(),
-        wrapper_timeout_ms,
-        service_status_max_staleness_ms,
-        session_dir: Some(session_dir.to_path_buf()),
-        output_path: None,
-        json: true,
-    };
-    let report = run_live_package_authorization_report(&config)?;
-    package_live_authorization_launch_packet_step(report)
-}
-
-#[allow(dead_code)]
-pub(crate) fn verify_live_package_authorization_for_launch_packet(
-    package_dir: &Path,
-    install_root: &Path,
-    target_service_name: &str,
-    backend_command: &str,
-    wrapper_timeout_ms: u64,
-    service_status_max_staleness_ms: u64,
-    session_dir: &Path,
-) -> Result<PackageLiveAuthorizationLaunchPacketStep> {
-    let config = Config {
-        mode: Mode::VerifyLivePackageAuthorization,
-        package_dir: package_dir.to_path_buf(),
-        install_root: install_root.to_path_buf(),
-        target_service_name: target_service_name.to_string(),
-        backend_command: backend_command.to_string(),
-        wrapper_timeout_ms,
-        service_status_max_staleness_ms,
-        session_dir: Some(session_dir.to_path_buf()),
-        output_path: None,
-        json: true,
-    };
-    let report = verify_live_package_authorization_report(&config)?;
-    package_live_authorization_launch_packet_step(report)
-}
-
-fn package_live_authorization_launch_packet_step(
-    report: PackageLiveAuthorizationReport,
-) -> Result<PackageLiveAuthorizationLaunchPacketStep> {
-    Ok(PackageLiveAuthorizationLaunchPacketStep {
-        report_json: serde_json::to_value(&report)?,
-        verdict: serialize_enum(&report.verdict),
-        reason: report.reason.clone(),
-        generated_at: report.generated_at,
-        result: report.result.clone(),
-        current_pre_activation_gate_verdict: report.current_pre_activation_gate_verdict.clone(),
-        current_pre_activation_gate_reason: report.current_pre_activation_gate_reason.clone(),
-        gate_evaluation_command_summary: report.gate_evaluation_command_summary.clone(),
-        authorized_live_cutover_command_summary: report
-            .authorized_live_cutover_command_summary
-            .clone(),
-        activation_authorized: report.activation_authorized,
-    })
+    reason: String,
+    gate_evaluation_command_summary: String,
+    authorized_live_cutover_command_summary: String,
+    current_pre_activation_gate_verdict: Option<String>,
+    current_pre_activation_gate_reason: Option<String>,
+    activation_authorized: bool,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -329,41 +239,49 @@ where
                 output_path = Some(PathBuf::from(parse_string_arg("--output", args.next())?))
             }
             "--json" => json = true,
-            "--plan-live-package-authorization" => set_mode(
+            "--plan-live-package-launch-packet" => set_mode(
                 &mut mode,
-                Mode::PlanLivePackageAuthorization,
-                "--plan-live-package-authorization",
+                Mode::PlanLivePackageLaunchPacket,
+                "--plan-live-package-launch-packet",
             )?,
-            "--render-live-package-authorization-script" => set_mode(
+            "--render-live-package-launch-packet" => set_mode(
                 &mut mode,
-                Mode::RenderLivePackageAuthorizationScript,
-                "--render-live-package-authorization-script",
+                Mode::RenderLivePackageLaunchPacket,
+                "--render-live-package-launch-packet",
             )?,
-            "--run-live-package-authorization" => set_mode(
+            "--run-live-package-launch-packet" => set_mode(
                 &mut mode,
-                Mode::RunLivePackageAuthorization,
-                "--run-live-package-authorization",
+                Mode::RunLivePackageLaunchPacket,
+                "--run-live-package-launch-packet",
             )?,
-            "--verify-live-package-authorization" => set_mode(
+            "--verify-live-package-launch-packet" => set_mode(
                 &mut mode,
-                Mode::VerifyLivePackageAuthorization,
-                "--verify-live-package-authorization",
+                Mode::VerifyLivePackageLaunchPacket,
+                "--verify-live-package-launch-packet",
             )?,
             "--help" | "-h" => return Ok(None),
-            other => bail!("unrecognized argument: {other}"),
+            other => bail!("unknown argument: {other}"),
         }
     }
 
-    let mode = mode.ok_or_else(|| anyhow!("missing required mode"))?;
+    let Some(mode) = mode else {
+        return Ok(None);
+    };
     let package_dir = package_dir.ok_or_else(|| anyhow!("missing required --package-dir"))?;
     let install_root = install_root.ok_or_else(|| anyhow!("missing required --install-root"))?;
     let target_service_name =
         target_service_name.ok_or_else(|| anyhow!("missing required --target-service"))?;
     let backend_command =
         backend_command.ok_or_else(|| anyhow!("missing required --backend-command"))?;
-
-    if matches!(mode, Mode::RenderLivePackageAuthorizationScript) && output_path.is_none() {
-        bail!("missing required --output for --render-live-package-authorization-script");
+    if matches!(mode, Mode::RenderLivePackageLaunchPacket) && output_path.is_none() {
+        bail!("missing required --output for --render-live-package-launch-packet");
+    }
+    if matches!(
+        mode,
+        Mode::RunLivePackageLaunchPacket | Mode::VerifyLivePackageLaunchPacket
+    ) && session_dir.is_none()
+    {
+        bail!("missing required --session-dir");
     }
 
     Ok(Some(Config {
@@ -380,9 +298,9 @@ where
     }))
 }
 
-fn set_mode(slot: &mut Option<Mode>, mode: Mode, flag: &str) -> Result<()> {
-    if slot.replace(mode).is_some() {
-        bail!("multiple modes provided; {flag} conflicts with an earlier mode");
+fn set_mode(mode: &mut Option<Mode>, value: Mode, flag: &str) -> Result<()> {
+    if mode.replace(value).is_some() {
+        bail!("multiple modes specified including {flag}");
     }
     Ok(())
 }
@@ -399,53 +317,52 @@ fn parse_u64_arg(flag: &str, value: Option<String>) -> Result<u64> {
 
 fn run(config: Config) -> Result<String> {
     let report = match config.mode {
-        Mode::PlanLivePackageAuthorization => match plan_live_package_authorization_report(&config) {
+        Mode::PlanLivePackageLaunchPacket => match plan_live_package_launch_packet_report(&config)
+        {
             Ok(report) => report,
             Err(error) => refusal_report(
                 &config,
-                TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationRefusedByInvalidTarget,
+                TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketRefusedByInvalidTarget,
                 error.to_string(),
             ),
         },
-        Mode::RenderLivePackageAuthorizationScript => {
-            match render_live_package_authorization_script_report(&config) {
-                Ok(report) => report,
-                Err(error) => refusal_report(
-                    &config,
-                    TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationRefusedByInvalidTarget,
-                    error.to_string(),
-                ),
-            }
-        }
-        Mode::RunLivePackageAuthorization => match run_live_package_authorization_report(&config) {
+        Mode::RenderLivePackageLaunchPacket => match render_live_package_launch_packet_report(&config)
+        {
             Ok(report) => report,
             Err(error) => refusal_report(
                 &config,
-                TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationRefusedByInvalidTarget,
+                TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketRefusedByInvalidTarget,
                 error.to_string(),
             ),
         },
-        Mode::VerifyLivePackageAuthorization => {
-            match verify_live_package_authorization_report(&config) {
+        Mode::RunLivePackageLaunchPacket => match run_live_package_launch_packet_report(&config) {
+            Ok(report) => report,
+            Err(error) => refusal_report(
+                &config,
+                TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketRefusedByInvalidTarget,
+                error.to_string(),
+            ),
+        },
+        Mode::VerifyLivePackageLaunchPacket => {
+            match verify_live_package_launch_packet_report(&config) {
                 Ok(report) => report,
                 Err(error) => refusal_report(
                     &config,
-                    TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationVerifyInvalid,
+                    TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketVerifyInvalid,
                     error.to_string(),
                 ),
             }
         }
     };
     if config.json {
-        Ok(serde_json::to_string_pretty(&report)?)
+        serde_json::to_string_pretty(&report)
+            .context("failed to serialize live package launch packet report")
     } else {
         Ok(render_report_lines(&report))
     }
 }
 
-fn plan_live_package_authorization_report(
-    config: &Config,
-) -> Result<PackageLiveAuthorizationReport> {
+fn plan_live_package_launch_packet_report(config: &Config) -> Result<PackageLaunchPacketReport> {
     let _ = tiny_live_activation_package::verify_package_contract_for_deploy(
         &config.package_dir,
         &config.install_root,
@@ -459,29 +376,28 @@ fn plan_live_package_authorization_report(
     }
     Ok(base_report(
         config,
-        TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationPlanReady,
+        TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketPlanReady,
         format!(
-            "package-native live authorization session is explicit for install root {}; current Stage 3 truth is still evaluated only at run time and remains the hard go/no-go boundary",
+            "package-native live launch packet is explicit for install root {}; today it still serializes the current authorization truth and remains non-authorizing by itself",
             config.install_root.display()
         ),
         &controller_view,
     ))
 }
 
-fn render_live_package_authorization_script_report(
-    config: &Config,
-) -> Result<PackageLiveAuthorizationReport> {
-    let plan = plan_live_package_authorization_report(config)?;
-    let output_path = config.output_path.as_ref().ok_or_else(|| {
-        anyhow!("missing --output for --render-live-package-authorization-script")
-    })?;
+fn render_live_package_launch_packet_report(config: &Config) -> Result<PackageLaunchPacketReport> {
+    let plan = plan_live_package_launch_packet_report(config)?;
+    let output_path = config
+        .output_path
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing --output for --render-live-package-launch-packet"))?;
     ensure_new_output_path(output_path)?;
     let session_dir = config
         .session_dir
         .clone()
         .unwrap_or_else(|| PathBuf::from("<session-dir>"));
     let script = format!(
-        "#!/usr/bin/env bash\nset -euo pipefail\n\ncopybot_tiny_live_activation_package_live_authorization --package-dir {} --install-root {} --target-service {} --backend-command {} --wrapper-timeout-ms {} --service-status-max-staleness-ms {} --plan-live-package-authorization\ncopybot_tiny_live_activation_package_live_authorization --package-dir {} --install-root {} --target-service {} --backend-command {} --wrapper-timeout-ms {} --service-status-max-staleness-ms {} --session-dir {} --run-live-package-authorization\ncopybot_tiny_live_activation_package_live_authorization --package-dir {} --install-root {} --target-service {} --backend-command {} --wrapper-timeout-ms {} --service-status-max-staleness-ms {} --session-dir {} --verify-live-package-authorization\n",
+        "#!/usr/bin/env bash\nset -euo pipefail\n\ncopybot_tiny_live_activation_package_launch_packet --package-dir {} --install-root {} --target-service {} --backend-command {} --wrapper-timeout-ms {} --service-status-max-staleness-ms {} --plan-live-package-launch-packet\ncopybot_tiny_live_activation_package_launch_packet --package-dir {} --install-root {} --target-service {} --backend-command {} --wrapper-timeout-ms {} --service-status-max-staleness-ms {} --session-dir {} --run-live-package-launch-packet\ncopybot_tiny_live_activation_package_launch_packet --package-dir {} --install-root {} --target-service {} --backend-command {} --wrapper-timeout-ms {} --service-status-max-staleness-ms {} --session-dir {} --verify-live-package-launch-packet\n",
         shell_single_quote(&config.package_dir.display().to_string()),
         shell_single_quote(&config.install_root.display().to_string()),
         shell_single_quote(&config.target_service_name),
@@ -504,36 +420,26 @@ fn render_live_package_authorization_script_report(
         shell_single_quote(&session_dir.display().to_string()),
     );
     write_text_file(output_path, &script)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(output_path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(output_path, perms)?;
-    }
-    Ok(PackageLiveAuthorizationReport {
-        verdict:
-            TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationScriptRendered,
+    Ok(PackageLaunchPacketReport {
+        verdict: TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketRendered,
         reason: format!(
-            "rendered package-native live authorization script to {}",
+            "rendered package-native live launch packet script to {}",
             output_path.display()
         ),
         ..plan
     })
 }
 
-fn run_live_package_authorization_report(
-    config: &Config,
-) -> Result<PackageLiveAuthorizationReport> {
+fn run_live_package_launch_packet_report(config: &Config) -> Result<PackageLaunchPacketReport> {
     let session_dir = config
         .session_dir
         .as_ref()
-        .ok_or_else(|| anyhow!("missing --session-dir for --run-live-package-authorization"))?;
-    ensure_clean_live_package_authorization_session_dir(session_dir)?;
-    let paths = package_live_authorization_paths(session_dir);
+        .ok_or_else(|| anyhow!("missing --session-dir for --run-live-package-launch-packet"))?;
+    ensure_clean_live_package_launch_packet_session_dir(session_dir)?;
+    let paths = package_live_launch_packet_paths(session_dir);
     let controller_view = controller_plan_view(config);
-    let session = PackageLiveAuthorizationSession {
-        session_version: AUTHORIZATION_SESSION_VERSION.to_string(),
+    let session = PackageLaunchPacketSession {
+        session_version: LAUNCH_PACKET_SESSION_VERSION.to_string(),
         planned_at: Utc::now(),
         package_dir: config.package_dir.display().to_string(),
         install_root: config.install_root.display().to_string(),
@@ -542,90 +448,52 @@ fn run_live_package_authorization_report(
         wrapper_timeout_ms: config.wrapper_timeout_ms,
         service_status_max_staleness_ms: config.service_status_max_staleness_ms,
         session_dir: session_dir.display().to_string(),
-        nested_preflight_session_dir: paths.preflight_session_dir.display().to_string(),
-        run_preflight_command_summary: run_preflight_command_summary(config, &paths.preflight_session_dir),
-        gate_evaluation_command_summary: controller_view.gate_evaluation_command_summary.clone(),
-        authorized_live_cutover_command_summary: controller_view
+        nested_authorization_session_dir: paths.authorization_session_dir.display().to_string(),
+        run_live_authorization_command_summary: run_live_authorization_command_summary(
+            config,
+            &paths.authorization_session_dir,
+        ),
+        frozen_live_cutover_controller_command_summary: controller_view
             .run_live_cutover_command_summary
             .clone(),
         explicit_statement:
-            "this package-native live authorization session binds one immutable package, one explicit live target contract, and one final live cutover controller into one go/no-go artifact; current Stage 3 / pre-activation truth remains the hard authorization boundary"
+            "this package-native live launch packet freezes one immutable package, one explicit live target contract, one operator-facing authorization truth, and one final live cutover controller into one handoff artifact only; it does not execute live cutover by itself"
                 .to_string(),
     };
     persist_json(&paths.session_path, &session)?;
-    persist_json(&paths.controller_plan_report_path, &controller_view)?;
-    let controller_plan_step = Some(step_artifact(
-        &paths.controller_plan_report_path,
+    persist_json(&paths.controller_report_path, &controller_view)?;
+    let controller_step = Some(step_artifact(
+        &paths.controller_report_path,
         "plan_live_cutover_controller",
         &controller_view.verdict,
         &controller_view.reason,
         Utc::now(),
     ));
 
-    let preflight =
-        tiny_live_activation_package_preflight::run_live_package_preflight_for_capability(
+    let authorization =
+        tiny_live_activation_package_live_authorization::run_live_package_authorization_for_launch_packet(
             &config.package_dir,
             &config.install_root,
             &config.target_service_name,
             &config.backend_command,
             config.wrapper_timeout_ms,
             config.service_status_max_staleness_ms,
-            &paths.preflight_session_dir,
-            None,
+            &paths.authorization_session_dir,
         )?;
-    persist_json_value(&paths.preflight_report_path, &preflight.report_json)?;
-    let preflight_step = Some(step_artifact(
-        &paths.preflight_report_path,
-        "run_live_package_preflight",
-        &preflight.verdict,
-        &preflight.reason,
-        preflight.generated_at,
+    persist_json_value(&paths.authorization_report_path, &authorization.report_json)?;
+    let authorization_step = Some(step_artifact(
+        &paths.authorization_report_path,
+        "run_live_authorization",
+        &authorization.verdict,
+        &authorization.reason,
+        authorization.generated_at,
     ));
-    let stored_preflight: StoredPreflightReportView =
-        serde_json::from_value(preflight.report_json.clone())
-            .context("failed parsing nested preflight report json")?;
+    let stored_authorization: StoredAuthorizationReportView =
+        serde_json::from_value(authorization.report_json.clone())
+            .context("failed parsing nested launch-packet authorization report json")?;
 
-    let maybe_package_contract = tiny_live_activation_package::verify_package_contract_for_deploy(
-        &config.package_dir,
-        &config.install_root,
-        &config.target_service_name,
-        &config.backend_command,
-        config.wrapper_timeout_ms,
-    )
-    .ok();
-    let maybe_install_summary = maybe_package_contract
-        .as_ref()
-        .map(|value| resolve_install_target_paths(&value.install_target_summary));
-    let gate_report = maybe_install_summary.as_ref().map(|install_summary| {
-        tiny_live_activation_live_execute::build_plan_live_report_for_drill(
-            Path::new(&install_summary.installed_activation_config_path),
-            Path::new(&install_summary.installed_rollback_config_path),
-            Path::new(&install_summary.target_config_path),
-            &config.target_service_name,
-            Path::new(&install_summary.wrapper_path),
-            Path::new(&install_summary.runtime_dir),
-            Path::new(&install_summary.backup_dir),
-            DEFAULT_STARTUP_TIMEOUT_MS,
-            DEFAULT_ROLLBACK_TIMEOUT_MS,
-        )
-    });
-    let gate_report = match gate_report.transpose()? {
-        Some(value) => {
-            persist_json(&paths.gate_report_path, &value)?;
-            Some(value)
-        }
-        None => None,
-    };
-    let gate_step = gate_report.as_ref().map(|report| {
-        step_artifact(
-            &paths.gate_report_path,
-            "evaluate_live_gate",
-            &serialize_enum(&report.verdict),
-            &report.reason,
-            report.generated_at,
-        )
-    });
-
+    let authorization_matches_controller =
+        authorization_report_matches_controller(&stored_authorization, &controller_view);
     let (
         result,
         verdict,
@@ -635,89 +503,82 @@ fn run_live_package_authorization_report(
         activation_authorized,
     ) = if controller_view.verdict != "tiny_live_package_live_cutover_plan_ready" {
         (
-                LivePackageAuthorizationResult::RefusedByInvalidTarget,
-                TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationRefusedByInvalidTarget,
-                controller_view.reason.clone(),
-                None,
-                None,
-                false,
-            )
-    } else if !preflight_allows_live_authorization(&stored_preflight) {
+            LivePackageLaunchPacketResult::RefusedByInvalidTarget,
+            TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketRefusedByInvalidTarget,
+            controller_view.reason.clone(),
+            None,
+            None,
+            false,
+        )
+    } else if !authorization_matches_controller {
         (
-                LivePackageAuthorizationResult::RefusedByInvalidTarget,
-                TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationRefusedByInvalidTarget,
-                preflight.reason.clone(),
-                preflight.current_pre_activation_gate_verdict.clone(),
-                preflight.current_pre_activation_gate_reason.clone(),
-                false,
-            )
-    } else if let Some(report) = gate_report.as_ref() {
-        match report.verdict {
-                tiny_live_activation_live_execute::TinyLiveLiveExecuteVerdict::TinyLiveLivePlanReady
-                    if preflight_proves_authorized_now(&stored_preflight) => (
-                    LivePackageAuthorizationResult::AuthorizedNow,
-                    TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationAuthorizedNow,
-                    "current Stage 3 / pre-activation truth is green and the exact package-native live cutover controller is authorized now".to_string(),
-                    report.current_pre_activation_gate_verdict.clone(),
-                    report.current_pre_activation_gate_reason.clone(),
-                    true,
-                ),
-                tiny_live_activation_live_execute::TinyLiveLiveExecuteVerdict::TinyLiveLivePlanReady => (
-                    LivePackageAuthorizationResult::RefusedByInvalidTarget,
-                    TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationRefusedByInvalidTarget,
-                    "gate step is plan-ready but nested live package preflight did not prove genuine green authorization truth".to_string(),
-                    report.current_pre_activation_gate_verdict.clone(),
-                    report.current_pre_activation_gate_reason.clone(),
-                    false,
-                ),
-                tiny_live_activation_live_execute::TinyLiveLiveExecuteVerdict::TinyLiveLiveApplyRefusedByStage3 => (
-                    LivePackageAuthorizationResult::RefusedByStage3,
-                    TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationRefusedByStage3,
-                    report.reason.clone(),
-                    report.current_pre_activation_gate_verdict.clone(),
-                    report.current_pre_activation_gate_reason.clone(),
-                    false,
-                ),
-                tiny_live_activation_live_execute::TinyLiveLiveExecuteVerdict::TinyLiveLiveApplyRefusedByPreActivationGate => (
-                    LivePackageAuthorizationResult::RefusedByPreActivationGate,
-                    TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationRefusedByPreActivationGate,
-                    report.reason.clone(),
-                    report.current_pre_activation_gate_verdict.clone(),
-                    report.current_pre_activation_gate_reason.clone(),
-                    false,
-                ),
-                _ => (
-                    LivePackageAuthorizationResult::RefusedByInvalidTarget,
-                    TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationRefusedByInvalidTarget,
-                    report.reason.clone(),
-                    report.current_pre_activation_gate_verdict.clone(),
-                    report.current_pre_activation_gate_reason.clone(),
-                    false,
-                ),
-            }
+            LivePackageLaunchPacketResult::RefusedByInvalidTarget,
+            TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketRefusedByInvalidTarget,
+            "nested live authorization contract did not freeze the same final live cutover controller command summary"
+                .to_string(),
+            stored_authorization.current_pre_activation_gate_verdict.clone(),
+            stored_authorization.current_pre_activation_gate_reason.clone(),
+            false,
+        )
     } else {
-        (
-                LivePackageAuthorizationResult::RefusedByInvalidTarget,
-                TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationRefusedByInvalidTarget,
-                "live authorization could not derive a bounded gate-evaluation step from the requested package/live target contract".to_string(),
-                preflight.current_pre_activation_gate_verdict.clone(),
-                preflight.current_pre_activation_gate_reason.clone(),
+        match stored_authorization.result.as_deref() {
+            Some("authorized_now") if authorization_proves_eligible_now(&authorization) => (
+                LivePackageLaunchPacketResult::EligibleWhenGateTurnsGreen,
+                TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketEligibleWhenGateTurnsGreen,
+                "launch packet froze exact package/live target/controller truth and the current authorization chain is green".to_string(),
+                stored_authorization.current_pre_activation_gate_verdict.clone(),
+                stored_authorization.current_pre_activation_gate_reason.clone(),
+                true,
+            ),
+            Some("authorized_now") => (
+                LivePackageLaunchPacketResult::RefusedByInvalidTarget,
+                TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketRefusedByInvalidTarget,
+                "nested live authorization reported authorized_now without verified green authorization truth".to_string(),
+                stored_authorization.current_pre_activation_gate_verdict.clone(),
+                stored_authorization.current_pre_activation_gate_reason.clone(),
                 false,
-            )
+            ),
+            Some("refused_by_stage3") => (
+                LivePackageLaunchPacketResult::RefusedByStage3,
+                TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketRefusedByStage3,
+                stored_authorization.reason.clone(),
+                stored_authorization.current_pre_activation_gate_verdict.clone(),
+                stored_authorization.current_pre_activation_gate_reason.clone(),
+                false,
+            ),
+            Some("refused_by_pre_activation_gate") => (
+                LivePackageLaunchPacketResult::RefusedByPreActivationGate,
+                TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketRefusedByPreActivationGate,
+                stored_authorization.reason.clone(),
+                stored_authorization.current_pre_activation_gate_verdict.clone(),
+                stored_authorization.current_pre_activation_gate_reason.clone(),
+                false,
+            ),
+            _ => (
+                LivePackageLaunchPacketResult::RefusedByInvalidTarget,
+                TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketRefusedByInvalidTarget,
+                stored_authorization.reason.clone(),
+                stored_authorization.current_pre_activation_gate_verdict.clone(),
+                stored_authorization.current_pre_activation_gate_reason.clone(),
+                false,
+            ),
+        }
     };
-
-    let status = PackageLiveAuthorizationStatus {
-        status_version: AUTHORIZATION_STATUS_VERSION.to_string(),
+    let operator_next_action_summary =
+        operator_next_action_summary(&controller_view, result, activation_authorized);
+    let status = PackageLaunchPacketStatus {
+        status_version: LAUNCH_PACKET_STATUS_VERSION.to_string(),
         updated_at: Utc::now(),
         session_dir: session_dir.display().to_string(),
-        nested_preflight_session_dir: paths.preflight_session_dir.display().to_string(),
+        nested_authorization_session_dir: paths.authorization_session_dir.display().to_string(),
         result,
         reason,
-        preflight_step,
-        gate_step,
-        controller_plan_step,
+        authorization_result_now: stored_authorization.result.clone(),
+        authorization_step,
+        controller_step,
+        operator_next_action_summary,
         explicit_statement:
-            "this package-native live authorization session binds one immutable package, one explicit live target contract, and one final live cutover controller into one go/no-go artifact; current Stage 3 / pre-activation truth remains the hard authorization boundary"
+            "this package-native live launch packet is an immutable operator handoff artifact only; current Stage 3 / pre-activation truth still remains the hard live authorization boundary"
                 .to_string(),
     };
     persist_json(&paths.status_path, &status)?;
@@ -733,131 +594,95 @@ fn run_live_package_authorization_report(
     ))
 }
 
-fn verify_live_package_authorization_report(
-    config: &Config,
-) -> Result<PackageLiveAuthorizationReport> {
+fn verify_live_package_launch_packet_report(config: &Config) -> Result<PackageLaunchPacketReport> {
     let session_dir = config
         .session_dir
         .as_ref()
-        .ok_or_else(|| anyhow!("missing --session-dir for --verify-live-package-authorization"))?;
-    let package_contract = match tiny_live_activation_package::verify_package_contract_for_deploy(
-        &config.package_dir,
-        &config.install_root,
-        &config.target_service_name,
-        &config.backend_command,
-        config.wrapper_timeout_ms,
-    ) {
-        Ok(value) => value,
-        Err(error) => {
-            let paths = package_live_authorization_paths(session_dir);
-            return Ok(PackageLiveAuthorizationReport {
-                generated_at: Utc::now(),
-                mode: "verify_live_package_authorization".to_string(),
-                verdict: TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationVerifyInvalid,
-                reason: format!(
-                    "package does not match the requested live target contract: {error}"
-                ),
-                package_dir: config.package_dir.display().to_string(),
-                install_root: config.install_root.display().to_string(),
-                target_service_name: config.target_service_name.clone(),
-                backend_command: config.backend_command.clone(),
-                wrapper_timeout_ms: config.wrapper_timeout_ms,
-                service_status_max_staleness_ms: config.service_status_max_staleness_ms,
-                session_dir: Some(session_dir.display().to_string()),
-                authorization_session_path: Some(paths.session_path.display().to_string()),
-                authorization_status_path: Some(paths.status_path.display().to_string()),
-                nested_preflight_session_dir: Some(paths.preflight_session_dir.display().to_string()),
-                result: None,
-                preflight_step: None,
-                gate_step: None,
-                controller_plan_step: None,
-                run_preflight_command_summary: run_preflight_command_summary(config, &paths.preflight_session_dir),
-                gate_evaluation_command_summary: gate_evaluation_command_summary_placeholder(config),
-                authorized_live_cutover_command_summary: controller_plan_view(config)
-                    .run_live_cutover_command_summary,
-                current_pre_activation_gate_verdict: None,
-                current_pre_activation_gate_reason: None,
-                verification_mismatches: vec![error.to_string()],
-                activation_authorized: false,
-                explicit_statement:
-                    "this package-native live authorization verification checks bounded package/gate/controller evidence only; it does not authorize activation by itself"
-                        .to_string(),
-            });
-        }
-    };
-    let install_summary = resolve_install_target_paths(&package_contract.install_target_summary);
-    let paths = package_live_authorization_paths(session_dir);
-    let session: PackageLiveAuthorizationSession = load_json(&paths.session_path)?;
-    let status: PackageLiveAuthorizationStatus = load_json(&paths.status_path)?;
+        .ok_or_else(|| anyhow!("missing --session-dir for --verify-live-package-launch-packet"))?;
+    let paths = package_live_launch_packet_paths(session_dir);
+    let session: PackageLaunchPacketSession = load_json(&paths.session_path)?;
+    let status: PackageLaunchPacketStatus = load_json(&paths.status_path)?;
+    let expected_controller_view = controller_plan_view(config);
     let mut mismatches = Vec::new();
 
     compare_string(
         &session.package_dir,
         &config.package_dir.display().to_string(),
-        "package live authorization package_dir",
+        "package launch packet package_dir",
         &mut mismatches,
     );
     compare_string(
         &session.install_root,
         &config.install_root.display().to_string(),
-        "package live authorization install_root",
+        "package launch packet install_root",
         &mut mismatches,
     );
     compare_string(
         &session.target_service_name,
         &config.target_service_name,
-        "package live authorization target_service_name",
+        "package launch packet target_service_name",
         &mut mismatches,
     );
     compare_string(
         &session.backend_command,
         &config.backend_command,
-        "package live authorization backend_command",
+        "package launch packet backend_command",
         &mut mismatches,
     );
     if session.wrapper_timeout_ms != config.wrapper_timeout_ms {
         mismatches.push(format!(
-            "package live authorization wrapper_timeout_ms {} does not match requested {}",
+            "package launch packet wrapper_timeout_ms {} does not match requested {}",
             session.wrapper_timeout_ms, config.wrapper_timeout_ms
         ));
     }
     if session.service_status_max_staleness_ms != config.service_status_max_staleness_ms {
         mismatches.push(format!(
-            "package live authorization service_status_max_staleness_ms {} does not match requested {}",
+            "package launch packet service_status_max_staleness_ms {} does not match requested {}",
             session.service_status_max_staleness_ms, config.service_status_max_staleness_ms
         ));
     }
     compare_string(
         &session.session_dir,
         &session_dir.display().to_string(),
-        "package live authorization session_dir",
+        "package launch packet session_dir",
         &mut mismatches,
     );
     compare_string(
-        &session.nested_preflight_session_dir,
-        &paths.preflight_session_dir.display().to_string(),
-        "package live authorization nested_preflight_session_dir",
+        &session.nested_authorization_session_dir,
+        &paths.authorization_session_dir.display().to_string(),
+        "package launch packet nested_authorization_session_dir",
         &mut mismatches,
     );
     compare_string(
         &status.session_dir,
         &session_dir.display().to_string(),
-        "package live authorization status session_dir",
+        "package launch packet status session_dir",
         &mut mismatches,
     );
     compare_string(
-        &status.nested_preflight_session_dir,
-        &paths.preflight_session_dir.display().to_string(),
-        "package live authorization status nested_preflight_session_dir",
+        &status.nested_authorization_session_dir,
+        &paths.authorization_session_dir.display().to_string(),
+        "package launch packet status nested_authorization_session_dir",
+        &mut mismatches,
+    );
+    compare_string(
+        &session.run_live_authorization_command_summary,
+        &run_live_authorization_command_summary(config, &paths.authorization_session_dir),
+        "package launch packet run_live_authorization_command_summary",
+        &mut mismatches,
+    );
+    compare_string(
+        &session.frozen_live_cutover_controller_command_summary,
+        &expected_controller_view.run_live_cutover_command_summary,
+        "package launch packet frozen_live_cutover_controller_command_summary",
         &mut mismatches,
     );
 
-    let expected_controller_view = controller_plan_view(config);
     let stored_controller_view: tiny_live_activation_package_live_cutover::LiveCutoverControllerPlanView =
         load_required_step_json(
-            &status.controller_plan_step,
-            &paths.controller_plan_report_path,
-            "controller_plan_step",
+            &status.controller_step,
+            &paths.controller_report_path,
+            "controller_step",
             &mut mismatches,
         )?;
     validate_controller_plan_view_contract(
@@ -865,228 +690,128 @@ fn verify_live_package_authorization_report(
         &expected_controller_view,
         &mut mismatches,
     );
-    compare_string(
-        &session.authorized_live_cutover_command_summary,
-        &expected_controller_view.run_live_cutover_command_summary,
-        "package live authorization authorized_live_cutover_command_summary",
-        &mut mismatches,
-    );
-    compare_string(
-        &session.gate_evaluation_command_summary,
-        &expected_controller_view.gate_evaluation_command_summary,
-        "package live authorization gate_evaluation_command_summary",
-        &mut mismatches,
-    );
-    compare_string(
-        &session.run_preflight_command_summary,
-        &run_preflight_command_summary(config, &paths.preflight_session_dir),
-        "package live authorization run_preflight_command_summary",
-        &mut mismatches,
-    );
 
-    let stored_preflight: StoredPreflightReportView = load_required_step_json(
-        &status.preflight_step,
-        &paths.preflight_report_path,
-        "preflight_step",
+    let stored_authorization: StoredAuthorizationReportView = load_required_step_json(
+        &status.authorization_step,
+        &paths.authorization_report_path,
+        "authorization_step",
         &mut mismatches,
     )?;
-    validate_preflight_report_contract(&stored_preflight, config, &paths, &mut mismatches);
-    let verified_preflight =
-        tiny_live_activation_package_preflight::verify_live_package_preflight_for_capability(
+    validate_authorization_report_contract(
+        &stored_authorization,
+        config,
+        &paths,
+        &expected_controller_view,
+        &mut mismatches,
+    );
+    let verified_authorization =
+        tiny_live_activation_package_live_authorization::verify_live_package_authorization_for_launch_packet(
             &config.package_dir,
             &config.install_root,
             &config.target_service_name,
             &config.backend_command,
             config.wrapper_timeout_ms,
             config.service_status_max_staleness_ms,
-            &paths.preflight_session_dir,
+            &paths.authorization_session_dir,
         )?;
-    if verified_preflight.verdict != "tiny_live_package_preflight_verify_ok" {
+    if verified_authorization.verdict != "tiny_live_package_live_authorization_verify_ok" {
         mismatches.push(format!(
-            "nested live package preflight verification is non-green: {}",
-            verified_preflight.reason
+            "nested live authorization verification is non-green: {}",
+            verified_authorization.reason
         ));
     }
-    if stored_preflight.result != verified_preflight.result {
+    if stored_authorization.result != verified_authorization.result {
         mismatches.push(format!(
-            "stored preflight result {:?} does not match verified nested preflight result {:?}",
-            stored_preflight.result, verified_preflight.result
+            "stored authorization result {:?} does not match verified nested authorization result {:?}",
+            stored_authorization.result, verified_authorization.result
         ));
     }
-    let gate_report = match &status.gate_step {
-        Some(step) => Some(load_bound_step_json::<
-            tiny_live_activation_live_execute::LiveExecuteReport,
-        >(
-            step,
-            &paths.gate_report_path,
-            "gate_step",
-            &mut mismatches,
-        )?),
-        None => None,
+    if stored_authorization.activation_authorized != verified_authorization.activation_authorized {
+        mismatches.push(format!(
+            "stored authorization activation_authorized {} does not match verified nested authorization activation_authorized {}",
+            stored_authorization.activation_authorized,
+            verified_authorization.activation_authorized
+        ));
+    }
+
+    let expected_result = match verified_authorization.result.as_deref() {
+        Some("authorized_now")
+            if expected_controller_view.verdict == "tiny_live_package_live_cutover_plan_ready"
+                && authorization_proves_eligible_now(&verified_authorization) =>
+        {
+            Some(LivePackageLaunchPacketResult::EligibleWhenGateTurnsGreen)
+        }
+        Some("refused_by_stage3")
+            if expected_controller_view.verdict == "tiny_live_package_live_cutover_plan_ready" =>
+        {
+            Some(LivePackageLaunchPacketResult::RefusedByStage3)
+        }
+        Some("refused_by_pre_activation_gate")
+            if expected_controller_view.verdict == "tiny_live_package_live_cutover_plan_ready" =>
+        {
+            Some(LivePackageLaunchPacketResult::RefusedByPreActivationGate)
+        }
+        Some("refused_by_invalid_target") => {
+            Some(LivePackageLaunchPacketResult::RefusedByInvalidTarget)
+        }
+        _ if expected_controller_view.verdict != "tiny_live_package_live_cutover_plan_ready" => {
+            Some(LivePackageLaunchPacketResult::RefusedByInvalidTarget)
+        }
+        _ => None,
     };
-    if let Some(report) = gate_report.as_ref() {
-        validate_live_execute_report_contract(
-            report,
-            &install_summary,
-            config,
-            "gate step",
-            &mut mismatches,
-        );
+    match (status.result, expected_result) {
+        (actual, Some(expected)) if actual != expected => mismatches.push(format!(
+            "package launch packet result {} does not match verified nested authorization/controller truth {}",
+            serialize_enum(&actual),
+            serialize_enum(&expected)
+        )),
+        (_, None) => mismatches.push(
+            "package launch packet could not derive a coherent result from the verified authorization/controller chain"
+                .to_string(),
+        ),
+        _ => {}
     }
-
-    let mut current_pre_activation_gate_verdict = verified_preflight
-        .current_pre_activation_gate_verdict
-        .clone();
-    let mut current_pre_activation_gate_reason = verified_preflight
-        .current_pre_activation_gate_reason
-        .clone();
-
-    match status.result {
-        LivePackageAuthorizationResult::AuthorizedNow => {
-            if !preflight_allows_live_authorization(&stored_preflight) {
-                mismatches.push(
-                    "authorized_now session must carry a green/eligible nested preflight result"
-                        .to_string(),
-                );
-            }
-            if !preflight_proves_authorized_now(&stored_preflight) {
-                mismatches.push(
-                    "authorized_now session must store nested preflight ready_for_cutover_planning"
-                        .to_string(),
-                );
-            }
-            if !verified_preflight_proves_authorized_now(&verified_preflight) {
-                mismatches.push(
-                    "authorized_now session must verify nested preflight ready_for_cutover_planning with activation_authorized=true"
-                        .to_string(),
-                );
-            }
-            if stored_controller_view.verdict != "tiny_live_package_live_cutover_plan_ready" {
-                mismatches.push(
-                    "authorized_now session must carry a plan-ready live cutover controller contract"
-                        .to_string(),
-                );
-            }
-            let report = gate_report.as_ref().ok_or_else(|| {
-                anyhow!("missing required package live authorization step gate_step")
-            })?;
-            if report.verdict
-                != tiny_live_activation_live_execute::TinyLiveLiveExecuteVerdict::TinyLiveLivePlanReady
-            {
-                mismatches.push(
-                    "authorized_now session must carry a plan-ready gate evaluation step"
-                        .to_string(),
-                );
-            }
-            current_pre_activation_gate_verdict =
-                report.current_pre_activation_gate_verdict.clone();
-            current_pre_activation_gate_reason = report.current_pre_activation_gate_reason.clone();
-        }
-        LivePackageAuthorizationResult::RefusedByStage3 => {
-            if !preflight_allows_live_authorization(&stored_preflight) {
-                mismatches.push(
-                    "refused_by_stage3 session must still carry an eligible nested preflight result"
-                        .to_string(),
-                );
-            }
-            if stored_controller_view.verdict != "tiny_live_package_live_cutover_plan_ready" {
-                mismatches.push(
-                    "refused_by_stage3 session must still carry a plan-ready live cutover controller contract"
-                        .to_string(),
-                );
-            }
-            let report = gate_report.as_ref().ok_or_else(|| {
-                anyhow!("missing required package live authorization step gate_step")
-            })?;
-            if report.verdict
-                != tiny_live_activation_live_execute::TinyLiveLiveExecuteVerdict::TinyLiveLiveApplyRefusedByStage3
-            {
-                mismatches.push(
-                    "refused_by_stage3 session must carry a stage3-refused gate evaluation step"
-                        .to_string(),
-                );
-            }
-            current_pre_activation_gate_verdict =
-                report.current_pre_activation_gate_verdict.clone();
-            current_pre_activation_gate_reason = report.current_pre_activation_gate_reason.clone();
-        }
-        LivePackageAuthorizationResult::RefusedByPreActivationGate => {
-            if !preflight_allows_live_authorization(&stored_preflight) {
-                mismatches.push(
-                    "refused_by_pre_activation_gate session must still carry an eligible nested preflight result"
-                        .to_string(),
-                );
-            }
-            if stored_controller_view.verdict != "tiny_live_package_live_cutover_plan_ready" {
-                mismatches.push(
-                    "refused_by_pre_activation_gate session must still carry a plan-ready live cutover controller contract"
-                        .to_string(),
-                );
-            }
-            let report = gate_report.as_ref().ok_or_else(|| {
-                anyhow!("missing required package live authorization step gate_step")
-            })?;
-            if report.verdict
-                != tiny_live_activation_live_execute::TinyLiveLiveExecuteVerdict::TinyLiveLiveApplyRefusedByPreActivationGate
-            {
-                mismatches.push(
-                    "refused_by_pre_activation_gate session must carry a pre-activation-refused gate evaluation step"
-                        .to_string(),
-                );
-            }
-            current_pre_activation_gate_verdict =
-                report.current_pre_activation_gate_verdict.clone();
-            current_pre_activation_gate_reason = report.current_pre_activation_gate_reason.clone();
-        }
-        LivePackageAuthorizationResult::RefusedByInvalidTarget => {
-            let controller_invalid =
-                stored_controller_view.verdict != "tiny_live_package_live_cutover_plan_ready";
-            let preflight_invalid = !preflight_allows_live_authorization(&stored_preflight);
-            let gate_invalid = gate_report.as_ref().is_some_and(|report| {
-                !matches!(
-                    report.verdict,
-                    tiny_live_activation_live_execute::TinyLiveLiveExecuteVerdict::TinyLiveLivePlanReady
-                        | tiny_live_activation_live_execute::TinyLiveLiveExecuteVerdict::TinyLiveLiveApplyRefusedByStage3
-                        | tiny_live_activation_live_execute::TinyLiveLiveExecuteVerdict::TinyLiveLiveApplyRefusedByPreActivationGate
-                )
-            });
-            if !(controller_invalid || preflight_invalid || gate_invalid || gate_report.is_none()) {
-                mismatches.push(
-                    "refused_by_invalid_target session must carry an invalid controller contract, non-eligible preflight result, or invalid gate step"
-                        .to_string(),
-                );
-            }
-            if let Some(report) = gate_report.as_ref() {
-                current_pre_activation_gate_verdict =
-                    report.current_pre_activation_gate_verdict.clone();
-                current_pre_activation_gate_reason =
-                    report.current_pre_activation_gate_reason.clone();
-            }
-        }
+    if status.authorization_result_now != verified_authorization.result {
+        mismatches.push(format!(
+            "package launch packet status authorization_result_now {:?} does not match verified nested authorization result {:?}",
+            status.authorization_result_now, verified_authorization.result
+        ));
     }
+    let expected_operator_next_action_summary = operator_next_action_summary(
+        &expected_controller_view,
+        status.result,
+        status.result == LivePackageLaunchPacketResult::EligibleWhenGateTurnsGreen
+            && authorization_proves_eligible_now(&verified_authorization),
+    );
+    compare_string(
+        &status.operator_next_action_summary,
+        &expected_operator_next_action_summary,
+        "package launch packet operator_next_action_summary",
+        &mut mismatches,
+    );
 
     let activation_authorized = mismatches.is_empty()
-        && status.result == LivePackageAuthorizationResult::AuthorizedNow
-        && verified_preflight_proves_authorized_now(&verified_preflight);
+        && status.result == LivePackageLaunchPacketResult::EligibleWhenGateTurnsGreen
+        && authorization_proves_eligible_now(&verified_authorization);
     let verdict = if mismatches.is_empty() {
-        TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationVerifyOk
+        TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketVerifyOk
     } else {
-        TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationVerifyInvalid
+        TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketVerifyInvalid
     };
     let reason = if mismatches.is_empty() {
         format!(
-            "package-native live authorization session under {} is coherent and bound to the requested package/live target/controller contract",
+            "package-native live launch packet session under {} is coherent and frozen to the requested package/live target/authorization/controller contract",
             session_dir.display()
         )
     } else {
         mismatches
             .first()
             .cloned()
-            .unwrap_or_else(|| "package-native live authorization verification failed".to_string())
+            .unwrap_or_else(|| "package-native live launch packet verification failed".to_string())
     };
-    Ok(PackageLiveAuthorizationReport {
+    Ok(PackageLaunchPacketReport {
         generated_at: Utc::now(),
-        mode: "verify_live_package_authorization".to_string(),
+        mode: "verify_live_package_launch_packet".to_string(),
         verdict,
         reason,
         package_dir: config.package_dir.display().to_string(),
@@ -1096,25 +821,157 @@ fn verify_live_package_authorization_report(
         wrapper_timeout_ms: config.wrapper_timeout_ms,
         service_status_max_staleness_ms: config.service_status_max_staleness_ms,
         session_dir: Some(session_dir.display().to_string()),
-        authorization_session_path: Some(paths.session_path.display().to_string()),
-        authorization_status_path: Some(paths.status_path.display().to_string()),
-        nested_preflight_session_dir: Some(paths.preflight_session_dir.display().to_string()),
+        launch_packet_session_path: Some(paths.session_path.display().to_string()),
+        launch_packet_status_path: Some(paths.status_path.display().to_string()),
+        nested_authorization_session_dir: Some(paths.authorization_session_dir.display().to_string()),
         result: Some(serialize_enum(&status.result)),
-        preflight_step: status.preflight_step,
-        gate_step: status.gate_step,
-        controller_plan_step: status.controller_plan_step,
-        run_preflight_command_summary: run_preflight_command_summary(config, &paths.preflight_session_dir),
-        gate_evaluation_command_summary: expected_controller_view.gate_evaluation_command_summary,
-        authorized_live_cutover_command_summary: expected_controller_view
+        authorization_result_now: verified_authorization.result.clone(),
+        authorization_step: status.authorization_step,
+        controller_step: status.controller_step,
+        run_live_authorization_command_summary: run_live_authorization_command_summary(
+            config,
+            &paths.authorization_session_dir,
+        ),
+        frozen_live_cutover_controller_command_summary: expected_controller_view
             .run_live_cutover_command_summary,
-        current_pre_activation_gate_verdict,
-        current_pre_activation_gate_reason,
+        operator_next_action_summary: status.operator_next_action_summary,
+        current_pre_activation_gate_verdict: verified_authorization
+            .current_pre_activation_gate_verdict
+            .clone(),
+        current_pre_activation_gate_reason: verified_authorization
+            .current_pre_activation_gate_reason
+            .clone(),
         verification_mismatches: mismatches,
         activation_authorized,
         explicit_statement:
-            "this package-native live authorization verification checks bounded package/gate/controller evidence only; it does not authorize activation by itself"
+            "this package-native live launch packet verification checks only bounded package/authorization/controller evidence; it still does not execute live cutover by itself"
                 .to_string(),
     })
+}
+
+fn base_report(
+    config: &Config,
+    verdict: TinyLivePackageLaunchPacketVerdict,
+    reason: String,
+    controller_view: &tiny_live_activation_package_live_cutover::LiveCutoverControllerPlanView,
+) -> PackageLaunchPacketReport {
+    let session_dir = config.session_dir.as_ref();
+    let paths = session_dir.map(|path| package_live_launch_packet_paths(path));
+    PackageLaunchPacketReport {
+        generated_at: Utc::now(),
+        mode: mode_name(config.mode).to_string(),
+        verdict,
+        reason,
+        package_dir: config.package_dir.display().to_string(),
+        install_root: config.install_root.display().to_string(),
+        target_service_name: config.target_service_name.clone(),
+        backend_command: config.backend_command.clone(),
+        wrapper_timeout_ms: config.wrapper_timeout_ms,
+        service_status_max_staleness_ms: config.service_status_max_staleness_ms,
+        session_dir: session_dir.map(|path| path.display().to_string()),
+        launch_packet_session_path: paths
+            .as_ref()
+            .map(|value| value.session_path.display().to_string()),
+        launch_packet_status_path: paths
+            .as_ref()
+            .map(|value| value.status_path.display().to_string()),
+        nested_authorization_session_dir: paths
+            .as_ref()
+            .map(|value| value.authorization_session_dir.display().to_string()),
+        result: None,
+        authorization_result_now: None,
+        authorization_step: None,
+        controller_step: None,
+        run_live_authorization_command_summary: run_live_authorization_command_summary(
+            config,
+            &paths
+                .as_ref()
+                .map(|value| value.authorization_session_dir.clone())
+                .unwrap_or_else(|| {
+                    PathBuf::from(
+                        "<session-dir>/tiny_live_activation_package_launch_packet.authorization_session",
+                    )
+                }),
+        ),
+        frozen_live_cutover_controller_command_summary: controller_view
+            .run_live_cutover_command_summary
+            .clone(),
+        operator_next_action_summary:
+            "inspect the frozen launch packet, then wait for current Stage 3 / pre-activation truth to become genuinely green before considering any real live cutover invocation"
+                .to_string(),
+        current_pre_activation_gate_verdict: None,
+        current_pre_activation_gate_reason: None,
+        verification_mismatches: Vec::new(),
+        activation_authorized: false,
+        explicit_statement:
+            "this package-native live launch packet is an immutable operator handoff artifact only; it freezes authorization/controller truth without running live cutover"
+                .to_string(),
+    }
+}
+
+fn refusal_report(
+    config: &Config,
+    verdict: TinyLivePackageLaunchPacketVerdict,
+    reason: String,
+) -> PackageLaunchPacketReport {
+    let controller_view = controller_plan_view(config);
+    base_report(config, verdict, reason, &controller_view)
+}
+
+fn report_from_status(
+    config: &Config,
+    session_dir: &Path,
+    paths: &PackageLaunchPacketPaths,
+    verdict: TinyLivePackageLaunchPacketVerdict,
+    status: &PackageLaunchPacketStatus,
+    current_pre_activation_gate_verdict: Option<String>,
+    current_pre_activation_gate_reason: Option<String>,
+    activation_authorized: bool,
+) -> PackageLaunchPacketReport {
+    let controller_view = controller_plan_view(config);
+    PackageLaunchPacketReport {
+        generated_at: Utc::now(),
+        mode: "run_live_package_launch_packet".to_string(),
+        verdict,
+        reason: status.reason.clone(),
+        package_dir: config.package_dir.display().to_string(),
+        install_root: config.install_root.display().to_string(),
+        target_service_name: config.target_service_name.clone(),
+        backend_command: config.backend_command.clone(),
+        wrapper_timeout_ms: config.wrapper_timeout_ms,
+        service_status_max_staleness_ms: config.service_status_max_staleness_ms,
+        session_dir: Some(session_dir.display().to_string()),
+        launch_packet_session_path: Some(paths.session_path.display().to_string()),
+        launch_packet_status_path: Some(paths.status_path.display().to_string()),
+        nested_authorization_session_dir: Some(paths.authorization_session_dir.display().to_string()),
+        result: Some(serialize_enum(&status.result)),
+        authorization_result_now: status.authorization_result_now.clone(),
+        authorization_step: status.authorization_step.clone(),
+        controller_step: status.controller_step.clone(),
+        run_live_authorization_command_summary: run_live_authorization_command_summary(
+            config,
+            &paths.authorization_session_dir,
+        ),
+        frozen_live_cutover_controller_command_summary: controller_view
+            .run_live_cutover_command_summary,
+        operator_next_action_summary: status.operator_next_action_summary.clone(),
+        current_pre_activation_gate_verdict,
+        current_pre_activation_gate_reason,
+        verification_mismatches: Vec::new(),
+        activation_authorized,
+        explicit_statement:
+            "this package-native live launch packet freezes the exact current authorization/refusal truth together with the final live cutover controller contract; it does not launch live cutover by itself"
+                .to_string(),
+    }
+}
+
+fn mode_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::PlanLivePackageLaunchPacket => "plan_live_package_launch_packet",
+        Mode::RenderLivePackageLaunchPacket => "render_live_package_launch_packet",
+        Mode::RunLivePackageLaunchPacket => "run_live_package_launch_packet",
+        Mode::VerifyLivePackageLaunchPacket => "verify_live_package_launch_packet",
+    }
 }
 
 fn controller_plan_view(
@@ -1130,180 +987,91 @@ fn controller_plan_view(
     )
 }
 
-fn base_report(
+fn run_live_authorization_command_summary(
     config: &Config,
-    verdict: TinyLivePackageLiveAuthorizationVerdict,
-    reason: String,
+    authorization_session_dir: &Path,
+) -> String {
+    format!(
+        "copybot_tiny_live_activation_package_live_authorization --package-dir {} --install-root {} --target-service {} --backend-command {} --wrapper-timeout-ms {} --service-status-max-staleness-ms {} --session-dir {} --run-live-package-authorization",
+        shell_single_quote(&config.package_dir.display().to_string()),
+        shell_single_quote(&config.install_root.display().to_string()),
+        shell_single_quote(&config.target_service_name),
+        shell_single_quote(&config.backend_command),
+        config.wrapper_timeout_ms,
+        config.service_status_max_staleness_ms,
+        shell_single_quote(&authorization_session_dir.display().to_string()),
+    )
+}
+
+fn operator_next_action_summary(
     controller_view: &tiny_live_activation_package_live_cutover::LiveCutoverControllerPlanView,
-) -> PackageLiveAuthorizationReport {
-    let session_dir = config.session_dir.as_ref();
-    let paths = session_dir.map(|path| package_live_authorization_paths(path));
-    PackageLiveAuthorizationReport {
-        generated_at: Utc::now(),
-        mode: mode_name(config.mode).to_string(),
-        verdict,
-        reason,
-        package_dir: config.package_dir.display().to_string(),
-        install_root: config.install_root.display().to_string(),
-        target_service_name: config.target_service_name.clone(),
-        backend_command: config.backend_command.clone(),
-        wrapper_timeout_ms: config.wrapper_timeout_ms,
-        service_status_max_staleness_ms: config.service_status_max_staleness_ms,
-        session_dir: session_dir.map(|path| path.display().to_string()),
-        authorization_session_path: paths
-            .as_ref()
-            .map(|value| value.session_path.display().to_string()),
-        authorization_status_path: paths
-            .as_ref()
-            .map(|value| value.status_path.display().to_string()),
-        nested_preflight_session_dir: paths
-            .as_ref()
-            .map(|value| value.preflight_session_dir.display().to_string()),
-        result: None,
-        preflight_step: None,
-        gate_step: None,
-        controller_plan_step: None,
-        run_preflight_command_summary: run_preflight_command_summary(
-            config,
-            &paths
-                .as_ref()
-                .map(|value| value.preflight_session_dir.clone())
-                .unwrap_or_else(|| {
-                    PathBuf::from(
-                        "<session-dir>/tiny_live_activation_package_live_authorization.preflight_session",
-                    )
-                }),
-        ),
-        gate_evaluation_command_summary: controller_view.gate_evaluation_command_summary.clone(),
-        authorized_live_cutover_command_summary: controller_view
-            .run_live_cutover_command_summary
-            .clone(),
-        current_pre_activation_gate_verdict: None,
-        current_pre_activation_gate_reason: None,
-        verification_mismatches: Vec::new(),
-        activation_authorized: false,
-        explicit_statement:
-            "this package-native live authorization session binds one immutable package, one explicit live target contract, and one final live cutover controller into one go/no-go artifact; current Stage 3 / pre-activation truth still remains the hard authorization boundary"
-                .to_string(),
-    }
-}
-
-fn refusal_report(
-    config: &Config,
-    verdict: TinyLivePackageLiveAuthorizationVerdict,
-    reason: String,
-) -> PackageLiveAuthorizationReport {
-    let controller_view = controller_plan_view(config);
-    base_report(config, verdict, reason, &controller_view)
-}
-
-fn report_from_status(
-    config: &Config,
-    session_dir: &Path,
-    paths: &PackageLiveAuthorizationPaths,
-    verdict: TinyLivePackageLiveAuthorizationVerdict,
-    status: &PackageLiveAuthorizationStatus,
-    current_pre_activation_gate_verdict: Option<String>,
-    current_pre_activation_gate_reason: Option<String>,
+    result: LivePackageLaunchPacketResult,
     activation_authorized: bool,
-) -> PackageLiveAuthorizationReport {
-    let controller_view = controller_plan_view(config);
-    PackageLiveAuthorizationReport {
-        generated_at: Utc::now(),
-        mode: "run_live_package_authorization".to_string(),
-        verdict,
-        reason: status.reason.clone(),
-        package_dir: config.package_dir.display().to_string(),
-        install_root: config.install_root.display().to_string(),
-        target_service_name: config.target_service_name.clone(),
-        backend_command: config.backend_command.clone(),
-        wrapper_timeout_ms: config.wrapper_timeout_ms,
-        service_status_max_staleness_ms: config.service_status_max_staleness_ms,
-        session_dir: Some(session_dir.display().to_string()),
-        authorization_session_path: Some(paths.session_path.display().to_string()),
-        authorization_status_path: Some(paths.status_path.display().to_string()),
-        nested_preflight_session_dir: Some(paths.preflight_session_dir.display().to_string()),
-        result: Some(serialize_enum(&status.result)),
-        preflight_step: status.preflight_step.clone(),
-        gate_step: status.gate_step.clone(),
-        controller_plan_step: status.controller_plan_step.clone(),
-        run_preflight_command_summary: run_preflight_command_summary(config, &paths.preflight_session_dir),
-        gate_evaluation_command_summary: controller_view.gate_evaluation_command_summary,
-        authorized_live_cutover_command_summary: controller_view.run_live_cutover_command_summary,
-        current_pre_activation_gate_verdict,
-        current_pre_activation_gate_reason,
-        verification_mismatches: Vec::new(),
-        activation_authorized,
-        explicit_statement:
-            "this package-native live authorization session produces one deterministic go/no-go artifact only; it still does not authorize activation unless the current gate is genuinely green"
-                .to_string(),
+) -> String {
+    match result {
+        LivePackageLaunchPacketResult::EligibleWhenGateTurnsGreen if activation_authorized => format!(
+            "current authorization truth is green; the exact bounded next step remains {}. This launch packet itself still does not execute live cutover.",
+            controller_view.run_live_cutover_command_summary
+        ),
+        LivePackageLaunchPacketResult::RefusedByStage3 => format!(
+            "today refused by current Stage 3 truth; do not run live cutover now. Once the current Stage 3 / pre-activation truth genuinely turns green, the frozen bounded controller command remains {}",
+            controller_view.run_live_cutover_command_summary
+        ),
+        LivePackageLaunchPacketResult::RefusedByPreActivationGate => format!(
+            "today refused by the current pre-activation gate; do not run live cutover now. Once the current Stage 3 / pre-activation truth genuinely turns green, the frozen bounded controller command remains {}",
+            controller_view.run_live_cutover_command_summary
+        ),
+        LivePackageLaunchPacketResult::RefusedByInvalidTarget => {
+            if controller_view.verdict == "tiny_live_package_live_cutover_plan_ready" {
+                format!(
+                    "the live target/package/controller contract is non-green today; repair that contract before any launch. The frozen bounded controller command remains {}",
+                    controller_view.run_live_cutover_command_summary
+                )
+            } else {
+                "the final live cutover controller contract is not plan-ready today; repair package/live target/controller truth before any launch packet can become eligible".to_string()
+            }
+        }
+        LivePackageLaunchPacketResult::EligibleWhenGateTurnsGreen => format!(
+            "current nested authorization did not prove genuine green truth; do not run live cutover now. The frozen bounded controller command remains {}",
+            controller_view.run_live_cutover_command_summary
+        ),
     }
 }
 
-fn mode_name(mode: Mode) -> &'static str {
-    match mode {
-        Mode::PlanLivePackageAuthorization => "plan_live_package_authorization",
-        Mode::RenderLivePackageAuthorizationScript => "render_live_package_authorization_script",
-        Mode::RunLivePackageAuthorization => "run_live_package_authorization",
-        Mode::VerifyLivePackageAuthorization => "verify_live_package_authorization",
+fn package_live_launch_packet_paths(session_dir: &Path) -> PackageLaunchPacketPaths {
+    PackageLaunchPacketPaths {
+        session_path: session_dir.join("tiny_live_activation_package_launch_packet.session.json"),
+        status_path: session_dir.join("tiny_live_activation_package_launch_packet.status.json"),
+        authorization_report_path: session_dir
+            .join("tiny_live_activation_package_launch_packet.authorization.report.json"),
+        controller_report_path: session_dir
+            .join("tiny_live_activation_package_launch_packet.controller.report.json"),
+        authorization_session_dir: session_dir
+            .join("tiny_live_activation_package_launch_packet.authorization_session"),
     }
 }
 
-fn step_artifact(
-    path: &Path,
-    mode: &str,
-    verdict: &str,
-    reason: &str,
-    generated_at: DateTime<Utc>,
-) -> PackageLiveAuthorizationStepArtifact {
-    PackageLiveAuthorizationStepArtifact {
-        path: path.display().to_string(),
-        mode: mode.to_string(),
-        verdict: verdict.to_string(),
-        reason: reason.to_string(),
-        generated_at,
-    }
-}
-
-fn package_live_authorization_paths(session_dir: &Path) -> PackageLiveAuthorizationPaths {
-    PackageLiveAuthorizationPaths {
-        session_path: session_dir
-            .join("tiny_live_activation_package_live_authorization.session.json"),
-        status_path: session_dir
-            .join("tiny_live_activation_package_live_authorization.status.json"),
-        preflight_report_path: session_dir
-            .join("tiny_live_activation_package_live_authorization.preflight.report.json"),
-        gate_report_path: session_dir
-            .join("tiny_live_activation_package_live_authorization.gate.report.json"),
-        controller_plan_report_path: session_dir
-            .join("tiny_live_activation_package_live_authorization.controller.report.json"),
-        preflight_session_dir: session_dir
-            .join("tiny_live_activation_package_live_authorization.preflight_session"),
-    }
-}
-
-fn ensure_clean_live_package_authorization_session_dir(session_dir: &Path) -> Result<()> {
-    let paths = package_live_authorization_paths(session_dir);
+fn ensure_clean_live_package_launch_packet_session_dir(session_dir: &Path) -> Result<()> {
+    let paths = package_live_launch_packet_paths(session_dir);
     for path in [
         &paths.session_path,
         &paths.status_path,
-        &paths.preflight_report_path,
-        &paths.gate_report_path,
-        &paths.controller_plan_report_path,
+        &paths.authorization_report_path,
+        &paths.controller_report_path,
     ] {
         if path.exists() {
             bail!(
-                "refusing to reuse package live authorization session dir {}; artifact {} already exists",
+                "refusing to reuse package live launch packet session dir {}; artifact {} already exists",
                 session_dir.display(),
                 path.display()
             );
         }
     }
-    if paths.preflight_session_dir.exists() {
+    if paths.authorization_session_dir.exists() {
         bail!(
-            "refusing to reuse package live authorization session dir {}; artifact {} already exists",
+            "refusing to reuse package live launch packet session dir {}; artifact {} already exists",
             session_dir.display(),
-            paths.preflight_session_dir.display()
+            paths.authorization_session_dir.display()
         );
     }
     fs::create_dir_all(session_dir)
@@ -1354,19 +1122,19 @@ fn persist_json_value(path: &Path, value: &serde_json::Value) -> Result<()> {
 }
 
 fn load_required_step_json<T: for<'de> Deserialize<'de>>(
-    step: &Option<PackageLiveAuthorizationStepArtifact>,
+    step: &Option<PackageLaunchPacketStepArtifact>,
     expected_path: &Path,
     label: &str,
     mismatches: &mut Vec<String>,
 ) -> Result<T> {
     let step = step
         .as_ref()
-        .ok_or_else(|| anyhow!("missing required package live authorization step {label}"))?;
+        .ok_or_else(|| anyhow!("missing required package launch packet step {label}"))?;
     load_bound_step_json(step, expected_path, label, mismatches)
 }
 
 fn load_bound_step_json<T: for<'de> Deserialize<'de>>(
-    step: &PackageLiveAuthorizationStepArtifact,
+    step: &PackageLaunchPacketStepArtifact,
     expected_path: &Path,
     label: &str,
     mismatches: &mut Vec<String>,
@@ -1374,26 +1142,16 @@ fn load_bound_step_json<T: for<'de> Deserialize<'de>>(
     let expected = expected_path.display().to_string();
     if step.path != expected {
         mismatches.push(format!(
-            "package live authorization {label} path {} does not match deterministic session artifact {}",
+            "package launch packet {label} path {} does not match deterministic session artifact {}",
             step.path, expected
         ));
     }
     load_json(expected_path).with_context(|| {
         format!(
-            "failed reading deterministic package live authorization {label} report {}",
+            "failed reading deterministic package launch packet {label} report {}",
             expected_path.display()
         )
     })
-}
-
-fn resolve_install_target_paths<S>(summary: &S) -> ResolvedInstallTargetPaths
-where
-    S: Serialize,
-{
-    let value = serde_json::to_value(summary)
-        .expect("serializing install target summary for path resolution should succeed");
-    serde_json::from_value(value)
-        .expect("install target summary shape should match resolved install target paths")
 }
 
 fn compare_string(actual: &str, expected: &str, label: &str, mismatches: &mut Vec<String>) {
@@ -1415,145 +1173,97 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-fn run_preflight_command_summary(config: &Config, preflight_session_dir: &Path) -> String {
-    format!(
-        "copybot_tiny_live_activation_package_preflight --package-dir {} --install-root {} --target-service {} --backend-command {} --wrapper-timeout-ms {} --service-status-max-staleness-ms {} --session-dir {} --run-live-package-preflight",
-        shell_single_quote(&config.package_dir.display().to_string()),
-        shell_single_quote(&config.install_root.display().to_string()),
-        shell_single_quote(&config.target_service_name),
-        shell_single_quote(&config.backend_command),
-        config.wrapper_timeout_ms,
-        config.service_status_max_staleness_ms,
-        shell_single_quote(&preflight_session_dir.display().to_string()),
-    )
+fn step_artifact(
+    path: &Path,
+    mode: &str,
+    verdict: &str,
+    reason: &str,
+    generated_at: DateTime<Utc>,
+) -> PackageLaunchPacketStepArtifact {
+    PackageLaunchPacketStepArtifact {
+        path: path.display().to_string(),
+        mode: mode.to_string(),
+        verdict: verdict.to_string(),
+        reason: reason.to_string(),
+        generated_at,
+    }
 }
 
-fn gate_evaluation_command_summary_placeholder(config: &Config) -> String {
-    format!(
-        "copybot_tiny_live_activation_live_execute --activation-config <installed-activation-config> --rollback-config <installed-rollback-config> --target-config <installed-target-config> --target-service {} --service-control-command <installed-wrapper> --runtime-dir <installed-runtime-dir> --backup-dir <installed-backup-dir> --plan-live",
-        shell_single_quote(&config.target_service_name),
-    )
+fn authorization_report_matches_controller(
+    authorization: &StoredAuthorizationReportView,
+    controller_view: &tiny_live_activation_package_live_cutover::LiveCutoverControllerPlanView,
+) -> bool {
+    authorization.authorized_live_cutover_command_summary
+        == controller_view.run_live_cutover_command_summary
+        && authorization.gate_evaluation_command_summary
+            == controller_view.gate_evaluation_command_summary
 }
 
-fn validate_preflight_report_contract(
-    report: &StoredPreflightReportView,
+fn authorization_proves_eligible_now(
+    authorization: &tiny_live_activation_package_live_authorization::PackageLiveAuthorizationLaunchPacketStep,
+) -> bool {
+    authorization.result.as_deref() == Some("authorized_now") && authorization.activation_authorized
+}
+
+fn validate_authorization_report_contract(
+    report: &StoredAuthorizationReportView,
     config: &Config,
-    paths: &PackageLiveAuthorizationPaths,
+    paths: &PackageLaunchPacketPaths,
+    expected_controller_view: &tiny_live_activation_package_live_cutover::LiveCutoverControllerPlanView,
     mismatches: &mut Vec<String>,
 ) {
     compare_string(
         &report.package_dir,
         &config.package_dir.display().to_string(),
-        "stored preflight package_dir",
+        "stored authorization package_dir",
         mismatches,
     );
     compare_string(
         &report.install_root,
         &config.install_root.display().to_string(),
-        "stored preflight install_root",
+        "stored authorization install_root",
         mismatches,
     );
     compare_string(
         &report.target_service_name,
         &config.target_service_name,
-        "stored preflight target_service_name",
+        "stored authorization target_service_name",
         mismatches,
     );
     compare_string(
         &report.backend_command,
         &config.backend_command,
-        "stored preflight backend_command",
+        "stored authorization backend_command",
         mismatches,
     );
     if report.wrapper_timeout_ms != config.wrapper_timeout_ms {
         mismatches.push(format!(
-            "stored preflight wrapper_timeout_ms {} does not match requested {}",
+            "stored authorization wrapper_timeout_ms {} does not match requested {}",
             report.wrapper_timeout_ms, config.wrapper_timeout_ms
         ));
     }
     if report.service_status_max_staleness_ms != config.service_status_max_staleness_ms {
         mismatches.push(format!(
-            "stored preflight service_status_max_staleness_ms {} does not match requested {}",
+            "stored authorization service_status_max_staleness_ms {} does not match requested {}",
             report.service_status_max_staleness_ms, config.service_status_max_staleness_ms
         ));
     }
     compare_string(
         report.session_dir.as_deref().unwrap_or_default(),
-        &paths.preflight_session_dir.display().to_string(),
-        "stored preflight session_dir",
-        mismatches,
-    );
-}
-
-fn preflight_allows_live_authorization(report: &StoredPreflightReportView) -> bool {
-    match report.result.as_deref() {
-        Some("ready_for_cutover_planning") | Some("cutover_blocked_by_gate") => true,
-        Some("failed_during_live_target_verify") => {
-            report.cutover_plan_step.as_ref().is_some_and(|step| {
-                step.verdict == "tiny_live_package_cutover_refused_by_missing_backup"
-            })
-        }
-        _ => false,
-    }
-}
-
-fn preflight_proves_authorized_now(report: &StoredPreflightReportView) -> bool {
-    report.result.as_deref() == Some("ready_for_cutover_planning")
-}
-
-fn verified_preflight_proves_authorized_now(
-    report: &tiny_live_activation_package_preflight::PackagePreflightCapabilityStep,
-) -> bool {
-    report.result.as_deref() == Some("ready_for_cutover_planning") && report.activation_authorized
-}
-
-fn validate_live_execute_report_contract(
-    report: &tiny_live_activation_live_execute::LiveExecuteReport,
-    install_summary: &ResolvedInstallTargetPaths,
-    config: &Config,
-    label: &str,
-    mismatches: &mut Vec<String>,
-) {
-    compare_string(
-        &report.activation_config_path,
-        &install_summary.installed_activation_config_path,
-        &format!("{label} activation_config_path"),
+        &paths.authorization_session_dir.display().to_string(),
+        "stored authorization session_dir",
         mismatches,
     );
     compare_string(
-        &report.rollback_config_path,
-        &install_summary.installed_rollback_config_path,
-        &format!("{label} rollback_config_path"),
+        &report.gate_evaluation_command_summary,
+        &expected_controller_view.gate_evaluation_command_summary,
+        "stored authorization gate_evaluation_command_summary",
         mismatches,
     );
     compare_string(
-        &report.target_config_path,
-        &install_summary.target_config_path,
-        &format!("{label} target_config_path"),
-        mismatches,
-    );
-    compare_string(
-        &report.target_service_name,
-        &config.target_service_name,
-        &format!("{label} target_service_name"),
-        mismatches,
-    );
-    compare_string(
-        &report.service_control_command_path,
-        &install_summary.wrapper_path,
-        &format!("{label} service_control_command_path"),
-        mismatches,
-    );
-    compare_string(
-        &report.runtime_dir,
-        &install_summary.runtime_dir,
-        &format!("{label} runtime_dir"),
-        mismatches,
-    );
-    compare_string(
-        &report.backup_dir,
-        &install_summary.backup_dir,
-        &format!("{label} backup_dir"),
+        &report.authorized_live_cutover_command_summary,
+        &expected_controller_view.run_live_cutover_command_summary,
+        "stored authorization authorized_live_cutover_command_summary",
         mismatches,
     );
 }
@@ -1649,7 +1359,7 @@ fn validate_controller_plan_view_contract(
     );
 }
 
-fn render_report_lines(report: &PackageLiveAuthorizationReport) -> String {
+fn render_report_lines(report: &PackageLaunchPacketReport) -> String {
     let mut lines = vec![
         format!("mode={}", report.mode),
         format!("verdict={}", serialize_enum(&report.verdict)),
@@ -1667,29 +1377,32 @@ fn render_report_lines(report: &PackageLiveAuthorizationReport) -> String {
     if let Some(value) = &report.session_dir {
         lines.push(format!("session_dir={value}"));
     }
-    if let Some(value) = &report.authorization_session_path {
-        lines.push(format!("authorization_session_path={value}"));
+    if let Some(value) = &report.launch_packet_session_path {
+        lines.push(format!("launch_packet_session_path={value}"));
     }
-    if let Some(value) = &report.authorization_status_path {
-        lines.push(format!("authorization_status_path={value}"));
+    if let Some(value) = &report.launch_packet_status_path {
+        lines.push(format!("launch_packet_status_path={value}"));
     }
-    if let Some(value) = &report.nested_preflight_session_dir {
-        lines.push(format!("nested_preflight_session_dir={value}"));
+    if let Some(value) = &report.nested_authorization_session_dir {
+        lines.push(format!("nested_authorization_session_dir={value}"));
     }
     if let Some(value) = &report.result {
         lines.push(format!("result={value}"));
     }
+    if let Some(value) = &report.authorization_result_now {
+        lines.push(format!("authorization_result_now={value}"));
+    }
     lines.push(format!(
-        "run_preflight_command_summary={}",
-        report.run_preflight_command_summary
+        "run_live_authorization_command_summary={}",
+        report.run_live_authorization_command_summary
     ));
     lines.push(format!(
-        "gate_evaluation_command_summary={}",
-        report.gate_evaluation_command_summary
+        "frozen_live_cutover_controller_command_summary={}",
+        report.frozen_live_cutover_controller_command_summary
     ));
     lines.push(format!(
-        "authorized_live_cutover_command_summary={}",
-        report.authorized_live_cutover_command_summary
+        "operator_next_action_summary={}",
+        report.operator_next_action_summary
     ));
     if let Some(value) = &report.current_pre_activation_gate_verdict {
         lines.push(format!("current_pre_activation_gate_verdict={value}"));
@@ -1701,19 +1414,21 @@ fn render_report_lines(report: &PackageLiveAuthorizationReport) -> String {
         "activation_authorized={}",
         report.activation_authorized
     ));
+    lines.push(format!("explicit_statement={}", report.explicit_statement));
     if !report.verification_mismatches.is_empty() {
-        lines.push("verification_mismatches=".to_string());
+        lines.push("verification_mismatches:".to_string());
         for mismatch in &report.verification_mismatches {
-            lines.push(format!("- {mismatch}"));
+            lines.push(format!("  - {mismatch}"));
         }
     }
-    lines.push(format!("explicit_statement={}", report.explicit_statement));
     lines.join("\n")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tiny_live_activation_live_execute::tiny_live_activation_execute::RenderedConfigMetadata;
+    use chrono::Duration;
     use copybot_config::load_from_path;
     use copybot_storage::{
         DiscoveryWalletFreshnessCaptureWrite, ExecutionDryRunRehearsalWrite, SqliteStore,
@@ -1722,71 +1437,84 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpListener};
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn green_gate_authorizes_now() {
-        let fixture = authorization_fixture(
-            "tiny_live_activation_package_live_authorization_green",
+    fn green_gate_yields_eligible_launch_packet() {
+        let fixture = launch_packet_fixture(
+            "tiny_live_activation_package_launch_packet_green",
             GateState::Green,
         );
         let report = run_json_report(fixture.config.clone());
         assert_eq!(
             report.verdict,
-            TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationAuthorizedNow
+            TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketEligibleWhenGateTurnsGreen
         );
-        assert_eq!(report.result.as_deref(), Some("authorized_now"));
+        assert_eq!(
+            report.result.as_deref(),
+            Some("eligible_when_gate_turns_green")
+        );
+        assert_eq!(
+            report.authorization_result_now.as_deref(),
+            Some("authorized_now")
+        );
         assert!(report.activation_authorized);
     }
 
     #[test]
-    fn green_run_then_verify_stays_authorized_now() {
-        let fixture = authorization_fixture(
-            "tiny_live_activation_package_live_authorization_verify_green",
+    fn green_run_then_verify_stays_eligible() {
+        let fixture = launch_packet_fixture(
+            "tiny_live_activation_package_launch_packet_verify_green",
             GateState::Green,
         );
         let run_report = run_json_report(fixture.config.clone());
         assert_eq!(
             run_report.verdict,
-            TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationAuthorizedNow
+            TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketEligibleWhenGateTurnsGreen
         );
 
-        let verify = verify_live_package_authorization_report(&fixture.config).unwrap();
+        let verify = verify_live_package_launch_packet_report(&fixture.config).unwrap();
         assert_eq!(
             verify.verdict,
-            TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationVerifyOk,
+            TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketVerifyOk,
             "verification mismatches: {:?}",
             verify.verification_mismatches
         );
-        assert_eq!(verify.result.as_deref(), Some("authorized_now"));
+        assert_eq!(
+            verify.result.as_deref(),
+            Some("eligible_when_gate_turns_green")
+        );
+        assert_eq!(
+            verify.authorization_result_now.as_deref(),
+            Some("authorized_now")
+        );
         assert!(verify.activation_authorized);
     }
 
     #[test]
-    fn stage3_non_green_refuses_authorization() {
-        let fixture = authorization_fixture(
-            "tiny_live_activation_package_live_authorization_stage3",
+    fn stage3_non_green_yields_refused_packet() {
+        let fixture = launch_packet_fixture(
+            "tiny_live_activation_package_launch_packet_stage3",
             GateState::Stage3Blocked,
         );
         let report = run_json_report(fixture.config.clone());
         assert_eq!(
             report.verdict,
-            TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationRefusedByStage3
+            TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketRefusedByStage3
         );
         assert_eq!(report.result.as_deref(), Some("refused_by_stage3"));
         assert!(!report.activation_authorized);
     }
 
     #[test]
-    fn pre_activation_gate_non_green_refuses_authorization() {
-        let fixture = authorization_fixture(
-            "tiny_live_activation_package_live_authorization_pre_gate",
+    fn pre_activation_non_green_yields_refused_packet() {
+        let fixture = launch_packet_fixture(
+            "tiny_live_activation_package_launch_packet_pre_gate",
             GateState::PreActivationBlocked,
         );
         let report = run_json_report(fixture.config.clone());
         assert_eq!(
             report.verdict,
-            TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationRefusedByPreActivationGate
+            TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketRefusedByPreActivationGate
         );
         assert_eq!(
             report.result.as_deref(),
@@ -1796,9 +1524,9 @@ mod tests {
     }
 
     #[test]
-    fn tampered_installed_wrapper_is_refused_as_invalid_target() {
-        let fixture = authorization_fixture(
-            "tiny_live_activation_package_live_authorization_invalid_wrapper",
+    fn tampered_installed_wrapper_refuses_packet_as_invalid_target() {
+        let fixture = launch_packet_fixture(
+            "tiny_live_activation_package_launch_packet_invalid_wrapper",
             GateState::Green,
         );
         let wrapper_path = fixture
@@ -1809,85 +1537,48 @@ mod tests {
         let report = run_json_report(fixture.config.clone());
         assert_eq!(
             report.verdict,
-            TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationRefusedByInvalidTarget
+            TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketRefusedByInvalidTarget
         );
         assert_eq!(report.result.as_deref(), Some("refused_by_invalid_target"));
     }
 
     #[test]
-    fn verify_rejects_tampered_controller_plan_step_path() {
-        let fixture = authorization_fixture(
-            "tiny_live_activation_package_live_authorization_verify_tampered_path",
+    fn verify_rejects_tampered_authorization_step_path() {
+        let fixture = launch_packet_fixture(
+            "tiny_live_activation_package_launch_packet_tampered_auth_path",
             GateState::Green,
         );
         run_json_report(fixture.config.clone());
-        let paths = package_live_authorization_paths(fixture.config.session_dir.as_ref().unwrap());
-        let mut status: PackageLiveAuthorizationStatus = load_json(&paths.status_path).unwrap();
+        let paths = package_live_launch_packet_paths(fixture.config.session_dir.as_ref().unwrap());
+        let mut status: PackageLaunchPacketStatus = load_json(&paths.status_path).unwrap();
         let other = fixture.fixture_dir.join("other.report.json");
         fs::write(&other, "{}").unwrap();
-        status.controller_plan_step.as_mut().unwrap().path = other.display().to_string();
+        status.authorization_step.as_mut().unwrap().path = other.display().to_string();
         persist_json(&paths.status_path, &status).unwrap();
 
-        let verify = verify_live_package_authorization_report(&fixture.config).unwrap();
+        let verify = verify_live_package_launch_packet_report(&fixture.config).unwrap();
         assert_eq!(
             verify.verdict,
-            TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationVerifyInvalid
+            TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketVerifyInvalid
         );
     }
 
     #[test]
     fn verify_rejects_mismatched_target_contract() {
-        let fixture = authorization_fixture(
-            "tiny_live_activation_package_live_authorization_verify_target_mismatch",
+        let fixture = launch_packet_fixture(
+            "tiny_live_activation_package_launch_packet_target_mismatch",
             GateState::Green,
         );
         run_json_report(fixture.config.clone());
-        let verify = verify_live_package_authorization_report(&Config {
+        let verify = verify_live_package_launch_packet_report(&Config {
             target_service_name: "other.service".to_string(),
             ..fixture.config
         })
         .unwrap();
         assert_eq!(
             verify.verdict,
-            TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationVerifyInvalid
+            TinyLivePackageLaunchPacketVerdict::TinyLivePackageLaunchPacketVerifyInvalid
         );
-    }
-
-    #[test]
-    fn verify_rejects_authorized_now_when_nested_preflight_still_gate_blocked() {
-        let fixture = authorization_fixture(
-            "tiny_live_activation_package_live_authorization_verify_gate_tamper",
-            GateState::Stage3Blocked,
-        );
-        let run_report = run_json_report(fixture.config.clone());
-        assert_eq!(
-            run_report.verdict,
-            TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationRefusedByStage3
-        );
-
-        let paths = package_live_authorization_paths(fixture.config.session_dir.as_ref().unwrap());
-        let mut status: PackageLiveAuthorizationStatus = load_json(&paths.status_path).unwrap();
-        status.result = LivePackageAuthorizationResult::AuthorizedNow;
-        status.reason = "tampered authorized_now".to_string();
-        persist_json(&paths.status_path, &status).unwrap();
-
-        let mut gate_report: tiny_live_activation_live_execute::LiveExecuteReport =
-            load_json(&paths.gate_report_path).unwrap();
-        gate_report.verdict =
-            tiny_live_activation_live_execute::TinyLiveLiveExecuteVerdict::TinyLiveLivePlanReady;
-        gate_report.reason = "tampered plan ready gate".to_string();
-        persist_json(&paths.gate_report_path, &gate_report).unwrap();
-
-        let verify = verify_live_package_authorization_report(&fixture.config).unwrap();
-        assert_eq!(
-            verify.verdict,
-            TinyLivePackageLiveAuthorizationVerdict::TinyLivePackageLiveAuthorizationVerifyInvalid
-        );
-        assert!(!verify.activation_authorized);
-        assert!(verify.verification_mismatches.iter().any(|mismatch| {
-            mismatch.contains("nested preflight ready_for_cutover_planning")
-                || mismatch.contains("nested preflight activation_authorized")
-        }));
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -1897,14 +1588,14 @@ mod tests {
         PreActivationBlocked,
     }
 
-    struct AuthorizationFixture {
+    struct LaunchPacketFixture {
         fixture_dir: PathBuf,
         config: Config,
         _rpc_server: MockHttpServer,
         _adapter_server: MockHttpServer,
     }
 
-    fn authorization_fixture(label: &str, gate_state: GateState) -> AuthorizationFixture {
+    fn launch_packet_fixture(label: &str, gate_state: GateState) -> LaunchPacketFixture {
         let fixture_dir = temp_dir(label);
         let install_root = fixture_dir.join("live-root");
         let target_config_path = install_root.join("etc/solana-copy-bot/live.server.toml");
@@ -1972,10 +1663,10 @@ mod tests {
         )
         .unwrap();
 
-        AuthorizationFixture {
+        LaunchPacketFixture {
             fixture_dir: fixture_dir.clone(),
             config: Config {
-                mode: Mode::RunLivePackageAuthorization,
+                mode: Mode::RunLivePackageLaunchPacket,
                 package_dir,
                 install_root,
                 target_service_name: "solana-copy-bot.service".to_string(),
@@ -1983,7 +1674,7 @@ mod tests {
                 wrapper_timeout_ms: tiny_live_activation_live_execute::live_service_control_wrapper_contract::DEFAULT_TIMEOUT_MS,
                 service_status_max_staleness_ms:
                     tiny_live_activation_package_preflight::DEFAULT_SERVICE_STATUS_MAX_STALENESS_MS,
-                session_dir: Some(fixture_dir.join("live-authorization-session")),
+                session_dir: Some(fixture_dir.join("launch-packet-session")),
                 output_path: None,
                 json: false,
             },
@@ -1992,7 +1683,7 @@ mod tests {
         }
     }
 
-    fn run_json_report(config: Config) -> PackageLiveAuthorizationReport {
+    fn run_json_report(config: Config) -> PackageLaunchPacketReport {
         let output = run(Config {
             json: true,
             ..config
@@ -2047,37 +1738,38 @@ mod tests {
     ) {
         fs::write(path, &contents).unwrap();
         let hash = format!("{:x}", Sha256::digest(contents.as_bytes()));
-        let metadata =
-            tiny_live_activation_live_execute::tiny_live_activation_execute::RenderedConfigMetadata {
-                metadata_version: "1".to_string(),
-                render_kind,
-                generated_at: ts("2026-03-28T12:00:00Z"),
-                input_config_path: source_config_path.display().to_string(),
-                output_config_path: path.display().to_string(),
-                source_config_fingerprint_scope:
-                    tiny_live_activation_live_execute::tiny_live_activation_execute::FINGERPRINT_SCOPE
-                        .to_string(),
-                source_config_fingerprint_sha256: source_fingerprint_sha256.to_string(),
-                expected_source_fingerprint_sha256: Some(source_fingerprint_sha256.to_string()),
-                rendered_config_sha256: hash,
-                pre_activation_gate_verdict: "pre_activation_gates_green".to_string(),
-                pre_activation_gate_reason: "green".to_string(),
-                activation_plan_verdict: "activation_plan_ready_when_stage_gate_allows".to_string(),
-                activation_plan_reason: "ready".to_string(),
-                activation_overlay_complete: true,
-                rollback_plan_complete: true,
-                service_restart_contract_complete: true,
-                field_expectations: vec![tiny_live_activation_live_execute::tiny_live_activation_execute::FieldExpectation {
+        let metadata = RenderedConfigMetadata {
+            metadata_version: "1".to_string(),
+            render_kind,
+            generated_at: ts("2026-03-28T12:00:00Z"),
+            input_config_path: source_config_path.display().to_string(),
+            output_config_path: path.display().to_string(),
+            source_config_fingerprint_scope:
+                tiny_live_activation_live_execute::tiny_live_activation_execute::FINGERPRINT_SCOPE
+                    .to_string(),
+            source_config_fingerprint_sha256: source_fingerprint_sha256.to_string(),
+            expected_source_fingerprint_sha256: Some(source_fingerprint_sha256.to_string()),
+            rendered_config_sha256: hash,
+            pre_activation_gate_verdict: "pre_activation_gates_green".to_string(),
+            pre_activation_gate_reason: "green".to_string(),
+            activation_plan_verdict: "activation_plan_ready_when_stage_gate_allows".to_string(),
+            activation_plan_reason: "ready".to_string(),
+            activation_overlay_complete: true,
+            rollback_plan_complete: true,
+            service_restart_contract_complete: true,
+            field_expectations: vec![
+                tiny_live_activation_live_execute::tiny_live_activation_execute::FieldExpectation {
                     field: "execution.enabled".to_string(),
                     source_value: serde_json::json!(source_execution_enabled),
                     target_value: serde_json::json!(target_execution_enabled),
                     reason: "test".to_string(),
                     source: "test".to_string(),
-                }],
-                execution_untouched_by_batch: true,
-                activation_authorized: false,
-                not_authorized_summary: "test".to_string(),
-            };
+                },
+            ],
+            execution_untouched_by_batch: true,
+            activation_authorized: false,
+            not_authorized_summary: "test".to_string(),
+        };
         fs::write(
             tiny_live_activation_live_execute::tiny_live_activation_execute::metadata_path_for_rendered_config(path),
             serde_json::to_string_pretty(&metadata).unwrap(),
@@ -2093,34 +1785,34 @@ mod tests {
             GateState::Green => {
                 append_wallet_freshness_capture(
                     &store,
-                    now - chrono::Duration::minutes(5),
+                    now - Duration::minutes(5),
                     "validated_current",
                     "fresh_current",
                     true,
                 );
                 append_wallet_freshness_capture(
                     &store,
-                    now - chrono::Duration::minutes(15),
+                    now - Duration::minutes(15),
                     "validated_current",
                     "fresh_current",
                     true,
                 );
                 append_wallet_freshness_capture(
                     &store,
-                    now - chrono::Duration::minutes(25),
+                    now - Duration::minutes(25),
                     "validated_current",
                     "fresh_current",
                     true,
                 );
                 store
                     .append_execution_dry_run_rehearsal(&rehearsal_write(
-                        now - chrono::Duration::minutes(3),
+                        now - Duration::minutes(3),
                         "rehearsal_green",
                     ))
                     .unwrap();
                 store
                     .append_execution_dry_run_rehearsal(&rehearsal_write(
-                        now - chrono::Duration::minutes(12),
+                        now - Duration::minutes(12),
                         "rehearsal_green_with_business_reject",
                     ))
                     .unwrap();
@@ -2128,28 +1820,28 @@ mod tests {
             GateState::PreActivationBlocked => {
                 append_wallet_freshness_capture(
                     &store,
-                    now - chrono::Duration::minutes(5),
+                    now - Duration::minutes(5),
                     "validated_current",
                     "fresh_current",
                     true,
                 );
                 append_wallet_freshness_capture(
                     &store,
-                    now - chrono::Duration::minutes(15),
+                    now - Duration::minutes(15),
                     "validated_current",
                     "fresh_current",
                     true,
                 );
                 append_wallet_freshness_capture(
                     &store,
-                    now - chrono::Duration::minutes(25),
+                    now - Duration::minutes(25),
                     "validated_current",
                     "fresh_current",
                     true,
                 );
                 store
                     .append_execution_dry_run_rehearsal(&rehearsal_write(
-                        now - chrono::Duration::days(2),
+                        now - Duration::days(2),
                         "stale_rehearsal",
                     ))
                     .unwrap();
@@ -2157,21 +1849,21 @@ mod tests {
             GateState::Stage3Blocked => {
                 append_wallet_freshness_capture(
                     &store,
-                    now - chrono::Duration::minutes(5),
+                    now - Duration::minutes(5),
                     "publication_drifting",
                     "drifting_but_acceptable",
                     false,
                 );
                 append_wallet_freshness_capture(
                     &store,
-                    now - chrono::Duration::minutes(15),
+                    now - Duration::minutes(15),
                     "publication_drifting",
                     "drifting_but_acceptable",
                     false,
                 );
                 append_wallet_freshness_capture(
                     &store,
-                    now - chrono::Duration::minutes(25),
+                    now - Duration::minutes(25),
                     "publication_drifting",
                     "drifting_but_acceptable",
                     false,
@@ -2209,7 +1901,7 @@ mod tests {
                 ],
                 audit_json: serde_json::json!({
                     "now": captured_at,
-                    "window_start": captured_at - chrono::Duration::days(5),
+                    "window_start": captured_at - Duration::days(5),
                     "verdict": audit_verdict,
                     "reason": "seed",
                     "follow_top_n": 2,
@@ -2218,7 +1910,7 @@ mod tests {
                     "publication_recent_under_gate": true,
                     "latest_publication_ts": captured_at,
                     "publication_age_seconds": 60,
-                    "latest_publication_window_start": captured_at - chrono::Duration::days(5),
+                    "latest_publication_window_start": captured_at - Duration::days(5),
                     "published_scoring_source": "raw_window_persisted_stream",
                     "published_wallet_ids": ["wallet-alpha", "wallet-beta"],
                     "active_follow_wallet_ids": ["wallet-alpha", "wallet-beta"],
@@ -2254,7 +1946,7 @@ mod tests {
                         "eligible_wallet_count": 2,
                         "top_wallet_count": 2,
                         "short_retention_configured": false,
-                        "covered_since": captured_at - chrono::Duration::days(5),
+                        "covered_since": captured_at - Duration::days(5),
                         "covered_through_cursor": {
                             "ts_utc": captured_at,
                             "slot": 1,
@@ -2285,7 +1977,7 @@ mod tests {
                 })
                 .to_string(),
                 shadow_signal_json: serde_json::json!({
-                    "recent_window_start": captured_at - chrono::Duration::minutes(30),
+                    "recent_window_start": captured_at - Duration::minutes(30),
                     "recent_window_end": captured_at,
                     "selected_wallet_ids": ["wallet-alpha", "wallet-beta"],
                     "selected_wallet_count": 2,
@@ -2494,8 +2186,8 @@ max_consecutive_hard_failures = 3
     fn temp_dir(label: &str) -> PathBuf {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         loop {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
             let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2536,11 +2228,13 @@ max_consecutive_hard_failures = 3
                     let mut buffer = [0u8; 8192];
                     let bytes_read = stream.read(&mut buffer).unwrap_or(0);
                     let request = String::from_utf8_lossy(&buffer[..bytes_read]);
-                    if let Some(required) = required_header.as_deref() {
+                    if let Some(header) = required_header.as_deref() {
+                        let header_name = format!("{header}:");
                         assert!(
-                            request.lines().any(|line| line
-                                .eq_ignore_ascii_case(&format!("x-copybot-env: {required}"))),
-                            "request missing required x-copybot-env header: {request}",
+                            request
+                                .lines()
+                                .any(|line| line.to_ascii_lowercase().starts_with(&header_name)),
+                            "missing required header {header} in request: {request}"
                         );
                     }
                     let response = format!(

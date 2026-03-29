@@ -1349,6 +1349,51 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `tiny_live_package_live_authorization_verify_ok`
    - `tiny_live_package_live_authorization_verify_invalid`
 
+## Tiny-Live Package Launch Packet
+
+1. The repo now also has one first-class package-native live launch packet /
+   turn-green handoff artifact bound to the final authorization truth and the
+   final live cutover controller:
+   - review the bounded launch-packet plan:
+     `copybot_tiny_live_activation_package_launch_packet --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-live-package-launch-packet --json`
+   - render an operator-facing launch-packet script:
+     `copybot_tiny_live_activation_package_launch_packet --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --render-live-package-launch-packet --output /tmp/tiny-live.package-launch-packet.sh --json`
+   - run the immutable handoff packet session:
+     `copybot_tiny_live_activation_package_launch_packet --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-launch-packet-session --run-live-package-launch-packet --json`
+   - verify a persisted launch packet later:
+     `copybot_tiny_live_activation_package_launch_packet --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-launch-packet-session --verify-live-package-launch-packet --json`
+2. `--package-dir` remains the sole immutable handoff input:
+   - the packet sequence is fixed:
+     verify package -> verify installed live target -> verify installed
+     wrapper/package binding -> evaluate current authorization/refusal truth
+     -> freeze the exact final live cutover controller command summary ->
+     classify today refused vs eligible when green -> persist session/status
+   - no fresh wrapper render or direct activation/rollback source paths
+     outside the package participate in the packet
+3. This closes the remaining operator-facing ambiguity after the final live
+   authorization artifact exists:
+   - operators now get one immutable turn-green handoff packet instead of
+     restitching package truth, authorization truth, and the final controller
+     command by hand
+   - current real-host usage still refuses today because current Stage 3 /
+     pre-activation truth remains non-green
+   - green plan or green verify does not authorize activation
+4. Safety stays hard:
+   - Stage 3 and the pre-activation gate remain the hard authorization
+     boundary
+   - no hidden apply or restart path is introduced here
+   - no production activation is performed in this batch
+   - no real trades
+5. Important live launch-packet verdicts:
+   - `tiny_live_package_launch_packet_plan_ready`
+   - `tiny_live_package_launch_packet_rendered`
+   - `tiny_live_package_launch_packet_refused_by_stage3`
+   - `tiny_live_package_launch_packet_refused_by_pre_activation_gate`
+   - `tiny_live_package_launch_packet_refused_by_invalid_target`
+   - `tiny_live_package_launch_packet_eligible_when_gate_turns_green`
+   - `tiny_live_package_launch_packet_verify_ok`
+   - `tiny_live_package_launch_packet_verify_invalid`
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:
