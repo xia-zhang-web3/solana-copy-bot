@@ -1537,17 +1537,19 @@ fn shell_single_quote(value: &str) -> String {
 }
 
 fn temp_validation_dir(label: &str) -> PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     for attempt in 0..128u32 {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
             "{label}_{}_{}_{}_{}",
             std::process::id(),
             nanos,
             attempt,
-            std::thread::current().name().unwrap_or("unnamed")
+            counter
         ));
         match fs::create_dir(&path) {
             Ok(()) => return path,

@@ -2426,6 +2426,50 @@ Acceptance update (`2026-03-28`, package-native Stage-3-authorized real live cut
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_live_cutover`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_live_cutover --bin copybot_tiny_live_activation_package_deploy --bin copybot_tiny_live_activation_cutover --bin copybot_tiny_live_activation_package_preflight --bin copybot_tiny_live_activation_live_execute`
 
+Acceptance update (`2026-03-28`, package-native live cutover authorization/refusal session):
+
+1. Stage 4 now also has one first-class package-native live
+   authorization/refusal session bound to the final real live cutover
+   controller:
+   - `copybot_tiny_live_activation_package_live_authorization --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-live-package-authorization --json`
+   - `copybot_tiny_live_activation_package_live_authorization --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --render-live-package-authorization-script --output /tmp/tiny-live.package-live-authorization.sh --json`
+   - `copybot_tiny_live_activation_package_live_authorization --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-live-authorization-session --run-live-package-authorization --json`
+   - `copybot_tiny_live_activation_package_live_authorization --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-live-authorization-session --verify-live-package-authorization --json`
+2. `--package-dir` remains the sole immutable handoff input:
+   - the session sequence is fixed:
+     verify package -> verify installed live target -> verify installed
+     wrapper/package binding -> evaluate current Stage 3 / pre-activation
+     truth -> verify the exact final live cutover controller contract summary
+     -> classify authorized/refused now -> persist session/status
+   - no fresh wrapper render or direct activation/rollback source paths
+     outside the package participate in the authorization artifact
+3. This closes the remaining operator-facing ambiguity after the final live
+   cutover controller exists:
+   - operators now get one deterministic go/no-go artifact instead of
+     hand-stitching package truth, target truth, gate truth, and controller
+     truth
+   - the current real host still honestly refuses today because Stage 3 /
+     pre-activation truth is non-green in this batch
+   - green plan or green verify remains non-authorizing
+4. Safety stays hard:
+   - Stage 3 and the pre-activation gate remain the hard authorization
+     boundary
+   - no hidden apply or restart path is introduced here
+   - no production activation is performed in this batch
+   - no real trades are sent
+5. Important live authorization verdicts:
+   - `tiny_live_package_live_authorization_plan_ready`
+   - `tiny_live_package_live_authorization_script_rendered`
+   - `tiny_live_package_live_authorization_authorized_now`
+   - `tiny_live_package_live_authorization_refused_by_stage3`
+   - `tiny_live_package_live_authorization_refused_by_pre_activation_gate`
+   - `tiny_live_package_live_authorization_refused_by_invalid_target`
+   - `tiny_live_package_live_authorization_verify_ok`
+   - `tiny_live_package_live_authorization_verify_invalid`
+6. Checks:
+   - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_live_authorization`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_live_authorization --bin copybot_tiny_live_activation_package_live_cutover --bin copybot_tiny_live_activation_package_preflight --bin copybot_tiny_live_activation_package --bin copybot_tiny_live_activation_package_deploy --bin copybot_tiny_live_activation_live_execute`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:

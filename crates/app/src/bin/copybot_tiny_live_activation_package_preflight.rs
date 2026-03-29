@@ -494,6 +494,11 @@ pub(crate) fn verify_live_package_preflight_for_capability(
 fn package_preflight_capability_step(
     report: PackagePreflightReport,
 ) -> Result<PackagePreflightCapabilityStep> {
+    let activation_authorized = matches!(
+        report.verdict,
+        TinyLivePackagePreflightVerdict::TinyLivePackagePreflightCompletedReadyForCutoverPlanning
+            | TinyLivePackagePreflightVerdict::TinyLivePackagePreflightVerifyOk
+    ) && report.result.as_deref() == Some("ready_for_cutover_planning");
     Ok(PackagePreflightCapabilityStep {
         report_json: serde_json::to_value(&report)?,
         verdict: serialize_enum(&report.verdict),
@@ -503,7 +508,7 @@ fn package_preflight_capability_step(
         current_pre_activation_gate_verdict: report.current_pre_activation_gate_verdict.clone(),
         current_pre_activation_gate_reason: report.current_pre_activation_gate_reason.clone(),
         service_status_observed_at: report.service_status_observed_at,
-        activation_authorized: report.activation_authorized,
+        activation_authorized,
     })
 }
 

@@ -1304,6 +1304,51 @@ They are synced with the current staging server snapshot (`52.28.0.218`, `2026-0
    - `tiny_live_package_live_cutover_verify_ok`
    - `tiny_live_package_live_cutover_verify_invalid`
 
+## Tiny-Live Package Live Authorization
+
+1. The repo now also has one first-class package-native live
+   authorization/refusal session bound to the final real live cutover
+   controller:
+   - review the bounded authorization plan:
+     `copybot_tiny_live_activation_package_live_authorization --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --plan-live-package-authorization --json`
+   - render an operator-facing authorization script:
+     `copybot_tiny_live_activation_package_live_authorization --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --render-live-package-authorization-script --output /tmp/tiny-live.package-live-authorization.sh --json`
+   - run the explicit live authorization/refusal session:
+     `copybot_tiny_live_activation_package_live_authorization --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-live-authorization-session --run-live-package-authorization --json`
+   - verify a persisted authorization session later:
+     `copybot_tiny_live_activation_package_live_authorization --package-dir /tmp/tiny-live.package --install-root / --target-service solana-copy-bot.service --backend-command systemctl --session-dir /tmp/tiny-live.package-live-authorization-session --verify-live-package-authorization --json`
+2. `--package-dir` remains the sole immutable handoff input:
+   - the session sequence is fixed:
+     verify package -> verify installed live target -> verify installed
+     wrapper/package binding -> evaluate current Stage 3 / pre-activation
+     truth -> verify the exact final live cutover controller contract summary
+     -> classify authorized/refused now -> persist session/status
+   - no fresh wrapper render or direct activation/rollback source paths
+     outside the package participate in the session
+3. This closes the remaining operator-facing ambiguity after the final live
+   cutover controller exists:
+   - operators now get one deterministic go/no-go artifact instead of
+     hand-stitching package truth, target truth, gate truth, and controller
+     truth
+   - current real-host usage still refuses today because current Stage 3 /
+     pre-activation truth is non-green
+   - green plan or green verify does not authorize activation
+4. Safety stays hard:
+   - Stage 3 and the current pre-activation gate remain the hard
+     authorization boundary
+   - no hidden apply or restart path is introduced here
+   - no production activation is performed in this batch
+   - no real trades
+5. Important live authorization verdicts:
+   - `tiny_live_package_live_authorization_plan_ready`
+   - `tiny_live_package_live_authorization_script_rendered`
+   - `tiny_live_package_live_authorization_authorized_now`
+   - `tiny_live_package_live_authorization_refused_by_stage3`
+   - `tiny_live_package_live_authorization_refused_by_pre_activation_gate`
+   - `tiny_live_package_live_authorization_refused_by_invalid_target`
+   - `tiny_live_package_live_authorization_verify_ok`
+   - `tiny_live_package_live_authorization_verify_invalid`
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

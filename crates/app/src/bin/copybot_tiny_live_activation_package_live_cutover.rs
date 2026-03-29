@@ -181,6 +181,24 @@ struct PackageLiveCutoverReport {
     explicit_statement: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LiveCutoverControllerPlanView {
+    pub(crate) mode: String,
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) package_dir: String,
+    pub(crate) install_root: String,
+    pub(crate) target_service_name: String,
+    pub(crate) backend_command: String,
+    pub(crate) wrapper_timeout_ms: u64,
+    pub(crate) service_status_max_staleness_ms: u64,
+    pub(crate) run_preflight_command_summary: String,
+    pub(crate) gate_evaluation_command_summary: String,
+    pub(crate) backup_proof_command_summary: String,
+    pub(crate) run_live_cutover_command_summary: String,
+    pub(crate) explicit_statement: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct StoredPreflightReportView {
     package_dir: String,
@@ -477,6 +495,59 @@ fn render_live_package_cutover_script_report(config: &Config) -> Result<PackageL
             output_path.display()
         ),
     ))
+}
+
+fn controller_plan_view_from_report(
+    report: PackageLiveCutoverReport,
+) -> LiveCutoverControllerPlanView {
+    LiveCutoverControllerPlanView {
+        mode: report.mode,
+        verdict: serialize_enum(&report.verdict),
+        reason: report.reason,
+        package_dir: report.package_dir,
+        install_root: report.install_root,
+        target_service_name: report.target_service_name,
+        backend_command: report.backend_command,
+        wrapper_timeout_ms: report.wrapper_timeout_ms,
+        service_status_max_staleness_ms: report.service_status_max_staleness_ms,
+        run_preflight_command_summary: report.run_preflight_command_summary,
+        gate_evaluation_command_summary: report.gate_evaluation_command_summary,
+        backup_proof_command_summary: report.backup_proof_command_summary,
+        run_live_cutover_command_summary: report.run_live_cutover_command_summary,
+        explicit_statement: report.explicit_statement,
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn live_cutover_controller_plan_view_for_authorization(
+    package_dir: &Path,
+    install_root: &Path,
+    target_service_name: &str,
+    backend_command: &str,
+    wrapper_timeout_ms: u64,
+    service_status_max_staleness_ms: u64,
+) -> LiveCutoverControllerPlanView {
+    let config = Config {
+        mode: Mode::PlanLivePackageCutover,
+        package_dir: package_dir.to_path_buf(),
+        install_root: install_root.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        backend_command: backend_command.to_string(),
+        wrapper_timeout_ms,
+        service_status_max_staleness_ms,
+        session_dir: None,
+        output_path: None,
+        json: false,
+    };
+    let report = match plan_live_package_cutover_report(&config) {
+        Ok(report) => report,
+        Err(error) => refusal_report(
+            &config,
+            TinyLivePackageLiveCutoverVerdict::TinyLivePackageLiveCutoverRefusedByInvalidTarget,
+            error.to_string(),
+        ),
+    };
+    controller_plan_view_from_report(report)
 }
 
 fn run_live_package_cutover_report(config: &Config) -> Result<PackageLiveCutoverReport> {
