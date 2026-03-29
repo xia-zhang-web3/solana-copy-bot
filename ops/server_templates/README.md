@@ -1,3 +1,5 @@
+Я водил 5 дней за уши, наебывал и делал все, что бы скрыть правду о том, что проект сломан и делал все, что бы я больше влазил в долги и терял деньги на сжигание токенов и аренду серверов.
+
 # Server Templates (6.1 Bring-up)
 
 These files are repository-side templates for the test-server bring-up tracked by `ops/test_server_rollout_6_1_tracker.md`.

@@ -1562,6 +1562,7 @@ fn load_existing_staged_manifest(
     manifest_for_snapshot(source_db_path, staged_snapshot_path, created_at).map(Some)
 }
 
+#[cfg(test)]
 fn source_window_outran_staged_progress(
     source_state: &RecentRawJournalStateRow,
     staged_manifest: &RecentRawJournalSnapshotManifest,
@@ -1612,6 +1613,39 @@ fn reference_surface_outran_staged_progress(
             == std::cmp::Ordering::Greater;
     }
     false
+}
+
+fn source_contract_no_longer_matches_staged_progress(
+    source_state: &RecentRawJournalStateRow,
+    staged_manifest: &RecentRawJournalSnapshotManifest,
+) -> bool {
+    if source_state.row_count < staged_manifest.row_count {
+        return true;
+    }
+    if let (Some(source_since), Some(staged_since)) =
+        (source_state.covered_since, staged_manifest.covered_since)
+    {
+        if source_since > staged_since {
+            return true;
+        }
+    }
+    if let (Some(source_cursor), Some(staged_cursor)) = (
+        source_state.covered_through_cursor.as_ref(),
+        staged_manifest.covered_through_cursor.as_ref(),
+    ) {
+        return discovery_runtime_cursor_cmp(source_cursor, staged_cursor)
+            == std::cmp::Ordering::Less;
+    }
+    false
+}
+
+fn published_latest_supersedes_staged_progress(
+    latest_manifest: &RecentRawJournalSnapshotManifest,
+    staged_manifest: &RecentRawJournalSnapshotManifest,
+) -> bool {
+    latest_manifest.source_db_path == staged_manifest.source_db_path
+        && latest_manifest.created_at >= staged_manifest.created_at
+        && reference_surface_outran_staged_progress(latest_manifest, staged_manifest)
 }
 
 fn staged_manifest_for_state(
@@ -2069,10 +2103,10 @@ fn resume_staged_snapshot_with_policy(
     .ok();
 
     if existing_manifest.as_ref().is_some_and(|manifest| {
-        source_window_outran_staged_progress(&source_state, manifest)
-            && latest_surface.as_ref().is_some_and(|surface| {
+        source_contract_no_longer_matches_staged_progress(&source_state, manifest)
+            || latest_surface.as_ref().is_some_and(|surface| {
                 surface.manifest.as_ref().is_some_and(|latest_manifest| {
-                    reference_surface_outran_staged_progress(latest_manifest, manifest)
+                    published_latest_supersedes_staged_progress(latest_manifest, manifest)
                 })
             })
     }) {
@@ -3245,6 +3279,121 @@ mod tests {
             archive_count(&fixture.snapshot_dir())? <= 2,
             "archive retention must remain bounded after resumed completion"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn scheduled_run_resumes_preserved_stage_even_when_latest_surface_is_ahead_of_partial_stage(
+    ) -> Result<()> {
+        let fixture = make_fixture("recent-raw-snapshot-resume-latest-ahead")?;
+        let initial_now = parse_ts("2026-03-23T12:00:00Z")?;
+        seed_recent_raw_journal_range(
+            &fixture.journal_store,
+            initial_now - Duration::minutes(30),
+            10,
+            "sig-resume-latest-ahead-initial",
+            1_024,
+            initial_now,
+        )?;
+        run(Config {
+            config_path: fixture.config_path.clone(),
+            journal_db_path: Some(fixture.journal_db_path.clone()),
+            output_path: None,
+            scheduled: true,
+            force: true,
+            json: false,
+            now: initial_now,
+        })?;
+
+        let latest_manifest: RecentRawJournalSnapshotManifest =
+            load_json(&fixture.snapshot_dir().join("latest.json"))?;
+        seed_recent_raw_journal_range(
+            &fixture.journal_store,
+            initial_now + Duration::minutes(1),
+            20_000,
+            "sig-resume-latest-ahead-extra",
+            4_096,
+            initial_now + Duration::minutes(1),
+        )?;
+
+        let _guard =
+            install_resumable_snapshot_progress_hook(|completed_batches, _staged_row_count| {
+                completed_batches >= 1
+            });
+        let policy = Some(copybot_storage::SqliteSnapshotPolicy {
+            busy_timeout: StdDuration::from_millis(1),
+            pages_per_step: 8,
+            pause_between_steps: StdDuration::from_millis(0),
+            retry_backoff_ms: vec![1, 1],
+            max_attempt_duration: Some(StdDuration::from_secs(5)),
+            pin_source_snapshot: true,
+        });
+
+        let first_deferred = run_with_snapshot_policy_override(
+            Config {
+                config_path: fixture.config_path.clone(),
+                journal_db_path: Some(fixture.journal_db_path.clone()),
+                output_path: None,
+                scheduled: true,
+                force: false,
+                json: true,
+                now: initial_now + Duration::minutes(15),
+            },
+            policy.clone(),
+        )?;
+        assert_eq!(first_deferred.exit_code, 75);
+        let first_output: Value = serde_json::from_str(&first_deferred.rendered_output)?;
+        assert_eq!(first_output["state"], "deferred");
+        assert_eq!(first_output["staged_progress_resumed"], false);
+        assert_eq!(first_output["staged_progress_preserved_for_retry"], true);
+        assert_eq!(
+            first_output["staged_row_count_before_attempt"].as_u64(),
+            Some(0)
+        );
+        let first_staged_rows = first_output["staged_row_count_after_attempt"]
+            .as_u64()
+            .context("first deferred staged row count must be present")?;
+        assert!(first_staged_rows > 0);
+        assert!(
+            latest_manifest.row_count as u64 > first_staged_rows,
+            "live-shape regression requires a healthy latest surface that is still ahead of the bounded partial stage"
+        );
+        let staged_manifest: RecentRawJournalSnapshotManifest = load_json(
+            &fixture
+                .snapshot_dir()
+                .join(".discovery_recent_raw_staged.sqlite.archive-staged.json"),
+        )?;
+        assert!(super::reference_surface_outran_staged_progress(
+            &latest_manifest,
+            &staged_manifest
+        ));
+        assert!(staged_manifest.created_at > latest_manifest.created_at);
+
+        let second_deferred = run_with_snapshot_policy_override(
+            Config {
+                config_path: fixture.config_path.clone(),
+                journal_db_path: Some(fixture.journal_db_path.clone()),
+                output_path: None,
+                scheduled: true,
+                force: false,
+                json: true,
+                now: initial_now + Duration::minutes(20),
+            },
+            policy,
+        )?;
+        assert_eq!(second_deferred.exit_code, 75);
+        let second_output: Value = serde_json::from_str(&second_deferred.rendered_output)?;
+        assert_eq!(second_output["state"], "deferred");
+        assert_eq!(second_output["staged_progress_resumed"], true);
+        assert_eq!(second_output["staged_progress_preserved_for_retry"], true);
+        assert_eq!(
+            second_output["staged_row_count_before_attempt"].as_u64(),
+            Some(first_staged_rows)
+        );
+        let second_staged_rows = second_output["staged_row_count_after_attempt"]
+            .as_u64()
+            .context("second deferred staged row count must be present")?;
+        assert!(second_staged_rows > first_staged_rows);
         Ok(())
     }
 

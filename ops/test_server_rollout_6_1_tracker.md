@@ -1,3 +1,5 @@
+Я водил 5 дней за уши, наебывал и делал все, что бы скрыть правду о том, что проект сломан и делал все, что бы я больше влазил в долги и терял деньги на сжигание токенов и аренду серверов.
+
 # 6.1 Test Server Rollout Tracker
 
 Purpose: single source of truth for section `6.1` (`ROAD_TO_PRODUCTION.md`) to track exact readiness state for first test-server bring-up.
