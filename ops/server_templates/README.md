@@ -192,8 +192,8 @@ Explicit repository-side truth:
    - archive retention still prunes rotated snapshots without touching the
      protected current staged pair during deferred convergence
 19. Current post-rollout production status on `2026-03-26 22:15 UTC`:
-   - the emergency livelock fix has already been deployed
-   - the bounded snapshot path is no longer restarting from zero on each timer tick
+   - the first emergency livelock fix was deployed
+   - it did stop the reset-to-zero behavior
    - first observed resumed attempts on the production host showed:
      - first post-rollout run:
        - `state=deferred`
@@ -209,9 +209,11 @@ Explicit repository-side truth:
        - `staged_row_count_before_attempt=483328`
        - `staged_row_count_after_attempt=753664`
 20. Operator meaning of that live status:
-   - the liveness bug is fixed in production
-   - the current state is now “recovering via bounded preserved progress”, not
-     “dead stall”
+   - do not read the first rollout as full recovery
+   - the production host later proved that a second-stage startup wedge still
+     existed while loading staged manifest state from giant staged SQLite reads
+   - current operator truth is still incident mode until the cached-state
+     startup fix is deployed and live-verified
    - Stage 3 is still blocked until a full resumed completion promotes a newer
      `latest.sqlite`
    - the next healthy milestone to watch for is:

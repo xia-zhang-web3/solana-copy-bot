@@ -1789,7 +1789,11 @@ fn manifest_for_snapshot(
 ) -> Result<RecentRawJournalSnapshotManifest> {
     let snapshot_store = SqliteStore::open_read_only(snapshot_path)
         .with_context(|| format!("failed opening {}", snapshot_path.display()))?;
-    let state = snapshot_store.recent_raw_journal_state_read_only()?;
+    let state = load_required_cached_recent_raw_state(
+        &snapshot_store,
+        snapshot_path,
+        "snapshot manifest derivation",
+    )?;
     let snapshot_bytes = fs::metadata(snapshot_path)
         .with_context(|| format!("failed stat {}", snapshot_path.display()))?
         .len();
@@ -1800,6 +1804,52 @@ fn manifest_for_snapshot(
         &state,
         snapshot_bytes,
     ))
+}
+
+fn load_required_cached_recent_raw_state(
+    store: &SqliteStore,
+    db_path: &Path,
+    context_label: &str,
+) -> Result<RecentRawJournalStateRow> {
+    let state = store
+        .recent_raw_journal_state_cached_read_only_required()
+        .with_context(|| {
+            format!(
+                "failed loading cached recent_raw journal state from {} for {context_label}",
+                db_path.display()
+            )
+        })?;
+    validate_cached_recent_raw_state_for_resume(&state, db_path, context_label)?;
+    Ok(state)
+}
+
+fn validate_cached_recent_raw_state_for_resume(
+    state: &RecentRawJournalStateRow,
+    db_path: &Path,
+    context_label: &str,
+) -> Result<()> {
+    if state.row_count == 0 {
+        if state.covered_since.is_some() || state.covered_through_cursor.is_some() {
+            bail!(
+                "cached recent_raw journal state from {} for {context_label} is invalid: row_count=0 but coverage fields are populated",
+                db_path.display()
+            );
+        }
+        return Ok(());
+    }
+    if state.covered_since.is_none() {
+        bail!(
+            "cached recent_raw journal state from {} for {context_label} is invalid: covered_since is missing for non-empty state",
+            db_path.display()
+        );
+    }
+    if state.covered_through_cursor.is_none() {
+        bail!(
+            "cached recent_raw journal state from {} for {context_label} is invalid: covered_through_cursor is missing for non-empty state",
+            db_path.display()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1955,14 +2005,18 @@ fn resume_staged_snapshot_with_policy(
         };
     }
 
-    let source_state = match source_store.recent_raw_journal_state_read_only() {
+    let source_state = match load_required_cached_recent_raw_state(
+        source_store,
+        source_db_path,
+        "scheduled source resume state",
+    ) {
         Ok(state) => state,
         Err(error) => {
             return StagedSnapshotAttemptResult::HardFailure {
                 manifest: None,
                 progress,
                 attempt_duration_ms: 0,
-                reason: format!("failed reading source recent_raw journal state: {error}"),
+                reason: format!("failed reading source recent_raw journal state: {error:#}"),
             };
         }
     };
@@ -1979,7 +2033,7 @@ fn resume_staged_snapshot_with_policy(
                 progress,
                 attempt_duration_ms: 0,
                 reason: format!(
-                    "failed reading staged recent_raw snapshot progress from {}: {error}",
+                    "failed reading staged recent_raw snapshot progress from {}: {error:#}",
                     staged_snapshot_path.display()
                 ),
             };
@@ -3195,6 +3249,81 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_run_fails_explicitly_when_preserved_staged_cached_state_is_missing() -> Result<()>
+    {
+        let fixture = make_fixture("recent-raw-snapshot-missing-staged-cached-state")?;
+        let initial_now = parse_ts("2026-03-23T12:00:00Z")?;
+        seed_recent_raw_journal_range(
+            &fixture.journal_store,
+            initial_now - Duration::minutes(5),
+            10,
+            "sig-missing-staged-cached",
+            512,
+            initial_now,
+        )?;
+        let _guard =
+            install_resumable_snapshot_progress_hook(|completed_batches, _staged_row_count| {
+                completed_batches >= 1
+            });
+        let policy = Some(copybot_storage::SqliteSnapshotPolicy {
+            busy_timeout: StdDuration::from_millis(1),
+            pages_per_step: 8,
+            pause_between_steps: StdDuration::from_millis(0),
+            retry_backoff_ms: vec![1, 1],
+            max_attempt_duration: Some(StdDuration::from_secs(5)),
+            pin_source_snapshot: true,
+        });
+
+        let deferred = run_with_snapshot_policy_override(
+            Config {
+                config_path: fixture.config_path.clone(),
+                journal_db_path: Some(fixture.journal_db_path.clone()),
+                output_path: None,
+                scheduled: true,
+                force: true,
+                json: true,
+                now: initial_now + Duration::minutes(15),
+            },
+            policy.clone(),
+        )?;
+        assert_eq!(deferred.exit_code, 75);
+        let deferred_output: Value = serde_json::from_str(&deferred.rendered_output)?;
+        assert_eq!(deferred_output["state"], "deferred");
+        assert_eq!(deferred_output["staged_progress_preserved_for_retry"], true);
+
+        let staged_snapshot_path = fixture
+            .snapshot_dir()
+            .join(".discovery_recent_raw_staged.sqlite.archive-staged");
+        let staged_conn = rusqlite::Connection::open(&staged_snapshot_path)?;
+        staged_conn.execute("DELETE FROM recent_raw_journal_state WHERE id = 1", [])?;
+
+        let failed = run_with_snapshot_policy_override(
+            Config {
+                config_path: fixture.config_path.clone(),
+                journal_db_path: Some(fixture.journal_db_path.clone()),
+                output_path: None,
+                scheduled: true,
+                force: false,
+                json: true,
+                now: initial_now + Duration::minutes(20),
+            },
+            policy,
+        )?;
+        assert_eq!(failed.exit_code, 1);
+        let failed_output: Value = serde_json::from_str(&failed.rendered_output)?;
+        assert_eq!(failed_output["state"], "hard_failure");
+        assert!(
+            failed_output["hard_failure_reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("cached recent raw journal state row id=1 is missing"),
+            "unexpected hard-failure output: {}",
+            serde_json::to_string_pretty(&failed_output)?
+        );
+        Ok(())
+    }
+
+    #[test]
     fn scheduled_run_completes_under_live_source_writes() -> Result<()> {
         let fixture = make_fixture("recent-raw-snapshot-live-writes")?;
         let now = parse_ts("2026-03-23T12:00:00Z")?;
@@ -3631,6 +3760,54 @@ mod tests {
         assert_eq!(
             manifest.snapshot_bytes,
             std::fs::metadata(&snapshot_path)?.len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_for_snapshot_uses_cached_state_without_scanning_observed_swaps() -> Result<()> {
+        let fixture = make_fixture("recent-raw-snapshot-cached-manifest")?;
+        let now = parse_ts("2026-03-23T12:00:00Z")?;
+        seed_recent_raw_journal(&fixture.journal_store, now)?;
+
+        run(Config {
+            config_path: fixture.config_path.clone(),
+            journal_db_path: Some(fixture.journal_db_path.clone()),
+            output_path: Some(PathBuf::from("snapshots/manual.sqlite")),
+            scheduled: false,
+            force: false,
+            json: false,
+            now,
+        })?;
+
+        let snapshot_path = fixture
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("snapshots/manual.sqlite");
+        let manifest_path = snapshot_path.with_extension("json");
+        let stored_manifest: RecentRawJournalSnapshotManifest = load_json(&manifest_path)?;
+
+        let conn = rusqlite::Connection::open(&snapshot_path)?;
+        conn.execute("DELETE FROM observed_swaps", [])?;
+
+        let rebuilt_manifest = super::manifest_for_snapshot(
+            &fixture.journal_db_path,
+            &snapshot_path,
+            stored_manifest.created_at,
+        )?;
+        assert_eq!(rebuilt_manifest.row_count, stored_manifest.row_count);
+        assert_eq!(
+            rebuilt_manifest.covered_since,
+            stored_manifest.covered_since
+        );
+        assert_eq!(
+            rebuilt_manifest.covered_through_cursor,
+            stored_manifest.covered_through_cursor
+        );
+        assert_eq!(
+            rebuilt_manifest.last_batch_completed_at,
+            stored_manifest.last_batch_completed_at
         );
         Ok(())
     }

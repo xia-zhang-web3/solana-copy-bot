@@ -15,6 +15,9 @@ Current hard truth:
 - the bounded `recent_raw` snapshot/promotion path is failing on the live host
 - the five-day window is not available in a usable promoted surface
 - Stage 3 remains non-green
+- the first emergency fix removed only part of the stall; a second-stage fix is
+  now required to stop startup/resume from rebuilding staged manifest state via
+  giant staged SQLite reads
 - the project therefore counts as operationally broken, not merely
   "still accumulating"
 

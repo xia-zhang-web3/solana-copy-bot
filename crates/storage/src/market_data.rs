@@ -5,7 +5,7 @@ use crate::{
     RecentRawJournalWriteSummary, SqliteBatchedDeleteSummary, SqliteStore, TokenMarketStats,
     TokenQualityCacheRow, TokenQualityRpcRow, WalletActivityDayRow, WalletRecentActivityCountRow,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::{ExactSwapAmounts, SwapEvent};
 use reqwest::blocking::Client;
@@ -403,6 +403,20 @@ fn recent_raw_journal_state_cached_query(conn: &Connection) -> Result<RecentRawJ
     })
 }
 
+fn recent_raw_journal_state_row_exists(conn: &Connection) -> Result<bool> {
+    let row = conn
+        .query_row(
+            "SELECT 1
+             FROM recent_raw_journal_state
+             WHERE id = 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .context("failed checking cached recent raw journal state row presence")?;
+    Ok(row.is_some())
+}
+
 fn upsert_recent_raw_journal_state_on_conn(
     conn: &Connection,
     state: &RecentRawJournalStateRow,
@@ -476,6 +490,18 @@ impl SqliteStore {
             return Ok(RecentRawJournalStateRow::default());
         }
         recent_raw_journal_state_query(&self.conn)
+    }
+
+    pub fn recent_raw_journal_state_cached_read_only_required(
+        &self,
+    ) -> Result<RecentRawJournalStateRow> {
+        if !self.sqlite_table_exists("recent_raw_journal_state")? {
+            bail!("cached recent raw journal state table recent_raw_journal_state is missing");
+        }
+        if !recent_raw_journal_state_row_exists(&self.conn)? {
+            bail!("cached recent raw journal state row id=1 is missing");
+        }
+        recent_raw_journal_state_cached_query(&self.conn)
     }
 
     pub fn recent_raw_journal_state_cached(&self) -> Result<RecentRawJournalStateRow> {
@@ -3612,6 +3638,80 @@ mod tests {
         let scanned_state = store.recent_raw_journal_state()?;
         assert_eq!(cached_state, scanned_state);
         assert_eq!(summary.row_count, scanned_state.row_count);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_cached_read_only_required_uses_cached_state_without_scanning_observed_swaps(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("recent-raw-cached-read-only.db");
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let now = DateTime::parse_from_rfc3339("2026-03-29T12:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let swaps = vec![
+            swap(
+                "sig-recent-raw-cached-read-a",
+                "wallet-cached-read",
+                now - Duration::minutes(2),
+                SOL_MINT,
+                "TokenRecentRawCachedReadA11111111111111111111",
+                301,
+            ),
+            swap(
+                "sig-recent-raw-cached-read-b",
+                "wallet-cached-read",
+                now - Duration::minutes(1),
+                SOL_MINT,
+                "TokenRecentRawCachedReadB11111111111111111111",
+                302,
+            ),
+        ];
+        store.insert_recent_raw_journal_batch(&swaps, now)?;
+        let expected_state = store.recent_raw_journal_state_cached()?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute("DELETE FROM observed_swaps", [])?;
+
+        let read_only = SqliteStore::open_read_only(Path::new(&db_path))?;
+        let cached_state = read_only.recent_raw_journal_state_cached_read_only_required()?;
+        assert_eq!(cached_state, expected_state);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_cached_read_only_required_errors_when_cached_state_row_is_missing(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("recent-raw-missing-cached-read-only.db");
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let now = DateTime::parse_from_rfc3339("2026-03-29T12:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let swaps = vec![swap(
+            "sig-recent-raw-missing-cached",
+            "wallet-missing-cached",
+            now - Duration::minutes(1),
+            SOL_MINT,
+            "TokenRecentRawMissingCached111111111111111111",
+            401,
+        )];
+        store.insert_recent_raw_journal_batch(&swaps, now)?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute("DELETE FROM recent_raw_journal_state WHERE id = 1", [])?;
+
+        let read_only = SqliteStore::open_read_only(Path::new(&db_path))?;
+        let error = read_only
+            .recent_raw_journal_state_cached_read_only_required()
+            .expect_err("missing cached state row must fail explicitly");
+        assert!(
+            error
+                .to_string()
+                .contains("cached recent raw journal state row id=1 is missing"),
+            "{error:#}"
+        );
         Ok(())
     }
 

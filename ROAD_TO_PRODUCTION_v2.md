@@ -5815,9 +5815,16 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
      - `staged_row_count_before_attempt=483328`
      - `staged_row_count_after_attempt=753664`
 9. Operational interpretation of the post-rollout status:
-   - the old reset-to-zero livelock is gone
-   - the bounded snapshot path is now converging across timer ticks
-   - but the promoted `latest.sqlite` frontier is still stale until a resumed
-     completion reaches `state=written` and `archive_promoted=true`
-   - therefore Stage 3 remains blocked tonight, but the recovery path is now
-     active again instead of deadlocked
+   - the old reset-to-zero livelock fix was real, but it was not sufficient
+     for the full live incident
+   - after deploying commit `1d187cb`, the production host still wedged in
+     startup/resume before the bounded staged-write loop
+   - the remaining exact wedge was `manifest_for_snapshot()` /
+     startup-resume state load rebuilding staged manifest state through giant
+     staged SQLite reads
+   - the accepted second-stage emergency fix removes that startup manifest scan
+     path and requires cached `recent_raw_journal_state` for staged/source
+     resume
+   - until that second-stage fix is deployed and observed live, Stage 3 remains
+     blocked and the bounded snapshot recovery path must still be treated as
+     incident work, not recovered production behavior
