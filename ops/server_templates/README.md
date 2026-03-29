@@ -5,23 +5,20 @@
 These files are repository-side templates for the test-server bring-up tracked by `ops/test_server_rollout_6_1_tracker.md`.
 They are synced with the current staging server snapshot (`52.28.0.218`, `2026-03-03`).
 
-## Emergency Status (`2026-03-29`)
+## Incident Update (`2026-03-30`)
 
-The live project must currently be treated as operationally broken.
-
-Do not read these server templates, service files, timers, launch packets, or
-activation/cutover instructions as evidence that the system is working. The
-live bounded `recent_raw` path is in an incident state, the promoted surface is
-stale, and Stage 3 is non-green.
+The live project is still not production-usable, but the acute `recent_raw`
+startup deadlock is no longer the current blocker.
 
 Explicit repository-side truth:
 
-- the project is not currently production-usable
-- the code written so far has not yet delivered a dependable working runtime on
-  the live host
-- the current state is emergency triage, not normal rollout
-- until the `recent_raw` snapshot/promotion failure is root-caused and fixed,
-  all operator docs must be read as incident documents for a non-working system
+- the live `recent_raw` service now completes bounded deferred runs instead of
+  dying in the old startup wedge
+- preserved staged progress now resumes across runs on the live host
+- the promoted five-day surface in `latest` is still stale
+- Stage 3 is still non-green
+- operator docs therefore remain recovery documents, not proof of a healthy
+  production rollout
 
 ## Security note
 
@@ -1415,6 +1412,37 @@ Explicit repository-side truth:
    - `tiny_live_package_launch_packet_eligible_when_gate_turns_green`
    - `tiny_live_package_launch_packet_verify_ok`
    - `tiny_live_package_launch_packet_verify_invalid`
+
+## Tiny-Live Package Turn-Green Refresh
+
+1. Operators now also have one launch-packet-native executable-now /
+   refused-now refresh step:
+   - review the frozen refresh plan:
+     `copybot_tiny_live_activation_package_turn_green --launch-packet-session-dir /tmp/tiny-live.package-launch-packet-session --plan-live-package-turn-green --json`
+   - render an operator-facing refresh script:
+     `copybot_tiny_live_activation_package_turn_green --launch-packet-session-dir /tmp/tiny-live.package-launch-packet-session --render-live-package-turn-green-script --output /tmp/tiny-live.package-turn-green.sh --json`
+   - run the packet-native refresh session:
+     `copybot_tiny_live_activation_package_turn_green --launch-packet-session-dir /tmp/tiny-live.package-launch-packet-session --session-dir /tmp/tiny-live.package-turn-green-session --run-live-package-turn-green --json`
+   - verify a persisted refresh session later:
+     `copybot_tiny_live_activation_package_turn_green --launch-packet-session-dir /tmp/tiny-live.package-launch-packet-session --session-dir /tmp/tiny-live.package-turn-green-session --verify-live-package-turn-green --json`
+2. The frozen launch packet is the direct input:
+   - this step revalidates the launch packet, current authorization truth, and
+     current cutover-controller contract without re-stitching them from scratch
+   - it answers exactly whether the frozen controller is executable now
+3. Important turn-green verdicts:
+   - `tiny_live_package_turn_green_plan_ready`
+   - `tiny_live_package_turn_green_script_rendered`
+   - `tiny_live_package_turn_green_refused_now_by_stage3`
+   - `tiny_live_package_turn_green_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_turn_green_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_turn_green_executable_now`
+   - `tiny_live_package_turn_green_verify_ok`
+   - `tiny_live_package_turn_green_verify_invalid`
+4. Safety remains hard:
+   - this step does not run the frozen live cutover controller
+   - it does not restart or mutate the live target
+   - current real-host usage still remains non-authorizing while Stage 3 /
+     pre-activation truth is non-green
 
 ## Tiny-Live Guardrail Audit
 

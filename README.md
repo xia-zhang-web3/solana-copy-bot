@@ -2,29 +2,25 @@
 
 # solana-copy-bot
 
-## Emergency Status (`2026-03-29`)
+## Incident Update (`2026-03-30`)
 
-This project must currently be treated as being in an emergency, non-working
-state.
-
-The code written since the start of the project does not currently provide a
-dependable, production-usable system and must not be read as proof that the
-runtime, `recent_raw` bounded window, Stage 3 accumulation, or launch/cutover
-tooling are operational.
+The acute `recent_raw` startup deadlock on the live host has been removed, but
+the project is still not production-usable yet.
 
 Current hard truth:
 
-- the bounded `recent_raw` snapshot/promotion path is failing on the live host
-- the five-day window is not available in a usable promoted surface
+- the live `recent_raw` snapshot service no longer dies in the old startup
+  staged-manifest wedge
+- bounded staged progress is now preserved and resumed across runs on the live
+  host
+- the usable promoted five-day surface is still not published in `latest`
 - Stage 3 remains non-green
-- the first emergency fix removed only part of the stall; a second-stage fix is
-  now required to stop startup/resume from rebuilding staged manifest state via
-  giant staged SQLite reads
-- the project therefore counts as operationally broken, not merely
-  "still accumulating"
+- the project therefore remains in incident recovery, not in normal production
+  readiness
 
-Until the root cause is found and fixed, treat the repository as incident work
-for a non-functional system, not as a working product.
+Do not read this repo as a working production system yet. The correct current
+state is "the hard deadlock was removed and convergence is active", not
+"incident fully closed."
 
 Phase 0 skeleton for Solana copy bot in Rust:
 - workspace layout,

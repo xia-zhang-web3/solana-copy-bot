@@ -6,6 +6,12 @@ Status: LEGACY
 
 This file is intentionally reduced to a legacy pointer.
 
+Current incident truth:
+
+1. The acute live `recent_raw` startup deadlock has been removed.
+2. The project is still not production-ready because the promoted five-day
+   surface is still stale and Stage 3 is still non-green.
+
 Why:
 
 1. The old roadmap mixed together:

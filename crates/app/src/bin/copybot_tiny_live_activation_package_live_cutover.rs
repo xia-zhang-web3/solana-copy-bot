@@ -2110,6 +2110,11 @@ fn render_report_lines(report: &PackageLiveCutoverReport) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::tiny_live_activation_cutover;
+    use super::tiny_live_activation_install_target;
+    use super::tiny_live_activation_live_execute;
+    use super::tiny_live_activation_package;
+    use super::tiny_live_activation_package_preflight;
     use super::*;
     use copybot_config::load_from_path;
     use copybot_storage::{

@@ -180,8 +180,136 @@ struct StoredAuthorizationReportView {
     activation_authorized: bool,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct LivePackageLaunchPacketContractView {
+    pub(crate) launch_packet_session_dir: PathBuf,
+    pub(crate) package_dir: PathBuf,
+    pub(crate) install_root: PathBuf,
+    pub(crate) target_service_name: String,
+    pub(crate) backend_command: String,
+    pub(crate) wrapper_timeout_ms: u64,
+    pub(crate) service_status_max_staleness_ms: u64,
+    pub(crate) frozen_result: Option<String>,
+    pub(crate) authorization_result_now: Option<String>,
+    pub(crate) activation_authorized: bool,
+    pub(crate) current_pre_activation_gate_verdict: Option<String>,
+    pub(crate) current_pre_activation_gate_reason: Option<String>,
+    pub(crate) run_live_authorization_command_summary: String,
+    pub(crate) frozen_live_cutover_controller_command_summary: String,
+    pub(crate) operator_next_action_summary: String,
+    pub(crate) explicit_statement: String,
+    pub(crate) controller_plan_view:
+        tiny_live_activation_package_live_cutover::LiveCutoverControllerPlanView,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct VerifiedLivePackageLaunchPacketTurnGreenStep {
+    pub(crate) report_json: serde_json::Value,
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) generated_at: DateTime<Utc>,
+    pub(crate) contract: LivePackageLaunchPacketContractView,
+}
+
 fn parse_args() -> Result<Option<Config>> {
     parse_args_from(env::args().skip(1))
+}
+
+#[allow(dead_code)]
+pub(crate) fn run_live_package_launch_packet_for_turn_green(
+    package_dir: &Path,
+    install_root: &Path,
+    target_service_name: &str,
+    backend_command: &str,
+    wrapper_timeout_ms: u64,
+    service_status_max_staleness_ms: u64,
+    session_dir: &Path,
+) -> Result<LivePackageLaunchPacketContractView> {
+    let config = Config {
+        mode: Mode::RunLivePackageLaunchPacket,
+        package_dir: package_dir.to_path_buf(),
+        install_root: install_root.to_path_buf(),
+        target_service_name: target_service_name.to_string(),
+        backend_command: backend_command.to_string(),
+        wrapper_timeout_ms,
+        service_status_max_staleness_ms,
+        session_dir: Some(session_dir.to_path_buf()),
+        output_path: None,
+        json: true,
+    };
+    run_live_package_launch_packet_report(&config)?;
+    load_live_package_launch_packet_contract_for_turn_green(session_dir)
+}
+
+#[allow(dead_code)]
+pub(crate) fn load_live_package_launch_packet_contract_for_turn_green(
+    launch_packet_session_dir: &Path,
+) -> Result<LivePackageLaunchPacketContractView> {
+    let paths = package_live_launch_packet_paths(launch_packet_session_dir);
+    let session: PackageLaunchPacketSession = load_json(&paths.session_path)?;
+    let status: PackageLaunchPacketStatus = load_json(&paths.status_path)?;
+    let controller_plan_view: tiny_live_activation_package_live_cutover::LiveCutoverControllerPlanView =
+        load_json(&paths.controller_report_path)?;
+    Ok(LivePackageLaunchPacketContractView {
+        launch_packet_session_dir: launch_packet_session_dir.to_path_buf(),
+        package_dir: PathBuf::from(&session.package_dir),
+        install_root: PathBuf::from(&session.install_root),
+        target_service_name: session.target_service_name,
+        backend_command: session.backend_command,
+        wrapper_timeout_ms: session.wrapper_timeout_ms,
+        service_status_max_staleness_ms: session.service_status_max_staleness_ms,
+        frozen_result: Some(serialize_enum(&status.result)),
+        authorization_result_now: status.authorization_result_now,
+        activation_authorized: matches!(
+            status.result,
+            LivePackageLaunchPacketResult::EligibleWhenGateTurnsGreen
+        ),
+        current_pre_activation_gate_verdict: None,
+        current_pre_activation_gate_reason: None,
+        run_live_authorization_command_summary: session.run_live_authorization_command_summary,
+        frozen_live_cutover_controller_command_summary: session
+            .frozen_live_cutover_controller_command_summary,
+        operator_next_action_summary: status.operator_next_action_summary,
+        explicit_statement: status.explicit_statement,
+        controller_plan_view,
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn verify_live_package_launch_packet_for_turn_green(
+    launch_packet_session_dir: &Path,
+) -> Result<VerifiedLivePackageLaunchPacketTurnGreenStep> {
+    let contract =
+        load_live_package_launch_packet_contract_for_turn_green(launch_packet_session_dir)?;
+    let config = Config {
+        mode: Mode::VerifyLivePackageLaunchPacket,
+        package_dir: contract.package_dir.clone(),
+        install_root: contract.install_root.clone(),
+        target_service_name: contract.target_service_name.clone(),
+        backend_command: contract.backend_command.clone(),
+        wrapper_timeout_ms: contract.wrapper_timeout_ms,
+        service_status_max_staleness_ms: contract.service_status_max_staleness_ms,
+        session_dir: Some(launch_packet_session_dir.to_path_buf()),
+        output_path: None,
+        json: true,
+    };
+    let report = verify_live_package_launch_packet_report(&config)?;
+    Ok(VerifiedLivePackageLaunchPacketTurnGreenStep {
+        report_json: serde_json::to_value(&report)?,
+        verdict: serialize_enum(&report.verdict),
+        reason: report.reason.clone(),
+        generated_at: report.generated_at,
+        contract: LivePackageLaunchPacketContractView {
+            current_pre_activation_gate_verdict: report.current_pre_activation_gate_verdict.clone(),
+            current_pre_activation_gate_reason: report.current_pre_activation_gate_reason.clone(),
+            activation_authorized: report.activation_authorized,
+            frozen_result: report.result.clone(),
+            authorization_result_now: report.authorization_result_now.clone(),
+            operator_next_action_summary: report.operator_next_action_summary.clone(),
+            explicit_statement: report.explicit_statement.clone(),
+            ..contract
+        },
+    })
 }
 
 fn parse_args_from<I>(args: I) -> Result<Option<Config>>
@@ -1426,13 +1554,17 @@ fn render_report_lines(report: &PackageLaunchPacketReport) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::tiny_live_activation_install_target;
+    use super::tiny_live_activation_live_execute as local_live_execute;
+    use super::tiny_live_activation_package;
+    use super::tiny_live_activation_package_preflight;
     use super::*;
-    use crate::tiny_live_activation_live_execute::tiny_live_activation_execute::RenderedConfigMetadata;
     use chrono::Duration;
     use copybot_config::load_from_path;
     use copybot_storage::{
         DiscoveryWalletFreshnessCaptureWrite, ExecutionDryRunRehearsalWrite, SqliteStore,
     };
+    use local_live_execute::tiny_live_activation_execute::RenderedConfigMetadata;
     use sha2::{Digest, Sha256};
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpListener};
@@ -1647,7 +1779,7 @@ mod tests {
             &install_root,
             "solana-copy-bot.service",
             &backend_path.display().to_string(),
-            tiny_live_activation_live_execute::live_service_control_wrapper_contract::DEFAULT_TIMEOUT_MS,
+            local_live_execute::live_service_control_wrapper_contract::DEFAULT_TIMEOUT_MS,
             &activation_config_source_path,
             &rollback_config_source_path,
         )
@@ -1656,7 +1788,7 @@ mod tests {
             &install_root,
             "solana-copy-bot.service",
             &backend_path.display().to_string(),
-            tiny_live_activation_live_execute::live_service_control_wrapper_contract::DEFAULT_TIMEOUT_MS,
+            local_live_execute::live_service_control_wrapper_contract::DEFAULT_TIMEOUT_MS,
             &package_dir.join("wrapper/copybot-live-service-control"),
             &package_dir.join("artifacts/rendered.activation.toml"),
             &package_dir.join("artifacts/rendered.rollback.toml"),
@@ -1671,7 +1803,8 @@ mod tests {
                 install_root,
                 target_service_name: "solana-copy-bot.service".to_string(),
                 backend_command: backend_path.display().to_string(),
-                wrapper_timeout_ms: tiny_live_activation_live_execute::live_service_control_wrapper_contract::DEFAULT_TIMEOUT_MS,
+                wrapper_timeout_ms:
+                    local_live_execute::live_service_control_wrapper_contract::DEFAULT_TIMEOUT_MS,
                 service_status_max_staleness_ms:
                     tiny_live_activation_package_preflight::DEFAULT_SERVICE_STATUS_MAX_STALENESS_MS,
                 session_dir: Some(fixture_dir.join("launch-packet-session")),
@@ -1701,15 +1834,14 @@ mod tests {
         adapter_url: &str,
     ) {
         let source = load_from_path(target_config_path).unwrap();
-        let fingerprint =
-            tiny_live_activation_live_execute::activation_decision_packet::build_config_fingerprint(
-                tiny_live_activation_live_execute::tiny_live_activation_execute::FINGERPRINT_SCOPE,
-                &source,
-            )
-            .unwrap();
+        let fingerprint = local_live_execute::activation_decision_packet::build_config_fingerprint(
+            local_live_execute::tiny_live_activation_execute::FINGERPRINT_SCOPE,
+            &source,
+        )
+        .unwrap();
         write_rendered_artifact(
             activation_path,
-            tiny_live_activation_live_execute::tiny_live_activation_execute::RenderKind::Activation,
+            local_live_execute::tiny_live_activation_execute::RenderKind::Activation,
             dynamic_live_config_toml(db_path, rpc_url, adapter_url, true),
             target_config_path,
             &fingerprint.sha256,
@@ -1718,7 +1850,7 @@ mod tests {
         );
         write_rendered_artifact(
             rollback_path,
-            tiny_live_activation_live_execute::tiny_live_activation_execute::RenderKind::Rollback,
+            local_live_execute::tiny_live_activation_execute::RenderKind::Rollback,
             dynamic_live_config_toml(db_path, rpc_url, adapter_url, false),
             target_config_path,
             &fingerprint.sha256,
@@ -1729,7 +1861,7 @@ mod tests {
 
     fn write_rendered_artifact(
         path: &Path,
-        render_kind: tiny_live_activation_live_execute::tiny_live_activation_execute::RenderKind,
+        render_kind: local_live_execute::tiny_live_activation_execute::RenderKind,
         contents: String,
         source_config_path: &Path,
         source_fingerprint_sha256: &str,
@@ -1745,8 +1877,7 @@ mod tests {
             input_config_path: source_config_path.display().to_string(),
             output_config_path: path.display().to_string(),
             source_config_fingerprint_scope:
-                tiny_live_activation_live_execute::tiny_live_activation_execute::FINGERPRINT_SCOPE
-                    .to_string(),
+                local_live_execute::tiny_live_activation_execute::FINGERPRINT_SCOPE.to_string(),
             source_config_fingerprint_sha256: source_fingerprint_sha256.to_string(),
             expected_source_fingerprint_sha256: Some(source_fingerprint_sha256.to_string()),
             rendered_config_sha256: hash,
@@ -1758,7 +1889,7 @@ mod tests {
             rollback_plan_complete: true,
             service_restart_contract_complete: true,
             field_expectations: vec![
-                tiny_live_activation_live_execute::tiny_live_activation_execute::FieldExpectation {
+                local_live_execute::tiny_live_activation_execute::FieldExpectation {
                     field: "execution.enabled".to_string(),
                     source_value: serde_json::json!(source_execution_enabled),
                     target_value: serde_json::json!(target_execution_enabled),
@@ -1771,11 +1902,14 @@ mod tests {
             not_authorized_summary: "test".to_string(),
         };
         fs::write(
-            tiny_live_activation_live_execute::tiny_live_activation_execute::metadata_path_for_rendered_config(path),
+            local_live_execute::tiny_live_activation_execute::metadata_path_for_rendered_config(
+                path,
+            ),
             serde_json::to_string_pretty(&metadata).unwrap(),
         )
         .unwrap();
-        tiny_live_activation_live_execute::tiny_live_activation_execute::inspect_rendered_config_artifact(path).unwrap();
+        local_live_execute::tiny_live_activation_execute::inspect_rendered_config_artifact(path)
+            .unwrap();
     }
 
     fn seed_current_gate_state(db_path: &Path, gate_state: GateState) {

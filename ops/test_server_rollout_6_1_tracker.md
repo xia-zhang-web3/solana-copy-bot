@@ -7,6 +7,15 @@ Purpose: single source of truth for section `6.1` (`ROAD_TO_PRODUCTION.md`) to t
 Last update: 2026-03-03 (server run on `52.28.0.218`, LaserStream + mock-upstream contour applied)
 Overall status: `NO_GO` (bring-up is `DONE`, execution evidence gate is `NO_GO`)
 
+Current incident truth (`2026-03-30`):
+
+1. The acute live `recent_raw` startup deadlock has been removed.
+2. Bounded staged progress now resumes across live runs.
+3. The promoted five-day surface is still stale.
+4. Stage 3 is still non-green.
+5. So the project is still `NO_GO`, but the exact blocker moved from "startup
+   deadlock" to "bounded convergence not yet completed."
+
 ## 0) Critical status (explicit)
 
 1. As of `2026-03-03`, the project is **NOT WORKING for real execution trades** on the current server setup.

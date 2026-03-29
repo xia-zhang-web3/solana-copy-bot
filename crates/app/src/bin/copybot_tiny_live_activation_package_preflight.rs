@@ -2462,6 +2462,9 @@ fn serialize_enum<T: Serialize>(value: &T) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::tiny_live_activation_live_execute;
+    use super::tiny_live_activation_package;
+    use super::tiny_live_activation_package_deploy;
     use super::*;
     use copybot_config::load_from_path;
     use copybot_storage::{

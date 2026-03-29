@@ -5,27 +5,26 @@
 Date: 2026-03-17
 Status: Active historical roadmap with 2026-03-27 production-readiness and live Stage 3 accumulation addendum
 
-## Emergency Status (`2026-03-29`)
+## Incident Update (`2026-03-30`)
 
-The project is currently in an emergency state and must be treated as not
-working.
-
-This is no longer an honest "wait a bit longer for five days to accumulate"
-situation. The live `recent_raw` snapshot/promotion pipeline is failing, the
-promoted bounded surface is stale, Stage 3 remains non-green, and the code
-written so far does not currently demonstrate an operational production path.
+The acute live `recent_raw` startup wedge has been removed, but the project is
+still not out of incident response.
 
 Repository truth that must now be stated explicitly:
 
-- the project is operationally broken
-- the bounded `recent_raw` / Stage 3 path is not dependable
-- the tooling and activation/controller layers in this repo are not evidence of
-  a working production system while the live bounded raw truth is stalled
-- until root cause is identified and fixed, this project must be described as
-  non-working and under incident response
+- the live `recent_raw` service no longer hangs in the old startup
+  staged-manifest read path
+- bounded staged progress now resumes across live runs instead of resetting to
+  zero
+- the promoted bounded surface in `latest.sqlite` / `latest.json` is still
+  stale
+- Stage 3 is still non-green
+- the repository therefore remains in recovery mode, not in normal production
+  readiness
 
-Any reader who only sees artifact symmetry, activation controllers, launch
-packets, or readiness reports without this banner would be misled.
+Any reader who only sees resumed staged progress and concludes "production is
+working now" would still be misled. The honest status is "deadlock removed,
+convergence active, incident not yet closed."
 
 ## 0. Why v2 exists
 
@@ -2554,6 +2553,39 @@ Acceptance update (`2026-03-29`, package-native live launch packet / turn-green 
 6. Checks:
    - `cargo test -p copybot-app --bin copybot_tiny_live_activation_package_launch_packet`
    - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_launch_packet --bin copybot_tiny_live_activation_package_live_authorization --bin copybot_tiny_live_activation_package_live_cutover --bin copybot_tiny_live_activation_package_preflight --bin copybot_tiny_live_activation_package --bin copybot_tiny_live_activation_package_deploy --bin copybot_tiny_live_activation_live_execute`
+
+Acceptance update (`2026-03-29`, launch-packet-native live turn-green refresh / executable-now session):
+
+1. Stage 4 now also has one packet-native refresh step over the immutable
+   launch packet:
+   - `copybot_tiny_live_activation_package_turn_green --launch-packet-session-dir /tmp/tiny-live.package-launch-packet-session --plan-live-package-turn-green --json`
+   - `copybot_tiny_live_activation_package_turn_green --launch-packet-session-dir /tmp/tiny-live.package-launch-packet-session --render-live-package-turn-green-script --output /tmp/tiny-live.package-turn-green.sh --json`
+   - `copybot_tiny_live_activation_package_turn_green --launch-packet-session-dir /tmp/tiny-live.package-launch-packet-session --session-dir /tmp/tiny-live.package-turn-green-session --run-live-package-turn-green --json`
+   - `copybot_tiny_live_activation_package_turn_green --launch-packet-session-dir /tmp/tiny-live.package-launch-packet-session --session-dir /tmp/tiny-live.package-turn-green-session --verify-live-package-turn-green --json`
+2. The immutable launch packet is now the direct frozen handoff input:
+   - this step revalidates the frozen launch packet against current live target,
+     current authorization truth, and the current cutover-controller contract
+   - operators no longer need to restitch package truth, authorization truth,
+     and controller truth by hand to answer "can the frozen controller run now?"
+3. Result semantics are explicit and machine-readable:
+   - `tiny_live_package_turn_green_plan_ready`
+   - `tiny_live_package_turn_green_script_rendered`
+   - `tiny_live_package_turn_green_refused_now_by_stage3`
+   - `tiny_live_package_turn_green_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_turn_green_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_turn_green_executable_now`
+   - `tiny_live_package_turn_green_verify_ok`
+   - `tiny_live_package_turn_green_verify_invalid`
+4. Safety remains hard:
+   - this step does not run the frozen controller
+   - it does not restart or mutate the live target
+   - Stage 3 and the pre-activation gate remain the hard authorization
+     boundary
+   - current real-host usage still honestly refuses while gate truth is
+     non-green
+5. Bounded verification added for this step:
+   - `cargo test -p copybot-app --test tiny_live_activation_package_turn_green -- --test-threads=1`
+   - `cargo check -p copybot-app --bin copybot_tiny_live_activation_package_turn_green`
 
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
