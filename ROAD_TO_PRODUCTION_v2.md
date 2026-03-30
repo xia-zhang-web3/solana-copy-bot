@@ -2634,6 +2634,53 @@ Acceptance update (`2026-03-30`, turn-green-native frozen live cutover execution
    - `cargo test -j 1 -p copybot-app --lib run_args_match_frozen_controller_contract`
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_execute_frozen`
 
+Acceptance update (`2026-03-30`, execute-frozen-native final activation decision packet):
+
+1. Stage 4 now also has one final operator-facing decision/checklist packet
+   over a verified execute-frozen session:
+   - `copybot_tiny_live_activation_package_decision_packet --execute-frozen-session-dir /tmp/tiny-live.package-execute-frozen-session --plan-live-package-decision-packet --json`
+   - `copybot_tiny_live_activation_package_decision_packet --execute-frozen-session-dir /tmp/tiny-live.package-execute-frozen-session --render-live-package-decision-packet --output /tmp/tiny-live.package-decision-packet.sh --json`
+   - `copybot_tiny_live_activation_package_decision_packet --execute-frozen-session-dir /tmp/tiny-live.package-execute-frozen-session --session-dir /tmp/tiny-live.package-decision-packet-session --run-live-package-decision-packet --json`
+   - `copybot_tiny_live_activation_package_decision_packet --execute-frozen-session-dir /tmp/tiny-live.package-execute-frozen-session --session-dir /tmp/tiny-live.package-decision-packet-session --verify-live-package-decision-packet --json`
+2. The verified `execute_frozen` session is now the only direct input:
+   - the packet reuses verified execute-frozen truth, nested turn-green truth,
+     and the exact frozen live cutover controller summary already bound by the
+     accepted lightweight shared layer
+   - it does not restitch package, target, wrapper, or controller args from
+     loose CLI inputs
+3. Final operator verdicts are explicit and machine-readable:
+   - `tiny_live_package_decision_packet_plan_ready`
+   - `tiny_live_package_decision_packet_rendered`
+   - `tiny_live_package_decision_packet_refused_now_by_stage3`
+   - `tiny_live_package_decision_packet_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_decision_packet_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_decision_packet_runnable_when_gate_truth_turns_green`
+   - `tiny_live_package_decision_packet_verify_ok`
+   - `tiny_live_package_decision_packet_verify_invalid`
+4. The packet freezes one final human-facing handoff:
+   - verified current refusal-vs-runnable truth
+   - the exact frozen live cutover controller command summary
+   - operator checklist text
+   - operator runbook text
+   - all of the above are rebound during verify, so tampering top-level packet
+     text does not verify green
+5. Safety remains hard:
+   - this packet never executes the frozen controller itself
+   - it does not weaken Stage 3 / pre-activation semantics
+   - current real-host usage still remains refused while gate truth is
+     non-green
+6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
+   compile/test surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_decision_packet`
+   - `cargo test -j 1 -p copybot-app --lib trusted_turn_green_session_dir_is_loaded_from_persisted_step_report`
+   - `cargo test -j 1 -p copybot-app --lib verify_args_are_exact_and_bounded`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_decision_packet tests::run_completed_keep_running_then_verify_stays_runnable -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_decision_packet tests::stage3_refusal_stays_explicit -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_decision_packet tests::drifted_execute_frozen_contract_is_refused -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_decision_packet tests::verify_rejects_tampered_execute_frozen_step_path -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_decision_packet tests::verify_rejects_tampered_checklist_and_runbook_summary -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_decision_packet tests::verify_rejects_tampered_top_level_contract -- --exact`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:

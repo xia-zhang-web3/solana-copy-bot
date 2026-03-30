@@ -1492,6 +1492,48 @@ Explicit repository-side truth:
    - bounded verification no longer depends on the heavy `turn_green`
      compile/test surface
 
+## Tiny-Live Package Decision Packet
+
+1. Operators now also have one final activation decision/checklist packet over
+   a verified execute-frozen session:
+   - inspect the final decision packet plan:
+     `copybot_tiny_live_activation_package_decision_packet --execute-frozen-session-dir /tmp/tiny-live.package-execute-frozen-session --plan-live-package-decision-packet --json`
+   - render an operator-facing decision/checklist script:
+     `copybot_tiny_live_activation_package_decision_packet --execute-frozen-session-dir /tmp/tiny-live.package-execute-frozen-session --render-live-package-decision-packet --output /tmp/tiny-live.package-decision-packet.sh --json`
+   - persist one final decision/checklist packet:
+     `copybot_tiny_live_activation_package_decision_packet --execute-frozen-session-dir /tmp/tiny-live.package-execute-frozen-session --session-dir /tmp/tiny-live.package-decision-packet-session --run-live-package-decision-packet --json`
+   - verify the persisted packet later:
+     `copybot_tiny_live_activation_package_decision_packet --execute-frozen-session-dir /tmp/tiny-live.package-execute-frozen-session --session-dir /tmp/tiny-live.package-decision-packet-session --verify-live-package-decision-packet --json`
+2. The verified `execute_frozen` session is the direct input:
+   - this step reuses verified execute-frozen truth, nested verified
+     `turn_green` truth, and the exact frozen live cutover controller summary
+   - it does not ask the operator to restitch package, target, wrapper, or
+     controller arguments by hand
+3. Important decision-packet verdicts:
+   - `tiny_live_package_decision_packet_plan_ready`
+   - `tiny_live_package_decision_packet_rendered`
+   - `tiny_live_package_decision_packet_refused_now_by_stage3`
+   - `tiny_live_package_decision_packet_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_decision_packet_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_decision_packet_runnable_when_gate_truth_turns_green`
+   - `tiny_live_package_decision_packet_verify_ok`
+   - `tiny_live_package_decision_packet_verify_invalid`
+4. The packet is the final human-facing go/no-go layer:
+   - it freezes the current refusal-vs-runnable classification
+   - it freezes the exact frozen live cutover controller command summary
+   - it freezes one explicit checklist summary and one explicit runbook summary
+   - verify rebinds those summaries to verified frozen execution truth, so
+     tampering packet text does not verify green
+5. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - it does not weaken Stage 3 / pre-activation semantics
+   - current real-host usage still remains refused while gate truth is
+     non-green
+6. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:
