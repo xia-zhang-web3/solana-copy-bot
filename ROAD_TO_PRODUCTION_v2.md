@@ -2782,6 +2782,58 @@ Acceptance update (`2026-03-30`, handoff-bundle-native operator signoff / review
    - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_review_receipt tests::verify_rejects_tampered_review_receipt_text -- --exact`
    - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_review_receipt tests::verify_rejects_tampered_nested_handoff_bundle_report_content -- --exact`
 
+Acceptance update (`2026-03-30`, review-receipt-native immutable activation ticket / execution warrant):
+
+1. Stage 4 now also has one final immutable activation-ticket / execution-warrant
+   surface over a verified review-receipt session:
+   - `copybot_tiny_live_activation_package_activation_ticket --review-receipt-session-dir /tmp/tiny-live.package-review-receipt-session --plan-live-package-activation-ticket --json`
+   - `copybot_tiny_live_activation_package_activation_ticket --review-receipt-session-dir /tmp/tiny-live.package-review-receipt-session --render-live-package-activation-ticket --output /tmp/tiny-live.package-activation-ticket.sh --json`
+   - `copybot_tiny_live_activation_package_activation_ticket --review-receipt-session-dir /tmp/tiny-live.package-review-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-activation-ticket-session --run-live-package-activation-ticket --json`
+   - `copybot_tiny_live_activation_package_activation_ticket --review-receipt-session-dir /tmp/tiny-live.package-review-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-activation-ticket-session --verify-live-package-activation-ticket --json`
+2. The verified `review_receipt` session remains the primary direct input, and
+   run/verify additionally require one confirmation anchor:
+   - this step reuses verified review-receipt truth, nested handoff-bundle
+     truth, nested decision-packet truth, nested execute-frozen truth, and the
+     exact reviewed frozen live cutover controller summary already bound by the
+     lightweight shared layer
+   - `--confirm-decision-packet-session-dir` only confirms the reviewed nested
+     decision-packet contract for run/verify; it does not replace the
+     review-receipt session as the source of truth
+   - it does not restitch package, target, wrapper, or controller arguments
+     from loose CLI inputs
+3. Final activation-ticket verdicts are explicit and machine-readable:
+   - `tiny_live_package_activation_ticket_plan_ready`
+   - `tiny_live_package_activation_ticket_rendered`
+   - `tiny_live_package_activation_ticket_refused_now_by_stage3`
+   - `tiny_live_package_activation_ticket_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_activation_ticket_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_activation_ticket_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_activation_ticket_verify_ok`
+   - `tiny_live_package_activation_ticket_verify_invalid`
+4. The activation ticket freezes one final operator-ready execution warrant:
+   - verified review-receipt truth
+   - exact reviewed frozen live cutover controller command summary
+   - explicit machine-readable execution-warrant classification
+   - exact operator-ready “when gate turns green” handoff wording
+5. Safety remains hard:
+   - this command stays read-only and archival
+   - it never enables production execution on the real host
+   - it never submits real trades
+   - current real-host usage still remains refused while Stage 3 / promoted
+     5-day truth is non-green
+6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
+   compile/test surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_activation_ticket`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_review_receipt_activation_ticket::tests::confirmed_decision_packet_session_dir_must_match_stored_contract_and_archive -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_activation_ticket tests::run_ready_for_manual_execution_when_gate_turns_green_then_verify_stays_green -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_activation_ticket tests::stage3_refusal_stays_explicit -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_activation_ticket tests::pre_activation_refusal_stays_explicit -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_activation_ticket tests::drifted_review_receipt_contract_is_refused -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_activation_ticket tests::run_refuses_managed_surface_overlap_before_writing_any_artifacts -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_activation_ticket tests::verify_rejects_tampered_review_receipt_step_path -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_activation_ticket tests::verify_rejects_tampered_activation_ticket_text -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_activation_ticket tests::verify_rejects_tampered_nested_review_receipt_report_content -- --exact`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:

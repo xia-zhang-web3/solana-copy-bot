@@ -1627,6 +1627,56 @@ Explicit repository-side truth:
    - it intentionally does not depend on the heavy `turn_green`
      compile/test surface
 
+## Tiny-Live Package Activation Ticket
+
+1. Operators now also have one final immutable activation-ticket /
+   execution-warrant layer over a verified review-receipt session:
+   - inspect the activation-ticket plan:
+     `copybot_tiny_live_activation_package_activation_ticket --review-receipt-session-dir /tmp/tiny-live.package-review-receipt-session --plan-live-package-activation-ticket --json`
+   - render an operator-facing activation-ticket script:
+     `copybot_tiny_live_activation_package_activation_ticket --review-receipt-session-dir /tmp/tiny-live.package-review-receipt-session --render-live-package-activation-ticket --output /tmp/tiny-live.package-activation-ticket.sh --json`
+   - persist one immutable activation-ticket artifact:
+     `copybot_tiny_live_activation_package_activation_ticket --review-receipt-session-dir /tmp/tiny-live.package-review-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-activation-ticket-session --run-live-package-activation-ticket --json`
+   - verify the persisted ticket later:
+     `copybot_tiny_live_activation_package_activation_ticket --review-receipt-session-dir /tmp/tiny-live.package-review-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-activation-ticket-session --verify-live-package-activation-ticket --json`
+2. The verified `review_receipt` session remains the primary direct input, and
+   run/verify additionally require a confirmation anchor:
+   - this step reuses verified review-receipt truth, nested handoff-bundle
+     truth, nested decision-packet truth, nested execute-frozen truth, and the
+     exact reviewed frozen live cutover controller summary
+   - `--confirm-decision-packet-session-dir` only confirms the reviewed nested
+     decision-packet contract for run/verify; it does not replace the
+     review-receipt session as the source of truth
+   - it does not ask the operator to restitch package, target, wrapper, or
+     controller arguments by hand
+3. Important activation-ticket verdicts:
+   - `tiny_live_package_activation_ticket_plan_ready`
+   - `tiny_live_package_activation_ticket_rendered`
+   - `tiny_live_package_activation_ticket_refused_now_by_stage3`
+   - `tiny_live_package_activation_ticket_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_activation_ticket_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_activation_ticket_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_activation_ticket_verify_ok`
+   - `tiny_live_package_activation_ticket_verify_invalid`
+4. The ticket is the final immutable execution-warrant layer:
+   - it freezes the current refusal-vs-execution-warrant classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes exact operator-ready “when gate turns green” activation wording
+   - verify rebinds all of the above to verified review-receipt truth, so
+     tampering ticket text or nested archived report content does not verify
+     green
+5. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - managed-surface overlap checks still protect the activation-ticket session
+     dir
+   - current real-host usage still remains refused while gate truth is
+     non-green
+6. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:
