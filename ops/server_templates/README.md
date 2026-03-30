@@ -1677,6 +1677,57 @@ Explicit repository-side truth:
    - it intentionally does not depend on the heavy `turn_green`
      compile/test surface
 
+## Tiny-Live Package Release Capsule
+
+1. Operators now also have one final immutable release-capsule / hash-locked
+   audit-manifest layer over a verified activation-ticket session:
+   - inspect the release-capsule plan:
+     `copybot_tiny_live_activation_package_release_capsule --activation-ticket-session-dir /tmp/tiny-live.package-activation-ticket-session --plan-live-package-release-capsule --json`
+   - render an operator-facing release-capsule script:
+     `copybot_tiny_live_activation_package_release_capsule --activation-ticket-session-dir /tmp/tiny-live.package-activation-ticket-session --render-live-package-release-capsule --output /tmp/tiny-live.package-release-capsule.sh --json`
+   - persist one immutable release-capsule artifact:
+     `copybot_tiny_live_activation_package_release_capsule --activation-ticket-session-dir /tmp/tiny-live.package-activation-ticket-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-release-capsule-session --run-live-package-release-capsule --json`
+   - verify the persisted capsule later:
+     `copybot_tiny_live_activation_package_release_capsule --activation-ticket-session-dir /tmp/tiny-live.package-activation-ticket-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-release-capsule-session --verify-live-package-release-capsule --json`
+2. The verified `activation_ticket` session remains the primary direct input,
+   and run/verify additionally require a confirmation anchor:
+   - this step reuses verified activation-ticket truth, nested review-receipt
+     truth, nested handoff-bundle truth, and the exact reviewed frozen live
+     cutover controller summary
+   - `--confirm-decision-packet-session-dir` only confirms the already reviewed
+     nested decision-packet contract for run/verify; it does not replace the
+     activation-ticket session as the source of truth
+   - it does not ask the operator to restitch package, target, wrapper, or
+     controller arguments by hand
+3. Important release-capsule verdicts:
+   - `tiny_live_package_release_capsule_plan_ready`
+   - `tiny_live_package_release_capsule_rendered`
+   - `tiny_live_package_release_capsule_refused_now_by_stage3`
+   - `tiny_live_package_release_capsule_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_release_capsule_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_release_capsule_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_release_capsule_verify_ok`
+   - `tiny_live_package_release_capsule_verify_invalid`
+4. The release capsule is the final hash-locked archival layer:
+   - it freezes the current refusal-vs-ready classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes an explicit SHA-256 digest manifest over the top-level capsule
+     artifacts and the nested archival chain it depends on
+   - verify rebinds all of the above to verified activation-ticket truth, so
+     tampering capsule text, nested archived report content, or digest members
+     does not verify green
+5. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - managed-surface overlap checks still protect the release-capsule session
+     dir
+   - current real-host usage still remains refused while gate truth is
+     non-green
+6. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:
