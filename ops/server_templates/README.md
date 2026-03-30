@@ -2035,6 +2035,56 @@ Explicit repository-side truth:
    - it intentionally does not depend on the heavy `turn_green`
      compile/test surface
 
+## Tiny-Live Closure Certificate
+
+1. Operators now also have one final immutable closure-certificate /
+   terminal-seal surface over the verified archive receipt:
+   - `copybot_tiny_live_activation_package_closure_certificate --archive-receipt-session-dir /tmp/tiny-live.package-archive-receipt-session --plan-live-package-closure-certificate --json`
+   - `copybot_tiny_live_activation_package_closure_certificate --archive-receipt-session-dir /tmp/tiny-live.package-archive-receipt-session --render-live-package-closure-certificate --output /tmp/tiny-live.package-closure-certificate.sh --json`
+   - `copybot_tiny_live_activation_package_closure_certificate --archive-receipt-session-dir /tmp/tiny-live.package-archive-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-closure-certificate-session --run-live-package-closure-certificate --json`
+   - `copybot_tiny_live_activation_package_closure_certificate --archive-receipt-session-dir /tmp/tiny-live.package-archive-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-closure-certificate-session --verify-live-package-closure-certificate --json`
+2. The verified `archive_receipt` session is the primary direct input:
+   - run and verify additionally require
+     `--confirm-decision-packet-session-dir <path>` as a confirmation-only
+     anchor for the already reviewed nested decision-packet contract
+   - this command does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Important verdicts:
+   - `tiny_live_package_closure_certificate_plan_ready`
+   - `tiny_live_package_closure_certificate_rendered`
+   - `tiny_live_package_closure_certificate_refused_now_by_stage3`
+   - `tiny_live_package_closure_certificate_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_closure_certificate_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_closure_certificate_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_closure_certificate_verify_ok`
+   - `tiny_live_package_closure_certificate_verify_invalid`
+4. The closure certificate is the final terminal-style record over the fully
+   archived chain:
+   - it freezes the current refusal-vs-ready classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes the canonical chain-fingerprint identity
+   - it freezes the top-level ledger-seal identity
+   - it freezes the top-level registry-entry identity
+   - it freezes the top-level filing-certificate identity
+   - it freezes the top-level archive-receipt identity
+   - it freezes one top-level SHA-256 closure-certificate identity over the
+     fully archived chain
+   - verify rebinds all of the above to verified archive-receipt truth, so
+     tampering closure text, nested archived report content, retimed nested
+     evidence, top-level status/gate fields, or chain/ledger/registry/
+     filing/archive/closure identity fields does not verify green
+5. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - managed-surface overlap checks still protect the closure-certificate
+     session dir
+   - current real-host usage still remains refused while gate truth is
+     non-green
+6. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

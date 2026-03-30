@@ -3,6 +3,7 @@ pub mod package_activation_ticket_release_capsule;
 pub mod package_attestation_seal_provenance_certificate;
 pub mod package_decision_packet_handoff_bundle;
 pub mod package_execute_frozen_decision_packet;
+pub mod package_archive_receipt_closure_certificate;
 pub mod package_filing_certificate_archive_receipt;
 pub mod package_handoff_bundle_review_receipt;
 pub mod package_live_cutover_execute_frozen;
