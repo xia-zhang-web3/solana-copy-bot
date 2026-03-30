@@ -3323,6 +3323,65 @@ Acceptance update (`2026-03-30`, closure-certificate-native immutable finality r
    - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_closure_certificate_finality_receipt::tests::confirmed_decision_packet_session_dir_must_match_stored_contract_and_archive -- --exact`
    - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_finality_receipt -- --test-threads=1`
 
+Acceptance update (`2026-03-30`, finality-receipt-native immutable consummation record / terminus seal):
+
+1. Stage 4 now also has one final immutable consummation-record /
+   terminus-seal surface over a verified finality-receipt session:
+   - `copybot_tiny_live_activation_package_consummation_record --finality-receipt-session-dir /tmp/tiny-live.package-finality-receipt-session --plan-live-package-consummation-record --json`
+   - `copybot_tiny_live_activation_package_consummation_record --finality-receipt-session-dir /tmp/tiny-live.package-finality-receipt-session --render-live-package-consummation-record --output /tmp/tiny-live.package-consummation-record.sh --json`
+   - `copybot_tiny_live_activation_package_consummation_record --finality-receipt-session-dir /tmp/tiny-live.package-finality-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-consummation-record-session --run-live-package-consummation-record --json`
+   - `copybot_tiny_live_activation_package_consummation_record --finality-receipt-session-dir /tmp/tiny-live.package-finality-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-consummation-record-session --verify-live-package-consummation-record --json`
+2. The verified `finality_receipt` session is the primary direct input, and
+   run/verify additionally require one confirmation anchor:
+   - this step reuses verified finality-receipt truth, the exact reviewed
+     frozen live cutover controller summary, the canonical chain fingerprint,
+     the ledger-seal identity, the registry-entry identity, the
+     filing-certificate identity, the archive-receipt identity, the
+     closure-certificate identity, the finality-receipt identity, and the
+     current refusal-vs-ready classification already bound by the lightweight
+     shared layer
+   - `--confirm-decision-packet-session-dir` only confirms the already
+     reviewed nested decision-packet contract for run/verify; it does not
+     replace the finality-receipt session as the source of truth
+   - it still does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Final consummation-record verdicts are explicit and machine-readable:
+   - `tiny_live_package_consummation_record_plan_ready`
+   - `tiny_live_package_consummation_record_rendered`
+   - `tiny_live_package_consummation_record_refused_now_by_stage3`
+   - `tiny_live_package_consummation_record_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_consummation_record_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_consummation_record_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_consummation_record_verify_ok`
+   - `tiny_live_package_consummation_record_verify_invalid`
+4. The consummation record freezes one final top-level terminus identity over
+   the fully finalized chain:
+   - verified finality-receipt truth
+   - exact reviewed frozen live cutover controller command summary
+   - final refusal-vs-ready classification
+   - exact canonical chain-fingerprint identity
+   - exact top-level ledger-seal identity
+   - exact top-level registry-entry identity
+   - exact top-level filing-certificate identity
+   - exact top-level archive-receipt identity
+   - exact top-level closure-certificate identity
+   - exact top-level finality-receipt identity
+   - one final top-level SHA-256 consummation-record identity over the fully
+     finalized chain
+5. Safety remains hard:
+   - this command stays read-only and archival
+   - it never enables production execution on the real host
+   - it never submits real trades
+   - current real-host usage still remains refused while Stage 3 / promoted
+     5-day truth is non-green
+6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
+   compile/test surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_consummation_record`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_finality_receipt_consummation_record::tests::load_contract_reads_stored_finality_receipt_files -- --exact`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_finality_receipt_consummation_record::tests::finality_receipt_verify_args_are_exact_and_bounded -- --exact`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_finality_receipt_consummation_record::tests::confirmed_decision_packet_session_dir_must_match_stored_contract_and_archive -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_consummation_record -- --test-threads=1`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
