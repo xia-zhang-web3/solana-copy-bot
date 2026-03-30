@@ -1938,6 +1938,54 @@ Explicit repository-side truth:
    - it intentionally does not depend on the heavy `turn_green`
      compile/test surface
 
+## Tiny-Live Filing Certificate
+
+1. Operators now also have one final immutable filing-certificate /
+   docket-receipt surface over the verified registry entry:
+   - `copybot_tiny_live_activation_package_filing_certificate --registry-entry-session-dir /tmp/tiny-live.package-registry-entry-session --plan-live-package-filing-certificate --json`
+   - `copybot_tiny_live_activation_package_filing_certificate --registry-entry-session-dir /tmp/tiny-live.package-registry-entry-session --render-live-package-filing-certificate --output /tmp/tiny-live.package-filing-certificate.sh --json`
+   - `copybot_tiny_live_activation_package_filing_certificate --registry-entry-session-dir /tmp/tiny-live.package-registry-entry-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-filing-certificate-session --run-live-package-filing-certificate --json`
+   - `copybot_tiny_live_activation_package_filing_certificate --registry-entry-session-dir /tmp/tiny-live.package-registry-entry-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-filing-certificate-session --verify-live-package-filing-certificate --json`
+2. The verified `registry_entry` session is the primary direct input:
+   - run and verify additionally require
+     `--confirm-decision-packet-session-dir <path>` as a confirmation-only
+     anchor for the already reviewed nested decision-packet contract
+   - this command does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Important verdicts:
+   - `tiny_live_package_filing_certificate_plan_ready`
+   - `tiny_live_package_filing_certificate_rendered`
+   - `tiny_live_package_filing_certificate_refused_now_by_stage3`
+   - `tiny_live_package_filing_certificate_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_filing_certificate_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_filing_certificate_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_filing_certificate_verify_ok`
+   - `tiny_live_package_filing_certificate_verify_invalid`
+4. The filing certificate is the final filing-style record over the docketed
+   chain:
+   - it freezes the current refusal-vs-ready classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes the canonical chain-fingerprint identity
+   - it freezes the top-level ledger-seal identity
+   - it freezes the top-level registry-entry identity
+   - it freezes one top-level SHA-256 filing-certificate identity over the
+     fully docketed chain
+   - verify rebinds all of the above to verified registry-entry truth, so
+     tampering filing text, nested archived report content, retimed nested
+     evidence, top-level status/gate fields, or chain/ledger/registry/filing
+     identity fields does not verify green
+5. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - managed-surface overlap checks still protect the
+     filing-certificate session dir
+   - current real-host usage still remains refused while gate truth is
+     non-green
+6. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

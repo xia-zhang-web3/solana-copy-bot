@@ -7,6 +7,7 @@ pub mod package_handoff_bundle_review_receipt;
 pub mod package_live_cutover_execute_frozen;
 pub mod package_notarization_receipt_registry_entry;
 pub mod package_provenance_certificate_notarization_receipt;
+pub mod package_registry_entry_filing_certificate;
 pub mod package_release_capsule_attestation_seal;
 pub mod package_review_receipt_activation_ticket;
 pub mod package_turn_green_execute_frozen;

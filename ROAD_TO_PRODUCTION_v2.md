@@ -3099,6 +3099,61 @@ Acceptance update (`2026-03-30`, notarization-receipt-native immutable registry 
    - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_notarization_receipt_registry_entry::tests::confirmed_decision_packet_session_dir_must_match_stored_contract_and_archive -- --exact`
    - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_registry_entry -- --test-threads=1`
 
+Acceptance update (`2026-03-30`, registry-entry-native immutable filing certificate / docket receipt):
+
+1. Stage 4 now also has one final immutable filing-certificate / docket-receipt
+   surface over a verified registry-entry session:
+   - `copybot_tiny_live_activation_package_filing_certificate --registry-entry-session-dir /tmp/tiny-live.package-registry-entry-session --plan-live-package-filing-certificate --json`
+   - `copybot_tiny_live_activation_package_filing_certificate --registry-entry-session-dir /tmp/tiny-live.package-registry-entry-session --render-live-package-filing-certificate --output /tmp/tiny-live.package-filing-certificate.sh --json`
+   - `copybot_tiny_live_activation_package_filing_certificate --registry-entry-session-dir /tmp/tiny-live.package-registry-entry-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-filing-certificate-session --run-live-package-filing-certificate --json`
+   - `copybot_tiny_live_activation_package_filing_certificate --registry-entry-session-dir /tmp/tiny-live.package-registry-entry-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-filing-certificate-session --verify-live-package-filing-certificate --json`
+2. The verified `registry_entry` session is the primary direct input,
+   and run/verify additionally require one confirmation anchor:
+   - this step reuses verified registry-entry truth, the canonical chain
+     fingerprint, the top-level ledger-seal identity, the top-level
+     registry-entry identity, the reviewed frozen live cutover controller
+     summary, and the current refusal-vs-ready classification already bound
+     by the lightweight shared layer
+   - `--confirm-decision-packet-session-dir` only confirms the already
+     reviewed nested decision-packet contract for run/verify; it does not
+     replace the registry-entry session as the source of truth
+   - it still does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Final filing-certificate verdicts are explicit and machine-readable:
+   - `tiny_live_package_filing_certificate_plan_ready`
+   - `tiny_live_package_filing_certificate_rendered`
+   - `tiny_live_package_filing_certificate_refused_now_by_stage3`
+   - `tiny_live_package_filing_certificate_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_filing_certificate_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_filing_certificate_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_filing_certificate_verify_ok`
+   - `tiny_live_package_filing_certificate_verify_invalid`
+4. The filing certificate freezes one final top-level filing-style identity
+   over the fully docketed chain:
+   - verified registry-entry truth
+   - exact reviewed frozen live cutover controller command summary
+   - final refusal-vs-ready classification
+   - exact canonical chain-fingerprint identity
+   - exact top-level ledger-seal identity
+   - exact top-level registry-entry identity
+   - exact nested release-capsule digest-manifest identity already bound by
+     the registry entry
+   - one final top-level SHA-256 filing-certificate identity over the
+     docketed chain
+5. Safety remains hard:
+   - this command stays read-only and archival
+   - it never enables production execution on the real host
+   - it never submits real trades
+   - current real-host usage still remains refused while Stage 3 / promoted
+     5-day truth is non-green
+6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
+   compile/test surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_filing_certificate`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_registry_entry_filing_certificate::tests::load_contract_reads_stored_registry_entry_files -- --exact`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_registry_entry_filing_certificate::tests::registry_entry_verify_args_are_exact_and_bounded -- --exact`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_registry_entry_filing_certificate::tests::confirmed_decision_packet_session_dir_must_match_stored_contract_and_archive -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_filing_certificate -- --test-threads=1`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
