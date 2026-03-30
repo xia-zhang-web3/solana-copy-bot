@@ -1780,6 +1780,59 @@ Explicit repository-side truth:
    - it intentionally does not depend on the heavy `turn_green`
      compile/test surface
 
+## Tiny-Live Package Provenance Certificate
+
+1. Operators now also have one final immutable provenance-certificate /
+   chain-fingerprint layer over a verified attestation-seal session:
+   - inspect the provenance-certificate plan:
+     `copybot_tiny_live_activation_package_provenance_certificate --attestation-seal-session-dir /tmp/tiny-live.package-attestation-seal-session --plan-live-package-provenance-certificate --json`
+   - render an operator-facing provenance-certificate script:
+     `copybot_tiny_live_activation_package_provenance_certificate --attestation-seal-session-dir /tmp/tiny-live.package-attestation-seal-session --render-live-package-provenance-certificate --output /tmp/tiny-live.package-provenance-certificate.sh --json`
+   - persist one immutable provenance-certificate artifact:
+     `copybot_tiny_live_activation_package_provenance_certificate --attestation-seal-session-dir /tmp/tiny-live.package-attestation-seal-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-provenance-certificate-session --run-live-package-provenance-certificate --json`
+   - verify the persisted certificate later:
+     `copybot_tiny_live_activation_package_provenance_certificate --attestation-seal-session-dir /tmp/tiny-live.package-attestation-seal-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-provenance-certificate-session --verify-live-package-provenance-certificate --json`
+2. The verified `attestation_seal` session remains the primary direct input,
+   and run/verify additionally require a confirmation anchor:
+   - this step reuses verified attestation-seal truth, nested
+     release-capsule digest-manifest identity, and the exact reviewed frozen
+     live cutover controller summary
+   - `--confirm-decision-packet-session-dir` only confirms the already
+     reviewed nested decision-packet contract for run/verify; it does not
+     replace the attestation-seal session as the source of truth
+   - it still does not ask the operator to restitch package, target, wrapper,
+     or controller arguments by hand
+3. Important provenance-certificate verdicts:
+   - `tiny_live_package_provenance_certificate_plan_ready`
+   - `tiny_live_package_provenance_certificate_rendered`
+   - `tiny_live_package_provenance_certificate_refused_now_by_stage3`
+   - `tiny_live_package_provenance_certificate_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_provenance_certificate_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_provenance_certificate_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_provenance_certificate_verify_ok`
+   - `tiny_live_package_provenance_certificate_verify_invalid`
+4. The provenance certificate is the final canonical chain-identity layer:
+   - it freezes the current refusal-vs-ready classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes the exact nested release-capsule digest-manifest identity,
+     including canonical manifest SHA-256 and member count
+   - it freezes one top-level SHA-256 chain fingerprint over the reviewed
+     controller summary plus the nested archival identity
+   - verify rebinds all of the above to verified attestation-seal truth, so
+     tampering certificate text, nested archived report content, nested digest
+     identity, or top-level fingerprint fields does not verify green
+5. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - managed-surface overlap checks still protect the
+     provenance-certificate session dir
+   - current real-host usage still remains refused while gate truth is
+     non-green
+6. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

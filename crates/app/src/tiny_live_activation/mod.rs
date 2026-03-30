@@ -1,5 +1,6 @@
 pub mod install_target_managed_surface;
 pub mod package_activation_ticket_release_capsule;
+pub mod package_attestation_seal_provenance_certificate;
 pub mod package_decision_packet_handoff_bundle;
 pub mod package_execute_frozen_decision_packet;
 pub mod package_handoff_bundle_review_receipt;

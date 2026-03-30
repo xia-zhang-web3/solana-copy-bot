@@ -2944,6 +2944,56 @@ Acceptance update (`2026-03-30`, release-capsule-native immutable attestation se
    - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_attestation_seal tests::verify_rejects_retimed_nested_release_capsule_report_and_step_generated_at -- --exact`
    - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_attestation_seal tests::verify_rejects_tampered_digest_member_identity -- --exact`
 
+Acceptance update (`2026-03-30`, attestation-seal-native immutable provenance certificate / chain fingerprint):
+
+1. Stage 4 now also has one final immutable provenance-certificate /
+   chain-fingerprint surface over a verified attestation-seal session:
+   - `copybot_tiny_live_activation_package_provenance_certificate --attestation-seal-session-dir /tmp/tiny-live.package-attestation-seal-session --plan-live-package-provenance-certificate --json`
+   - `copybot_tiny_live_activation_package_provenance_certificate --attestation-seal-session-dir /tmp/tiny-live.package-attestation-seal-session --render-live-package-provenance-certificate --output /tmp/tiny-live.package-provenance-certificate.sh --json`
+   - `copybot_tiny_live_activation_package_provenance_certificate --attestation-seal-session-dir /tmp/tiny-live.package-attestation-seal-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-provenance-certificate-session --run-live-package-provenance-certificate --json`
+   - `copybot_tiny_live_activation_package_provenance_certificate --attestation-seal-session-dir /tmp/tiny-live.package-attestation-seal-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-provenance-certificate-session --verify-live-package-provenance-certificate --json`
+2. The verified `attestation_seal` session is the primary direct input, and
+   run/verify additionally require one confirmation anchor:
+   - this step reuses verified attestation-seal truth, nested release-capsule
+     digest-manifest identity, and the exact reviewed frozen live cutover
+     controller summary already bound by the lightweight shared layer
+   - `--confirm-decision-packet-session-dir` only confirms the already
+     reviewed nested decision-packet contract for run/verify; it does not
+     replace the attestation-seal session as the source of truth
+   - it still does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Final provenance-certificate verdicts are explicit and machine-readable:
+   - `tiny_live_package_provenance_certificate_plan_ready`
+   - `tiny_live_package_provenance_certificate_rendered`
+   - `tiny_live_package_provenance_certificate_refused_now_by_stage3`
+   - `tiny_live_package_provenance_certificate_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_provenance_certificate_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_provenance_certificate_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_provenance_certificate_verify_ok`
+   - `tiny_live_package_provenance_certificate_verify_invalid`
+4. The provenance certificate freezes one final canonical chain-identity
+   record:
+   - verified attestation-seal truth
+   - exact reviewed frozen live cutover controller command summary
+   - final refusal-vs-ready classification
+   - exact nested release-capsule digest-manifest identity, including canonical
+     manifest SHA-256 and member count
+   - one top-level SHA-256 chain fingerprint over the reviewed controller
+     summary plus the nested archival identity
+5. Safety remains hard:
+   - this command stays read-only and archival
+   - it never enables production execution on the real host
+   - it never submits real trades
+   - current real-host usage still remains refused while Stage 3 / promoted
+     5-day truth is non-green
+6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
+   compile/test surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_provenance_certificate`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_attestation_seal_provenance_certificate::tests::load_contract_reads_stored_attestation_seal_files -- --exact`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_attestation_seal_provenance_certificate::tests::attestation_seal_verify_args_are_exact_and_bounded -- --exact`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_attestation_seal_provenance_certificate::tests::confirmed_decision_packet_session_dir_must_match_stored_contract_and_archive -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_provenance_certificate -- --test-threads=1`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
