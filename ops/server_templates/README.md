@@ -1889,6 +1889,55 @@ Explicit repository-side truth:
    - it intentionally does not depend on the heavy `turn_green`
      compile/test surface
 
+## Tiny-Live Registry Entry
+
+1. Operators now also have one final immutable registry-entry / docket-seal
+   surface over the verified notarization receipt:
+   - `copybot_tiny_live_activation_package_registry_entry --notarization-receipt-session-dir /tmp/tiny-live.package-notarization-receipt-session --plan-live-package-registry-entry --json`
+   - `copybot_tiny_live_activation_package_registry_entry --notarization-receipt-session-dir /tmp/tiny-live.package-notarization-receipt-session --render-live-package-registry-entry --output /tmp/tiny-live.package-registry-entry.sh --json`
+   - `copybot_tiny_live_activation_package_registry_entry --notarization-receipt-session-dir /tmp/tiny-live.package-notarization-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-registry-entry-session --run-live-package-registry-entry --json`
+   - `copybot_tiny_live_activation_package_registry_entry --notarization-receipt-session-dir /tmp/tiny-live.package-notarization-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-registry-entry-session --verify-live-package-registry-entry --json`
+2. The verified `notarization_receipt` session is the primary direct input:
+   - run and verify additionally require
+     `--confirm-decision-packet-session-dir <path>` as a confirmation-only
+     anchor for the already reviewed nested decision-packet contract
+   - this command does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Important verdicts:
+   - `tiny_live_package_registry_entry_plan_ready`
+   - `tiny_live_package_registry_entry_rendered`
+   - `tiny_live_package_registry_entry_refused_now_by_stage3`
+   - `tiny_live_package_registry_entry_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_registry_entry_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_registry_entry_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_registry_entry_verify_ok`
+   - `tiny_live_package_registry_entry_verify_invalid`
+4. The registry entry is the final registry-style record over the notarized
+   chain:
+   - it freezes the current refusal-vs-ready classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes the canonical chain-fingerprint identity
+   - it freezes the top-level ledger-seal identity
+   - it freezes the exact nested release-capsule digest-manifest identity
+     already bound by the notarization receipt
+   - it freezes one top-level SHA-256 registry-entry identity over the fully
+     sealed chain
+   - verify rebinds all of the above to verified notarization-receipt truth,
+     so tampering registry text, nested archived report content, retimed
+     nested evidence, top-level status/gate fields, or registry/ledger/chain
+     identity fields does not verify green
+5. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - managed-surface overlap checks still protect the registry-entry session
+     dir
+   - current real-host usage still remains refused while gate truth is
+     non-green
+6. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:
