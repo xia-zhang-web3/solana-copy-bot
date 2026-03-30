@@ -1728,6 +1728,58 @@ Explicit repository-side truth:
    - it intentionally does not depend on the heavy `turn_green`
      compile/test surface
 
+## Tiny-Live Package Attestation Seal
+
+1. Operators now also have one final immutable attestation-seal / custody-record
+   layer over a verified release-capsule session:
+   - inspect the attestation-seal plan:
+     `copybot_tiny_live_activation_package_attestation_seal --release-capsule-session-dir /tmp/tiny-live.package-release-capsule-session --plan-live-package-attestation-seal --json`
+   - render an operator-facing attestation-seal script:
+     `copybot_tiny_live_activation_package_attestation_seal --release-capsule-session-dir /tmp/tiny-live.package-release-capsule-session --render-live-package-attestation-seal --output /tmp/tiny-live.package-attestation-seal.sh --json`
+   - persist one immutable attestation-seal artifact:
+     `copybot_tiny_live_activation_package_attestation_seal --release-capsule-session-dir /tmp/tiny-live.package-release-capsule-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-attestation-seal-session --run-live-package-attestation-seal --json`
+   - verify the persisted seal later:
+     `copybot_tiny_live_activation_package_attestation_seal --release-capsule-session-dir /tmp/tiny-live.package-release-capsule-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-attestation-seal-session --verify-live-package-attestation-seal --json`
+2. The verified `release_capsule` session remains the primary direct input,
+   and run/verify additionally require a confirmation anchor:
+   - this step reuses verified release-capsule truth, nested activation-ticket
+     truth, nested review-receipt truth, and the exact reviewed frozen live
+     cutover controller summary
+   - `--confirm-decision-packet-session-dir` only confirms the already reviewed
+     nested decision-packet contract for run/verify; it does not replace the
+     release-capsule session as the source of truth
+   - it does not ask the operator to restitch package, target, wrapper, or
+     controller arguments by hand
+3. Important attestation-seal verdicts:
+   - `tiny_live_package_attestation_seal_plan_ready`
+   - `tiny_live_package_attestation_seal_rendered`
+   - `tiny_live_package_attestation_seal_refused_now_by_stage3`
+   - `tiny_live_package_attestation_seal_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_attestation_seal_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_attestation_seal_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_attestation_seal_verify_ok`
+   - `tiny_live_package_attestation_seal_verify_invalid`
+4. The attestation seal is the final custody-style archival layer:
+   - it freezes the current refusal-vs-ready classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes the exact digest-manifest identity of the nested release-capsule
+     archival chain, including the nested manifest member set and canonical
+     manifest SHA-256
+   - verify rebinds all of the above to verified release-capsule truth, so
+     tampering seal text, nested archived report content, or nested digest
+     member identity does not verify green
+5. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - managed-surface overlap checks still protect the attestation-seal session
+     dir
+   - current real-host usage still remains refused while gate truth is
+     non-green
+6. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

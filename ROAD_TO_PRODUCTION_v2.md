@@ -2887,6 +2887,63 @@ Acceptance update (`2026-03-30`, activation-ticket-native immutable release caps
    - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_release_capsule tests::verify_rejects_tampered_nested_activation_ticket_report_content -- --exact`
    - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_release_capsule tests::verify_rejects_tampered_digest_manifest_member_set -- --exact`
 
+Acceptance update (`2026-03-30`, release-capsule-native immutable attestation seal / custody record):
+
+1. Stage 4 now also has one final immutable attestation-seal / custody-record
+   surface over a verified release-capsule session:
+   - `copybot_tiny_live_activation_package_attestation_seal --release-capsule-session-dir /tmp/tiny-live.package-release-capsule-session --plan-live-package-attestation-seal --json`
+   - `copybot_tiny_live_activation_package_attestation_seal --release-capsule-session-dir /tmp/tiny-live.package-release-capsule-session --render-live-package-attestation-seal --output /tmp/tiny-live.package-attestation-seal.sh --json`
+   - `copybot_tiny_live_activation_package_attestation_seal --release-capsule-session-dir /tmp/tiny-live.package-release-capsule-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-attestation-seal-session --run-live-package-attestation-seal --json`
+   - `copybot_tiny_live_activation_package_attestation_seal --release-capsule-session-dir /tmp/tiny-live.package-release-capsule-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-attestation-seal-session --verify-live-package-attestation-seal --json`
+2. The verified `release_capsule` session remains the primary direct input,
+   and run/verify additionally require one confirmation anchor:
+   - this step reuses verified release-capsule truth, nested activation-ticket
+     truth, nested review-receipt truth, and the exact reviewed frozen live
+     cutover controller summary already bound by the lightweight shared layer
+   - `--confirm-decision-packet-session-dir` only confirms the already reviewed
+     nested decision-packet contract for run/verify; it does not replace the
+     release-capsule session as the source of truth
+   - it does not restitch package, target, wrapper, or controller arguments
+     from loose CLI inputs
+3. Final attestation-seal verdicts are explicit and machine-readable:
+   - `tiny_live_package_attestation_seal_plan_ready`
+   - `tiny_live_package_attestation_seal_rendered`
+   - `tiny_live_package_attestation_seal_refused_now_by_stage3`
+   - `tiny_live_package_attestation_seal_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_attestation_seal_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_attestation_seal_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_attestation_seal_verify_ok`
+   - `tiny_live_package_attestation_seal_verify_invalid`
+4. The attestation seal freezes one final custody-style attested record:
+   - verified release-capsule truth
+   - exact reviewed frozen live cutover controller command summary
+   - final refusal-vs-ready classification
+   - exact digest-manifest identity of the nested release-capsule archival
+     chain, including the nested manifest member set and canonical manifest
+     SHA-256
+5. Safety remains hard:
+   - this command stays read-only and archival
+   - it never enables production execution on the real host
+   - it never submits real trades
+   - current real-host usage still remains refused while Stage 3 / promoted
+     5-day truth is non-green
+6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
+   compile/test surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_attestation_seal`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_release_capsule_attestation_seal::tests::load_contract_reads_stored_release_capsule_files -- --exact`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_release_capsule_attestation_seal::tests::release_capsule_verify_args_are_exact_and_bounded -- --exact`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_release_capsule_attestation_seal::tests::confirmed_decision_packet_session_dir_must_match_stored_contract_and_archive -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_attestation_seal tests::run_ready_for_manual_execution_when_gate_turns_green_then_verify_stays_green -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_attestation_seal tests::stage3_refusal_stays_explicit -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_attestation_seal tests::pre_activation_refusal_stays_explicit -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_attestation_seal tests::drifted_release_capsule_contract_is_refused -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_attestation_seal tests::run_refuses_managed_surface_overlap_before_writing_any_artifacts -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_attestation_seal tests::verify_rejects_tampered_release_capsule_step_path -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_attestation_seal tests::verify_rejects_tampered_attestation_seal_text -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_attestation_seal tests::verify_rejects_tampered_nested_release_capsule_report_content -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_attestation_seal tests::verify_rejects_retimed_nested_release_capsule_report_and_step_generated_at -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_attestation_seal tests::verify_rejects_tampered_digest_member_identity -- --exact`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
