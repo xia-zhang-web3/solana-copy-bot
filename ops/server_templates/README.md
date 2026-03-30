@@ -1833,6 +1833,62 @@ Explicit repository-side truth:
    - it intentionally does not depend on the heavy `turn_green`
      compile/test surface
 
+## Tiny-Live Package Notarization Receipt
+
+1. Operators now also have one final immutable notarization-receipt /
+   ledger-seal layer over a verified provenance-certificate session:
+   - inspect the notarization-receipt plan:
+     `copybot_tiny_live_activation_package_notarization_receipt --provenance-certificate-session-dir /tmp/tiny-live.package-provenance-certificate-session --plan-live-package-notarization-receipt --json`
+   - render an operator-facing notarization-receipt script:
+     `copybot_tiny_live_activation_package_notarization_receipt --provenance-certificate-session-dir /tmp/tiny-live.package-provenance-certificate-session --render-live-package-notarization-receipt --output /tmp/tiny-live.package-notarization-receipt.sh --json`
+   - persist one immutable notarization-receipt artifact:
+     `copybot_tiny_live_activation_package_notarization_receipt --provenance-certificate-session-dir /tmp/tiny-live.package-provenance-certificate-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-notarization-receipt-session --run-live-package-notarization-receipt --json`
+   - verify the persisted receipt later:
+     `copybot_tiny_live_activation_package_notarization_receipt --provenance-certificate-session-dir /tmp/tiny-live.package-provenance-certificate-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-notarization-receipt-session --verify-live-package-notarization-receipt --json`
+2. The verified `provenance_certificate` session remains the primary direct
+   input, and run/verify additionally require a confirmation anchor:
+   - this step reuses verified provenance-certificate truth, the canonical
+     chain fingerprint, the nested release-capsule digest-manifest identity,
+     and the exact reviewed frozen live cutover controller summary
+   - `--confirm-decision-packet-session-dir` only confirms the already
+     reviewed nested decision-packet contract for run/verify; it does not
+     replace the provenance-certificate session as the source of truth
+   - it still does not ask the operator to restitch package, target, wrapper,
+     or controller arguments by hand
+3. Important notarization-receipt verdicts:
+   - `tiny_live_package_notarization_receipt_plan_ready`
+   - `tiny_live_package_notarization_receipt_rendered`
+   - `tiny_live_package_notarization_receipt_refused_now_by_stage3`
+   - `tiny_live_package_notarization_receipt_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_notarization_receipt_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_notarization_receipt_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_notarization_receipt_verify_ok`
+   - `tiny_live_package_notarization_receipt_verify_invalid`
+4. The notarization receipt is the final ledger-style seal over the canonical
+   reviewed chain:
+   - it freezes the current refusal-vs-ready classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes the canonical chain fingerprint identity from the provenance
+     certificate
+   - it freezes the exact nested release-capsule digest-manifest identity,
+     including canonical manifest SHA-256 and member count
+   - it freezes one top-level SHA-256 ledger seal over the reviewed
+     controller summary plus the canonical chain identity
+   - verify rebinds all of the above to verified provenance-certificate truth,
+     so tampering receipt text, nested archived report content, nested digest
+     identity, or top-level ledger-seal fields does not verify green
+5. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - managed-surface overlap checks still protect the
+     notarization-receipt session dir
+   - current real-host usage still remains refused while gate truth is
+     non-green
+6. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

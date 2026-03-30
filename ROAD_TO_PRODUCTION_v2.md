@@ -2994,6 +2994,59 @@ Acceptance update (`2026-03-30`, attestation-seal-native immutable provenance ce
    - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_attestation_seal_provenance_certificate::tests::confirmed_decision_packet_session_dir_must_match_stored_contract_and_archive -- --exact`
    - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_provenance_certificate -- --test-threads=1`
 
+Acceptance update (`2026-03-30`, provenance-certificate-native immutable notarization receipt / ledger seal):
+
+1. Stage 4 now also has one final immutable notarization-receipt /
+   ledger-seal surface over a verified provenance-certificate session:
+   - `copybot_tiny_live_activation_package_notarization_receipt --provenance-certificate-session-dir /tmp/tiny-live.package-provenance-certificate-session --plan-live-package-notarization-receipt --json`
+   - `copybot_tiny_live_activation_package_notarization_receipt --provenance-certificate-session-dir /tmp/tiny-live.package-provenance-certificate-session --render-live-package-notarization-receipt --output /tmp/tiny-live.package-notarization-receipt.sh --json`
+   - `copybot_tiny_live_activation_package_notarization_receipt --provenance-certificate-session-dir /tmp/tiny-live.package-provenance-certificate-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-notarization-receipt-session --run-live-package-notarization-receipt --json`
+   - `copybot_tiny_live_activation_package_notarization_receipt --provenance-certificate-session-dir /tmp/tiny-live.package-provenance-certificate-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-notarization-receipt-session --verify-live-package-notarization-receipt --json`
+2. The verified `provenance_certificate` session is the primary direct input,
+   and run/verify additionally require one confirmation anchor:
+   - this step reuses verified provenance-certificate truth, the canonical
+     chain fingerprint, the nested release-capsule digest-manifest identity,
+     and the exact reviewed frozen live cutover controller summary already
+     bound by the lightweight shared layer
+   - `--confirm-decision-packet-session-dir` only confirms the already
+     reviewed nested decision-packet contract for run/verify; it does not
+     replace the provenance-certificate session as the source of truth
+   - it still does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Final notarization-receipt verdicts are explicit and machine-readable:
+   - `tiny_live_package_notarization_receipt_plan_ready`
+   - `tiny_live_package_notarization_receipt_rendered`
+   - `tiny_live_package_notarization_receipt_refused_now_by_stage3`
+   - `tiny_live_package_notarization_receipt_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_notarization_receipt_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_notarization_receipt_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_notarization_receipt_verify_ok`
+   - `tiny_live_package_notarization_receipt_verify_invalid`
+4. The notarization receipt freezes one final ledger-style seal over the
+   canonical reviewed chain:
+   - verified provenance-certificate truth
+   - exact reviewed frozen live cutover controller command summary
+   - final refusal-vs-ready classification
+   - exact canonical chain-fingerprint identity from the provenance
+     certificate
+   - exact nested release-capsule digest-manifest identity, including
+     canonical manifest SHA-256 and member count
+   - one top-level SHA-256 ledger seal over the reviewed controller summary
+     plus the canonical chain identity
+5. Safety remains hard:
+   - this command stays read-only and archival
+   - it never enables production execution on the real host
+   - it never submits real trades
+   - current real-host usage still remains refused while Stage 3 / promoted
+     5-day truth is non-green
+6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
+   compile/test surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_notarization_receipt`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_provenance_certificate_notarization_receipt::tests::load_contract_reads_stored_provenance_certificate_files -- --exact`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_provenance_certificate_notarization_receipt::tests::provenance_certificate_verify_args_are_exact_and_bounded -- --exact`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_provenance_certificate_notarization_receipt::tests::confirmed_decision_packet_session_dir_must_match_stored_contract_and_archive -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_notarization_receipt`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
