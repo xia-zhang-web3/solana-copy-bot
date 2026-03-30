@@ -1578,6 +1578,55 @@ Explicit repository-side truth:
    - it intentionally does not depend on the heavy `turn_green`
      compile/test surface
 
+## Tiny-Live Package Review Receipt
+
+1. Operators now also have one final immutable operator signoff / review-receipt
+   layer over a verified handoff-bundle session:
+   - inspect the review-receipt plan:
+     `copybot_tiny_live_activation_package_review_receipt --handoff-bundle-session-dir /tmp/tiny-live.package-handoff-bundle-session --plan-live-package-review-receipt --json`
+   - render an operator-facing review-receipt script:
+     `copybot_tiny_live_activation_package_review_receipt --handoff-bundle-session-dir /tmp/tiny-live.package-handoff-bundle-session --render-live-package-review-receipt --output /tmp/tiny-live.package-review-receipt.sh --json`
+   - persist one immutable review-receipt artifact:
+     `copybot_tiny_live_activation_package_review_receipt --handoff-bundle-session-dir /tmp/tiny-live.package-handoff-bundle-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-review-receipt-session --run-live-package-review-receipt --json`
+   - verify the persisted receipt later:
+     `copybot_tiny_live_activation_package_review_receipt --handoff-bundle-session-dir /tmp/tiny-live.package-handoff-bundle-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-review-receipt-session --verify-live-package-review-receipt --json`
+2. The verified `handoff_bundle` session remains the primary direct input, and
+   run/verify additionally require a confirmation anchor:
+   - this step reuses verified handoff-bundle truth, nested decision-packet
+     truth, nested execute-frozen truth, and the exact frozen live cutover
+     controller summary
+   - `--confirm-decision-packet-session-dir` only confirms the nested reviewed
+     decision-packet contract for run/verify; it does not replace the
+     handoff-bundle session as the source of truth
+   - it does not ask the operator to restitch package, target, wrapper, or
+     controller arguments by hand
+3. Important review-receipt verdicts:
+   - `tiny_live_package_review_receipt_plan_ready`
+   - `tiny_live_package_review_receipt_rendered`
+   - `tiny_live_package_review_receipt_refused_now_by_stage3`
+   - `tiny_live_package_review_receipt_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_review_receipt_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_review_receipt_ready_for_manual_go_live_signoff`
+   - `tiny_live_package_review_receipt_verify_ok`
+   - `tiny_live_package_review_receipt_verify_invalid`
+4. The receipt is the final reviewed signoff layer:
+   - it freezes the current refusal-vs-signoff classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes checklist acknowledgement text and runbook acknowledgement text
+   - verify rebinds all of the above to verified handoff-bundle truth, so
+     tampering receipt text or nested archived report content does not verify
+     green
+5. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - managed-surface overlap checks still protect the receipt session dir
+   - current real-host usage still remains refused while gate truth is
+     non-green
+6. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

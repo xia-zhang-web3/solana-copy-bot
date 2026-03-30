@@ -2729,6 +2729,59 @@ Acceptance update (`2026-03-30`, decision-packet-native immutable go-live handof
    - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_handoff_bundle tests::verify_rejects_tampered_decision_packet_step_path -- --exact`
    - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_handoff_bundle tests::verify_rejects_tampered_bundle_summary_and_manifest -- --exact`
 
+Acceptance update (`2026-03-30`, handoff-bundle-native operator signoff / review receipt):
+
+1. Stage 4 now also has one final immutable operator review-receipt surface over
+   a verified handoff-bundle session:
+   - `copybot_tiny_live_activation_package_review_receipt --handoff-bundle-session-dir /tmp/tiny-live.package-handoff-bundle-session --plan-live-package-review-receipt --json`
+   - `copybot_tiny_live_activation_package_review_receipt --handoff-bundle-session-dir /tmp/tiny-live.package-handoff-bundle-session --render-live-package-review-receipt --output /tmp/tiny-live.package-review-receipt.sh --json`
+   - `copybot_tiny_live_activation_package_review_receipt --handoff-bundle-session-dir /tmp/tiny-live.package-handoff-bundle-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-review-receipt-session --run-live-package-review-receipt --json`
+   - `copybot_tiny_live_activation_package_review_receipt --handoff-bundle-session-dir /tmp/tiny-live.package-handoff-bundle-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-review-receipt-session --verify-live-package-review-receipt --json`
+2. The verified `handoff_bundle` session remains the primary direct input, and
+   run/verify additionally require one confirmation anchor:
+   - this step reuses verified handoff-bundle truth, nested decision-packet
+     truth, nested execute-frozen truth, and the exact frozen live cutover
+     controller summary already bound by the lightweight shared layer
+   - `--confirm-decision-packet-session-dir` only confirms the reviewed nested
+     decision-packet contract for run/verify; it does not replace the
+     handoff-bundle session as the source of truth
+   - it does not restitch package, target, wrapper, or controller arguments
+     from loose CLI inputs
+3. Final review-receipt verdicts are explicit and machine-readable:
+   - `tiny_live_package_review_receipt_plan_ready`
+   - `tiny_live_package_review_receipt_rendered`
+   - `tiny_live_package_review_receipt_refused_now_by_stage3`
+   - `tiny_live_package_review_receipt_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_review_receipt_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_review_receipt_ready_for_manual_go_live_signoff`
+   - `tiny_live_package_review_receipt_verify_ok`
+   - `tiny_live_package_review_receipt_verify_invalid`
+4. The receipt freezes one final reviewed signoff record:
+   - verified handoff-bundle truth
+   - exact reviewed frozen live cutover controller command summary
+   - review outcome / signoff classification
+   - checklist acknowledgement text
+   - runbook acknowledgement text
+5. Safety remains hard:
+   - this receipt never executes the frozen controller itself
+   - managed-surface overlap checks still protect the receipt session dir
+   - current real-host usage still remains refused while gate truth is
+     non-green
+6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
+   compile/test surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_review_receipt`
+   - `cargo test -j 1 -p copybot-app --lib load_contract_reads_stored_handoff_bundle_files`
+   - `cargo test -j 1 -p copybot-app --lib trusted_decision_packet_session_dir_is_loaded_from_archived_report`
+   - `cargo test -j 1 -p copybot-app --lib handoff_bundle_verify_args_are_exact_and_bounded`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_review_receipt tests::run_ready_for_manual_go_live_signoff_then_verify_stays_green -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_review_receipt tests::stage3_refusal_stays_explicit -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_review_receipt tests::pre_activation_refusal_stays_explicit -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_review_receipt tests::drifted_handoff_bundle_contract_is_refused -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_review_receipt tests::run_refuses_managed_surface_overlap_before_writing_any_artifacts -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_review_receipt tests::verify_rejects_tampered_handoff_bundle_step_path -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_review_receipt tests::verify_rejects_tampered_review_receipt_text -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_review_receipt tests::verify_rejects_tampered_nested_handoff_bundle_report_content -- --exact`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
