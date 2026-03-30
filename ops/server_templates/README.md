@@ -1534,6 +1534,50 @@ Explicit repository-side truth:
    - it intentionally does not depend on the heavy `turn_green`
      compile/test surface
 
+## Tiny-Live Package Handoff Bundle
+
+1. Operators now also have one final immutable go-live handoff bundle over a
+   verified decision-packet session:
+   - inspect the handoff bundle plan:
+     `copybot_tiny_live_activation_package_handoff_bundle --decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --plan-live-package-handoff-bundle --json`
+   - render an operator-facing handoff-bundle script:
+     `copybot_tiny_live_activation_package_handoff_bundle --decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --render-live-package-handoff-bundle --output /tmp/tiny-live.package-handoff-bundle.sh --json`
+   - persist one immutable handoff dossier:
+     `copybot_tiny_live_activation_package_handoff_bundle --decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-handoff-bundle-session --run-live-package-handoff-bundle --json`
+   - verify the persisted dossier later:
+     `copybot_tiny_live_activation_package_handoff_bundle --decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-handoff-bundle-session --verify-live-package-handoff-bundle --json`
+2. The verified `decision_packet` session is the direct input:
+   - this step reuses verified decision-packet truth, nested execute-frozen
+     truth, nested turn-green truth, and the exact frozen live cutover
+     controller summary
+   - it does not ask the operator to restitch package, target, wrapper, or
+     controller arguments by hand
+3. Important handoff-bundle verdicts:
+   - `tiny_live_package_handoff_bundle_plan_ready`
+   - `tiny_live_package_handoff_bundle_rendered`
+   - `tiny_live_package_handoff_bundle_refused_now_by_stage3`
+   - `tiny_live_package_handoff_bundle_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_handoff_bundle_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_handoff_bundle_ready_for_manual_go_live_review`
+   - `tiny_live_package_handoff_bundle_verify_ok`
+   - `tiny_live_package_handoff_bundle_verify_invalid`
+4. The dossier is the final archival handoff layer:
+   - it freezes the current refusal-vs-review classification
+   - it freezes the exact frozen live cutover controller command summary
+   - it freezes checklist text, runbook text, and exact nested artifact
+     membership for the handoff
+   - verify rebinds all of the above to verified decision-packet truth, so
+     tampering dossier text or manifest membership does not verify green
+5. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - managed-surface overlap checks still protect the bundle session dir
+   - current real-host usage still remains refused while gate truth is
+     non-green
+6. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

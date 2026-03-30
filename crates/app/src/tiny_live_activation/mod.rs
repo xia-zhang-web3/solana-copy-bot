@@ -1,4 +1,5 @@
 pub mod install_target_managed_surface;
+pub mod package_decision_packet_handoff_bundle;
 pub mod package_execute_frozen_decision_packet;
 pub mod package_live_cutover_execute_frozen;
 pub mod package_turn_green_execute_frozen;

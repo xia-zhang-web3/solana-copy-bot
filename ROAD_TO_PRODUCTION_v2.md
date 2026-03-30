@@ -2681,6 +2681,54 @@ Acceptance update (`2026-03-30`, execute-frozen-native final activation decision
    - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_decision_packet tests::verify_rejects_tampered_checklist_and_runbook_summary -- --exact`
    - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_decision_packet tests::verify_rejects_tampered_top_level_contract -- --exact`
 
+Acceptance update (`2026-03-30`, decision-packet-native immutable go-live handoff bundle):
+
+1. Stage 4 now also has one final immutable go-live handoff bundle over a
+   verified decision-packet session:
+   - `copybot_tiny_live_activation_package_handoff_bundle --decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --plan-live-package-handoff-bundle --json`
+   - `copybot_tiny_live_activation_package_handoff_bundle --decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --render-live-package-handoff-bundle --output /tmp/tiny-live.package-handoff-bundle.sh --json`
+   - `copybot_tiny_live_activation_package_handoff_bundle --decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-handoff-bundle-session --run-live-package-handoff-bundle --json`
+   - `copybot_tiny_live_activation_package_handoff_bundle --decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-handoff-bundle-session --verify-live-package-handoff-bundle --json`
+2. The verified `decision_packet` session is the only direct input:
+   - the bundle reuses verified decision-packet truth, nested execute-frozen
+     truth, nested turn-green truth, and the exact frozen live cutover
+     controller summary already bound by the lightweight shared layer
+   - it does not restitch package, target, wrapper, or controller arguments
+     from loose CLI inputs
+3. Final dossier verdicts are explicit and machine-readable:
+   - `tiny_live_package_handoff_bundle_plan_ready`
+   - `tiny_live_package_handoff_bundle_rendered`
+   - `tiny_live_package_handoff_bundle_refused_now_by_stage3`
+   - `tiny_live_package_handoff_bundle_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_handoff_bundle_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_handoff_bundle_ready_for_manual_go_live_review`
+   - `tiny_live_package_handoff_bundle_verify_ok`
+   - `tiny_live_package_handoff_bundle_verify_invalid`
+4. The bundle freezes one final archival handoff:
+   - verified decision-packet truth
+   - exact frozen live cutover command summary
+   - operator checklist text
+   - operator runbook text
+   - exact nested artifact membership / manifest for the handoff dossier
+5. Safety remains hard:
+   - this bundle never executes the frozen controller itself
+   - managed-surface overlap checks still apply to the bundle session dir
+   - current real-host usage still remains refused while gate truth is
+     non-green
+6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
+   compile/test surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_handoff_bundle`
+   - `cargo test -j 1 -p copybot-app --lib load_contract_reads_stored_decision_packet_files`
+   - `cargo test -j 1 -p copybot-app --lib trusted_execute_frozen_session_dir_is_loaded_from_persisted_step_report`
+   - `cargo test -j 1 -p copybot-app --lib decision_packet_verify_args_are_exact_and_bounded`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_handoff_bundle tests::run_ready_for_manual_go_live_review_then_verify_stays_green -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_handoff_bundle tests::stage3_refusal_stays_explicit -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_handoff_bundle tests::pre_activation_refusal_stays_explicit -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_handoff_bundle tests::drifted_decision_packet_contract_is_refused -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_handoff_bundle tests::run_refuses_managed_surface_overlap_before_writing_any_artifacts -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_handoff_bundle tests::verify_rejects_tampered_decision_packet_step_path -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_handoff_bundle tests::verify_rejects_tampered_bundle_summary_and_manifest -- --exact`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
