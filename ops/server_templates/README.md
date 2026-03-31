@@ -2453,6 +2453,50 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
    - it freezes the top-level consummation-record identity
    - it freezes the top-level completion-certificate identity
    - it freezes the top-level culmination-receipt identity
+
+## Tiny-Live Package Keystone Receipt
+
+1. Operators now also have one final immutable keystone-receipt /
+   imperial-seal surface over the verified capstone certificate:
+   - `copybot_tiny_live_activation_package_keystone_receipt --capstone-certificate-session-dir /tmp/tiny-live.package-capstone-certificate-session --plan-live-package-keystone-receipt --json`
+   - `copybot_tiny_live_activation_package_keystone_receipt --capstone-certificate-session-dir /tmp/tiny-live.package-capstone-certificate-session --render-live-package-keystone-receipt --output /tmp/tiny-live.package-keystone-receipt.sh --json`
+   - `copybot_tiny_live_activation_package_keystone_receipt --capstone-certificate-session-dir /tmp/tiny-live.package-capstone-certificate-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-keystone-receipt-session --run-live-package-keystone-receipt --json`
+   - `copybot_tiny_live_activation_package_keystone_receipt --capstone-certificate-session-dir /tmp/tiny-live.package-capstone-certificate-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-keystone-receipt-session --verify-live-package-keystone-receipt --json`
+2. The verified `capstone_certificate` session is the primary direct input:
+   - run and verify additionally require
+     `--confirm-decision-packet-session-dir <path>` as a confirmation-only
+     anchor for the already reviewed nested decision-packet contract
+   - this command does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Important verdicts:
+   - `tiny_live_package_keystone_receipt_plan_ready`
+   - `tiny_live_package_keystone_receipt_rendered`
+   - `tiny_live_package_keystone_receipt_refused_now_by_stage3`
+   - `tiny_live_package_keystone_receipt_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_keystone_receipt_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_keystone_receipt_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_keystone_receipt_verify_ok`
+   - `tiny_live_package_keystone_receipt_verify_invalid`
+4. The keystone receipt is the final imperial-style record over the fully
+   culminated chain:
+   - it freezes the current refusal-vs-ready classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes the canonical chain-fingerprint identity
+   - it freezes the top-level ledger-seal identity
+   - it freezes the top-level registry-entry identity
+   - it freezes the top-level filing-certificate identity
+   - it freezes the top-level archive-receipt identity
+   - it freezes the top-level closure-certificate identity
+   - it freezes the top-level finality-receipt identity
+   - it freezes the top-level consummation-record identity
+   - it freezes the top-level completion-certificate identity
+   - it freezes the top-level culmination-receipt identity
+   - it freezes the top-level summit-certificate identity
+   - it freezes the top-level pinnacle-receipt identity
+   - it freezes the top-level capstone-certificate identity
+   - it freezes one top-level SHA-256 keystone-receipt identity over the
+     fully culminated chain
    - it freezes the top-level summit-certificate identity
    - it freezes the top-level pinnacle-receipt identity
    - it freezes one top-level SHA-256 capstone-certificate identity over the

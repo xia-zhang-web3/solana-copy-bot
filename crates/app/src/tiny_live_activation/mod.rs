@@ -13,6 +13,7 @@ pub mod package_finality_receipt_consummation_record;
 pub mod package_handoff_bundle_review_receipt;
 pub mod package_live_cutover_execute_frozen;
 pub mod package_notarization_receipt_registry_entry;
+pub mod package_capstone_certificate_keystone_receipt;
 pub mod package_pinnacle_receipt_capstone_certificate;
 pub mod package_provenance_certificate_notarization_receipt;
 pub mod package_registry_entry_filing_certificate;
