@@ -2322,6 +2322,57 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
    - it intentionally does not depend on the heavy `turn_green`
      compile/test surface
 
+## Tiny-Live Package Summit Certificate
+
+1. Operators now also have one final immutable summit-certificate /
+   zenith-seal surface over the verified culmination receipt:
+   - `copybot_tiny_live_activation_package_summit_certificate --culmination-receipt-session-dir /tmp/tiny-live.package-culmination-receipt-session --plan-live-package-summit-certificate --json`
+   - `copybot_tiny_live_activation_package_summit_certificate --culmination-receipt-session-dir /tmp/tiny-live.package-culmination-receipt-session --render-live-package-summit-certificate --output /tmp/tiny-live.package-summit-certificate.sh --json`
+   - `copybot_tiny_live_activation_package_summit_certificate --culmination-receipt-session-dir /tmp/tiny-live.package-culmination-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-summit-certificate-session --run-live-package-summit-certificate --json`
+   - `copybot_tiny_live_activation_package_summit_certificate --culmination-receipt-session-dir /tmp/tiny-live.package-culmination-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-summit-certificate-session --verify-live-package-summit-certificate --json`
+2. The verified `culmination_receipt` session is the primary direct input:
+   - run and verify additionally require
+     `--confirm-decision-packet-session-dir <path>` as a confirmation-only
+     anchor for the already reviewed nested decision-packet contract
+   - this command does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Important verdicts:
+   - `tiny_live_package_summit_certificate_plan_ready`
+   - `tiny_live_package_summit_certificate_rendered`
+   - `tiny_live_package_summit_certificate_refused_now_by_stage3`
+   - `tiny_live_package_summit_certificate_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_summit_certificate_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_summit_certificate_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_summit_certificate_verify_ok`
+   - `tiny_live_package_summit_certificate_verify_invalid`
+4. The summit certificate is the final zenith-style record over the fully
+   culminated chain:
+   - it freezes the current refusal-vs-ready classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes the canonical chain-fingerprint identity
+   - it freezes the top-level ledger-seal identity
+   - it freezes the top-level registry-entry identity
+   - it freezes the top-level filing-certificate identity
+   - it freezes the top-level archive-receipt identity
+   - it freezes the top-level closure-certificate identity
+   - it freezes the top-level finality-receipt identity
+   - it freezes the top-level consummation-record identity
+   - it freezes the top-level completion-certificate identity
+   - it freezes the top-level culmination-receipt identity
+   - it freezes one top-level SHA-256 summit-certificate identity over the
+     fully culminated chain
+5. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - managed-surface overlap checks still protect the
+     summit-certificate session dir
+   - current real-host usage still remains refused while gate truth is
+     non-green
+6. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
 ## Tiny-Live Guardrail Audit
 
 1. Operators now also have a planning-only tiny-live guardrail audit:

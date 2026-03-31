@@ -3503,6 +3503,69 @@ Acceptance update (`2026-03-31`, completion-certificate-native immutable culmina
    - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_completion_certificate_culmination_receipt::tests::confirmed_decision_packet_session_dir_must_match_stored_contract_and_archive -- --exact`
    - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_culmination_receipt -- --test-threads=1`
 
+Acceptance update (`2026-03-31`, culmination-receipt-native immutable summit certificate / zenith seal):
+
+1. Stage 4 now also has one final immutable summit-certificate / zenith-seal
+   surface over a verified culmination-receipt session:
+   - `copybot_tiny_live_activation_package_summit_certificate --culmination-receipt-session-dir /tmp/tiny-live.package-culmination-receipt-session --plan-live-package-summit-certificate --json`
+   - `copybot_tiny_live_activation_package_summit_certificate --culmination-receipt-session-dir /tmp/tiny-live.package-culmination-receipt-session --render-live-package-summit-certificate --output /tmp/tiny-live.package-summit-certificate.sh --json`
+   - `copybot_tiny_live_activation_package_summit_certificate --culmination-receipt-session-dir /tmp/tiny-live.package-culmination-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-summit-certificate-session --run-live-package-summit-certificate --json`
+   - `copybot_tiny_live_activation_package_summit_certificate --culmination-receipt-session-dir /tmp/tiny-live.package-culmination-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-summit-certificate-session --verify-live-package-summit-certificate --json`
+2. The verified `culmination_receipt` session is the primary direct input, and
+   run/verify additionally require one confirmation anchor:
+   - this step reuses verified culmination-receipt truth, the exact reviewed
+     frozen live cutover controller summary, the canonical chain fingerprint,
+     the ledger-seal identity, the registry-entry identity, the
+     filing-certificate identity, the archive-receipt identity, the
+     closure-certificate identity, the finality-receipt identity, the
+     consummation-record identity, the completion-certificate identity, the
+     culmination-receipt identity, and the current refusal-vs-ready
+     classification already bound by the lightweight shared layer
+   - `--confirm-decision-packet-session-dir` only confirms the already
+     reviewed nested decision-packet contract for run/verify; it does not
+     replace the culmination-receipt session as the source of truth
+   - it still does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Final summit-certificate verdicts are explicit and machine-readable:
+   - `tiny_live_package_summit_certificate_plan_ready`
+   - `tiny_live_package_summit_certificate_rendered`
+   - `tiny_live_package_summit_certificate_refused_now_by_stage3`
+   - `tiny_live_package_summit_certificate_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_summit_certificate_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_summit_certificate_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_summit_certificate_verify_ok`
+   - `tiny_live_package_summit_certificate_verify_invalid`
+4. The summit certificate freezes one final top-level zenith identity over the
+   fully culminated chain:
+   - verified culmination-receipt truth
+   - exact reviewed frozen live cutover controller command summary
+   - final refusal-vs-ready classification
+   - exact canonical chain-fingerprint identity
+   - exact top-level ledger-seal identity
+   - exact top-level registry-entry identity
+   - exact top-level filing-certificate identity
+   - exact top-level archive-receipt identity
+   - exact top-level closure-certificate identity
+   - exact top-level finality-receipt identity
+   - exact top-level consummation-record identity
+   - exact top-level completion-certificate identity
+   - exact top-level culmination-receipt identity
+   - one final top-level SHA-256 summit-certificate identity over the fully
+     culminated chain
+5. Safety remains hard:
+   - this command stays read-only and archival
+   - it never enables production execution on the real host
+   - it never submits real trades
+   - current real-host usage still remains refused while Stage 3 / promoted
+     5-day truth is non-green
+6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
+   compile/test surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_summit_certificate`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_culmination_receipt_summit_certificate::tests::load_contract_reads_stored_culmination_receipt_files -- --exact`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_culmination_receipt_summit_certificate::tests::culmination_receipt_verify_args_are_exact_and_bounded -- --exact`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_culmination_receipt_summit_certificate::tests::confirmed_decision_packet_session_dir_must_match_stored_contract_and_archive -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_summit_certificate -- --test-threads=1`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
