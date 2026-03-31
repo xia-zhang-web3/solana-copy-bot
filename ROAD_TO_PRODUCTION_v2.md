@@ -7462,6 +7462,52 @@ Acceptance update, lectern-certificate / armorial-seal layer (`2026-03-31`):
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
+Acceptance update, chancel-certificate / herald-seal layer (`2026-03-31`):
+
+1. The repo now has one more final immutable archival layer over the verified
+   pulpit-receipt session:
+   - `copybot_tiny_live_activation_package_chancel_certificate`
+2. The new operator surface is explicit and bounded:
+   - `--plan-live-package-chancel-certificate`
+   - `--render-live-package-chancel-certificate --output <path>`
+   - `--run-live-package-chancel-certificate --session-dir <path>`
+   - `--verify-live-package-chancel-certificate --session-dir <path>`
+3. The contract stays source-of-truth-first:
+   - verified `pulpit_receipt` session is the direct primary input
+   - `--confirm-decision-packet-session-dir <path>` remains only a
+     confirmation-only anchor for the already reviewed nested decision-packet
+     contract
+   - no loose package / target / controller arguments are reintroduced
+4. The chancel certificate is read-only and archival:
+   - it freezes the reviewed frozen-controller summary and current
+     refusal-vs-ready classification
+   - it freezes the canonical chain fingerprint plus ledger / registry /
+     filing / archive / closure / finality / consummation / completion /
+     culmination / summit / pinnacle / capstone / keystone / cornerstone /
+     foundation / bedrock / basal / substructure / plinth / pedestal / dais /
+     rostrum / podium / lectern / pulpit identities
+   - it adds one top-level immutable `chancel_certificate_sha256` over that
+     fully culminated chain identity
+   - it does not enable production execution, mutate the target/service
+     contract, or submit real trades
+5. Verification is real and drift-intolerant:
+   - stored session/status/report artifacts must match fresh verified nested
+     pulpit-receipt truth
+   - stored top-level status.result / gate fields, nested step path, identity
+     fields, and coordinated nested `generated_at` retime all fail verify when
+     tampered
+6. Acceptance stayed on the lightweight bounded surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_chancel_certificate`
+   - targeted lib tests for
+     `tiny_live_activation::package_pulpit_receipt_chancel_certificate`
+   - targeted bin tests for
+     `copybot_tiny_live_activation_package_chancel_certificate`
+   - no heavy `turn_green` compile/test dependency was reintroduced
+7. Current production status remains unchanged:
+   - the real host still remains non-green while Stage 3 / promoted 5-day
+     truth is blocked by the separate live recent_raw incident
+   - this batch does not authorize or perform production activation
+
 Acceptance update, bedrock-certificate / coronet-seal layer (`2026-03-31`):
 
 1. The repo now has one more final immutable archival layer over the verified

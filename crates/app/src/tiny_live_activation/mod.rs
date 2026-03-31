@@ -25,6 +25,7 @@ pub mod package_pedestal_certificate_dais_receipt;
 pub mod package_pinnacle_receipt_capstone_certificate;
 pub mod package_plinth_receipt_pedestal_certificate;
 pub mod package_podium_receipt_lectern_certificate;
+pub mod package_pulpit_receipt_chancel_certificate;
 pub mod package_provenance_certificate_notarization_receipt;
 pub mod package_registry_entry_filing_certificate;
 pub mod package_release_capsule_attestation_seal;
