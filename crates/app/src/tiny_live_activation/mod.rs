@@ -1,5 +1,6 @@
 pub mod install_target_managed_surface;
 pub mod package_activation_ticket_release_capsule;
+pub mod package_chancel_certificate_apse_receipt;
 pub mod package_archive_receipt_closure_certificate;
 pub mod package_attestation_seal_provenance_certificate;
 pub mod package_basal_receipt_substructure_certificate;
