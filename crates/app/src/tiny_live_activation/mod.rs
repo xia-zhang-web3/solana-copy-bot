@@ -10,6 +10,7 @@ pub mod package_decision_packet_handoff_bundle;
 pub mod package_execute_frozen_decision_packet;
 pub mod package_filing_certificate_archive_receipt;
 pub mod package_finality_receipt_consummation_record;
+pub mod package_foundation_receipt_bedrock_certificate;
 pub mod package_handoff_bundle_review_receipt;
 pub mod package_live_cutover_execute_frozen;
 pub mod package_notarization_receipt_registry_entry;
