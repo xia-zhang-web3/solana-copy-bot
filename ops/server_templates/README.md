@@ -2497,6 +2497,51 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
    - it freezes the top-level capstone-certificate identity
    - it freezes one top-level SHA-256 keystone-receipt identity over the
      fully culminated chain
+
+## Tiny-Live Package Cornerstone Certificate
+
+1. Operators now also have one final immutable cornerstone-certificate /
+   regalia-seal surface over the verified keystone receipt:
+   - `copybot_tiny_live_activation_package_cornerstone_certificate --keystone-receipt-session-dir /tmp/tiny-live.package-keystone-receipt-session --plan-live-package-cornerstone-certificate --json`
+   - `copybot_tiny_live_activation_package_cornerstone_certificate --keystone-receipt-session-dir /tmp/tiny-live.package-keystone-receipt-session --render-live-package-cornerstone-certificate --output /tmp/tiny-live.package-cornerstone-certificate.sh --json`
+   - `copybot_tiny_live_activation_package_cornerstone_certificate --keystone-receipt-session-dir /tmp/tiny-live.package-keystone-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-cornerstone-certificate-session --run-live-package-cornerstone-certificate --json`
+   - `copybot_tiny_live_activation_package_cornerstone_certificate --keystone-receipt-session-dir /tmp/tiny-live.package-keystone-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-cornerstone-certificate-session --verify-live-package-cornerstone-certificate --json`
+2. The verified `keystone_receipt` session is the primary direct input:
+   - run and verify additionally require
+     `--confirm-decision-packet-session-dir <path>` as a confirmation-only
+     anchor for the already reviewed nested decision-packet contract
+   - this command does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Important verdicts:
+   - `tiny_live_package_cornerstone_certificate_plan_ready`
+   - `tiny_live_package_cornerstone_certificate_rendered`
+   - `tiny_live_package_cornerstone_certificate_refused_now_by_stage3`
+   - `tiny_live_package_cornerstone_certificate_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_cornerstone_certificate_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_cornerstone_certificate_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_cornerstone_certificate_verify_ok`
+   - `tiny_live_package_cornerstone_certificate_verify_invalid`
+4. The cornerstone certificate is the final regalia-style record over the
+   fully culminated chain:
+   - it freezes the current refusal-vs-ready classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes the canonical chain-fingerprint identity
+   - it freezes the top-level ledger-seal identity
+   - it freezes the top-level registry-entry identity
+   - it freezes the top-level filing-certificate identity
+   - it freezes the top-level archive-receipt identity
+   - it freezes the top-level closure-certificate identity
+   - it freezes the top-level finality-receipt identity
+   - it freezes the top-level consummation-record identity
+   - it freezes the top-level completion-certificate identity
+   - it freezes the top-level culmination-receipt identity
+   - it freezes the top-level summit-certificate identity
+   - it freezes the top-level pinnacle-receipt identity
+   - it freezes the top-level capstone-certificate identity
+   - it freezes the top-level keystone-receipt identity
+   - it freezes one top-level SHA-256 cornerstone-certificate identity over
+     the fully culminated chain
    - it freezes the top-level summit-certificate identity
    - it freezes the top-level pinnacle-receipt identity
    - it freezes one top-level SHA-256 capstone-certificate identity over the

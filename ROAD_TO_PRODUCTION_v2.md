@@ -3765,6 +3765,75 @@ Acceptance update (`2026-03-31`, capstone-certificate-native immutable keystone 
    - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_capstone_certificate_keystone_receipt::tests::confirmed_decision_packet_session_dir_must_match_stored_contract_and_archive -- --exact`
    - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_keystone_receipt -- --test-threads=1`
 
+Acceptance update (`2026-03-31`, keystone-receipt-native immutable cornerstone certificate / regalia seal):
+
+1. Stage 4 now also has one final immutable cornerstone-certificate /
+   regalia-seal surface over a verified keystone-receipt session:
+   - `copybot_tiny_live_activation_package_cornerstone_certificate --keystone-receipt-session-dir /tmp/tiny-live.package-keystone-receipt-session --plan-live-package-cornerstone-certificate --json`
+   - `copybot_tiny_live_activation_package_cornerstone_certificate --keystone-receipt-session-dir /tmp/tiny-live.package-keystone-receipt-session --render-live-package-cornerstone-certificate --output /tmp/tiny-live.package-cornerstone-certificate.sh --json`
+   - `copybot_tiny_live_activation_package_cornerstone_certificate --keystone-receipt-session-dir /tmp/tiny-live.package-keystone-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-cornerstone-certificate-session --run-live-package-cornerstone-certificate --json`
+   - `copybot_tiny_live_activation_package_cornerstone_certificate --keystone-receipt-session-dir /tmp/tiny-live.package-keystone-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-cornerstone-certificate-session --verify-live-package-cornerstone-certificate --json`
+2. The verified `keystone_receipt` session is the primary direct input,
+   and run/verify additionally require one confirmation anchor:
+   - this step reuses verified keystone-receipt truth, the exact reviewed
+     frozen live cutover controller summary, the canonical chain fingerprint,
+     the ledger-seal identity, the registry-entry identity, the
+     filing-certificate identity, the archive-receipt identity, the
+     closure-certificate identity, the finality-receipt identity, the
+     consummation-record identity, the completion-certificate identity, the
+     culmination-receipt identity, the summit-certificate identity, the
+     pinnacle-receipt identity, the capstone-certificate identity, the
+     keystone-receipt identity, and the current refusal-vs-ready
+     classification already bound by the lightweight shared layer
+   - `--confirm-decision-packet-session-dir` only confirms the already
+     reviewed nested decision-packet contract for run/verify; it does not
+     replace the keystone-receipt session as the source of truth
+   - it still does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Final cornerstone-certificate verdicts are explicit and machine-readable:
+   - `tiny_live_package_cornerstone_certificate_plan_ready`
+   - `tiny_live_package_cornerstone_certificate_rendered`
+   - `tiny_live_package_cornerstone_certificate_refused_now_by_stage3`
+   - `tiny_live_package_cornerstone_certificate_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_cornerstone_certificate_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_cornerstone_certificate_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_cornerstone_certificate_verify_ok`
+   - `tiny_live_package_cornerstone_certificate_verify_invalid`
+4. The cornerstone certificate freezes one final top-level regalia identity
+   over the fully culminated chain:
+   - verified keystone-receipt truth
+   - exact reviewed frozen live cutover controller command summary
+   - final refusal-vs-ready classification
+   - exact canonical chain-fingerprint identity
+   - exact top-level ledger-seal identity
+   - exact top-level registry-entry identity
+   - exact top-level filing-certificate identity
+   - exact top-level archive-receipt identity
+   - exact top-level closure-certificate identity
+   - exact top-level finality-receipt identity
+   - exact top-level consummation-record identity
+   - exact top-level completion-certificate identity
+   - exact top-level culmination-receipt identity
+   - exact top-level summit-certificate identity
+   - exact top-level pinnacle-receipt identity
+   - exact top-level capstone-certificate identity
+   - exact top-level keystone-receipt identity
+   - one final top-level SHA-256 cornerstone-certificate identity over the
+     fully culminated chain
+5. Safety remains hard:
+   - this command stays read-only and archival
+   - it never enables production execution on the real host
+   - it never submits real trades
+   - current real-host usage still remains refused while Stage 3 / promoted
+     5-day truth is non-green
+6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
+   compile/test surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_cornerstone_certificate`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_keystone_receipt_cornerstone_certificate::tests::load_contract_reads_stored_keystone_receipt_files -- --exact`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_keystone_receipt_cornerstone_certificate::tests::keystone_receipt_verify_args_are_exact_and_bounded -- --exact`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_keystone_receipt_cornerstone_certificate::tests::confirmed_decision_packet_session_dir_must_match_stored_contract_and_archive -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_cornerstone_certificate -- --test-threads=1`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
