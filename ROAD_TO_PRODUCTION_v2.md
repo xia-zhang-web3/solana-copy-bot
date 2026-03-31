@@ -7138,6 +7138,51 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
      - `terminal_reason=staged_write_attempt_duration_budget_exhausted`
    - operational interpretation of the morning state:
      - the active blocker is no longer “staged never moves”
-     - the recovery path has already outrun the stale published `latest`
-     - the remaining lag is publication of a newer `latest` and eventual live
-       catch-up, not proof of another reset/deadlock loop
+   - the recovery path has already outrun the stale published `latest`
+   - the remaining lag is publication of a newer `latest` and eventual live
+     catch-up, not proof of another reset/deadlock loop
+
+Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
+
+1. The repo now has one more final immutable archival layer over the verified
+   cornerstone-certificate session:
+   - `copybot_tiny_live_activation_package_foundation_receipt`
+2. The new operator surface is explicit and bounded:
+   - `--plan-live-package-foundation-receipt`
+   - `--render-live-package-foundation-receipt --output <path>`
+   - `--run-live-package-foundation-receipt --session-dir <path>`
+   - `--verify-live-package-foundation-receipt --session-dir <path>`
+3. The contract stays source-of-truth-first:
+   - verified `cornerstone_certificate` session is the direct primary input
+   - `--confirm-decision-packet-session-dir <path>` remains only a
+     confirmation-only anchor for the already reviewed nested decision-packet
+     contract
+   - no loose package / target / controller arguments are reintroduced
+4. The foundation receipt is read-only and archival:
+   - it freezes the reviewed frozen-controller summary and current
+     refusal-vs-ready classification
+   - it freezes the canonical chain fingerprint plus ledger / registry /
+     filing / archive / closure / finality / consummation / completion /
+     culmination / summit / pinnacle / capstone / keystone / cornerstone
+     identities
+   - it adds one top-level immutable `foundation_receipt_sha256` over that
+     fully culminated chain identity
+   - it does not enable production execution, mutate the target/service
+     contract, or submit real trades
+5. Verification is real and drift-intolerant:
+   - stored session/status/report artifacts must match fresh verified nested
+     cornerstone-certificate truth
+   - stored top-level status.result / gate fields, nested step path, identity
+     fields, and coordinated nested `generated_at` retime all fail verify when
+     tampered
+6. Acceptance stayed on the lightweight bounded surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_foundation_receipt`
+   - targeted lib tests for
+     `tiny_live_activation::package_cornerstone_certificate_foundation_receipt`
+   - targeted bin tests for
+     `copybot_tiny_live_activation_package_foundation_receipt`
+   - no heavy `turn_green` compile/test dependency was reintroduced
+7. Current production status remains unchanged:
+   - the real host still remains non-green while Stage 3 / promoted 5-day
+     truth is blocked by the separate live recent_raw incident
+   - this batch does not authorize or perform production activation
