@@ -2558,6 +2558,77 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
    - it intentionally does not depend on the heavy `turn_green`
      compile/test surface
 
+## Tiny-Live Package Pulpit Receipt
+
+1. Operators now also have one final immutable pulpit-receipt / crest-seal
+   surface over the verified lectern certificate:
+   - `copybot_tiny_live_activation_package_pulpit_receipt --lectern-certificate-session-dir /tmp/tiny-live.package-lectern-certificate-session --plan-live-package-pulpit-receipt --json`
+   - `copybot_tiny_live_activation_package_pulpit_receipt --lectern-certificate-session-dir /tmp/tiny-live.package-lectern-certificate-session --render-live-package-pulpit-receipt --output /tmp/tiny-live.package-pulpit-receipt.sh --json`
+   - `copybot_tiny_live_activation_package_pulpit_receipt --lectern-certificate-session-dir /tmp/tiny-live.package-lectern-certificate-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-pulpit-receipt-session --run-live-package-pulpit-receipt --json`
+   - `copybot_tiny_live_activation_package_pulpit_receipt --lectern-certificate-session-dir /tmp/tiny-live.package-lectern-certificate-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-pulpit-receipt-session --verify-live-package-pulpit-receipt --json`
+2. The verified `lectern_certificate` session is the primary direct input:
+   - run and verify additionally require
+     `--confirm-decision-packet-session-dir <path>` as a confirmation-only
+     anchor for the already reviewed nested decision-packet contract
+   - this command does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Important verdicts:
+   - `tiny_live_package_pulpit_receipt_plan_ready`
+   - `tiny_live_package_pulpit_receipt_rendered`
+   - `tiny_live_package_pulpit_receipt_refused_now_by_stage3`
+   - `tiny_live_package_pulpit_receipt_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_pulpit_receipt_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_pulpit_receipt_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_pulpit_receipt_verify_ok`
+   - `tiny_live_package_pulpit_receipt_verify_invalid`
+4. The pulpit receipt is the final crest-style record over the fully
+   culminated chain:
+   - it freezes the current refusal-vs-ready classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes the canonical chain-fingerprint identity
+   - it freezes the top-level ledger-seal identity
+   - it freezes the top-level registry-entry identity
+   - it freezes the top-level filing-certificate identity
+   - it freezes the top-level archive-receipt identity
+   - it freezes the top-level closure-certificate identity
+   - it freezes the top-level finality-receipt identity
+   - it freezes the top-level consummation-record identity
+   - it freezes the top-level completion-certificate identity
+   - it freezes the top-level culmination-receipt identity
+   - it freezes the top-level summit-certificate identity
+   - it freezes the top-level pinnacle-receipt identity
+   - it freezes the top-level capstone-certificate identity
+   - it freezes the top-level keystone-receipt identity
+   - it freezes the top-level cornerstone-certificate identity
+   - it freezes the top-level foundation-receipt identity
+   - it freezes the top-level bedrock-certificate identity
+   - it freezes the top-level basal-receipt identity
+   - it freezes the top-level substructure-certificate identity
+   - it freezes the top-level plinth-receipt identity
+   - it freezes the top-level pedestal-certificate identity
+   - it freezes the top-level dais-receipt identity
+   - it freezes the top-level rostrum-certificate identity
+   - it freezes the top-level podium-receipt identity
+   - it freezes the top-level lectern-certificate identity
+   - it freezes one top-level SHA-256 pulpit-receipt identity over the fully
+     culminated chain
+5. This layer remains read-only and archival:
+   - it never enables production execution on the real host
+   - it never submits real trades
+   - current real-host use still remains refused while Stage 3 / promoted 5-day
+     truth is non-green
+6. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - managed-surface overlap checks still protect the
+     lectern-certificate install-root contract
+   - current real-host usage still remains refused while gate truth is
+     non-green
+7. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
 ## Tiny-Live Package Lectern Certificate
 
 1. Operators now also have one final immutable lectern-certificate /
