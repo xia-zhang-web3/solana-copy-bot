@@ -20,6 +20,7 @@ pub mod package_capstone_certificate_keystone_receipt;
 pub mod package_cornerstone_certificate_foundation_receipt;
 pub mod package_keystone_receipt_cornerstone_certificate;
 pub mod package_pinnacle_receipt_capstone_certificate;
+pub mod package_plinth_receipt_pedestal_certificate;
 pub mod package_provenance_certificate_notarization_receipt;
 pub mod package_registry_entry_filing_certificate;
 pub mod package_release_capsule_attestation_seal;
