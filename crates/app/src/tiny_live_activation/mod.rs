@@ -2,6 +2,7 @@ pub mod install_target_managed_surface;
 pub mod package_activation_ticket_release_capsule;
 pub mod package_archive_receipt_closure_certificate;
 pub mod package_attestation_seal_provenance_certificate;
+pub mod package_bedrock_certificate_basal_receipt;
 pub mod package_closure_certificate_finality_receipt;
 pub mod package_culmination_receipt_summit_certificate;
 pub mod package_completion_certificate_culmination_receipt;
