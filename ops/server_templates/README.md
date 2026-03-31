@@ -21,6 +21,41 @@ Explicit repository-side truth:
 - operator docs therefore remain recovery documents, not proof of a healthy
   production rollout
 
+Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
+
+- `copybot-discovery-recent-raw-snapshot.service` is alive and the current
+  bounded run started at `2026-03-31T07:29:11Z`
+- published `latest` is still the old surface:
+  - `created_at = 2026-03-28T01:10:10.692412940Z`
+  - `covered_through = 2026-03-28T01:07:12.816747365Z`
+  - `row_count = 26092103`
+- hidden staged sidecar has now advanced well past that old published latest:
+  - `updated_at = 2026-03-31T07:29:11.196754312Z`
+  - `covered_through = 2026-03-29T22:36:44.393193202Z`
+  - `row_count = 34937844`
+  - staged frontier is now `+1 day 21h 29m` beyond the still-published
+    `latest` frontier
+  - staged row count is now `+8845741` rows above the still-published
+    `latest`
+- current live source tip is still ahead of staged:
+  - `live_tip.ts = 2026-03-31T07:28:51.918115296Z`
+  - `live_tip.slot = 410044140`
+  - remaining live frontier gap is about `1 day 8h 52m`
+- overnight/early-morning convergence remained real:
+  - journal shows repeated bounded runs with
+    `staged_progress_resumed=true`,
+    `staged_progress_preserved_for_retry=true`,
+    `staged_progress_advanced=true`
+  - staged row count moved from `28767470` to `34937844` during the observed
+    morning recovery window (`+6170374` rows)
+  - bounded attempts remained around `120-125s` and still ended with
+    `terminal_reason=staged_write_attempt_duration_budget_exhausted`
+- operational meaning:
+  - the reset-to-zero / startup deadlock is no longer the active problem
+  - data convergence is real and already outran the stale published `latest`
+  - the main remaining lag is publication of a newer `latest`, not whether the
+    staged recovery path is still making forward progress
+
 ## Security note
 
 1. `live.server.toml.example` contains placeholder-only RPC values; populate real credentials only in the server-local copy or via env overrides.
@@ -2230,6 +2265,56 @@ Explicit repository-side truth:
    - this command never executes the frozen controller itself
    - managed-surface overlap checks still protect the
      completion-certificate session dir
+   - current real-host usage still remains refused while gate truth is
+     non-green
+6. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
+## Tiny-Live Culmination Receipt
+
+1. Operators now also have one final immutable culmination-receipt /
+   apex-seal surface over the verified completion certificate:
+   - `copybot_tiny_live_activation_package_culmination_receipt --completion-certificate-session-dir /tmp/tiny-live.package-completion-certificate-session --plan-live-package-culmination-receipt --json`
+   - `copybot_tiny_live_activation_package_culmination_receipt --completion-certificate-session-dir /tmp/tiny-live.package-completion-certificate-session --render-live-package-culmination-receipt --output /tmp/tiny-live.package-culmination-receipt.sh --json`
+   - `copybot_tiny_live_activation_package_culmination_receipt --completion-certificate-session-dir /tmp/tiny-live.package-completion-certificate-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-culmination-receipt-session --run-live-package-culmination-receipt --json`
+   - `copybot_tiny_live_activation_package_culmination_receipt --completion-certificate-session-dir /tmp/tiny-live.package-completion-certificate-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-culmination-receipt-session --verify-live-package-culmination-receipt --json`
+2. The verified `completion_certificate` session is the primary direct input:
+   - run and verify additionally require
+     `--confirm-decision-packet-session-dir <path>` as a confirmation-only
+     anchor for the already reviewed nested decision-packet contract
+   - this command does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Important verdicts:
+   - `tiny_live_package_culmination_receipt_plan_ready`
+   - `tiny_live_package_culmination_receipt_rendered`
+   - `tiny_live_package_culmination_receipt_refused_now_by_stage3`
+   - `tiny_live_package_culmination_receipt_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_culmination_receipt_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_culmination_receipt_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_culmination_receipt_verify_ok`
+   - `tiny_live_package_culmination_receipt_verify_invalid`
+4. The culmination receipt is the final apex-style record over the fully
+   completed chain:
+   - it freezes the current refusal-vs-ready classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes the canonical chain-fingerprint identity
+   - it freezes the top-level ledger-seal identity
+   - it freezes the top-level registry-entry identity
+   - it freezes the top-level filing-certificate identity
+   - it freezes the top-level archive-receipt identity
+   - it freezes the top-level closure-certificate identity
+   - it freezes the top-level finality-receipt identity
+   - it freezes the top-level consummation-record identity
+   - it freezes the top-level completion-certificate identity
+   - it freezes one top-level SHA-256 culmination-receipt identity over the
+     fully completed chain
+5. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - managed-surface overlap checks still protect the
+     culmination-receipt session dir
    - current real-host usage still remains refused while gate truth is
      non-green
 6. Bounded verification remains lightweight:

@@ -3441,6 +3441,68 @@ Acceptance update (`2026-03-30`, consummation-record-native immutable completion
    - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_consummation_record_completion_certificate::tests::confirmed_decision_packet_session_dir_must_match_stored_contract_and_archive -- --exact`
    - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_completion_certificate -- --test-threads=1`
 
+Acceptance update (`2026-03-31`, completion-certificate-native immutable culmination receipt / apex seal):
+
+1. Stage 4 now also has one final immutable culmination-receipt /
+   apex-seal surface over a verified completion-certificate session:
+   - `copybot_tiny_live_activation_package_culmination_receipt --completion-certificate-session-dir /tmp/tiny-live.package-completion-certificate-session --plan-live-package-culmination-receipt --json`
+   - `copybot_tiny_live_activation_package_culmination_receipt --completion-certificate-session-dir /tmp/tiny-live.package-completion-certificate-session --render-live-package-culmination-receipt --output /tmp/tiny-live.package-culmination-receipt.sh --json`
+   - `copybot_tiny_live_activation_package_culmination_receipt --completion-certificate-session-dir /tmp/tiny-live.package-completion-certificate-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-culmination-receipt-session --run-live-package-culmination-receipt --json`
+   - `copybot_tiny_live_activation_package_culmination_receipt --completion-certificate-session-dir /tmp/tiny-live.package-completion-certificate-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-culmination-receipt-session --verify-live-package-culmination-receipt --json`
+2. The verified `completion_certificate` session is the primary direct input,
+   and run/verify additionally require one confirmation anchor:
+   - this step reuses verified completion-certificate truth, the exact
+     reviewed frozen live cutover controller summary, the canonical chain
+     fingerprint, the ledger-seal identity, the registry-entry identity, the
+     filing-certificate identity, the archive-receipt identity, the
+     closure-certificate identity, the finality-receipt identity, the
+     consummation-record identity, the completion-certificate identity, and
+     the current refusal-vs-ready classification already bound by the
+     lightweight shared layer
+   - `--confirm-decision-packet-session-dir` only confirms the already
+     reviewed nested decision-packet contract for run/verify; it does not
+     replace the completion-certificate session as the source of truth
+   - it still does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Final culmination-receipt verdicts are explicit and machine-readable:
+   - `tiny_live_package_culmination_receipt_plan_ready`
+   - `tiny_live_package_culmination_receipt_rendered`
+   - `tiny_live_package_culmination_receipt_refused_now_by_stage3`
+   - `tiny_live_package_culmination_receipt_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_culmination_receipt_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_culmination_receipt_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_culmination_receipt_verify_ok`
+   - `tiny_live_package_culmination_receipt_verify_invalid`
+4. The culmination receipt freezes one final top-level apex identity over the
+   fully completed chain:
+   - verified completion-certificate truth
+   - exact reviewed frozen live cutover controller command summary
+   - final refusal-vs-ready classification
+   - exact canonical chain-fingerprint identity
+   - exact top-level ledger-seal identity
+   - exact top-level registry-entry identity
+   - exact top-level filing-certificate identity
+   - exact top-level archive-receipt identity
+   - exact top-level closure-certificate identity
+   - exact top-level finality-receipt identity
+   - exact top-level consummation-record identity
+   - exact top-level completion-certificate identity
+   - one final top-level SHA-256 culmination-receipt identity over the fully
+     completed chain
+5. Safety remains hard:
+   - this command stays read-only and archival
+   - it never enables production execution on the real host
+   - it never submits real trades
+   - current real-host usage still remains refused while Stage 3 / promoted
+     5-day truth is non-green
+6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
+   compile/test surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_culmination_receipt`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_completion_certificate_culmination_receipt::tests::load_contract_reads_stored_consummation_record_files -- --exact`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_completion_certificate_culmination_receipt::tests::completion_certificate_verify_args_are_exact_and_bounded -- --exact`
+   - `cargo test -j 1 -p copybot-app --lib tiny_live_activation::package_completion_certificate_culmination_receipt::tests::confirmed_decision_packet_session_dir_must_match_stored_contract_and_archive -- --exact`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_culmination_receipt -- --test-threads=1`
+
 Acceptance update (`2026-03-26`, tiny-live guardrail package):
 
 1. Stage 4 preparation now also has a planning-only guardrail surface:
@@ -6716,3 +6778,35 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
    - until that second-stage fix is deployed and observed live, Stage 3 remains
      blocked and the bounded snapshot recovery path must still be treated as
      incident work, not recovered production behavior
+10. Morning follow-up snapshot on the live host (`2026-03-31 10:30 Europe/Kiev`):
+   - the service is alive and currently running another bounded attempt:
+     - `ActiveState=activating`
+     - `SubState=start`
+     - `ExecMainStartTimestamp=Tue 2026-03-31 07:29:11 UTC`
+   - published `latest` is still the old promoted surface:
+     - `created_at = 2026-03-28T01:10:10.692412940Z`
+     - `covered_through = 2026-03-28T01:07:12.816747365Z`
+     - `row_count = 26092103`
+   - hidden staged sidecar has now advanced materially beyond that old latest:
+     - `updated_at = 2026-03-31T07:29:11.196754312Z`
+     - `covered_through = 2026-03-29T22:36:44.393193202Z`
+     - `row_count = 34937844`
+     - staged frontier is about `1 day 21h 29m` ahead of the still-published
+       latest frontier
+     - staged row count is `+8845741` rows above the still-published latest
+   - current live source tip remains ahead of staged:
+     - `live_tip.ts = 2026-03-31T07:28:51.918115296Z`
+     - `live_tip.slot = 410044140`
+     - remaining live frontier gap is about `1 day 8h 52m`
+   - journal evidence from the `2026-03-31` morning window remains consistent
+     with healthy bounded resume:
+     - `staged_progress_resumed=true`
+     - `staged_progress_preserved_for_retry=true`
+     - `staged_progress_advanced=true`
+     - bounded attempts remain around `120-125s`
+     - `terminal_reason=staged_write_attempt_duration_budget_exhausted`
+   - operational interpretation of the morning state:
+     - the active blocker is no longer “staged never moves”
+     - the recovery path has already outrun the stale published `latest`
+     - the remaining lag is publication of a newer `latest` and eventual live
+       catch-up, not proof of another reset/deadlock loop
