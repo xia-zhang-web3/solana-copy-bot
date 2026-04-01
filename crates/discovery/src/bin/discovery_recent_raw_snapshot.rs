@@ -97,12 +97,20 @@ struct SnapshotOutput {
     archive_set_count_before: Option<usize>,
     archive_set_count_after: Option<usize>,
     staged_progress_resumed: bool,
+    staged_seeded_from_latest_surface: bool,
     staged_progress_preserved_for_retry: bool,
     staged_progress_advanced: bool,
+    staged_completed_batches: usize,
+    staged_source_rows_loaded: usize,
+    staged_rows_processed: usize,
+    staged_rows_inserted: usize,
     staged_row_count_before_attempt: Option<usize>,
     staged_row_count_after_attempt: Option<usize>,
     staged_covered_through_cursor_before_attempt: Option<DiscoveryRuntimeCursor>,
     staged_covered_through_cursor_after_attempt: Option<DiscoveryRuntimeCursor>,
+    staged_terminal_phase: Option<String>,
+    staged_source_read_duration_ms: u64,
+    staged_write_duration_ms: u64,
     source_db_bytes: u64,
     source_wal_bytes: u64,
     source_total_bytes: u64,
@@ -293,13 +301,20 @@ struct StagedSnapshotProgress {
     staged_snapshot_path: Option<PathBuf>,
     staged_metadata_path: Option<PathBuf>,
     resumed_from_existing_stage: bool,
+    seeded_from_latest_surface: bool,
     preserved_for_retry: bool,
     advanced_during_attempt: bool,
+    completed_batches: usize,
+    source_rows_loaded: usize,
+    rows_processed_during_attempt: usize,
+    rows_inserted_during_attempt: usize,
     row_count_before_attempt: Option<usize>,
     row_count_after_attempt: Option<usize>,
     covered_through_cursor_before_attempt: Option<DiscoveryRuntimeCursor>,
     covered_through_cursor_after_attempt: Option<DiscoveryRuntimeCursor>,
     terminal_phase: Option<StagedSnapshotTerminalPhase>,
+    source_read_duration_ms: u64,
+    staged_write_duration_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -346,6 +361,13 @@ impl StagedSnapshotTerminalPhase {
         match self {
             Self::SourceRead => "source_read_attempt_duration_budget_exhausted",
             Self::StagedWrite => "staged_write_attempt_duration_budget_exhausted",
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceRead => "source_read",
+            Self::StagedWrite => "staged_write",
         }
     }
 }
@@ -1644,8 +1666,47 @@ fn published_latest_supersedes_staged_progress(
     staged_manifest: &RecentRawJournalSnapshotManifest,
 ) -> bool {
     latest_manifest.source_db_path == staged_manifest.source_db_path
-        && latest_manifest.created_at >= staged_manifest.created_at
         && reference_surface_outran_staged_progress(latest_manifest, staged_manifest)
+}
+
+fn latest_surface_can_seed_staged_progress(
+    source_db_path: &Path,
+    source_state: &RecentRawJournalStateRow,
+    latest_manifest: &RecentRawJournalSnapshotManifest,
+    staged_manifest: Option<&RecentRawJournalSnapshotManifest>,
+) -> bool {
+    latest_manifest.source_db_path == source_db_path.display().to_string()
+        && latest_manifest.row_count > 0
+        && !source_contract_no_longer_matches_staged_progress(source_state, latest_manifest)
+        && staged_manifest.map_or(true, |staged_manifest| {
+            published_latest_supersedes_staged_progress(latest_manifest, staged_manifest)
+        })
+}
+
+fn seed_staged_snapshot_from_latest_surface(
+    source_db_path: &Path,
+    latest_snapshot_path: &Path,
+    latest_manifest: &RecentRawJournalSnapshotManifest,
+    staged_snapshot_path: &Path,
+    staged_metadata_path: &Path,
+) -> Result<RecentRawJournalSnapshotManifest> {
+    let _ = remove_file_if_exists(&sqlite_snapshot_wal_path(staged_snapshot_path))?;
+    let _ = remove_file_if_exists(&sqlite_snapshot_shm_path(staged_snapshot_path))?;
+    link_or_copy_atomic(latest_snapshot_path, staged_snapshot_path).with_context(|| {
+        format!(
+            "failed seeding staged recent_raw snapshot {} from {}",
+            staged_snapshot_path.display(),
+            latest_snapshot_path.display()
+        )
+    })?;
+    let staged_manifest = manifest_for_snapshot(
+        source_db_path,
+        staged_snapshot_path,
+        latest_manifest.created_at,
+    )?;
+    write_json_atomic(staged_metadata_path, &staged_manifest)
+        .with_context(|| format!("failed writing {}", staged_metadata_path.display()))?;
+    Ok(staged_manifest)
 }
 
 fn staged_manifest_for_state(
@@ -2055,6 +2116,7 @@ fn resume_staged_snapshot_with_policy(
         }
     };
 
+    let latest_snapshot_path = journal_snapshot_latest_path(snapshot_dir);
     let mut existing_manifest = match load_existing_staged_manifest(
         source_db_path,
         &staged_snapshot_path,
@@ -2097,19 +2159,31 @@ fn resume_staged_snapshot_with_policy(
     }
 
     let latest_surface = assess_latest_surface(
-        &journal_snapshot_latest_path(snapshot_dir),
+        &latest_snapshot_path,
         &journal_snapshot_latest_metadata_path(snapshot_dir),
     )
     .ok();
+    let latest_resume_manifest = latest_surface.as_ref().and_then(|surface| {
+        if surface.status == LatestSurfaceStatus::Healthy {
+            surface.manifest.as_ref()
+        } else {
+            None
+        }
+    });
 
-    if existing_manifest.as_ref().is_some_and(|manifest| {
+    let should_reset_existing_stage = existing_manifest.as_ref().is_some_and(|manifest| {
         source_contract_no_longer_matches_staged_progress(&source_state, manifest)
-            || latest_surface.as_ref().is_some_and(|surface| {
-                surface.manifest.as_ref().is_some_and(|latest_manifest| {
-                    published_latest_supersedes_staged_progress(latest_manifest, manifest)
-                })
-            })
-    }) {
+    });
+    let should_seed_from_latest = latest_resume_manifest.is_some_and(|latest_manifest| {
+        latest_surface_can_seed_staged_progress(
+            source_db_path,
+            &source_state,
+            latest_manifest,
+            existing_manifest.as_ref(),
+        )
+    });
+
+    if should_reset_existing_stage && !should_seed_from_latest {
         match remove_staged_snapshot_artifacts(&staged_snapshot_path, &staged_metadata_path) {
             Ok(_) => {
                 existing_manifest = None;
@@ -2121,6 +2195,33 @@ fn resume_staged_snapshot_with_policy(
                     attempt_duration_ms: 0,
                     reason: format!(
                         "failed resetting stale staged recent_raw snapshot progress in {}: {error}",
+                        snapshot_dir.display()
+                    ),
+                };
+            }
+        }
+    }
+
+    if should_seed_from_latest {
+        let latest_manifest = latest_resume_manifest.expect("checked is_some above");
+        match seed_staged_snapshot_from_latest_surface(
+            source_db_path,
+            &latest_snapshot_path,
+            latest_manifest,
+            &staged_snapshot_path,
+            &staged_metadata_path,
+        ) {
+            Ok(staged_manifest) => {
+                progress.seeded_from_latest_surface = true;
+                existing_manifest = Some(staged_manifest);
+            }
+            Err(error) => {
+                return StagedSnapshotAttemptResult::HardFailure {
+                    manifest: existing_manifest,
+                    progress,
+                    attempt_duration_ms: 0,
+                    reason: format!(
+                        "failed seeding staged recent_raw snapshot progress in {} from published latest: {error:#}",
                         snapshot_dir.display()
                     ),
                 };
@@ -2174,7 +2275,8 @@ fn resume_staged_snapshot_with_policy(
     };
     progress.row_count_before_attempt = Some(before_state.row_count);
     progress.covered_through_cursor_before_attempt = before_state.covered_through_cursor.clone();
-    progress.resumed_from_existing_stage = before_state.row_count > 0;
+    progress.resumed_from_existing_stage =
+        !progress.seeded_from_latest_surface && before_state.row_count > 0;
 
     let deadline = snapshot_attempt_deadline(snapshot_policy.max_attempt_duration);
     let started = Instant::now();
@@ -2192,6 +2294,7 @@ fn resume_staged_snapshot_with_policy(
             break;
         }
 
+        let source_read_started = Instant::now();
         let mut batch = Vec::with_capacity(batch_limit);
         let page = if let Some(cursor) = current_state.covered_through_cursor.as_ref() {
             source_store.for_each_observed_swap_after_cursor_with_budget(
@@ -2241,6 +2344,12 @@ fn resume_staged_snapshot_with_policy(
                 };
             }
         };
+        progress.source_read_duration_ms = progress.source_read_duration_ms.saturating_add(
+            source_read_started
+                .elapsed()
+                .as_millis()
+                .min(u64::MAX as u128) as u64,
+        );
 
         if batch.is_empty() {
             if page.time_budget_exhausted {
@@ -2248,9 +2357,11 @@ fn resume_staged_snapshot_with_policy(
             }
             break;
         }
+        progress.source_rows_loaded = progress.source_rows_loaded.saturating_add(batch.len());
 
         progress.terminal_phase = Some(StagedSnapshotTerminalPhase::StagedWrite);
-        let (_write_summary, write_budget_exhausted) = match staged_store
+        let staged_write_started = Instant::now();
+        let (write_summary, write_budget_exhausted) = match staged_store
             .insert_recent_raw_journal_batch_with_deadline(&batch, now, deadline)
         {
             Ok(result) => result,
@@ -2275,6 +2386,12 @@ fn resume_staged_snapshot_with_policy(
                     };
             }
         };
+        progress.staged_write_duration_ms = progress.staged_write_duration_ms.saturating_add(
+            staged_write_started
+                .elapsed()
+                .as_millis()
+                .min(u64::MAX as u128) as u64,
+        );
 
         current_state = match staged_store.recent_raw_journal_state_cached() {
             Ok(state) => state,
@@ -2300,6 +2417,13 @@ fn resume_staged_snapshot_with_policy(
             }
         };
         completed_batches = completed_batches.saturating_add(1);
+        progress.completed_batches = completed_batches;
+        progress.rows_processed_during_attempt = progress
+            .rows_processed_during_attempt
+            .saturating_add(write_summary.batch_rows);
+        progress.rows_inserted_during_attempt = progress
+            .rows_inserted_during_attempt
+            .saturating_add(write_summary.inserted_rows);
         progress.advanced_during_attempt |= current_state.row_count > before_state.row_count
             || current_state.covered_through_cursor != before_state.covered_through_cursor;
 
@@ -2564,8 +2688,15 @@ fn render_output(
         archive_set_count_before: output_context.archive_maintenance.archive_set_count_before,
         archive_set_count_after: output_context.archive_maintenance.archive_set_count_after,
         staged_progress_resumed: output_context.staged_progress.resumed_from_existing_stage,
+        staged_seeded_from_latest_surface: output_context
+            .staged_progress
+            .seeded_from_latest_surface,
         staged_progress_preserved_for_retry: output_context.staged_progress.preserved_for_retry,
         staged_progress_advanced: output_context.staged_progress.advanced_during_attempt,
+        staged_completed_batches: output_context.staged_progress.completed_batches,
+        staged_source_rows_loaded: output_context.staged_progress.source_rows_loaded,
+        staged_rows_processed: output_context.staged_progress.rows_processed_during_attempt,
+        staged_rows_inserted: output_context.staged_progress.rows_inserted_during_attempt,
         staged_row_count_before_attempt: output_context.staged_progress.row_count_before_attempt,
         staged_row_count_after_attempt: output_context.staged_progress.row_count_after_attempt,
         staged_covered_through_cursor_before_attempt: output_context
@@ -2576,6 +2707,13 @@ fn render_output(
             .staged_progress
             .covered_through_cursor_after_attempt
             .clone(),
+        staged_terminal_phase: output_context
+            .staged_progress
+            .terminal_phase
+            .map(StagedSnapshotTerminalPhase::as_str)
+            .map(str::to_string),
+        staged_source_read_duration_ms: output_context.staged_progress.source_read_duration_ms,
+        staged_write_duration_ms: output_context.staged_progress.staged_write_duration_ms,
         source_db_bytes: snapshot_context.source_stats.source_db_bytes,
         source_wal_bytes: snapshot_context.source_stats.source_wal_bytes,
         source_total_bytes: snapshot_context.source_stats.source_total_bytes(),
@@ -2683,6 +2821,10 @@ fn render_human(output: &SnapshotOutput) -> String {
         ),
         format!("staged_progress_resumed={}", output.staged_progress_resumed),
         format!(
+            "staged_seeded_from_latest_surface={}",
+            output.staged_seeded_from_latest_surface
+        ),
+        format!(
             "staged_progress_preserved_for_retry={}",
             output.staged_progress_preserved_for_retry
         ),
@@ -2690,6 +2832,16 @@ fn render_human(output: &SnapshotOutput) -> String {
             "staged_progress_advanced={}",
             output.staged_progress_advanced
         ),
+        format!(
+            "staged_completed_batches={}",
+            output.staged_completed_batches
+        ),
+        format!(
+            "staged_source_rows_loaded={}",
+            output.staged_source_rows_loaded
+        ),
+        format!("staged_rows_processed={}", output.staged_rows_processed),
+        format!("staged_rows_inserted={}", output.staged_rows_inserted),
         format!(
             "staged_row_count_before_attempt={}",
             output
@@ -2729,6 +2881,18 @@ fn render_human(output: &SnapshotOutput) -> String {
                     cursor.signature
                 ))
                 .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "staged_terminal_phase={}",
+            output.staged_terminal_phase.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "staged_source_read_duration_ms={}",
+            output.staged_source_read_duration_ms
+        ),
+        format!(
+            "staged_write_duration_ms={}",
+            output.staged_write_duration_ms
         ),
         format!("source_db_bytes={}", output.source_db_bytes),
         format!("source_wal_bytes={}", output.source_wal_bytes),
@@ -3005,6 +3169,16 @@ mod tests {
             "unchanged_due_to_attempt_budget"
         );
         assert_eq!(output["snapshot_pages_per_step"], 8);
+        assert_eq!(output["staged_completed_batches"].as_u64(), Some(1));
+        assert!(
+            output["staged_source_rows_loaded"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
+        assert!(output["staged_rows_processed"].as_u64().unwrap_or_default() > 0);
+        assert!(output["staged_rows_inserted"].as_u64().unwrap_or_default() > 0);
+        assert_eq!(output["staged_terminal_phase"], "staged_write");
         assert_eq!(output["staged_progress_preserved_for_retry"], true);
         assert_eq!(output["staged_progress_advanced"], true);
         assert!(
@@ -3021,7 +3195,8 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_run_resets_outrun_staged_snapshot_instead_of_resuming_it() -> Result<()> {
+    fn scheduled_run_reseeds_from_latest_surface_when_latest_outruns_staged_progress() -> Result<()>
+    {
         let fixture = make_fixture("recent-raw-snapshot-outrun-stage")?;
         let initial_now = parse_ts("2026-03-23T12:00:00Z")?;
         seed_recent_raw_journal_range(
@@ -3087,15 +3262,16 @@ mod tests {
                 staged_snapshot_path.display()
             )
         })?;
-        let staged_manifest = super::manifest_for_snapshot(
-            &fixture.journal_db_path,
-            &staged_snapshot_path,
-            initial_latest_manifest.created_at,
-        )?;
-        write_json_atomic(&staged_metadata_path, &staged_manifest)?;
-        let current_source_state = fixture.journal_store.recent_raw_journal_state()?;
         let current_latest_manifest: RecentRawJournalSnapshotManifest =
             load_json(&snapshot_dir.join("latest.json"))?;
+        let mut staged_manifest = super::manifest_for_snapshot(
+            &fixture.journal_db_path,
+            &staged_snapshot_path,
+            current_latest_manifest.created_at + Duration::minutes(1),
+        )?;
+        staged_manifest.created_at = current_latest_manifest.created_at + Duration::minutes(1);
+        write_json_atomic(&staged_metadata_path, &staged_manifest)?;
+        let current_source_state = fixture.journal_store.recent_raw_journal_state()?;
         assert!(source_window_outran_staged_progress(
             &current_source_state,
             &staged_manifest
@@ -3104,6 +3280,7 @@ mod tests {
             &current_latest_manifest,
             &staged_manifest
         ));
+        assert!(staged_manifest.created_at > current_latest_manifest.created_at);
 
         let written = run(Config {
             config_path: fixture.config_path.clone(),
@@ -3123,13 +3300,111 @@ mod tests {
             "unexpected outrun-stage output: {}",
             serde_json::to_string_pretty(&output)?
         );
-        assert_eq!(output["staged_row_count_before_attempt"].as_u64(), Some(0));
+        assert_eq!(output["staged_seeded_from_latest_surface"], true);
+        assert_eq!(
+            output["staged_row_count_before_attempt"].as_u64(),
+            Some(current_latest_manifest.row_count as u64)
+        );
 
         let promoted_latest_manifest: RecentRawJournalSnapshotManifest =
             load_json(&snapshot_dir.join("latest.json"))?;
         assert!(
             promoted_latest_manifest.row_count > staged_manifest.row_count,
-            "outrun staged progress must be reset and replaced with a newer published latest"
+            "lagging staged progress must be reseeded from the farther healthy latest surface"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn scheduled_run_does_not_seed_stage_from_foreign_latest_source_contract() -> Result<()> {
+        let fixture = make_fixture("recent-raw-snapshot-foreign-latest")?;
+        let initial_now = parse_ts("2026-03-23T12:00:00Z")?;
+        seed_recent_raw_journal_range(
+            &fixture.journal_store,
+            initial_now - Duration::minutes(5),
+            10,
+            "sig-foreign-latest-initial",
+            64,
+            initial_now,
+        )?;
+        run(Config {
+            config_path: fixture.config_path.clone(),
+            journal_db_path: Some(fixture.journal_db_path.clone()),
+            output_path: None,
+            scheduled: true,
+            force: true,
+            json: false,
+            now: initial_now,
+        })?;
+
+        let latest_manifest_path = fixture.snapshot_dir().join("latest.json");
+        let mut foreign_latest_manifest: RecentRawJournalSnapshotManifest =
+            load_json(&latest_manifest_path)?;
+        foreign_latest_manifest.source_db_path = fixture
+            .snapshot_dir()
+            .join("foreign-recent-raw.db")
+            .display()
+            .to_string();
+        write_json_atomic(&latest_manifest_path, &foreign_latest_manifest)?;
+
+        seed_recent_raw_journal_range(
+            &fixture.journal_store,
+            initial_now + Duration::minutes(1),
+            50_000,
+            "sig-foreign-latest-extra",
+            1_024,
+            initial_now + Duration::minutes(1),
+        )?;
+
+        let _guard =
+            install_resumable_snapshot_progress_hook(|completed_batches, _staged_row_count| {
+                completed_batches >= 1
+            });
+        let deferred = run_with_snapshot_policy_override(
+            Config {
+                config_path: fixture.config_path.clone(),
+                journal_db_path: Some(fixture.journal_db_path.clone()),
+                output_path: None,
+                scheduled: true,
+                force: false,
+                json: true,
+                now: initial_now + Duration::minutes(15),
+            },
+            Some(copybot_storage::SqliteSnapshotPolicy {
+                busy_timeout: StdDuration::from_millis(1),
+                pages_per_step: 8,
+                pause_between_steps: StdDuration::from_millis(0),
+                retry_backoff_ms: vec![1, 1],
+                max_attempt_duration: Some(StdDuration::from_secs(5)),
+                pin_source_snapshot: true,
+            }),
+        )?;
+        assert_eq!(deferred.exit_code, 75);
+        let output: Value = serde_json::from_str(&deferred.rendered_output)?;
+        assert_eq!(output["state"], "deferred");
+        assert_eq!(output["latest_surface_status"], "healthy");
+        assert_eq!(output["staged_seeded_from_latest_surface"], false);
+        assert_eq!(output["staged_progress_resumed"], false);
+        assert_eq!(output["staged_row_count_before_attempt"].as_u64(), Some(0));
+        assert!(
+            output["staged_row_count_after_attempt"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
+
+        let staged_manifest: RecentRawJournalSnapshotManifest = load_json(
+            &fixture
+                .snapshot_dir()
+                .join(".discovery_recent_raw_staged.sqlite.archive-staged.json"),
+        )?;
+        assert_eq!(
+            staged_manifest.source_db_path,
+            fixture.journal_db_path.display().to_string()
+        );
+        assert_ne!(
+            staged_manifest.source_db_path,
+            foreign_latest_manifest.source_db_path
         );
         Ok(())
     }
@@ -3207,8 +3482,13 @@ mod tests {
             "deferred_due_to_attempt_budget"
         );
         assert_eq!(first_output["staged_progress_resumed"], false);
+        assert_eq!(first_output["staged_seeded_from_latest_surface"], true);
         assert_eq!(first_output["staged_progress_preserved_for_retry"], true);
         assert_eq!(first_output["staged_progress_advanced"], true);
+        assert_eq!(
+            first_output["staged_row_count_before_attempt"].as_u64(),
+            Some(stale_latest_manifest.row_count as u64)
+        );
         let first_staged_rows = first_output["staged_row_count_after_attempt"]
             .as_u64()
             .context("first deferred staged row count must be present")?;
@@ -3230,6 +3510,7 @@ mod tests {
         let second_output: Value = serde_json::from_str(&second_deferred.rendered_output)?;
         assert_eq!(second_output["state"], "deferred");
         assert_eq!(second_output["staged_progress_resumed"], true);
+        assert_eq!(second_output["staged_seeded_from_latest_surface"], false);
         assert_eq!(second_output["staged_progress_preserved_for_retry"], true);
         assert_eq!(second_output["staged_progress_advanced"], true);
         assert_eq!(
@@ -3283,8 +3564,7 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_run_resumes_preserved_stage_even_when_latest_surface_is_ahead_of_partial_stage(
-    ) -> Result<()> {
+    fn scheduled_run_seeds_stage_from_latest_surface_before_bounded_catchup() -> Result<()> {
         let fixture = make_fixture("recent-raw-snapshot-resume-latest-ahead")?;
         let initial_now = parse_ts("2026-03-23T12:00:00Z")?;
         seed_recent_raw_journal_range(
@@ -3345,29 +3625,22 @@ mod tests {
         let first_output: Value = serde_json::from_str(&first_deferred.rendered_output)?;
         assert_eq!(first_output["state"], "deferred");
         assert_eq!(first_output["staged_progress_resumed"], false);
+        assert_eq!(first_output["staged_seeded_from_latest_surface"], true);
         assert_eq!(first_output["staged_progress_preserved_for_retry"], true);
         assert_eq!(
             first_output["staged_row_count_before_attempt"].as_u64(),
-            Some(0)
+            Some(latest_manifest.row_count as u64)
         );
         let first_staged_rows = first_output["staged_row_count_after_attempt"]
             .as_u64()
             .context("first deferred staged row count must be present")?;
-        assert!(first_staged_rows > 0);
-        assert!(
-            latest_manifest.row_count as u64 > first_staged_rows,
-            "live-shape regression requires a healthy latest surface that is still ahead of the bounded partial stage"
-        );
+        assert!(first_staged_rows > latest_manifest.row_count as u64);
         let staged_manifest: RecentRawJournalSnapshotManifest = load_json(
             &fixture
                 .snapshot_dir()
                 .join(".discovery_recent_raw_staged.sqlite.archive-staged.json"),
         )?;
-        assert!(super::reference_surface_outran_staged_progress(
-            &latest_manifest,
-            &staged_manifest
-        ));
-        assert!(staged_manifest.created_at > latest_manifest.created_at);
+        assert_eq!(staged_manifest.created_at, latest_manifest.created_at);
 
         let second_deferred = run_with_snapshot_policy_override(
             Config {
@@ -3385,6 +3658,7 @@ mod tests {
         let second_output: Value = serde_json::from_str(&second_deferred.rendered_output)?;
         assert_eq!(second_output["state"], "deferred");
         assert_eq!(second_output["staged_progress_resumed"], true);
+        assert_eq!(second_output["staged_seeded_from_latest_surface"], false);
         assert_eq!(second_output["staged_progress_preserved_for_retry"], true);
         assert_eq!(
             second_output["staged_row_count_before_attempt"].as_u64(),

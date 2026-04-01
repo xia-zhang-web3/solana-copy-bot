@@ -202,10 +202,18 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
      `latest_surface_action=deferred_due_to_attempt_budget`
    - but operators must now also inspect:
      - `staged_progress_resumed`
+     - `staged_seeded_from_latest_surface`
      - `staged_progress_preserved_for_retry`
      - `staged_progress_advanced`
+     - `staged_completed_batches`
+     - `staged_source_rows_loaded`
+     - `staged_rows_processed`
+     - `staged_rows_inserted`
      - `staged_row_count_before_attempt`
      - `staged_row_count_after_attempt`
+     - `staged_terminal_phase`
+     - `staged_source_read_duration_ms`
+     - `staged_write_duration_ms`
      - `staged_snapshot_path`
 17. Operator interpretation for the fixed convergence contract:
    - `state=deferred` plus
@@ -218,6 +226,14 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
      `staged_progress_advanced=false`
      means the service resumed an older staged snapshot but made no new bounded
      progress this run and should be treated as a real stall
+   - `staged_seeded_from_latest_surface=true`
+     means the hidden staged lane was rebuilt from the already published
+     healthy `latest` surface because that surface was a better compatible
+     resume base than the previous staged frontier
+   - if `staged_terminal_phase=staged_write` and
+     `staged_write_duration_ms` dominates `staged_source_read_duration_ms`,
+     the current bottleneck is bounded staged persistence rather than source
+     scan startup
    - `state=written` plus `archive_promoted=true` means the resumed staged
      frontier completed and a newer `latest.sqlite` was promoted again
 18. The staged snapshot remains bounded:

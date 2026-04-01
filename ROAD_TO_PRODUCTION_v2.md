@@ -7137,10 +7137,44 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
      - bounded attempts remain around `120-125s`
      - `terminal_reason=staged_write_attempt_duration_budget_exhausted`
    - operational interpretation of the morning state:
-     - the active blocker is no longer “staged never moves”
+   - the active blocker is no longer “staged never moves”
    - the recovery path has already outrun the stale published `latest`
    - the remaining lag is publication of a newer `latest` and eventual live
      catch-up, not proof of another reset/deadlock loop
+11. Follow-up incident fix contract (`2026-04-01`):
+   - root cause of the remaining defer-without-convergence wedge is now
+     explicit:
+     - the scheduled bounded path could preserve or recreate a hidden staged
+       snapshot whose `created_at` was newer than published `latest`
+     - but that staged snapshot could still be materially behind the already
+       published healthy `latest` surface
+     - the old supersede rule required `latest.created_at >= staged.created_at`,
+       so the healthier farther `latest` could not replace the lagging staged
+       base
+     - practical result: bounded runs kept replaying from the weaker staged
+       frontier, exhausted `staged_write_attempt_duration_budget_exhausted`, and
+       failed to close the remaining live gap fast enough to promote
+   - accepted repair:
+     - scheduled convergence now seeds or reseeds the hidden staged snapshot
+       from a compatible healthy `latest` surface whenever that `latest` is a
+       better resume base than the current staged frontier
+     - the timestamp ordering of staged-vs-latest creation no longer blocks this
+       reseed
+     - deferred output now exposes staged replay telemetry:
+       - `staged_seeded_from_latest_surface`
+       - `staged_completed_batches`
+       - `staged_source_rows_loaded`
+       - `staged_rows_processed`
+       - `staged_rows_inserted`
+       - `staged_terminal_phase`
+       - `staged_source_read_duration_ms`
+       - `staged_write_duration_ms`
+   - safety remains unchanged:
+     - `latest.sqlite` still advances only after a fully coherent bounded staged
+       snapshot is complete
+     - no validation/integrity checks were relaxed
+     - Stage 3 remains non-green until the published latest surface genuinely
+       catches up enough for fresh healthy evidence again
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 
