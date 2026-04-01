@@ -37,4 +37,5 @@ pub mod package_rostrum_certificate_podium_receipt;
 pub mod package_sanctuary_certificate_nave_receipt;
 pub mod package_substructure_certificate_plinth_receipt;
 pub mod package_summit_certificate_pinnacle_receipt;
+pub mod package_transept_certificate_choir_receipt;
 pub mod package_turn_green_execute_frozen;

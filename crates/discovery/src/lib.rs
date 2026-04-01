@@ -475,6 +475,14 @@ pub struct DiscoveryPublicationTruthRepairTelemetry {
     pub replay_rows_loaded: usize,
     pub replay_rows_inserted: usize,
     pub replay_time_budget_exhausted: bool,
+    pub publication_truth_refresh_attempted: bool,
+    pub publication_truth_refresh_completed: bool,
+    pub publication_truth_refresh_phase: Option<&'static str>,
+    pub publication_truth_refresh_observed_swaps_loaded: usize,
+    pub publication_truth_refresh_wallets_buffered: usize,
+    pub publication_truth_refresh_cycle_rows_processed: usize,
+    pub publication_truth_refresh_cycle_pages_processed: usize,
+    pub publication_truth_refresh_budget_exhausted_reason: Option<&'static str>,
 }
 
 impl DiscoveryPublicationTruthRepairTelemetry {
@@ -504,6 +512,52 @@ impl DiscoveryPublicationTruthRepairTelemetry {
             replay_rows_loaded: 0,
             replay_rows_inserted: 0,
             replay_time_budget_exhausted: false,
+            publication_truth_refresh_attempted: false,
+            publication_truth_refresh_completed: false,
+            publication_truth_refresh_phase: None,
+            publication_truth_refresh_observed_swaps_loaded: 0,
+            publication_truth_refresh_wallets_buffered: 0,
+            publication_truth_refresh_cycle_rows_processed: 0,
+            publication_truth_refresh_cycle_pages_processed: 0,
+            publication_truth_refresh_budget_exhausted_reason: None,
+        }
+    }
+
+    fn from_runtime_window_truth_refresh(
+        state: &'static str,
+        reason: impl Into<String>,
+        required_window_start: DateTime<Utc>,
+        publication_truth_complete_before: bool,
+        publication_truth_fresh_before: bool,
+        runtime_window_complete_before: bool,
+        telemetry: &PersistedStreamProgressTelemetry,
+    ) -> Self {
+        Self {
+            state,
+            reason: Some(reason.into()),
+            required_window_start,
+            journal_covered_since: None,
+            journal_covers_runtime_cursor: false,
+            publication_truth_complete_before,
+            publication_truth_fresh_before,
+            runtime_window_complete_before,
+            runtime_window_complete_after: true,
+            runtime_window_first_cursor: None,
+            replay_until_cursor: None,
+            replay_batches_completed: 0,
+            replay_rows_loaded: 0,
+            replay_rows_inserted: 0,
+            replay_time_budget_exhausted: false,
+            publication_truth_refresh_attempted: true,
+            publication_truth_refresh_completed: telemetry.completed,
+            publication_truth_refresh_phase: Some(telemetry.phase.as_str()),
+            publication_truth_refresh_observed_swaps_loaded: telemetry.observed_swaps_loaded,
+            publication_truth_refresh_wallets_buffered: telemetry.wallets_buffered,
+            publication_truth_refresh_cycle_rows_processed: telemetry.cycle_rows_processed,
+            publication_truth_refresh_cycle_pages_processed: telemetry.cycle_pages_processed,
+            publication_truth_refresh_budget_exhausted_reason: telemetry
+                .budget_exhausted_reason
+                .map(PersistedStreamBudgetExhaustedReason::as_str),
         }
     }
 }
@@ -1542,7 +1596,7 @@ impl DiscoveryService {
     pub fn repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
         &self,
         runtime_store: &SqliteStore,
-        journal_store: &SqliteStore,
+        journal_store: Option<&SqliteStore>,
         now: DateTime<Utc>,
         replay_batch_size: usize,
         deadline: Instant,
@@ -1571,9 +1625,68 @@ impl DiscoveryService {
             ));
         }
         if runtime_window_complete_before {
+            let refresh_budget = deadline.saturating_duration_since(Instant::now());
+            if refresh_budget.is_zero() {
+                return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
+                    "skipped_runtime_window_truth_refresh_budget_exhausted",
+                    "runtime_window_complete_but_publication_truth_refresh_budget_exhausted",
+                    required_window_start,
+                    publication_truth_complete_before,
+                    publication_truth_fresh_before,
+                    runtime_window_complete_before,
+                    None,
+                    false,
+                ));
+            }
+
+            let metrics_window_start = self.metrics_window_start(now);
+            let fetch_limit = self.config.max_fetch_swaps_per_cycle.max(1);
+            let fetch_page_limit = self.config.max_fetch_pages_per_cycle.max(1);
+            return match self.advance_persisted_stream_rebuild(
+                runtime_store,
+                required_window_start,
+                metrics_window_start,
+                now,
+                fetch_limit,
+                fetch_page_limit,
+                refresh_budget,
+            )? {
+                PersistedStreamRebuildAdvanceOutcome::Completed { telemetry, .. } => {
+                    let completed_reason = if telemetry.wallets_buffered == 0 {
+                        "runtime_window_complete_publication_truth_rebuild_completed_without_publishable_wallets"
+                    } else {
+                        "runtime_window_complete_publication_truth_rebuild_completed"
+                    };
+                    Ok(
+                        DiscoveryPublicationTruthRepairTelemetry::from_runtime_window_truth_refresh(
+                            "advanced_runtime_window_truth_refresh_ready_for_publish",
+                            completed_reason,
+                            required_window_start,
+                            publication_truth_complete_before,
+                            publication_truth_fresh_before,
+                            runtime_window_complete_before,
+                            &telemetry,
+                        ),
+                    )
+                }
+                PersistedStreamRebuildAdvanceOutcome::InProgress { telemetry } => Ok(
+                    DiscoveryPublicationTruthRepairTelemetry::from_runtime_window_truth_refresh(
+                        "advanced_runtime_window_truth_refresh_partial",
+                        "runtime_window_complete_publication_truth_rebuild_in_progress",
+                        required_window_start,
+                        publication_truth_complete_before,
+                        publication_truth_fresh_before,
+                        runtime_window_complete_before,
+                        &telemetry,
+                    ),
+                ),
+            };
+        }
+
+        let Some(runtime_cursor) = runtime_store.load_discovery_runtime_cursor()? else {
             return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
-                "skipped_runtime_window_complete",
-                "runtime_store_already_covers_required_window",
+                "skipped_missing_runtime_cursor",
+                "discovery_runtime_cursor_missing",
                 required_window_start,
                 publication_truth_complete_before,
                 publication_truth_fresh_before,
@@ -1581,12 +1694,12 @@ impl DiscoveryService {
                 None,
                 false,
             ));
-        }
+        };
 
-        let Some(runtime_cursor) = runtime_store.load_discovery_runtime_cursor()? else {
+        let Some(journal_store) = journal_store else {
             return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
-                "skipped_missing_runtime_cursor",
-                "discovery_runtime_cursor_missing",
+                "skipped_journal_unavailable",
+                "recent_raw_journal_unavailable",
                 required_window_start,
                 publication_truth_complete_before,
                 publication_truth_fresh_before,
@@ -1732,6 +1845,14 @@ impl DiscoveryService {
             replay_rows_loaded,
             replay_rows_inserted,
             replay_time_budget_exhausted,
+            publication_truth_refresh_attempted: false,
+            publication_truth_refresh_completed: false,
+            publication_truth_refresh_phase: None,
+            publication_truth_refresh_observed_swaps_loaded: 0,
+            publication_truth_refresh_wallets_buffered: 0,
+            publication_truth_refresh_cycle_rows_processed: 0,
+            publication_truth_refresh_cycle_pages_processed: 0,
+            publication_truth_refresh_budget_exhausted_reason: None,
         })
     }
 
@@ -12100,7 +12221,7 @@ mod tests {
         let repair = discovery
             .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
                 &runtime_store,
-                &journal_store,
+                Some(&journal_store),
                 now,
                 64,
                 Instant::now() + StdDuration::from_secs(1),
@@ -12133,6 +12254,89 @@ mod tests {
                 .as_ref()
                 .is_some_and(|wallets| !wallets.is_empty()),
             "repaired healthy publish must repopulate the exact published wallet ids"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repair_runtime_window_complete_stale_publication_truth_refreshes_before_publish_due_cycle(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-publication-repair-runtime-window-complete.db");
+        let journal_db_path = temp
+            .path()
+            .join("stage1-publication-repair-runtime-window-complete-journal.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let mut journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+        journal_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-01T16:18:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = stage1_runtime_config();
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (_window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&runtime_store, &config, now, 6, 9)?;
+        runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
+            last_published_at: Some(
+                now - discovery.runtime_published_universe_max_age() - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        let repair = discovery
+            .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
+                &runtime_store,
+                None,
+                now,
+                64,
+                Instant::now() + StdDuration::from_secs(1),
+            )?;
+        assert_ne!(
+            repair.state, "skipped_runtime_window_complete",
+            "runtime-window-complete repair must not skip stale or incomplete publication truth"
+        );
+        assert!(
+            repair.publication_truth_refresh_attempted,
+            "repair should spend its bounded budget on a publication-truth refresh when raw coverage already exists"
+        );
+        assert!(
+            repair.publication_truth_refresh_phase.is_some(),
+            "repair logs must expose which persisted-truth rebuild phase ran"
+        );
+
+        let summary = discovery.run_cycle(&runtime_store, now)?;
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert!(
+            summary.published,
+            "the first publish-due cycle after repair should refresh publication truth instead of preserving the stale fail-closed surface"
+        );
+        let publication_state = runtime_store
+            .discovery_publication_state()?
+            .expect("publication state should exist after refreshed cycle");
+        assert_eq!(
+            publication_state.runtime_mode,
+            DiscoveryRuntimeMode::Healthy
+        );
+        assert_eq!(publication_state.last_published_at, Some(now));
+        assert_eq!(
+            publication_state.last_published_window_start,
+            Some(metrics_window_start)
+        );
+        assert!(
+            publication_state
+                .published_wallet_ids
+                .as_ref()
+                .is_some_and(|wallets| !wallets.is_empty()),
+            "refreshed publication truth must repopulate published wallet ids before runtime export can pass"
         );
         Ok(())
     }
@@ -12220,7 +12424,7 @@ mod tests {
         let repair = discovery
             .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
                 &runtime_store,
-                &journal_store,
+                Some(&journal_store),
                 now,
                 64,
                 Instant::now() + StdDuration::from_secs(1),

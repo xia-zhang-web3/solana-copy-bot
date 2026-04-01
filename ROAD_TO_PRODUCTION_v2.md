@@ -7264,6 +7264,13 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        runtime DB does not cover the required scoring window, the discovery
        cycle reuses the recovered `recent_raw` journal as a repair source
        before recomputing publication truth
+     - follow-up fix tightens that repair gate: `runtime_window_complete=true`
+       is no longer an unconditional skip while persisted publication truth is
+       still stale or incomplete
+     - when the runtime DB already covers the required window, the repair path
+       now spends its bounded budget advancing the persisted publication-truth
+       refresh/rebuild so the first publish-due cycle can either republish a
+       fresh wallet universe or surface a more precise rebuild blocker
      - the repair stays fail-closed unless the journal covers the required
        window and the current runtime cursor lineage
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime
@@ -7635,6 +7642,53 @@ Acceptance update, transept-certificate / guidon-seal layer (`2026-04-01`):
 7. Current production status remains unchanged:
    - the real host still remains non-green while Stage 3 / promoted 5-day
      truth remains a separate blocker for actual production activation
+   - this batch does not authorize or perform production activation
+
+Acceptance update, choir-receipt / ensign-seal layer (`2026-04-01`):
+
+1. The repo now has one more final immutable archival layer over the verified
+   transept-certificate session:
+   - `copybot_tiny_live_activation_package_choir_receipt`
+2. The new operator surface is explicit and bounded:
+   - `--plan-live-package-choir-receipt`
+   - `--render-live-package-choir-receipt --output <path>`
+   - `--run-live-package-choir-receipt --session-dir <path>`
+   - `--verify-live-package-choir-receipt --session-dir <path>`
+3. The contract stays source-of-truth-first:
+   - verified `transept_certificate` session is the direct primary input
+   - `--confirm-decision-packet-session-dir <path>` remains only a
+     confirmation-only anchor for the already reviewed nested decision-packet
+     contract
+   - no loose package / target / controller arguments are reintroduced
+4. The choir receipt is read-only and archival:
+   - it freezes the reviewed frozen-controller summary and current
+     refusal-vs-ready classification
+   - it freezes the canonical chain fingerprint plus ledger / registry /
+     filing / archive / closure / finality / consummation / completion /
+     culmination / summit / pinnacle / capstone / keystone / cornerstone /
+     foundation / bedrock / basal / substructure / plinth / pedestal / dais /
+     rostrum / podium / lectern / pulpit / chancel / apse / sanctuary / nave /
+     transept identities
+   - it adds one top-level immutable `choir_receipt_sha256` over that fully
+     culminated chain identity
+   - it does not enable production execution, mutate the target/service
+     contract, or submit real trades
+5. Verification is real and drift-intolerant:
+   - stored session/status/report artifacts must match fresh verified nested
+     transept-certificate truth
+   - stored top-level status.result / gate fields, nested step path, nested and
+     top-level identity fields, and coordinated nested `generated_at` retime
+     all fail verify when tampered
+6. Acceptance stayed on the lightweight bounded surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_choir_receipt`
+   - targeted lib tests for
+     `tiny_live_activation::package_transept_certificate_choir_receipt`
+   - targeted bin tests for
+     `copybot_tiny_live_activation_package_choir_receipt`
+   - no heavy `turn_green` compile/test dependency was reintroduced
+7. Current production status remains unchanged:
+   - the real host still remains non-green while the separate
+     runtime/export/publication-truth incident keeps full Stage 3 non-green
    - this batch does not authorize or perform production activation
 
 Acceptance update, nave-receipt / pennant-seal layer (`2026-04-01`):
