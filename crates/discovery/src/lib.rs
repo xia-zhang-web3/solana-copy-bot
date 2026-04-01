@@ -483,6 +483,7 @@ pub struct DiscoveryPublicationTruthRepairTelemetry {
     pub publication_truth_refresh_replay_subphase: Option<&'static str>,
     pub publication_truth_refresh_replay_wallet_stats_complete: bool,
     pub publication_truth_refresh_replay_wallet_stats_wallet_cursor: Option<String>,
+    pub publication_truth_refresh_replay_wallet_stats_phase_page_limit: Option<usize>,
     pub publication_truth_refresh_observed_swaps_loaded: usize,
     pub publication_truth_refresh_wallets_buffered: usize,
     pub publication_truth_refresh_cycle_rows_processed: usize,
@@ -523,6 +524,7 @@ impl DiscoveryPublicationTruthRepairTelemetry {
             publication_truth_refresh_replay_subphase: None,
             publication_truth_refresh_replay_wallet_stats_complete: false,
             publication_truth_refresh_replay_wallet_stats_wallet_cursor: None,
+            publication_truth_refresh_replay_wallet_stats_phase_page_limit: None,
             publication_truth_refresh_observed_swaps_loaded: 0,
             publication_truth_refresh_wallets_buffered: 0,
             publication_truth_refresh_cycle_rows_processed: 0,
@@ -538,6 +540,7 @@ impl DiscoveryPublicationTruthRepairTelemetry {
         publication_truth_complete_before: bool,
         publication_truth_fresh_before: bool,
         runtime_window_complete_before: bool,
+        replay_wallet_stats_phase_page_limit: Option<usize>,
         telemetry: &PersistedStreamProgressTelemetry,
     ) -> Self {
         Self {
@@ -565,6 +568,8 @@ impl DiscoveryPublicationTruthRepairTelemetry {
             publication_truth_refresh_replay_wallet_stats_wallet_cursor: telemetry
                 .replay_wallet_stats_wallet_cursor
                 .clone(),
+            publication_truth_refresh_replay_wallet_stats_phase_page_limit:
+                replay_wallet_stats_phase_page_limit,
             publication_truth_refresh_observed_swaps_loaded: telemetry.observed_swaps_loaded,
             publication_truth_refresh_wallets_buffered: telemetry.wallets_buffered,
             publication_truth_refresh_cycle_rows_processed: telemetry.cycle_rows_processed,
@@ -1671,15 +1676,23 @@ impl DiscoveryService {
             let metrics_window_start = self.metrics_window_start(now);
             let fetch_limit = self.config.max_fetch_swaps_per_cycle.max(1);
             let fetch_page_limit = self.config.max_fetch_pages_per_cycle.max(1);
-            return match self.advance_persisted_stream_rebuild(
-                runtime_store,
-                required_window_start,
-                metrics_window_start,
-                now,
-                fetch_limit,
-                fetch_page_limit,
-                refresh_budget,
-            )? {
+            let replay_wallet_stats_phase_page_limit = self
+                .replay_wallet_stats_repair_phase_page_limit(
+                    fetch_limit,
+                    fetch_page_limit,
+                    refresh_budget,
+                );
+            return match self
+                .advance_persisted_stream_rebuild_with_replay_wallet_stats_phase_page_limit(
+                    runtime_store,
+                    required_window_start,
+                    metrics_window_start,
+                    now,
+                    fetch_limit,
+                    fetch_page_limit,
+                    refresh_budget,
+                    Some(replay_wallet_stats_phase_page_limit),
+                )? {
                 PersistedStreamRebuildAdvanceOutcome::Completed { telemetry, .. } => {
                     let completed_reason = if telemetry.wallets_buffered == 0 {
                         "runtime_window_complete_publication_truth_rebuild_completed_without_publishable_wallets"
@@ -1694,6 +1707,7 @@ impl DiscoveryService {
                             publication_truth_complete_before,
                             publication_truth_fresh_before,
                             runtime_window_complete_before,
+                            Some(replay_wallet_stats_phase_page_limit),
                             &telemetry,
                         ),
                     )
@@ -1706,6 +1720,7 @@ impl DiscoveryService {
                         publication_truth_complete_before,
                         publication_truth_fresh_before,
                         runtime_window_complete_before,
+                        Some(replay_wallet_stats_phase_page_limit),
                         &telemetry,
                     ),
                 ),
@@ -1880,6 +1895,7 @@ impl DiscoveryService {
             publication_truth_refresh_replay_subphase: None,
             publication_truth_refresh_replay_wallet_stats_complete: false,
             publication_truth_refresh_replay_wallet_stats_wallet_cursor: None,
+            publication_truth_refresh_replay_wallet_stats_phase_page_limit: None,
             publication_truth_refresh_observed_swaps_loaded: 0,
             publication_truth_refresh_wallets_buffered: 0,
             publication_truth_refresh_cycle_rows_processed: 0,
@@ -2079,6 +2095,21 @@ impl DiscoveryService {
             .saturating_add(wallet_batch_size.saturating_sub(1))
             / wallet_batch_size;
         baseline_page_limit.max(pages_for_fetch_width.max(1))
+    }
+
+    fn replay_wallet_stats_repair_phase_page_limit(
+        &self,
+        fetch_limit: usize,
+        fetch_page_limit: usize,
+        repair_time_budget: StdDuration,
+    ) -> usize {
+        let baseline_page_limit =
+            Self::replay_wallet_stats_catch_up_page_limit(fetch_limit, fetch_page_limit);
+        let normal_fetch_budget_ms = self.config.fetch_time_budget_ms.max(1) as u128;
+        let repair_budget_ms = repair_time_budget.as_millis().max(1);
+        let budget_multiplier = repair_budget_ms.div_ceil(normal_fetch_budget_ms);
+        baseline_page_limit
+            .saturating_mul(budget_multiplier.min(usize::MAX as u128).max(1) as usize)
     }
 
     fn replay_wallet_stats_wallet_batch_size(fetch_limit: usize) -> usize {
@@ -3783,12 +3814,32 @@ impl DiscoveryService {
         })
     }
 
+    #[cfg(test)]
     fn advance_persisted_stream_replay_optimized(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,
         fetch_limit: usize,
         fetch_page_limit: usize,
+        deadline: Instant,
+    ) -> Result<PersistedStreamPhaseAdvance> {
+        self.advance_persisted_stream_replay_optimized_with_wallet_stats_phase_page_limit(
+            store,
+            state,
+            fetch_limit,
+            fetch_page_limit,
+            None,
+            deadline,
+        )
+    }
+
+    fn advance_persisted_stream_replay_optimized_with_wallet_stats_phase_page_limit(
+        &self,
+        store: &SqliteStore,
+        state: &mut PersistedStreamRebuildState,
+        fetch_limit: usize,
+        fetch_page_limit: usize,
+        replay_wallet_stats_phase_page_limit_override: Option<usize>,
         deadline: Instant,
     ) -> Result<PersistedStreamPhaseAdvance> {
         let mut replay_rows_processed = 0usize;
@@ -3805,7 +3856,9 @@ impl DiscoveryService {
             let phase_page_limit = if state.payload.replay_wallet_stats_complete {
                 fetch_page_limit
             } else {
-                Self::replay_wallet_stats_catch_up_page_limit(fetch_limit, fetch_page_limit)
+                replay_wallet_stats_phase_page_limit_override.unwrap_or_else(|| {
+                    Self::replay_wallet_stats_catch_up_page_limit(fetch_limit, fetch_page_limit)
+                })
             };
             let total_pages_processed =
                 replay_pages_processed.saturating_add(replay_wallet_stats_pages_processed);
@@ -4011,12 +4064,13 @@ impl DiscoveryService {
         })
     }
 
-    fn advance_persisted_stream_replay(
+    fn advance_persisted_stream_replay_with_wallet_stats_phase_page_limit(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,
         fetch_limit: usize,
         fetch_page_limit: usize,
+        replay_wallet_stats_phase_page_limit_override: Option<usize>,
         deadline: Instant,
     ) -> Result<PersistedStreamPhaseAdvance> {
         match state.payload.replay_mode {
@@ -4027,13 +4081,15 @@ impl DiscoveryService {
                 fetch_page_limit,
                 deadline,
             ),
-            ReplayMode::WalletStatsThenSolLeg => self.advance_persisted_stream_replay_optimized(
-                store,
-                state,
-                fetch_limit,
-                fetch_page_limit,
-                deadline,
-            ),
+            ReplayMode::WalletStatsThenSolLeg => self
+                .advance_persisted_stream_replay_optimized_with_wallet_stats_phase_page_limit(
+                    store,
+                    state,
+                    fetch_limit,
+                    fetch_page_limit,
+                    replay_wallet_stats_phase_page_limit_override,
+                    deadline,
+                ),
         }
     }
 
@@ -4046,6 +4102,29 @@ impl DiscoveryService {
         fetch_limit: usize,
         fetch_page_limit: usize,
         rebuild_time_budget: StdDuration,
+    ) -> Result<PersistedStreamRebuildAdvanceOutcome> {
+        self.advance_persisted_stream_rebuild_with_replay_wallet_stats_phase_page_limit(
+            store,
+            window_start,
+            metrics_window_start,
+            now,
+            fetch_limit,
+            fetch_page_limit,
+            rebuild_time_budget,
+            None,
+        )
+    }
+
+    fn advance_persisted_stream_rebuild_with_replay_wallet_stats_phase_page_limit(
+        &self,
+        store: &SqliteStore,
+        window_start: DateTime<Utc>,
+        metrics_window_start: DateTime<Utc>,
+        now: DateTime<Utc>,
+        fetch_limit: usize,
+        fetch_page_limit: usize,
+        rebuild_time_budget: StdDuration,
+        replay_wallet_stats_phase_page_limit_override: Option<usize>,
     ) -> Result<PersistedStreamRebuildAdvanceOutcome> {
         let (mut state, restore_outcome) = self.load_or_start_persisted_stream_rebuild_state(
             store,
@@ -4274,13 +4353,15 @@ impl DiscoveryService {
                         fetch_page_limit,
                         deadline,
                     )?,
-                DiscoveryPersistedRebuildPhase::Replay => self.advance_persisted_stream_replay(
-                    store,
-                    &mut state,
-                    fetch_limit,
-                    fetch_page_limit,
-                    deadline,
-                )?,
+                DiscoveryPersistedRebuildPhase::Replay => self
+                    .advance_persisted_stream_replay_with_wallet_stats_phase_page_limit(
+                        store,
+                        &mut state,
+                        fetch_limit,
+                        fetch_page_limit,
+                        replay_wallet_stats_phase_page_limit_override,
+                        deadline,
+                    )?,
                 DiscoveryPersistedRebuildPhase::PublishPending => {
                     unreachable!(
                         "publish-pending checkpoints are returned before phase advancement"
@@ -12481,12 +12562,12 @@ mod tests {
     }
 
     #[test]
-    fn repair_runtime_window_complete_live_like_replay_wallet_stats_remains_partial_under_short_budget(
+    fn runtime_window_complete_live_like_wallet_stats_replay_hits_baseline_page_budget_before_truth_refresh_can_publish(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let runtime_db_path = temp
             .path()
-            .join("stage1-publication-repair-live-like-replay-short-budget.db");
+            .join("stage1-publication-repair-live-like-replay-baseline-page-budget.db");
         let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
         runtime_store.run_migrations(&migration_dir)?;
@@ -12498,7 +12579,7 @@ mod tests {
         config.metric_snapshot_interval_seconds = 3_600;
         config.max_fetch_swaps_per_cycle = 20_000;
         config.max_fetch_pages_per_cycle = 5;
-        config.fetch_time_budget_ms = 60_000;
+        config.fetch_time_budget_ms = 15_000;
         let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
         let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
         let metrics_window_start = metrics_window_start_for_test(&config, now);
@@ -12526,7 +12607,7 @@ mod tests {
             ))?;
         }
 
-        let noise_wallets = 100_000usize;
+        let noise_wallets = 50_000usize;
         let mut latest_cursor: Option<DiscoveryRuntimeCursor> = None;
         for idx in 0..noise_wallets {
             let ts = now - Duration::seconds((noise_wallets.saturating_sub(idx)) as i64);
@@ -12560,32 +12641,39 @@ mod tests {
             published_wallet_ids: Some(Vec::new()),
         })?;
 
-        let repair = discovery
-            .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
+        let PersistedStreamRebuildAdvanceOutcome::InProgress { telemetry } = discovery
+            .advance_persisted_stream_rebuild(
                 &runtime_store,
-                None,
+                window_start,
+                metrics_window_start,
                 now,
-                64,
-                Instant::now() + StdDuration::from_secs(1),
-            )?;
+                config.max_fetch_swaps_per_cycle,
+                config.max_fetch_pages_per_cycle,
+                StdDuration::from_secs(60),
+            )?
+        else {
+            panic!("baseline live-like rebuild should stay in progress under the old replay wallet-stats page ceiling");
+        };
+        assert_eq!(telemetry.phase, DiscoveryPersistedRebuildPhase::Replay);
         assert_eq!(
-            repair.state,
-            "advanced_runtime_window_truth_refresh_partial"
-        );
-        assert!(repair.publication_truth_refresh_attempted);
-        assert_eq!(repair.publication_truth_refresh_phase, Some("replay"));
-        assert_eq!(
-            repair.publication_truth_refresh_replay_subphase,
+            telemetry.replay_subphase,
             Some("wallet_stats"),
-            "short repair budgets should reproduce the live bottleneck instead of pretending wallet-stats replay already converged"
+            "the baseline live fetch contract should reproduce the exact wallet_stats replay bottleneck before the repair-specific page-budget widening"
         );
         assert!(
-            !repair.publication_truth_refresh_replay_wallet_stats_complete,
-            "the short-budget regression must stay in wallet_stats so the longer repair-budget fix has a concrete before/after"
+            !telemetry.replay_wallet_stats_complete,
+            "the baseline rebuild should stay in wallet_stats when the old fetch-width page ceiling runs out before publication truth becomes publishable"
         );
         assert!(
-            repair.publication_truth_refresh_wallets_buffered < noise_wallets,
-            "the short-budget regression should leave the publishable-universe rebuild materially behind the live-like wallet frontier"
+            matches!(
+                telemetry.budget_exhausted_reason,
+                Some(PersistedStreamBudgetExhaustedReason::PageBudget)
+            ),
+            "the remaining live blocker is specifically page_budget, not time_budget"
+        );
+        assert!(
+            telemetry.wallets_buffered < noise_wallets,
+            "the baseline rebuild should leave the publishable-universe buffer materially behind the live-like wallet frontier under the old 23-page ceiling"
         );
         Ok(())
     }
@@ -12608,7 +12696,7 @@ mod tests {
         config.metric_snapshot_interval_seconds = 3_600;
         config.max_fetch_swaps_per_cycle = 20_000;
         config.max_fetch_pages_per_cycle = 5;
-        config.fetch_time_budget_ms = 60_000;
+        config.fetch_time_budget_ms = 15_000;
         let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
         let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
         let metrics_window_start = metrics_window_start_for_test(&config, now);
@@ -12636,7 +12724,7 @@ mod tests {
             ))?;
         }
 
-        let noise_wallets = 20_000usize;
+        let noise_wallets = 50_000usize;
         let mut latest_cursor: Option<DiscoveryRuntimeCursor> = None;
         for idx in 0..noise_wallets {
             let ts = now - Duration::seconds((noise_wallets.saturating_sub(idx)) as i64);
@@ -12685,9 +12773,14 @@ mod tests {
         assert!(repair.publication_truth_refresh_attempted);
         assert_eq!(repair.publication_truth_refresh_phase, Some("replay"));
         assert_eq!(
+            repair.publication_truth_refresh_replay_wallet_stats_phase_page_limit,
+            Some(92),
+            "runtime-window-complete stale publication-truth repair should scale the wallet-stats replay page budget from the normal 15s fetch contract to the widened 60s repair contract"
+        );
+        assert_eq!(
             repair.publication_truth_refresh_replay_subphase,
             Some("sol_leg"),
-            "live-like runtime-window repair should drain the wallet-stats prepass within the widened fetch-width budget and leave only SOL-leg replay for the following cycle"
+            "live-like runtime-window repair should drain the wallet-stats prepass within the widened repair page budget and leave only SOL-leg replay for the following cycle"
         );
         assert!(
             repair.publication_truth_refresh_replay_wallet_stats_complete,
@@ -12697,19 +12790,26 @@ mod tests {
             repair
                 .publication_truth_refresh_replay_wallet_stats_wallet_cursor
                 .is_none(),
-            "once the widened repair budget drains the wallet-stats prepass, the persisted replay wallet cursor should clear instead of keeping the rebuild stuck in the same subphase"
+            "once the widened repair page budget drains the wallet-stats prepass, the persisted replay wallet cursor should clear instead of keeping the rebuild stuck in the same subphase"
         );
         assert!(
             repair.publication_truth_refresh_wallets_buffered >= noise_wallets,
-            "live-like repair should consume enough wallet-stats pages in one bounded attempt to cover the current fetch-width backlog instead of stalling far below it"
+            "live-like repair should consume enough wallet-stats pages in one bounded attempt to cover the current wallet-stats backlog instead of stalling far below it"
         );
 
-        let summary = discovery.run_cycle(&runtime_store, now)?;
-        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
-        assert!(
-            summary.published,
-            "after the widened live-like wallet-stats catch-up phase, the following bounded discovery cycle should reach a publishable universe instead of staying fail-closed in replay"
+        let mut published_summary = None;
+        for cycle_offset_minutes in 0..=6 {
+            let cycle_now = now + Duration::minutes(cycle_offset_minutes);
+            let summary = discovery.run_cycle(&runtime_store, cycle_now)?;
+            if summary.published {
+                published_summary = Some((cycle_now, summary));
+                break;
+            }
+        }
+        let (published_at, summary) = published_summary.expect(
+            "after the widened live-like wallet-stats catch-up phase, the next bounded discovery cycles should reach a publishable universe instead of staying fail-closed in replay",
         );
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
         let publication_state = runtime_store
             .discovery_publication_state()?
             .expect("publication state should exist after refreshed cycle");
@@ -12717,7 +12817,7 @@ mod tests {
             publication_state.runtime_mode,
             DiscoveryRuntimeMode::Healthy
         );
-        assert_eq!(publication_state.last_published_at, Some(now));
+        assert_eq!(publication_state.last_published_at, Some(published_at));
         assert_eq!(
             publication_state.last_published_window_start,
             Some(metrics_window_start)
@@ -17078,6 +17178,24 @@ mod tests {
             DiscoveryService::replay_wallet_stats_catch_up_page_limit(20_000, 5),
             23,
             "live fetch width should widen the replay wallet-stats page budget beyond the old fixed 2x page multiplier"
+        );
+    }
+
+    #[test]
+    fn replay_wallet_stats_repair_phase_page_limit_scales_to_live_repair_budget() {
+        let mut config = stage1_runtime_config();
+        config.max_fetch_swaps_per_cycle = 20_000;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        assert_eq!(
+            discovery.replay_wallet_stats_repair_phase_page_limit(
+                20_000,
+                5,
+                StdDuration::from_secs(60),
+            ),
+            92,
+            "runtime-window-complete stale publication-truth repair should widen the live wallet-stats replay page budget in proportion to the longer 60s repair contract"
         );
     }
 

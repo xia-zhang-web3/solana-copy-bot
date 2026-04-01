@@ -110,6 +110,8 @@ pub(crate) fn spawn_discovery_task(
                 publication_truth_refresh_replay_wallet_stats_wallet_cursor = repair
                     .publication_truth_refresh_replay_wallet_stats_wallet_cursor
                     .as_deref(),
+                publication_truth_refresh_replay_wallet_stats_phase_page_limit = repair
+                    .publication_truth_refresh_replay_wallet_stats_phase_page_limit,
                 publication_truth_refresh_observed_swaps_loaded =
                     repair.publication_truth_refresh_observed_swaps_loaded,
                 publication_truth_refresh_wallets_buffered =
@@ -160,6 +162,8 @@ pub(crate) fn spawn_discovery_task(
                 publication_truth_refresh_replay_wallet_stats_wallet_cursor = repair
                     .publication_truth_refresh_replay_wallet_stats_wallet_cursor
                     .as_deref(),
+                publication_truth_refresh_replay_wallet_stats_phase_page_limit = repair
+                    .publication_truth_refresh_replay_wallet_stats_phase_page_limit,
                 publication_truth_refresh_observed_swaps_loaded =
                     repair.publication_truth_refresh_observed_swaps_loaded,
                 publication_truth_refresh_wallets_buffered =

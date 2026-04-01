@@ -378,11 +378,16 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
        shape: the app now gives that truth-refresh branch the larger of the
        live fetch budget or `60s`, so wallet-stats replay can actually drain
        instead of re-entering the same partial subphase forever
+     - follow-up fix also decouples the repair-only wallet-stats replay page
+       budget from the normal live fetch contract: the runtime-window-complete
+       truth-refresh branch now scales that page ceiling with the longer repair
+       budget instead of staying pinned to the old live-like `23`-page ceiling
      - operator logs now also expose:
        - `repair_time_budget_ms`
        - `publication_truth_refresh_replay_subphase`
        - `publication_truth_refresh_replay_wallet_stats_complete`
        - `publication_truth_refresh_replay_wallet_stats_wallet_cursor`
+       - `publication_truth_refresh_replay_wallet_stats_phase_page_limit`
        so a remaining fail-closed runtime can be triaged as
        "still draining wallet-stats replay" vs "already in SOL-leg replay"
      - this repair remains fail-closed when the journal does not cover the

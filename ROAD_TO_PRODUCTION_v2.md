@@ -7280,11 +7280,17 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        shape: the repair lane now budgets the larger of the live fetch budget
        or `60s`, because the narrowed live blocker is the exact wallet-stats
        replay itself rather than missing raw coverage
+     - follow-up fix also gives that exact repair lane its own wallet-stats
+       replay page ceiling, scaled from the longer repair budget instead of
+       reusing the normal live fetch contract unchanged; on the live shape this
+       means the truth-refresh branch is no longer pinned to the old `23` pages
+       per cycle while it is still draining the `wallet_stats` prepass
      - repair/runtime logs now surface the replay subphase and the persisted
-       replay wallet cursor plus `repair_time_budget_ms`, so operators can
-       distinguish "still draining wallet-stats pages" from "already in
-       SOL-leg replay" and verify that the truth-refresh lane is no longer
-       running on the old too-short budget
+       replay wallet cursor plus `repair_time_budget_ms` and the exact
+       `publication_truth_refresh_replay_wallet_stats_phase_page_limit`, so
+       operators can distinguish "still draining wallet-stats pages" from
+       "already in SOL-leg replay" and verify that the truth-refresh lane is
+       no longer running on the old too-short / too-narrow budget
      - the repair stays fail-closed unless the journal covers the required
        window and the current runtime cursor lineage
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime
