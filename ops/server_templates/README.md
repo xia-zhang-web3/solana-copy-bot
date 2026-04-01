@@ -352,6 +352,16 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
        complete persisted publication truth plus a persisted runtime cursor;
        current `publication_runtime_mode=fail_closed` alone is no longer
        enough to block export when exact published truth is still fresh
+     - healthy promoted `recent_raw/latest.sqlite` alone is still not enough to
+       refresh runtime publication truth, because the publish path reads the
+       live runtime DB
+     - repo-side fix now adds bounded recent-raw journal repair ahead of the
+       discovery publish cycle: if publication truth is stale/incomplete and
+       the runtime DB does not cover the required scoring window, the app
+       replays the missing head slice from the recovered journal before
+       recomputing publication truth
+     - this repair remains fail-closed when the journal does not cover the
+       required window or the current runtime cursor lineage
    - practical rule:
      - treat recent-raw ingestion/promotion as recovered
      - do not yet treat the runtime discovery export / top-wallet artifact

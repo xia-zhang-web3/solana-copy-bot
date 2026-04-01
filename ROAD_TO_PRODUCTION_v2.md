@@ -7253,6 +7253,19 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        persisted publication truth under the export gate plus a persisted
        runtime cursor, instead of refusing solely because the current
        `publication_runtime_mode` is `fail_closed`
+     - the deeper remaining root cause is that runtime publication truth is
+       owned by the live runtime DB, not by promoted `recent_raw/latest.sqlite`
+     - healthy `latest.sqlite` therefore does not refresh
+       `last_published_at` / `last_published_window_start` /
+       `published_wallet_ids` by itself when the runtime DB is still missing
+       the scoring-window head
+     - repo-side fix now adds a bounded pre-cycle repair path in
+       `copybot-app`: when publication truth is stale/incomplete and the live
+       runtime DB does not cover the required scoring window, the discovery
+       cycle reuses the recovered `recent_raw` journal as a repair source
+       before recomputing publication truth
+     - the repair stays fail-closed unless the journal covers the required
+       window and the current runtime cursor lineage
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime
        discovery export / top-wallet artifact surface is still fail-closed even
        though `latest.sqlite` itself is now healthy

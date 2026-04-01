@@ -3303,6 +3303,8 @@ async fn run_app_loop(
                 discovery_catch_up_pending = false;
                 discovery_handle = Some(tokio::task::spawn_blocking(spawn_discovery_task(
                     sqlite_path.clone(),
+                    recent_raw_journal_config.path.clone(),
+                    recent_raw_journal_config.replay_batch_size,
                     discovery.clone(),
                     Utc::now(),
                 )));
@@ -4196,6 +4198,8 @@ async fn run_app_loop(
                 discovery_catch_up_pending = false;
                 discovery_handle = Some(tokio::task::spawn_blocking(spawn_discovery_task(
                     sqlite_path.clone(),
+                    recent_raw_journal_config.path.clone(),
+                    recent_raw_journal_config.replay_batch_size,
                     discovery.clone(),
                     Utc::now(),
                 )));

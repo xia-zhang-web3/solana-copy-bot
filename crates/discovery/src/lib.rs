@@ -458,6 +458,56 @@ pub enum RuntimePublicationTruthResolution {
     BootstrapDegraded(RuntimePublishedUniverseTruth),
 }
 
+#[derive(Debug, Clone)]
+pub struct DiscoveryPublicationTruthRepairTelemetry {
+    pub state: &'static str,
+    pub reason: Option<String>,
+    pub required_window_start: DateTime<Utc>,
+    pub journal_covered_since: Option<DateTime<Utc>>,
+    pub journal_covers_runtime_cursor: bool,
+    pub publication_truth_complete_before: bool,
+    pub publication_truth_fresh_before: bool,
+    pub runtime_window_complete_before: bool,
+    pub runtime_window_complete_after: bool,
+    pub runtime_window_first_cursor: Option<DiscoveryRuntimeCursor>,
+    pub replay_until_cursor: Option<DiscoveryRuntimeCursor>,
+    pub replay_batches_completed: usize,
+    pub replay_rows_loaded: usize,
+    pub replay_rows_inserted: usize,
+    pub replay_time_budget_exhausted: bool,
+}
+
+impl DiscoveryPublicationTruthRepairTelemetry {
+    fn skipped(
+        state: &'static str,
+        reason: impl Into<String>,
+        required_window_start: DateTime<Utc>,
+        publication_truth_complete_before: bool,
+        publication_truth_fresh_before: bool,
+        runtime_window_complete_before: bool,
+        journal_covered_since: Option<DateTime<Utc>>,
+        journal_covers_runtime_cursor: bool,
+    ) -> Self {
+        Self {
+            state,
+            reason: Some(reason.into()),
+            required_window_start,
+            journal_covered_since,
+            journal_covers_runtime_cursor,
+            publication_truth_complete_before,
+            publication_truth_fresh_before,
+            runtime_window_complete_before,
+            runtime_window_complete_after: runtime_window_complete_before,
+            runtime_window_first_cursor: None,
+            replay_until_cursor: None,
+            replay_batches_completed: 0,
+            replay_rows_loaded: 0,
+            replay_rows_inserted: 0,
+            replay_time_budget_exhausted: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WalletSnapshot {
     wallet_id: String,
@@ -1447,6 +1497,242 @@ impl DiscoveryService {
         .with_runtime_mode(DiscoveryRuntimeMode::FailClosed)
         .with_scoring_source(scoring_source)
         .with_cap_truncation_telemetry(cap_truncation_telemetry))
+    }
+
+    fn runtime_cursor_from_swap(swap: &SwapEvent) -> DiscoveryRuntimeCursor {
+        DiscoveryRuntimeCursor {
+            ts_utc: swap.ts_utc,
+            slot: swap.slot,
+            signature: swap.signature.clone(),
+        }
+    }
+
+    fn runtime_cursor_cmp(
+        left: &DiscoveryRuntimeCursor,
+        right: &DiscoveryRuntimeCursor,
+    ) -> Ordering {
+        left.ts_utc
+            .cmp(&right.ts_utc)
+            .then_with(|| left.slot.cmp(&right.slot))
+            .then_with(|| left.signature.cmp(&right.signature))
+    }
+
+    fn first_persisted_observed_swap_cursor_in_window(
+        &self,
+        store: &SqliteStore,
+        window_start: DateTime<Utc>,
+        until: &DiscoveryRuntimeCursor,
+        deadline: Instant,
+    ) -> Result<Option<DiscoveryRuntimeCursor>> {
+        let mut first_cursor: Option<DiscoveryRuntimeCursor> = None;
+        store.for_each_observed_swap_in_window_after_cursor_with_budget(
+            window_start,
+            until.ts_utc,
+            None,
+            1,
+            deadline,
+            |swap| {
+                first_cursor = Some(Self::runtime_cursor_from_swap(&swap));
+                Ok(())
+            },
+        )?;
+        Ok(first_cursor)
+    }
+
+    pub fn repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
+        &self,
+        runtime_store: &SqliteStore,
+        journal_store: &SqliteStore,
+        now: DateTime<Utc>,
+        replay_batch_size: usize,
+        deadline: Instant,
+    ) -> Result<DiscoveryPublicationTruthRepairTelemetry> {
+        let gate = self.publication_freshness_gate();
+        let required_window_start = now - Duration::days(self.runtime_scoring_window_days());
+        let publication_state = runtime_store.discovery_publication_state_read_only()?;
+        let publication_truth_complete_before = publication_state
+            .as_ref()
+            .is_some_and(DiscoveryPublicationStateRow::has_complete_publication_truth);
+        let publication_truth_fresh_before = publication_state
+            .as_ref()
+            .is_some_and(|state| state.is_fresh_under_gate(gate, now));
+        let runtime_window_complete_before =
+            self.persisted_observed_swaps_cover_window(runtime_store, required_window_start)?;
+        if publication_truth_fresh_before {
+            return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
+                "skipped_fresh_publication_truth",
+                "publication_truth_already_fresh_under_gate",
+                required_window_start,
+                publication_truth_complete_before,
+                publication_truth_fresh_before,
+                runtime_window_complete_before,
+                None,
+                false,
+            ));
+        }
+        if runtime_window_complete_before {
+            return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
+                "skipped_runtime_window_complete",
+                "runtime_store_already_covers_required_window",
+                required_window_start,
+                publication_truth_complete_before,
+                publication_truth_fresh_before,
+                runtime_window_complete_before,
+                None,
+                false,
+            ));
+        }
+
+        let Some(runtime_cursor) = runtime_store.load_discovery_runtime_cursor()? else {
+            return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
+                "skipped_missing_runtime_cursor",
+                "discovery_runtime_cursor_missing",
+                required_window_start,
+                publication_truth_complete_before,
+                publication_truth_fresh_before,
+                runtime_window_complete_before,
+                None,
+                false,
+            ));
+        };
+
+        let journal_state = journal_store.recent_raw_journal_state_read_only()?;
+        if journal_state.row_count == 0 {
+            return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
+                "skipped_journal_unavailable",
+                "recent_raw_journal_unavailable",
+                required_window_start,
+                publication_truth_complete_before,
+                publication_truth_fresh_before,
+                runtime_window_complete_before,
+                journal_state.covered_since,
+                false,
+            ));
+        }
+        if !journal_state
+            .covered_since
+            .is_some_and(|covered_since| covered_since <= required_window_start)
+        {
+            return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
+                "skipped_journal_window_unavailable",
+                "recent_raw_journal_does_not_cover_required_window_start",
+                required_window_start,
+                publication_truth_complete_before,
+                publication_truth_fresh_before,
+                runtime_window_complete_before,
+                journal_state.covered_since,
+                false,
+            ));
+        }
+        let journal_covers_runtime_cursor = journal_state
+            .covered_through_cursor
+            .as_ref()
+            .is_some_and(|cursor| {
+                Self::runtime_cursor_cmp(cursor, &runtime_cursor) != Ordering::Less
+            });
+        if !journal_covers_runtime_cursor {
+            return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
+                "skipped_journal_cursor_lineage_mismatch",
+                "recent_raw_journal_does_not_cover_runtime_cursor",
+                required_window_start,
+                publication_truth_complete_before,
+                publication_truth_fresh_before,
+                runtime_window_complete_before,
+                journal_state.covered_since,
+                false,
+            ));
+        }
+
+        let runtime_window_first_cursor = self.first_persisted_observed_swap_cursor_in_window(
+            runtime_store,
+            required_window_start,
+            &runtime_cursor,
+            deadline,
+        )?;
+        let replay_until_cursor = runtime_window_first_cursor
+            .clone()
+            .unwrap_or_else(|| runtime_cursor.clone());
+        if Self::runtime_cursor_cmp(&replay_until_cursor, &runtime_cursor) == Ordering::Greater {
+            return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
+                "skipped_runtime_window_cursor_invalid",
+                "runtime_window_floor_exceeds_runtime_cursor",
+                required_window_start,
+                publication_truth_complete_before,
+                publication_truth_fresh_before,
+                runtime_window_complete_before,
+                journal_state.covered_since,
+                journal_covers_runtime_cursor,
+            ));
+        }
+
+        let mut replay_cursor: Option<DiscoveryRuntimeCursor> = None;
+        let mut replay_batches_completed = 0usize;
+        let mut replay_rows_loaded = 0usize;
+        let mut replay_rows_inserted = 0usize;
+        let mut replay_time_budget_exhausted = false;
+        let page_limit = replay_batch_size.max(1);
+
+        while Instant::now() < deadline {
+            let mut batch = Vec::with_capacity(page_limit);
+            let mut page_last_cursor = replay_cursor.clone();
+            let page = journal_store.for_each_observed_swap_in_window_after_cursor_with_budget(
+                required_window_start,
+                replay_until_cursor.ts_utc,
+                replay_cursor.as_ref(),
+                page_limit,
+                deadline,
+                |swap| {
+                    page_last_cursor = Some(Self::runtime_cursor_from_swap(&swap));
+                    batch.push(swap);
+                    Ok(())
+                },
+            )?;
+            if batch.is_empty() {
+                replay_time_budget_exhausted = page.time_budget_exhausted;
+                break;
+            }
+            replay_rows_loaded = replay_rows_loaded.saturating_add(page.rows_seen);
+            replay_rows_inserted = replay_rows_inserted.saturating_add(
+                runtime_store
+                    .insert_observed_swaps_batch_with_activity_days(&batch)?
+                    .into_iter()
+                    .filter(|inserted| *inserted)
+                    .count(),
+            );
+            replay_batches_completed = replay_batches_completed.saturating_add(1);
+            replay_cursor = page_last_cursor;
+            if page.rows_seen < page_limit && !page.time_budget_exhausted {
+                break;
+            }
+            if page.time_budget_exhausted {
+                replay_time_budget_exhausted = true;
+                break;
+            }
+        }
+
+        let runtime_window_complete_after =
+            self.persisted_observed_swaps_cover_window(runtime_store, required_window_start)?;
+        Ok(DiscoveryPublicationTruthRepairTelemetry {
+            state: if runtime_window_complete_after {
+                "replayed_recent_raw_journal_head_gap"
+            } else {
+                "replayed_recent_raw_journal_head_gap_partial"
+            },
+            reason: None,
+            required_window_start,
+            journal_covered_since: journal_state.covered_since,
+            journal_covers_runtime_cursor,
+            publication_truth_complete_before,
+            publication_truth_fresh_before,
+            runtime_window_complete_before,
+            runtime_window_complete_after,
+            runtime_window_first_cursor,
+            replay_until_cursor: Some(replay_until_cursor),
+            replay_batches_completed,
+            replay_rows_loaded,
+            replay_rows_inserted,
+            replay_time_budget_exhausted,
+        })
     }
 
     fn persisted_observed_swaps_cover_window(
@@ -11709,6 +11995,256 @@ mod tests {
             DiscoveryRuntimeMode::Healthy
         );
         assert_eq!(publication_state.last_published_at, Some(recovery_now));
+        Ok(())
+    }
+
+    #[test]
+    fn repair_recent_raw_journal_head_gap_restores_fresh_complete_publication_truth() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp.path().join("stage1-publication-repair-runtime.db");
+        let journal_db_path = temp.path().join("stage1-publication-repair-journal.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let mut journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+        journal_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-01T14:52:24Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = stage1_runtime_config();
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = discovery.metrics_window_start(now);
+
+        let mut journal_swaps = Vec::new();
+        for idx in 0..4 {
+            let offset = Duration::minutes((idx * 20) as i64);
+            journal_swaps.push(swap(
+                "wallet_top",
+                &format!("repair-top-buy-{idx}"),
+                window_start + offset,
+                SOL_MINT,
+                "TokenStage1RepairTop1111111111111111111111",
+                1.0,
+                100.0,
+            ));
+            journal_swaps.push(swap(
+                "wallet_top",
+                &format!("repair-top-sell-{idx}"),
+                window_start + offset + Duration::minutes(5),
+                "TokenStage1RepairTop1111111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.3,
+            ));
+            journal_swaps.push(swap(
+                "wallet_noise",
+                &format!("repair-noise-buy-{idx}"),
+                window_start + offset,
+                SOL_MINT,
+                "TokenStage1RepairNoise11111111111111111111",
+                1.0,
+                100.0,
+            ));
+            journal_swaps.push(swap(
+                "wallet_noise",
+                &format!("repair-noise-sell-{idx}"),
+                window_start + offset + Duration::minutes(5),
+                "TokenStage1RepairNoise11111111111111111111",
+                SOL_MINT,
+                100.0,
+                0.7,
+            ));
+        }
+
+        let mut latest_cursor: Option<DiscoveryRuntimeCursor> = None;
+        for idx in 0..6 {
+            let ts = now - Duration::minutes(6) + Duration::minutes(idx as i64);
+            let tail_swap = swap(
+                "wallet_tail_noise",
+                &format!("repair-tail-noise-{idx}"),
+                ts,
+                SOL_MINT,
+                "TokenStage1RepairTail111111111111111111111",
+                0.2,
+                20.0,
+            );
+            latest_cursor = Some(DiscoveryRuntimeCursor {
+                ts_utc: tail_swap.ts_utc,
+                slot: tail_swap.slot,
+                signature: tail_swap.signature.clone(),
+            });
+            journal_swaps.push(tail_swap);
+        }
+        journal_store.insert_recent_raw_journal_batch(&journal_swaps, now)?;
+
+        for swap in journal_swaps.iter().skip(4) {
+            runtime_store.insert_observed_swap(swap)?;
+        }
+        runtime_store.upsert_discovery_runtime_cursor(
+            &latest_cursor.clone().expect("latest cursor must exist"),
+        )?;
+        runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
+            last_published_at: Some(
+                now - discovery.runtime_published_universe_max_age() - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        let repair = discovery
+            .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
+                &runtime_store,
+                &journal_store,
+                now,
+                64,
+                Instant::now() + StdDuration::from_secs(1),
+            )?;
+        assert_eq!(repair.state, "replayed_recent_raw_journal_head_gap");
+        assert!(repair.replay_rows_inserted > 0);
+        assert!(repair.runtime_window_complete_after);
+
+        let summary = discovery.run_cycle(&runtime_store, now)?;
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert!(
+            summary.published,
+            "repaired runtime window should allow the publish-due cycle to persist fresh publication truth"
+        );
+        let publication_state = runtime_store
+            .discovery_publication_state()?
+            .expect("publication state should exist after repaired cycle");
+        assert_eq!(
+            publication_state.runtime_mode,
+            DiscoveryRuntimeMode::Healthy
+        );
+        assert_eq!(publication_state.last_published_at, Some(now));
+        assert_eq!(
+            publication_state.last_published_window_start,
+            Some(metrics_window_start)
+        );
+        assert!(
+            publication_state
+                .published_wallet_ids
+                .as_ref()
+                .is_some_and(|wallets| !wallets.is_empty()),
+            "repaired healthy publish must repopulate the exact published wallet ids"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repair_recent_raw_journal_head_gap_refuses_foreign_runtime_cursor_lineage() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-publication-repair-foreign-runtime.db");
+        let journal_db_path = temp
+            .path()
+            .join("stage1-publication-repair-foreign-journal.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let mut journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+        journal_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-01T14:52:24Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = stage1_runtime_config();
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = discovery.metrics_window_start(now);
+
+        let journal_swaps = vec![
+            swap(
+                "wallet_top",
+                "foreign-repair-window-floor",
+                window_start,
+                SOL_MINT,
+                "TokenStage1ForeignRepair111111111111111111",
+                0.8,
+                80.0,
+            ),
+            swap(
+                "wallet_top",
+                "foreign-repair-top-buy",
+                window_start + Duration::minutes(1),
+                SOL_MINT,
+                "TokenStage1ForeignRepair111111111111111111",
+                1.0,
+                100.0,
+            ),
+            swap(
+                "wallet_top",
+                "foreign-repair-top-sell",
+                window_start + Duration::minutes(6),
+                "TokenStage1ForeignRepair111111111111111111",
+                SOL_MINT,
+                100.0,
+                1.3,
+            ),
+        ];
+        journal_store.insert_recent_raw_journal_batch(&journal_swaps, now)?;
+
+        let runtime_swap = swap(
+            "wallet_tail_noise",
+            "foreign-runtime-tail",
+            now,
+            SOL_MINT,
+            "TokenStage1ForeignRuntimeTail11111111111111",
+            0.2,
+            20.0,
+        );
+        runtime_store.insert_observed_swap(&runtime_swap)?;
+        runtime_store.upsert_discovery_runtime_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: runtime_swap.ts_utc + Duration::minutes(1),
+            slot: runtime_swap.slot.saturating_add(1),
+            signature: "foreign-runtime-cursor-after-journal".to_string(),
+        })?;
+        runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
+            last_published_at: Some(
+                now - discovery.runtime_published_universe_max_age() - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        let repair = discovery
+            .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
+                &runtime_store,
+                &journal_store,
+                now,
+                64,
+                Instant::now() + StdDuration::from_secs(1),
+            )?;
+        assert_eq!(repair.state, "skipped_journal_cursor_lineage_mismatch");
+        assert_eq!(
+            repair.reason.as_deref(),
+            Some("recent_raw_journal_does_not_cover_runtime_cursor")
+        );
+        assert!(
+            !discovery.persisted_observed_swaps_cover_window(&runtime_store, window_start)?,
+            "foreign journal lineage must not be used to backfill the missing runtime raw window"
+        );
+        let publication_state = runtime_store
+            .discovery_publication_state()?
+            .expect("publication state should still exist");
+        assert_eq!(
+            publication_state.runtime_mode,
+            DiscoveryRuntimeMode::FailClosed
+        );
+        assert!(
+            !publication_state.has_complete_publication_truth(),
+            "foreign journal lineage must not fake complete publication truth"
+        );
         Ok(())
     }
 
