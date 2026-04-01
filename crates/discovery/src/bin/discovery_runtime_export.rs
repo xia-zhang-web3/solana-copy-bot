@@ -46,6 +46,10 @@ struct ExportOutput {
     retention: Option<usize>,
     pruned_archive_paths: Vec<String>,
     exported_at: DateTime<Utc>,
+    publication_runtime_mode: String,
+    publication_reason: String,
+    publication_truth_complete: bool,
+    fresh_under_export_gate: bool,
     last_published_at: Option<DateTime<Utc>>,
     last_published_window_start: Option<DateTime<Utc>>,
     published_wallet_count: usize,
@@ -159,9 +163,9 @@ fn run(config: Config) -> Result<String> {
         );
         let artifact =
             export_runtime_artifact(&store, &discovery, config.now).context("artifact export")?;
+        let freshness = discovery.assess_runtime_artifact_freshness(&artifact, config.now);
         write_json_atomic(&output_path, &artifact)
             .with_context(|| format!("failed writing {}", output_path.display()))?;
-        let freshness = discovery.assess_runtime_artifact_freshness(&artifact, config.now);
         render_output(
             "written",
             &config.config_path,
@@ -172,6 +176,7 @@ fn run(config: Config) -> Result<String> {
             None,
             &[],
             &artifact,
+            freshness.fresh_under_export_gate,
             freshness.fresh_under_current_gate,
         )
     };
@@ -214,6 +219,7 @@ fn run_scheduled(
                 Some(retention),
                 &[],
                 &latest_artifact,
+                freshness.fresh_under_export_gate,
                 freshness.fresh_under_current_gate,
             ));
         }
@@ -243,6 +249,7 @@ fn run_scheduled(
         Some(retention),
         &pruned,
         &artifact,
+        freshness.fresh_under_export_gate,
         freshness.fresh_under_current_gate,
     ))
 }
@@ -265,6 +272,7 @@ fn render_output(
     retention: Option<usize>,
     pruned_archive_paths: &[PathBuf],
     artifact: &DiscoveryRuntimeArtifact,
+    fresh_under_export_gate: bool,
     fresh_under_current_gate: bool,
 ) -> ExportOutput {
     ExportOutput {
@@ -281,6 +289,10 @@ fn render_output(
             .map(|path| path.display().to_string())
             .collect(),
         exported_at: artifact.exported_at,
+        publication_runtime_mode: artifact.publication_state.runtime_mode.as_str().to_string(),
+        publication_reason: artifact.publication_state.reason.clone(),
+        publication_truth_complete: artifact.publication_state.has_complete_publication_truth(),
+        fresh_under_export_gate,
         last_published_at: artifact.publication_state.last_published_at,
         last_published_window_start: artifact.publication_state.last_published_window_start,
         published_wallet_count: artifact
@@ -324,6 +336,16 @@ fn render_human(output: &ExportOutput) -> String {
         ),
         format!("pruned_archives={}", output.pruned_archive_paths.len()),
         format!("exported_at={}", output.exported_at.to_rfc3339()),
+        format!(
+            "publication_runtime_mode={}",
+            output.publication_runtime_mode
+        ),
+        format!("publication_reason={}", output.publication_reason),
+        format!(
+            "publication_truth_complete={}",
+            output.publication_truth_complete
+        ),
+        format!("fresh_under_export_gate={}", output.fresh_under_export_gate),
         format!(
             "last_published_at={}",
             format_optional_ts(output.last_published_at.as_ref())
@@ -426,6 +448,125 @@ mod tests {
             Some(now - Duration::minutes(5))
         );
         assert_eq!(artifact.published_wallet_metrics_snapshot.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn run_exports_fresh_complete_fail_closed_publication_truth() -> Result<()> {
+        let fixture = make_fixture("runtime-export-fail-closed-publication-truth")?;
+        let now = parse_ts("2026-03-23T12:10:00Z")?;
+        seed_runtime_export_source(&fixture.store, now)?;
+        let metrics_window_start = metrics_window_start(now);
+        fixture
+            .store
+            .set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::FailClosed,
+                reason: "fail_closed_current_runtime_but_recent_publication_truth_is_complete"
+                    .to_string(),
+                last_published_at: Some(now - Duration::minutes(5)),
+                last_published_window_start: Some(metrics_window_start),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(vec!["wallet-alpha".to_string()]),
+            })?;
+
+        let output_json = run(Config {
+            config_path: fixture.config_path.clone(),
+            db_path: None,
+            output_path: Some(PathBuf::from("artifacts/runtime-export-fail-closed.json")),
+            scheduled: false,
+            force: false,
+            json: true,
+            now,
+        })?;
+
+        let output: serde_json::Value =
+            serde_json::from_str(&output_json).context("failed parsing json")?;
+        assert_eq!(output["state"], "written");
+        assert_eq!(output["publication_runtime_mode"], "fail_closed");
+        assert_eq!(output["publication_truth_complete"], true);
+        assert_eq!(output["fresh_under_export_gate"], true);
+
+        let artifact_path = fixture
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("artifacts/runtime-export-fail-closed.json");
+        let artifact: DiscoveryRuntimeArtifact = load_json(&artifact_path)?;
+        assert_eq!(
+            artifact.publication_state.runtime_mode,
+            DiscoveryRuntimeMode::FailClosed
+        );
+        assert_eq!(
+            artifact.publication_state.last_published_at,
+            Some(now - Duration::minutes(5))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_refuses_stale_publication_truth_with_actionable_diagnostics() -> Result<()> {
+        let fixture = make_fixture("runtime-export-stale-publication-truth")?;
+        let now = parse_ts("2026-03-23T12:10:00Z")?;
+        seed_runtime_export_source(&fixture.store, now)?;
+        fixture
+            .store
+            .set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::Healthy,
+                reason: "stale_publication_truth_for_export".to_string(),
+                last_published_at: Some(now - Duration::hours(2)),
+                last_published_window_start: Some(metrics_window_start(now)),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(vec!["wallet-alpha".to_string()]),
+            })?;
+
+        let error = run(Config {
+            config_path: fixture.config_path.clone(),
+            db_path: None,
+            output_path: Some(PathBuf::from("artifacts/runtime-export-stale.json")),
+            scheduled: false,
+            force: false,
+            json: false,
+            now,
+        })
+        .expect_err("stale publication truth must refuse export");
+        let error_text = format!("{error:#}");
+        assert!(error_text.contains("requires fresh publication truth under export gate"));
+        assert!(error_text.contains("runtime_mode=healthy"));
+        assert!(error_text.contains("fresh_under_export_gate=false"));
+        assert!(error_text.contains("published_wallet_count=1"));
+        Ok(())
+    }
+
+    #[test]
+    fn run_refuses_incomplete_publication_truth_with_actionable_diagnostics() -> Result<()> {
+        let fixture = make_fixture("runtime-export-incomplete-publication-truth")?;
+        let now = parse_ts("2026-03-23T12:10:00Z")?;
+        seed_runtime_export_source(&fixture.store, now)?;
+        fixture
+            .store
+            .set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::FailClosed,
+                reason: "missing_wallet_ids".to_string(),
+                last_published_at: Some(now - Duration::minutes(5)),
+                last_published_window_start: Some(metrics_window_start(now)),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(Vec::new()),
+            })?;
+
+        let error = run(Config {
+            config_path: fixture.config_path.clone(),
+            db_path: None,
+            output_path: Some(PathBuf::from("artifacts/runtime-export-incomplete.json")),
+            scheduled: false,
+            force: false,
+            json: false,
+            now,
+        })
+        .expect_err("incomplete publication truth must refuse export");
+        let error_text = format!("{error:#}");
+        assert!(error_text.contains("requires complete publication truth"));
+        assert!(error_text.contains("runtime_mode=fail_closed"));
+        assert!(error_text.contains("missing_fields=published_wallet_ids"));
         Ok(())
     }
 

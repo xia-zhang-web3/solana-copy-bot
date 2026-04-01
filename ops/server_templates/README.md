@@ -348,6 +348,10 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
      - `copybot-discovery-runtime-export.service` is currently `failed`
      - current journal reason is
        `discovery runtime artifact export requires non-fail-closed publication truth`
+     - repo-side runtime-export fix now changes that guard to require fresh,
+       complete persisted publication truth plus a persisted runtime cursor;
+       current `publication_runtime_mode=fail_closed` alone is no longer
+       enough to block export when exact published truth is still fresh
    - practical rule:
      - treat recent-raw ingestion/promotion as recovered
      - do not yet treat the runtime discovery export / top-wallet artifact
