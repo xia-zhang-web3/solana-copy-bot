@@ -33,6 +33,7 @@ pub mod package_registry_entry_filing_certificate;
 pub mod package_release_capsule_attestation_seal;
 pub mod package_review_receipt_activation_ticket;
 pub mod package_rostrum_certificate_podium_receipt;
+pub mod package_sanctuary_certificate_nave_receipt;
 pub mod package_substructure_certificate_plinth_receipt;
 pub mod package_summit_certificate_pinnacle_receipt;
 pub mod package_turn_green_execute_frozen;
