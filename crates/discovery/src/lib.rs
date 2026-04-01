@@ -54,6 +54,8 @@ const STALE_RECONCILE_TOKEN_BATCH_CAP: usize = 256;
 const STALE_RECONCILE_EXACT_COUNT_BATCH_CAP: usize = 32;
 const REPLAY_WALLET_STATS_WALLET_BATCH_CAP: usize = 900;
 const REPLAY_WALLET_STATS_CATCH_UP_PAGE_LIMIT_MULTIPLIER: usize = 2;
+const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEFAULT_TIME_BUDGET_MS: u64 = 10_000;
+const DISCOVERY_PUBLICATION_TRUTH_REPAIR_RUNTIME_WINDOW_REFRESH_MIN_TIME_BUDGET_MS: u64 = 60_000;
 #[cfg(test)]
 const POST_BOOTSTRAP_ROTATION_BLOCKED_REASON: &str =
     "post_bootstrap_rotation_blocked_cap_truncated";
@@ -1900,6 +1902,38 @@ impl DiscoveryService {
         }
         let (recent_window_swaps, _) = store.load_recent_observed_swaps_since(window_start, 1)?;
         Ok(!recent_window_swaps.is_empty())
+    }
+
+    pub fn recommended_publication_truth_repair_time_budget(
+        &self,
+        runtime_store: &SqliteStore,
+        now: DateTime<Utc>,
+    ) -> Result<StdDuration> {
+        let gate = self.publication_freshness_gate();
+        let required_window_start = now - Duration::days(self.runtime_scoring_window_days());
+        let publication_truth_fresh = runtime_store
+            .discovery_publication_state_read_only()?
+            .as_ref()
+            .is_some_and(|state| state.is_fresh_under_gate(gate, now));
+        if publication_truth_fresh {
+            return Ok(StdDuration::from_millis(
+                DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEFAULT_TIME_BUDGET_MS,
+            ));
+        }
+
+        let runtime_window_complete =
+            self.persisted_observed_swaps_cover_window(runtime_store, required_window_start)?;
+        if runtime_window_complete {
+            return Ok(StdDuration::from_millis(
+                self.config.fetch_time_budget_ms.max(
+                    DISCOVERY_PUBLICATION_TRUTH_REPAIR_RUNTIME_WINDOW_REFRESH_MIN_TIME_BUDGET_MS,
+                ),
+            ));
+        }
+
+        Ok(StdDuration::from_millis(
+            DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEFAULT_TIME_BUDGET_MS,
+        ))
     }
 
     fn persisted_stream_rebuild_state_from_row(
@@ -12403,6 +12437,155 @@ mod tests {
                 .as_ref()
                 .is_some_and(|wallets| !wallets.is_empty()),
             "refreshed publication truth must repopulate published wallet ids before runtime export can pass"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recommended_publication_truth_repair_time_budget_extends_runtime_window_complete_stale_truth_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-publication-repair-budget-runtime-window-complete.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-01T19:52:20Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = stage1_runtime_config();
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (_window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&runtime_store, &config, now, 6, 9)?;
+        runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
+            last_published_at: Some(
+                now - discovery.runtime_published_universe_max_age() - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        assert_eq!(
+            discovery.recommended_publication_truth_repair_time_budget(&runtime_store, now)?,
+            StdDuration::from_millis(
+                DISCOVERY_PUBLICATION_TRUTH_REPAIR_RUNTIME_WINDOW_REFRESH_MIN_TIME_BUDGET_MS
+            ),
+            "runtime-window-complete but stale publication truth should get the longer repair budget instead of the old 10s micro-burst that kept wallet-stats replay in partial refresh"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repair_runtime_window_complete_live_like_replay_wallet_stats_remains_partial_under_short_budget(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-publication-repair-live-like-replay-short-budget.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-01T19:52:20Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 20_000;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 60_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let token = "TokenStage1RepairReplayLive11111111111111111";
+
+        for idx in 0..2 {
+            let buy_ts = window_start + Duration::minutes((idx * 10) as i64);
+            runtime_store.insert_observed_swap(&swap(
+                "wallet_live_like_top",
+                &format!("stage1-live-like-top-buy-short-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                token,
+                1.0,
+                100.0,
+            ))?;
+            runtime_store.insert_observed_swap(&swap(
+                "wallet_live_like_top",
+                &format!("stage1-live-like-top-sell-short-{idx}"),
+                buy_ts + Duration::minutes(5),
+                token,
+                SOL_MINT,
+                100.0,
+                1.3,
+            ))?;
+        }
+
+        let noise_wallets = 100_000usize;
+        let mut latest_cursor: Option<DiscoveryRuntimeCursor> = None;
+        for idx in 0..noise_wallets {
+            let ts = now - Duration::seconds((noise_wallets.saturating_sub(idx)) as i64);
+            let swap = swap(
+                &format!("wallet_live_like_noise_short_{idx:05}"),
+                &format!("stage1-live-like-noise-short-{idx:05}"),
+                ts,
+                SOL_MINT,
+                token,
+                0.2,
+                20.0,
+            );
+            latest_cursor = Some(DiscoveryRuntimeCursor {
+                ts_utc: swap.ts_utc,
+                slot: swap.slot,
+                signature: swap.signature.clone(),
+            });
+            runtime_store.insert_observed_swap(&swap)?;
+        }
+        runtime_store.upsert_discovery_runtime_cursor(
+            &latest_cursor.expect("latest cursor should be present"),
+        )?;
+        runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
+            last_published_at: Some(
+                now - discovery.runtime_published_universe_max_age() - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(2)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        let repair = discovery
+            .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
+                &runtime_store,
+                None,
+                now,
+                64,
+                Instant::now() + StdDuration::from_secs(1),
+            )?;
+        assert_eq!(
+            repair.state,
+            "advanced_runtime_window_truth_refresh_partial"
+        );
+        assert!(repair.publication_truth_refresh_attempted);
+        assert_eq!(repair.publication_truth_refresh_phase, Some("replay"));
+        assert_eq!(
+            repair.publication_truth_refresh_replay_subphase,
+            Some("wallet_stats"),
+            "short repair budgets should reproduce the live bottleneck instead of pretending wallet-stats replay already converged"
+        );
+        assert!(
+            !repair.publication_truth_refresh_replay_wallet_stats_complete,
+            "the short-budget regression must stay in wallet_stats so the longer repair-budget fix has a concrete before/after"
+        );
+        assert!(
+            repair.publication_truth_refresh_wallets_buffered < noise_wallets,
+            "the short-budget regression should leave the publishable-universe rebuild materially behind the live-like wallet frontier"
         );
         Ok(())
     }

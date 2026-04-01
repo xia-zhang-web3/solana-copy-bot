@@ -7275,10 +7275,16 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        the live fetch width instead of the old fixed `2x` page multiplier, so
        large runtime-window-complete rebuilds can move past the wallet-stats
        replay bottleneck and reach publishable truth under bounded cycles
+     - follow-up fix also removes the old fixed `10s` truth-refresh micro-burst
+       for the `runtime_window_complete + stale/incomplete publication truth`
+       shape: the repair lane now budgets the larger of the live fetch budget
+       or `60s`, because the narrowed live blocker is the exact wallet-stats
+       replay itself rather than missing raw coverage
      - repair/runtime logs now surface the replay subphase and the persisted
-       replay wallet cursor, so operators can distinguish "still draining
-       wallet-stats pages" from "already in SOL-leg replay" when publication
-       truth remains incomplete
+       replay wallet cursor plus `repair_time_budget_ms`, so operators can
+       distinguish "still draining wallet-stats pages" from "already in
+       SOL-leg replay" and verify that the truth-refresh lane is no longer
+       running on the old too-short budget
      - the repair stays fail-closed unless the journal covers the required
        window and the current runtime cursor lineage
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime

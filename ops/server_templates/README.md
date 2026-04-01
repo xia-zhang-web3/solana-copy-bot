@@ -373,7 +373,13 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
        multiplier, because large runtime-window-complete rebuilds were
        otherwise spending many cycles in wallet-stats replay without ever
        reaching a publishable universe
+     - follow-up fix also removes the old fixed `10s` repair micro-burst for
+       the `runtime_window_complete + stale/incomplete publication truth`
+       shape: the app now gives that truth-refresh branch the larger of the
+       live fetch budget or `60s`, so wallet-stats replay can actually drain
+       instead of re-entering the same partial subphase forever
      - operator logs now also expose:
+       - `repair_time_budget_ms`
        - `publication_truth_refresh_replay_subphase`
        - `publication_truth_refresh_replay_wallet_stats_complete`
        - `publication_truth_refresh_replay_wallet_stats_wallet_cursor`

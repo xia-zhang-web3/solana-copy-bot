@@ -6,10 +6,8 @@ use copybot_shadow::{ShadowService, ShadowSnapshot};
 use copybot_storage::SqliteStore;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tracing::{info, warn};
-
-const DISCOVERY_PUBLICATION_TRUTH_REPAIR_TIME_BUDGET_MS: u64 = 10_000;
 
 pub(crate) fn spawn_discovery_task(
     sqlite_path: String,
@@ -33,14 +31,16 @@ pub(crate) fn spawn_discovery_task(
                 None
             }
         };
+        let repair_time_budget =
+            discovery.recommended_publication_truth_repair_time_budget(&store, now)?;
+        let repair_time_budget_ms = repair_time_budget.as_millis().min(u64::MAX as u128) as u64;
         let repair = discovery
             .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
                 &store,
                 journal_store.as_ref(),
                 now,
                 recent_raw_replay_batch_size,
-                Instant::now()
-                    + Duration::from_millis(DISCOVERY_PUBLICATION_TRUTH_REPAIR_TIME_BUDGET_MS),
+                Instant::now() + repair_time_budget,
             )?;
         let required_window_start = repair.required_window_start.to_rfc3339();
         let journal_covered_since = repair.journal_covered_since.map(|ts| ts.to_rfc3339());
@@ -76,6 +76,7 @@ pub(crate) fn spawn_discovery_task(
             info!(
                 repair_state = repair.state,
                 repair_reason = log_reason,
+                repair_time_budget_ms,
                 required_window_start = required_window_start.as_str(),
                 journal_path = recent_raw_journal_path.as_str(),
                 journal_covered_since = ?journal_covered_since,
@@ -125,6 +126,7 @@ pub(crate) fn spawn_discovery_task(
             warn!(
                 repair_state = repair.state,
                 repair_reason = log_reason,
+                repair_time_budget_ms,
                 required_window_start = required_window_start.as_str(),
                 journal_path = recent_raw_journal_path.as_str(),
                 journal_covered_since = ?journal_covered_since,
