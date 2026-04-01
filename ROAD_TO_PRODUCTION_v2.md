@@ -7175,6 +7175,44 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
      - no validation/integrity checks were relaxed
      - Stage 3 remains non-green until the published latest surface genuinely
        catches up enough for fresh healthy evidence again
+12. Post-fix live rollout verification (`2026-04-01 10:50-10:56 Europe/Kiev`):
+   - commit `c911ef2` was deployed on the production host and
+     `copybot-discovery-recent-raw-snapshot.service` was exercised with two
+     back-to-back bounded runs
+   - first post-fix run (`2026-04-01 07:50:19 UTC -> 07:52:24 UTC`) returned:
+     - `state=deferred`
+     - `staged_seeded_from_latest_surface=true`
+     - `staged_progress_resumed=false`
+     - `staged_row_count_before_attempt=41479923`
+     - `staged_row_count_after_attempt=41543912`
+     - staged cursor advanced from
+       `2026-03-31T16:50:52.139890192Z` to
+       `2026-03-31T17:17:41.654197170Z`
+   - second post-fix run (`2026-04-01 07:53:59 UTC -> 07:56:01 UTC`) returned:
+     - `state=deferred`
+     - `staged_seeded_from_latest_surface=false`
+     - `staged_progress_resumed=true`
+     - `staged_row_count_before_attempt=41543912`
+     - `staged_row_count_after_attempt=41605685`
+     - staged cursor advanced again to
+       `2026-03-31T17:44:16.792131480Z`
+   - current live surfaces after the second run:
+     - published `latest` is still the old promoted surface:
+       - `covered_through = 2026-03-31T16:50:52.139890192Z`
+       - `row_count = 41479923`
+     - hidden staged sidecar is now ahead of published latest:
+       - `covered_through = 2026-03-31T17:44:16.792131480Z`
+       - `row_count = 41605685`
+     - live source tip at the same check was:
+       - `ts = 2026-04-01T07:50:15.151368550Z`
+       - `slot = 410268175`
+       - `row_count = 43543291`
+   - operational interpretation:
+     - the new reseed contract is live-verified
+     - the bounded path no longer replays from the old hidden lagging staged
+       base and now resumes correctly from the latest-seeded frontier
+     - Stage 3 still remains non-green until a future bounded completion
+       actually promotes a newer `latest.sqlite`
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 
@@ -7490,6 +7528,52 @@ Acceptance update, lectern-certificate / armorial-seal layer (`2026-03-31`):
      `tiny_live_activation::package_podium_receipt_lectern_certificate`
    - targeted bin tests for
      `copybot_tiny_live_activation_package_lectern_certificate`
+   - no heavy `turn_green` compile/test dependency was reintroduced
+7. Current production status remains unchanged:
+   - the real host still remains non-green while Stage 3 / promoted 5-day
+     truth is blocked by the separate live recent_raw incident
+   - this batch does not authorize or perform production activation
+
+Acceptance update, sanctuary-certificate / banner-seal layer (`2026-04-01`):
+
+1. The repo now has one more final immutable archival layer over the verified
+   apse-receipt session:
+   - `copybot_tiny_live_activation_package_sanctuary_certificate`
+2. The new operator surface is explicit and bounded:
+   - `--plan-live-package-sanctuary-certificate`
+   - `--render-live-package-sanctuary-certificate --output <path>`
+   - `--run-live-package-sanctuary-certificate --session-dir <path>`
+   - `--verify-live-package-sanctuary-certificate --session-dir <path>`
+3. The contract stays source-of-truth-first:
+   - verified `apse_receipt` session is the direct primary input
+   - `--confirm-decision-packet-session-dir <path>` remains only a
+     confirmation-only anchor for the already reviewed nested decision-packet
+     contract
+   - no loose package / target / controller arguments are reintroduced
+4. The sanctuary certificate is read-only and archival:
+   - it freezes the reviewed frozen-controller summary and current
+     refusal-vs-ready classification
+   - it freezes the canonical chain fingerprint plus ledger / registry /
+     filing / archive / closure / finality / consummation / completion /
+     culmination / summit / pinnacle / capstone / keystone / cornerstone /
+     foundation / bedrock / basal / substructure / plinth / pedestal / dais /
+     rostrum / podium / lectern / pulpit / chancel / apse identities
+   - it adds one top-level immutable `sanctuary_certificate_sha256` over that
+     fully culminated chain identity
+   - it does not enable production execution, mutate the target/service
+     contract, or submit real trades
+5. Verification is real and drift-intolerant:
+   - stored session/status/report artifacts must match fresh verified nested
+     apse-receipt truth
+   - stored top-level status.result / gate fields, nested step path, nested and
+     top-level identity fields, and coordinated nested `generated_at` retime
+     all fail verify when tampered
+6. Acceptance stayed on the lightweight bounded surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_sanctuary_certificate`
+   - targeted lib tests for
+     `tiny_live_activation::package_apse_receipt_sanctuary_certificate`
+   - targeted bin tests for
+     `copybot_tiny_live_activation_package_sanctuary_certificate`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
    - the real host still remains non-green while Stage 3 / promoted 5-day

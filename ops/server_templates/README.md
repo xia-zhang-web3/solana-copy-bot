@@ -271,6 +271,48 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
      - `state=written`
      - `archive_promoted=true`
      - a newer `covered_through_cursor.ts_utc` in `latest.json`
+21. Post-fix live verification on `2026-04-01 10:50-10:56 Europe/Kiev`:
+   - commit `c911ef2` was deployed on the production host
+   - first bounded run after deploy:
+     - `ExecMainStartTimestamp=Wed 2026-04-01 07:50:19 UTC`
+     - `ExecMainExitTimestamp=Wed 2026-04-01 07:52:24 UTC`
+     - `state=deferred`
+     - `staged_seeded_from_latest_surface=true`
+     - `staged_progress_resumed=false`
+     - `staged_row_count_before_attempt=41479923`
+     - `staged_row_count_after_attempt=41543912`
+   - second bounded run after deploy:
+     - `ExecMainStartTimestamp=Wed 2026-04-01 07:53:59 UTC`
+     - `ExecMainExitTimestamp=Wed 2026-04-01 07:56:01 UTC`
+     - `state=deferred`
+     - `staged_seeded_from_latest_surface=false`
+     - `staged_progress_resumed=true`
+     - `staged_row_count_before_attempt=41543912`
+     - `staged_row_count_after_attempt=41605685`
+   - surface truth immediately after the second run:
+     - published `latest` was still:
+       - `covered_through = 2026-03-31T16:50:52.139890192Z`
+       - `row_count = 41479923`
+     - hidden staged sidecar had advanced to:
+       - `covered_through = 2026-03-31T17:44:16.792131480Z`
+       - `row_count = 41605685`
+     - live source at the same check was:
+       - `ts = 2026-04-01T07:50:15.151368550Z`
+       - `slot = 410268175`
+       - `row_count = 43543291`
+22. Operator meaning of the post-fix verification:
+   - the new reseed path is now confirmed live
+   - the first bounded run seeded staged progress from the already published
+     healthy `latest`
+   - the next bounded run resumed that new staged frontier instead of
+     replaying from the old hidden lagging base
+   - this is a real convergence-path repair, but not yet a full recovery:
+     `latest.sqlite` has not been promoted yet, so Stage 3 remains non-green
+   - the next healthy milestone is unchanged:
+     - `state=written`
+     - `archive_promoted=true`
+     - `latest.json` moves beyond
+       `2026-03-31T16:50:52.139890192Z`
 
 ## Stage 4 Execution Readiness Audit
 
@@ -2853,6 +2895,80 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
    - this command never executes the frozen controller itself
    - managed-surface overlap checks still protect the
      chancel-certificate install-root contract
+   - current real-host usage still remains refused while gate truth is
+     non-green
+7. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
+## Tiny-Live Package Sanctuary Certificate
+
+1. Operators now also have one final immutable sanctuary-certificate /
+   banner-seal surface over the verified apse receipt:
+   - `copybot_tiny_live_activation_package_sanctuary_certificate --apse-receipt-session-dir /tmp/tiny-live.package-apse-receipt-session --plan-live-package-sanctuary-certificate --json`
+   - `copybot_tiny_live_activation_package_sanctuary_certificate --apse-receipt-session-dir /tmp/tiny-live.package-apse-receipt-session --render-live-package-sanctuary-certificate --output /tmp/tiny-live.package-sanctuary-certificate.sh --json`
+   - `copybot_tiny_live_activation_package_sanctuary_certificate --apse-receipt-session-dir /tmp/tiny-live.package-apse-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-sanctuary-certificate-session --run-live-package-sanctuary-certificate --json`
+   - `copybot_tiny_live_activation_package_sanctuary_certificate --apse-receipt-session-dir /tmp/tiny-live.package-apse-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-sanctuary-certificate-session --verify-live-package-sanctuary-certificate --json`
+2. The verified `apse_receipt` session is the primary direct input:
+   - run and verify additionally require
+     `--confirm-decision-packet-session-dir <path>` as a confirmation-only
+     anchor for the already reviewed nested decision-packet contract
+   - this command does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Important verdicts:
+   - `tiny_live_package_sanctuary_certificate_plan_ready`
+   - `tiny_live_package_sanctuary_certificate_rendered`
+   - `tiny_live_package_sanctuary_certificate_refused_now_by_stage3`
+   - `tiny_live_package_sanctuary_certificate_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_sanctuary_certificate_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_sanctuary_certificate_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_sanctuary_certificate_verify_ok`
+   - `tiny_live_package_sanctuary_certificate_verify_invalid`
+4. The sanctuary certificate is the final banner-style record over the fully
+   culminated chain:
+   - it freezes the current refusal-vs-ready classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes the canonical chain-fingerprint identity
+   - it freezes the top-level ledger-seal identity
+   - it freezes the top-level registry-entry identity
+   - it freezes the top-level filing-certificate identity
+   - it freezes the top-level archive-receipt identity
+   - it freezes the top-level closure-certificate identity
+   - it freezes the top-level finality-receipt identity
+   - it freezes the top-level consummation-record identity
+   - it freezes the top-level completion-certificate identity
+   - it freezes the top-level culmination-receipt identity
+   - it freezes the top-level summit-certificate identity
+   - it freezes the top-level pinnacle-receipt identity
+   - it freezes the top-level capstone-certificate identity
+   - it freezes the top-level keystone-receipt identity
+   - it freezes the top-level cornerstone-certificate identity
+   - it freezes the top-level foundation-receipt identity
+   - it freezes the top-level bedrock-certificate identity
+   - it freezes the top-level basal-receipt identity
+   - it freezes the top-level substructure-certificate identity
+   - it freezes the top-level plinth-receipt identity
+   - it freezes the top-level pedestal-certificate identity
+   - it freezes the top-level dais-receipt identity
+   - it freezes the top-level rostrum-certificate identity
+   - it freezes the top-level podium-receipt identity
+   - it freezes the top-level lectern-certificate identity
+   - it freezes the top-level pulpit-receipt identity
+   - it freezes the top-level chancel-certificate identity
+   - it freezes the top-level apse-receipt identity
+   - it freezes one top-level SHA-256 sanctuary-certificate identity over the
+     fully culminated chain
+5. This layer remains read-only and archival:
+   - it never enables production execution on the real host
+   - it never submits real trades
+   - current real-host use still remains refused while Stage 3 / promoted 5-day
+     truth is non-green
+6. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - managed-surface overlap checks still protect the apse-receipt
+     install-root contract
    - current real-host usage still remains refused while gate truth is
      non-green
 7. Bounded verification remains lightweight:
