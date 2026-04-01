@@ -478,6 +478,9 @@ pub struct DiscoveryPublicationTruthRepairTelemetry {
     pub publication_truth_refresh_attempted: bool,
     pub publication_truth_refresh_completed: bool,
     pub publication_truth_refresh_phase: Option<&'static str>,
+    pub publication_truth_refresh_replay_subphase: Option<&'static str>,
+    pub publication_truth_refresh_replay_wallet_stats_complete: bool,
+    pub publication_truth_refresh_replay_wallet_stats_wallet_cursor: Option<String>,
     pub publication_truth_refresh_observed_swaps_loaded: usize,
     pub publication_truth_refresh_wallets_buffered: usize,
     pub publication_truth_refresh_cycle_rows_processed: usize,
@@ -515,6 +518,9 @@ impl DiscoveryPublicationTruthRepairTelemetry {
             publication_truth_refresh_attempted: false,
             publication_truth_refresh_completed: false,
             publication_truth_refresh_phase: None,
+            publication_truth_refresh_replay_subphase: None,
+            publication_truth_refresh_replay_wallet_stats_complete: false,
+            publication_truth_refresh_replay_wallet_stats_wallet_cursor: None,
             publication_truth_refresh_observed_swaps_loaded: 0,
             publication_truth_refresh_wallets_buffered: 0,
             publication_truth_refresh_cycle_rows_processed: 0,
@@ -551,6 +557,12 @@ impl DiscoveryPublicationTruthRepairTelemetry {
             publication_truth_refresh_attempted: true,
             publication_truth_refresh_completed: telemetry.completed,
             publication_truth_refresh_phase: Some(telemetry.phase.as_str()),
+            publication_truth_refresh_replay_subphase: telemetry.replay_subphase,
+            publication_truth_refresh_replay_wallet_stats_complete: telemetry
+                .replay_wallet_stats_complete,
+            publication_truth_refresh_replay_wallet_stats_wallet_cursor: telemetry
+                .replay_wallet_stats_wallet_cursor
+                .clone(),
             publication_truth_refresh_observed_swaps_loaded: telemetry.observed_swaps_loaded,
             publication_truth_refresh_wallets_buffered: telemetry.wallets_buffered,
             publication_truth_refresh_cycle_rows_processed: telemetry.cycle_rows_processed,
@@ -886,10 +898,12 @@ struct PersistedStreamProgressTelemetry {
     phase: DiscoveryPersistedRebuildPhase,
     collect_buy_mints_mode: CollectBuyMintsMode,
     replay_mode: ReplayMode,
+    replay_subphase: Option<&'static str>,
     window_start: DateTime<Utc>,
     horizon_end: DateTime<Utc>,
     metrics_window_start: DateTime<Utc>,
     phase_cursor: Option<DiscoveryRuntimeCursor>,
+    replay_wallet_stats_wallet_cursor: Option<String>,
     collect_buy_mints_cursor_token: Option<String>,
     collect_buy_mints_reconcile_source_window_start: Option<DateTime<Utc>>,
     collect_buy_mints_reconcile_source_horizon_end: Option<DateTime<Utc>>,
@@ -930,8 +944,7 @@ struct PersistedStreamProgressTelemetry {
 
 fn should_request_persisted_stream_catch_up(telemetry: &PersistedStreamProgressTelemetry) -> bool {
     if telemetry.phase == DiscoveryPersistedRebuildPhase::Replay {
-        return !telemetry.replay_wallet_stats_complete
-            && telemetry.budget_exhausted_reason.is_some();
+        return telemetry.budget_exhausted_reason.is_some();
     }
     if telemetry.phase != DiscoveryPersistedRebuildPhase::CollectBuyMints {
         return false;
@@ -984,6 +997,20 @@ struct PersistedStreamPhaseAdvance {
 }
 
 impl DiscoveryService {
+    fn replay_subphase(
+        phase: DiscoveryPersistedRebuildPhase,
+        replay_wallet_stats_complete: bool,
+    ) -> Option<&'static str> {
+        if phase != DiscoveryPersistedRebuildPhase::Replay {
+            return None;
+        }
+        Some(if replay_wallet_stats_complete {
+            "sol_leg"
+        } else {
+            "wallet_stats"
+        })
+    }
+
     pub fn new(config: DiscoveryConfig, shadow_quality: ShadowConfig) -> Self {
         Self::new_with_helius(config, shadow_quality, None)
     }
@@ -1848,6 +1875,9 @@ impl DiscoveryService {
             publication_truth_refresh_attempted: false,
             publication_truth_refresh_completed: false,
             publication_truth_refresh_phase: None,
+            publication_truth_refresh_replay_subphase: None,
+            publication_truth_refresh_replay_wallet_stats_complete: false,
+            publication_truth_refresh_replay_wallet_stats_wallet_cursor: None,
             publication_truth_refresh_observed_swaps_loaded: 0,
             publication_truth_refresh_wallets_buffered: 0,
             publication_truth_refresh_cycle_rows_processed: 0,
@@ -2002,10 +2032,19 @@ impl DiscoveryService {
             .min(STALE_RECONCILE_EXACT_COUNT_BATCH_CAP)
     }
 
-    fn replay_wallet_stats_catch_up_page_limit(fetch_page_limit: usize) -> usize {
-        fetch_page_limit
+    fn replay_wallet_stats_catch_up_page_limit(
+        fetch_limit: usize,
+        fetch_page_limit: usize,
+    ) -> usize {
+        let wallet_batch_size = Self::replay_wallet_stats_wallet_batch_size(fetch_limit).max(1);
+        let baseline_page_limit = fetch_page_limit
             .max(1)
-            .saturating_mul(REPLAY_WALLET_STATS_CATCH_UP_PAGE_LIMIT_MULTIPLIER)
+            .saturating_mul(REPLAY_WALLET_STATS_CATCH_UP_PAGE_LIMIT_MULTIPLIER);
+        let pages_for_fetch_width = fetch_limit
+            .max(1)
+            .saturating_add(wallet_batch_size.saturating_sub(1))
+            / wallet_batch_size;
+        baseline_page_limit.max(pages_for_fetch_width.max(1))
     }
 
     fn replay_wallet_stats_wallet_batch_size(fetch_limit: usize) -> usize {
@@ -2625,6 +2664,7 @@ impl DiscoveryService {
             rebuild_phase = telemetry.phase.as_str(),
             rebuild_collect_buy_mints_mode = telemetry.collect_buy_mints_mode.as_str(),
             rebuild_replay_mode = telemetry.replay_mode.as_str(),
+            rebuild_replay_subphase = telemetry.replay_subphase,
             rebuild_replay_sol_leg_access_path = telemetry
                 .replay_sol_leg_access_path
                 .map(ObservedSolLegCursorAccessPath::as_str),
@@ -2648,6 +2688,8 @@ impl DiscoveryService {
                 .phase_cursor
                 .as_ref()
                 .map(|cursor| cursor.signature.as_str()),
+            rebuild_replay_wallet_stats_wallet_cursor =
+                telemetry.replay_wallet_stats_wallet_cursor.as_deref(),
             rebuild_collect_buy_mints_cursor_token =
                 telemetry.collect_buy_mints_cursor_token.as_deref(),
             rebuild_collect_buy_mints_reconcile_source_window_start =
@@ -3729,7 +3771,7 @@ impl DiscoveryService {
             let phase_page_limit = if state.payload.replay_wallet_stats_complete {
                 fetch_page_limit
             } else {
-                Self::replay_wallet_stats_catch_up_page_limit(fetch_page_limit)
+                Self::replay_wallet_stats_catch_up_page_limit(fetch_limit, fetch_page_limit)
             };
             let total_pages_processed =
                 replay_pages_processed.saturating_add(replay_wallet_stats_pages_processed);
@@ -4071,10 +4113,18 @@ impl DiscoveryService {
                 phase: DiscoveryPersistedRebuildPhase::PublishPending,
                 collect_buy_mints_mode: state.payload.collect_buy_mints_mode,
                 replay_mode: state.payload.replay_mode,
+                replay_subphase: Self::replay_subphase(
+                    DiscoveryPersistedRebuildPhase::PublishPending,
+                    state.payload.replay_wallet_stats_complete,
+                ),
                 window_start: state.window_start,
                 horizon_end: state.horizon_end,
                 metrics_window_start: state.metrics_window_start,
                 phase_cursor: None,
+                replay_wallet_stats_wallet_cursor: state
+                    .payload
+                    .replay_wallet_stats_wallet_cursor
+                    .clone(),
                 collect_buy_mints_cursor_token: None,
                 collect_buy_mints_reconcile_source_window_start: state
                     .payload
@@ -4352,10 +4402,18 @@ impl DiscoveryService {
                     phase: DiscoveryPersistedRebuildPhase::PublishPending,
                     collect_buy_mints_mode: state.payload.collect_buy_mints_mode,
                     replay_mode: state.payload.replay_mode,
+                    replay_subphase: Self::replay_subphase(
+                        DiscoveryPersistedRebuildPhase::PublishPending,
+                        state.payload.replay_wallet_stats_complete,
+                    ),
                     window_start: state.window_start,
                     horizon_end: state.horizon_end,
                     metrics_window_start: state.metrics_window_start,
                     phase_cursor: None,
+                    replay_wallet_stats_wallet_cursor: state
+                        .payload
+                        .replay_wallet_stats_wallet_cursor
+                        .clone(),
                     collect_buy_mints_cursor_token: None,
                     collect_buy_mints_reconcile_source_window_start: state
                         .payload
@@ -4450,10 +4508,18 @@ impl DiscoveryService {
             phase: state.phase,
             collect_buy_mints_mode: state.payload.collect_buy_mints_mode,
             replay_mode: state.payload.replay_mode,
+            replay_subphase: Self::replay_subphase(
+                state.phase,
+                state.payload.replay_wallet_stats_complete,
+            ),
             window_start: state.window_start,
             horizon_end: state.horizon_end,
             metrics_window_start: state.metrics_window_start,
             phase_cursor: state.phase_cursor.clone(),
+            replay_wallet_stats_wallet_cursor: state
+                .payload
+                .replay_wallet_stats_wallet_cursor
+                .clone(),
             collect_buy_mints_cursor_token: state.payload.collect_buy_mints_cursor_token.clone(),
             collect_buy_mints_reconcile_source_window_start: state
                 .payload
@@ -12342,6 +12408,148 @@ mod tests {
     }
 
     #[test]
+    fn repair_runtime_window_complete_live_like_replay_wallet_stats_catch_up_restores_publication_truth(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-publication-repair-live-like-replay.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-01T18:20:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 20_000;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 60_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let token = "TokenStage1RepairReplayLive11111111111111111";
+
+        for idx in 0..2 {
+            let buy_ts = window_start + Duration::minutes((idx * 10) as i64);
+            runtime_store.insert_observed_swap(&swap(
+                "wallet_live_like_top",
+                &format!("stage1-live-like-top-buy-{idx}"),
+                buy_ts,
+                SOL_MINT,
+                token,
+                1.0,
+                100.0,
+            ))?;
+            runtime_store.insert_observed_swap(&swap(
+                "wallet_live_like_top",
+                &format!("stage1-live-like-top-sell-{idx}"),
+                buy_ts + Duration::minutes(5),
+                token,
+                SOL_MINT,
+                100.0,
+                1.3,
+            ))?;
+        }
+
+        let noise_wallets = 20_000usize;
+        let mut latest_cursor: Option<DiscoveryRuntimeCursor> = None;
+        for idx in 0..noise_wallets {
+            let ts = now - Duration::seconds((noise_wallets.saturating_sub(idx)) as i64);
+            let swap = swap(
+                &format!("wallet_live_like_noise_{idx:05}"),
+                &format!("stage1-live-like-noise-{idx:05}"),
+                ts,
+                SOL_MINT,
+                token,
+                0.2,
+                20.0,
+            );
+            latest_cursor = Some(DiscoveryRuntimeCursor {
+                ts_utc: swap.ts_utc,
+                slot: swap.slot,
+                signature: swap.signature.clone(),
+            });
+            runtime_store.insert_observed_swap(&swap)?;
+        }
+        runtime_store.upsert_discovery_runtime_cursor(
+            &latest_cursor.expect("latest cursor should be present"),
+        )?;
+        runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
+            last_published_at: Some(
+                now - discovery.runtime_published_universe_max_age() - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(2)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        let repair = discovery
+            .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
+                &runtime_store,
+                None,
+                now,
+                64,
+                Instant::now() + StdDuration::from_secs(60),
+            )?;
+        assert_eq!(
+            repair.state,
+            "advanced_runtime_window_truth_refresh_partial"
+        );
+        assert!(repair.publication_truth_refresh_attempted);
+        assert_eq!(repair.publication_truth_refresh_phase, Some("replay"));
+        assert_eq!(
+            repair.publication_truth_refresh_replay_subphase,
+            Some("sol_leg"),
+            "live-like runtime-window repair should drain the wallet-stats prepass within the widened fetch-width budget and leave only SOL-leg replay for the following cycle"
+        );
+        assert!(
+            repair.publication_truth_refresh_replay_wallet_stats_complete,
+            "repair telemetry should report that the wallet-stats prepass finished before the next cycle resumes replay"
+        );
+        assert!(
+            repair
+                .publication_truth_refresh_replay_wallet_stats_wallet_cursor
+                .is_none(),
+            "once the widened repair budget drains the wallet-stats prepass, the persisted replay wallet cursor should clear instead of keeping the rebuild stuck in the same subphase"
+        );
+        assert!(
+            repair.publication_truth_refresh_wallets_buffered >= noise_wallets,
+            "live-like repair should consume enough wallet-stats pages in one bounded attempt to cover the current fetch-width backlog instead of stalling far below it"
+        );
+
+        let summary = discovery.run_cycle(&runtime_store, now)?;
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert!(
+            summary.published,
+            "after the widened live-like wallet-stats catch-up phase, the following bounded discovery cycle should reach a publishable universe instead of staying fail-closed in replay"
+        );
+        let publication_state = runtime_store
+            .discovery_publication_state()?
+            .expect("publication state should exist after refreshed cycle");
+        assert_eq!(
+            publication_state.runtime_mode,
+            DiscoveryRuntimeMode::Healthy
+        );
+        assert_eq!(publication_state.last_published_at, Some(now));
+        assert_eq!(
+            publication_state.last_published_window_start,
+            Some(metrics_window_start)
+        );
+        assert!(
+            publication_state
+                .published_wallet_ids
+                .as_ref()
+                .is_some_and(|wallets| !wallets.is_empty()),
+            "the real rebuild-to-publish path must repopulate the exact published wallet universe instead of leaving runtime export stuck on empty published_wallet_ids"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn repair_recent_raw_journal_head_gap_refuses_foreign_runtime_cursor_lineage() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let runtime_db_path = temp
@@ -16630,10 +16838,12 @@ mod tests {
             phase,
             collect_buy_mints_mode: mode,
             replay_mode: ReplayMode::WalletStatsThenSolLeg,
+            replay_subphase: DiscoveryService::replay_subphase(phase, replay_wallet_stats_complete),
             window_start: now - Duration::days(5),
             horizon_end: now,
             metrics_window_start: now,
             phase_cursor: None,
+            replay_wallet_stats_wallet_cursor: None,
             collect_buy_mints_cursor_token: None,
             collect_buy_mints_reconcile_source_window_start: None,
             collect_buy_mints_reconcile_source_horizon_end: None,
@@ -16676,7 +16886,20 @@ mod tests {
     }
 
     #[test]
-    fn persisted_stream_catch_up_request_targets_collect_buy_mints_and_replay_wallet_stats_only() {
+    fn replay_wallet_stats_catch_up_page_limit_scales_to_live_fetch_width() {
+        assert_eq!(
+            DiscoveryService::replay_wallet_stats_catch_up_page_limit(1, 1),
+            2
+        );
+        assert_eq!(
+            DiscoveryService::replay_wallet_stats_catch_up_page_limit(20_000, 5),
+            23,
+            "live fetch width should widen the replay wallet-stats page budget beyond the old fixed 2x page multiplier"
+        );
+    }
+
+    #[test]
+    fn persisted_stream_catch_up_request_targets_collect_buy_mints_and_replay_phases() {
         assert!(should_request_persisted_stream_catch_up(
             &catch_up_test_telemetry(
                 DiscoveryPersistedRebuildPhase::CollectBuyMints,
@@ -16734,6 +16957,14 @@ mod tests {
             )
         ));
         assert!(!should_request_persisted_stream_catch_up(
+            &catch_up_test_telemetry(
+                DiscoveryPersistedRebuildPhase::Replay,
+                CollectBuyMintsMode::FreshScan,
+                true,
+                None,
+            )
+        ));
+        assert!(should_request_persisted_stream_catch_up(
             &catch_up_test_telemetry(
                 DiscoveryPersistedRebuildPhase::Replay,
                 CollectBuyMintsMode::FreshScan,

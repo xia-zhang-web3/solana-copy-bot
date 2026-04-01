@@ -7271,6 +7271,14 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        now spends its bounded budget advancing the persisted publication-truth
        refresh/rebuild so the first publish-due cycle can either republish a
        fresh wallet universe or surface a more precise rebuild blocker
+     - follow-up fix widens the replay wallet-stats catch-up page budget to
+       the live fetch width instead of the old fixed `2x` page multiplier, so
+       large runtime-window-complete rebuilds can move past the wallet-stats
+       replay bottleneck and reach publishable truth under bounded cycles
+     - repair/runtime logs now surface the replay subphase and the persisted
+       replay wallet cursor, so operators can distinguish "still draining
+       wallet-stats pages" from "already in SOL-leg replay" when publication
+       truth remains incomplete
      - the repair stays fail-closed unless the journal covers the required
        window and the current runtime cursor lineage
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime

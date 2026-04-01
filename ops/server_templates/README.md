@@ -368,6 +368,17 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
        publication-truth refresh/rebuild before the next publish-due discovery
        cycle, so operators can see whether Stage 3 is truly ready to republish
        or still blocked on a narrower rebuild predicate
+     - the replay wallet-stats refresh branch now scales its bounded page
+       budget to the live fetch width instead of the old fixed `2x` page
+       multiplier, because large runtime-window-complete rebuilds were
+       otherwise spending many cycles in wallet-stats replay without ever
+       reaching a publishable universe
+     - operator logs now also expose:
+       - `publication_truth_refresh_replay_subphase`
+       - `publication_truth_refresh_replay_wallet_stats_complete`
+       - `publication_truth_refresh_replay_wallet_stats_wallet_cursor`
+       so a remaining fail-closed runtime can be triaged as
+       "still draining wallet-stats replay" vs "already in SOL-leg replay"
      - this repair remains fail-closed when the journal does not cover the
        required window or the current runtime cursor lineage
    - practical rule:
