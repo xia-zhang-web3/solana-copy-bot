@@ -7213,6 +7213,45 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        base and now resumes correctly from the latest-seeded frontier
      - Stage 3 still remains non-green until a future bounded completion
        actually promotes a newer `latest.sqlite`
+13. Live follow-up after recovery (`2026-04-01 14:37-15:01 Europe/Kiev`):
+   - the recent-raw promotion path is now behaving like a healthy rotating
+     surface instead of a stuck staged-only loop
+   - first confirmed healthy completion:
+     - `state = written`
+     - `archive_promoted = true`
+     - `latest_surface_action = refreshed_from_source`
+     - `created_at = 2026-04-01T11:31:09.853655352Z`
+     - `row_count = 44006003`
+     - `covered_through = 2026-04-01T11:25:44.137773287Z`
+   - second confirmed healthy completion:
+     - `state = written`
+     - `archive_promoted = true`
+     - `latest_surface_action = refreshed_from_source`
+     - `created_at = 2026-04-01T11:53:39.600494796Z`
+     - `row_count = 44056179`
+     - `covered_through = 2026-04-01T11:47:58.294186664Z`
+   - the next bounded cycle after that was no longer another defer:
+     - `state = skipped_not_due`
+     - `latest_surface_action = healthy_skip`
+   - hidden staged sidecar was fully cleaned up again after promotion:
+     - staged metadata file absent
+   - live source tail on the later check (`2026-04-01T12:01:59Z`) was:
+     - `ts = 2026-04-01T11:55:47.374091971Z`
+     - `slot = 410305801`
+     - `rowid = 44073339`
+   - practical meaning:
+     - the specific stuck `recent_raw` promotion incident is no longer the
+       active Stage 3 blocker
+     - recent-raw ingestion + promotion are now moving in a normal
+       low-lag cadence again
+   - remaining blocker:
+     - `copybot-discovery-runtime-export.service` is still failing on the same
+       host
+     - current journal reason:
+       `discovery runtime artifact export requires non-fail-closed publication truth`
+     - therefore Stage 3 is not yet fully green end-to-end, because the runtime
+       discovery export / top-wallet artifact surface is still fail-closed even
+       though `latest.sqlite` itself is now healthy
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 
@@ -7532,6 +7571,53 @@ Acceptance update, lectern-certificate / armorial-seal layer (`2026-03-31`):
 7. Current production status remains unchanged:
    - the real host still remains non-green while Stage 3 / promoted 5-day
      truth is blocked by the separate live recent_raw incident
+   - this batch does not authorize or perform production activation
+
+Acceptance update, transept-certificate / guidon-seal layer (`2026-04-01`):
+
+1. The repo now has one more final immutable archival layer over the verified
+   nave-receipt session:
+   - `copybot_tiny_live_activation_package_transept_certificate`
+2. The new operator surface is explicit and bounded:
+   - `--plan-live-package-transept-certificate`
+   - `--render-live-package-transept-certificate --output <path>`
+   - `--run-live-package-transept-certificate --session-dir <path>`
+   - `--verify-live-package-transept-certificate --session-dir <path>`
+3. The contract stays source-of-truth-first:
+   - verified `nave_receipt` session is the direct primary input
+   - `--confirm-decision-packet-session-dir <path>` remains only a
+     confirmation-only anchor for the already reviewed nested decision-packet
+     contract
+   - no loose package / target / controller arguments are reintroduced
+4. The transept certificate is read-only and archival:
+   - it freezes the reviewed frozen-controller summary and current
+     refusal-vs-ready classification
+   - it freezes the canonical chain fingerprint plus ledger / registry /
+     filing / archive / closure / finality / consummation / completion /
+     culmination / summit / pinnacle / capstone / keystone / cornerstone /
+     foundation / bedrock / basal / substructure / plinth / pedestal / dais /
+     rostrum / podium / lectern / pulpit / chancel / apse / sanctuary / nave
+     identities
+   - it adds one top-level immutable `transept_certificate_sha256` over that
+     fully culminated chain identity
+   - it does not enable production execution, mutate the target/service
+     contract, or submit real trades
+5. Verification is real and drift-intolerant:
+   - stored session/status/report artifacts must match fresh verified nested
+     nave-receipt truth
+   - stored top-level status.result / gate fields, nested step path, nested and
+     top-level identity fields, and coordinated nested `generated_at` retime
+     all fail verify when tampered
+6. Acceptance stayed on the lightweight bounded surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_transept_certificate`
+   - targeted lib tests for
+     `tiny_live_activation::package_nave_receipt_transept_certificate`
+   - targeted bin tests for
+     `copybot_tiny_live_activation_package_transept_certificate`
+   - no heavy `turn_green` compile/test dependency was reintroduced
+7. Current production status remains unchanged:
+   - the real host still remains non-green while Stage 3 / promoted 5-day
+     truth remains a separate blocker for actual production activation
    - this batch does not authorize or perform production activation
 
 Acceptance update, nave-receipt / pennant-seal layer (`2026-04-01`):

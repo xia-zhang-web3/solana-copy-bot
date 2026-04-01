@@ -313,6 +313,46 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
      - `archive_promoted=true`
      - `latest.json` moves beyond
        `2026-03-31T16:50:52.139890192Z`
+23. Follow-up live snapshot on `2026-04-01 14:37-15:01 Europe/Kiev`:
+   - the bounded recent-raw path is no longer stuck in staged-only replay
+   - first confirmed healthy promotion after the fix:
+     - `state = written`
+     - `archive_promoted = true`
+     - `latest_surface_action = refreshed_from_source`
+     - `created_at = 2026-04-01T11:31:09.853655352Z`
+     - `row_count = 44006003`
+     - `covered_through = 2026-04-01T11:25:44.137773287Z`
+   - later confirmed healthy promotion:
+     - `state = written`
+     - `archive_promoted = true`
+     - `latest_surface_action = refreshed_from_source`
+     - `created_at = 2026-04-01T11:53:39.600494796Z`
+     - `row_count = 44056179`
+     - `covered_through = 2026-04-01T11:47:58.294186664Z`
+   - later bounded cycle status after promotion:
+     - `state = skipped_not_due`
+     - `latest_surface_action = healthy_skip`
+   - hidden staged sidecar was absent again after the successful promotion
+   - source tail on the later read-only check:
+     - `rowid = 44073339`
+     - `ts = 2026-04-01T11:55:47.374091971Z`
+     - `slot = 410305801`
+24. Operational interpretation of that later snapshot:
+   - green now:
+     - `copybot-discovery-recent-raw-snapshot.service` is once again promoting
+       fresh `latest.sqlite`
+     - the old defer-without-publish incident is no longer the active failure
+     - low residual lag after promotion is normal bounded cadence lag, not the
+       old stuck backlog shape
+   - still not green:
+     - `copybot-discovery-runtime-export.service` is currently `failed`
+     - current journal reason is
+       `discovery runtime artifact export requires non-fail-closed publication truth`
+   - practical rule:
+     - treat recent-raw ingestion/promotion as recovered
+     - do not yet treat the runtime discovery export / top-wallet artifact
+       surface as healthy until `copybot-discovery-runtime-export.service`
+       stops failing and exports fresh runtime truth again
 
 ## Stage 4 Execution Readiness Audit
 
@@ -2895,6 +2935,81 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
    - this command never executes the frozen controller itself
    - managed-surface overlap checks still protect the
      chancel-certificate install-root contract
+   - current real-host usage still remains refused while gate truth is
+     non-green
+7. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
+## Tiny-Live Package Transept Certificate
+
+1. Operators now also have one final immutable transept-certificate /
+   guidon-seal surface over the verified nave receipt:
+   - `copybot_tiny_live_activation_package_transept_certificate --nave-receipt-session-dir /tmp/tiny-live.package-nave-receipt-session --plan-live-package-transept-certificate --json`
+   - `copybot_tiny_live_activation_package_transept_certificate --nave-receipt-session-dir /tmp/tiny-live.package-nave-receipt-session --render-live-package-transept-certificate --output /tmp/tiny-live.package-transept-certificate.sh --json`
+   - `copybot_tiny_live_activation_package_transept_certificate --nave-receipt-session-dir /tmp/tiny-live.package-nave-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-transept-certificate-session --run-live-package-transept-certificate --json`
+   - `copybot_tiny_live_activation_package_transept_certificate --nave-receipt-session-dir /tmp/tiny-live.package-nave-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-transept-certificate-session --verify-live-package-transept-certificate --json`
+2. The verified `nave_receipt` session is the primary direct input:
+   - run and verify additionally require
+     `--confirm-decision-packet-session-dir <path>` as a confirmation-only
+     anchor for the already reviewed nested decision-packet contract
+   - this command does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Important verdicts:
+   - `tiny_live_package_transept_certificate_plan_ready`
+   - `tiny_live_package_transept_certificate_rendered`
+   - `tiny_live_package_transept_certificate_refused_now_by_stage3`
+   - `tiny_live_package_transept_certificate_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_transept_certificate_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_transept_certificate_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_transept_certificate_verify_ok`
+   - `tiny_live_package_transept_certificate_verify_invalid`
+4. The transept certificate is the final guidon-style record over the fully
+   culminated chain:
+   - it freezes the current refusal-vs-ready classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes the canonical chain-fingerprint identity
+   - it freezes the top-level ledger-seal identity
+   - it freezes the top-level registry-entry identity
+   - it freezes the top-level filing-certificate identity
+   - it freezes the top-level archive-receipt identity
+   - it freezes the top-level closure-certificate identity
+   - it freezes the top-level finality-receipt identity
+   - it freezes the top-level consummation-record identity
+   - it freezes the top-level completion-certificate identity
+   - it freezes the top-level culmination-receipt identity
+   - it freezes the top-level summit-certificate identity
+   - it freezes the top-level pinnacle-receipt identity
+   - it freezes the top-level capstone-certificate identity
+   - it freezes the top-level keystone-receipt identity
+   - it freezes the top-level cornerstone-certificate identity
+   - it freezes the top-level foundation-receipt identity
+   - it freezes the top-level bedrock-certificate identity
+   - it freezes the top-level basal-receipt identity
+   - it freezes the top-level substructure-certificate identity
+   - it freezes the top-level plinth-receipt identity
+   - it freezes the top-level pedestal-certificate identity
+   - it freezes the top-level dais-receipt identity
+   - it freezes the top-level rostrum-certificate identity
+   - it freezes the top-level podium-receipt identity
+   - it freezes the top-level lectern-certificate identity
+   - it freezes the top-level pulpit-receipt identity
+   - it freezes the top-level chancel-certificate identity
+   - it freezes the top-level apse-receipt identity
+   - it freezes the top-level sanctuary-certificate identity
+   - it freezes the top-level nave-receipt identity
+   - it adds one final top-level `transept_certificate_sha256`
+5. This layer remains read-only and archival:
+   - it never enables production execution on the real host
+   - it never submits real trades
+   - current real-host use still remains refused while Stage 3 / promoted 5-day
+     truth is non-green
+6. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - managed-surface overlap checks still protect the
+     nave-receipt install-root contract
    - current real-host usage still remains refused while gate truth is
      non-green
 7. Bounded verification remains lightweight:

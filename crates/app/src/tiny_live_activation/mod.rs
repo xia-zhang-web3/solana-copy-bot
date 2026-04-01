@@ -22,6 +22,7 @@ pub mod package_handoff_bundle_review_receipt;
 pub mod package_keystone_receipt_cornerstone_certificate;
 pub mod package_lectern_certificate_pulpit_receipt;
 pub mod package_live_cutover_execute_frozen;
+pub mod package_nave_receipt_transept_certificate;
 pub mod package_notarization_receipt_registry_entry;
 pub mod package_pedestal_certificate_dais_receipt;
 pub mod package_pinnacle_receipt_capstone_certificate;
