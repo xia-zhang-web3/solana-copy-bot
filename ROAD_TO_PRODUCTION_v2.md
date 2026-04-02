@@ -7315,6 +7315,17 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        cursor, buffered wallets, and real forward progress, discovery now
        marks the next immediate catch-up as pressure-override-worthy instead
        of waiting for a later normal cadence cycle
+     - the same constrained priority path now also covers the live
+       `collect_buy_mints / fresh_scan` recovery shape when bounded progress is
+       still real but publishable truth is not reachable yet:
+       - if fresh-scan times out with a live mint cursor, non-zero discovered
+         buy mints, and real forward rows/pages processed, discovery now marks
+         the next immediate catch-up as pressure-override-worthy instead of
+         treating that shape as ordinary cadence work
+       - this is expected because a same-target restart can honestly resume in
+         `collect_buy_mints / fresh_scan` whenever the persisted checkpoint had
+         not yet reached exact prepass completion or any later replay/publish
+         checkpoint at restart time
      - app-side scheduling is also narrowed to the actual live blocker:
        that pressure override now bypasses the lone
        `writer_pending_requests >= 128` signal, but it still refuses when

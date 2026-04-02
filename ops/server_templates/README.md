@@ -413,6 +413,11 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
        - if stale-publication repair times out in `wallet_stats` with a live
          wallet cursor, buffered wallets, and real forward progress, discovery
          now marks the next immediate catch-up as pressure-override-worthy
+       - the same rule now also applies to bounded
+         `collect_buy_mints / fresh_scan` progress when the mint cursor is
+         still advancing and new buy mints are still being discovered, because
+         publication still cannot exist until that prepass reaches later
+         quality/replay/publish checkpoints
        - app-side scheduling only lets that override bypass the lone
          `writer_pending_requests` blocker
        - aggregate queue depth, journal queue depth, Yellowstone output

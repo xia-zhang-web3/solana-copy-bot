@@ -1022,7 +1022,10 @@ fn should_request_persisted_stream_catch_up_pressure_override(
                 telemetry.budget_exhausted_reason,
                 Some(PersistedStreamBudgetExhaustedReason::TimeBudget)
             )
-            && telemetry.cycle_pages_processed <= 1
+            && telemetry.collect_buy_mints_cursor_token.is_some()
+            && telemetry.cycle_pages_processed > 0
+            && telemetry.cycle_rows_processed > 0
+            && telemetry.cycle_unique_buy_mints_discovered > 0
             && telemetry.wallets_buffered == 0)
 }
 
@@ -18035,8 +18038,16 @@ mod tests {
             false,
             Some(PersistedStreamBudgetExhaustedReason::TimeBudget),
         );
-        collect_buy_mints.cycle_pages_processed = 1;
+        collect_buy_mints.collect_buy_mints_cursor_token = Some("fresh-scan-cursor".to_string());
+        collect_buy_mints.cycle_pages_processed = 2;
+        collect_buy_mints.cycle_rows_processed = 518;
+        collect_buy_mints.cycle_unique_buy_mints_discovered = 518;
         assert!(should_request_persisted_stream_catch_up_pressure_override(
+            &collect_buy_mints
+        ));
+
+        collect_buy_mints.cycle_unique_buy_mints_discovered = 0;
+        assert!(!should_request_persisted_stream_catch_up_pressure_override(
             &collect_buy_mints
         ));
 
