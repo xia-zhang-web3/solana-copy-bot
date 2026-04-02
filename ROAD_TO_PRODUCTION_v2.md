@@ -7309,6 +7309,23 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        and requests immediate catch-up, the app now treats that exact request
        as a pressure-override recovery signal instead of deferring it behind
        normal writer / ingestion pressure suppression
+     - follow-up fix now extends that same constrained priority path to the
+       remaining live `Replay -> wallet_stats` recovery shape: if bounded
+       stale-publication repair times out in `wallet_stats` with a live wallet
+       cursor, buffered wallets, and real forward progress, discovery now
+       marks the next immediate catch-up as pressure-override-worthy instead
+       of waiting for a later normal cadence cycle
+     - app-side scheduling is also narrowed to the actual live blocker:
+       that pressure override now bypasses the lone
+       `writer_pending_requests >= 128` signal, but it still refuses when
+       aggregate queue depth, journal queue depth, Yellowstone output
+       pressure, or the shadow queue are genuinely non-empty
+     - deferred catch-up logs now surface
+       `discovery_catch_up_block_reason` and
+       `discovery_catch_up_pending_requests_only_blocker`, so operators can
+       tell when fail-closed recovery was blocked specifically by raw
+       `pending_requests` even though the real runtime queues were otherwise
+       clear
      - the same fix also keeps stale-but-still-publishable
        `ResolveTokenQuality` / `Replay` checkpoints on their frozen target
        window until they either publish or age out of the freshness gate,

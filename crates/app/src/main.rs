@@ -3239,6 +3239,17 @@ async fn run_app_loop(
                         }
                         let observed_swap_writer_snapshot = observed_swap_writer.snapshot();
                         let ingestion_snapshot = ingestion.runtime_snapshot();
+                        let catch_up_block_reason = discovery_catch_up_block_reason(
+                            &discovery_output,
+                            shadow_queue_full,
+                            &observed_swap_writer_snapshot,
+                            ingestion_snapshot.as_ref(),
+                        );
+                        let pending_requests_only_pressure =
+                            discovery_catch_up_pending_requests_only_pressure(
+                                &observed_swap_writer_snapshot,
+                                ingestion_snapshot.as_ref(),
+                            );
                         discovery_catch_up_pending = should_schedule_discovery_catch_up(
                             &discovery_output,
                             shadow_queue_full,
@@ -3263,6 +3274,8 @@ async fn run_app_loop(
                                         observed_swap_writer_snapshot.aggregate_queue_depth_batches,
                                     writer_journal_queue_depth_batches =
                                         observed_swap_writer_snapshot.journal_queue_depth_batches,
+                                    discovery_catch_up_pending_requests_only_pressure_bypassed =
+                                        pending_requests_only_pressure,
                                     yellowstone_output_queue_fill_ratio =
                                         ingestion_snapshot
                                             .as_ref()
@@ -3307,6 +3320,10 @@ async fn run_app_loop(
                                     observed_swap_writer_snapshot.aggregate_queue_depth_batches,
                                 writer_journal_queue_depth_batches =
                                     observed_swap_writer_snapshot.journal_queue_depth_batches,
+                                discovery_catch_up_block_reason = catch_up_block_reason
+                                    .map(DiscoveryCatchUpBlockReason::as_str),
+                                discovery_catch_up_pending_requests_only_blocker =
+                                    pending_requests_only_pressure,
                                 yellowstone_output_queue_fill_ratio =
                                     ingestion_snapshot
                                         .as_ref()
@@ -4381,32 +4398,101 @@ fn validate_bootstrap_degraded_execution_contract(
     ))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiscoveryCatchUpBlockReason {
+    ShadowQueueFull,
+    WriterPendingRequests,
+    WriterAggregateQueueDepth,
+    WriterJournalQueueDepth,
+    YellowstoneOutputQueueFill,
+}
+
+impl DiscoveryCatchUpBlockReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ShadowQueueFull => "shadow_queue_full",
+            Self::WriterPendingRequests => "writer_pending_requests",
+            Self::WriterAggregateQueueDepth => "writer_aggregate_queue_depth_batches",
+            Self::WriterJournalQueueDepth => "writer_journal_queue_depth_batches",
+            Self::YellowstoneOutputQueueFill => "yellowstone_output_queue_fill_ratio",
+        }
+    }
+}
+
+fn discovery_catch_up_has_writer_queue_pressure(
+    observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
+) -> bool {
+    observed_swap_writer_snapshot.aggregate_queue_depth_batches > 0
+        || observed_swap_writer_snapshot.journal_queue_depth_batches > 0
+}
+
+fn discovery_catch_up_has_ingestion_pressure(
+    ingestion_runtime_snapshot: Option<&IngestionRuntimeSnapshot>,
+) -> bool {
+    ingestion_runtime_snapshot.is_some_and(|snapshot| {
+        snapshot.yellowstone_output_queue_capacity > 0
+            && snapshot.yellowstone_output_queue_fill_ratio > 0.0
+    })
+}
+
+fn discovery_catch_up_pending_requests_only_pressure(
+    observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
+    ingestion_runtime_snapshot: Option<&IngestionRuntimeSnapshot>,
+) -> bool {
+    observed_swap_writer_snapshot.pending_requests
+        >= DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD
+        && !discovery_catch_up_has_writer_queue_pressure(observed_swap_writer_snapshot)
+        && !discovery_catch_up_has_ingestion_pressure(ingestion_runtime_snapshot)
+}
+
+fn discovery_catch_up_block_reason(
+    discovery_output: &DiscoveryTaskOutput,
+    shadow_queue_full: bool,
+    observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
+    ingestion_runtime_snapshot: Option<&IngestionRuntimeSnapshot>,
+) -> Option<DiscoveryCatchUpBlockReason> {
+    if !discovery_output.persisted_stream_catch_up_requested {
+        return None;
+    }
+    if shadow_queue_full {
+        return Some(DiscoveryCatchUpBlockReason::ShadowQueueFull);
+    }
+    if observed_swap_writer_snapshot.aggregate_queue_depth_batches > 0 {
+        return Some(DiscoveryCatchUpBlockReason::WriterAggregateQueueDepth);
+    }
+    if observed_swap_writer_snapshot.journal_queue_depth_batches > 0 {
+        return Some(DiscoveryCatchUpBlockReason::WriterJournalQueueDepth);
+    }
+    if discovery_catch_up_has_ingestion_pressure(ingestion_runtime_snapshot) {
+        return Some(DiscoveryCatchUpBlockReason::YellowstoneOutputQueueFill);
+    }
+    if discovery_output.persisted_stream_catch_up_pressure_override_requested {
+        return None;
+    }
+    if observed_swap_writer_snapshot.pending_requests
+        >= DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD
+    {
+        return Some(DiscoveryCatchUpBlockReason::WriterPendingRequests);
+    }
+    None
+}
+
 fn should_schedule_discovery_catch_up(
     discovery_output: &DiscoveryTaskOutput,
     shadow_queue_full: bool,
     observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
     ingestion_runtime_snapshot: Option<&IngestionRuntimeSnapshot>,
 ) -> bool {
-    if !discovery_output.persisted_stream_catch_up_requested || shadow_queue_full {
+    if !discovery_output.persisted_stream_catch_up_requested {
         return false;
     }
-    if discovery_output.persisted_stream_catch_up_pressure_override_requested {
-        return true;
-    }
-    if observed_swap_writer_snapshot.pending_requests
-        >= DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD
-        || observed_swap_writer_snapshot.aggregate_queue_depth_batches > 0
-        || observed_swap_writer_snapshot.journal_queue_depth_batches > 0
-    {
-        return false;
-    }
-    if ingestion_runtime_snapshot.is_some_and(|snapshot| {
-        snapshot.yellowstone_output_queue_capacity > 0
-            && snapshot.yellowstone_output_queue_fill_ratio > 0.0
-    }) {
-        return false;
-    }
-    true
+    discovery_catch_up_block_reason(
+        discovery_output,
+        shadow_queue_full,
+        observed_swap_writer_snapshot,
+        ingestion_runtime_snapshot,
+    )
+    .is_none()
 }
 
 struct DiscoveryTaskOutput {
@@ -4637,16 +4723,18 @@ mod app_tests {
     }
 
     #[test]
-    fn discovery_catch_up_scheduler_allows_pressure_override_for_near_publish_replay() {
+    fn discovery_catch_up_scheduler_allows_pressure_override_when_pending_requests_is_the_only_blocker(
+    ) {
         let mut discovery_output = discovery_output_for_catch_up_tests(true);
         discovery_output.persisted_stream_catch_up_pressure_override_requested = true;
-        let writer_snapshot = maintenance_test_writer_snapshot();
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.pending_requests = DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD;
 
         assert!(should_schedule_discovery_catch_up(
             &discovery_output,
             false,
             &writer_snapshot,
-            Some(&maintenance_test_ingestion_snapshot(1.0)),
+            Some(&maintenance_test_ingestion_snapshot(0.0)),
         ));
     }
 
@@ -4661,6 +4749,48 @@ mod app_tests {
             true,
             &writer_snapshot,
             Some(&maintenance_test_ingestion_snapshot(1.0)),
+        ));
+    }
+
+    #[test]
+    fn discovery_catch_up_scheduler_keeps_yellowstone_pressure_as_hard_stop_even_with_pressure_override(
+    ) {
+        let mut discovery_output = discovery_output_for_catch_up_tests(true);
+        discovery_output.persisted_stream_catch_up_pressure_override_requested = true;
+        let writer_snapshot = maintenance_test_writer_snapshot();
+
+        assert!(!should_schedule_discovery_catch_up(
+            &discovery_output,
+            false,
+            &writer_snapshot,
+            Some(&maintenance_test_ingestion_snapshot(1.0)),
+        ));
+    }
+
+    #[test]
+    fn discovery_catch_up_scheduler_keeps_writer_queue_depth_as_hard_stop_even_with_pressure_override(
+    ) {
+        let mut discovery_output = discovery_output_for_catch_up_tests(true);
+        discovery_output.persisted_stream_catch_up_pressure_override_requested = true;
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.pending_requests = DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD;
+        writer_snapshot.aggregate_queue_depth_batches = 1;
+
+        assert!(!should_schedule_discovery_catch_up(
+            &discovery_output,
+            false,
+            &writer_snapshot,
+            Some(&maintenance_test_ingestion_snapshot(0.0)),
+        ));
+
+        writer_snapshot.aggregate_queue_depth_batches = 0;
+        writer_snapshot.journal_queue_depth_batches = 1;
+
+        assert!(!should_schedule_discovery_catch_up(
+            &discovery_output,
+            false,
+            &writer_snapshot,
+            Some(&maintenance_test_ingestion_snapshot(0.0)),
         ));
     }
 

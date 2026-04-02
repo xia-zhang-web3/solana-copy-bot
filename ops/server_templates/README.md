@@ -408,6 +408,21 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
        schedules that retrigger even under the normal writer / ingestion
        pressure gate so the rebuild is less likely to age out and rewind
        before publish
+     - the same constrained priority path now also covers the current live
+       `Replay -> wallet_stats` recovery shape:
+       - if stale-publication repair times out in `wallet_stats` with a live
+         wallet cursor, buffered wallets, and real forward progress, discovery
+         now marks the next immediate catch-up as pressure-override-worthy
+       - app-side scheduling only lets that override bypass the lone
+         `writer_pending_requests` blocker
+       - aggregate queue depth, journal queue depth, Yellowstone output
+         pressure, and the shadow queue still remain hard stops
+     - deferred catch-up logs now also expose:
+       - `discovery_catch_up_block_reason`
+       - `discovery_catch_up_pending_requests_only_blocker`
+       so operators can see when fail-closed recovery is being held back only
+       by raw `writer_pending_requests` even though the real runtime queues
+       are otherwise empty
      - stale-but-still-publishable `ResolveTokenQuality` / `Replay`
        checkpoints also stay on their frozen target window until they either
        publish or truthfully age out of the freshness gate, instead of

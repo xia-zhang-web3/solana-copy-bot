@@ -1005,6 +1005,17 @@ fn should_request_persisted_stream_catch_up_pressure_override(
     (telemetry.phase == DiscoveryPersistedRebuildPhase::Replay
         && telemetry.replay_subphase == Some("sol_leg")
         && telemetry.budget_exhausted_reason.is_some())
+        || (telemetry.phase == DiscoveryPersistedRebuildPhase::Replay
+            && telemetry.replay_subphase == Some("wallet_stats")
+            && !telemetry.replay_wallet_stats_complete
+            && telemetry.replay_wallet_stats_wallet_cursor.is_some()
+            && matches!(
+                telemetry.budget_exhausted_reason,
+                Some(PersistedStreamBudgetExhaustedReason::TimeBudget)
+            )
+            && telemetry.cycle_pages_processed > 0
+            && telemetry.cycle_rows_processed > 0
+            && telemetry.wallets_buffered > 0)
         || (telemetry.phase == DiscoveryPersistedRebuildPhase::CollectBuyMints
             && telemetry.collect_buy_mints_mode == CollectBuyMintsMode::FreshScan
             && matches!(
@@ -17998,6 +18009,22 @@ mod tests {
             Some(PersistedStreamBudgetExhaustedReason::PageBudget),
         );
         replay_wallet_stats.replay_subphase = Some("wallet_stats");
+        assert!(!should_request_persisted_stream_catch_up_pressure_override(
+            &replay_wallet_stats
+        ));
+
+        replay_wallet_stats.budget_exhausted_reason =
+            Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+        replay_wallet_stats.replay_wallet_stats_wallet_cursor =
+            Some("wallet-stats-cursor".to_string());
+        replay_wallet_stats.cycle_pages_processed = 54;
+        replay_wallet_stats.cycle_rows_processed = 1_094_540;
+        replay_wallet_stats.wallets_buffered = 500_400;
+        assert!(should_request_persisted_stream_catch_up_pressure_override(
+            &replay_wallet_stats
+        ));
+
+        replay_wallet_stats.replay_wallet_stats_complete = true;
         assert!(!should_request_persisted_stream_catch_up_pressure_override(
             &replay_wallet_stats
         ));
