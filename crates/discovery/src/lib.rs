@@ -62,6 +62,8 @@ const DISCOVERY_PUBLICATION_TRUTH_REPAIR_RUNTIME_WINDOW_REFRESH_MIN_TIME_BUDGET_
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_MIN_TIME_BUDGET_MS: u64 = 180_000;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_MAX_TIME_BUDGET_MS: u64 = 900_000;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_TARGET_MS_PER_PAGE: u64 = 1_500;
+const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MIN_TIME_BUDGET_MS: u64 = 180_000;
+const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MAX_TIME_BUDGET_MS: u64 = 900_000;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_NUMERATOR: usize =
     3;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_DENOMINATOR: usize =
@@ -522,7 +524,10 @@ pub struct DiscoveryPublicationTruthRepairTelemetry {
     pub publication_truth_refresh_effective_time_budget_ms: Option<u64>,
     pub publication_truth_refresh_collect_buy_mints_phase_page_limit: Option<usize>,
     pub publication_truth_refresh_replay_wallet_stats_phase_page_limit: Option<usize>,
+    pub publication_truth_refresh_replay_sol_leg_phase_page_limit: Option<usize>,
     pub publication_truth_refresh_observed_swaps_loaded: usize,
+    pub publication_truth_refresh_replay_rows_processed: usize,
+    pub publication_truth_refresh_replay_pages_processed: usize,
     pub publication_truth_refresh_wallets_buffered: usize,
     pub publication_truth_refresh_cycle_rows_processed: usize,
     pub publication_truth_refresh_cycle_pages_processed: usize,
@@ -568,7 +573,10 @@ impl DiscoveryPublicationTruthRepairTelemetry {
             publication_truth_refresh_effective_time_budget_ms: None,
             publication_truth_refresh_collect_buy_mints_phase_page_limit: None,
             publication_truth_refresh_replay_wallet_stats_phase_page_limit: None,
+            publication_truth_refresh_replay_sol_leg_phase_page_limit: None,
             publication_truth_refresh_observed_swaps_loaded: 0,
+            publication_truth_refresh_replay_rows_processed: 0,
+            publication_truth_refresh_replay_pages_processed: 0,
             publication_truth_refresh_wallets_buffered: 0,
             publication_truth_refresh_cycle_rows_processed: 0,
             publication_truth_refresh_cycle_pages_processed: 0,
@@ -627,7 +635,11 @@ impl DiscoveryPublicationTruthRepairTelemetry {
                 .collect_buy_mints_phase_page_limit_override,
             publication_truth_refresh_replay_wallet_stats_phase_page_limit: recovery_contract
                 .replay_wallet_stats_phase_page_limit_override,
+            publication_truth_refresh_replay_sol_leg_phase_page_limit: recovery_contract
+                .replay_sol_leg_phase_page_limit_override,
             publication_truth_refresh_observed_swaps_loaded: telemetry.observed_swaps_loaded,
+            publication_truth_refresh_replay_rows_processed: telemetry.replay_rows_processed,
+            publication_truth_refresh_replay_pages_processed: telemetry.replay_pages_processed,
             publication_truth_refresh_wallets_buffered: telemetry.wallets_buffered,
             publication_truth_refresh_cycle_rows_processed: 0,
             publication_truth_refresh_cycle_pages_processed: 0,
@@ -1009,6 +1021,7 @@ struct PersistedStreamPriorityRecoveryContract {
     time_budget: StdDuration,
     collect_buy_mints_phase_page_limit_override: Option<usize>,
     replay_wallet_stats_phase_page_limit_override: Option<usize>,
+    replay_sol_leg_phase_page_limit_override: Option<usize>,
     reason: Option<&'static str>,
 }
 
@@ -1097,32 +1110,35 @@ struct PersistedStreamPhaseAdvance {
 }
 
 impl DiscoveryService {
-    fn persisted_stream_publishable_checkpoint_blocker(
-        telemetry: &PersistedStreamProgressTelemetry,
+    fn persisted_stream_publishable_checkpoint_blocker_for_phase(
+        phase: DiscoveryPersistedRebuildPhase,
+        collect_buy_mints_mode: CollectBuyMintsMode,
+        quality_next_mint_index: usize,
+        unique_buy_mints: usize,
+        replay_wallet_stats_complete: bool,
+        phase_cursor_present: bool,
     ) -> &'static str {
-        match telemetry.phase {
-            DiscoveryPersistedRebuildPhase::CollectBuyMints => {
-                match telemetry.collect_buy_mints_mode {
-                    CollectBuyMintsMode::FreshScan => "collect_buy_mints_fresh_scan_incomplete",
-                    CollectBuyMintsMode::ReconcileExpiredHead => {
-                        "collect_buy_mints_reconcile_expired_head_incomplete"
-                    }
-                    CollectBuyMintsMode::ReconcileNewTail => {
-                        "collect_buy_mints_reconcile_new_tail_incomplete"
-                    }
+        match phase {
+            DiscoveryPersistedRebuildPhase::CollectBuyMints => match collect_buy_mints_mode {
+                CollectBuyMintsMode::FreshScan => "collect_buy_mints_fresh_scan_incomplete",
+                CollectBuyMintsMode::ReconcileExpiredHead => {
+                    "collect_buy_mints_reconcile_expired_head_incomplete"
                 }
-            }
+                CollectBuyMintsMode::ReconcileNewTail => {
+                    "collect_buy_mints_reconcile_new_tail_incomplete"
+                }
+            },
             DiscoveryPersistedRebuildPhase::ResolveTokenQuality => {
-                if telemetry.quality_next_mint_index < telemetry.unique_buy_mints {
+                if quality_next_mint_index < unique_buy_mints {
                     "token_quality_incomplete"
                 } else {
                     "token_quality_handoff_pending"
                 }
             }
             DiscoveryPersistedRebuildPhase::Replay => {
-                if !telemetry.replay_wallet_stats_complete {
+                if !replay_wallet_stats_complete {
                     "replay_wallet_stats_incomplete"
-                } else if telemetry.phase_cursor.is_some() {
+                } else if phase_cursor_present {
                     "replay_sol_leg_incomplete"
                 } else {
                     "replay_post_wallet_stats_handoff_pending"
@@ -1130,6 +1146,32 @@ impl DiscoveryService {
             }
             DiscoveryPersistedRebuildPhase::PublishPending => "publish_pending_flush",
         }
+    }
+
+    fn persisted_stream_publishable_checkpoint_blocker_from_state(
+        state: &PersistedStreamRebuildState,
+    ) -> &'static str {
+        Self::persisted_stream_publishable_checkpoint_blocker_for_phase(
+            state.phase,
+            state.payload.collect_buy_mints_mode,
+            state.payload.token_quality_progress.next_mint_index,
+            state.payload.unique_buy_mints.len(),
+            state.payload.replay_wallet_stats_complete,
+            state.phase_cursor.is_some(),
+        )
+    }
+
+    fn persisted_stream_publishable_checkpoint_blocker(
+        telemetry: &PersistedStreamProgressTelemetry,
+    ) -> &'static str {
+        Self::persisted_stream_publishable_checkpoint_blocker_for_phase(
+            telemetry.phase,
+            telemetry.collect_buy_mints_mode,
+            telemetry.quality_next_mint_index,
+            telemetry.unique_buy_mints,
+            telemetry.replay_wallet_stats_complete,
+            telemetry.phase_cursor.is_some(),
+        )
     }
 
     fn replay_subphase(
@@ -2011,7 +2053,10 @@ impl DiscoveryService {
             publication_truth_refresh_effective_time_budget_ms: None,
             publication_truth_refresh_collect_buy_mints_phase_page_limit: None,
             publication_truth_refresh_replay_wallet_stats_phase_page_limit: None,
+            publication_truth_refresh_replay_sol_leg_phase_page_limit: None,
             publication_truth_refresh_observed_swaps_loaded: 0,
+            publication_truth_refresh_replay_rows_processed: 0,
+            publication_truth_refresh_replay_pages_processed: 0,
             publication_truth_refresh_wallets_buffered: 0,
             publication_truth_refresh_cycle_rows_processed: 0,
             publication_truth_refresh_cycle_pages_processed: 0,
@@ -2083,6 +2128,7 @@ impl DiscoveryService {
                 time_budget,
                 collect_buy_mints_phase_page_limit_override: None,
                 replay_wallet_stats_phase_page_limit_override: None,
+                replay_sol_leg_phase_page_limit_override: None,
                 reason: None,
             });
         }
@@ -2103,6 +2149,7 @@ impl DiscoveryService {
                     time_budget,
                 ),
             ),
+            replay_sol_leg_phase_page_limit_override: None,
             reason: Some("runtime_window_complete_stale_publication_truth"),
         })
     }
@@ -2167,6 +2214,64 @@ impl DiscoveryService {
         StdDuration::from_millis(target_budget_ms.min(u64::MAX as u128) as u64)
     }
 
+    fn state_needs_deep_replay_sol_leg_priority_recovery_contract(
+        state: &PersistedStreamRebuildState,
+    ) -> bool {
+        state.phase == DiscoveryPersistedRebuildPhase::Replay
+            && state.payload.replay_wallet_stats_complete
+            && state.phase_cursor.is_some()
+            && state.replay_rows_processed > 0
+    }
+
+    fn replay_sol_leg_processed_floor_pages(
+        fetch_limit: usize,
+        state: &PersistedStreamRebuildState,
+    ) -> usize {
+        let rows_floor_pages = state
+            .replay_rows_processed
+            .max(1)
+            .div_ceil(fetch_limit.max(1));
+        state.replay_pages_processed.max(rows_floor_pages)
+    }
+
+    fn deep_replay_sol_leg_target_time_budget(
+        &self,
+        baseline_time_budget: StdDuration,
+        fetch_page_limit: usize,
+        processed_floor_pages: usize,
+    ) -> StdDuration {
+        let floor_pages_with_headroom = processed_floor_pages
+            .saturating_mul(
+                DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_NUMERATOR,
+            )
+            .div_ceil(
+                DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_DENOMINATOR,
+            );
+        let base_fetch_budget_ms = self.config.fetch_time_budget_ms.max(1) as u128;
+        let floor_budget_ms = (floor_pages_with_headroom as u128)
+            .saturating_mul(base_fetch_budget_ms)
+            .div_ceil(fetch_page_limit.max(1) as u128);
+        let target_budget_ms = baseline_time_budget
+            .as_millis()
+            .max(floor_budget_ms)
+            .min(DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MAX_TIME_BUDGET_MS as u128)
+            .max(1);
+        StdDuration::from_millis(target_budget_ms.min(u64::MAX as u128) as u64)
+    }
+
+    fn replay_sol_leg_repair_phase_page_limit(
+        &self,
+        fetch_page_limit: usize,
+        repair_time_budget: StdDuration,
+    ) -> usize {
+        let normal_fetch_budget_ms = self.config.fetch_time_budget_ms.max(1) as u128;
+        let repair_budget_ms = repair_time_budget.as_millis().max(1);
+        let budget_multiplier = repair_budget_ms.div_ceil(normal_fetch_budget_ms);
+        fetch_page_limit
+            .max(1)
+            .saturating_mul(budget_multiplier.min(usize::MAX as u128).max(1) as usize)
+    }
+
     fn deepen_persisted_stream_priority_recovery_contract_for_state(
         &self,
         state: &PersistedStreamRebuildState,
@@ -2174,32 +2279,66 @@ impl DiscoveryService {
         fetch_page_limit: usize,
         contract: PersistedStreamPriorityRecoveryContract,
     ) -> PersistedStreamPriorityRecoveryContract {
-        if !Self::state_needs_deep_replay_wallet_stats_priority_recovery_contract(state) {
+        let mut contract = contract;
+        if Self::state_needs_deep_replay_wallet_stats_priority_recovery_contract(state) {
+            let baseline_time_budget = contract.time_budget.max(StdDuration::from_millis(
+                DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_MIN_TIME_BUDGET_MS,
+            ));
+            let buffered_wallet_backlog_floor =
+                Self::replay_wallet_stats_buffered_wallet_backlog_floor_wallets(state);
+            let buffered_wallet_floor_pages = Self::replay_wallet_stats_buffered_wallet_floor_pages(
+                fetch_limit,
+                buffered_wallet_backlog_floor,
+            );
+            let deep_time_budget = Self::deep_replay_wallet_stats_target_time_budget(
+                baseline_time_budget,
+                buffered_wallet_floor_pages,
+            );
+            let deep_reason = if deep_time_budget > baseline_time_budget {
+                Some("deep_replay_wallet_stats_large_buffered_backlog")
+            } else {
+                Some("deep_replay_wallet_stats_incomplete")
+            };
+            contract = PersistedStreamPriorityRecoveryContract {
+                time_budget: deep_time_budget,
+                collect_buy_mints_phase_page_limit_override: Some(
+                    self.collect_buy_mints_repair_phase_page_limit(
+                        fetch_limit,
+                        fetch_page_limit,
+                        deep_time_budget,
+                    ),
+                ),
+                replay_wallet_stats_phase_page_limit_override: Some(
+                    self.replay_wallet_stats_repair_phase_page_limit(
+                        fetch_limit,
+                        fetch_page_limit,
+                        deep_time_budget,
+                    ),
+                ),
+                replay_sol_leg_phase_page_limit_override: Some(
+                    self.replay_sol_leg_repair_phase_page_limit(fetch_page_limit, deep_time_budget),
+                ),
+                reason: deep_reason,
+            };
+        }
+        if !Self::state_needs_deep_replay_sol_leg_priority_recovery_contract(state) {
             return contract;
         }
 
         let baseline_time_budget = contract.time_budget.max(StdDuration::from_millis(
-            DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_MIN_TIME_BUDGET_MS,
+            DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MIN_TIME_BUDGET_MS,
         ));
-        let buffered_wallet_backlog_floor =
-            Self::replay_wallet_stats_buffered_wallet_backlog_floor_wallets(state);
-        let buffered_wallet_floor_pages = Self::replay_wallet_stats_buffered_wallet_floor_pages(
-            fetch_limit,
-            buffered_wallet_backlog_floor,
-        );
-        let deep_time_budget = Self::deep_replay_wallet_stats_target_time_budget(
+        let processed_floor_pages = Self::replay_sol_leg_processed_floor_pages(fetch_limit, state);
+        let deep_time_budget = self.deep_replay_sol_leg_target_time_budget(
             baseline_time_budget,
-            buffered_wallet_floor_pages,
+            fetch_page_limit,
+            processed_floor_pages,
         );
         let deep_reason = if deep_time_budget > baseline_time_budget {
-            Some("deep_replay_wallet_stats_large_buffered_backlog")
+            Some("deep_replay_sol_leg_large_processed_backlog")
         } else {
-            Some("deep_replay_wallet_stats_incomplete")
+            Some("deep_replay_sol_leg_incomplete")
         };
-        if deep_time_budget == contract.time_budget && contract.reason == deep_reason {
-            return contract;
-        }
-
         PersistedStreamPriorityRecoveryContract {
             time_budget: deep_time_budget,
             collect_buy_mints_phase_page_limit_override: Some(
@@ -2215,6 +2354,9 @@ impl DiscoveryService {
                     fetch_page_limit,
                     deep_time_budget,
                 ),
+            ),
+            replay_sol_leg_phase_page_limit_override: Some(
+                self.replay_sol_leg_repair_phase_page_limit(fetch_page_limit, deep_time_budget),
             ),
             reason: deep_reason,
         }
@@ -2802,7 +2944,10 @@ impl DiscoveryService {
     fn persisted_stream_observed_swaps_loaded(state: &PersistedStreamRebuildState) -> usize {
         match state.payload.replay_mode {
             ReplayMode::LegacyFullWindow => state.replay_rows_processed,
-            ReplayMode::WalletStatsThenSolLeg => state.payload.replay_wallet_stats_rows_processed,
+            ReplayMode::WalletStatsThenSolLeg => state
+                .payload
+                .replay_wallet_stats_rows_processed
+                .saturating_add(state.replay_rows_processed),
         }
     }
 
@@ -4478,6 +4623,7 @@ impl DiscoveryService {
             fetch_limit,
             fetch_page_limit,
             None,
+            None,
             deadline,
         )
     }
@@ -4489,6 +4635,7 @@ impl DiscoveryService {
         fetch_limit: usize,
         fetch_page_limit: usize,
         replay_wallet_stats_phase_page_limit_override: Option<usize>,
+        replay_sol_leg_phase_page_limit_override: Option<usize>,
         deadline: Instant,
     ) -> Result<PersistedStreamPhaseAdvance> {
         let mut replay_rows_processed = 0usize;
@@ -4503,7 +4650,7 @@ impl DiscoveryService {
 
         let budget_exhausted_reason = loop {
             let phase_page_limit = if state.payload.replay_wallet_stats_complete {
-                fetch_page_limit
+                replay_sol_leg_phase_page_limit_override.unwrap_or(fetch_page_limit)
             } else {
                 replay_wallet_stats_phase_page_limit_override.unwrap_or_else(|| {
                     Self::replay_wallet_stats_catch_up_page_limit(fetch_limit, fetch_page_limit)
@@ -4713,13 +4860,14 @@ impl DiscoveryService {
         })
     }
 
-    fn advance_persisted_stream_replay_with_wallet_stats_phase_page_limit(
+    fn advance_persisted_stream_replay_with_phase_page_limits(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,
         fetch_limit: usize,
         fetch_page_limit: usize,
         replay_wallet_stats_phase_page_limit_override: Option<usize>,
+        replay_sol_leg_phase_page_limit_override: Option<usize>,
         deadline: Instant,
     ) -> Result<PersistedStreamPhaseAdvance> {
         match state.payload.replay_mode {
@@ -4737,6 +4885,7 @@ impl DiscoveryService {
                     fetch_limit,
                     fetch_page_limit,
                     replay_wallet_stats_phase_page_limit_override,
+                    replay_sol_leg_phase_page_limit_override,
                     deadline,
                 ),
         }
@@ -4762,6 +4911,7 @@ impl DiscoveryService {
             rebuild_time_budget,
             None,
             None,
+            None,
         )
     }
 
@@ -4776,6 +4926,7 @@ impl DiscoveryService {
         rebuild_time_budget: StdDuration,
         collect_buy_mints_phase_page_limit_override: Option<usize>,
         replay_wallet_stats_phase_page_limit_override: Option<usize>,
+        replay_sol_leg_phase_page_limit_override: Option<usize>,
     ) -> Result<PersistedStreamRebuildAdvanceOutcome> {
         let (mut state, restore_outcome) = self.load_or_start_persisted_stream_rebuild_state(
             store,
@@ -4787,6 +4938,7 @@ impl DiscoveryService {
             time_budget: rebuild_time_budget,
             collect_buy_mints_phase_page_limit_override,
             replay_wallet_stats_phase_page_limit_override,
+            replay_sol_leg_phase_page_limit_override,
             reason: None,
         };
         let buffered_wallet_backlog_floor =
@@ -4795,6 +4947,8 @@ impl DiscoveryService {
             fetch_limit,
             buffered_wallet_backlog_floor,
         );
+        let replay_sol_leg_processed_floor_pages =
+            Self::replay_sol_leg_processed_floor_pages(fetch_limit, &state);
         let adjusted_contract = self.deepen_persisted_stream_priority_recovery_contract_for_state(
             &state,
             fetch_limit,
@@ -4806,6 +4960,8 @@ impl DiscoveryService {
             adjusted_contract.collect_buy_mints_phase_page_limit_override;
         let replay_wallet_stats_phase_page_limit_override =
             adjusted_contract.replay_wallet_stats_phase_page_limit_override;
+        let replay_sol_leg_phase_page_limit_override =
+            adjusted_contract.replay_sol_leg_phase_page_limit_override;
         if adjusted_contract != requested_contract {
             info!(
                 rebuild_priority_recovery_contract_scope = "checkpoint_specific",
@@ -4816,21 +4972,23 @@ impl DiscoveryService {
                 rebuild_horizon_end = %state.horizon_end,
                 rebuild_metrics_window_start = %state.metrics_window_start,
                 rebuild_publishable_checkpoint_blocker =
-                    if state.payload.replay_wallet_stats_complete {
-                        "replay_post_wallet_stats_handoff_pending"
-                    } else {
-                        "replay_wallet_stats_incomplete"
-                    },
+                    Self::persisted_stream_publishable_checkpoint_blocker_from_state(&state),
                 rebuild_priority_recovery_contract_reason = adjusted_contract.reason,
                 rebuild_time_budget_ms = adjusted_contract.time_budget.as_millis(),
                 rebuild_collect_buy_mints_phase_page_limit = adjusted_contract
                     .collect_buy_mints_phase_page_limit_override,
                 rebuild_replay_wallet_stats_phase_page_limit = adjusted_contract
                     .replay_wallet_stats_phase_page_limit_override,
+                rebuild_replay_sol_leg_phase_page_limit = adjusted_contract
+                    .replay_sol_leg_phase_page_limit_override,
                 rebuild_replay_wallet_stats_buffered_wallet_backlog_floor =
                     buffered_wallet_backlog_floor,
                 rebuild_replay_wallet_stats_buffered_wallet_floor_pages =
                     buffered_wallet_floor_pages,
+                rebuild_replay_sol_leg_processed_floor_pages =
+                    replay_sol_leg_processed_floor_pages,
+                rebuild_replay_rows_processed = state.replay_rows_processed,
+                rebuild_replay_pages_processed = state.replay_pages_processed,
                 rebuild_replay_wallet_stats_rows_processed =
                     state.payload.replay_wallet_stats_rows_processed,
                 rebuild_replay_wallet_stats_pages_processed =
@@ -5066,12 +5224,13 @@ impl DiscoveryService {
                         deadline,
                     )?,
                 DiscoveryPersistedRebuildPhase::Replay => self
-                    .advance_persisted_stream_replay_with_wallet_stats_phase_page_limit(
+                    .advance_persisted_stream_replay_with_phase_page_limits(
                         store,
                         &mut state,
                         fetch_limit,
                         fetch_page_limit,
                         replay_wallet_stats_phase_page_limit_override,
+                        replay_sol_leg_phase_page_limit_override,
                         deadline,
                     )?,
                 DiscoveryPersistedRebuildPhase::PublishPending => {
@@ -6153,6 +6312,9 @@ impl DiscoveryService {
                         rebuild_replay_wallet_stats_phase_page_limit =
                             priority_recovery_contract
                                 .replay_wallet_stats_phase_page_limit_override,
+                        rebuild_replay_sol_leg_phase_page_limit =
+                            priority_recovery_contract
+                                .replay_sol_leg_phase_page_limit_override,
                         "prepared base bounded persisted observed_swaps recovery contract before any checkpoint-specific deepening for stale or incomplete publication truth"
                     );
                 }
@@ -6166,6 +6328,7 @@ impl DiscoveryService {
                     priority_recovery_contract.time_budget,
                     priority_recovery_contract.collect_buy_mints_phase_page_limit_override,
                     priority_recovery_contract.replay_wallet_stats_phase_page_limit_override,
+                    priority_recovery_contract.replay_sol_leg_phase_page_limit_override,
                 )? {
                     PersistedStreamRebuildAdvanceOutcome::Completed {
                         snapshots,
@@ -8219,6 +8382,19 @@ mod tests {
         let mut total_rows = 0usize;
         let mut sol_leg_rows = 0usize;
 
+        // Keep the runtime window provably complete for repair/run_cycle tests that resume
+        // from a partial replay checkpoint rather than exercising the journal-gap path.
+        store.insert_observed_swap(&swap(
+            "wallet_replay_window_floor",
+            "stage1-replay-window-floor",
+            window_start,
+            "TokenReplayWindowFloorIn11111111111111111",
+            "TokenReplayWindowFloorOut1111111111111111",
+            1.0,
+            1.0,
+        ))?;
+        total_rows = total_rows.saturating_add(1);
+
         for idx in 0..profitable_pairs {
             let ts = window_start + Duration::minutes((idx * 12) as i64 + 1);
             let token = format!("TokenStage1ReplayOpt{idx:04}1111111111111111");
@@ -8263,6 +8439,117 @@ mod tests {
         }
 
         Ok((window_start, metrics_window_start, total_rows, sol_leg_rows))
+    }
+
+    fn seed_stage1_partial_sol_leg_replay_checkpoint_fixture(
+        store: &SqliteStore,
+        discovery: &DiscoveryService,
+        config: &DiscoveryConfig,
+        now: DateTime<Utc>,
+        profitable_pairs: usize,
+        seeded_sol_leg_pages: usize,
+    ) -> Result<(PersistedStreamRebuildState, DateTime<Utc>, usize)> {
+        let (window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(store, config, now, profitable_pairs, 1)?;
+        let sol_leg_rows = profitable_pairs.saturating_mul(4).saturating_add(1);
+        let unique_buy_mints = store.load_observed_buy_mints_in_window(window_start, now)?;
+
+        let mut state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        state.horizon_end = now;
+        state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        state.payload.collect_buy_mints_prepass_complete = true;
+        state.payload.unique_buy_mints = unique_buy_mints;
+        state.payload.buy_mint_counts = state
+            .payload
+            .unique_buy_mints
+            .iter()
+            .cloned()
+            .map(|mint| (mint, 1u32))
+            .collect();
+        state.payload.token_quality_cache = state
+            .payload
+            .unique_buy_mints
+            .iter()
+            .cloned()
+            .map(|mint| {
+                (
+                    mint.clone(),
+                    quality_cache::TokenQualityResolution::Fresh(
+                        copybot_core_types::TokenQualityCacheRow {
+                            mint,
+                            holders: Some(42),
+                            liquidity_sol: Some(3.0),
+                            token_age_seconds: Some(3_600),
+                            fetched_at: now - Duration::minutes(1),
+                        },
+                    ),
+                )
+            })
+            .collect();
+        state.payload.token_quality_progress.next_mint_index = state.payload.unique_buy_mints.len();
+
+        let stats_advance = discovery.advance_persisted_stream_replay_wallet_stats(
+            store,
+            &mut state,
+            config.max_fetch_swaps_per_cycle,
+            10,
+            Instant::now() + StdDuration::from_secs(30),
+        )?;
+        assert!(
+            stats_advance.source_exhausted,
+            "fixture should fully drain wallet_stats before seeding a partial sol-leg checkpoint"
+        );
+        state.payload.replay_wallet_stats_rows_processed = state
+            .payload
+            .replay_wallet_stats_rows_processed
+            .saturating_add(stats_advance.replay_wallet_stats_rows_processed);
+        state.payload.replay_wallet_stats_pages_processed = state
+            .payload
+            .replay_wallet_stats_pages_processed
+            .saturating_add(stats_advance.replay_wallet_stats_pages_processed);
+        state
+            .payload
+            .replay_wallet_stats_day_count_source_progress
+            .merge(stats_advance.replay_wallet_stats_day_count_source_progress);
+        state.payload.replay_wallet_stats_complete = true;
+        state.payload.replay_wallet_stats_wallet_cursor = None;
+        state.phase_cursor = None;
+        for acc in state.payload.by_wallet.values_mut() {
+            acc.tx_per_minute.clear();
+        }
+
+        let replay_advance = discovery
+            .advance_persisted_stream_replay_optimized_with_wallet_stats_phase_page_limit(
+                store,
+                &mut state,
+                config.max_fetch_swaps_per_cycle,
+                config.max_fetch_pages_per_cycle,
+                None,
+                Some(seeded_sol_leg_pages.max(1)),
+                Instant::now() + StdDuration::from_secs(30),
+            )?;
+        assert!(
+            !replay_advance.source_exhausted,
+            "fixture should leave a live sol-leg cursor behind for the resumed checkpoint"
+        );
+        assert!(
+            matches!(
+                replay_advance.budget_exhausted_reason,
+                Some(PersistedStreamBudgetExhaustedReason::PageBudget)
+            ),
+            "fixture should stop on page budget so the resumed checkpoint mirrors the live sol-leg blocker"
+        );
+        state.replay_rows_processed = state
+            .replay_rows_processed
+            .saturating_add(replay_advance.rows_processed);
+        state.replay_pages_processed = state
+            .replay_pages_processed
+            .saturating_add(replay_advance.pages_processed);
+        state.phase_cursor = replay_advance.phase_cursor;
+
+        Ok((state, metrics_window_start, sol_leg_rows))
     }
 
     fn seed_stage1_collect_buy_mints_noise_fixture(
@@ -14093,6 +14380,7 @@ mod tests {
             time_budget: StdDuration::from_secs(60),
             collect_buy_mints_phase_page_limit_override: Some(160),
             replay_wallet_stats_phase_page_limit_override: Some(92),
+            replay_sol_leg_phase_page_limit_override: None,
             reason: Some("runtime_window_complete_stale_publication_truth"),
         };
         let deep_contract = discovery.deepen_persisted_stream_priority_recovery_contract_for_state(
@@ -14154,6 +14442,7 @@ mod tests {
             time_budget: StdDuration::from_secs(60),
             collect_buy_mints_phase_page_limit_override: Some(160),
             replay_wallet_stats_phase_page_limit_override: Some(92),
+            replay_sol_leg_phase_page_limit_override: None,
             reason: Some("runtime_window_complete_stale_publication_truth"),
         };
         let deep_contract = discovery.deepen_persisted_stream_priority_recovery_contract_for_state(
@@ -14179,6 +14468,74 @@ mod tests {
         assert_eq!(
             deep_contract.reason,
             Some("deep_replay_wallet_stats_large_buffered_backlog")
+        );
+    }
+
+    #[test]
+    fn persisted_stream_priority_recovery_contract_deepens_resumed_replay_sol_leg_checkpoint_stage1(
+    ) {
+        let now = DateTime::parse_from_rfc3339("2026-04-02T18:15:01Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 20_000;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let mut state = discovery.start_persisted_stream_rebuild_state(
+            now - Duration::days(config.scoring_window_days.max(1) as i64),
+            metrics_window_start_for_test(&config, now),
+            now,
+        );
+        state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        state.horizon_end = now;
+        state.phase_cursor = Some(DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::minutes(3),
+            slot: 42,
+            signature: "stage1-sol-leg-cursor".to_string(),
+        });
+        state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        state.payload.replay_wallet_stats_complete = true;
+        state.payload.replay_wallet_stats_rows_processed = 15_740_016;
+        state.replay_rows_processed = 900_000;
+        state.replay_pages_processed = 45;
+        state.payload.unique_buy_mints =
+            vec!["TokenReplayDeep11111111111111111111111111".to_string()];
+        state.payload.token_quality_progress.next_mint_index = state.payload.unique_buy_mints.len();
+
+        let base_contract = PersistedStreamPriorityRecoveryContract {
+            time_budget: StdDuration::from_secs(60),
+            collect_buy_mints_phase_page_limit_override: Some(160),
+            replay_wallet_stats_phase_page_limit_override: Some(92),
+            replay_sol_leg_phase_page_limit_override: None,
+            reason: Some("runtime_window_complete_stale_publication_truth"),
+        };
+        let deep_contract = discovery.deepen_persisted_stream_priority_recovery_contract_for_state(
+            &state,
+            config.max_fetch_swaps_per_cycle,
+            config.max_fetch_pages_per_cycle,
+            base_contract,
+        );
+
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(&state),
+            "replay_sol_leg_incomplete"
+        );
+        assert_eq!(deep_contract.time_budget, StdDuration::from_secs(204));
+        assert_eq!(
+            deep_contract.replay_sol_leg_phase_page_limit_override,
+            Some(70)
+        );
+        assert!(
+            deep_contract
+                .replay_wallet_stats_phase_page_limit_override
+                .is_some_and(|limit| limit > 92),
+            "once the same replay checkpoint is still stuck in sol_leg, the widened contract should carry the larger bounded budget through the replay lane instead of leaving sol_leg on the old five-page ceiling"
+        );
+        assert_eq!(
+            deep_contract.reason,
+            Some("deep_replay_sol_leg_large_processed_backlog")
         );
     }
 
@@ -14378,6 +14735,7 @@ mod tests {
                 config.max_fetch_swaps_per_cycle,
                 config.max_fetch_pages_per_cycle,
                 Some(baseline_phase_page_limit),
+                None,
                 Instant::now() + StdDuration::from_secs(30),
             )?;
         assert!(
@@ -14402,6 +14760,7 @@ mod tests {
                 config.max_fetch_swaps_per_cycle,
                 config.max_fetch_pages_per_cycle,
                 Some(priority_phase_page_limit),
+                None,
                 Instant::now() + StdDuration::from_secs(30),
             )?;
         assert!(
@@ -14423,6 +14782,183 @@ mod tests {
                 Some(PersistedStreamBudgetExhaustedReason::PageBudget)
             ) || priority_advance.source_exhausted,
             "after draining wallet_stats, the deeper checkpoint should either hand off into the next replay step or fully exhaust the replay source"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repair_runtime_window_complete_delegated_replay_sol_leg_checkpoint_uses_deeper_priority_contract_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-publication-repair-live-like-sol-leg.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-02T18:15:04Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (replay_state, metrics_window_start, _sol_leg_rows) =
+            seed_stage1_partial_sol_leg_replay_checkpoint_fixture(
+                &runtime_store,
+                &discovery,
+                &config,
+                now,
+                401,
+                3,
+            )?;
+        runtime_store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, now)?,
+        )?;
+        runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
+            last_published_at: Some(
+                now - discovery.runtime_published_universe_max_age() - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        let repair = discovery
+            .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
+                &runtime_store,
+                None,
+                now,
+                64,
+                Instant::now() + StdDuration::from_secs(60),
+            )?;
+        assert_eq!(
+            repair.state,
+            "deferred_runtime_window_truth_refresh_to_run_cycle"
+        );
+        assert!(repair.publication_truth_refresh_delegated_to_runtime_cycle);
+        assert_eq!(repair.publication_truth_refresh_phase, Some("replay"));
+        assert_eq!(
+            repair.publication_truth_refresh_replay_subphase,
+            Some("sol_leg")
+        );
+        assert!(repair.publication_truth_refresh_replay_wallet_stats_complete);
+        assert_eq!(
+            repair.publication_truth_refresh_publishable_checkpoint_blocker,
+            Some("replay_sol_leg_incomplete")
+        );
+        assert_eq!(
+            repair.publication_truth_refresh_priority_recovery_contract_reason,
+            Some("deep_replay_sol_leg_incomplete")
+        );
+        assert_eq!(
+            repair.publication_truth_refresh_effective_time_budget_ms,
+            Some(180_000)
+        );
+        assert_eq!(
+            repair.publication_truth_refresh_replay_sol_leg_phase_page_limit,
+            Some(60)
+        );
+        assert_eq!(repair.publication_truth_refresh_replay_rows_processed, 300);
+        assert_eq!(repair.publication_truth_refresh_replay_pages_processed, 3);
+        assert!(
+            repair.publication_truth_refresh_observed_swaps_loaded
+                > replay_state.payload.replay_wallet_stats_rows_processed,
+            "delegated repair telemetry should now expose total optimized replay progress instead of freezing observed_swaps_loaded on the completed wallet-stats count"
+        );
+        let rebuild_after_repair = load_persisted_stream_rebuild_state_for_test(&runtime_store)?;
+        assert_eq!(
+            rebuild_after_repair.replay_rows_processed,
+            replay_state.replay_rows_processed,
+            "delegated repair must still leave the partial sol-leg checkpoint untouched for the owning run_cycle"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_cycle_runtime_window_complete_resumed_replay_sol_leg_uses_deeper_priority_contract_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-run-cycle-deep-replay-sol-leg-priority-contract.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-02T18:15:01Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (replay_state, metrics_window_start, sol_leg_rows) =
+            seed_stage1_partial_sol_leg_replay_checkpoint_fixture(
+                &runtime_store,
+                &discovery,
+                &config,
+                now,
+                401,
+                3,
+            )?;
+        assert!(
+            sol_leg_rows
+                > replay_state
+                    .replay_rows_processed
+                    .saturating_add(
+                        config.max_fetch_swaps_per_cycle * config.max_fetch_pages_per_cycle
+                ),
+            "fixture must leave more than one ordinary five-page sol-leg suffix so the resumed live checkpoint reproduces the exact page-budget blocker"
+        );
+        runtime_store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, now)?,
+        )?;
+        runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
+            last_published_at: Some(
+                now - discovery.runtime_published_universe_max_age() - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        let summary = discovery.run_cycle(&runtime_store, now)?;
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert!(summary.published);
+        let publication_state = runtime_store
+            .discovery_publication_state()?
+            .expect("publication state should exist after the resumed sol-leg cycle publishes");
+        assert_eq!(
+            publication_state.runtime_mode,
+            DiscoveryRuntimeMode::Healthy
+        );
+        assert_eq!(publication_state.last_published_at, Some(now));
+        assert_eq!(
+            publication_state.last_published_window_start,
+            Some(metrics_window_start)
+        );
+        assert!(
+            publication_state
+                .published_wallet_ids
+                .as_ref()
+                .is_some_and(|wallets| !wallets.is_empty()),
+            "once the resumed sol-leg checkpoint gets its deeper bounded contract, the owning run_cycle should reach PublishPending and write a real non-empty published universe"
+        );
+        assert!(
+            runtime_store
+                .load_discovery_persisted_rebuild_state()?
+                .is_none(),
+            "after the deeper sol-leg contract reaches publish, the persisted replay checkpoint should clear"
         );
         Ok(())
     }

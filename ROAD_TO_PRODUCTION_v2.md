@@ -7388,6 +7388,20 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        - checkpoint-specific widening now logs
          `rebuild_priority_recovery_contract_scope="checkpoint_specific"` plus
          the buffered-wallet backlog floor that forced the larger replay budget
+     - follow-up fix now extends that same checkpoint-specific widening to
+       resumed `Replay -> sol_leg` checkpoints once `wallet_stats` is already
+       complete:
+       - the widening now keys off persisted `replay_rows_processed` /
+         `replay_pages_processed` so a live `replay_sol_leg_incomplete`
+         checkpoint is no longer stuck on the generic stale-publication page
+         ceiling after `wallet_stats_complete=true`
+       - runtime logs now surface
+         `rebuild_replay_sol_leg_phase_page_limit` and
+         `rebuild_replay_sol_leg_processed_floor_pages` on the widened lane
+       - delegated repair telemetry now mirrors that same effective lane via
+         `publication_truth_refresh_replay_sol_leg_phase_page_limit`,
+         `publication_truth_refresh_replay_rows_processed`, and
+         `publication_truth_refresh_replay_pages_processed`
      - deferred catch-up logs now surface
        `discovery_catch_up_block_reason` and
        `discovery_catch_up_pending_requests_only_blocker`, so operators can

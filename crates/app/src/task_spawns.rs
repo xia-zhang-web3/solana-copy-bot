@@ -126,10 +126,16 @@ pub(crate) fn spawn_discovery_task(
                     .publication_truth_refresh_publishable_checkpoint_blocker,
                 publication_truth_refresh_replay_wallet_stats_phase_page_limit = repair
                     .publication_truth_refresh_replay_wallet_stats_phase_page_limit,
+                publication_truth_refresh_replay_sol_leg_phase_page_limit = repair
+                    .publication_truth_refresh_replay_sol_leg_phase_page_limit,
                 publication_truth_refresh_collect_buy_mints_phase_page_limit = repair
                     .publication_truth_refresh_collect_buy_mints_phase_page_limit,
                 publication_truth_refresh_observed_swaps_loaded =
                     repair.publication_truth_refresh_observed_swaps_loaded,
+                publication_truth_refresh_replay_rows_processed =
+                    repair.publication_truth_refresh_replay_rows_processed,
+                publication_truth_refresh_replay_pages_processed =
+                    repair.publication_truth_refresh_replay_pages_processed,
                 publication_truth_refresh_wallets_buffered =
                     repair.publication_truth_refresh_wallets_buffered,
                 publication_truth_refresh_cycle_rows_processed =
@@ -187,10 +193,16 @@ pub(crate) fn spawn_discovery_task(
                     .publication_truth_refresh_publishable_checkpoint_blocker,
                 publication_truth_refresh_replay_wallet_stats_phase_page_limit = repair
                     .publication_truth_refresh_replay_wallet_stats_phase_page_limit,
+                publication_truth_refresh_replay_sol_leg_phase_page_limit = repair
+                    .publication_truth_refresh_replay_sol_leg_phase_page_limit,
                 publication_truth_refresh_collect_buy_mints_phase_page_limit = repair
                     .publication_truth_refresh_collect_buy_mints_phase_page_limit,
                 publication_truth_refresh_observed_swaps_loaded =
                     repair.publication_truth_refresh_observed_swaps_loaded,
+                publication_truth_refresh_replay_rows_processed =
+                    repair.publication_truth_refresh_replay_rows_processed,
+                publication_truth_refresh_replay_pages_processed =
+                    repair.publication_truth_refresh_replay_pages_processed,
                 publication_truth_refresh_wallets_buffered =
                     repair.publication_truth_refresh_wallets_buffered,
                 publication_truth_refresh_cycle_rows_processed =

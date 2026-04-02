@@ -454,6 +454,16 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
          cycle now logs
          `rebuild_priority_recovery_contract_scope="checkpoint_specific"` plus
          the buffered-wallet backlog floor that drove the wider contract
+       - the same checkpoint-specific widening now also applies after
+         `wallet_stats_complete=true` when the live blocker is already
+         `Replay -> sol_leg`
+       - operators should now expect
+         `rebuild_replay_sol_leg_phase_page_limit` and
+         `rebuild_replay_sol_leg_processed_floor_pages` on the widened runtime
+         lane, plus matching delegated repair fields
+         `publication_truth_refresh_replay_sol_leg_phase_page_limit`,
+         `publication_truth_refresh_replay_rows_processed`, and
+         `publication_truth_refresh_replay_pages_processed`
        - rebuild logs now also expose
          `rebuild_publishable_checkpoint_blocker`, so operators can see
          whether the remaining gate is still `collect_buy_mints`,
