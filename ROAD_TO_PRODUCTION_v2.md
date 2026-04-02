@@ -7356,11 +7356,26 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
          recovery contract, so the live host can finish draining
          `wallet_stats` and hand off into the later replay/publish path instead
          of timing out forever on the same buffered-wallet prepass
+     - follow-up fix also removes the new runtime-window-complete split between
+       the pre-cycle repair helper and the owning `run_cycle()` rebuild path:
+       - when persisted raw coverage is already complete, the repair helper no
+         longer spends another deep replay pass before `run_cycle`
+       - instead it reports the exact current rebuild blocker plus the
+         effective recovery contract that `run_cycle` will use
+       - this keeps the export-visible publication-truth write barrier on one
+         owning path instead of burning a long pre-cycle budget in a helper
+         that cannot itself write fresh `published_wallet_ids`
      - persisted rebuild progress logs now also expose
        `rebuild_publishable_checkpoint_blocker`, so operators can distinguish
        `collect_buy_mints`, `token_quality`, `replay_wallet_stats`,
        post-wallet-stats replay handoff, and `publish_pending` as separate
        remaining blockers instead of seeing only a generic partial rebuild
+     - discovery task logs now also expose whether the export-visible
+       publication state was actually refreshed by the runtime cycle, via:
+       - `publication_state_refreshed`
+       - `publication_state_updated_at_before`
+       - `publication_state_updated_at_after`
+       - `publication_published_wallet_count_after`
      - deferred catch-up logs now surface
        `discovery_catch_up_block_reason` and
        `discovery_catch_up_pending_requests_only_blocker`, so operators can

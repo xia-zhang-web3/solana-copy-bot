@@ -20,6 +20,7 @@ pub(crate) fn spawn_discovery_task(
         let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
             format!("failed to open sqlite db for discovery task: {sqlite_path}")
         })?;
+        let publication_state_before = store.discovery_publication_state_read_only()?;
         let journal_store = match SqliteStore::open_read_only(Path::new(&recent_raw_journal_path)) {
             Ok(journal_store) => Some(journal_store),
             Err(error) => {
@@ -33,7 +34,8 @@ pub(crate) fn spawn_discovery_task(
         };
         let repair_time_budget =
             discovery.recommended_publication_truth_repair_time_budget(&store, now)?;
-        let repair_time_budget_ms = repair_time_budget.as_millis().min(u64::MAX as u128) as u64;
+        let repair_requested_time_budget_ms =
+            repair_time_budget.as_millis().min(u64::MAX as u128) as u64;
         let repair = discovery
             .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
                 &store,
@@ -69,14 +71,20 @@ pub(crate) fn spawn_discovery_task(
             .as_ref()
             .map(|cursor| cursor.signature.as_str());
         let log_reason = repair.reason.as_deref().unwrap_or("none");
-        let repair_reached_publish_ready = repair.runtime_window_complete_after
+        let repair_effective_time_budget_ms = repair
+            .publication_truth_refresh_effective_time_budget_ms
+            .unwrap_or(repair_requested_time_budget_ms);
+        let repair_reached_publish_ready = !repair
+            .publication_truth_refresh_delegated_to_runtime_cycle
+            && repair.runtime_window_complete_after
             && (!repair.publication_truth_refresh_attempted
                 || repair.publication_truth_refresh_completed);
         if repair_reached_publish_ready {
             info!(
                 repair_state = repair.state,
                 repair_reason = log_reason,
-                repair_time_budget_ms,
+                repair_requested_time_budget_ms,
+                repair_effective_time_budget_ms,
                 required_window_start = required_window_start.as_str(),
                 journal_path = recent_raw_journal_path.as_str(),
                 journal_covered_since = ?journal_covered_since,
@@ -110,8 +118,16 @@ pub(crate) fn spawn_discovery_task(
                 publication_truth_refresh_replay_wallet_stats_wallet_cursor = repair
                     .publication_truth_refresh_replay_wallet_stats_wallet_cursor
                     .as_deref(),
+                publication_truth_refresh_delegated_to_runtime_cycle =
+                    repair.publication_truth_refresh_delegated_to_runtime_cycle,
+                publication_truth_refresh_priority_recovery_contract_reason =
+                    repair.publication_truth_refresh_priority_recovery_contract_reason,
+                publication_truth_refresh_publishable_checkpoint_blocker = repair
+                    .publication_truth_refresh_publishable_checkpoint_blocker,
                 publication_truth_refresh_replay_wallet_stats_phase_page_limit = repair
                     .publication_truth_refresh_replay_wallet_stats_phase_page_limit,
+                publication_truth_refresh_collect_buy_mints_phase_page_limit = repair
+                    .publication_truth_refresh_collect_buy_mints_phase_page_limit,
                 publication_truth_refresh_observed_swaps_loaded =
                     repair.publication_truth_refresh_observed_swaps_loaded,
                 publication_truth_refresh_wallets_buffered =
@@ -128,7 +144,8 @@ pub(crate) fn spawn_discovery_task(
             warn!(
                 repair_state = repair.state,
                 repair_reason = log_reason,
-                repair_time_budget_ms,
+                repair_requested_time_budget_ms,
+                repair_effective_time_budget_ms,
                 required_window_start = required_window_start.as_str(),
                 journal_path = recent_raw_journal_path.as_str(),
                 journal_covered_since = ?journal_covered_since,
@@ -162,8 +179,16 @@ pub(crate) fn spawn_discovery_task(
                 publication_truth_refresh_replay_wallet_stats_wallet_cursor = repair
                     .publication_truth_refresh_replay_wallet_stats_wallet_cursor
                     .as_deref(),
+                publication_truth_refresh_delegated_to_runtime_cycle =
+                    repair.publication_truth_refresh_delegated_to_runtime_cycle,
+                publication_truth_refresh_priority_recovery_contract_reason =
+                    repair.publication_truth_refresh_priority_recovery_contract_reason,
+                publication_truth_refresh_publishable_checkpoint_blocker = repair
+                    .publication_truth_refresh_publishable_checkpoint_blocker,
                 publication_truth_refresh_replay_wallet_stats_phase_page_limit = repair
                     .publication_truth_refresh_replay_wallet_stats_phase_page_limit,
+                publication_truth_refresh_collect_buy_mints_phase_page_limit = repair
+                    .publication_truth_refresh_collect_buy_mints_phase_page_limit,
                 publication_truth_refresh_observed_swaps_loaded =
                     repair.publication_truth_refresh_observed_swaps_loaded,
                 publication_truth_refresh_wallets_buffered =
@@ -178,6 +203,43 @@ pub(crate) fn spawn_discovery_task(
             );
         }
         let summary = discovery.run_cycle(&store, now)?;
+        let publication_state_after = store.discovery_publication_state_read_only()?;
+        let publication_state_updated_at_before = publication_state_before
+            .as_ref()
+            .map(|state| state.updated_at.to_rfc3339());
+        let publication_state_updated_at_after = publication_state_after
+            .as_ref()
+            .map(|state| state.updated_at.to_rfc3339());
+        let publication_state_refreshed = publication_state_before
+            .as_ref()
+            .map(|state| state.updated_at)
+            != publication_state_after
+                .as_ref()
+                .map(|state| state.updated_at);
+        info!(
+            publication_state_refreshed,
+            publication_state_updated_at_before = ?publication_state_updated_at_before,
+            publication_state_updated_at_after = ?publication_state_updated_at_after,
+            publication_last_published_at_before = ?publication_state_before
+                .as_ref()
+                .and_then(|state| state.last_published_at)
+                .map(|ts| ts.to_rfc3339()),
+            publication_last_published_at_after = ?publication_state_after
+                .as_ref()
+                .and_then(|state| state.last_published_at)
+                .map(|ts| ts.to_rfc3339()),
+            publication_published_wallet_count_before = publication_state_before
+                .as_ref()
+                .and_then(|state| state.published_wallet_ids.as_ref())
+                .map(|wallets| wallets.len()),
+            publication_published_wallet_count_after = publication_state_after
+                .as_ref()
+                .and_then(|state| state.published_wallet_ids.as_ref())
+                .map(|wallets| wallets.len()),
+            discovery_runtime_mode_after = summary.runtime_mode.as_str(),
+            discovery_published_after = summary.published,
+            "discovery publication state after runtime cycle"
+        );
         let active_wallets = store.list_active_follow_wallets()?;
         Ok(super::DiscoveryTaskOutput {
             active_wallets,

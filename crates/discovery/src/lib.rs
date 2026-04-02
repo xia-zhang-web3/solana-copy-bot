@@ -510,6 +510,10 @@ pub struct DiscoveryPublicationTruthRepairTelemetry {
     pub publication_truth_refresh_replay_subphase: Option<&'static str>,
     pub publication_truth_refresh_replay_wallet_stats_complete: bool,
     pub publication_truth_refresh_replay_wallet_stats_wallet_cursor: Option<String>,
+    pub publication_truth_refresh_delegated_to_runtime_cycle: bool,
+    pub publication_truth_refresh_priority_recovery_contract_reason: Option<&'static str>,
+    pub publication_truth_refresh_publishable_checkpoint_blocker: Option<&'static str>,
+    pub publication_truth_refresh_effective_time_budget_ms: Option<u64>,
     pub publication_truth_refresh_collect_buy_mints_phase_page_limit: Option<usize>,
     pub publication_truth_refresh_replay_wallet_stats_phase_page_limit: Option<usize>,
     pub publication_truth_refresh_observed_swaps_loaded: usize,
@@ -552,6 +556,10 @@ impl DiscoveryPublicationTruthRepairTelemetry {
             publication_truth_refresh_replay_subphase: None,
             publication_truth_refresh_replay_wallet_stats_complete: false,
             publication_truth_refresh_replay_wallet_stats_wallet_cursor: None,
+            publication_truth_refresh_delegated_to_runtime_cycle: false,
+            publication_truth_refresh_priority_recovery_contract_reason: None,
+            publication_truth_refresh_publishable_checkpoint_blocker: None,
+            publication_truth_refresh_effective_time_budget_ms: None,
             publication_truth_refresh_collect_buy_mints_phase_page_limit: None,
             publication_truth_refresh_replay_wallet_stats_phase_page_limit: None,
             publication_truth_refresh_observed_swaps_loaded: 0,
@@ -562,35 +570,35 @@ impl DiscoveryPublicationTruthRepairTelemetry {
         }
     }
 
-    fn from_runtime_window_truth_refresh(
-        state: &'static str,
-        reason: impl Into<String>,
+    fn deferred_to_runtime_cycle(
         required_window_start: DateTime<Utc>,
         publication_truth_complete_before: bool,
         publication_truth_fresh_before: bool,
         runtime_window_complete_before: bool,
-        collect_buy_mints_phase_page_limit: Option<usize>,
-        replay_wallet_stats_phase_page_limit: Option<usize>,
+        recovery_contract: PersistedStreamPriorityRecoveryContract,
         telemetry: &PersistedStreamProgressTelemetry,
     ) -> Self {
         Self {
-            state,
-            reason: Some(reason.into()),
+            state: "deferred_runtime_window_truth_refresh_to_run_cycle",
+            reason: Some(
+                "runtime_window_complete_publication_truth_refresh_delegated_to_runtime_cycle"
+                    .to_string(),
+            ),
             required_window_start,
             journal_covered_since: None,
             journal_covers_runtime_cursor: false,
             publication_truth_complete_before,
             publication_truth_fresh_before,
             runtime_window_complete_before,
-            runtime_window_complete_after: true,
+            runtime_window_complete_after: runtime_window_complete_before,
             runtime_window_first_cursor: None,
             replay_until_cursor: None,
             replay_batches_completed: 0,
             replay_rows_loaded: 0,
             replay_rows_inserted: 0,
             replay_time_budget_exhausted: false,
-            publication_truth_refresh_attempted: true,
-            publication_truth_refresh_completed: telemetry.completed,
+            publication_truth_refresh_attempted: false,
+            publication_truth_refresh_completed: false,
             publication_truth_refresh_phase: Some(telemetry.phase.as_str()),
             publication_truth_refresh_replay_subphase: telemetry.replay_subphase,
             publication_truth_refresh_replay_wallet_stats_complete: telemetry
@@ -598,17 +606,26 @@ impl DiscoveryPublicationTruthRepairTelemetry {
             publication_truth_refresh_replay_wallet_stats_wallet_cursor: telemetry
                 .replay_wallet_stats_wallet_cursor
                 .clone(),
-            publication_truth_refresh_collect_buy_mints_phase_page_limit:
-                collect_buy_mints_phase_page_limit,
-            publication_truth_refresh_replay_wallet_stats_phase_page_limit:
-                replay_wallet_stats_phase_page_limit,
+            publication_truth_refresh_delegated_to_runtime_cycle: true,
+            publication_truth_refresh_priority_recovery_contract_reason: recovery_contract.reason,
+            publication_truth_refresh_publishable_checkpoint_blocker: Some(
+                DiscoveryService::persisted_stream_publishable_checkpoint_blocker(telemetry),
+            ),
+            publication_truth_refresh_effective_time_budget_ms: Some(
+                recovery_contract
+                    .time_budget
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            ),
+            publication_truth_refresh_collect_buy_mints_phase_page_limit: recovery_contract
+                .collect_buy_mints_phase_page_limit_override,
+            publication_truth_refresh_replay_wallet_stats_phase_page_limit: recovery_contract
+                .replay_wallet_stats_phase_page_limit_override,
             publication_truth_refresh_observed_swaps_loaded: telemetry.observed_swaps_loaded,
             publication_truth_refresh_wallets_buffered: telemetry.wallets_buffered,
-            publication_truth_refresh_cycle_rows_processed: telemetry.cycle_rows_processed,
-            publication_truth_refresh_cycle_pages_processed: telemetry.cycle_pages_processed,
-            publication_truth_refresh_budget_exhausted_reason: telemetry
-                .budget_exhausted_reason
-                .map(PersistedStreamBudgetExhaustedReason::as_str),
+            publication_truth_refresh_cycle_rows_processed: 0,
+            publication_truth_refresh_cycle_pages_processed: 0,
+            publication_truth_refresh_budget_exhausted_reason: None,
         }
     }
 }
@@ -1781,63 +1798,37 @@ impl DiscoveryService {
             let metrics_window_start = self.metrics_window_start(now);
             let fetch_limit = self.config.max_fetch_swaps_per_cycle.max(1);
             let fetch_page_limit = self.config.max_fetch_pages_per_cycle.max(1);
-            let collect_buy_mints_phase_page_limit = self
-                .collect_buy_mints_repair_phase_page_limit(
-                    fetch_limit,
-                    fetch_page_limit,
-                    refresh_budget,
-                );
-            let replay_wallet_stats_phase_page_limit = self
-                .replay_wallet_stats_repair_phase_page_limit(
-                    fetch_limit,
-                    fetch_page_limit,
-                    refresh_budget,
-                );
-            return match self.advance_persisted_stream_rebuild_with_phase_page_limits(
+            let base_recovery_contract = self.persisted_stream_priority_recovery_contract(
                 runtime_store,
-                required_window_start,
-                metrics_window_start,
                 now,
                 fetch_limit,
                 fetch_page_limit,
                 refresh_budget,
-                Some(collect_buy_mints_phase_page_limit),
-                Some(replay_wallet_stats_phase_page_limit),
-            )? {
-                PersistedStreamRebuildAdvanceOutcome::Completed { telemetry, .. } => {
-                    let completed_reason = if telemetry.wallets_buffered == 0 {
-                        "runtime_window_complete_publication_truth_rebuild_completed_without_publishable_wallets"
-                    } else {
-                        "runtime_window_complete_publication_truth_rebuild_completed"
-                    };
-                    Ok(
-                        DiscoveryPublicationTruthRepairTelemetry::from_runtime_window_truth_refresh(
-                            "advanced_runtime_window_truth_refresh_ready_for_publish",
-                            completed_reason,
-                            required_window_start,
-                            publication_truth_complete_before,
-                            publication_truth_fresh_before,
-                            runtime_window_complete_before,
-                            Some(collect_buy_mints_phase_page_limit),
-                            Some(replay_wallet_stats_phase_page_limit),
-                            &telemetry,
-                        ),
-                    )
-                }
-                PersistedStreamRebuildAdvanceOutcome::InProgress { telemetry } => Ok(
-                    DiscoveryPublicationTruthRepairTelemetry::from_runtime_window_truth_refresh(
-                        "advanced_runtime_window_truth_refresh_partial",
-                        "runtime_window_complete_publication_truth_rebuild_in_progress",
-                        required_window_start,
-                        publication_truth_complete_before,
-                        publication_truth_fresh_before,
-                        runtime_window_complete_before,
-                        Some(collect_buy_mints_phase_page_limit),
-                        Some(replay_wallet_stats_phase_page_limit),
-                        &telemetry,
-                    ),
+            )?;
+            let (state, _) = self.load_or_start_persisted_stream_rebuild_state(
+                runtime_store,
+                required_window_start,
+                metrics_window_start,
+                now,
+            )?;
+            let recovery_contract = self
+                .deepen_persisted_stream_priority_recovery_contract_for_state(
+                    &state,
+                    fetch_limit,
+                    fetch_page_limit,
+                    base_recovery_contract,
+                );
+            let telemetry = self.persisted_stream_progress_telemetry_from_state(&state, now);
+            return Ok(
+                DiscoveryPublicationTruthRepairTelemetry::deferred_to_runtime_cycle(
+                    required_window_start,
+                    publication_truth_complete_before,
+                    publication_truth_fresh_before,
+                    runtime_window_complete_before,
+                    recovery_contract,
+                    &telemetry,
                 ),
-            };
+            );
         }
 
         let Some(runtime_cursor) = runtime_store.load_discovery_runtime_cursor()? else {
@@ -2008,6 +1999,10 @@ impl DiscoveryService {
             publication_truth_refresh_replay_subphase: None,
             publication_truth_refresh_replay_wallet_stats_complete: false,
             publication_truth_refresh_replay_wallet_stats_wallet_cursor: None,
+            publication_truth_refresh_delegated_to_runtime_cycle: false,
+            publication_truth_refresh_priority_recovery_contract_reason: None,
+            publication_truth_refresh_publishable_checkpoint_blocker: None,
+            publication_truth_refresh_effective_time_budget_ms: None,
             publication_truth_refresh_collect_buy_mints_phase_page_limit: None,
             publication_truth_refresh_replay_wallet_stats_phase_page_limit: None,
             publication_truth_refresh_observed_swaps_loaded: 0,
@@ -3155,6 +3150,101 @@ impl DiscoveryService {
         state.updated_at = updated_at;
         let row = Self::persisted_stream_rebuild_row(state, updated_at)?;
         store.upsert_discovery_persisted_rebuild_state(&row)
+    }
+
+    fn persisted_stream_progress_telemetry_from_state(
+        &self,
+        state: &PersistedStreamRebuildState,
+        now: DateTime<Utc>,
+    ) -> PersistedStreamProgressTelemetry {
+        PersistedStreamProgressTelemetry {
+            phase: state.phase,
+            collect_buy_mints_mode: state.payload.collect_buy_mints_mode,
+            replay_mode: state.payload.replay_mode,
+            replay_subphase: Self::replay_subphase(
+                state.phase,
+                state.payload.replay_wallet_stats_complete,
+            ),
+            window_start: state.window_start,
+            horizon_end: state.horizon_end,
+            metrics_window_start: state.metrics_window_start,
+            phase_cursor: state.phase_cursor.clone(),
+            replay_wallet_stats_wallet_cursor: state
+                .payload
+                .replay_wallet_stats_wallet_cursor
+                .clone(),
+            collect_buy_mints_cursor_token: state.payload.collect_buy_mints_cursor_token.clone(),
+            collect_buy_mints_reconcile_source_window_start: state
+                .payload
+                .collect_buy_mints_reconcile_source_window_start,
+            collect_buy_mints_reconcile_source_horizon_end: state
+                .payload
+                .collect_buy_mints_reconcile_source_horizon_end,
+            collect_buy_mints_reconcile_expired_head_cursor: state
+                .payload
+                .collect_buy_mints_reconcile_expired_head_cursor
+                .clone(),
+            collect_buy_mints_reconcile_new_tail_cursor: state
+                .payload
+                .collect_buy_mints_reconcile_new_tail_cursor
+                .clone(),
+            collect_buy_mints_reconcile_expired_head_cursor_token: state
+                .payload
+                .collect_buy_mints_reconcile_expired_head_cursor_token
+                .clone(),
+            collect_buy_mints_reconcile_new_tail_cursor_token: state
+                .payload
+                .collect_buy_mints_reconcile_new_tail_cursor_token
+                .clone(),
+            collect_buy_mints_reconcile_expired_head_pending_mints: state
+                .payload
+                .collect_buy_mints_reconcile_expired_head_pending_mints
+                .len(),
+            collect_buy_mints_reconcile_new_tail_slice_end_token: state
+                .payload
+                .collect_buy_mints_reconcile_new_tail_slice_end_token
+                .clone(),
+            collect_buy_mints_reconcile_new_tail_pending_mints: state
+                .payload
+                .collect_buy_mints_reconcile_new_tail_pending_mints
+                .len(),
+            prepass_rows_processed: state.prepass_rows_processed,
+            prepass_pages_processed: state.prepass_pages_processed,
+            replay_wallet_stats_complete: state.payload.replay_wallet_stats_complete,
+            replay_wallet_stats_rows_processed: state.payload.replay_wallet_stats_rows_processed,
+            replay_wallet_stats_pages_processed: state.payload.replay_wallet_stats_pages_processed,
+            replay_wallet_stats_day_count_source_progress: state
+                .payload
+                .replay_wallet_stats_day_count_source_progress,
+            replay_sol_leg_access_path: None,
+            replay_rows_processed: state.replay_rows_processed,
+            replay_pages_processed: state.replay_pages_processed,
+            chunks_completed: state.chunks_completed,
+            cycle_rows_processed: 0,
+            cycle_pages_processed: 0,
+            cycle_replay_wallet_stats_day_count_source_progress:
+                ReplayWalletStatsDayCountSourceProgress::default(),
+            cycle_unique_buy_mints_discovered: 0,
+            observed_swaps_loaded: Self::persisted_stream_observed_swaps_loaded(state),
+            unique_buy_mints: state.payload.unique_buy_mints.len(),
+            quality_next_mint_index: state.payload.token_quality_progress.next_mint_index,
+            quality_rpc_attempted: state.payload.token_quality_progress.rpc_attempted,
+            quality_rpc_spent_ms: state.payload.token_quality_progress.rpc_spent_ms,
+            wallets_buffered: if state.phase == DiscoveryPersistedRebuildPhase::PublishPending {
+                state.payload.completed_snapshots.len()
+            } else {
+                state.payload.by_wallet.len()
+            },
+            started_at: state.started_at,
+            cycle_elapsed_ms: 0,
+            total_elapsed_ms: (now
+                .signed_duration_since(state.started_at)
+                .num_milliseconds()
+                .max(0) as u64),
+            partial: state.phase != DiscoveryPersistedRebuildPhase::PublishPending,
+            completed: state.phase == DiscoveryPersistedRebuildPhase::PublishPending,
+            budget_exhausted_reason: None,
+        }
     }
 
     fn log_persisted_stream_progress(
@@ -13738,13 +13828,18 @@ mod tests {
             repair.state, "skipped_runtime_window_complete",
             "runtime-window-complete repair must not skip stale or incomplete publication truth"
         );
-        assert!(
-            repair.publication_truth_refresh_attempted,
-            "repair should spend its bounded budget on a publication-truth refresh when raw coverage already exists"
+        assert_eq!(
+            repair.state,
+            "deferred_runtime_window_truth_refresh_to_run_cycle"
         );
         assert!(
+            !repair.publication_truth_refresh_attempted,
+            "runtime-window-complete repair should now delegate the persisted rebuild to the owning run_cycle instead of duplicating that work before the cycle starts"
+        );
+        assert!(repair.publication_truth_refresh_delegated_to_runtime_cycle);
+        assert!(
             repair.publication_truth_refresh_phase.is_some(),
-            "repair logs must expose which persisted-truth rebuild phase ran"
+            "repair logs must expose which persisted-truth rebuild phase will be resumed by run_cycle"
         );
 
         let summary = discovery.run_cycle(&runtime_store, now)?;
@@ -14406,55 +14501,15 @@ mod tests {
         config.max_fetch_pages_per_cycle = 5;
         config.fetch_time_budget_ms = 15_000;
         let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
-        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
-        let metrics_window_start = metrics_window_start_for_test(&config, now);
-        let token = "TokenStage1RepairReplayLive11111111111111111";
-
-        for idx in 0..2 {
-            let buy_ts = window_start + Duration::minutes((idx * 10) as i64);
-            runtime_store.insert_observed_swap(&swap(
-                "wallet_live_like_top",
-                &format!("stage1-live-like-top-buy-{idx}"),
-                buy_ts,
-                SOL_MINT,
-                token,
-                1.0,
-                100.0,
-            ))?;
-            runtime_store.insert_observed_swap(&swap(
-                "wallet_live_like_top",
-                &format!("stage1-live-like-top-sell-{idx}"),
-                buy_ts + Duration::minutes(5),
-                token,
-                SOL_MINT,
-                100.0,
-                1.3,
-            ))?;
-        }
-
-        let noise_wallets = 50_000usize;
-        let mut latest_cursor: Option<DiscoveryRuntimeCursor> = None;
-        for idx in 0..noise_wallets {
-            let ts = now - Duration::seconds((noise_wallets.saturating_sub(idx)) as i64);
-            let swap = swap(
-                &format!("wallet_live_like_noise_{idx:05}"),
-                &format!("stage1-live-like-noise-{idx:05}"),
-                ts,
-                SOL_MINT,
-                token,
-                0.2,
-                20.0,
-            );
-            latest_cursor = Some(DiscoveryRuntimeCursor {
-                ts_utc: swap.ts_utc,
-                slot: swap.slot,
-                signature: swap.signature.clone(),
-            });
-            runtime_store.insert_observed_swap(&swap)?;
-        }
-        runtime_store.upsert_discovery_runtime_cursor(
-            &latest_cursor.expect("latest cursor should be present"),
-        )?;
+        let noise_wallets = 60_000usize;
+        let (window_start, metrics_window_start) =
+            seed_stage1_live_like_wallet_stats_backlog_fixture(
+                &runtime_store,
+                &config,
+                now,
+                noise_wallets,
+                "stage1-live-like-repair-delegated",
+            )?;
         runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
             runtime_mode: DiscoveryRuntimeMode::FailClosed,
             reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
@@ -14466,6 +14521,39 @@ mod tests {
             published_wallet_ids: Some(Vec::new()),
         })?;
 
+        let mut replay_state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        replay_state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        replay_state.horizon_end = now;
+        replay_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        replay_state.payload.unique_buy_mints =
+            runtime_store.load_observed_buy_mints_in_window(window_start, now)?;
+        replay_state.payload.token_quality_progress.next_mint_index =
+            replay_state.payload.unique_buy_mints.len();
+
+        let partial = discovery.advance_persisted_stream_replay_wallet_stats(
+            &runtime_store,
+            &mut replay_state,
+            config.max_fetch_swaps_per_cycle,
+            8,
+            Instant::now() + StdDuration::from_secs(30),
+        )?;
+        replay_state.payload.replay_wallet_stats_rows_processed = replay_state
+            .payload
+            .replay_wallet_stats_rows_processed
+            .saturating_add(partial.replay_wallet_stats_rows_processed);
+        replay_state.payload.replay_wallet_stats_pages_processed = replay_state
+            .payload
+            .replay_wallet_stats_pages_processed
+            .saturating_add(partial.replay_wallet_stats_pages_processed);
+        replay_state
+            .payload
+            .replay_wallet_stats_day_count_source_progress
+            .merge(partial.replay_wallet_stats_day_count_source_progress);
+        runtime_store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, now)?,
+        )?;
+
         let repair = discovery
             .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
                 &runtime_store,
@@ -14476,38 +14564,64 @@ mod tests {
             )?;
         assert_eq!(
             repair.state,
-            "advanced_runtime_window_truth_refresh_partial"
+            "deferred_runtime_window_truth_refresh_to_run_cycle"
         );
-        assert!(repair.publication_truth_refresh_attempted);
+        assert!(!repair.publication_truth_refresh_attempted);
+        assert!(repair.publication_truth_refresh_delegated_to_runtime_cycle);
         assert_eq!(repair.publication_truth_refresh_phase, Some("replay"));
         assert_eq!(
             repair.publication_truth_refresh_collect_buy_mints_phase_page_limit,
-            Some(160),
-            "runtime-window-complete repair telemetry should expose the widened collect_buy_mints page budget as part of the same recovery contract"
+            Some(480),
+            "repair telemetry should expose the same deep-replay collect_buy_mints ceiling that run_cycle will actually use, not the stale 60s value"
         );
         assert_eq!(
             repair.publication_truth_refresh_replay_wallet_stats_phase_page_limit,
-            Some(92),
-            "runtime-window-complete stale publication-truth repair should scale the wallet-stats replay page budget from the normal 15s fetch contract to the widened 60s repair contract"
+            Some(276),
+            "repair telemetry should expose the same deep-replay wallet-stats ceiling that the owning run_cycle will actually use"
+        );
+        assert_eq!(
+            repair.publication_truth_refresh_effective_time_budget_ms,
+            Some(180_000)
+        );
+        assert_eq!(
+            repair.publication_truth_refresh_priority_recovery_contract_reason,
+            Some("deep_replay_wallet_stats_incomplete")
         );
         assert_eq!(
             repair.publication_truth_refresh_replay_subphase,
-            Some("sol_leg"),
-            "live-like runtime-window repair should drain the wallet-stats prepass within the widened repair page budget and leave only SOL-leg replay for the following cycle"
+            Some("wallet_stats"),
+            "before run_cycle resumes the checkpoint, repair telemetry should report the exact buffered replay subphase that still blocks publication"
+        );
+        assert_eq!(
+            repair.publication_truth_refresh_publishable_checkpoint_blocker,
+            Some("replay_wallet_stats_incomplete")
         );
         assert!(
-            repair.publication_truth_refresh_replay_wallet_stats_complete,
-            "repair telemetry should report that the wallet-stats prepass finished before the next cycle resumes replay"
+            !repair.publication_truth_refresh_replay_wallet_stats_complete,
+            "repair telemetry should no longer pretend the pre-run_cycle helper already drained wallet_stats"
         );
         assert!(
             repair
                 .publication_truth_refresh_replay_wallet_stats_wallet_cursor
-                .is_none(),
-            "once the widened repair page budget drains the wallet-stats prepass, the persisted replay wallet cursor should clear instead of keeping the rebuild stuck in the same subphase"
+                .is_some(),
+            "the delegated repair summary should preserve the exact replay cursor that run_cycle will resume instead of clearing it prematurely"
         );
         assert!(
-            repair.publication_truth_refresh_wallets_buffered >= noise_wallets,
-            "live-like repair should consume enough wallet-stats pages in one bounded attempt to cover the current wallet-stats backlog instead of stalling far below it"
+            repair.publication_truth_refresh_wallets_buffered > 0,
+            "repair telemetry should still expose that the live replay checkpoint already buffered wallets even before publication truth is refreshed"
+        );
+        let rebuild_after_repair = load_persisted_stream_rebuild_state_for_test(&runtime_store)?;
+        assert_eq!(
+            rebuild_after_repair
+                .payload
+                .replay_wallet_stats_rows_processed,
+            replay_state.payload.replay_wallet_stats_rows_processed,
+            "delegated repair must not burn another deep replay pass before run_cycle starts"
+        );
+        assert_eq!(
+            rebuild_after_repair.payload.replay_wallet_stats_wallet_cursor,
+            replay_state.payload.replay_wallet_stats_wallet_cursor,
+            "delegated repair must leave the persisted replay cursor untouched for the owning run_cycle"
         );
 
         let mut published_summary = None;

@@ -436,11 +436,25 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
          recovery lane now escalates that exact checkpoint to a deeper bounded
          `180s` contract instead of leaving it on the generic `60s` replay
          refresh lane
+       - once persisted raw coverage is already complete, the pre-cycle repair
+         helper no longer burns that same deep replay budget before
+         `run_cycle`
+       - it now reports the exact current checkpoint blocker plus the
+         effective recovery contract that the owning runtime cycle will use,
+         and then leaves the real rebuild/publish work to `run_cycle`
        - rebuild logs now also expose
          `rebuild_publishable_checkpoint_blocker`, so operators can see
          whether the remaining gate is still `collect_buy_mints`,
          `token_quality`, `replay_wallet_stats`, later replay handoff, or
          `publish_pending`
+       - discovery task logs now also expose:
+         - `publication_state_refreshed`
+         - `publication_state_updated_at_before`
+         - `publication_state_updated_at_after`
+         - `publication_published_wallet_count_after`
+         so operators can tell whether the export-visible publication truth was
+         actually updated by the runtime cycle or whether the host is still
+         only advancing an in-progress persisted rebuild
      - deferred catch-up logs now also expose:
        - `discovery_catch_up_block_reason`
        - `discovery_catch_up_pending_requests_only_blocker`
