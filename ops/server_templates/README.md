@@ -433,15 +433,27 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
          frozen at `0`
        - when the live host has already resumed deep
          `Replay -> wallet_stats` with buffered wallets, the same fail-closed
-         recovery lane now escalates that exact checkpoint to a deeper bounded
-         `180s` contract instead of leaving it on the generic `60s` replay
-         refresh lane
+         recovery lane now starts from a deeper bounded `180s` contract and can
+         widen further from the persisted buffered-wallet backlog itself, capped
+         at `900s`, instead of leaving that exact checkpoint on the generic
+         `60s` replay refresh lane
+       - this widening is now driven by the resumed checkpoint's own buffered
+         wallet floor, so large live replay backlogs do not stay trapped in the
+         same fixed deep-replay budget once `wallet_stats` has already buffered
+         hundreds of thousands of wallets
        - once persisted raw coverage is already complete, the pre-cycle repair
          helper no longer burns that same deep replay budget before
          `run_cycle`
        - it now reports the exact current checkpoint blocker plus the
          effective recovery contract that the owning runtime cycle will use,
          and then leaves the real rebuild/publish work to `run_cycle`
+       - the base stale-publication log now reports
+         `rebuild_priority_recovery_contract_scope="base_pre_resume"` so it no
+         longer looks like a second narrower rebuild pass inside `run_cycle`
+       - if the resumed checkpoint forces a larger replay budget, the owning
+         cycle now logs
+         `rebuild_priority_recovery_contract_scope="checkpoint_specific"` plus
+         the buffered-wallet backlog floor that drove the wider contract
        - rebuild logs now also expose
          `rebuild_publishable_checkpoint_blocker`, so operators can see
          whether the remaining gate is still `collect_buy_mints`,

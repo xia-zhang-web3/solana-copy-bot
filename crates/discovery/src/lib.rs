@@ -60,6 +60,12 @@ const REPLAY_WALLET_STATS_CATCH_UP_PAGE_LIMIT_MULTIPLIER: usize = 2;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEFAULT_TIME_BUDGET_MS: u64 = 10_000;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_RUNTIME_WINDOW_REFRESH_MIN_TIME_BUDGET_MS: u64 = 60_000;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_MIN_TIME_BUDGET_MS: u64 = 180_000;
+const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_MAX_TIME_BUDGET_MS: u64 = 900_000;
+const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_TARGET_MS_PER_PAGE: u64 = 1_500;
+const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_NUMERATOR: usize =
+    3;
+const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_DENOMINATOR: usize =
+    2;
 #[cfg(test)]
 const POST_BOOTSTRAP_ROTATION_BLOCKED_REASON: &str =
     "post_bootstrap_rotation_blocked_cap_truncated";
@@ -2108,7 +2114,57 @@ impl DiscoveryService {
             && !state.payload.replay_wallet_stats_complete
             && state.payload.replay_wallet_stats_wallet_cursor.is_some()
             && state.payload.replay_wallet_stats_rows_processed > 0
-            && !state.payload.by_wallet.is_empty()
+            && Self::replay_wallet_stats_buffered_wallet_backlog_floor_wallets(state) > 0
+    }
+
+    fn replay_wallet_stats_buffered_wallet_backlog_floor_wallets(
+        state: &PersistedStreamRebuildState,
+    ) -> usize {
+        state.payload.by_wallet.len().max(
+            state
+                .payload
+                .replay_wallet_stats_day_count_source_progress
+                .fast_path_wallets_processed
+                .saturating_add(
+                    state
+                        .payload
+                        .replay_wallet_stats_day_count_source_progress
+                        .fallback_wallets_processed,
+                ),
+        )
+    }
+
+    fn replay_wallet_stats_buffered_wallet_floor_pages(
+        fetch_limit: usize,
+        buffered_wallets: usize,
+    ) -> usize {
+        let wallet_batch_size = Self::replay_wallet_stats_wallet_batch_size(fetch_limit).max(1);
+        buffered_wallets.max(1).div_ceil(wallet_batch_size)
+    }
+
+    fn deep_replay_wallet_stats_target_time_budget(
+        baseline_time_budget: StdDuration,
+        buffered_wallet_floor_pages: usize,
+    ) -> StdDuration {
+        let floor_pages_with_headroom = buffered_wallet_floor_pages
+            .saturating_mul(
+                DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_NUMERATOR,
+            )
+            .div_ceil(
+                DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_DENOMINATOR,
+            );
+        let buffered_floor_budget_ms = (floor_pages_with_headroom as u128).saturating_mul(
+            DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_TARGET_MS_PER_PAGE as u128,
+        );
+        let target_budget_ms = baseline_time_budget
+            .as_millis()
+            .max(buffered_floor_budget_ms)
+            .min(
+                DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_MAX_TIME_BUDGET_MS
+                    as u128,
+            )
+            .max(1);
+        StdDuration::from_millis(target_budget_ms.min(u64::MAX as u128) as u64)
     }
 
     fn deepen_persisted_stream_priority_recovery_contract_for_state(
@@ -2122,12 +2178,25 @@ impl DiscoveryService {
             return contract;
         }
 
-        let deep_time_budget = contract.time_budget.max(StdDuration::from_millis(
+        let baseline_time_budget = contract.time_budget.max(StdDuration::from_millis(
             DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_MIN_TIME_BUDGET_MS,
         ));
-        if deep_time_budget == contract.time_budget
-            && contract.reason == Some("deep_replay_wallet_stats_incomplete")
-        {
+        let buffered_wallet_backlog_floor =
+            Self::replay_wallet_stats_buffered_wallet_backlog_floor_wallets(state);
+        let buffered_wallet_floor_pages = Self::replay_wallet_stats_buffered_wallet_floor_pages(
+            fetch_limit,
+            buffered_wallet_backlog_floor,
+        );
+        let deep_time_budget = Self::deep_replay_wallet_stats_target_time_budget(
+            baseline_time_budget,
+            buffered_wallet_floor_pages,
+        );
+        let deep_reason = if deep_time_budget > baseline_time_budget {
+            Some("deep_replay_wallet_stats_large_buffered_backlog")
+        } else {
+            Some("deep_replay_wallet_stats_incomplete")
+        };
+        if deep_time_budget == contract.time_budget && contract.reason == deep_reason {
             return contract;
         }
 
@@ -2147,7 +2216,7 @@ impl DiscoveryService {
                     deep_time_budget,
                 ),
             ),
-            reason: Some("deep_replay_wallet_stats_incomplete"),
+            reason: deep_reason,
         }
     }
 
@@ -4720,6 +4789,12 @@ impl DiscoveryService {
             replay_wallet_stats_phase_page_limit_override,
             reason: None,
         };
+        let buffered_wallet_backlog_floor =
+            Self::replay_wallet_stats_buffered_wallet_backlog_floor_wallets(&state);
+        let buffered_wallet_floor_pages = Self::replay_wallet_stats_buffered_wallet_floor_pages(
+            fetch_limit,
+            buffered_wallet_backlog_floor,
+        );
         let adjusted_contract = self.deepen_persisted_stream_priority_recovery_contract_for_state(
             &state,
             fetch_limit,
@@ -4733,6 +4808,7 @@ impl DiscoveryService {
             adjusted_contract.replay_wallet_stats_phase_page_limit_override;
         if adjusted_contract != requested_contract {
             info!(
+                rebuild_priority_recovery_contract_scope = "checkpoint_specific",
                 rebuild_phase = state.phase.as_str(),
                 rebuild_replay_subphase =
                     Self::replay_subphase(state.phase, state.payload.replay_wallet_stats_complete),
@@ -4751,6 +4827,10 @@ impl DiscoveryService {
                     .collect_buy_mints_phase_page_limit_override,
                 rebuild_replay_wallet_stats_phase_page_limit = adjusted_contract
                     .replay_wallet_stats_phase_page_limit_override,
+                rebuild_replay_wallet_stats_buffered_wallet_backlog_floor =
+                    buffered_wallet_backlog_floor,
+                rebuild_replay_wallet_stats_buffered_wallet_floor_pages =
+                    buffered_wallet_floor_pages,
                 rebuild_replay_wallet_stats_rows_processed =
                     state.payload.replay_wallet_stats_rows_processed,
                 rebuild_replay_wallet_stats_pages_processed =
@@ -6044,6 +6124,8 @@ impl DiscoveryService {
                 empty_window_bootstrap_degraded_scoring_source,
                 empty_window_unusable_scoring_source,
             } => {
+                let persisted_checkpoint_present =
+                    store.load_discovery_persisted_rebuild_state()?.is_some();
                 let priority_recovery_contract = self.persisted_stream_priority_recovery_contract(
                     store,
                     now,
@@ -6055,6 +6137,13 @@ impl DiscoveryService {
                     info!(
                         rebuild_window_start = %window_start,
                         rebuild_metrics_window_start = %metrics_window_start,
+                        rebuild_priority_recovery_contract_scope = if persisted_checkpoint_present {
+                            "base_pre_resume"
+                        } else {
+                            "effective_no_existing_checkpoint"
+                        },
+                        rebuild_existing_persisted_checkpoint_present =
+                            persisted_checkpoint_present,
                         rebuild_priority_recovery_contract_reason =
                             priority_recovery_contract.reason,
                         rebuild_time_budget_ms =
@@ -6064,7 +6153,7 @@ impl DiscoveryService {
                         rebuild_replay_wallet_stats_phase_page_limit =
                             priority_recovery_contract
                                 .replay_wallet_stats_phase_page_limit_override,
-                        "running bounded persisted observed_swaps rebuild under the widened fail-closed publication recovery contract because persisted raw coverage is complete while publication truth is still stale or incomplete"
+                        "prepared base bounded persisted observed_swaps recovery contract before any checkpoint-specific deepening for stale or incomplete publication truth"
                     );
                 }
                 match self.advance_persisted_stream_rebuild_with_phase_page_limits(
@@ -14027,6 +14116,70 @@ mod tests {
             Some("deep_replay_wallet_stats_incomplete")
         );
         Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_priority_recovery_contract_scales_for_large_resumed_replay_wallet_stats_backlog_stage1(
+    ) {
+        let now = DateTime::parse_from_rfc3339("2026-04-02T17:01:12Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 20_000;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let mut state = discovery.start_persisted_stream_rebuild_state(
+            now - Duration::days(config.scoring_window_days.max(1) as i64),
+            metrics_window_start_for_test(&config, now),
+            now,
+        );
+        state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        state.horizon_end = now;
+        state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        state.payload.unique_buy_mints =
+            vec!["TokenReplayDeep11111111111111111111111111".to_string()];
+        state.payload.token_quality_progress.next_mint_index = state.payload.unique_buy_mints.len();
+        state.payload.replay_wallet_stats_rows_processed = 7_932_777;
+        state.payload.replay_wallet_stats_pages_processed = 276;
+        state.payload.replay_wallet_stats_wallet_cursor =
+            Some("AQkMMyk5ZjkALFF3pvYXKnD37vXPS8QZ2D8UwRxpqZJL".to_string());
+        state
+            .payload
+            .replay_wallet_stats_day_count_source_progress
+            .fast_path_wallets_processed = 367_200;
+
+        let base_contract = PersistedStreamPriorityRecoveryContract {
+            time_budget: StdDuration::from_secs(60),
+            collect_buy_mints_phase_page_limit_override: Some(160),
+            replay_wallet_stats_phase_page_limit_override: Some(92),
+            reason: Some("runtime_window_complete_stale_publication_truth"),
+        };
+        let deep_contract = discovery.deepen_persisted_stream_priority_recovery_contract_for_state(
+            &state,
+            config.max_fetch_swaps_per_cycle,
+            config.max_fetch_pages_per_cycle,
+            base_contract,
+        );
+
+        assert_eq!(deep_contract.time_budget, StdDuration::from_secs(900));
+        assert!(
+            deep_contract
+                .replay_wallet_stats_phase_page_limit_override
+                .is_some_and(|limit| limit > 276),
+            "large live-like replay backlogs should widen the wallet-stats phase ceiling beyond the fixed 180s contract"
+        );
+        assert!(
+            deep_contract
+                .collect_buy_mints_phase_page_limit_override
+                .is_some_and(|limit| limit > 480),
+            "once the deep replay contract is stretched for a large buffered wallet backlog, the shared recovery contract should carry the same widened time budget through its other phase ceilings"
+        );
+        assert_eq!(
+            deep_contract.reason,
+            Some("deep_replay_wallet_stats_large_buffered_backlog")
+        );
     }
 
     #[test]

@@ -7352,10 +7352,14 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        - the widened stale-publication recovery contract is no longer capped at
          the generic `60s` lane once replay is already deep and only the
          wallet-stats prepass still blocks `PublishPending`
-       - that exact checkpoint now escalates to a deeper bounded `180s`
-         recovery contract, so the live host can finish draining
-         `wallet_stats` and hand off into the later replay/publish path instead
-         of timing out forever on the same buffered-wallet prepass
+       - that exact checkpoint now starts from a deeper bounded `180s`
+         recovery contract and can widen further from the persisted buffered
+         wallet backlog itself, capped at `900s`, so the live host is no longer
+         pinned to the same undersized deep-replay lane once the wallet-stats
+         cursor has already buffered hundreds of thousands of wallets
+       - the widening now keys off the exact persisted replay checkpoint rather
+         than a fixed constant alone, using the buffered-wallet floor to scale
+         the recovery budget for the remaining wallet-stats suffix
      - follow-up fix also removes the new runtime-window-complete split between
        the pre-cycle repair helper and the owning `run_cycle()` rebuild path:
        - when persisted raw coverage is already complete, the repair helper no
@@ -7376,6 +7380,14 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        - `publication_state_updated_at_before`
        - `publication_state_updated_at_after`
        - `publication_published_wallet_count_after`
+     - the base stale-publication pre-resume log now explicitly reports itself
+       as `rebuild_priority_recovery_contract_scope="base_pre_resume"` instead
+       of looking like a second rebuild pass:
+       - this makes it explicit that the owning cycle prepares a base recovery
+         contract first and then deepens it against the resumed checkpoint
+       - checkpoint-specific widening now logs
+         `rebuild_priority_recovery_contract_scope="checkpoint_specific"` plus
+         the buffered-wallet backlog floor that forced the larger replay budget
      - deferred catch-up logs now surface
        `discovery_catch_up_block_reason` and
        `discovery_catch_up_pending_requests_only_blocker`, so operators can
