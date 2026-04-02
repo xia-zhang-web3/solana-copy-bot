@@ -431,6 +431,16 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
          over the exact discovered mint prefix, so `quality_next_mint_index`
          can advance before grouped-mint source exhaustion instead of staying
          frozen at `0`
+       - when the live host has already resumed deep
+         `Replay -> wallet_stats` with buffered wallets, the same fail-closed
+         recovery lane now escalates that exact checkpoint to a deeper bounded
+         `180s` contract instead of leaving it on the generic `60s` replay
+         refresh lane
+       - rebuild logs now also expose
+         `rebuild_publishable_checkpoint_blocker`, so operators can see
+         whether the remaining gate is still `collect_buy_mints`,
+         `token_quality`, `replay_wallet_stats`, later replay handoff, or
+         `publish_pending`
      - deferred catch-up logs now also expose:
        - `discovery_catch_up_block_reason`
        - `discovery_catch_up_pending_requests_only_blocker`

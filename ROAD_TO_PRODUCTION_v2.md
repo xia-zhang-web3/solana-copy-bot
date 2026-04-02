@@ -7347,6 +7347,20 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
          grouped-mint cursor progress is already real
        - once the final fresh-scan suffix is exhausted, rebuild can hand off
          into replay without paying a separate cold quality phase
+     - follow-up fix now deepens the exact resumed
+       `Replay -> wallet_stats + wallets_buffered>0` fail-closed checkpoint:
+       - the widened stale-publication recovery contract is no longer capped at
+         the generic `60s` lane once replay is already deep and only the
+         wallet-stats prepass still blocks `PublishPending`
+       - that exact checkpoint now escalates to a deeper bounded `180s`
+         recovery contract, so the live host can finish draining
+         `wallet_stats` and hand off into the later replay/publish path instead
+         of timing out forever on the same buffered-wallet prepass
+     - persisted rebuild progress logs now also expose
+       `rebuild_publishable_checkpoint_blocker`, so operators can distinguish
+       `collect_buy_mints`, `token_quality`, `replay_wallet_stats`,
+       post-wallet-stats replay handoff, and `publish_pending` as separate
+       remaining blockers instead of seeing only a generic partial rebuild
      - deferred catch-up logs now surface
        `discovery_catch_up_block_reason` and
        `discovery_catch_up_pending_requests_only_blocker`, so operators can
