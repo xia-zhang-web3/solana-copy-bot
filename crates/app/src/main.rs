@@ -3246,28 +3246,58 @@ async fn run_app_loop(
                             ingestion_snapshot.as_ref(),
                         );
                         if discovery_catch_up_pending {
-                            info!(
-                                discovery_runtime_mode = discovery_output.runtime_mode.as_str(),
-                                discovery_scoring_source = discovery_output.scoring_source,
-                                shadow_queue_full,
-                                writer_pending_requests =
-                                    observed_swap_writer_snapshot.pending_requests,
-                                writer_pending_requests_threshold =
-                                    DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD,
-                                writer_aggregate_queue_depth_batches =
-                                    observed_swap_writer_snapshot.aggregate_queue_depth_batches,
-                                writer_journal_queue_depth_batches =
-                                    observed_swap_writer_snapshot.journal_queue_depth_batches,
-                                yellowstone_output_queue_fill_ratio =
-                                    ingestion_snapshot
-                                        .as_ref()
-                                        .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio),
-                                "bounded partial discovery rebuild requested immediate catch-up cycle"
-                            );
+                            let pressure_override =
+                                discovery_output.persisted_stream_catch_up_pressure_override_requested;
+                            if pressure_override {
+                                info!(
+                                    discovery_runtime_mode = discovery_output.runtime_mode.as_str(),
+                                    discovery_scoring_source = discovery_output.scoring_source,
+                                    discovery_persisted_stream_catch_up_pressure_override_requested =
+                                        pressure_override,
+                                    shadow_queue_full,
+                                    writer_pending_requests =
+                                        observed_swap_writer_snapshot.pending_requests,
+                                    writer_pending_requests_threshold =
+                                        DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD,
+                                    writer_aggregate_queue_depth_batches =
+                                        observed_swap_writer_snapshot.aggregate_queue_depth_batches,
+                                    writer_journal_queue_depth_batches =
+                                        observed_swap_writer_snapshot.journal_queue_depth_batches,
+                                    yellowstone_output_queue_fill_ratio =
+                                        ingestion_snapshot
+                                            .as_ref()
+                                            .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio),
+                                    "bounded partial discovery rebuild requested immediate catch-up cycle and overrode the runtime pressure gate because replay is already in near-publish recovery"
+                                );
+                            } else {
+                                info!(
+                                    discovery_runtime_mode = discovery_output.runtime_mode.as_str(),
+                                    discovery_scoring_source = discovery_output.scoring_source,
+                                    discovery_persisted_stream_catch_up_pressure_override_requested =
+                                        pressure_override,
+                                    shadow_queue_full,
+                                    writer_pending_requests =
+                                        observed_swap_writer_snapshot.pending_requests,
+                                    writer_pending_requests_threshold =
+                                        DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD,
+                                    writer_aggregate_queue_depth_batches =
+                                        observed_swap_writer_snapshot.aggregate_queue_depth_batches,
+                                    writer_journal_queue_depth_batches =
+                                        observed_swap_writer_snapshot.journal_queue_depth_batches,
+                                    yellowstone_output_queue_fill_ratio =
+                                        ingestion_snapshot
+                                            .as_ref()
+                                            .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio),
+                                    "bounded partial discovery rebuild requested immediate catch-up cycle"
+                                );
+                            }
                         } else if discovery_output.persisted_stream_catch_up_requested {
                             info!(
                                 discovery_runtime_mode = discovery_output.runtime_mode.as_str(),
                                 discovery_scoring_source = discovery_output.scoring_source,
+                                discovery_persisted_stream_catch_up_pressure_override_requested =
+                                    discovery_output
+                                        .persisted_stream_catch_up_pressure_override_requested,
                                 shadow_queue_full,
                                 writer_pending_requests =
                                     observed_swap_writer_snapshot.pending_requests,
@@ -4360,6 +4390,9 @@ fn should_schedule_discovery_catch_up(
     if !discovery_output.persisted_stream_catch_up_requested || shadow_queue_full {
         return false;
     }
+    if discovery_output.persisted_stream_catch_up_pressure_override_requested {
+        return true;
+    }
     if observed_swap_writer_snapshot.pending_requests
         >= DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD
         || observed_swap_writer_snapshot.aggregate_queue_depth_batches > 0
@@ -4391,6 +4424,7 @@ struct DiscoveryTaskOutput {
     cap_truncation_floor_ts_utc: Option<DateTime<Utc>>,
     cap_truncation_floor_signature: Option<String>,
     persisted_stream_catch_up_requested: bool,
+    persisted_stream_catch_up_pressure_override_requested: bool,
 }
 
 #[cfg(test)]
@@ -4526,6 +4560,7 @@ mod app_tests {
             cap_truncation_floor_ts_utc: None,
             cap_truncation_floor_signature: None,
             persisted_stream_catch_up_requested: requested,
+            persisted_stream_catch_up_pressure_override_requested: false,
         }
     }
 
@@ -4598,6 +4633,34 @@ mod app_tests {
             false,
             &writer_snapshot,
             Some(&maintenance_test_ingestion_snapshot(0.0)),
+        ));
+    }
+
+    #[test]
+    fn discovery_catch_up_scheduler_allows_pressure_override_for_near_publish_replay() {
+        let mut discovery_output = discovery_output_for_catch_up_tests(true);
+        discovery_output.persisted_stream_catch_up_pressure_override_requested = true;
+        let writer_snapshot = maintenance_test_writer_snapshot();
+
+        assert!(should_schedule_discovery_catch_up(
+            &discovery_output,
+            false,
+            &writer_snapshot,
+            Some(&maintenance_test_ingestion_snapshot(1.0)),
+        ));
+    }
+
+    #[test]
+    fn discovery_catch_up_scheduler_keeps_shadow_queue_as_hard_stop_even_with_pressure_override() {
+        let mut discovery_output = discovery_output_for_catch_up_tests(true);
+        discovery_output.persisted_stream_catch_up_pressure_override_requested = true;
+        let writer_snapshot = maintenance_test_writer_snapshot();
+
+        assert!(!should_schedule_discovery_catch_up(
+            &discovery_output,
+            true,
+            &writer_snapshot,
+            Some(&maintenance_test_ingestion_snapshot(1.0)),
         ));
     }
 
@@ -6769,6 +6832,7 @@ mod app_tests {
             cap_truncation_floor_ts_utc: Some(floor_ts),
             cap_truncation_floor_signature: Some("restart-noise-buy-1".to_string()),
             persisted_stream_catch_up_requested: false,
+            persisted_stream_catch_up_pressure_override_requested: false,
         };
 
         guard.observe_discovery_cycle(&store, now, 5, 5, Some(&discovery_output))?;
@@ -6835,6 +6899,7 @@ mod app_tests {
             cap_truncation_floor_ts_utc: Some(floor_ts),
             cap_truncation_floor_signature: Some("restart-noise-buy-1".to_string()),
             persisted_stream_catch_up_requested: false,
+            persisted_stream_catch_up_pressure_override_requested: false,
         };
 
         guard.observe_discovery_cycle(&store, now, 5, 5, Some(&discovery_output))?;
@@ -6881,6 +6946,7 @@ mod app_tests {
             cap_truncation_floor_ts_utc: Some(now),
             cap_truncation_floor_signature: Some("cap-sig-001".to_string()),
             persisted_stream_catch_up_requested: false,
+            persisted_stream_catch_up_pressure_override_requested: false,
         };
 
         guard.observe_discovery_cycle(&store, now, 5, 5, Some(&discovery_output))?;
@@ -6936,6 +7002,7 @@ mod app_tests {
             cap_truncation_floor_ts_utc: Some(now),
             cap_truncation_floor_signature: Some("aggregate-floor-sig".to_string()),
             persisted_stream_catch_up_requested: false,
+            persisted_stream_catch_up_pressure_override_requested: false,
         };
 
         guard.observe_discovery_cycle(&store, now, 5, 5, Some(&discovery_output))?;

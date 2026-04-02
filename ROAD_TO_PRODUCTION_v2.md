@@ -7291,6 +7291,16 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        operators can distinguish "still draining wallet-stats pages" from
        "already in SOL-leg replay" and verify that the truth-refresh lane is
        no longer running on the old too-short / too-narrow budget
+     - follow-up fix also closes the remaining pressure-gate churn path:
+       when a fail-closed persisted rebuild is already in `Replay -> sol_leg`
+       and requests immediate catch-up, the app now treats that exact request
+       as a pressure-override recovery signal instead of deferring it behind
+       normal writer / ingestion pressure suppression
+     - the same fix also keeps stale-but-still-publishable
+       `ResolveTokenQuality` / `Replay` checkpoints on their frozen target
+       window until they either publish or age out of the freshness gate,
+       instead of rewinding them back into `collect_buy_mints` at the first
+       bucket rollover
      - the repair stays fail-closed unless the journal covers the required
        window and the current runtime cursor lineage
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime

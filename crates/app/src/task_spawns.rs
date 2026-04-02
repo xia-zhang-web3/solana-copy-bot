@@ -197,6 +197,8 @@ pub(crate) fn spawn_discovery_task(
             cap_truncation_floor_ts_utc: summary.cap_truncation_floor_ts_utc,
             cap_truncation_floor_signature: summary.cap_truncation_floor_signature,
             persisted_stream_catch_up_requested: summary.persisted_stream_catch_up_requested,
+            persisted_stream_catch_up_pressure_override_requested: summary
+                .persisted_stream_catch_up_pressure_override_requested,
         })
     }
 }

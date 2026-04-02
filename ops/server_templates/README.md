@@ -390,6 +390,16 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
        - `publication_truth_refresh_replay_wallet_stats_phase_page_limit`
        so a remaining fail-closed runtime can be triaged as
        "still draining wallet-stats replay" vs "already in SOL-leg replay"
+     - follow-up fix also gives the exact near-publish recovery shape a
+       bounded pressure override: if fail-closed persisted rebuild is already
+       in `Replay -> sol_leg` and requests immediate catch-up, the app now
+       schedules that retrigger even under the normal writer / ingestion
+       pressure gate so the rebuild is less likely to age out and rewind
+       before publish
+     - stale-but-still-publishable `ResolveTokenQuality` / `Replay`
+       checkpoints also stay on their frozen target window until they either
+       publish or truthfully age out of the freshness gate, instead of
+       bouncing straight back into `collect_buy_mints` on the next bucket roll
      - this repair remains fail-closed when the journal does not cover the
        required window or the current runtime cursor lineage
    - practical rule:
