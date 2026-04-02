@@ -422,6 +422,15 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
          `writer_pending_requests` blocker
        - aggregate queue depth, journal queue depth, Yellowstone output
          pressure, and the shadow queue still remain hard stops
+       - the main `run_cycle()` persisted fallback now also adopts the same
+         widened stale-publication recovery contract when persisted raw
+         coverage is already complete, so the live service itself does not stay
+         pinned to the old 15s / 5-page `collect_buy_mints` contract while
+         `published_wallet_ids` are still empty
+       - bounded `collect_buy_mints / fresh_scan` also now warms token-quality
+         over the exact discovered mint prefix, so `quality_next_mint_index`
+         can advance before grouped-mint source exhaustion instead of staying
+         frozen at `0`
      - deferred catch-up logs now also expose:
        - `discovery_catch_up_block_reason`
        - `discovery_catch_up_pending_requests_only_blocker`

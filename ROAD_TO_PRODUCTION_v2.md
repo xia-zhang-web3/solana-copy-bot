@@ -7331,6 +7331,22 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        `writer_pending_requests >= 128` signal, but it still refuses when
        aggregate queue depth, journal queue depth, Yellowstone output
        pressure, or the shadow queue are genuinely non-empty
+     - the ordinary `run_cycle()` persisted fallback now also reuses the same
+       widened stale-publication recovery contract when persisted raw coverage
+       is already complete:
+       - if runtime truth is fail-closed only because the published universe is
+         stale / incomplete, the bounded `PersistedRecompute` path no longer
+         stays on the old 15s / 5-page contract
+       - it now adopts the already-tracked longer repair budget plus widened
+         `collect_buy_mints` / `replay -> wallet_stats` phase limits, so the
+         live service itself can move beyond `fresh_scan` instead of relying on
+         a separate repair-only helper to make that progress
+     - bounded `collect_buy_mints / fresh_scan` now also warms token-quality
+       over the exact discovered mint prefix before full source exhaustion:
+       - `quality_next_mint_index` no longer has to stay pinned at `0` while
+         grouped-mint cursor progress is already real
+       - once the final fresh-scan suffix is exhausted, rebuild can hand off
+         into replay without paying a separate cold quality phase
      - deferred catch-up logs now surface
        `discovery_catch_up_block_reason` and
        `discovery_catch_up_pending_requests_only_blocker`, so operators can
