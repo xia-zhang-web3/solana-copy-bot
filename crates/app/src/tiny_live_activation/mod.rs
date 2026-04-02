@@ -7,6 +7,7 @@ pub mod package_basal_receipt_substructure_certificate;
 pub mod package_bedrock_certificate_basal_receipt;
 pub mod package_capstone_certificate_keystone_receipt;
 pub mod package_chancel_certificate_apse_receipt;
+pub mod package_choir_receipt_clerestory_certificate;
 pub mod package_closure_certificate_finality_receipt;
 pub mod package_completion_certificate_culmination_receipt;
 pub mod package_consummation_record_completion_certificate;
