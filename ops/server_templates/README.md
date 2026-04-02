@@ -390,6 +390,18 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
        - `publication_truth_refresh_replay_wallet_stats_phase_page_limit`
        so a remaining fail-closed runtime can be triaged as
        "still draining wallet-stats replay" vs "already in SOL-leg replay"
+     - the same bounded repair lane now also narrows the deeper
+       `collect_buy_mints / fresh_scan` bottleneck under heavy writer / WAL
+       pressure:
+       - one grouped fresh-scan page is capped to `512` mints
+       - the runtime-window-complete repair branch gets its own
+         `publication_truth_refresh_collect_buy_mints_phase_page_limit`
+         scaled from the longer repair budget instead of reusing the normal
+         live fetch page ceiling
+       - the exact single-page `collect_buy_mints / fresh_scan` stall shape
+         remains eligible for bounded pressure-override catch-up, so operators
+         can distinguish scheduler deferral from a hot grouped read that is
+         still advancing its mint cursor
      - follow-up fix also gives the exact near-publish recovery shape a
        bounded pressure override: if fail-closed persisted rebuild is already
        in `Replay -> sol_leg` and requests immediate catch-up, the app now
@@ -3064,6 +3076,84 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
    - this command never executes the frozen controller itself
    - managed-surface overlap checks still protect the
      nave-receipt install-root contract
+   - current real-host usage still remains refused while gate truth is
+     non-green
+7. Bounded verification remains lightweight:
+   - acceptance uses `cargo check -j 1` plus targeted lib/bin tests
+   - it intentionally does not depend on the heavy `turn_green`
+     compile/test surface
+
+## Tiny-Live Package Clerestory Certificate
+
+1. Operators now also have one final immutable clerestory-certificate /
+   gonfalon-seal surface over the verified choir receipt:
+   - `copybot_tiny_live_activation_package_clerestory_certificate --choir-receipt-session-dir /tmp/tiny-live.package-choir-receipt-session --plan-live-package-clerestory-certificate --json`
+   - `copybot_tiny_live_activation_package_clerestory_certificate --choir-receipt-session-dir /tmp/tiny-live.package-choir-receipt-session --render-live-package-clerestory-certificate --output /tmp/tiny-live.package-clerestory-certificate.sh --json`
+   - `copybot_tiny_live_activation_package_clerestory_certificate --choir-receipt-session-dir /tmp/tiny-live.package-choir-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-clerestory-certificate-session --run-live-package-clerestory-certificate --json`
+   - `copybot_tiny_live_activation_package_clerestory_certificate --choir-receipt-session-dir /tmp/tiny-live.package-choir-receipt-session --confirm-decision-packet-session-dir /tmp/tiny-live.package-decision-packet-session --session-dir /tmp/tiny-live.package-clerestory-certificate-session --verify-live-package-clerestory-certificate --json`
+2. The verified `choir_receipt` session is the primary direct input:
+   - run and verify additionally require
+     `--confirm-decision-packet-session-dir <path>` as a confirmation-only
+     anchor for the already reviewed nested decision-packet contract
+   - this command does not restitch package, target, wrapper, or controller
+     arguments from loose CLI inputs
+3. Important verdicts:
+   - `tiny_live_package_clerestory_certificate_plan_ready`
+   - `tiny_live_package_clerestory_certificate_rendered`
+   - `tiny_live_package_clerestory_certificate_refused_now_by_stage3`
+   - `tiny_live_package_clerestory_certificate_refused_now_by_pre_activation_gate`
+   - `tiny_live_package_clerestory_certificate_refused_now_by_invalid_or_drifted_contract`
+   - `tiny_live_package_clerestory_certificate_ready_for_manual_execution_when_gate_turns_green`
+   - `tiny_live_package_clerestory_certificate_verify_ok`
+   - `tiny_live_package_clerestory_certificate_verify_invalid`
+4. The clerestory certificate is the final gonfalon-style record over the
+   fully culminated chain:
+   - it freezes the current refusal-vs-ready classification
+   - it freezes the exact reviewed frozen live cutover controller command
+     summary
+   - it freezes the canonical chain-fingerprint identity
+   - it freezes the top-level ledger-seal identity
+   - it freezes the top-level registry-entry identity
+   - it freezes the top-level filing-certificate identity
+   - it freezes the top-level archive-receipt identity
+   - it freezes the top-level closure-certificate identity
+   - it freezes the top-level finality-receipt identity
+   - it freezes the top-level consummation-record identity
+   - it freezes the top-level completion-certificate identity
+   - it freezes the top-level culmination-receipt identity
+   - it freezes the top-level summit-certificate identity
+   - it freezes the top-level pinnacle-receipt identity
+   - it freezes the top-level capstone-certificate identity
+   - it freezes the top-level keystone-receipt identity
+   - it freezes the top-level cornerstone-certificate identity
+   - it freezes the top-level foundation-receipt identity
+   - it freezes the top-level bedrock-certificate identity
+   - it freezes the top-level basal-receipt identity
+   - it freezes the top-level substructure-certificate identity
+   - it freezes the top-level plinth-receipt identity
+   - it freezes the top-level pedestal-certificate identity
+   - it freezes the top-level dais-receipt identity
+   - it freezes the top-level rostrum-certificate identity
+   - it freezes the top-level podium-receipt identity
+   - it freezes the top-level lectern-certificate identity
+   - it freezes the top-level pulpit-receipt identity
+   - it freezes the top-level chancel-certificate identity
+   - it freezes the top-level apse-receipt identity
+   - it freezes the top-level sanctuary-certificate identity
+   - it freezes the top-level nave-receipt identity
+   - it freezes the top-level transept-certificate identity
+   - it freezes the top-level choir-receipt identity
+   - it adds one final top-level summary plus one final top-level
+     `clerestory_certificate_sha256`
+5. This layer remains read-only and archival:
+   - it never enables production execution on the real host
+   - it never submits real trades
+   - current real-host use still remains refused while Stage 3 /
+     runtime/publication truth is non-green
+6. Safety remains hard:
+   - this command never executes the frozen controller itself
+   - managed-surface overlap checks still protect the
+     choir-receipt install-root contract
    - current real-host usage still remains refused while gate truth is
      non-green
 7. Bounded verification remains lightweight:

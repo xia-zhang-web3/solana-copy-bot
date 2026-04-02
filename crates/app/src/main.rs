@@ -3267,7 +3267,7 @@ async fn run_app_loop(
                                         ingestion_snapshot
                                             .as_ref()
                                             .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio),
-                                    "bounded partial discovery rebuild requested immediate catch-up cycle and overrode the runtime pressure gate because replay is already in near-publish recovery"
+                                    "bounded partial discovery rebuild requested immediate catch-up cycle and overrode the runtime pressure gate because fail-closed publication recovery is on a constrained priority path"
                                 );
                             } else {
                                 info!(

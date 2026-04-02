@@ -50,8 +50,10 @@ const QUALITY_RPC_BUDGET_MS: u64 = 1_500;
 const AGGREGATE_READINESS_MAX_LAG_BUCKETS: u64 = 2;
 const CAP_TRUNCATION_FOLLOWLIST_DEACTIVATION_GUARD_CYCLES: u32 = 2;
 const STREAMING_RUG_TRADE_SWEEP_INTERVAL_SWAPS: usize = 2_048;
+const COLLECT_BUY_MINTS_FRESH_SCAN_BATCH_CAP: usize = 512;
 const STALE_RECONCILE_TOKEN_BATCH_CAP: usize = 256;
 const STALE_RECONCILE_EXACT_COUNT_BATCH_CAP: usize = 32;
+const COLLECT_BUY_MINTS_CATCH_UP_PAGE_LIMIT_MULTIPLIER: usize = 2;
 const REPLAY_WALLET_STATS_WALLET_BATCH_CAP: usize = 900;
 const REPLAY_WALLET_STATS_CATCH_UP_PAGE_LIMIT_MULTIPLIER: usize = 2;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEFAULT_TIME_BUDGET_MS: u64 = 10_000;
@@ -62,9 +64,23 @@ const POST_BOOTSTRAP_ROTATION_BLOCKED_REASON: &str =
 
 #[cfg(test)]
 thread_local! {
+    static TEST_FORCE_COLLECT_BUY_MINTS_FRESH_SCAN_ROW_LIMIT: Cell<usize> = const { Cell::new(0) };
     static TEST_FORCE_RECONCILE_NEW_TAIL_ZERO_ROW_TIMEOUT: Cell<bool> = const { Cell::new(false) };
     static TEST_FORCE_RECONCILE_EXPIRED_HEAD_EXACT_BATCH_ROW_LIMIT: Cell<usize> = const { Cell::new(0) };
     static TEST_FORCE_RECONCILE_NEW_TAIL_EXACT_BATCH_ROW_LIMIT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn arm_test_force_collect_buy_mints_fresh_scan_row_limit(limit: usize) {
+    TEST_FORCE_COLLECT_BUY_MINTS_FRESH_SCAN_ROW_LIMIT.with(|value| value.set(limit));
+}
+
+#[cfg(test)]
+fn take_test_force_collect_buy_mints_fresh_scan_row_limit() -> Option<usize> {
+    TEST_FORCE_COLLECT_BUY_MINTS_FRESH_SCAN_ROW_LIMIT.with(|value| {
+        let limit = value.replace(0);
+        (limit > 0).then_some(limit)
+    })
 }
 
 #[cfg(test)]
@@ -492,6 +508,7 @@ pub struct DiscoveryPublicationTruthRepairTelemetry {
     pub publication_truth_refresh_replay_subphase: Option<&'static str>,
     pub publication_truth_refresh_replay_wallet_stats_complete: bool,
     pub publication_truth_refresh_replay_wallet_stats_wallet_cursor: Option<String>,
+    pub publication_truth_refresh_collect_buy_mints_phase_page_limit: Option<usize>,
     pub publication_truth_refresh_replay_wallet_stats_phase_page_limit: Option<usize>,
     pub publication_truth_refresh_observed_swaps_loaded: usize,
     pub publication_truth_refresh_wallets_buffered: usize,
@@ -533,6 +550,7 @@ impl DiscoveryPublicationTruthRepairTelemetry {
             publication_truth_refresh_replay_subphase: None,
             publication_truth_refresh_replay_wallet_stats_complete: false,
             publication_truth_refresh_replay_wallet_stats_wallet_cursor: None,
+            publication_truth_refresh_collect_buy_mints_phase_page_limit: None,
             publication_truth_refresh_replay_wallet_stats_phase_page_limit: None,
             publication_truth_refresh_observed_swaps_loaded: 0,
             publication_truth_refresh_wallets_buffered: 0,
@@ -549,6 +567,7 @@ impl DiscoveryPublicationTruthRepairTelemetry {
         publication_truth_complete_before: bool,
         publication_truth_fresh_before: bool,
         runtime_window_complete_before: bool,
+        collect_buy_mints_phase_page_limit: Option<usize>,
         replay_wallet_stats_phase_page_limit: Option<usize>,
         telemetry: &PersistedStreamProgressTelemetry,
     ) -> Self {
@@ -577,6 +596,8 @@ impl DiscoveryPublicationTruthRepairTelemetry {
             publication_truth_refresh_replay_wallet_stats_wallet_cursor: telemetry
                 .replay_wallet_stats_wallet_cursor
                 .clone(),
+            publication_truth_refresh_collect_buy_mints_phase_page_limit:
+                collect_buy_mints_phase_page_limit,
             publication_truth_refresh_replay_wallet_stats_phase_page_limit:
                 replay_wallet_stats_phase_page_limit,
             publication_truth_refresh_observed_swaps_loaded: telemetry.observed_swaps_loaded,
@@ -981,9 +1002,17 @@ fn should_request_persisted_stream_catch_up(telemetry: &PersistedStreamProgressT
 fn should_request_persisted_stream_catch_up_pressure_override(
     telemetry: &PersistedStreamProgressTelemetry,
 ) -> bool {
-    telemetry.phase == DiscoveryPersistedRebuildPhase::Replay
+    (telemetry.phase == DiscoveryPersistedRebuildPhase::Replay
         && telemetry.replay_subphase == Some("sol_leg")
-        && telemetry.budget_exhausted_reason.is_some()
+        && telemetry.budget_exhausted_reason.is_some())
+        || (telemetry.phase == DiscoveryPersistedRebuildPhase::CollectBuyMints
+            && telemetry.collect_buy_mints_mode == CollectBuyMintsMode::FreshScan
+            && matches!(
+                telemetry.budget_exhausted_reason,
+                Some(PersistedStreamBudgetExhaustedReason::TimeBudget)
+            )
+            && telemetry.cycle_pages_processed <= 1
+            && telemetry.wallets_buffered == 0)
 }
 
 #[derive(Debug)]
@@ -1693,23 +1722,29 @@ impl DiscoveryService {
             let metrics_window_start = self.metrics_window_start(now);
             let fetch_limit = self.config.max_fetch_swaps_per_cycle.max(1);
             let fetch_page_limit = self.config.max_fetch_pages_per_cycle.max(1);
+            let collect_buy_mints_phase_page_limit = self
+                .collect_buy_mints_repair_phase_page_limit(
+                    fetch_limit,
+                    fetch_page_limit,
+                    refresh_budget,
+                );
             let replay_wallet_stats_phase_page_limit = self
                 .replay_wallet_stats_repair_phase_page_limit(
                     fetch_limit,
                     fetch_page_limit,
                     refresh_budget,
                 );
-            return match self
-                .advance_persisted_stream_rebuild_with_replay_wallet_stats_phase_page_limit(
-                    runtime_store,
-                    required_window_start,
-                    metrics_window_start,
-                    now,
-                    fetch_limit,
-                    fetch_page_limit,
-                    refresh_budget,
-                    Some(replay_wallet_stats_phase_page_limit),
-                )? {
+            return match self.advance_persisted_stream_rebuild_with_phase_page_limits(
+                runtime_store,
+                required_window_start,
+                metrics_window_start,
+                now,
+                fetch_limit,
+                fetch_page_limit,
+                refresh_budget,
+                Some(collect_buy_mints_phase_page_limit),
+                Some(replay_wallet_stats_phase_page_limit),
+            )? {
                 PersistedStreamRebuildAdvanceOutcome::Completed { telemetry, .. } => {
                     let completed_reason = if telemetry.wallets_buffered == 0 {
                         "runtime_window_complete_publication_truth_rebuild_completed_without_publishable_wallets"
@@ -1724,6 +1759,7 @@ impl DiscoveryService {
                             publication_truth_complete_before,
                             publication_truth_fresh_before,
                             runtime_window_complete_before,
+                            Some(collect_buy_mints_phase_page_limit),
                             Some(replay_wallet_stats_phase_page_limit),
                             &telemetry,
                         ),
@@ -1737,6 +1773,7 @@ impl DiscoveryService {
                         publication_truth_complete_before,
                         publication_truth_fresh_before,
                         runtime_window_complete_before,
+                        Some(collect_buy_mints_phase_page_limit),
                         Some(replay_wallet_stats_phase_page_limit),
                         &telemetry,
                     ),
@@ -1912,6 +1949,7 @@ impl DiscoveryService {
             publication_truth_refresh_replay_subphase: None,
             publication_truth_refresh_replay_wallet_stats_complete: false,
             publication_truth_refresh_replay_wallet_stats_wallet_cursor: None,
+            publication_truth_refresh_collect_buy_mints_phase_page_limit: None,
             publication_truth_refresh_replay_wallet_stats_phase_page_limit: None,
             publication_truth_refresh_observed_swaps_loaded: 0,
             publication_truth_refresh_wallets_buffered: 0,
@@ -2139,6 +2177,39 @@ impl DiscoveryService {
             .max(1)
             .min(STALE_RECONCILE_TOKEN_BATCH_CAP)
             .min(STALE_RECONCILE_EXACT_COUNT_BATCH_CAP)
+    }
+
+    fn collect_buy_mints_fresh_scan_batch_size(fetch_limit: usize) -> usize {
+        fetch_limit
+            .max(1)
+            .min(COLLECT_BUY_MINTS_FRESH_SCAN_BATCH_CAP)
+    }
+
+    fn collect_buy_mints_catch_up_page_limit(fetch_limit: usize, fetch_page_limit: usize) -> usize {
+        let fresh_scan_batch_size = Self::collect_buy_mints_fresh_scan_batch_size(fetch_limit);
+        let baseline_page_limit = fetch_page_limit
+            .max(1)
+            .saturating_mul(COLLECT_BUY_MINTS_CATCH_UP_PAGE_LIMIT_MULTIPLIER);
+        let pages_for_fetch_width = fetch_limit
+            .max(1)
+            .saturating_add(fresh_scan_batch_size.saturating_sub(1))
+            / fresh_scan_batch_size.max(1);
+        baseline_page_limit.max(pages_for_fetch_width.max(1))
+    }
+
+    fn collect_buy_mints_repair_phase_page_limit(
+        &self,
+        fetch_limit: usize,
+        fetch_page_limit: usize,
+        repair_time_budget: StdDuration,
+    ) -> usize {
+        let baseline_page_limit =
+            Self::collect_buy_mints_catch_up_page_limit(fetch_limit, fetch_page_limit);
+        let normal_fetch_budget_ms = self.config.fetch_time_budget_ms.max(1) as u128;
+        let repair_budget_ms = repair_time_budget.as_millis().max(1);
+        let budget_multiplier = repair_budget_ms.div_ceil(normal_fetch_budget_ms);
+        baseline_page_limit
+            .saturating_mul(budget_multiplier.min(usize::MAX as u128).max(1) as usize)
     }
 
     fn replay_wallet_stats_catch_up_page_limit(
@@ -2945,12 +3016,16 @@ impl DiscoveryService {
         state: &mut PersistedStreamRebuildState,
         fetch_limit: usize,
         fetch_page_limit: usize,
+        collect_buy_mints_phase_page_limit_override: Option<usize>,
         deadline: Instant,
     ) -> Result<PersistedStreamPhaseAdvance> {
         let mut rows_processed = 0usize;
         let mut pages_processed = 0usize;
         let mut unique_buy_mints_discovered = 0usize;
         let mut cursor_token = state.payload.collect_buy_mints_cursor_token.clone();
+        let phase_page_limit = collect_buy_mints_phase_page_limit_override
+            .unwrap_or(fetch_page_limit)
+            .max(1);
         if state.payload.collect_buy_mints_mode == CollectBuyMintsMode::FreshScan
             && cursor_token.is_none()
             && state.phase_cursor.is_some()
@@ -3009,7 +3084,7 @@ impl DiscoveryService {
             );
         }
         let budget_exhausted_reason = loop {
-            if pages_processed >= fetch_page_limit {
+            if pages_processed >= phase_page_limit {
                 break Some(PersistedStreamBudgetExhaustedReason::PageBudget);
             }
             if Instant::now() >= deadline {
@@ -3018,15 +3093,26 @@ impl DiscoveryService {
 
             match state.payload.collect_buy_mints_mode {
                 CollectBuyMintsMode::FreshScan => {
-                    let page = store
+                    let fresh_scan_fetch_limit =
+                        Self::collect_buy_mints_fresh_scan_batch_size(fetch_limit);
+                    let previous_cursor_token = cursor_token.clone();
+                    #[allow(unused_mut)]
+                    let mut page = store
                         .load_observed_buy_mint_counts_in_window_after_token_with_budget(
                             state.window_start,
                             state.horizon_end,
                             cursor_token.as_deref(),
                             None,
-                            fetch_limit,
+                            fresh_scan_fetch_limit,
                             deadline,
                         )?;
+                    #[cfg(test)]
+                    if let Some(limit) = take_test_force_collect_buy_mints_fresh_scan_row_limit() {
+                        if page.rows.len() > limit {
+                            page.rows.truncate(limit);
+                            page.time_budget_exhausted = true;
+                        }
+                    }
                     pages_processed = pages_processed.saturating_add(1);
                     rows_processed = rows_processed.saturating_add(page.rows.len());
                     for row in &page.rows {
@@ -3041,9 +3127,28 @@ impl DiscoveryService {
                     }
                     cursor_token = page.rows.last().map(|row| row.mint.clone());
                     if page.time_budget_exhausted {
+                        info!(
+                            rebuild_window_start = %state.window_start,
+                            rebuild_horizon_end = %state.horizon_end,
+                            rebuild_collect_buy_mints_requested_fetch_limit = fetch_limit,
+                            rebuild_collect_buy_mints_effective_fetch_limit =
+                                fresh_scan_fetch_limit,
+                            rebuild_collect_buy_mints_previous_cursor_token =
+                                previous_cursor_token.as_deref(),
+                            rebuild_collect_buy_mints_next_cursor_token =
+                                cursor_token.as_deref(),
+                            rebuild_collect_buy_mints_cursor_advanced =
+                                cursor_token != previous_cursor_token,
+                            rebuild_collect_buy_mints_page_rows = page.rows.len(),
+                            rebuild_collect_buy_mints_cycle_unique_buy_mints_discovered =
+                                unique_buy_mints_discovered,
+                            "collect_buy_mints fresh-scan hit its bounded time budget; persisting grouped mint cursor progress before the next recovery cycle"
+                        );
+                    }
+                    if page.time_budget_exhausted {
                         break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
                     }
-                    if page.rows.len() < fetch_limit {
+                    if page.rows.len() < fresh_scan_fetch_limit {
                         state.payload.collect_buy_mints_prepass_complete = true;
                         state.payload.collect_buy_mints_cursor_token = None;
                         if Self::payload_has_exact_buy_mint_membership(&state.payload) {
@@ -4187,7 +4292,7 @@ impl DiscoveryService {
         fetch_page_limit: usize,
         rebuild_time_budget: StdDuration,
     ) -> Result<PersistedStreamRebuildAdvanceOutcome> {
-        self.advance_persisted_stream_rebuild_with_replay_wallet_stats_phase_page_limit(
+        self.advance_persisted_stream_rebuild_with_phase_page_limits(
             store,
             window_start,
             metrics_window_start,
@@ -4196,10 +4301,11 @@ impl DiscoveryService {
             fetch_page_limit,
             rebuild_time_budget,
             None,
+            None,
         )
     }
 
-    fn advance_persisted_stream_rebuild_with_replay_wallet_stats_phase_page_limit(
+    fn advance_persisted_stream_rebuild_with_phase_page_limits(
         &self,
         store: &SqliteStore,
         window_start: DateTime<Utc>,
@@ -4208,6 +4314,7 @@ impl DiscoveryService {
         fetch_limit: usize,
         fetch_page_limit: usize,
         rebuild_time_budget: StdDuration,
+        collect_buy_mints_phase_page_limit_override: Option<usize>,
         replay_wallet_stats_phase_page_limit_override: Option<usize>,
     ) -> Result<PersistedStreamRebuildAdvanceOutcome> {
         let (mut state, restore_outcome) = self.load_or_start_persisted_stream_rebuild_state(
@@ -4431,6 +4538,7 @@ impl DiscoveryService {
                         &mut state,
                         fetch_limit,
                         fetch_page_limit,
+                        collect_buy_mints_phase_page_limit_override,
                         deadline,
                     )?,
                 DiscoveryPersistedRebuildPhase::ResolveTokenQuality => self
@@ -8654,6 +8762,7 @@ mod tests {
             &mut state,
             20,
             1,
+            None,
             Instant::now() + StdDuration::from_secs(1),
         )?;
 
@@ -8665,6 +8774,168 @@ mod tests {
         assert!(
             phase_advance.collect_buy_mints_cursor_token.is_none(),
             "completed direct distinct-mint prepass should clear the mint cursor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_collect_buy_mints_fresh_scan_caps_grouped_query_width_under_live_high_limit_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-collect-buy-mints-fresh-scan-batch-cap.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-02T09:30:03Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = bounded_stage1_runtime_config();
+        config.max_fetch_swaps_per_cycle = 20_000;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+
+        for idx in 0..6_000usize {
+            store.insert_observed_swap(&swap(
+                "wallet_collect_buy_mints_cap",
+                &format!("stage1-collect-buy-mints-cap-{idx:05}"),
+                window_start + Duration::seconds(idx as i64),
+                SOL_MINT,
+                &format!("TokenStage1CollectBuyMintsCap{idx:05}"),
+                0.2,
+                20.0,
+            ))?;
+        }
+
+        let mut state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        arm_test_force_collect_buy_mints_fresh_scan_row_limit(
+            COLLECT_BUY_MINTS_FRESH_SCAN_BATCH_CAP,
+        );
+        let phase_advance = discovery.advance_persisted_stream_prepass(
+            &store,
+            &mut state,
+            config.max_fetch_swaps_per_cycle,
+            config.max_fetch_pages_per_cycle,
+            None,
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+
+        assert!(!phase_advance.source_exhausted);
+        assert_eq!(
+            phase_advance.pages_processed,
+            config.max_fetch_pages_per_cycle,
+            "fresh-scan recovery should consume its bounded cycle on multiple capped grouped-mint pages instead of one giant interrupted query"
+        );
+        assert_eq!(
+            phase_advance.rows_processed,
+            COLLECT_BUY_MINTS_FRESH_SCAN_BATCH_CAP * config.max_fetch_pages_per_cycle,
+            "the effective grouped-mint batch width should be capped independently from the much larger raw swap fetch limit"
+        );
+        assert_eq!(
+            phase_advance.unique_buy_mints_discovered, phase_advance.rows_processed,
+            "one-shot distinct mint pages should discover one exact buy mint per grouped row"
+        );
+        assert!(matches!(
+            phase_advance.budget_exhausted_reason,
+            Some(PersistedStreamBudgetExhaustedReason::PageBudget)
+        ));
+        assert_eq!(
+            state.payload.unique_buy_mints.len(),
+            phase_advance.rows_processed,
+            "bounded fresh-scan progress must persist every capped grouped-mint page instead of re-reading from zero"
+        );
+        assert!(
+            phase_advance.collect_buy_mints_cursor_token.is_some(),
+            "partial capped fresh-scan progress must persist the exact next mint cursor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_collect_buy_mints_repair_phase_page_limit_completes_large_fresh_scan_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-collect-buy-mints-repair-page-limit.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-02T09:30:03Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = bounded_stage1_runtime_config();
+        config.max_fetch_swaps_per_cycle = 20_000;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+
+        for idx in 0..6_000usize {
+            store.insert_observed_swap(&swap(
+                "wallet_collect_buy_mints_repair",
+                &format!("stage1-collect-buy-mints-repair-{idx:05}"),
+                window_start + Duration::seconds(idx as i64),
+                SOL_MINT,
+                &format!("TokenStage1CollectBuyMintsRepair{idx:05}"),
+                0.2,
+                20.0,
+            ))?;
+        }
+
+        let mut baseline_state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        let baseline = discovery.advance_persisted_stream_prepass(
+            &store,
+            &mut baseline_state,
+            config.max_fetch_swaps_per_cycle,
+            config.max_fetch_pages_per_cycle,
+            None,
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+        assert!(!baseline.source_exhausted);
+        assert_eq!(
+            baseline.pages_processed,
+            config.max_fetch_pages_per_cycle,
+            "without a widened repair contract, the large live-like fresh scan should still stop on the normal page ceiling"
+        );
+
+        let mut repair_state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        let repair_page_limit = discovery.collect_buy_mints_repair_phase_page_limit(
+            config.max_fetch_swaps_per_cycle,
+            config.max_fetch_pages_per_cycle,
+            StdDuration::from_secs(60),
+        );
+        let repaired = discovery.advance_persisted_stream_prepass(
+            &store,
+            &mut repair_state,
+            config.max_fetch_swaps_per_cycle,
+            config.max_fetch_pages_per_cycle,
+            Some(repair_page_limit),
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+
+        assert!(repaired.source_exhausted);
+        assert_eq!(
+            repaired.rows_processed, 6_000,
+            "runtime-window-complete repair should be able to drain the bounded collect_buy_mints backlog instead of leaving it stuck on the first few grouped pages"
+        );
+        assert!(
+            repaired.pages_processed > config.max_fetch_pages_per_cycle,
+            "the widened repair phase budget must allow more collect_buy_mints pages than the normal cycle ceiling"
+        );
+        assert!(
+            repaired.collect_buy_mints_cursor_token.is_none(),
+            "once the widened repair contract drains fresh_scan, the grouped mint cursor should clear instead of persisting a partial prefix"
         );
         Ok(())
     }
@@ -8793,6 +9064,7 @@ mod tests {
             &mut carried,
             10,
             10,
+            None,
             Instant::now() + StdDuration::from_secs(1),
         )?;
 
@@ -10150,6 +10422,7 @@ mod tests {
             &mut carried,
             1,
             10,
+            None,
             Instant::now() + StdDuration::from_secs(1),
         )?;
         assert!(phase_advance.source_exhausted);
@@ -10265,6 +10538,7 @@ mod tests {
             &mut state,
             1,
             1,
+            None,
             Instant::now() + StdDuration::from_secs(1),
         )?;
         state.prepass_rows_processed = state
@@ -10492,6 +10766,7 @@ mod tests {
             &mut state,
             1,
             2,
+            None,
             Instant::now() + StdDuration::from_secs(1),
         )?;
         state.prepass_rows_processed = state
@@ -10640,6 +10915,7 @@ mod tests {
             &mut state,
             config.max_fetch_swaps_per_cycle,
             config.max_fetch_pages_per_cycle,
+            None,
             Instant::now() + StdDuration::from_secs(5),
         )?;
 
@@ -10779,6 +11055,7 @@ mod tests {
             &mut state,
             config.max_fetch_swaps_per_cycle,
             config.max_fetch_pages_per_cycle,
+            None,
             Instant::now() + StdDuration::from_secs(5),
         )?;
         state.prepass_rows_processed = state
@@ -10840,6 +11117,7 @@ mod tests {
             &mut resumed,
             config.max_fetch_swaps_per_cycle,
             config.max_fetch_pages_per_cycle,
+            None,
             Instant::now() + StdDuration::from_secs(5),
         )?;
         assert!(
@@ -10955,6 +11233,7 @@ mod tests {
             &mut state,
             config.max_fetch_swaps_per_cycle,
             config.max_fetch_pages_per_cycle,
+            None,
             Instant::now() + StdDuration::from_secs(5),
         )?;
         state.prepass_rows_processed = state
@@ -11001,6 +11280,7 @@ mod tests {
             &mut resumed,
             config.max_fetch_swaps_per_cycle,
             config.max_fetch_pages_per_cycle,
+            None,
             Instant::now() + StdDuration::from_secs(5),
         )?;
         assert_eq!(
@@ -11124,6 +11404,7 @@ mod tests {
             &mut state,
             config.max_fetch_swaps_per_cycle,
             config.max_fetch_pages_per_cycle,
+            None,
             Instant::now() + StdDuration::from_secs(5),
         )?;
 
@@ -11237,6 +11518,7 @@ mod tests {
             &mut state,
             32,
             1,
+            None,
             Instant::now() + StdDuration::from_secs(1),
         )?;
         state.prepass_rows_processed = 2_154_114usize;
@@ -11370,6 +11652,7 @@ mod tests {
             &mut state,
             config.max_fetch_swaps_per_cycle,
             config.max_fetch_pages_per_cycle,
+            None,
             Instant::now() + StdDuration::from_secs(5),
         )?;
 
@@ -11510,6 +11793,7 @@ mod tests {
             &mut state,
             config.max_fetch_swaps_per_cycle,
             config.max_fetch_pages_per_cycle,
+            None,
             Instant::now() + StdDuration::from_secs(5),
         )?;
         state.prepass_rows_processed = state
@@ -11564,6 +11848,7 @@ mod tests {
             &mut resumed,
             config.max_fetch_swaps_per_cycle,
             config.max_fetch_pages_per_cycle,
+            None,
             Instant::now() + StdDuration::from_secs(5),
         )?;
         assert_eq!(
@@ -11685,6 +11970,7 @@ mod tests {
             &mut state,
             config.max_fetch_swaps_per_cycle,
             config.max_fetch_pages_per_cycle,
+            None,
             Instant::now() + StdDuration::from_secs(5),
         )?;
 
@@ -13145,6 +13431,11 @@ mod tests {
         );
         assert!(repair.publication_truth_refresh_attempted);
         assert_eq!(repair.publication_truth_refresh_phase, Some("replay"));
+        assert_eq!(
+            repair.publication_truth_refresh_collect_buy_mints_phase_page_limit,
+            Some(160),
+            "runtime-window-complete repair telemetry should expose the widened collect_buy_mints page budget as part of the same recovery contract"
+        );
         assert_eq!(
             repair.publication_truth_refresh_replay_wallet_stats_phase_page_limit,
             Some(92),
@@ -17573,6 +17864,37 @@ mod tests {
     }
 
     #[test]
+    fn collect_buy_mints_catch_up_page_limit_scales_to_live_fetch_width() {
+        assert_eq!(
+            DiscoveryService::collect_buy_mints_catch_up_page_limit(1, 1),
+            2
+        );
+        assert_eq!(
+            DiscoveryService::collect_buy_mints_catch_up_page_limit(20_000, 5),
+            40,
+            "live fetch width should widen the collect_buy_mints page budget beyond the fixed 2x page multiplier once grouped fresh-scan pages are capped"
+        );
+    }
+
+    #[test]
+    fn collect_buy_mints_repair_phase_page_limit_scales_to_live_repair_budget() {
+        let mut config = stage1_runtime_config();
+        config.max_fetch_swaps_per_cycle = 20_000;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        assert_eq!(
+            discovery.collect_buy_mints_repair_phase_page_limit(
+                20_000,
+                5,
+                StdDuration::from_secs(60),
+            ),
+            160,
+            "runtime-window-complete stale publication-truth repair should widen the collect_buy_mints page budget in proportion to the longer 60s repair contract"
+        );
+    }
+
+    #[test]
     fn persisted_stream_catch_up_request_targets_collect_buy_mints_and_replay_phases() {
         assert!(should_request_persisted_stream_catch_up(
             &catch_up_test_telemetry(
@@ -17657,7 +17979,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_stream_catch_up_pressure_override_targets_near_publish_replay_only() {
+    fn persisted_stream_catch_up_pressure_override_targets_priority_recovery_phases() {
         let mut replay_sol_leg = catch_up_test_telemetry(
             DiscoveryPersistedRebuildPhase::Replay,
             CollectBuyMintsMode::FreshScan,
@@ -17680,14 +18002,35 @@ mod tests {
             &replay_wallet_stats
         ));
 
-        let collect_buy_mints = catch_up_test_telemetry(
+        let mut collect_buy_mints = catch_up_test_telemetry(
             DiscoveryPersistedRebuildPhase::CollectBuyMints,
-            CollectBuyMintsMode::ReconcileExpiredHead,
+            CollectBuyMintsMode::FreshScan,
+            false,
+            Some(PersistedStreamBudgetExhaustedReason::TimeBudget),
+        );
+        collect_buy_mints.cycle_pages_processed = 1;
+        assert!(should_request_persisted_stream_catch_up_pressure_override(
+            &collect_buy_mints
+        ));
+
+        let collect_buy_mints_page_budget = catch_up_test_telemetry(
+            DiscoveryPersistedRebuildPhase::CollectBuyMints,
+            CollectBuyMintsMode::FreshScan,
             false,
             Some(PersistedStreamBudgetExhaustedReason::PageBudget),
         );
         assert!(!should_request_persisted_stream_catch_up_pressure_override(
-            &collect_buy_mints
+            &collect_buy_mints_page_budget
+        ));
+
+        let collect_buy_mints_reconcile = catch_up_test_telemetry(
+            DiscoveryPersistedRebuildPhase::CollectBuyMints,
+            CollectBuyMintsMode::ReconcileExpiredHead,
+            false,
+            Some(PersistedStreamBudgetExhaustedReason::TimeBudget),
+        );
+        assert!(!should_request_persisted_stream_catch_up_pressure_override(
+            &collect_buy_mints_reconcile
         ));
     }
 

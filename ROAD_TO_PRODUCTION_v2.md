@@ -7291,6 +7291,19 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        operators can distinguish "still draining wallet-stats pages" from
        "already in SOL-leg replay" and verify that the truth-refresh lane is
        no longer running on the old too-short / too-narrow budget
+     - follow-up fix also narrows the remaining `collect_buy_mints /
+       fresh_scan` bottleneck under heavy writer/WAL pressure:
+       `copybot-discovery` now caps one grouped fresh-scan page to `512`
+       mints and gives the runtime-window-complete repair lane its own
+       `collect_buy_mints` page ceiling scaled from the longer repair budget,
+       instead of forcing that fail-closed repair path to stop on the normal
+       live fetch contract after the first few grouped pages
+     - repair telemetry now also exposes
+       `publication_truth_refresh_collect_buy_mints_phase_page_limit`, and
+       the same fail-closed recovery lane keeps the bounded pressure override
+       for the exact `collect_buy_mints / fresh_scan` single-page stall shape,
+       so operators can distinguish "one hot grouped page under sqlite
+       pressure" from a genuine lack of forward cursor progress
      - follow-up fix also closes the remaining pressure-gate churn path:
        when a fail-closed persisted rebuild is already in `Replay -> sol_leg`
        and requests immediate catch-up, the app now treats that exact request
@@ -7672,6 +7685,53 @@ Acceptance update, transept-certificate / guidon-seal layer (`2026-04-01`):
 7. Current production status remains unchanged:
    - the real host still remains non-green while Stage 3 / promoted 5-day
      truth remains a separate blocker for actual production activation
+   - this batch does not authorize or perform production activation
+
+Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
+
+1. The repo now has one more final immutable archival layer over the verified
+   choir-receipt session:
+   - `copybot_tiny_live_activation_package_clerestory_certificate`
+2. The new operator surface is explicit and bounded:
+   - `--plan-live-package-clerestory-certificate`
+   - `--render-live-package-clerestory-certificate --output <path>`
+   - `--run-live-package-clerestory-certificate --session-dir <path>`
+   - `--verify-live-package-clerestory-certificate --session-dir <path>`
+3. The contract stays source-of-truth-first:
+   - verified `choir_receipt` session is the direct primary input
+   - `--confirm-decision-packet-session-dir <path>` remains only a
+     confirmation-only anchor for the already reviewed nested decision-packet
+     contract
+   - no loose package / target / controller arguments are reintroduced
+4. The clerestory certificate is read-only and archival:
+   - it freezes the reviewed frozen-controller summary and current
+     refusal-vs-ready classification
+   - it freezes the canonical chain fingerprint plus ledger / registry /
+     filing / archive / closure / finality / consummation / completion /
+     culmination / summit / pinnacle / capstone / keystone / cornerstone /
+     foundation / bedrock / basal / substructure / plinth / pedestal / dais /
+     rostrum / podium / lectern / pulpit / chancel / apse / sanctuary / nave /
+     transept / choir identities
+   - it adds one final top-level summary plus one top-level immutable
+     `clerestory_certificate_sha256` over that fully culminated chain identity
+   - it does not enable production execution, mutate the target/service
+     contract, or submit real trades
+5. Verification is real and drift-intolerant:
+   - stored session/status/report artifacts must match fresh verified nested
+     choir-receipt truth
+   - stored top-level status.result / gate fields, nested step path, nested and
+     top-level identity fields, and coordinated nested `generated_at` retime
+     all fail verify when tampered
+6. Acceptance stayed on the lightweight bounded surface:
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_clerestory_certificate`
+   - targeted lib tests for
+     `tiny_live_activation::package_choir_receipt_clerestory_certificate`
+   - targeted bin tests for
+     `copybot_tiny_live_activation_package_clerestory_certificate`
+   - no heavy `turn_green` compile/test dependency was reintroduced
+7. Current production status remains unchanged:
+   - the real host still remains non-green while the separate
+     runtime/export/publication-truth incident keeps full Stage 3 non-green
    - this batch does not authorize or perform production activation
 
 Acceptance update, choir-receipt / ensign-seal layer (`2026-04-01`):
