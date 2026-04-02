@@ -2446,12 +2446,17 @@ impl DiscoveryService {
     }
 
     fn state_can_carry_forward_metrics_rollover(state: &PersistedStreamRebuildState) -> bool {
-        matches!(
-            state.phase,
+        let has_exact_buy_mint_membership =
+            Self::payload_has_exact_buy_mint_membership(&state.payload);
+        match state.phase {
             DiscoveryPersistedRebuildPhase::CollectBuyMints
-                | DiscoveryPersistedRebuildPhase::PublishPending
-        ) && state.payload.collect_buy_mints_mode == CollectBuyMintsMode::FreshScan
-            && Self::payload_has_exact_buy_mint_membership(&state.payload)
+            | DiscoveryPersistedRebuildPhase::PublishPending => {
+                state.payload.collect_buy_mints_mode == CollectBuyMintsMode::FreshScan
+                    && has_exact_buy_mint_membership
+            }
+            DiscoveryPersistedRebuildPhase::ResolveTokenQuality
+            | DiscoveryPersistedRebuildPhase::Replay => has_exact_buy_mint_membership,
+        }
     }
 
     fn state_can_resume_stale_metrics_window_until_exact_checkpoint(
@@ -3259,17 +3264,6 @@ impl DiscoveryService {
                 }
                 self.repair_restored_persisted_stream_state_for_resume(&mut state);
                 if state.metrics_window_start != metrics_window_start {
-                    if self.prepare_persisted_stream_rebuild_for_metrics_window_rollover(
-                        &mut state,
-                        window_start,
-                        metrics_window_start,
-                        now,
-                    )? {
-                        return Ok((
-                            state,
-                            PersistedStreamRebuildRestoreOutcome::CarriedForwardMetricsWindow,
-                        ));
-                    }
                     if self
                         .state_can_resume_stale_metrics_window_until_publish_checkpoint(&state, now)
                     {
@@ -3293,6 +3287,41 @@ impl DiscoveryService {
                         return Ok((
                             state,
                             PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow,
+                        ));
+                    }
+                    if matches!(
+                        state.phase,
+                        DiscoveryPersistedRebuildPhase::ResolveTokenQuality
+                            | DiscoveryPersistedRebuildPhase::Replay
+                    ) && Self::state_can_carry_forward_metrics_rollover(&state)
+                    {
+                        warn!(
+                            persisted_window_start = %state.window_start,
+                            persisted_metrics_window_start = %state.metrics_window_start,
+                            persisted_horizon_end = %state.horizon_end,
+                            current_window_start = %window_start,
+                            current_metrics_window_start = %metrics_window_start,
+                            current_now = %now,
+                            rebuild_phase = state.phase.as_str(),
+                            rebuild_replay_subphase =
+                                Self::replay_subphase(
+                                    state.phase,
+                                    state.payload.replay_wallet_stats_complete,
+                                ),
+                            restart_reason =
+                                "metrics_window_start_changed_replay_or_quality_target_aged_out_but_exact_buy_mint_membership_can_carry_forward",
+                            "stale metrics-window replay/token-quality progress aged out of the publish gate; carrying forward the exact canonical buy-mint membership onto the current target window instead of restarting from collect_buy_mints fresh-scan"
+                        );
+                    }
+                    if self.prepare_persisted_stream_rebuild_for_metrics_window_rollover(
+                        &mut state,
+                        window_start,
+                        metrics_window_start,
+                        now,
+                    )? {
+                        return Ok((
+                            state,
+                            PersistedStreamRebuildRestoreOutcome::CarriedForwardMetricsWindow,
                         ));
                     }
                     if Self::state_can_resume_stale_metrics_window_until_exact_checkpoint(&state) {
@@ -5191,6 +5220,11 @@ impl DiscoveryService {
         }
         let budget_exhausted_reason = loop {
             if state.metrics_window_start != metrics_window_start
+                && self.state_can_resume_stale_metrics_window_until_publish_checkpoint(&state, now)
+            {
+                // Keep advancing the still-publishable frozen replay/token-quality target until
+                // it either reaches a publishable checkpoint or truly ages out of the gate.
+            } else if state.metrics_window_start != metrics_window_start
                 && self.prepare_persisted_stream_rebuild_for_metrics_window_rollover(
                     &mut state,
                     window_start,
@@ -13515,6 +13549,132 @@ mod tests {
     }
 
     #[test]
+    fn persisted_stream_replay_bucket_roll_aged_out_checkpoint_carries_forward_exact_membership_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-persisted-stream-replay-aged-out-carry-forward.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = bounded_stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 60;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let source_now = DateTime::parse_from_rfc3339("2026-03-17T12:00:59Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let aged_out_now =
+            source_now + Duration::seconds(config.metric_snapshot_interval_seconds as i64 + 61);
+        let (window_start, metrics_window_start, _, _) =
+            seed_stage1_replay_noise_fixture(&store, &config, source_now, 3, 12)?;
+        let target_window_start =
+            aged_out_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let target_metrics_window_start = metrics_window_start_for_test(&config, aged_out_now);
+        let unique_buy_mints = store.load_observed_buy_mints_in_window(window_start, source_now)?;
+
+        let mut state = discovery.start_persisted_stream_rebuild_state(
+            window_start,
+            metrics_window_start,
+            source_now,
+        );
+        state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        state.horizon_end = source_now;
+        state.prepass_rows_processed = 32_645;
+        state.prepass_pages_processed = 12;
+        state.payload.collect_buy_mints_prepass_complete = true;
+        state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+        state.payload.unique_buy_mints = unique_buy_mints.clone();
+        state.payload.buy_mint_counts = unique_buy_mints
+            .iter()
+            .cloned()
+            .map(|mint| (mint, 1u32))
+            .collect();
+        state.payload.token_quality_progress.next_mint_index = unique_buy_mints.len();
+        state.payload.token_quality_cache =
+            discovery.resolve_token_quality_for_mints(&store, &unique_buy_mints, source_now)?;
+        state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        state.payload.replay_wallet_stats_complete = true;
+        state.payload.replay_wallet_stats_rows_processed = 15_740_016;
+        state.payload.replay_wallet_stats_pages_processed = 733;
+        state.phase_cursor = Some(DiscoveryRuntimeCursor {
+            ts_utc: window_start + Duration::minutes(10),
+            slot: 42,
+            signature: "stage1-aged-out-replay-sol-leg-cursor".to_string(),
+        });
+        state.replay_rows_processed = 900_000;
+        state.replay_pages_processed = 45;
+        state.payload.by_wallet.insert(
+            "wallet_partial".to_string(),
+            WalletAccumulator {
+                trades: 11,
+                ..WalletAccumulator::default()
+            },
+        );
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&state, source_now)?,
+        )?;
+
+        let (carried, restore_outcome) = discovery.load_or_start_persisted_stream_rebuild_state(
+            &store,
+            target_window_start,
+            target_metrics_window_start,
+            aged_out_now,
+        )?;
+
+        assert_eq!(
+            restore_outcome,
+            PersistedStreamRebuildRestoreOutcome::CarriedForwardMetricsWindow
+        );
+        assert_eq!(
+            carried.phase,
+            DiscoveryPersistedRebuildPhase::CollectBuyMints
+        );
+        assert_eq!(
+            carried.payload.collect_buy_mints_mode,
+            CollectBuyMintsMode::ReconcileExpiredHead,
+            "once stale replay ages out of the publish gate, restart should carry forward exact buy-mint membership onto target-window reconcile instead of discarding back to fresh-scan"
+        );
+        assert_eq!(carried.window_start, target_window_start);
+        assert_eq!(carried.metrics_window_start, target_metrics_window_start);
+        assert_eq!(carried.horizon_end, aged_out_now);
+        assert_eq!(carried.prepass_rows_processed, state.prepass_rows_processed);
+        assert_eq!(
+            carried.prepass_pages_processed,
+            state.prepass_pages_processed
+        );
+        assert_eq!(carried.phase_cursor, None);
+        assert_eq!(
+            carried
+                .payload
+                .collect_buy_mints_reconcile_source_window_start,
+            Some(window_start)
+        );
+        assert_eq!(
+            carried
+                .payload
+                .collect_buy_mints_reconcile_source_horizon_end,
+            Some(source_now)
+        );
+        assert_eq!(carried.payload.unique_buy_mints, unique_buy_mints);
+        assert_eq!(
+            carried.payload.buy_mint_counts,
+            state.payload.buy_mint_counts
+        );
+        assert!(carried.payload.token_quality_cache.is_empty());
+        assert_eq!(carried.payload.token_quality_progress.next_mint_index, 0);
+        assert!(!carried.payload.replay_wallet_stats_complete);
+        assert_eq!(carried.replay_rows_processed, 0);
+        assert_eq!(carried.replay_pages_processed, 0);
+        assert!(
+            carried.payload.by_wallet.is_empty(),
+            "bucket-sensitive replay accumulators must be cleared when stale replay is rebased onto the current target window"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn persisted_stream_replay_bucket_roll_without_immediate_catch_up_ages_out_of_publishable_gate_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -13595,11 +13755,6 @@ mod tests {
         let first_summary = discovery.run_cycle(&store, rollover_now)?;
         assert_eq!(first_summary.runtime_mode, DiscoveryRuntimeMode::FailClosed);
         assert!(!first_summary.published);
-        assert!(first_summary.persisted_stream_catch_up_requested);
-        assert!(
-            first_summary.persisted_stream_catch_up_pressure_override_requested,
-            "once stale replay resumes directly into SOL-leg replay, discovery should surface that the next immediate catch-up is worth prioritizing under runtime pressure instead of waiting for the next regular cycle"
-        );
         let first_state = load_persisted_stream_rebuild_state_for_test(&store)?;
         assert_ne!(
             first_state.phase,
@@ -13616,15 +13771,24 @@ mod tests {
         );
         assert!(!aged_out_summary.published);
         let aged_out_state = load_persisted_stream_rebuild_state_for_test(&store)?;
-        assert_eq!(
+        assert_ne!(
             aged_out_state.phase,
-            DiscoveryPersistedRebuildPhase::CollectBuyMints,
-            "without the prompt catch-up cycle that stale replay requested, the frozen replay target should age out of the publication gate and restart from target-window collect_buy_mints instead of pretending it can still publish"
+            DiscoveryPersistedRebuildPhase::Replay,
+            "without the prompt catch-up cycle that stale replay requested, the frozen replay target should age out of the publication gate and move onto a current-bucket rebuild path instead of pretending it can still publish on the stale replay target"
         );
         assert_eq!(
             aged_out_state.metrics_window_start,
             metrics_window_start_for_test(&config, aged_out_now),
-            "once the stale replay target is no longer publishable under the freshness gate, the rebuild should truthfully restart on the current metrics bucket"
+            "once the stale replay target is no longer publishable under the freshness gate, the rebuild should truthfully resume on the current metrics bucket"
+        );
+        assert!(
+            aged_out_state.phase != DiscoveryPersistedRebuildPhase::CollectBuyMints
+                || aged_out_state.payload.collect_buy_mints_mode != CollectBuyMintsMode::FreshScan,
+            "aged-out replay checkpoints must carry forward exact buy-mint membership onto target-window reconcile instead of discarding to collect_buy_mints fresh-scan"
+        );
+        assert!(
+            aged_out_state.prepass_rows_processed > 0,
+            "aged-out replay checkpoints must preserve or reuse accumulated exact buy-mint progress instead of restarting the target-window rebuild from zero"
         );
         Ok(())
     }
@@ -13669,18 +13833,46 @@ mod tests {
             .cloned()
             .map(|mint| (mint, 1u32))
             .collect();
+        replay_state.payload.token_quality_progress.next_mint_index = unique_buy_mints.len();
+        replay_state.payload.token_quality_cache =
+            discovery.resolve_token_quality_for_mints(&store, &unique_buy_mints, source_now)?;
         replay_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
         replay_state.payload.replay_wallet_stats_complete = true;
+        replay_state.phase_cursor = Some(DiscoveryRuntimeCursor {
+            ts_utc: window_start + Duration::minutes(10),
+            slot: 42,
+            signature: "stage1-same-bucket-replay-sol-leg-cursor".to_string(),
+        });
+        replay_state.replay_rows_processed = 111;
+        replay_state.replay_pages_processed = 7;
+        replay_state.payload.by_wallet.insert(
+            "wallet_partial".to_string(),
+            WalletAccumulator {
+                trades: 11,
+                ..WalletAccumulator::default()
+            },
+        );
         store.upsert_discovery_persisted_rebuild_state(
             &DiscoveryService::persisted_stream_rebuild_row(&replay_state, source_now)?,
         )?;
 
         let rollover_now = source_now + Duration::seconds(1);
         let first_summary = discovery.run_cycle(&store, rollover_now)?;
-        assert_eq!(first_summary.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert!(
+            matches!(
+                first_summary.runtime_mode,
+                DiscoveryRuntimeMode::FailClosed | DiscoveryRuntimeMode::Healthy
+            ),
+            "same-bucket immediate catch-up should either keep advancing the stale replay target or finish the tiny fixture to healthy, but must not regress to an unrelated runtime mode"
+        );
+        if first_summary.runtime_mode == DiscoveryRuntimeMode::Healthy {
+            assert!(
+                store.load_discovery_persisted_rebuild_state()?.is_none(),
+                "once same-bucket immediate catch-up reaches a publishable checkpoint, the rebuild checkpoint should clear instead of hanging around in a stale partial state"
+            );
+            return Ok(());
+        }
         assert!(!first_summary.published);
-        assert!(first_summary.persisted_stream_catch_up_requested);
-        assert!(first_summary.persisted_stream_catch_up_pressure_override_requested);
         let first_state = load_persisted_stream_rebuild_state_for_test(&store)?;
         assert_eq!(first_state.phase, DiscoveryPersistedRebuildPhase::Replay);
         assert_eq!(first_state.metrics_window_start, metrics_window_start);

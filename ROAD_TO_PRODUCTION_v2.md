@@ -7413,6 +7413,19 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        window until they either publish or age out of the freshness gate,
        instead of rewinding them back into `collect_buy_mints` at the first
        bucket rollover
+     - follow-up restart/resume fix now also rebases aged-out exact
+       `ResolveTokenQuality` / `Replay` checkpoints onto the current target
+       window via carried-forward `collect_buy_mints` reconcile, instead of
+       discarding them to `collect_buy_mints / fresh_scan`:
+       - operators should now expect restart logs that distinguish
+         `metrics_window_start_changed_but_existing_replay_target_still_publishable_under_gate`
+         from
+         `metrics_window_start_changed_replay_or_quality_target_aged_out_but_exact_buy_mint_membership_can_carry_forward`
+       - once the stale replay target truly ages out, the next persisted state
+         should move onto current-bucket reconcile / quality progression while
+         preserving exact canonical buy-mint membership, rather than resetting
+         `observed_swaps_loaded`, `wallets_buffered`, and quality progress all
+         the way back to a fresh-scan baseline
      - the repair stays fail-closed unless the journal covers the required
        window and the current runtime cursor lineage
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime

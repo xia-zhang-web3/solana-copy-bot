@@ -457,6 +457,14 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
        - the same checkpoint-specific widening now also applies after
          `wallet_stats_complete=true` when the live blocker is already
          `Replay -> sol_leg`
+       - restart/resume no longer throws away an aged-out exact replay/quality
+         checkpoint to `collect_buy_mints / fresh_scan`:
+         - while the frozen replay target is still publishable, `run_cycle`
+           keeps it on the stale target window
+         - once that stale target ages out, the runtime now carries forward the
+           exact canonical buy-mint membership into current-bucket
+           `collect_buy_mints` reconcile instead of restarting from a blank
+           fresh-scan baseline
        - operators should now expect
          `rebuild_replay_sol_leg_phase_page_limit` and
          `rebuild_replay_sol_leg_processed_floor_pages` on the widened runtime
