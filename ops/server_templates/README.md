@@ -509,6 +509,17 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
            `rebuild_replay_wallet_stats_frontier_saturated`, and
            `rebuild_replay_wallet_stats_frontier_saturated_inferred` when the
            widened lane is reacting to a still-open wallet frontier
+       - rollover carry-forwarded wallet-stats budget hints now also survive
+         the new target-window `ResolveTokenQuality -> Replay` handoff:
+         - replay truth still resets, but the handoff no longer silently drops
+           the carried budget floor / last-partial-cycle replay hints before
+           the first resumed replay yield
+         - operators should now expect
+           `rebuild_replay_wallet_stats_budget_floor_carried_forward_into_replay`
+           together with the carried budget/hint fields on the
+           token-quality -> replay transition log when the resumed replay lane
+           is actually starting from rolled-over budgeting memory instead of
+           from the tiny newly observed frontier
        - operators should now expect
          `rebuild_replay_sol_leg_phase_page_limit` and
          `rebuild_replay_sol_leg_processed_floor_pages` on the widened runtime

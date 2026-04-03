@@ -7487,6 +7487,25 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
          `rebuild_replay_wallet_stats_frontier_saturated_inferred` in the
          widened replay logs when the blocker is still
          `replay_wallet_stats_incomplete`
+     - follow-up carry-forward replay handoff fix now also preserves the
+       carried wallet-stats budgeting memory when the new target window reaches
+       replay:
+       - the live blocker after `ab0c6b6` was no longer missing rollover carry
+         itself; the defect was that the carry-forward log could show a large
+         `replay_wallet_stats_budget_floor_wallets`, but the subsequent
+         `ResolveTokenQuality -> Replay` transition reset replay progress so
+         aggressively that the resumed replay checkpoint started widening again
+         from the tiny newly observed frontier
+       - the target-window replay handoff now resets bucket-sensitive replay
+         truth while preserving carry-only wallet-stats hints:
+         `replay_wallet_stats_budget_floor_wallets`,
+         `replay_wallet_stats_last_partial_cycle_pages_processed`,
+         `replay_wallet_stats_last_partial_cycle_wallets_processed`, and
+         `replay_wallet_stats_last_partial_cycle_elapsed_ms`
+       - operators should now expect
+         `rebuild_replay_wallet_stats_budget_floor_carried_forward_into_replay`
+         on the token-quality -> replay handoff log when a rolled-over replay
+         checkpoint is actually reusing its carried budget memory
      - the repair stays fail-closed unless the journal covers the required
        window and the current runtime cursor lineage
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime
