@@ -7422,10 +7422,40 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
          from
          `metrics_window_start_changed_replay_or_quality_target_aged_out_but_exact_buy_mint_membership_can_carry_forward`
        - once the stale replay target truly ages out, the next persisted state
-         should move onto current-bucket reconcile / quality progression while
-         preserving exact canonical buy-mint membership, rather than resetting
-         `observed_swaps_loaded`, `wallets_buffered`, and quality progress all
-         the way back to a fresh-scan baseline
+       should move onto current-bucket reconcile / quality progression while
+       preserving exact canonical buy-mint membership, rather than resetting
+       `observed_swaps_loaded`, `wallets_buffered`, and quality progress all
+       the way back to a fresh-scan baseline
+     - follow-up wallet-stats recovery fix now also carries forward
+       budget-only replay hints across bucket rollover:
+       - rollover still clears bucket-sensitive replay truth, but it now keeps
+         the last observed wallet frontier size plus last partial
+         wallet-stats `pages_processed` / `elapsed_ms` as non-authoritative
+         budgeting hints for the next target-window replay
+       - the next post-rollover `Replay -> wallet_stats` contract therefore no
+         longer has to relearn the same live wallet frontier from near-zero
+         `wallets_buffered` before widening again
+       - operators should now expect
+         `rebuild_replay_wallet_stats_budget_floor_wallets`,
+         `rebuild_replay_wallet_stats_budget_floor_carried_forward`, and
+         `rebuild_replay_wallet_stats_target_ms_per_page` in runtime logs when
+         the replay checkpoint is being widened after rollover
+     - follow-up deep wallet-stats recovery fix now also widens from real
+       processed replay backlog instead of only from the current buffered
+       wallet count:
+       - the live blocker after `d83c39e` was no longer restart rewind; it was
+         deep `Replay -> wallet_stats` still waiting for full wallet-id source
+         exhaustion even though the host was making true cursor progress
+       - the checkpoint-specific wallet-stats lane now scales from
+         `replay_wallet_stats_pages_processed` plus the last partial cycle's
+         observed ms/page, up to a bounded `45m` recovery contract instead of
+         the old `15m` ceiling
+       - operators should now expect
+         `rebuild_replay_wallet_stats_progress_floor_pages`,
+         `rebuild_replay_wallet_stats_wallet_batch_size`, and
+         `rebuild_replay_wallet_stats_completion_requirement="wallet_id_source_exhaustion"`
+         in the owning runtime logs when the host is still inside
+         `Replay -> wallet_stats`
      - the repair stays fail-closed unless the journal covers the required
        window and the current runtime cursor lineage
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime

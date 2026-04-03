@@ -465,6 +465,27 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
            exact canonical buy-mint membership into current-bucket
            `collect_buy_mints` reconcile instead of restarting from a blank
            fresh-scan baseline
+       - post-rollover `Replay -> wallet_stats` now also carries forward
+         budget-only replay hints:
+         - replay truth still resets, but the next target-window replay keeps
+           the last observed wallet frontier size and last partial
+           wallet-stats `pages_processed` / `elapsed_ms` as budgeting hints
+         - operators should now expect
+           `rebuild_replay_wallet_stats_budget_floor_wallets`,
+           `rebuild_replay_wallet_stats_budget_floor_carried_forward`, and
+           `rebuild_replay_wallet_stats_target_ms_per_page` on widened replay
+           logs after rollover
+       - deep `Replay -> wallet_stats` widening now also scales from the
+         processed replay backlog itself:
+         - if the host is still making true wallet-id cursor progress but has
+           not yet exhausted the wallet source, the widened lane now uses
+           `replay_wallet_stats_pages_processed` plus the last partial cycle's
+           observed ms/page, up to a bounded `45m` recovery contract
+         - operators should now expect
+           `rebuild_replay_wallet_stats_progress_floor_pages`,
+           `rebuild_replay_wallet_stats_wallet_batch_size`, and
+           `rebuild_replay_wallet_stats_completion_requirement="wallet_id_source_exhaustion"`
+           when the current blocker is still `Replay -> wallet_stats`
        - operators should now expect
          `rebuild_replay_sol_leg_phase_page_limit` and
          `rebuild_replay_sol_leg_processed_floor_pages` on the widened runtime
