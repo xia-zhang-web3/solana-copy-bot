@@ -470,11 +470,19 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
          - replay truth still resets, but the next target-window replay keeps
            the last observed wallet frontier size and last partial
            wallet-stats `pages_processed` / `elapsed_ms` as budgeting hints
+       - operators should now expect
+         `rebuild_replay_wallet_stats_budget_floor_wallets`,
+         `rebuild_replay_wallet_stats_budget_floor_carried_forward`, and
+         `rebuild_replay_wallet_stats_target_ms_per_page` on widened replay
+         logs after rollover
+       - resumed replay checkpoints that predate those persisted hint fields
+         are now repaired in place:
+         - discovery backfills `replay_wallet_stats_budget_floor_wallets` from
+           the already persisted wallet frontier and immediately re-persists
+           that checkpoint
          - operators should now expect
-           `rebuild_replay_wallet_stats_budget_floor_wallets`,
-           `rebuild_replay_wallet_stats_budget_floor_carried_forward`, and
-           `rebuild_replay_wallet_stats_target_ms_per_page` on widened replay
-           logs after rollover
+           `rebuild_replay_wallet_stats_resume_budget_hint_source="current_observed_frontier"`
+           when that resume-time repair fires
        - deep `Replay -> wallet_stats` widening now also scales from the
          processed replay backlog itself:
          - if the host is still making true wallet-id cursor progress but has

@@ -7440,6 +7440,15 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
          `rebuild_replay_wallet_stats_budget_floor_carried_forward`, and
          `rebuild_replay_wallet_stats_target_ms_per_page` in runtime logs when
          the replay checkpoint is being widened after rollover
+     - follow-up resume repair now also backfills missing wallet-stats budget
+       floor hints on pre-upgrade replay checkpoints:
+       - if a resumed `Replay -> wallet_stats` checkpoint predates the explicit
+         budget-hint fields, restore now seeds
+         `replay_wallet_stats_budget_floor_wallets` from the already persisted
+         wallet frontier and immediately writes the repaired checkpoint back
+       - operators should now expect an explicit
+         `current_observed_frontier` resume-backfill log instead of silently
+         widening from `0` until the next bounded yield
      - follow-up deep wallet-stats recovery fix now also widens from real
        processed replay backlog instead of only from the current buffered
        wallet count:

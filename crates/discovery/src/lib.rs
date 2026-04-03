@@ -3159,19 +3159,69 @@ impl DiscoveryService {
         cache_changed || next_index_changed
     }
 
+    fn repair_replay_wallet_stats_budget_hints_for_resume(
+        &self,
+        state: &mut PersistedStreamRebuildState,
+    ) -> bool {
+        if state.phase != DiscoveryPersistedRebuildPhase::Replay
+            || state.payload.replay_wallet_stats_complete
+        {
+            return false;
+        }
+
+        let inferred_budget_floor_wallets =
+            Self::replay_wallet_stats_current_observed_wallet_floor_wallets(state);
+        if inferred_budget_floor_wallets == 0
+            || state.payload.replay_wallet_stats_budget_floor_wallets
+                >= inferred_budget_floor_wallets
+        {
+            return false;
+        }
+
+        let previous_budget_floor_wallets = state.payload.replay_wallet_stats_budget_floor_wallets;
+        state.payload.replay_wallet_stats_budget_floor_wallets = inferred_budget_floor_wallets;
+        info!(
+            rebuild_window_start = %state.window_start,
+            rebuild_horizon_end = %state.horizon_end,
+            rebuild_phase = state.phase.as_str(),
+            rebuild_replay_subphase =
+                Self::replay_subphase(state.phase, state.payload.replay_wallet_stats_complete),
+            rebuild_replay_wallet_stats_budget_floor_wallets_before =
+                previous_budget_floor_wallets,
+            rebuild_replay_wallet_stats_budget_floor_wallets_after =
+                state.payload.replay_wallet_stats_budget_floor_wallets,
+            rebuild_replay_wallet_stats_pages_processed =
+                state.payload.replay_wallet_stats_pages_processed,
+            rebuild_replay_wallet_stats_rows_processed =
+                state.payload.replay_wallet_stats_rows_processed,
+            rebuild_replay_wallet_stats_wallet_cursor =
+                state.payload.replay_wallet_stats_wallet_cursor.as_deref(),
+            rebuild_wallets_buffered = state.payload.by_wallet.len(),
+            rebuild_replay_wallet_stats_last_partial_cycle_pages_processed =
+                state.payload.replay_wallet_stats_last_partial_cycle_pages_processed,
+            rebuild_replay_wallet_stats_last_partial_cycle_elapsed_ms =
+                state.payload.replay_wallet_stats_last_partial_cycle_elapsed_ms,
+            rebuild_replay_wallet_stats_resume_budget_hint_source =
+                "current_observed_frontier",
+            "backfilled missing replay wallet-stats budgeting floor from resumed checkpoint progress because the persisted checkpoint did not yet carry an explicit wallet-frontier hint"
+        );
+        true
+    }
+
     fn repair_restored_persisted_stream_state_for_resume(
         &self,
         state: &mut PersistedStreamRebuildState,
-    ) {
+    ) -> bool {
+        let mut changed = false;
         match state.phase {
             DiscoveryPersistedRebuildPhase::CollectBuyMints => {
                 if Self::payload_has_exact_buy_mint_membership(&state.payload) {
                     Self::sync_unique_buy_mints_from_counts(&mut state.payload);
                 }
                 if state.payload.collect_buy_mints_cursor_token.is_some() {
-                    self.repair_collect_buy_mints_payload_for_cursor(state);
+                    changed |= self.repair_collect_buy_mints_payload_for_cursor(state);
                 }
-                self.repair_collect_buy_mints_quality_progress_for_resume(state);
+                changed |= self.repair_collect_buy_mints_quality_progress_for_resume(state);
                 if state.payload.collect_buy_mints_mode != CollectBuyMintsMode::FreshScan
                     && (state
                         .payload
@@ -3204,6 +3254,7 @@ impl DiscoveryService {
                         .collect_buy_mints_reconcile_new_tail_slice_end_token = None;
                     Self::clear_reconcile_expired_head_pending_batch(&mut state.payload);
                     Self::clear_reconcile_new_tail_pending_batch(&mut state.payload);
+                    changed = true;
                 }
             }
             DiscoveryPersistedRebuildPhase::ResolveTokenQuality => {
@@ -3221,6 +3272,7 @@ impl DiscoveryService {
                     state.payload.token_quality_cache.clear();
                     state.payload.token_quality_progress =
                         quality_cache::TokenQualityResolutionProgress::default();
+                    changed = true;
                 }
             }
             DiscoveryPersistedRebuildPhase::Replay
@@ -3252,6 +3304,7 @@ impl DiscoveryService {
                         );
                     }
                     Self::reset_replay_progress_for_optimized_resume(state);
+                    changed = true;
                 }
                 if Self::canonicalize_unique_buy_mints(&mut state.payload.unique_buy_mints) {
                     warn!(
@@ -3276,9 +3329,12 @@ impl DiscoveryService {
                     state.payload.pending_rug_checks.clear();
                     state.payload.token_pending_buy_starts.clear();
                     state.payload.completed_snapshots.clear();
+                    changed = true;
                 }
+                changed |= self.repair_replay_wallet_stats_budget_hints_for_resume(state);
             }
         }
+        changed
     }
 
     fn derive_legacy_collect_buy_mints_safe_prefix_len(
@@ -3361,7 +3417,11 @@ impl DiscoveryService {
                         PersistedStreamRebuildRestoreOutcome::StartedFresh,
                     ));
                 }
-                self.repair_restored_persisted_stream_state_for_resume(&mut state);
+                let repaired_for_resume =
+                    self.repair_restored_persisted_stream_state_for_resume(&mut state);
+                if repaired_for_resume {
+                    self.persist_persisted_stream_rebuild_state(store, &mut state, now)?;
+                }
                 if state.metrics_window_start != metrics_window_start {
                     if self
                         .state_can_resume_stale_metrics_window_until_publish_checkpoint(&state, now)
@@ -13991,6 +14051,106 @@ mod tests {
     }
 
     #[test]
+    fn persisted_stream_replay_bucket_roll_legacy_checkpoint_without_budget_hint_still_carries_wallet_frontier_floor_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-persisted-stream-replay-aged-out-legacy-hintless-carry-forward.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = bounded_stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 60;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let source_now = DateTime::parse_from_rfc3339("2026-03-17T12:00:59Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let aged_out_now =
+            source_now + Duration::seconds(config.metric_snapshot_interval_seconds as i64 + 61);
+        let (window_start, metrics_window_start, _, _) =
+            seed_stage1_replay_noise_fixture(&store, &config, source_now, 3, 12)?;
+        let target_window_start =
+            aged_out_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let target_metrics_window_start = metrics_window_start_for_test(&config, aged_out_now);
+        let unique_buy_mints = store.load_observed_buy_mints_in_window(window_start, source_now)?;
+
+        let mut state = discovery.start_persisted_stream_rebuild_state(
+            window_start,
+            metrics_window_start,
+            source_now,
+        );
+        state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        state.horizon_end = source_now;
+        state.prepass_rows_processed = 32_645;
+        state.prepass_pages_processed = 12;
+        state.payload.collect_buy_mints_prepass_complete = true;
+        state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+        state.payload.unique_buy_mints = unique_buy_mints.clone();
+        state.payload.buy_mint_counts = unique_buy_mints
+            .iter()
+            .cloned()
+            .map(|mint| (mint, 1u32))
+            .collect();
+        state.payload.token_quality_progress.next_mint_index = unique_buy_mints.len();
+        state.payload.token_quality_cache =
+            discovery.resolve_token_quality_for_mints(&store, &unique_buy_mints, source_now)?;
+        state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        state.payload.replay_wallet_stats_complete = false;
+        state.payload.replay_wallet_stats_rows_processed = 12_419_939;
+        state.payload.replay_wallet_stats_pages_processed = 733;
+        state.payload.replay_wallet_stats_wallet_cursor =
+            Some("legacy-hintless-aged-out-wallet-stats-cursor".to_string());
+        state
+            .payload
+            .replay_wallet_stats_day_count_source_progress
+            .fast_path_wallets_processed = 656_100;
+        state.phase_cursor = Some(DiscoveryRuntimeCursor {
+            ts_utc: window_start + Duration::minutes(10),
+            slot: 42,
+            signature: "stage1-aged-out-replay-wallet-stats-cursor".to_string(),
+        });
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&state, source_now)?,
+        )?;
+
+        let (carried, restore_outcome) = discovery.load_or_start_persisted_stream_rebuild_state(
+            &store,
+            target_window_start,
+            target_metrics_window_start,
+            aged_out_now,
+        )?;
+
+        assert_eq!(
+            restore_outcome,
+            PersistedStreamRebuildRestoreOutcome::CarriedForwardMetricsWindow
+        );
+        assert_eq!(
+            carried.phase,
+            DiscoveryPersistedRebuildPhase::CollectBuyMints
+        );
+        assert_eq!(
+            carried.payload.replay_wallet_stats_budget_floor_wallets,
+            656_100,
+            "aged-out replay carry-forward must recover the wallet frontier floor from legacy checkpoints that predate explicit replay budgeting hints"
+        );
+        assert_eq!(
+            carried
+                .payload
+                .replay_wallet_stats_last_partial_cycle_pages_processed,
+            0
+        );
+        assert_eq!(
+            carried
+                .payload
+                .replay_wallet_stats_last_partial_cycle_elapsed_ms,
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
     fn persisted_stream_replay_bucket_roll_without_immediate_catch_up_ages_out_of_publishable_gate_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -15113,6 +15273,96 @@ mod tests {
                 .is_some_and(|limit| limit > 2_475),
             "post-rollover replay should immediately reuse the carried wallet frontier as a budgeting floor instead of relearning backlog from near-zero buffered wallets before the deep contract can widen"
         );
+    }
+
+    #[test]
+    fn persisted_stream_replay_resume_backfills_missing_wallet_stats_budget_hint_from_existing_progress_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-persisted-stream-replay-resume-backfills-budget-floor.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-03T07:24:59Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let restart_now = now + Duration::seconds(24);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 20_000;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let mut state = discovery.start_persisted_stream_rebuild_state(
+            now - Duration::days(config.scoring_window_days.max(1) as i64),
+            metrics_window_start_for_test(&config, now),
+            now,
+        );
+        state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        state.horizon_end = now;
+        state.payload.collect_buy_mints_prepass_complete = true;
+        state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+        state.payload.unique_buy_mints =
+            vec!["TokenReplayDeep11111111111111111111111111".to_string()];
+        state.payload.buy_mint_counts = state
+            .payload
+            .unique_buy_mints
+            .iter()
+            .cloned()
+            .map(|mint| (mint, 1u32))
+            .collect();
+        state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        state.payload.replay_wallet_stats_complete = false;
+        state.payload.replay_wallet_stats_rows_processed = 417_187;
+        state.payload.replay_wallet_stats_pages_processed = 31;
+        state.payload.replay_wallet_stats_wallet_cursor =
+            Some("resume-backfill-wallet-stats-cursor".to_string());
+        state
+            .payload
+            .replay_wallet_stats_day_count_source_progress
+            .fast_path_wallets_processed = 27_000;
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&state, now)?,
+        )?;
+
+        let (resumed, restore_outcome) = discovery.load_or_start_persisted_stream_rebuild_state(
+            &store,
+            state.window_start,
+            state.metrics_window_start,
+            restart_now,
+        )?;
+
+        assert_eq!(
+            restore_outcome,
+            PersistedStreamRebuildRestoreOutcome::ResumedExisting
+        );
+        assert_eq!(
+            resumed.payload.replay_wallet_stats_budget_floor_wallets,
+            27_000,
+            "resume should backfill the missing wallet frontier hint from already-persisted wallet-stats progress instead of waiting for another full bounded cycle"
+        );
+        assert_eq!(
+            resumed
+                .payload
+                .replay_wallet_stats_last_partial_cycle_pages_processed,
+            0
+        );
+        assert_eq!(
+            resumed
+                .payload
+                .replay_wallet_stats_last_partial_cycle_elapsed_ms,
+            0
+        );
+        let persisted = load_persisted_stream_rebuild_state_for_test(&store)?;
+        assert_eq!(
+            persisted.payload.replay_wallet_stats_budget_floor_wallets,
+            27_000,
+            "resume-time backfill should be durably flushed so the next restart or bounded cycle sees the repaired budgeting floor immediately"
+        );
+        Ok(())
     }
 
     #[test]
