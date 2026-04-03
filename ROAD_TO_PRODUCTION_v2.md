@@ -7465,6 +7465,28 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
          `rebuild_replay_wallet_stats_completion_requirement="wallet_id_source_exhaustion"`
          in the owning runtime logs when the host is still inside
          `Replay -> wallet_stats`
+     - follow-up wallet-stats frontier fix now also widens from an explicitly
+       open saturated frontier, not only from the already processed prefix:
+       - the live blocker after `ab7bdbe` was narrower again: cursor progress
+         was real, publication state refreshed, but the last bounded
+         wallet-stats chunk could still end on a fully saturated wallet-id
+         frontier, which meant the remaining work was larger than the
+         processed-prefix estimate suggested
+       - the checkpoint-specific wallet-stats lane now persists and carries
+         `replay_wallet_stats_last_partial_cycle_wallets_processed`; when the
+         last bounded chunk stayed saturated, deep recovery widens from
+         `progress_floor_pages + open_frontier_floor_pages` instead of waiting
+         for another equally full cycle to prove the same fact again
+       - pre-upgrade checkpoints that do not yet carry the explicit last-cycle
+         wallet count now infer the same frontier saturation from overall
+         wallet density on resume
+       - operators should now expect
+         `rebuild_replay_wallet_stats_last_partial_cycle_wallets_processed`,
+         `rebuild_replay_wallet_stats_open_frontier_floor_pages`,
+         `rebuild_replay_wallet_stats_frontier_saturated`, and
+         `rebuild_replay_wallet_stats_frontier_saturated_inferred` in the
+         widened replay logs when the blocker is still
+         `replay_wallet_stats_incomplete`
      - the repair stays fail-closed unless the journal covers the required
        window and the current runtime cursor lineage
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime

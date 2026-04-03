@@ -494,6 +494,21 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
            `rebuild_replay_wallet_stats_wallet_batch_size`, and
            `rebuild_replay_wallet_stats_completion_requirement="wallet_id_source_exhaustion"`
            when the current blocker is still `Replay -> wallet_stats`
+       - deep `Replay -> wallet_stats` widening now also treats a fully
+         saturated last bounded chunk as proof of an open remaining frontier:
+         - discovery persists
+           `replay_wallet_stats_last_partial_cycle_wallets_processed` and uses
+           it to widen from `processed_prefix + open_frontier_floor_pages`
+           instead of only from the already processed prefix
+         - older resumed checkpoints that do not yet have the explicit
+           last-cycle wallet count infer the same frontier saturation from the
+           persisted replay density on resume
+         - operators should now expect
+           `rebuild_replay_wallet_stats_last_partial_cycle_wallets_processed`,
+           `rebuild_replay_wallet_stats_open_frontier_floor_pages`,
+           `rebuild_replay_wallet_stats_frontier_saturated`, and
+           `rebuild_replay_wallet_stats_frontier_saturated_inferred` when the
+           widened lane is reacting to a still-open wallet frontier
        - operators should now expect
          `rebuild_replay_sol_leg_phase_page_limit` and
          `rebuild_replay_sol_leg_processed_floor_pages` on the widened runtime
