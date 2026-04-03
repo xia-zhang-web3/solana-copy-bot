@@ -514,12 +514,24 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
          - replay truth still resets, but the handoff no longer silently drops
            the carried budget floor / last-partial-cycle replay hints before
            the first resumed replay yield
+       - operators should now expect
+         `rebuild_replay_wallet_stats_budget_floor_carried_forward_into_replay`
+         together with the carried budget/hint fields on the
+         token-quality -> replay transition log when the resumed replay lane
+         is actually starting from rolled-over budgeting memory instead of
+         from the tiny newly observed frontier
+       - persistently saturated `Replay -> wallet_stats` checkpoints can now
+         also widen from the remaining publishable lifetime of the current
+         target window, not only from the already processed frontier:
+         - this applies only after replay has already consumed multiple
+           catch-up-sized wallet-stats chunks and the last bounded chunk still
+           ended on a saturated wallet frontier
          - operators should now expect
-           `rebuild_replay_wallet_stats_budget_floor_carried_forward_into_replay`
-           together with the carried budget/hint fields on the
-           token-quality -> replay transition log when the resumed replay lane
-           is actually starting from rolled-over budgeting memory instead of
-           from the tiny newly observed frontier
+           `rebuild_replay_wallet_stats_publishable_horizon_remaining_ms`,
+           `rebuild_replay_wallet_stats_persistently_open_frontier`, and
+           `rebuild_replay_wallet_stats_publishable_horizon_budget_floor_applied`
+           on checkpoint-specific replay widening logs when the resumed replay
+           checkpoint is still blocked on `replay_wallet_stats_incomplete`
        - operators should now expect
          `rebuild_replay_sol_leg_phase_page_limit` and
          `rebuild_replay_sol_leg_processed_floor_pages` on the widened runtime

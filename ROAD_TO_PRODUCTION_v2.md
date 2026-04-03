@@ -7506,6 +7506,27 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
          `rebuild_replay_wallet_stats_budget_floor_carried_forward_into_replay`
          on the token-quality -> replay handoff log when a rolled-over replay
          checkpoint is actually reusing its carried budget memory
+     - follow-up deep replay convergence fix now also uses the remaining
+       publishable lifetime of the current target window as a budget floor for
+       persistently saturated `Replay -> wallet_stats` checkpoints:
+       - the live blocker after fresh rebuild `19f65d7` was no longer missing
+         carry-forward or missing wallet-frontier hints; the resumed
+         checkpoint already had real cursor progress, open-frontier saturation,
+         and explicit last-partial-cycle hints, but the contract still widened
+         only from backlog heuristics and could yield partial again before the
+         same target window aged out of the freshness gate
+       - the checkpoint-specific deepening path now recognizes the narrower
+         shape "multiple full catch-up lanes already processed, last bounded
+         wallet-stats chunk still saturated, target window still publishable"
+         and can raise the effective wallet-stats lane to the remaining safe
+         horizon budget, still capped by the existing deep replay max
+       - operators should now expect
+         `rebuild_replay_wallet_stats_publishable_horizon_remaining_ms`,
+         `rebuild_replay_wallet_stats_persistently_open_frontier`, and
+         `rebuild_replay_wallet_stats_publishable_horizon_budget_floor_applied`
+         on checkpoint-specific replay widening logs when the blocker is still
+         `replay_wallet_stats_incomplete` for a frontier-heavy resumed replay
+         checkpoint
      - the repair stays fail-closed unless the journal covers the required
        window and the current runtime cursor lineage
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime
