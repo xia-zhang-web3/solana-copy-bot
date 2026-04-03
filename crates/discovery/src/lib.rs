@@ -950,6 +950,10 @@ struct PersistedStreamRebuildPayload {
     replay_wallet_stats_last_partial_cycle_wallets_processed: usize,
     #[serde(default)]
     replay_wallet_stats_last_partial_cycle_elapsed_ms: u64,
+    #[serde(default)]
+    replay_candidate_activity_backfill_required: bool,
+    #[serde(default)]
+    replay_candidate_activity_backfill_pending: bool,
     token_quality_cache: HashMap<String, quality_cache::TokenQualityResolution>,
     token_quality_progress: quality_cache::TokenQualityResolutionProgress,
     by_wallet: HashMap<String, WalletAccumulator>,
@@ -1147,7 +1151,7 @@ impl DiscoveryService {
         collect_buy_mints_mode: CollectBuyMintsMode,
         quality_next_mint_index: usize,
         unique_buy_mints: usize,
-        replay_wallet_stats_complete: bool,
+        replay_subphase: Option<&'static str>,
         phase_cursor_present: bool,
     ) -> &'static str {
         match phase {
@@ -1167,15 +1171,12 @@ impl DiscoveryService {
                     "token_quality_handoff_pending"
                 }
             }
-            DiscoveryPersistedRebuildPhase::Replay => {
-                if !replay_wallet_stats_complete {
-                    "replay_wallet_stats_incomplete"
-                } else if phase_cursor_present {
-                    "replay_sol_leg_incomplete"
-                } else {
-                    "replay_post_wallet_stats_handoff_pending"
-                }
-            }
+            DiscoveryPersistedRebuildPhase::Replay => match replay_subphase {
+                Some("wallet_stats") => "replay_wallet_stats_incomplete",
+                Some("activity_backfill") => "replay_candidate_activity_backfill_incomplete",
+                _ if phase_cursor_present => "replay_sol_leg_incomplete",
+                _ => "replay_post_wallet_stats_handoff_pending",
+            },
             DiscoveryPersistedRebuildPhase::PublishPending => "publish_pending_flush",
         }
     }
@@ -1188,7 +1189,11 @@ impl DiscoveryService {
             state.payload.collect_buy_mints_mode,
             state.payload.token_quality_progress.next_mint_index,
             state.payload.unique_buy_mints.len(),
-            state.payload.replay_wallet_stats_complete,
+            Self::replay_subphase(
+                state.phase,
+                state.payload.replay_wallet_stats_complete,
+                state.payload.replay_candidate_activity_backfill_pending,
+            ),
             state.phase_cursor.is_some(),
         )
     }
@@ -1201,7 +1206,7 @@ impl DiscoveryService {
             telemetry.collect_buy_mints_mode,
             telemetry.quality_next_mint_index,
             telemetry.unique_buy_mints,
-            telemetry.replay_wallet_stats_complete,
+            telemetry.replay_subphase,
             telemetry.phase_cursor.is_some(),
         )
     }
@@ -1209,14 +1214,17 @@ impl DiscoveryService {
     fn replay_subphase(
         phase: DiscoveryPersistedRebuildPhase,
         replay_wallet_stats_complete: bool,
+        replay_candidate_activity_backfill_pending: bool,
     ) -> Option<&'static str> {
         if phase != DiscoveryPersistedRebuildPhase::Replay {
             return None;
         }
-        Some(if replay_wallet_stats_complete {
-            "sol_leg"
-        } else {
+        Some(if !replay_wallet_stats_complete {
             "wallet_stats"
+        } else if replay_candidate_activity_backfill_pending {
+            "activity_backfill"
+        } else {
+            "sol_leg"
         })
     }
 
@@ -2395,8 +2403,17 @@ impl DiscoveryService {
     ) -> bool {
         state.phase == DiscoveryPersistedRebuildPhase::Replay
             && state.payload.replay_wallet_stats_complete
+            && !state.payload.replay_candidate_activity_backfill_pending
             && state.phase_cursor.is_some()
             && state.replay_rows_processed > 0
+    }
+
+    fn state_needs_deep_replay_candidate_activity_backfill_priority_recovery_contract(
+        state: &PersistedStreamRebuildState,
+    ) -> bool {
+        state.phase == DiscoveryPersistedRebuildPhase::Replay
+            && state.payload.replay_candidate_activity_backfill_pending
+            && (!state.payload.by_wallet.is_empty() || state.phase_cursor.is_some())
     }
 
     fn replay_sol_leg_processed_floor_pages(
@@ -2542,7 +2559,47 @@ impl DiscoveryService {
             };
         }
         if !Self::state_needs_deep_replay_sol_leg_priority_recovery_contract(state) {
-            return contract;
+            if !Self::state_needs_deep_replay_candidate_activity_backfill_priority_recovery_contract(
+                state,
+            ) {
+                return contract;
+            }
+            let baseline_time_budget = contract.time_budget.max(StdDuration::from_millis(
+                DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MIN_TIME_BUDGET_MS,
+            ));
+            let processed_floor_pages =
+                Self::replay_sol_leg_processed_floor_pages(fetch_limit, state);
+            let deep_time_budget = self.deep_replay_sol_leg_target_time_budget(
+                baseline_time_budget,
+                fetch_page_limit,
+                processed_floor_pages,
+            );
+            let deep_reason = if deep_time_budget > baseline_time_budget {
+                Some("deep_replay_candidate_activity_backfill_large_processed_backlog")
+            } else {
+                Some("deep_replay_candidate_activity_backfill_incomplete")
+            };
+            return PersistedStreamPriorityRecoveryContract {
+                time_budget: deep_time_budget,
+                collect_buy_mints_phase_page_limit_override: Some(
+                    self.collect_buy_mints_repair_phase_page_limit(
+                        fetch_limit,
+                        fetch_page_limit,
+                        deep_time_budget,
+                    ),
+                ),
+                replay_wallet_stats_phase_page_limit_override: Some(
+                    self.replay_wallet_stats_repair_phase_page_limit(
+                        fetch_limit,
+                        fetch_page_limit,
+                        deep_time_budget,
+                    ),
+                ),
+                replay_sol_leg_phase_page_limit_override: Some(
+                    self.replay_sol_leg_repair_phase_page_limit(fetch_page_limit, deep_time_budget),
+                ),
+                reason: deep_reason,
+            };
         }
 
         let baseline_time_budget = contract.time_budget.max(StdDuration::from_millis(
@@ -2897,6 +2954,35 @@ impl DiscoveryService {
         fetch_limit.max(1).min(REPLAY_WALLET_STATS_WALLET_BATCH_CAP)
     }
 
+    fn can_handoff_replay_wallet_stats_to_sol_leg_with_candidate_activity_backfill(
+        &self,
+        state: &PersistedStreamRebuildState,
+        advance: &PersistedStreamPhaseAdvance,
+        fetch_limit: usize,
+        replay_wallet_stats_phase_page_limit_override: Option<usize>,
+    ) -> bool {
+        if replay_wallet_stats_phase_page_limit_override.is_none()
+            || self.config.min_buy_count == 0
+            || state.payload.replay_wallet_stats_complete
+            || advance.source_exhausted
+            || state.payload.replay_wallet_stats_wallet_cursor.is_none()
+            || advance.replay_wallet_stats_pages_processed == 0
+        {
+            return false;
+        }
+        let wallets_processed = advance
+            .replay_wallet_stats_day_count_source_progress
+            .total_wallets_processed();
+        if wallets_processed == 0 {
+            return false;
+        }
+        let wallet_batch_size = Self::replay_wallet_stats_wallet_batch_size(fetch_limit).max(1);
+        wallets_processed
+            >= advance
+                .replay_wallet_stats_pages_processed
+                .saturating_mul(wallet_batch_size)
+    }
+
     fn observe_replay_wallet_activity_summary(
         payload: &mut PersistedStreamRebuildPayload,
         row: ObservedWalletActivityRow,
@@ -2924,6 +3010,107 @@ impl DiscoveryService {
                 .saturating_add(row.active_day_count),
         );
         entry.suspicious |= row.suspicious;
+    }
+
+    fn advance_persisted_stream_replay_candidate_wallet_activity_backfill(
+        &self,
+        store: &SqliteStore,
+        state: &mut PersistedStreamRebuildState,
+        fetch_limit: usize,
+        fetch_page_limit: usize,
+        deadline: Instant,
+    ) -> Result<PersistedStreamPhaseAdvance> {
+        if state.payload.by_wallet.is_empty() {
+            state.payload.replay_candidate_activity_backfill_pending = false;
+            state.phase_cursor = None;
+            return Ok(PersistedStreamPhaseAdvance {
+                rows_processed: 0,
+                pages_processed: 0,
+                replay_wallet_stats_rows_processed: 0,
+                replay_wallet_stats_pages_processed: 0,
+                replay_wallet_stats_day_count_source_progress:
+                    ReplayWalletStatsDayCountSourceProgress::default(),
+                replay_sol_leg_access_path: None,
+                source_exhausted: true,
+                phase_cursor: None,
+                collect_buy_mints_cursor_token: None,
+                unique_buy_mints_discovered: 0,
+                budget_exhausted_reason: None,
+            });
+        }
+
+        let mut rows_processed = 0usize;
+        let mut pages_processed = 0usize;
+        let mut cursor = state.phase_cursor.clone();
+
+        let budget_exhausted_reason = loop {
+            if pages_processed >= fetch_page_limit {
+                break Some(PersistedStreamBudgetExhaustedReason::PageBudget);
+            }
+            if Instant::now() >= deadline {
+                break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+            }
+
+            let mut page_last_cursor = cursor.clone();
+            let page = store.for_each_observed_swap_in_window_after_cursor_with_budget(
+                state.window_start,
+                state.horizon_end,
+                cursor.as_ref(),
+                fetch_limit,
+                deadline,
+                |swap| {
+                    page_last_cursor = Some(DiscoveryRuntimeCursor {
+                        ts_utc: swap.ts_utc,
+                        slot: swap.slot,
+                        signature: swap.signature.clone(),
+                    });
+                    if let Some(entry) = state.payload.by_wallet.get_mut(&swap.wallet) {
+                        entry.observe_activity_only(&swap, self.config.max_tx_per_minute);
+                    }
+                    Ok(())
+                },
+            )?;
+            pages_processed = pages_processed.saturating_add(1);
+            rows_processed = rows_processed.saturating_add(page.rows_seen);
+            cursor = page_last_cursor;
+
+            if page.time_budget_exhausted {
+                break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
+            }
+            if page.rows_seen < fetch_limit {
+                state.payload.replay_candidate_activity_backfill_pending = false;
+                state.phase_cursor = None;
+                return Ok(PersistedStreamPhaseAdvance {
+                    rows_processed,
+                    pages_processed,
+                    replay_wallet_stats_rows_processed: 0,
+                    replay_wallet_stats_pages_processed: 0,
+                    replay_wallet_stats_day_count_source_progress:
+                        ReplayWalletStatsDayCountSourceProgress::default(),
+                    replay_sol_leg_access_path: None,
+                    source_exhausted: true,
+                    phase_cursor: None,
+                    collect_buy_mints_cursor_token: None,
+                    unique_buy_mints_discovered: 0,
+                    budget_exhausted_reason: None,
+                });
+            }
+        };
+
+        Ok(PersistedStreamPhaseAdvance {
+            rows_processed,
+            pages_processed,
+            replay_wallet_stats_rows_processed: 0,
+            replay_wallet_stats_pages_processed: 0,
+            replay_wallet_stats_day_count_source_progress:
+                ReplayWalletStatsDayCountSourceProgress::default(),
+            replay_sol_leg_access_path: None,
+            source_exhausted: false,
+            phase_cursor: cursor,
+            collect_buy_mints_cursor_token: None,
+            unique_buy_mints_discovered: 0,
+            budget_exhausted_reason,
+        })
     }
 
     fn add_buy_mint_occurrences(
@@ -3021,6 +3208,8 @@ impl DiscoveryService {
         payload.replay_wallet_stats_last_partial_cycle_pages_processed = 0;
         payload.replay_wallet_stats_last_partial_cycle_wallets_processed = 0;
         payload.replay_wallet_stats_last_partial_cycle_elapsed_ms = 0;
+        payload.replay_candidate_activity_backfill_required = false;
+        payload.replay_candidate_activity_backfill_pending = false;
     }
 
     fn reset_replay_wallet_stats_progress_preserving_budget_hints(
@@ -3051,6 +3240,42 @@ impl DiscoveryService {
         state.phase_cursor = None;
         state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
         Self::reset_replay_wallet_stats_progress_preserving_budget_hints(&mut state.payload);
+    }
+
+    fn transition_persisted_stream_from_wallet_stats_to_sol_leg_with_candidate_activity_backfill(
+        state: &mut PersistedStreamRebuildState,
+    ) {
+        let buffered_wallets = state.payload.by_wallet.len();
+        state.payload.replay_wallet_stats_complete = true;
+        state.payload.replay_wallet_stats_wallet_cursor = None;
+        state.payload.replay_candidate_activity_backfill_required = true;
+        state.payload.replay_candidate_activity_backfill_pending = false;
+        state.phase_cursor = None;
+        state.payload.by_wallet.clear();
+        info!(
+            rebuild_window_start = %state.window_start,
+            rebuild_horizon_end = %state.horizon_end,
+            rebuild_wallets_buffered_before = buffered_wallets,
+            rebuild_replay_wallet_stats_budget_floor_wallets =
+                state.payload.replay_wallet_stats_budget_floor_wallets,
+            rebuild_replay_wallet_stats_last_partial_cycle_pages_processed =
+                state.payload.replay_wallet_stats_last_partial_cycle_pages_processed,
+            rebuild_replay_wallet_stats_last_partial_cycle_wallets_processed =
+                state.payload.replay_wallet_stats_last_partial_cycle_wallets_processed,
+            rebuild_replay_wallet_stats_last_partial_cycle_elapsed_ms =
+                state.payload.replay_wallet_stats_last_partial_cycle_elapsed_ms,
+            "deferred exhaustive replay wallet-stats source exhaustion behind exact candidate-wallet activity backfill; clearing all-wallet activity buffer and switching to SOL-leg replay"
+        );
+    }
+
+    fn prepare_persisted_stream_replay_candidate_activity_backfill(
+        state: &mut PersistedStreamRebuildState,
+    ) {
+        state.phase_cursor = None;
+        state.payload.replay_candidate_activity_backfill_pending = true;
+        for acc in state.payload.by_wallet.values_mut() {
+            acc.reset_activity_summary_for_exact_backfill();
+        }
     }
 
     fn reset_bucket_sensitive_rebuild_state_for_rollover(state: &mut PersistedStreamRebuildState) {
@@ -3372,7 +3597,11 @@ impl DiscoveryService {
                 rebuild_horizon_end = %state.horizon_end,
                 rebuild_phase = state.phase.as_str(),
                 rebuild_replay_subphase =
-                    Self::replay_subphase(state.phase, state.payload.replay_wallet_stats_complete),
+                    Self::replay_subphase(
+                        state.phase,
+                        state.payload.replay_wallet_stats_complete,
+                        state.payload.replay_candidate_activity_backfill_pending,
+                    ),
                 rebuild_replay_wallet_stats_budget_floor_wallets_before =
                     previous_budget_floor_wallets,
                 rebuild_replay_wallet_stats_budget_floor_wallets_after =
@@ -3423,7 +3652,11 @@ impl DiscoveryService {
                 rebuild_horizon_end = %state.horizon_end,
                 rebuild_phase = state.phase.as_str(),
                 rebuild_replay_subphase =
-                    Self::replay_subphase(state.phase, state.payload.replay_wallet_stats_complete),
+                    Self::replay_subphase(
+                        state.phase,
+                        state.payload.replay_wallet_stats_complete,
+                        state.payload.replay_candidate_activity_backfill_pending,
+                    ),
                 rebuild_replay_wallet_stats_pages_processed =
                     state.payload.replay_wallet_stats_pages_processed,
                 rebuild_replay_wallet_stats_rows_processed =
@@ -3672,6 +3905,7 @@ impl DiscoveryService {
                                 Self::replay_subphase(
                                     state.phase,
                                     state.payload.replay_wallet_stats_complete,
+                                    state.payload.replay_candidate_activity_backfill_pending,
                                 ),
                             restart_reason =
                                 "metrics_window_start_changed_but_existing_replay_target_still_publishable_under_gate",
@@ -3700,6 +3934,7 @@ impl DiscoveryService {
                                 Self::replay_subphase(
                                     state.phase,
                                     state.payload.replay_wallet_stats_complete,
+                                    state.payload.replay_candidate_activity_backfill_pending,
                                 ),
                             restart_reason =
                                 "metrics_window_start_changed_replay_or_quality_target_aged_out_but_exact_buy_mint_membership_can_carry_forward",
@@ -3800,6 +4035,7 @@ impl DiscoveryService {
             replay_subphase: Self::replay_subphase(
                 state.phase,
                 state.payload.replay_wallet_stats_complete,
+                state.payload.replay_candidate_activity_backfill_pending,
             ),
             window_start: state.window_start,
             horizon_end: state.horizon_end,
@@ -4160,6 +4396,14 @@ impl DiscoveryService {
                 && !telemetry.replay_wallet_stats_complete
             {
                 Some("wallet_id_source_exhaustion")
+            } else {
+                None
+            },
+            rebuild_replay_activity_backfill_completion_requirement = if telemetry
+                .replay_subphase
+                == Some("activity_backfill")
+            {
+                Some("candidate_wallet_swap_source_exhaustion")
             } else {
                 None
             },
@@ -5205,6 +5449,7 @@ impl DiscoveryService {
             fetch_page_limit,
             None,
             None,
+            false,
             deadline,
         )
     }
@@ -5217,6 +5462,7 @@ impl DiscoveryService {
         fetch_page_limit: usize,
         replay_wallet_stats_phase_page_limit_override: Option<usize>,
         replay_sol_leg_phase_page_limit_override: Option<usize>,
+        allow_wallet_stats_candidate_activity_backfill_handoff: bool,
         deadline: Instant,
     ) -> Result<PersistedStreamPhaseAdvance> {
         let mut replay_rows_processed = 0usize;
@@ -5265,6 +5511,8 @@ impl DiscoveryService {
                 if advance.source_exhausted {
                     state.payload.replay_wallet_stats_complete = true;
                     state.payload.replay_wallet_stats_wallet_cursor = None;
+                    state.payload.replay_candidate_activity_backfill_required = false;
+                    state.payload.replay_candidate_activity_backfill_pending = false;
                     state.phase_cursor = None;
                     cursor = None;
                     let replay_wallet_stats_day_count_source_progress_total = state
@@ -5302,6 +5550,18 @@ impl DiscoveryService {
                     );
                     continue;
                 }
+                if allow_wallet_stats_candidate_activity_backfill_handoff
+                    && self.can_handoff_replay_wallet_stats_to_sol_leg_with_candidate_activity_backfill(
+                        state,
+                        &advance,
+                        fetch_limit,
+                        replay_wallet_stats_phase_page_limit_override,
+                    )
+                {
+                    Self::transition_persisted_stream_from_wallet_stats_to_sol_leg_with_candidate_activity_backfill(state);
+                    cursor = None;
+                    continue;
+                }
                 return Ok(PersistedStreamPhaseAdvance {
                     rows_processed: replay_rows_processed,
                     pages_processed: replay_pages_processed,
@@ -5309,6 +5569,54 @@ impl DiscoveryService {
                     replay_wallet_stats_pages_processed,
                     replay_wallet_stats_day_count_source_progress,
                     replay_sol_leg_access_path: None,
+                    source_exhausted: false,
+                    phase_cursor: cursor,
+                    collect_buy_mints_cursor_token: None,
+                    unique_buy_mints_discovered: 0,
+                    budget_exhausted_reason: advance.budget_exhausted_reason,
+                });
+            }
+
+            if state.payload.replay_candidate_activity_backfill_pending {
+                state.phase_cursor = cursor.clone();
+                let advance = self
+                    .advance_persisted_stream_replay_candidate_wallet_activity_backfill(
+                        store,
+                        state,
+                        fetch_limit,
+                        phase_page_limit.saturating_sub(total_pages_processed),
+                        deadline,
+                    )?;
+                replay_rows_processed =
+                    replay_rows_processed.saturating_add(advance.rows_processed);
+                replay_pages_processed =
+                    replay_pages_processed.saturating_add(advance.pages_processed);
+                cursor = advance.phase_cursor.clone();
+                if advance.source_exhausted {
+                    state.payload.replay_candidate_activity_backfill_required = false;
+                    state.payload.replay_candidate_activity_backfill_pending = false;
+                    state.phase_cursor = None;
+                    return Ok(PersistedStreamPhaseAdvance {
+                        rows_processed: replay_rows_processed,
+                        pages_processed: replay_pages_processed,
+                        replay_wallet_stats_rows_processed,
+                        replay_wallet_stats_pages_processed,
+                        replay_wallet_stats_day_count_source_progress,
+                        replay_sol_leg_access_path: replay_sol_leg_access_path,
+                        source_exhausted: true,
+                        phase_cursor: None,
+                        collect_buy_mints_cursor_token: None,
+                        unique_buy_mints_discovered: 0,
+                        budget_exhausted_reason: None,
+                    });
+                }
+                return Ok(PersistedStreamPhaseAdvance {
+                    rows_processed: replay_rows_processed,
+                    pages_processed: replay_pages_processed,
+                    replay_wallet_stats_rows_processed,
+                    replay_wallet_stats_pages_processed,
+                    replay_wallet_stats_day_count_source_progress,
+                    replay_sol_leg_access_path: replay_sol_leg_access_path,
                     source_exhausted: false,
                     phase_cursor: cursor,
                     collect_buy_mints_cursor_token: None,
@@ -5410,6 +5718,25 @@ impl DiscoveryService {
                 break Some(PersistedStreamBudgetExhaustedReason::TimeBudget);
             }
             if page.rows_seen < fetch_limit {
+                if state.payload.replay_candidate_activity_backfill_required
+                    && !state.payload.by_wallet.is_empty()
+                {
+                    Self::prepare_persisted_stream_replay_candidate_activity_backfill(state);
+                    info!(
+                        rebuild_window_start = %state.window_start,
+                        rebuild_horizon_end = %state.horizon_end,
+                        rebuild_wallets_buffered = state.payload.by_wallet.len(),
+                        rebuild_replay_rows_processed = state.replay_rows_processed
+                            .saturating_add(replay_rows_processed),
+                        rebuild_replay_pages_processed = state.replay_pages_processed
+                            .saturating_add(replay_pages_processed),
+                        "completed bounded SOL-leg replay for the current candidate set; switching to exact all-swap activity backfill for candidate wallets before publish"
+                    );
+                    cursor = None;
+                    continue;
+                }
+                state.payload.replay_candidate_activity_backfill_required = false;
+                state.payload.replay_candidate_activity_backfill_pending = false;
                 return Ok(PersistedStreamPhaseAdvance {
                     rows_processed: replay_rows_processed,
                     pages_processed: replay_pages_processed,
@@ -5467,6 +5794,8 @@ impl DiscoveryService {
                     fetch_page_limit,
                     replay_wallet_stats_phase_page_limit_override,
                     replay_sol_leg_phase_page_limit_override,
+                    replay_wallet_stats_phase_page_limit_override.is_some()
+                        && self.config.min_buy_count > 0,
                     deadline,
                 ),
         }
@@ -5579,7 +5908,11 @@ impl DiscoveryService {
                 rebuild_priority_recovery_contract_scope = "checkpoint_specific",
                 rebuild_phase = state.phase.as_str(),
                 rebuild_replay_subphase =
-                    Self::replay_subphase(state.phase, state.payload.replay_wallet_stats_complete),
+                    Self::replay_subphase(
+                        state.phase,
+                        state.payload.replay_wallet_stats_complete,
+                        state.payload.replay_candidate_activity_backfill_pending,
+                    ),
                 rebuild_window_start = %state.window_start,
                 rebuild_horizon_end = %state.horizon_end,
                 rebuild_metrics_window_start = %state.metrics_window_start,
@@ -5647,6 +5980,14 @@ impl DiscoveryService {
                     .replay_wallet_stats_complete
                 {
                     Some("wallet_id_source_exhaustion")
+                } else {
+                    None
+                },
+                rebuild_replay_activity_backfill_completion_requirement = if state
+                    .payload
+                    .replay_candidate_activity_backfill_pending
+                {
+                    Some("candidate_wallet_swap_source_exhaustion")
                 } else {
                     None
                 },
@@ -5765,6 +6106,7 @@ impl DiscoveryService {
                 replay_subphase: Self::replay_subphase(
                     DiscoveryPersistedRebuildPhase::PublishPending,
                     state.payload.replay_wallet_stats_complete,
+                    state.payload.replay_candidate_activity_backfill_pending,
                 ),
                 window_start: state.window_start,
                 horizon_end: state.horizon_end,
@@ -6090,6 +6432,7 @@ impl DiscoveryService {
                     replay_subphase: Self::replay_subphase(
                         DiscoveryPersistedRebuildPhase::PublishPending,
                         state.payload.replay_wallet_stats_complete,
+                        state.payload.replay_candidate_activity_backfill_pending,
                     ),
                     window_start: state.window_start,
                     horizon_end: state.horizon_end,
@@ -6240,6 +6583,7 @@ impl DiscoveryService {
             replay_subphase: Self::replay_subphase(
                 state.phase,
                 state.payload.replay_wallet_stats_complete,
+                state.payload.replay_candidate_activity_backfill_pending,
             ),
             window_start: state.window_start,
             horizon_end: state.horizon_end,
@@ -8635,6 +8979,16 @@ impl DiscoveryService {
 }
 
 impl WalletAccumulator {
+    fn reset_activity_summary_for_exact_backfill(&mut self) {
+        self.first_seen = None;
+        self.last_seen = None;
+        self.trades = 0;
+        self.exact_active_day_count = None;
+        self.active_days.clear();
+        self.tx_per_minute.clear();
+        self.suspicious = false;
+    }
+
     fn observe_activity_only(&mut self, swap: &SwapEvent, max_tx_per_minute: u32) {
         self.trades = self.trades.saturating_add(1);
         self.first_seen = Some(
@@ -9291,6 +9645,7 @@ mod tests {
                 config.max_fetch_pages_per_cycle,
                 None,
                 Some(seeded_sol_leg_pages.max(1)),
+                false,
                 Instant::now() + StdDuration::from_secs(30),
             )?;
         assert!(
@@ -16411,6 +16766,7 @@ mod tests {
                 config.max_fetch_pages_per_cycle,
                 Some(baseline_phase_page_limit),
                 None,
+                false,
                 Instant::now() + StdDuration::from_secs(30),
             )?;
         assert!(
@@ -16436,6 +16792,7 @@ mod tests {
                 config.max_fetch_pages_per_cycle,
                 Some(priority_phase_page_limit),
                 None,
+                true,
                 Instant::now() + StdDuration::from_secs(30),
             )?;
         assert!(
@@ -16458,6 +16815,254 @@ mod tests {
             ) || priority_advance.source_exhausted,
             "after draining wallet_stats, the deeper checkpoint should either hand off into the next replay step or fully exhaust the replay source"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn priority_recovery_open_frontier_wallet_stats_hands_off_to_sol_leg_candidate_backfill_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-priority-recovery-wallet-stats-handoff-candidate-backfill.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-03T19:03:26Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 10_000;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let noise_wallets = 50_000usize;
+        let (window_start, metrics_window_start) =
+            seed_stage1_live_like_wallet_stats_backlog_fixture(
+                &runtime_store,
+                &config,
+                now,
+                noise_wallets,
+                "stage1-wallet-stats-handoff",
+            )?;
+
+        let mut replay_state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        replay_state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        replay_state.horizon_end = now;
+        replay_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        replay_state.payload.unique_buy_mints =
+            runtime_store.load_observed_buy_mints_in_window(window_start, now)?;
+        replay_state.payload.token_quality_progress.next_mint_index =
+            replay_state.payload.unique_buy_mints.len();
+
+        let seeded_partial = discovery.advance_persisted_stream_replay_wallet_stats(
+            &runtime_store,
+            &mut replay_state,
+            config.max_fetch_swaps_per_cycle,
+            8,
+            Instant::now() + StdDuration::from_secs(30),
+        )?;
+        replay_state.payload.replay_wallet_stats_rows_processed = replay_state
+            .payload
+            .replay_wallet_stats_rows_processed
+            .saturating_add(seeded_partial.replay_wallet_stats_rows_processed);
+        replay_state.payload.replay_wallet_stats_pages_processed = replay_state
+            .payload
+            .replay_wallet_stats_pages_processed
+            .saturating_add(seeded_partial.replay_wallet_stats_pages_processed);
+        replay_state
+            .payload
+            .replay_wallet_stats_day_count_source_progress
+            .merge(seeded_partial.replay_wallet_stats_day_count_source_progress);
+        assert!(!seeded_partial.source_exhausted);
+        assert!(replay_state
+            .payload
+            .replay_wallet_stats_wallet_cursor
+            .is_some());
+
+        let baseline_phase_page_limit = discovery.replay_wallet_stats_repair_phase_page_limit(
+            config.max_fetch_swaps_per_cycle,
+            config.max_fetch_pages_per_cycle,
+            StdDuration::from_secs(60),
+        );
+        let advance = discovery
+            .advance_persisted_stream_replay_optimized_with_wallet_stats_phase_page_limit(
+                &runtime_store,
+                &mut replay_state,
+                config.max_fetch_swaps_per_cycle,
+                config.max_fetch_pages_per_cycle,
+                Some(baseline_phase_page_limit),
+                None,
+                true,
+                Instant::now() + StdDuration::from_secs(30),
+            )?;
+        assert!(
+            replay_state.payload.replay_wallet_stats_complete,
+            "priority recovery should move the replay checkpoint beyond the wallet_stats blocker once the live-shaped open frontier proves that exhaustive all-wallet source draining is the bottleneck"
+        );
+        assert_eq!(
+            replay_state.payload.replay_wallet_stats_wallet_cursor,
+            None,
+            "after the handoff, the all-wallet wallet_stats cursor must clear instead of keeping the checkpoint pinned on the same blocker"
+        );
+        assert_ne!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &replay_state
+            ),
+            "replay_wallet_stats_incomplete",
+            "the checkpoint-specific blocker should advance beyond wallet_stats once the candidate-backfill handoff is armed"
+        );
+        assert!(
+            advance.replay_wallet_stats_pages_processed > 0,
+            "the handoff should be based on real wallet-stats frontier work, not on a zero-progress shortcut"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_candidate_activity_backfill_restores_exact_activity_summary_for_candidate_wallets_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-replay-candidate-activity-backfill.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-03T19:03:26Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.max_fetch_pages_per_cycle = 10;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let token = "TokenStage1ReplayBackfill11111111111111111111111";
+
+        let candidate_swaps = [
+            swap(
+                "wallet_candidate_backfill",
+                "candidate-backfill-non-sol-early",
+                window_start + Duration::hours(1),
+                "TokenOtherA11111111111111111111111111111111",
+                "TokenOtherB11111111111111111111111111111111",
+                10.0,
+                20.0,
+            ),
+            swap(
+                "wallet_candidate_backfill",
+                "candidate-backfill-buy",
+                window_start + Duration::days(1) + Duration::hours(2),
+                SOL_MINT,
+                token,
+                1.0,
+                100.0,
+            ),
+            swap(
+                "wallet_candidate_backfill",
+                "candidate-backfill-sell",
+                window_start + Duration::days(1) + Duration::hours(3),
+                token,
+                SOL_MINT,
+                100.0,
+                1.3,
+            ),
+            swap(
+                "wallet_candidate_backfill",
+                "candidate-backfill-non-sol-late",
+                window_start + Duration::days(3) + Duration::hours(4),
+                "TokenOtherB11111111111111111111111111111111",
+                "TokenOtherC11111111111111111111111111111111",
+                30.0,
+                40.0,
+            ),
+        ];
+        for swap in candidate_swaps {
+            store.insert_observed_swap(&swap)?;
+        }
+        store.insert_observed_swap(&swap(
+            "wallet_irrelevant_backfill",
+            "irrelevant-backfill-buy",
+            window_start + Duration::days(2),
+            SOL_MINT,
+            "TokenIrrelevant1111111111111111111111111111",
+            0.2,
+            20.0,
+        ))?;
+
+        let mut replay_state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        replay_state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        replay_state.horizon_end = now;
+        replay_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        replay_state.payload.replay_wallet_stats_complete = true;
+        replay_state
+            .payload
+            .replay_candidate_activity_backfill_required = true;
+        replay_state
+            .payload
+            .replay_candidate_activity_backfill_pending = true;
+        let mut acc = WalletAccumulator::default();
+        acc.observe_buy_streaming(
+            token,
+            100.0,
+            1.0,
+            window_start + Duration::days(1) + Duration::hours(2),
+            BuyTradability::Tradable,
+        );
+        acc.observe_sell(
+            token,
+            100.0,
+            1.3,
+            window_start + Duration::days(1) + Duration::hours(3),
+        );
+        replay_state
+            .payload
+            .by_wallet
+            .insert("wallet_candidate_backfill".to_string(), acc);
+
+        let advance = discovery
+            .advance_persisted_stream_replay_candidate_wallet_activity_backfill(
+                &store,
+                &mut replay_state,
+                config.max_fetch_swaps_per_cycle,
+                config.max_fetch_pages_per_cycle,
+                Instant::now() + StdDuration::from_secs(30),
+            )?;
+        assert!(advance.source_exhausted);
+        assert!(
+            !replay_state
+                .payload
+                .replay_candidate_activity_backfill_pending
+        );
+        let acc = replay_state
+            .payload
+            .by_wallet
+            .get("wallet_candidate_backfill")
+            .expect("candidate wallet must remain buffered");
+        assert_eq!(
+            acc.first_seen,
+            Some(window_start + Duration::hours(1)),
+            "candidate activity backfill must restore the earliest all-swap first_seen, not just the SOL-leg replay prefix"
+        );
+        assert_eq!(
+            acc.last_seen,
+            Some(window_start + Duration::days(3) + Duration::hours(4)),
+            "candidate activity backfill must restore the latest all-swap last_seen before publish"
+        );
+        assert_eq!(
+            acc.trades, 4,
+            "candidate activity backfill must restore the exact all-swap trade count for the publishable wallet set"
+        );
+        assert_eq!(acc.active_days.len(), 3);
+        assert!(!acc.suspicious);
         Ok(())
     }
 
@@ -21312,7 +21917,11 @@ mod tests {
             phase,
             collect_buy_mints_mode: mode,
             replay_mode: ReplayMode::WalletStatsThenSolLeg,
-            replay_subphase: DiscoveryService::replay_subphase(phase, replay_wallet_stats_complete),
+            replay_subphase: DiscoveryService::replay_subphase(
+                phase,
+                replay_wallet_stats_complete,
+                false,
+            ),
             window_start: now - Duration::days(5),
             horizon_end: now,
             metrics_window_start: now,

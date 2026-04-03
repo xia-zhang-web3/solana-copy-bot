@@ -7520,13 +7520,36 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
          wallet-stats chunk still saturated, target window still publishable"
          and can raise the effective wallet-stats lane to the remaining safe
          horizon budget, still capped by the existing deep replay max
-       - operators should now expect
+     - operators should now expect
          `rebuild_replay_wallet_stats_publishable_horizon_remaining_ms`,
          `rebuild_replay_wallet_stats_persistently_open_frontier`, and
         `rebuild_replay_wallet_stats_publishable_horizon_budget_cap_applied`
          on checkpoint-specific replay widening logs when the blocker is still
          `replay_wallet_stats_incomplete` for a frontier-heavy resumed replay
          checkpoint
+     - follow-up replay state-machine fix now stops treating exact all-wallet
+       `wallet_stats` exhaustion as the only safe handoff when
+       `min_buy_count > 0` and fail-closed priority recovery is already on the
+       widened replay lane:
+       - the live blocker after fresh rebuild `b32e1c4` was no longer missing
+         carry-forward, open-frontier widening, or publishable-horizon capping;
+         the owning cycle still stayed red because exhaustive distinct-wallet
+         activity prepass remained the only transition into later replay even
+         though publishable wallets are still determined by SOL-leg buys
+       - priority recovery can now hand off from `Replay -> wallet_stats` into
+         `Replay -> sol_leg` after a real saturated partial wallet-stats chunk,
+         then run an exact all-swap activity backfill only for the buffered
+         candidate-wallet set before `PublishPending`
+       - this does not fake publication truth: exact activity fields
+         (`first_seen`, `last_seen`, `trades`, active-day coverage, suspicious
+         flag) are rebuilt for the candidate-wallet set before snapshots and
+         `published_wallet_ids` are written
+       - operators should now expect replay subphase
+         `activity_backfill`, blocker
+         `replay_candidate_activity_backfill_incomplete`, and
+         `rebuild_replay_activity_backfill_completion_requirement=
+         candidate_wallet_swap_source_exhaustion` if the cycle gets past
+         wallet-stats but still has not reached `PublishPending`
      - the repair stays fail-closed unless the journal covers the required
        window and the current runtime cursor lineage
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime

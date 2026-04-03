@@ -526,12 +526,25 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
          - this applies only after replay has already consumed multiple
            catch-up-sized wallet-stats chunks and the last bounded chunk still
            ended on a saturated wallet frontier
-         - operators should now expect
-           `rebuild_replay_wallet_stats_publishable_horizon_remaining_ms`,
-           `rebuild_replay_wallet_stats_persistently_open_frontier`, and
-          `rebuild_replay_wallet_stats_publishable_horizon_budget_cap_applied`
-           on checkpoint-specific replay widening logs when the resumed replay
-           checkpoint is still blocked on `replay_wallet_stats_incomplete`
+       - operators should now expect
+         `rebuild_replay_wallet_stats_publishable_horizon_remaining_ms`,
+         `rebuild_replay_wallet_stats_persistently_open_frontier`, and
+        `rebuild_replay_wallet_stats_publishable_horizon_budget_cap_applied`
+         on checkpoint-specific replay widening logs when the resumed replay
+         checkpoint is still blocked on `replay_wallet_stats_incomplete`
+       - fail-closed priority recovery can now hand off from
+         `Replay -> wallet_stats` into `Replay -> sol_leg` without waiting for
+         exact all-wallet wallet-id exhaustion when:
+         - `min_buy_count > 0`
+         - the replay lane is already on the widened priority contract
+         - the last bounded wallet-stats chunk proved a still-open frontier
+       - after that handoff, discovery runs exact all-swap activity backfill
+         only for the buffered candidate-wallet set before `PublishPending`
+       - operators should now expect replay subphase `activity_backfill`,
+         blocker `replay_candidate_activity_backfill_incomplete`, and
+         `rebuild_replay_activity_backfill_completion_requirement=
+         candidate_wallet_swap_source_exhaustion` if the checkpoint has moved
+         beyond wallet-stats but is still not yet publishable
        - operators should now expect
          `rebuild_replay_sol_leg_phase_page_limit` and
          `rebuild_replay_sol_leg_processed_floor_pages` on the widened runtime
