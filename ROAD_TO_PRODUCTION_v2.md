@@ -7523,7 +7523,7 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        - operators should now expect
          `rebuild_replay_wallet_stats_publishable_horizon_remaining_ms`,
          `rebuild_replay_wallet_stats_persistently_open_frontier`, and
-         `rebuild_replay_wallet_stats_publishable_horizon_budget_floor_applied`
+        `rebuild_replay_wallet_stats_publishable_horizon_budget_cap_applied`
          on checkpoint-specific replay widening logs when the blocker is still
          `replay_wallet_stats_incomplete` for a frontier-heavy resumed replay
          checkpoint

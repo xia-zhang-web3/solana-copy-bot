@@ -529,7 +529,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
          - operators should now expect
            `rebuild_replay_wallet_stats_publishable_horizon_remaining_ms`,
            `rebuild_replay_wallet_stats_persistently_open_frontier`, and
-           `rebuild_replay_wallet_stats_publishable_horizon_budget_floor_applied`
+          `rebuild_replay_wallet_stats_publishable_horizon_budget_cap_applied`
            on checkpoint-specific replay widening logs when the resumed replay
            checkpoint is still blocked on `replay_wallet_stats_incomplete`
        - operators should now expect
