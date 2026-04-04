@@ -565,6 +565,16 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
          `rebuild_replay_wallet_stats_complete_carried_forward_into_replay`
          when that deeper replay milestone is actually consumed on the
          token-quality -> replay handoff
+       - once live is stably in `replay_sol_leg_incomplete`, the next exact
+         blocker is real SOL-leg source exhaustion before candidate-activity
+         backfill can arm:
+         - the recovery lane now persists `rebuild_replay_sol_leg_last_partial_cycle_*`
+           and logs
+           `rebuild_replay_sol_leg_open_frontier_floor_pages` plus
+           `rebuild_replay_sol_leg_remaining_frontier_min_*`
+         - if those fields keep rising while the blocker remains
+           `replay_sol_leg_incomplete`, the host is still on the SOL-leg suffix
+           and has not yet reached candidate activity backfill / publish
        - operators should now expect
          `rebuild_replay_sol_leg_phase_page_limit` and
          `rebuild_replay_sol_leg_processed_floor_pages` on the widened runtime

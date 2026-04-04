@@ -955,6 +955,12 @@ struct PersistedStreamRebuildPayload {
     #[serde(default)]
     replay_sol_leg_reentry_pending: bool,
     #[serde(default)]
+    replay_sol_leg_last_partial_cycle_pages_processed: usize,
+    #[serde(default)]
+    replay_sol_leg_last_partial_cycle_rows_processed: usize,
+    #[serde(default)]
+    replay_sol_leg_last_partial_cycle_elapsed_ms: u64,
+    #[serde(default)]
     replay_candidate_activity_backfill_required: bool,
     #[serde(default)]
     replay_candidate_activity_backfill_pending: bool,
@@ -1034,6 +1040,10 @@ struct PersistedStreamProgressTelemetry {
     replay_wallet_stats_publishable_horizon_remaining_ms: Option<u64>,
     replay_wallet_stats_milestone_reached: bool,
     replay_sol_leg_reentry_pending: bool,
+    replay_sol_leg_last_partial_cycle_pages_processed: usize,
+    replay_sol_leg_last_partial_cycle_rows_processed: usize,
+    replay_sol_leg_last_partial_cycle_elapsed_ms: u64,
+    replay_candidate_activity_backfill_required: bool,
     replay_sol_leg_access_path: Option<ObservedSolLegCursorAccessPath>,
     replay_rows_processed: usize,
     replay_pages_processed: usize,
@@ -1142,6 +1152,9 @@ struct PersistedStreamPhaseAdvance {
     pages_processed: usize,
     replay_wallet_stats_rows_processed: usize,
     replay_wallet_stats_pages_processed: usize,
+    replay_sol_leg_rows_processed: usize,
+    replay_sol_leg_pages_processed: usize,
+    replay_sol_leg_elapsed_ms: u64,
     replay_wallet_stats_day_count_source_progress: ReplayWalletStatsDayCountSourceProgress,
     replay_sol_leg_access_path: Option<ObservedSolLegCursorAccessPath>,
     source_exhausted: bool,
@@ -2453,13 +2466,52 @@ impl DiscoveryService {
         state.replay_pages_processed.max(rows_floor_pages)
     }
 
+    fn replay_sol_leg_last_partial_cycle_frontier_saturated(
+        fetch_limit: usize,
+        state: &PersistedStreamRebuildState,
+    ) -> bool {
+        let pages_processed = state
+            .payload
+            .replay_sol_leg_last_partial_cycle_pages_processed;
+        if pages_processed == 0 {
+            return false;
+        }
+        let rows_processed = state
+            .payload
+            .replay_sol_leg_last_partial_cycle_rows_processed;
+        if rows_processed == 0 {
+            return false;
+        }
+        rows_processed.saturating_mul(
+            DISCOVERY_PUBLICATION_TRUTH_REPLAY_WALLET_STATS_FRONTIER_SATURATION_DENOMINATOR,
+        ) >= pages_processed
+            .max(1)
+            .saturating_mul(fetch_limit.max(1))
+            .saturating_mul(
+                DISCOVERY_PUBLICATION_TRUTH_REPLAY_WALLET_STATS_FRONTIER_SATURATION_NUMERATOR,
+            )
+    }
+
+    fn replay_sol_leg_open_frontier_floor_pages(
+        fetch_limit: usize,
+        state: &PersistedStreamRebuildState,
+    ) -> usize {
+        if Self::replay_sol_leg_last_partial_cycle_frontier_saturated(fetch_limit, state) {
+            state
+                .payload
+                .replay_sol_leg_last_partial_cycle_pages_processed
+        } else {
+            0
+        }
+    }
+
     fn deep_replay_sol_leg_target_time_budget(
         &self,
         baseline_time_budget: StdDuration,
         fetch_page_limit: usize,
-        processed_floor_pages: usize,
+        target_floor_pages: usize,
     ) -> StdDuration {
-        let floor_pages_with_headroom = processed_floor_pages
+        let floor_pages_with_headroom = target_floor_pages
             .saturating_mul(
                 DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_NUMERATOR,
             )
@@ -2632,16 +2684,23 @@ impl DiscoveryService {
             DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MIN_TIME_BUDGET_MS,
         ));
         let processed_floor_pages = Self::replay_sol_leg_processed_floor_pages(fetch_limit, state);
+        let open_frontier_floor_pages =
+            Self::replay_sol_leg_open_frontier_floor_pages(fetch_limit, state);
         let deep_time_budget = self.deep_replay_sol_leg_target_time_budget(
             baseline_time_budget,
             fetch_page_limit,
-            processed_floor_pages,
+            processed_floor_pages
+                .saturating_add(open_frontier_floor_pages)
+                .max(processed_floor_pages),
         );
-        let deep_reason = if deep_time_budget > baseline_time_budget {
-            Some("deep_replay_sol_leg_large_processed_backlog")
-        } else {
-            Some("deep_replay_sol_leg_incomplete")
-        };
+        let deep_reason =
+            if deep_time_budget > baseline_time_budget && open_frontier_floor_pages > 0 {
+                Some("deep_replay_sol_leg_open_frontier_backlog")
+            } else if deep_time_budget > baseline_time_budget {
+                Some("deep_replay_sol_leg_large_processed_backlog")
+            } else {
+                Some("deep_replay_sol_leg_incomplete")
+            };
         PersistedStreamPriorityRecoveryContract {
             time_budget: deep_time_budget,
             collect_buy_mints_phase_page_limit_override: Some(
@@ -3054,6 +3113,9 @@ impl DiscoveryService {
                 pages_processed: 0,
                 replay_wallet_stats_rows_processed: 0,
                 replay_wallet_stats_pages_processed: 0,
+                replay_sol_leg_rows_processed: 0,
+                replay_sol_leg_pages_processed: 0,
+                replay_sol_leg_elapsed_ms: 0,
                 replay_wallet_stats_day_count_source_progress:
                     ReplayWalletStatsDayCountSourceProgress::default(),
                 replay_sol_leg_access_path: None,
@@ -3111,6 +3173,9 @@ impl DiscoveryService {
                     pages_processed,
                     replay_wallet_stats_rows_processed: 0,
                     replay_wallet_stats_pages_processed: 0,
+                    replay_sol_leg_rows_processed: 0,
+                    replay_sol_leg_pages_processed: 0,
+                    replay_sol_leg_elapsed_ms: 0,
                     replay_wallet_stats_day_count_source_progress:
                         ReplayWalletStatsDayCountSourceProgress::default(),
                     replay_sol_leg_access_path: None,
@@ -3128,6 +3193,9 @@ impl DiscoveryService {
             pages_processed,
             replay_wallet_stats_rows_processed: 0,
             replay_wallet_stats_pages_processed: 0,
+            replay_sol_leg_rows_processed: 0,
+            replay_sol_leg_pages_processed: 0,
+            replay_sol_leg_elapsed_ms: 0,
             replay_wallet_stats_day_count_source_progress:
                 ReplayWalletStatsDayCountSourceProgress::default(),
             replay_sol_leg_access_path: None,
@@ -3236,6 +3304,9 @@ impl DiscoveryService {
         payload.replay_wallet_stats_last_partial_cycle_elapsed_ms = 0;
         payload.replay_wallet_stats_milestone_reached = false;
         payload.replay_sol_leg_reentry_pending = false;
+        payload.replay_sol_leg_last_partial_cycle_pages_processed = 0;
+        payload.replay_sol_leg_last_partial_cycle_rows_processed = 0;
+        payload.replay_sol_leg_last_partial_cycle_elapsed_ms = 0;
         payload.replay_candidate_activity_backfill_required = false;
         payload.replay_candidate_activity_backfill_pending = false;
     }
@@ -3251,6 +3322,12 @@ impl DiscoveryService {
             payload.replay_wallet_stats_last_partial_cycle_wallets_processed;
         let replay_wallet_stats_last_partial_cycle_elapsed_ms =
             payload.replay_wallet_stats_last_partial_cycle_elapsed_ms;
+        let replay_sol_leg_last_partial_cycle_pages_processed =
+            payload.replay_sol_leg_last_partial_cycle_pages_processed;
+        let replay_sol_leg_last_partial_cycle_rows_processed =
+            payload.replay_sol_leg_last_partial_cycle_rows_processed;
+        let replay_sol_leg_last_partial_cycle_elapsed_ms =
+            payload.replay_sol_leg_last_partial_cycle_elapsed_ms;
         Self::reset_replay_wallet_stats_progress(payload);
         payload.replay_wallet_stats_budget_floor_wallets = replay_wallet_stats_budget_floor_wallets;
         payload.replay_wallet_stats_last_partial_cycle_pages_processed =
@@ -3259,6 +3336,12 @@ impl DiscoveryService {
             replay_wallet_stats_last_partial_cycle_wallets_processed;
         payload.replay_wallet_stats_last_partial_cycle_elapsed_ms =
             replay_wallet_stats_last_partial_cycle_elapsed_ms;
+        payload.replay_sol_leg_last_partial_cycle_pages_processed =
+            replay_sol_leg_last_partial_cycle_pages_processed;
+        payload.replay_sol_leg_last_partial_cycle_rows_processed =
+            replay_sol_leg_last_partial_cycle_rows_processed;
+        payload.replay_sol_leg_last_partial_cycle_elapsed_ms =
+            replay_sol_leg_last_partial_cycle_elapsed_ms;
     }
 
     fn transition_persisted_stream_from_token_quality_to_replay(
@@ -3288,6 +3371,13 @@ impl DiscoveryService {
         state.payload.replay_wallet_stats_complete = true;
         state.payload.replay_wallet_stats_milestone_reached = true;
         state.payload.replay_wallet_stats_wallet_cursor = None;
+        state
+            .payload
+            .replay_sol_leg_last_partial_cycle_pages_processed = 0;
+        state
+            .payload
+            .replay_sol_leg_last_partial_cycle_rows_processed = 0;
+        state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms = 0;
         state.payload.replay_candidate_activity_backfill_required = true;
         state.payload.replay_candidate_activity_backfill_pending = false;
         state.phase_cursor = None;
@@ -3312,6 +3402,13 @@ impl DiscoveryService {
         state: &mut PersistedStreamRebuildState,
     ) {
         state.phase_cursor = None;
+        state
+            .payload
+            .replay_sol_leg_last_partial_cycle_pages_processed = 0;
+        state
+            .payload
+            .replay_sol_leg_last_partial_cycle_rows_processed = 0;
+        state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms = 0;
         state.payload.replay_candidate_activity_backfill_pending = true;
         for acc in state.payload.by_wallet.values_mut() {
             acc.reset_activity_summary_for_exact_backfill();
@@ -3415,6 +3512,30 @@ impl DiscoveryService {
             self.config.min_buy_count > 0 && Self::state_has_replay_wallet_stats_milestone(state);
         let carried_replay_sol_leg_reentry_pending =
             self.state_can_carry_forward_replay_sol_leg_reentry(state);
+        let carry_sol_leg_budget_hints = old_phase == DiscoveryPersistedRebuildPhase::Replay
+            && old_replay_wallet_stats_complete
+            && !old_replay_candidate_activity_backfill_pending;
+        let carried_replay_sol_leg_last_partial_cycle_pages_processed =
+            if carry_sol_leg_budget_hints {
+                state
+                    .payload
+                    .replay_sol_leg_last_partial_cycle_pages_processed
+            } else {
+                0
+            };
+        let carried_replay_sol_leg_last_partial_cycle_rows_processed = if carry_sol_leg_budget_hints
+        {
+            state
+                .payload
+                .replay_sol_leg_last_partial_cycle_rows_processed
+        } else {
+            0
+        };
+        let carried_replay_sol_leg_last_partial_cycle_elapsed_ms = if carry_sol_leg_budget_hints {
+            state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms
+        } else {
+            0
+        };
         let prepass_complete = state.payload.collect_buy_mints_prepass_complete
             || state.phase != DiscoveryPersistedRebuildPhase::CollectBuyMints;
 
@@ -3465,6 +3586,16 @@ impl DiscoveryService {
         state.payload.replay_wallet_stats_milestone_reached =
             carried_replay_wallet_stats_milestone_reached;
         state.payload.replay_sol_leg_reentry_pending = carried_replay_sol_leg_reentry_pending;
+        state
+            .payload
+            .replay_sol_leg_last_partial_cycle_pages_processed =
+            carried_replay_sol_leg_last_partial_cycle_pages_processed;
+        state
+            .payload
+            .replay_sol_leg_last_partial_cycle_rows_processed =
+            carried_replay_sol_leg_last_partial_cycle_rows_processed;
+        state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms =
+            carried_replay_sol_leg_last_partial_cycle_elapsed_ms;
         info!(
             rebuild_previous_phase = old_phase.as_str(),
             rebuild_previous_replay_subphase = Self::replay_subphase(
@@ -3493,6 +3624,12 @@ impl DiscoveryService {
                 state.payload.replay_wallet_stats_milestone_reached,
             rebuild_replay_sol_leg_reentry_pending =
                 state.payload.replay_sol_leg_reentry_pending,
+            rebuild_replay_sol_leg_last_partial_cycle_pages_processed =
+                state.payload.replay_sol_leg_last_partial_cycle_pages_processed,
+            rebuild_replay_sol_leg_last_partial_cycle_rows_processed =
+                state.payload.replay_sol_leg_last_partial_cycle_rows_processed,
+            rebuild_replay_sol_leg_last_partial_cycle_elapsed_ms =
+                state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms,
             "carrying forward exact canonical buy-mint membership progress across metrics bucket rollover; bucket-sensitive quality/replay state reset for fresh target-window rebuild"
         );
         Ok(true)
@@ -3734,6 +3871,57 @@ impl DiscoveryService {
         changed
     }
 
+    fn repair_replay_sol_leg_budget_hints_for_resume(
+        &self,
+        state: &mut PersistedStreamRebuildState,
+    ) -> bool {
+        let in_sol_leg = state.phase == DiscoveryPersistedRebuildPhase::Replay
+            && state.payload.replay_wallet_stats_complete
+            && !state.payload.replay_candidate_activity_backfill_pending
+            && state.phase_cursor.is_some();
+        if in_sol_leg {
+            return false;
+        }
+        if state
+            .payload
+            .replay_sol_leg_last_partial_cycle_pages_processed
+            == 0
+            && state
+                .payload
+                .replay_sol_leg_last_partial_cycle_rows_processed
+                == 0
+            && state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms == 0
+        {
+            return false;
+        }
+        info!(
+            rebuild_window_start = %state.window_start,
+            rebuild_horizon_end = %state.horizon_end,
+            rebuild_phase = state.phase.as_str(),
+            rebuild_replay_subphase =
+                Self::replay_subphase(
+                    state.phase,
+                    state.payload.replay_wallet_stats_complete,
+                    state.payload.replay_candidate_activity_backfill_pending,
+                ),
+            rebuild_replay_sol_leg_last_partial_cycle_pages_processed =
+                state.payload.replay_sol_leg_last_partial_cycle_pages_processed,
+            rebuild_replay_sol_leg_last_partial_cycle_rows_processed =
+                state.payload.replay_sol_leg_last_partial_cycle_rows_processed,
+            rebuild_replay_sol_leg_last_partial_cycle_elapsed_ms =
+                state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms,
+            "clearing stale replay SOL-leg frontier hints from a resumed checkpoint because the active state is no longer the partial SOL-leg blocker"
+        );
+        state
+            .payload
+            .replay_sol_leg_last_partial_cycle_pages_processed = 0;
+        state
+            .payload
+            .replay_sol_leg_last_partial_cycle_rows_processed = 0;
+        state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms = 0;
+        true
+    }
+
     fn repair_restored_persisted_stream_state_for_resume(
         &self,
         state: &mut PersistedStreamRebuildState,
@@ -3899,6 +4087,7 @@ impl DiscoveryService {
                     changed = true;
                 }
                 changed |= self.repair_replay_wallet_stats_budget_hints_for_resume(state);
+                changed |= self.repair_replay_sol_leg_budget_hints_for_resume(state);
             }
         }
         changed
@@ -4206,6 +4395,18 @@ impl DiscoveryService {
                 .payload
                 .replay_wallet_stats_milestone_reached,
             replay_sol_leg_reentry_pending: state.payload.replay_sol_leg_reentry_pending,
+            replay_sol_leg_last_partial_cycle_pages_processed: state
+                .payload
+                .replay_sol_leg_last_partial_cycle_pages_processed,
+            replay_sol_leg_last_partial_cycle_rows_processed: state
+                .payload
+                .replay_sol_leg_last_partial_cycle_rows_processed,
+            replay_sol_leg_last_partial_cycle_elapsed_ms: state
+                .payload
+                .replay_sol_leg_last_partial_cycle_elapsed_ms,
+            replay_candidate_activity_backfill_required: state
+                .payload
+                .replay_candidate_activity_backfill_required,
             replay_sol_leg_access_path: None,
             replay_rows_processed: state.replay_rows_processed,
             replay_pages_processed: state.replay_pages_processed,
@@ -4333,6 +4534,37 @@ impl DiscoveryService {
         let replay_wallet_stats_remaining_frontier_min_wallets =
             replay_wallet_stats_remaining_frontier_min_pages
                 .saturating_mul(replay_wallet_stats_wallet_batch_size);
+        let replay_sol_leg_last_partial_cycle_frontier_saturated = if telemetry
+            .replay_sol_leg_last_partial_cycle_pages_processed
+            == 0
+        {
+            false
+        } else if telemetry.replay_sol_leg_last_partial_cycle_rows_processed == 0 {
+            false
+        } else {
+            telemetry
+                .replay_sol_leg_last_partial_cycle_rows_processed
+                .saturating_mul(
+                    DISCOVERY_PUBLICATION_TRUTH_REPLAY_WALLET_STATS_FRONTIER_SATURATION_DENOMINATOR,
+                )
+                >= telemetry
+                    .replay_sol_leg_last_partial_cycle_pages_processed
+                    .max(1)
+                    .saturating_mul(self.config.max_fetch_swaps_per_cycle.max(1))
+                    .saturating_mul(
+                        DISCOVERY_PUBLICATION_TRUTH_REPLAY_WALLET_STATS_FRONTIER_SATURATION_NUMERATOR,
+                    )
+        };
+        let replay_sol_leg_open_frontier_floor_pages =
+            if replay_sol_leg_last_partial_cycle_frontier_saturated {
+                telemetry.replay_sol_leg_last_partial_cycle_pages_processed
+            } else {
+                0
+            };
+        let replay_sol_leg_remaining_frontier_min_pages = replay_sol_leg_open_frontier_floor_pages;
+        let replay_sol_leg_remaining_frontier_min_rows =
+            replay_sol_leg_remaining_frontier_min_pages
+                .saturating_mul(self.config.max_fetch_swaps_per_cycle.max(1));
         info!(
             rebuild_phase = telemetry.phase.as_str(),
             rebuild_collect_buy_mints_mode = telemetry.collect_buy_mints_mode.as_str(),
@@ -4468,6 +4700,22 @@ impl DiscoveryService {
                 telemetry.replay_wallet_stats_milestone_reached,
             rebuild_replay_sol_leg_reentry_pending =
                 telemetry.replay_sol_leg_reentry_pending,
+            rebuild_replay_candidate_activity_backfill_required =
+                telemetry.replay_candidate_activity_backfill_required,
+            rebuild_replay_sol_leg_last_partial_cycle_pages_processed =
+                telemetry.replay_sol_leg_last_partial_cycle_pages_processed,
+            rebuild_replay_sol_leg_last_partial_cycle_rows_processed =
+                telemetry.replay_sol_leg_last_partial_cycle_rows_processed,
+            rebuild_replay_sol_leg_last_partial_cycle_elapsed_ms =
+                telemetry.replay_sol_leg_last_partial_cycle_elapsed_ms,
+            rebuild_replay_sol_leg_open_frontier_floor_pages =
+                replay_sol_leg_open_frontier_floor_pages,
+            rebuild_replay_sol_leg_remaining_frontier_min_pages =
+                replay_sol_leg_remaining_frontier_min_pages,
+            rebuild_replay_sol_leg_remaining_frontier_min_rows =
+                replay_sol_leg_remaining_frontier_min_rows,
+            rebuild_replay_sol_leg_frontier_saturated =
+                replay_sol_leg_last_partial_cycle_frontier_saturated,
             rebuild_replay_wallet_stats_target_ms_per_page =
                 replay_wallet_stats_target_ms_per_page,
             rebuild_replay_wallet_stats_wallet_batch_size =
@@ -4504,6 +4752,13 @@ impl DiscoveryService {
                 && !telemetry.replay_wallet_stats_complete
             {
                 Some("wallet_id_source_exhaustion")
+            } else {
+                None
+            },
+            rebuild_replay_sol_leg_completion_requirement = if telemetry.replay_subphase
+                == Some("sol_leg")
+            {
+                Some("sol_leg_swap_source_exhaustion")
             } else {
                 None
             },
@@ -4581,6 +4836,9 @@ impl DiscoveryService {
                     pages_processed: 0,
                     replay_wallet_stats_rows_processed: 0,
                     replay_wallet_stats_pages_processed: 0,
+                    replay_sol_leg_rows_processed: 0,
+                    replay_sol_leg_pages_processed: 0,
+                    replay_sol_leg_elapsed_ms: 0,
                     replay_wallet_stats_day_count_source_progress:
                         ReplayWalletStatsDayCountSourceProgress::default(),
                     replay_sol_leg_access_path: None,
@@ -4694,6 +4952,9 @@ impl DiscoveryService {
                             pages_processed,
                             replay_wallet_stats_rows_processed: 0,
                             replay_wallet_stats_pages_processed: 0,
+                            replay_sol_leg_rows_processed: 0,
+                            replay_sol_leg_pages_processed: 0,
+                            replay_sol_leg_elapsed_ms: 0,
                             replay_wallet_stats_day_count_source_progress:
                                 ReplayWalletStatsDayCountSourceProgress::default(),
                             replay_sol_leg_access_path: None,
@@ -4946,6 +5207,9 @@ impl DiscoveryService {
                                 pages_processed,
                                 replay_wallet_stats_rows_processed: 0,
                                 replay_wallet_stats_pages_processed: 0,
+                                replay_sol_leg_rows_processed: 0,
+                                replay_sol_leg_pages_processed: 0,
+                                replay_sol_leg_elapsed_ms: 0,
                                 replay_wallet_stats_day_count_source_progress:
                                     ReplayWalletStatsDayCountSourceProgress::default(),
                                 replay_sol_leg_access_path: None,
@@ -5015,6 +5279,9 @@ impl DiscoveryService {
                                     pages_processed,
                                     replay_wallet_stats_rows_processed: 0,
                                     replay_wallet_stats_pages_processed: 0,
+                                    replay_sol_leg_rows_processed: 0,
+                                    replay_sol_leg_pages_processed: 0,
+                                    replay_sol_leg_elapsed_ms: 0,
                                     replay_wallet_stats_day_count_source_progress:
                                         ReplayWalletStatsDayCountSourceProgress::default(),
                                     replay_sol_leg_access_path: None,
@@ -5231,6 +5498,9 @@ impl DiscoveryService {
             pages_processed,
             replay_wallet_stats_rows_processed: 0,
             replay_wallet_stats_pages_processed: 0,
+            replay_sol_leg_rows_processed: 0,
+            replay_sol_leg_pages_processed: 0,
+            replay_sol_leg_elapsed_ms: 0,
             replay_wallet_stats_day_count_source_progress:
                 ReplayWalletStatsDayCountSourceProgress::default(),
             replay_sol_leg_access_path: None,
@@ -5261,6 +5531,9 @@ impl DiscoveryService {
                     pages_processed,
                     replay_wallet_stats_rows_processed: 0,
                     replay_wallet_stats_pages_processed: 0,
+                    replay_sol_leg_rows_processed: 0,
+                    replay_sol_leg_pages_processed: 0,
+                    replay_sol_leg_elapsed_ms: 0,
                     replay_wallet_stats_day_count_source_progress:
                         ReplayWalletStatsDayCountSourceProgress::default(),
                     replay_sol_leg_access_path: None,
@@ -5297,6 +5570,9 @@ impl DiscoveryService {
                     pages_processed,
                     replay_wallet_stats_rows_processed: 0,
                     replay_wallet_stats_pages_processed: 0,
+                    replay_sol_leg_rows_processed: 0,
+                    replay_sol_leg_pages_processed: 0,
+                    replay_sol_leg_elapsed_ms: 0,
                     replay_wallet_stats_day_count_source_progress:
                         ReplayWalletStatsDayCountSourceProgress::default(),
                     replay_sol_leg_access_path: None,
@@ -5317,6 +5593,9 @@ impl DiscoveryService {
             pages_processed,
             replay_wallet_stats_rows_processed: 0,
             replay_wallet_stats_pages_processed: 0,
+            replay_sol_leg_rows_processed: 0,
+            replay_sol_leg_pages_processed: 0,
+            replay_sol_leg_elapsed_ms: 0,
             replay_wallet_stats_day_count_source_progress:
                 ReplayWalletStatsDayCountSourceProgress::default(),
             replay_sol_leg_access_path: None,
@@ -5381,6 +5660,9 @@ impl DiscoveryService {
                     pages_processed: 0,
                     replay_wallet_stats_rows_processed: rows_processed,
                     replay_wallet_stats_pages_processed: pages_processed,
+                    replay_sol_leg_rows_processed: 0,
+                    replay_sol_leg_pages_processed: 0,
+                    replay_sol_leg_elapsed_ms: 0,
                     replay_wallet_stats_day_count_source_progress,
                     replay_sol_leg_access_path: None,
                     source_exhausted: true,
@@ -5399,6 +5681,9 @@ impl DiscoveryService {
             pages_processed: 0,
             replay_wallet_stats_rows_processed: rows_processed,
             replay_wallet_stats_pages_processed: pages_processed,
+            replay_sol_leg_rows_processed: 0,
+            replay_sol_leg_pages_processed: 0,
+            replay_sol_leg_elapsed_ms: 0,
             replay_wallet_stats_day_count_source_progress,
             replay_sol_leg_access_path: None,
             source_exhausted: false,
@@ -5513,6 +5798,9 @@ impl DiscoveryService {
                     pages_processed,
                     replay_wallet_stats_rows_processed: 0,
                     replay_wallet_stats_pages_processed: 0,
+                    replay_sol_leg_rows_processed: 0,
+                    replay_sol_leg_pages_processed: 0,
+                    replay_sol_leg_elapsed_ms: 0,
                     replay_wallet_stats_day_count_source_progress:
                         ReplayWalletStatsDayCountSourceProgress::default(),
                     replay_sol_leg_access_path: None,
@@ -5530,6 +5818,9 @@ impl DiscoveryService {
             pages_processed,
             replay_wallet_stats_rows_processed: 0,
             replay_wallet_stats_pages_processed: 0,
+            replay_sol_leg_rows_processed: 0,
+            replay_sol_leg_pages_processed: 0,
+            replay_sol_leg_elapsed_ms: 0,
             replay_wallet_stats_day_count_source_progress:
                 ReplayWalletStatsDayCountSourceProgress::default(),
             replay_sol_leg_access_path: None,
@@ -5577,6 +5868,9 @@ impl DiscoveryService {
         let mut replay_pages_processed = 0usize;
         let mut replay_wallet_stats_rows_processed = 0usize;
         let mut replay_wallet_stats_pages_processed = 0usize;
+        let mut replay_sol_leg_rows_processed = 0usize;
+        let mut replay_sol_leg_pages_processed = 0usize;
+        let mut replay_sol_leg_elapsed_ms = 0u64;
         let mut replay_wallet_stats_day_count_source_progress =
             ReplayWalletStatsDayCountSourceProgress::default();
         let mut replay_sol_leg_access_path = None;
@@ -5620,6 +5914,13 @@ impl DiscoveryService {
                     state.payload.replay_wallet_stats_complete = true;
                     state.payload.replay_wallet_stats_milestone_reached = true;
                     state.payload.replay_wallet_stats_wallet_cursor = None;
+                    state
+                        .payload
+                        .replay_sol_leg_last_partial_cycle_pages_processed = 0;
+                    state
+                        .payload
+                        .replay_sol_leg_last_partial_cycle_rows_processed = 0;
+                    state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms = 0;
                     state.payload.replay_candidate_activity_backfill_required = false;
                     state.payload.replay_candidate_activity_backfill_pending = false;
                     state.phase_cursor = None;
@@ -5676,6 +5977,9 @@ impl DiscoveryService {
                     pages_processed: replay_pages_processed,
                     replay_wallet_stats_rows_processed,
                     replay_wallet_stats_pages_processed,
+                    replay_sol_leg_rows_processed,
+                    replay_sol_leg_pages_processed,
+                    replay_sol_leg_elapsed_ms,
                     replay_wallet_stats_day_count_source_progress,
                     replay_sol_leg_access_path: None,
                     source_exhausted: false,
@@ -5704,12 +6008,22 @@ impl DiscoveryService {
                 if advance.source_exhausted {
                     state.payload.replay_candidate_activity_backfill_required = false;
                     state.payload.replay_candidate_activity_backfill_pending = false;
+                    state
+                        .payload
+                        .replay_sol_leg_last_partial_cycle_pages_processed = 0;
+                    state
+                        .payload
+                        .replay_sol_leg_last_partial_cycle_rows_processed = 0;
+                    state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms = 0;
                     state.phase_cursor = None;
                     return Ok(PersistedStreamPhaseAdvance {
                         rows_processed: replay_rows_processed,
                         pages_processed: replay_pages_processed,
                         replay_wallet_stats_rows_processed,
                         replay_wallet_stats_pages_processed,
+                        replay_sol_leg_rows_processed,
+                        replay_sol_leg_pages_processed,
+                        replay_sol_leg_elapsed_ms,
                         replay_wallet_stats_day_count_source_progress,
                         replay_sol_leg_access_path: replay_sol_leg_access_path,
                         source_exhausted: true,
@@ -5724,6 +6038,9 @@ impl DiscoveryService {
                     pages_processed: replay_pages_processed,
                     replay_wallet_stats_rows_processed,
                     replay_wallet_stats_pages_processed,
+                    replay_sol_leg_rows_processed,
+                    replay_sol_leg_pages_processed,
+                    replay_sol_leg_elapsed_ms,
                     replay_wallet_stats_day_count_source_progress,
                     replay_sol_leg_access_path: replay_sol_leg_access_path,
                     source_exhausted: false,
@@ -5734,6 +6051,7 @@ impl DiscoveryService {
                 });
             }
 
+            let sol_leg_page_started = Instant::now();
             let mut page_last_cursor = cursor.clone();
             let base_replay_rows_processed = state.replay_rows_processed;
             let page = store.for_each_observed_sol_leg_swap_in_window_after_cursor_with_budget(
@@ -5816,11 +6134,15 @@ impl DiscoveryService {
                         );
                     }
                     replay_rows_processed = replay_rows_processed.saturating_add(1);
+                    replay_sol_leg_rows_processed = replay_sol_leg_rows_processed.saturating_add(1);
                     Ok(())
                 },
             )?;
+            replay_sol_leg_elapsed_ms = replay_sol_leg_elapsed_ms
+                .saturating_add(sol_leg_page_started.elapsed().as_millis() as u64);
             replay_sol_leg_access_path = Some(page.access_path);
             replay_pages_processed = replay_pages_processed.saturating_add(1);
+            replay_sol_leg_pages_processed = replay_sol_leg_pages_processed.saturating_add(1);
             cursor = page_last_cursor;
 
             if page.time_budget_exhausted {
@@ -5846,11 +6168,21 @@ impl DiscoveryService {
                 }
                 state.payload.replay_candidate_activity_backfill_required = false;
                 state.payload.replay_candidate_activity_backfill_pending = false;
+                state
+                    .payload
+                    .replay_sol_leg_last_partial_cycle_pages_processed = 0;
+                state
+                    .payload
+                    .replay_sol_leg_last_partial_cycle_rows_processed = 0;
+                state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms = 0;
                 return Ok(PersistedStreamPhaseAdvance {
                     rows_processed: replay_rows_processed,
                     pages_processed: replay_pages_processed,
                     replay_wallet_stats_rows_processed,
                     replay_wallet_stats_pages_processed,
+                    replay_sol_leg_rows_processed,
+                    replay_sol_leg_pages_processed,
+                    replay_sol_leg_elapsed_ms,
                     replay_wallet_stats_day_count_source_progress,
                     replay_sol_leg_access_path,
                     source_exhausted: true,
@@ -5867,6 +6199,9 @@ impl DiscoveryService {
             pages_processed: replay_pages_processed,
             replay_wallet_stats_rows_processed,
             replay_wallet_stats_pages_processed,
+            replay_sol_leg_rows_processed,
+            replay_sol_leg_pages_processed,
+            replay_sol_leg_elapsed_ms,
             replay_wallet_stats_day_count_source_progress,
             replay_sol_leg_access_path,
             source_exhausted: false,
@@ -5907,6 +6242,55 @@ impl DiscoveryService {
                         && self.config.min_buy_count > 0,
                     deadline,
                 ),
+        }
+    }
+
+    fn persist_partial_replay_frontier_hints_after_cycle(
+        state: &mut PersistedStreamRebuildState,
+        cycle_replay_wallet_stats_day_count_source_progress: ReplayWalletStatsDayCountSourceProgress,
+        cycle_elapsed_ms: u64,
+        cycle_replay_sol_leg_pages_processed: usize,
+        cycle_replay_sol_leg_rows_processed: usize,
+        cycle_replay_sol_leg_elapsed_ms: u64,
+    ) {
+        let cycle_replay_wallet_stats_pages_processed =
+            cycle_replay_wallet_stats_day_count_source_progress.total_pages_processed();
+        let cycle_replay_wallet_stats_wallets_processed =
+            cycle_replay_wallet_stats_day_count_source_progress.total_wallets_processed();
+        if state.phase == DiscoveryPersistedRebuildPhase::Replay
+            && !state.payload.replay_wallet_stats_complete
+            && cycle_replay_wallet_stats_pages_processed > 0
+        {
+            state.payload.replay_wallet_stats_budget_floor_wallets = state
+                .payload
+                .replay_wallet_stats_budget_floor_wallets
+                .max(Self::replay_wallet_stats_current_observed_wallet_floor_wallets(state));
+            state
+                .payload
+                .replay_wallet_stats_last_partial_cycle_pages_processed =
+                cycle_replay_wallet_stats_pages_processed;
+            state
+                .payload
+                .replay_wallet_stats_last_partial_cycle_wallets_processed =
+                cycle_replay_wallet_stats_wallets_processed;
+            state
+                .payload
+                .replay_wallet_stats_last_partial_cycle_elapsed_ms = cycle_elapsed_ms;
+        } else if state.phase == DiscoveryPersistedRebuildPhase::Replay
+            && state.payload.replay_wallet_stats_complete
+            && !state.payload.replay_candidate_activity_backfill_pending
+            && cycle_replay_sol_leg_pages_processed > 0
+        {
+            state
+                .payload
+                .replay_sol_leg_last_partial_cycle_pages_processed =
+                cycle_replay_sol_leg_pages_processed;
+            state
+                .payload
+                .replay_sol_leg_last_partial_cycle_rows_processed =
+                cycle_replay_sol_leg_rows_processed;
+            state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms =
+                cycle_replay_sol_leg_elapsed_ms;
         }
     }
 
@@ -5987,6 +6371,13 @@ impl DiscoveryService {
             Self::replay_wallet_stats_last_partial_cycle_frontier_saturated(fetch_limit, &state);
         let replay_sol_leg_processed_floor_pages =
             Self::replay_sol_leg_processed_floor_pages(fetch_limit, &state);
+        let replay_sol_leg_open_frontier_floor_pages =
+            Self::replay_sol_leg_open_frontier_floor_pages(fetch_limit, &state);
+        let replay_sol_leg_remaining_frontier_min_pages = replay_sol_leg_open_frontier_floor_pages;
+        let replay_sol_leg_remaining_frontier_min_rows =
+            replay_sol_leg_remaining_frontier_min_pages.saturating_mul(fetch_limit);
+        let replay_sol_leg_frontier_saturated =
+            Self::replay_sol_leg_last_partial_cycle_frontier_saturated(fetch_limit, &state);
         let replay_wallet_stats_target_time_budget_before_publishable_horizon_cap =
             Self::deep_replay_wallet_stats_target_time_budget(
                 requested_contract.time_budget.max(StdDuration::from_millis(
@@ -6063,6 +6454,17 @@ impl DiscoveryService {
                     state.payload.replay_wallet_stats_milestone_reached,
                 rebuild_replay_sol_leg_reentry_pending =
                     state.payload.replay_sol_leg_reentry_pending,
+                rebuild_replay_candidate_activity_backfill_required =
+                    state.payload.replay_candidate_activity_backfill_required,
+                rebuild_replay_sol_leg_last_partial_cycle_pages_processed = state
+                    .payload
+                    .replay_sol_leg_last_partial_cycle_pages_processed,
+                rebuild_replay_sol_leg_last_partial_cycle_rows_processed = state
+                    .payload
+                    .replay_sol_leg_last_partial_cycle_rows_processed,
+                rebuild_replay_sol_leg_last_partial_cycle_elapsed_ms = state
+                    .payload
+                    .replay_sol_leg_last_partial_cycle_elapsed_ms,
                 rebuild_replay_wallet_stats_target_time_budget_before_publishable_horizon_cap_ms =
                     replay_wallet_stats_target_time_budget_before_publishable_horizon_cap.as_millis(),
                 rebuild_replay_wallet_stats_publishable_horizon_budget_cap_applied =
@@ -6104,8 +6506,25 @@ impl DiscoveryService {
                 } else {
                     None
                 },
+                rebuild_replay_sol_leg_completion_requirement = if state.phase
+                    == DiscoveryPersistedRebuildPhase::Replay
+                    && state.payload.replay_wallet_stats_complete
+                    && !state.payload.replay_candidate_activity_backfill_pending
+                {
+                    Some("sol_leg_swap_source_exhaustion")
+                } else {
+                    None
+                },
                 rebuild_replay_sol_leg_processed_floor_pages =
                     replay_sol_leg_processed_floor_pages,
+                rebuild_replay_sol_leg_open_frontier_floor_pages =
+                    replay_sol_leg_open_frontier_floor_pages,
+                rebuild_replay_sol_leg_remaining_frontier_min_pages =
+                    replay_sol_leg_remaining_frontier_min_pages,
+                rebuild_replay_sol_leg_remaining_frontier_min_rows =
+                    replay_sol_leg_remaining_frontier_min_rows,
+                rebuild_replay_sol_leg_frontier_saturated =
+                    replay_sol_leg_frontier_saturated,
                 rebuild_replay_rows_processed = state.replay_rows_processed,
                 rebuild_replay_pages_processed = state.replay_pages_processed,
                 rebuild_replay_wallet_stats_rows_processed =
@@ -6207,6 +6626,9 @@ impl DiscoveryService {
         let deadline = cycle_started + rebuild_time_budget;
         let mut cycle_rows_processed = 0usize;
         let mut cycle_pages_processed = 0usize;
+        let mut cycle_replay_sol_leg_rows_processed = 0usize;
+        let mut cycle_replay_sol_leg_pages_processed = 0usize;
+        let mut cycle_replay_sol_leg_elapsed_ms = 0u64;
         let mut cycle_replay_wallet_stats_day_count_source_progress =
             ReplayWalletStatsDayCountSourceProgress::default();
         let cycle_replay_wallet_stats_wallet_cursor_before =
@@ -6298,6 +6720,18 @@ impl DiscoveryService {
                     .payload
                     .replay_wallet_stats_milestone_reached,
                 replay_sol_leg_reentry_pending: state.payload.replay_sol_leg_reentry_pending,
+                replay_sol_leg_last_partial_cycle_pages_processed: state
+                    .payload
+                    .replay_sol_leg_last_partial_cycle_pages_processed,
+                replay_sol_leg_last_partial_cycle_rows_processed: state
+                    .payload
+                    .replay_sol_leg_last_partial_cycle_rows_processed,
+                replay_sol_leg_last_partial_cycle_elapsed_ms: state
+                    .payload
+                    .replay_sol_leg_last_partial_cycle_elapsed_ms,
+                replay_candidate_activity_backfill_required: state
+                    .payload
+                    .replay_candidate_activity_backfill_required,
                 replay_sol_leg_access_path: None,
                 replay_rows_processed: state.replay_rows_processed,
                 replay_pages_processed: state.replay_pages_processed,
@@ -6400,6 +6834,12 @@ impl DiscoveryService {
             cycle_pages_processed = cycle_pages_processed
                 .saturating_add(phase_advance.pages_processed)
                 .saturating_add(phase_advance.replay_wallet_stats_pages_processed);
+            cycle_replay_sol_leg_rows_processed = cycle_replay_sol_leg_rows_processed
+                .saturating_add(phase_advance.replay_sol_leg_rows_processed);
+            cycle_replay_sol_leg_pages_processed = cycle_replay_sol_leg_pages_processed
+                .saturating_add(phase_advance.replay_sol_leg_pages_processed);
+            cycle_replay_sol_leg_elapsed_ms = cycle_replay_sol_leg_elapsed_ms
+                .saturating_add(phase_advance.replay_sol_leg_elapsed_ms);
             cycle_replay_wallet_stats_day_count_source_progress
                 .merge(phase_advance.replay_wallet_stats_day_count_source_progress);
             cycle_unique_buy_mints_discovered = cycle_unique_buy_mints_discovered
@@ -6669,6 +7109,18 @@ impl DiscoveryService {
                         .payload
                         .replay_wallet_stats_milestone_reached,
                     replay_sol_leg_reentry_pending: state.payload.replay_sol_leg_reentry_pending,
+                    replay_sol_leg_last_partial_cycle_pages_processed: state
+                        .payload
+                        .replay_sol_leg_last_partial_cycle_pages_processed,
+                    replay_sol_leg_last_partial_cycle_rows_processed: state
+                        .payload
+                        .replay_sol_leg_last_partial_cycle_rows_processed,
+                    replay_sol_leg_last_partial_cycle_elapsed_ms: state
+                        .payload
+                        .replay_sol_leg_last_partial_cycle_elapsed_ms,
+                    replay_candidate_activity_backfill_required: state
+                        .payload
+                        .replay_candidate_activity_backfill_required,
                     replay_sol_leg_access_path: cycle_replay_sol_leg_access_path,
                     replay_rows_processed: state.replay_rows_processed,
                     replay_pages_processed: state.replay_pages_processed,
@@ -6717,30 +7169,14 @@ impl DiscoveryService {
 
         state.chunks_completed = state.chunks_completed.saturating_add(1);
         let cycle_elapsed_ms = cycle_started.elapsed().as_millis() as u64;
-        let cycle_replay_wallet_stats_pages_processed =
-            cycle_replay_wallet_stats_day_count_source_progress.total_pages_processed();
-        let cycle_replay_wallet_stats_wallets_processed =
-            cycle_replay_wallet_stats_day_count_source_progress.total_wallets_processed();
-        if state.phase == DiscoveryPersistedRebuildPhase::Replay
-            && !state.payload.replay_wallet_stats_complete
-            && cycle_replay_wallet_stats_pages_processed > 0
-        {
-            state.payload.replay_wallet_stats_budget_floor_wallets = state
-                .payload
-                .replay_wallet_stats_budget_floor_wallets
-                .max(Self::replay_wallet_stats_current_observed_wallet_floor_wallets(&state));
-            state
-                .payload
-                .replay_wallet_stats_last_partial_cycle_pages_processed =
-                cycle_replay_wallet_stats_pages_processed;
-            state
-                .payload
-                .replay_wallet_stats_last_partial_cycle_wallets_processed =
-                cycle_replay_wallet_stats_wallets_processed;
-            state
-                .payload
-                .replay_wallet_stats_last_partial_cycle_elapsed_ms = cycle_elapsed_ms;
-        }
+        Self::persist_partial_replay_frontier_hints_after_cycle(
+            &mut state,
+            cycle_replay_wallet_stats_day_count_source_progress,
+            cycle_elapsed_ms,
+            cycle_replay_sol_leg_pages_processed,
+            cycle_replay_sol_leg_rows_processed,
+            cycle_replay_sol_leg_elapsed_ms,
+        );
         self.persist_persisted_stream_rebuild_state(store, &mut state, now)?;
         let telemetry = PersistedStreamProgressTelemetry {
             phase: state.phase,
@@ -6820,6 +7256,18 @@ impl DiscoveryService {
                 .payload
                 .replay_wallet_stats_milestone_reached,
             replay_sol_leg_reentry_pending: state.payload.replay_sol_leg_reentry_pending,
+            replay_sol_leg_last_partial_cycle_pages_processed: state
+                .payload
+                .replay_sol_leg_last_partial_cycle_pages_processed,
+            replay_sol_leg_last_partial_cycle_rows_processed: state
+                .payload
+                .replay_sol_leg_last_partial_cycle_rows_processed,
+            replay_sol_leg_last_partial_cycle_elapsed_ms: state
+                .payload
+                .replay_sol_leg_last_partial_cycle_elapsed_ms,
+            replay_candidate_activity_backfill_required: state
+                .payload
+                .replay_candidate_activity_backfill_required,
             replay_sol_leg_access_path: cycle_replay_sol_leg_access_path,
             replay_rows_processed: state.replay_rows_processed,
             replay_pages_processed: state.replay_pages_processed,
@@ -9558,6 +10006,9 @@ mod tests {
             replay_wallet_stats_last_partial_cycle_elapsed_ms: 60_002,
             replay_wallet_stats_milestone_reached: false,
             replay_sol_leg_reentry_pending: false,
+            replay_sol_leg_last_partial_cycle_pages_processed: 0,
+            replay_sol_leg_last_partial_cycle_rows_processed: 0,
+            replay_sol_leg_last_partial_cycle_elapsed_ms: 0,
             replay_candidate_activity_backfill_required: false,
             replay_candidate_activity_backfill_pending: false,
             token_quality_cache,
@@ -17706,6 +18157,183 @@ mod tests {
     }
 
     #[test]
+    fn persisted_stream_replay_sol_leg_partial_hint_persists_exact_suffix_not_mixed_cycle_volume_stage1(
+    ) -> Result<()> {
+        let now = DateTime::parse_from_rfc3339("2026-04-04T10:08:48Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = stage1_runtime_config();
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let window_start = metrics_window_start;
+        let horizon_end = window_start + Duration::days(config.scoring_window_days as i64);
+        let mut replay_state = PersistedStreamRebuildState {
+            phase: DiscoveryPersistedRebuildPhase::Replay,
+            window_start,
+            horizon_end,
+            metrics_window_start,
+            phase_cursor: Some(DiscoveryRuntimeCursor {
+                ts_utc: now - Duration::minutes(1),
+                slot: 123,
+                signature: "stage1-mixed-sol-leg-suffix".to_string(),
+            }),
+            payload: PersistedStreamRebuildPayload {
+                replay_mode: ReplayMode::WalletStatsThenSolLeg,
+                replay_wallet_stats_complete: true,
+                replay_wallet_stats_milestone_reached: true,
+                replay_wallet_stats_budget_floor_wallets: 662_481,
+                replay_wallet_stats_last_partial_cycle_pages_processed: 27,
+                replay_wallet_stats_last_partial_cycle_wallets_processed: 24_300,
+                replay_wallet_stats_last_partial_cycle_elapsed_ms: 60_002,
+                by_wallet: HashMap::from_iter([(
+                    "wallet_sol_leg".to_string(),
+                    WalletAccumulator::default(),
+                )]),
+                ..PersistedStreamRebuildPayload::default()
+            },
+            prepass_rows_processed: 0,
+            prepass_pages_processed: 0,
+            replay_rows_processed: 5,
+            replay_pages_processed: 1,
+            chunks_completed: 0,
+            started_at: now - Duration::minutes(5),
+            updated_at: now - Duration::seconds(1),
+        };
+        let mut mixed_wallet_stats_progress = ReplayWalletStatsDayCountSourceProgress::default();
+        mixed_wallet_stats_progress.observe_page(
+            Some(ObservedWalletActivityDayCountSource::WalletActivityDays),
+            24_300,
+        );
+        mixed_wallet_stats_progress.observe_page(
+            Some(ObservedWalletActivityDayCountSource::WalletActivityDays),
+            24_300,
+        );
+        mixed_wallet_stats_progress.observe_page(
+            Some(ObservedWalletActivityDayCountSource::WalletActivityDays),
+            24_300,
+        );
+        mixed_wallet_stats_progress.observe_page(
+            Some(ObservedWalletActivityDayCountSource::ObservedSwapsFallback),
+            5_400,
+        );
+        let whole_cycle_pages_processed = mixed_wallet_stats_progress
+            .total_pages_processed()
+            .saturating_add(5);
+        let whole_cycle_rows_processed = mixed_wallet_stats_progress
+            .total_wallets_processed()
+            .saturating_add(500);
+
+        DiscoveryService::persist_partial_replay_frontier_hints_after_cycle(
+            &mut replay_state,
+            mixed_wallet_stats_progress,
+            60_002,
+            5,
+            500,
+            7_250,
+        );
+
+        assert!(
+            whole_cycle_pages_processed > replay_state.payload.replay_sol_leg_last_partial_cycle_pages_processed,
+            "the deterministic repro must stay mixed: whole-cycle pages include wallet_stats plus the later sol_leg suffix"
+        );
+        assert!(
+            whole_cycle_rows_processed > replay_state.payload.replay_sol_leg_last_partial_cycle_rows_processed,
+            "the deterministic repro must stay mixed: whole-cycle rows include wallet_stats plus the later sol_leg suffix"
+        );
+        assert_eq!(
+            replay_state.payload.replay_sol_leg_last_partial_cycle_pages_processed,
+            5,
+            "whole-cycle pages must now be strictly larger than persisted sol_leg suffix pages on a mixed wallet_stats -> sol_leg cycle"
+        );
+        assert!(
+            replay_state.payload.replay_sol_leg_last_partial_cycle_rows_processed == 500,
+            "persisted sol_leg rows must come only from the exact sol_leg suffix of the mixed cycle"
+        );
+        assert_eq!(
+            replay_state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms,
+            7_250,
+            "persisted sol_leg elapsed time must come from the exact sol_leg suffix, not the whole mixed cycle"
+        );
+        assert_eq!(
+            replay_state.payload.replay_wallet_stats_last_partial_cycle_pages_processed,
+            27,
+            "once the mixed cycle has already crossed wallet_stats and is blocking in sol_leg, the downstream sol_leg hint persistence must not overwrite wallet_stats-specific hint memory"
+        );
+        assert_eq!(
+            replay_state.replay_pages_processed,
+            1,
+            "persisted sol_leg page hints must equal exact sol_leg replay suffix work, not the full mixed cycle volume"
+        );
+        assert_eq!(
+            replay_state.replay_rows_processed,
+            5,
+            "persisting exact sol_leg suffix memory must not mutate cumulative replay progress counters"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_priority_recovery_contract_does_not_reuse_sol_leg_open_frontier_for_candidate_activity_backfill_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-candidate-backfill-does-not-reuse-sol-leg-frontier.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-04T10:08:48Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 10;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (mut replay_state, _metrics_window_start, _sol_leg_rows) =
+            seed_stage1_partial_sol_leg_replay_checkpoint_fixture(
+                &runtime_store,
+                &discovery,
+                &config,
+                now,
+                401,
+                54,
+            )?;
+        DiscoveryService::prepare_persisted_stream_replay_candidate_activity_backfill(
+            &mut replay_state,
+        );
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_pages_processed = 54;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_rows_processed = 540;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_elapsed_ms = 243_000;
+
+        let contract = discovery.deepen_persisted_stream_priority_recovery_contract_for_state(
+            &replay_state,
+            config.max_fetch_swaps_per_cycle,
+            config.max_fetch_pages_per_cycle,
+            PersistedStreamPriorityRecoveryContract {
+                time_budget: StdDuration::from_secs(60),
+                collect_buy_mints_phase_page_limit_override: Some(160),
+                replay_wallet_stats_phase_page_limit_override: Some(92),
+                replay_sol_leg_phase_page_limit_override: None,
+                reason: Some("runtime_window_complete_stale_publication_truth"),
+            },
+        );
+        assert_ne!(
+            contract.reason,
+            Some("deep_replay_candidate_activity_backfill_open_frontier_backlog"),
+            "candidate activity backfill must not reuse persisted sol_leg frontier hints as if they were exact candidate-backfill suffix memory"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn replay_candidate_activity_backfill_restores_exact_activity_summary_for_candidate_wallets_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -18022,6 +18650,246 @@ mod tests {
                 .load_discovery_persisted_rebuild_state()?
                 .is_none(),
             "after the deeper sol-leg contract reaches publish, the persisted replay checkpoint should clear"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_priority_recovery_contract_scales_for_open_frontier_resumed_replay_sol_leg_checkpoint_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-sol-leg-open-frontier-priority-contract.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-04T10:08:48Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 10;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (mut replay_state, _metrics_window_start, sol_leg_rows) =
+            seed_stage1_partial_sol_leg_replay_checkpoint_fixture(
+                &runtime_store,
+                &discovery,
+                &config,
+                now,
+                401,
+                54,
+            )?;
+        assert_eq!(replay_state.phase, DiscoveryPersistedRebuildPhase::Replay);
+        assert!(replay_state.payload.replay_wallet_stats_complete);
+        assert_eq!(replay_state.replay_pages_processed, 54);
+        assert_eq!(replay_state.replay_rows_processed, 540);
+
+        let base_contract = PersistedStreamPriorityRecoveryContract {
+            time_budget: StdDuration::from_secs(60),
+            collect_buy_mints_phase_page_limit_override: Some(160),
+            replay_wallet_stats_phase_page_limit_override: Some(92),
+            replay_sol_leg_phase_page_limit_override: None,
+            reason: Some("runtime_window_complete_stale_publication_truth"),
+        };
+        let first_contract = discovery
+            .deepen_persisted_stream_priority_recovery_contract_for_state(
+                &replay_state,
+                config.max_fetch_swaps_per_cycle,
+                config.max_fetch_pages_per_cycle,
+                base_contract,
+            );
+        assert_eq!(
+            first_contract.reason,
+            Some("deep_replay_sol_leg_large_processed_backlog")
+        );
+        assert!(
+            first_contract
+                .replay_sol_leg_phase_page_limit_override
+                .is_some_and(|limit| limit > replay_state.replay_pages_processed),
+            "the first reduced live-shaped sol-leg contract should already widen beyond the processed prefix, but still remain tied to historical processed pages rather than the unresolved suffix"
+        );
+        assert!(
+            sol_leg_rows
+                > replay_state.replay_rows_processed.saturating_add(
+                    config.max_fetch_swaps_per_cycle
+                        * first_contract
+                            .replay_sol_leg_phase_page_limit_override
+                            .expect("sol_leg limit")
+                ),
+            "the reduced live-shaped sol-leg fixture must still leave more than one processed-prefix worth of source after the first deep contract so the downstream blocker is deterministic locally"
+        );
+
+        let first_advance = discovery
+            .advance_persisted_stream_replay_optimized_with_wallet_stats_phase_page_limit(
+                &runtime_store,
+                &mut replay_state,
+                config.max_fetch_swaps_per_cycle,
+                config.max_fetch_pages_per_cycle,
+                first_contract.replay_wallet_stats_phase_page_limit_override,
+                first_contract.replay_sol_leg_phase_page_limit_override,
+                false,
+                Instant::now() + StdDuration::from_secs(30),
+            )?;
+        assert!(!first_advance.source_exhausted);
+        assert!(
+            matches!(
+                first_advance.budget_exhausted_reason,
+                Some(PersistedStreamBudgetExhaustedReason::PageBudget)
+            ) || matches!(
+                first_advance.budget_exhausted_reason,
+                Some(PersistedStreamBudgetExhaustedReason::TimeBudget)
+            ),
+            "old behavior must stay on the sol_leg blocker once the processed-prefix contract runs out before source exhaustion"
+        );
+        replay_state.replay_rows_processed = replay_state
+            .replay_rows_processed
+            .saturating_add(first_advance.rows_processed);
+        replay_state.replay_pages_processed = replay_state
+            .replay_pages_processed
+            .saturating_add(first_advance.pages_processed);
+        replay_state.phase_cursor = first_advance.phase_cursor;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_pages_processed =
+            first_advance.replay_sol_leg_pages_processed;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_rows_processed =
+            first_advance.replay_sol_leg_rows_processed;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_elapsed_ms =
+            first_advance.replay_sol_leg_elapsed_ms.max(1);
+
+        let second_contract = discovery
+            .deepen_persisted_stream_priority_recovery_contract_for_state(
+                &replay_state,
+                config.max_fetch_swaps_per_cycle,
+                config.max_fetch_pages_per_cycle,
+                base_contract,
+            );
+        assert_eq!(
+            second_contract.reason,
+            Some("deep_replay_sol_leg_open_frontier_backlog")
+        );
+        assert!(
+            second_contract
+                .replay_sol_leg_phase_page_limit_override
+                .zip(first_contract.replay_sol_leg_phase_page_limit_override)
+                .is_some_and(|(second_limit, first_limit)| second_limit > first_limit),
+            "once a real saturated partial sol-leg cycle is persisted, the next checkpoint-specific contract must widen from the remaining frontier instead of pretending the processed prefix is the whole problem"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_cycle_live_like_resumed_replay_sol_leg_open_frontier_progress_publishes_after_second_cycle_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-run-cycle-live-like-sol-leg-open-frontier.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-04T10:08:48Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 10;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (replay_state, metrics_window_start, _sol_leg_rows) =
+            seed_stage1_partial_sol_leg_replay_checkpoint_fixture(
+                &runtime_store,
+                &discovery,
+                &config,
+                now,
+                401,
+                54,
+            )?;
+        runtime_store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, now)?,
+        )?;
+        runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
+            last_published_at: Some(
+                now - discovery.runtime_published_universe_max_age() - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        let first_summary = discovery.run_cycle(&runtime_store, now)?;
+        assert!(!first_summary.published);
+        let after_first = load_persisted_stream_rebuild_state_for_test(&runtime_store)?;
+        assert_eq!(after_first.phase, DiscoveryPersistedRebuildPhase::Replay);
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &after_first
+            ),
+            "replay_sol_leg_incomplete",
+            "the first cycle should deterministically reproduce the exact live-shaped downstream blocker: stable replay_sol_leg_incomplete with empty publication truth"
+        );
+        assert!(after_first.payload.replay_wallet_stats_complete);
+        assert!(
+            after_first
+                .payload
+                .replay_sol_leg_last_partial_cycle_pages_processed
+                > 0
+        );
+        assert!(
+            after_first
+                .payload
+                .replay_sol_leg_last_partial_cycle_rows_processed
+                > 0
+        );
+        let publication_after_first = runtime_store
+            .discovery_publication_state()?
+            .expect("publication state should exist after the first partial sol_leg cycle");
+        assert!(
+            publication_after_first
+                .published_wallet_ids
+                .as_ref()
+                .is_some_and(|wallets| wallets.is_empty()),
+            "the first live-shaped sol_leg cycle should still leave export-visible publication truth empty, matching the measured fail-closed blocker"
+        );
+
+        let second_summary = discovery.run_cycle(&runtime_store, now + Duration::seconds(1))?;
+        assert_eq!(second_summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert!(second_summary.published);
+        let publication_after_second = runtime_store
+            .discovery_publication_state()?
+            .expect("publication state should exist after the second cycle publishes");
+        assert_eq!(
+            publication_after_second.runtime_mode,
+            DiscoveryRuntimeMode::Healthy
+        );
+        assert_eq!(
+            publication_after_second.last_published_window_start,
+            Some(metrics_window_start)
+        );
+        assert!(
+            publication_after_second
+                .published_wallet_ids
+                .as_ref()
+                .is_some_and(|wallets| !wallets.is_empty()),
+            "once the same reduced live-shaped sol_leg checkpoint persists its saturated partial frontier, the next local cycle should move through candidate backfill into a real non-empty published universe"
+        );
+        assert!(
+            runtime_store
+                .load_discovery_persisted_rebuild_state()?
+                .is_none(),
+            "after the downstream sol_leg blocker clears and publish succeeds, the persisted replay checkpoint should clear instead of leaving recovery pinned on stale partial state"
         );
         Ok(())
     }
@@ -22734,6 +23602,10 @@ mod tests {
             replay_wallet_stats_publishable_horizon_remaining_ms: None,
             replay_wallet_stats_milestone_reached: false,
             replay_sol_leg_reentry_pending: false,
+            replay_sol_leg_last_partial_cycle_pages_processed: 0,
+            replay_sol_leg_last_partial_cycle_rows_processed: 0,
+            replay_sol_leg_last_partial_cycle_elapsed_ms: 0,
+            replay_candidate_activity_backfill_required: false,
             replay_sol_leg_access_path: None,
             replay_rows_processed: 0,
             replay_pages_processed: 0,

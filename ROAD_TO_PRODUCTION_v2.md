@@ -7582,10 +7582,26 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        - replay now persists a durable
          `replay_wallet_stats_milestone_reached` marker once the lineage
          legitimately crosses `wallet_stats`
-       - carry-forward still uses the narrow `replay_sol_leg_reentry_pending`
-         handoff marker, but resume/repair can now auto-heal any future
-         degraded replay row back into `sol_leg` if that durable milestone is
-         present
+     - carry-forward still uses the narrow `replay_sol_leg_reentry_pending`
+       handoff marker, but resume/repair can now auto-heal any future
+       degraded replay row back into `sol_leg` if that durable milestone is
+       present
+     - the next exact downstream blocker proved narrower still:
+       - `candidate_activity_backfill` cannot arm until `sol_leg` reaches real
+         source exhaustion
+       - the old deep `sol_leg` recovery contract only widened from already
+         processed replay pages, so a saturated partial `sol_leg` cycle could
+         keep yielding on the same blocker even after `wallet_stats` stayed
+         fixed
+       - replay now persists `sol_leg` partial-cycle frontier hints
+         (`pages_processed`, `rows_processed`, `elapsed_ms`) and uses them to
+         widen the next checkpoint-specific `sol_leg` lane from the proven
+         unresolved suffix instead of historical prefix only
+       - operators should now expect
+         `rebuild_replay_sol_leg_last_partial_cycle_*`,
+         `rebuild_replay_sol_leg_open_frontier_floor_pages`, and
+         `rebuild_replay_sol_leg_remaining_frontier_min_*` on resumed
+         `replay_sol_leg_incomplete` checkpoints
      - the repair stays fail-closed unless the journal covers the required
        window and the current runtime cursor lineage
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime
