@@ -7550,6 +7550,25 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
          `rebuild_replay_activity_backfill_completion_requirement=
          candidate_wallet_swap_source_exhaustion` if the cycle gets past
          wallet-stats but still has not reached `PublishPending`
+     - follow-up rollover survival fix now also preserves the deeper
+       post-`wallet_stats` replay milestone across target-window rebuilds:
+       - the live blocker after fresh `5310fc2` was no longer failure to cross
+         `wallet_stats`; live reached `Replay -> sol_leg` once, then later
+         rollover rebased the target window and silently re-entered
+         `Replay -> wallet_stats`
+       - rollover still clears bucket-sensitive replay truth, but when the old
+         replay checkpoint had already crossed `wallet_stats` and
+         `min_buy_count > 0`, the carried state now keeps a carry-only
+         `sol_leg` reentry marker
+       - after the new target window finishes token-quality resolution, replay
+         now re-enters directly at `sol_leg` with candidate-activity backfill
+         armed, instead of silently degrading the active blocker back to
+         `wallet_stats`
+       - operators should now expect
+         `rebuild_replay_sol_leg_reentry_pending` on carry-forward / resume
+         logs, plus
+         `rebuild_replay_wallet_stats_complete_carried_forward_into_replay`
+         when the target-window replay handoff actually consumes that marker
      - the repair stays fail-closed unless the journal covers the required
        window and the current runtime cursor lineage
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime

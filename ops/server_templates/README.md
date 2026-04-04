@@ -545,6 +545,21 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
          `rebuild_replay_activity_backfill_completion_requirement=
          candidate_wallet_swap_source_exhaustion` if the checkpoint has moved
          beyond wallet-stats but is still not yet publishable
+       - if rollover lands after live has already crossed `wallet_stats`,
+         target-window rebuilds now preserve that deeper replay milestone
+         without carrying stale replay truth:
+         - carry-forward still resets bucket-sensitive replay accumulators, but
+           it preserves a carry-only `sol_leg` reentry marker when
+           `min_buy_count > 0`
+         - after token-quality finishes on the new target window, replay
+           re-enters directly at `sol_leg` with candidate-activity backfill
+           armed instead of silently degrading back to `wallet_stats`
+       - operators should now expect
+         `rebuild_replay_sol_leg_reentry_pending` on rollover / resumed-state
+         logs and
+         `rebuild_replay_wallet_stats_complete_carried_forward_into_replay`
+         when that deeper replay milestone is actually consumed on the
+         token-quality -> replay handoff
        - operators should now expect
          `rebuild_replay_sol_leg_phase_page_limit` and
          `rebuild_replay_sol_leg_processed_floor_pages` on the widened runtime
