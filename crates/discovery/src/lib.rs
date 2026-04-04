@@ -1569,6 +1569,14 @@ impl DiscoveryService {
         self.config.refresh_seconds.max(1).saturating_mul(2)
     }
 
+    fn cached_cycle_exact_published_wallet_ids<'a>(
+        runtime_mode: DiscoveryRuntimeMode,
+        current_raw: Option<&'a CachedCurrentRawTruthSample>,
+    ) -> Option<&'a [String]> {
+        (runtime_mode == DiscoveryRuntimeMode::Healthy)
+            .then_some(current_raw?.top_wallet_ids.as_slice())
+    }
+
     fn maybe_persist_in_band_wallet_freshness_capture(
         &self,
         store: &SqliteStore,
@@ -7736,6 +7744,8 @@ impl DiscoveryService {
                 state.cap_truncation_deactivations_suppressed(raw_window_history_incomplete);
             let cap_truncation_telemetry =
                 snapshot_cap_truncation_telemetry(&state, followlist_deactivations_suppressed);
+            let persisted_rebuild_checkpoint_present =
+                store.load_discovery_persisted_rebuild_state()?.is_some();
             if state.consume_cap_truncation_deactivation_guard_cycle() {
                 maybe_warn_on_cap_truncation_deactivation_guard_expiry(
                     &state,
@@ -7806,6 +7816,38 @@ impl DiscoveryService {
                         },
                     )
                 }
+            } else if persisted_rebuild_checkpoint_present {
+                (
+                    swaps_window,
+                    fetch_progress,
+                    cap_truncation_telemetry,
+                    PreparedCycleState::PersistedRecompute {
+                        publish_due,
+                        scoring_source: "raw_window_persisted_stream",
+                        empty_window_degraded_scoring_source: if raw_window_history_incomplete {
+                            "published_universe_raw_window_degraded"
+                        } else if short_retention_window {
+                            "published_universe_short_retention_degraded"
+                        } else {
+                            "published_universe_raw_window_unavailable"
+                        },
+                        empty_window_bootstrap_degraded_scoring_source:
+                            if raw_window_history_incomplete {
+                                "bootstrap_degraded_publication_truth_raw_window_degraded"
+                            } else if short_retention_window {
+                                "bootstrap_degraded_publication_truth_short_retention_degraded"
+                            } else {
+                                "bootstrap_degraded_publication_truth_raw_window_unavailable"
+                            },
+                        empty_window_unusable_scoring_source: if raw_window_history_incomplete {
+                            "raw_window_incomplete_no_recent_published_universe"
+                        } else if short_retention_window {
+                            "raw_window_short_retention_no_recent_published_universe"
+                        } else {
+                            "raw_window_unusable_no_recent_published_universe"
+                        },
+                    },
+                )
             } else if state.last_snapshot_bucket == Some(metrics_window_start)
                 && state.last_summary.is_some()
             {
@@ -8118,7 +8160,10 @@ impl DiscoveryService {
                         summary.runtime_mode,
                         publish_due,
                         metrics_window_start,
-                        None,
+                        Self::cached_cycle_exact_published_wallet_ids(
+                            summary.runtime_mode,
+                            current_raw.as_ref(),
+                        ),
                         summary.scoring_source,
                         summary.scoring_source,
                         now,
@@ -15699,6 +15744,8 @@ mod tests {
         let mut publish_pending =
             discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
         publish_pending.phase = DiscoveryPersistedRebuildPhase::PublishPending;
+        publish_pending.replay_rows_processed = 100;
+        publish_pending.replay_pages_processed = 5;
         publish_pending.payload.collect_buy_mints_prepass_complete = true;
         publish_pending.payload.unique_buy_mints =
             count_page.rows.iter().map(|row| row.mint.clone()).collect();
@@ -15750,6 +15797,274 @@ mod tests {
         assert!(
             carried.payload.completed_snapshots.is_empty(),
             "stale publish-pending snapshots must be discarded before the carried-forward target-window rebuild resumes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cached_raw_window_persisted_stream_cycle_flushes_exact_cached_wallet_ids_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-cached-persisted-stream-publication-flush.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let now = DateTime::parse_from_rfc3339("2026-04-04T16:05:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let (window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 6, 9)?;
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
+            last_published_at: Some(
+                now - discovery.runtime_published_universe_max_age() - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+        {
+            let mut state = discovery
+                .window_state
+                .lock()
+                .expect("window_state lock should succeed");
+            state.last_publish_at =
+                Some(now - Duration::seconds(config.refresh_seconds as i64 + 1));
+            state.last_snapshot_bucket = Some(metrics_window_start);
+            state.last_summary = Some(
+                DiscoverySummary {
+                    window_start,
+                    wallets_seen: 1,
+                    eligible_wallets: 1,
+                    metrics_written: 1,
+                    follow_promoted: 0,
+                    follow_demoted: 0,
+                    active_follow_wallets: 0,
+                    top_wallets: vec!["wallet_publish_pending_flush".to_string()],
+                    published: false,
+                    ..DiscoverySummary::default()
+                }
+                .with_runtime_mode(DiscoveryRuntimeMode::Healthy)
+                .with_scoring_source("raw_window_persisted_stream"),
+            );
+            state.last_exact_current_raw_truth = Some(CachedCurrentRawTruthSample {
+                window_start,
+                observed_swaps_loaded: 100,
+                eligible_wallet_count: 1,
+                top_wallet_ids: vec!["wallet_publish_pending_flush".to_string()],
+            });
+        }
+
+        let summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert!(summary.published);
+        let publication_state = store
+            .discovery_publication_state()?
+            .expect("publication state should exist after the cached persisted-stream flush");
+        assert_eq!(
+            publication_state.runtime_mode,
+            DiscoveryRuntimeMode::Healthy
+        );
+        assert_eq!(publication_state.last_published_at, Some(now));
+        assert_eq!(
+            publication_state.last_published_window_start,
+            Some(metrics_window_start)
+        );
+        assert_eq!(
+            publication_state.published_wallet_ids.unwrap_or_default(),
+            vec!["wallet_publish_pending_flush".to_string()],
+            "cached healthy publication refresh for a completed persisted rebuild must flush the exact cached wallet ids instead of issuing a partial publication-state update that leaves runtime export on empty published_wallet_ids"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn publish_pending_checkpoint_same_bucket_takes_precedence_over_cached_healthy_refresh_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-publish-pending-checkpoint-beats-cached-refresh.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let now = DateTime::parse_from_rfc3339("2026-04-04T16:05:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let (window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 6, 9)?;
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
+            last_published_at: Some(
+                now - discovery.runtime_published_universe_max_age() - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        let mut publish_pending =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        publish_pending.phase = DiscoveryPersistedRebuildPhase::PublishPending;
+        publish_pending.replay_rows_processed = 123;
+        publish_pending.replay_pages_processed = 4;
+        publish_pending.payload.replay_wallet_stats_complete = true;
+        publish_pending
+            .payload
+            .replay_wallet_stats_milestone_reached = true;
+        publish_pending
+            .payload
+            .completed_snapshots
+            .push(WalletSnapshot {
+                wallet_id: "wallet_from_publish_pending".to_string(),
+                first_seen: window_start,
+                last_seen: now,
+                pnl_sol: 4.0,
+                win_rate: 1.0,
+                trades: 8,
+                closed_trades: 8,
+                hold_median_seconds: 60,
+                score: 4.0,
+                buy_total: 8,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+                eligible: true,
+            });
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&publish_pending, now)?,
+        )?;
+
+        {
+            let mut state = discovery
+                .window_state
+                .lock()
+                .expect("window_state lock should succeed");
+            state.last_publish_at =
+                Some(now - Duration::seconds(config.refresh_seconds as i64 + 1));
+            state.last_snapshot_bucket = Some(metrics_window_start);
+            state.last_summary = Some(
+                DiscoverySummary {
+                    window_start,
+                    wallets_seen: 1,
+                    eligible_wallets: 1,
+                    metrics_written: 1,
+                    follow_promoted: 0,
+                    follow_demoted: 0,
+                    active_follow_wallets: 0,
+                    top_wallets: vec!["wallet_from_cached_summary".to_string()],
+                    published: false,
+                    ..DiscoverySummary::default()
+                }
+                .with_runtime_mode(DiscoveryRuntimeMode::Healthy)
+                .with_scoring_source("raw_window"),
+            );
+            state.last_exact_current_raw_truth = Some(CachedCurrentRawTruthSample {
+                window_start,
+                observed_swaps_loaded: 100,
+                eligible_wallet_count: 1,
+                top_wallet_ids: vec!["wallet_from_cached_summary".to_string()],
+            });
+        }
+
+        let summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert!(summary.published);
+        assert_eq!(summary.scoring_source, "raw_window_persisted_stream");
+        let publication_state = store
+            .discovery_publication_state()?
+            .expect("publication state should exist after publish-pending flush");
+        assert_eq!(publication_state.last_published_at, Some(now));
+        assert_eq!(
+            publication_state.last_published_window_start,
+            Some(metrics_window_start)
+        );
+        assert_eq!(
+            publication_state.published_wallet_ids.unwrap_or_default(),
+            vec!["wallet_from_publish_pending".to_string()],
+            "same-bucket cached healthy summaries must not shadow a persisted publish-pending checkpoint; the exact published wallet universe must flush from the checkpoint snapshots"
+        );
+        assert!(
+            store.load_discovery_persisted_rebuild_state()?.is_none(),
+            "successful publish-pending flush should clear the persisted checkpoint"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cached_healthy_cycle_flushes_exact_cached_wallet_ids_stage1() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-cached-healthy-publication-flush.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_window_swaps_in_memory = 512;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let now = DateTime::parse_from_rfc3339("2026-04-04T18:05:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let (_window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 6, 1)?;
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
+            last_published_at: Some(
+                now - discovery.runtime_published_universe_max_age() - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+        {
+            let mut state = discovery
+                .window_state
+                .lock()
+                .expect("window_state lock should succeed");
+            state.last_publish_at = Some(now - Duration::seconds(60));
+        }
+
+        let first_summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(first_summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert!(!first_summary.published);
+        assert!(
+            store.load_discovery_persisted_rebuild_state()?.is_none(),
+            "this repro must stay on the cached healthy path, not the persisted rebuild path"
+        );
+
+        let second_now = now + Duration::seconds(config.refresh_seconds as i64 + 1);
+        let second_summary = discovery.run_cycle(&store, second_now)?;
+        assert_eq!(second_summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert!(second_summary.published);
+        let publication_state = store
+            .discovery_publication_state()?
+            .expect("publication state should exist after cached healthy publish");
+        assert_eq!(publication_state.last_published_at, Some(second_now));
+        assert_eq!(
+            publication_state.last_published_window_start,
+            Some(metrics_window_start)
+        );
+        assert!(
+            publication_state
+                .published_wallet_ids
+                .as_ref()
+                .is_some_and(|wallets| wallets == &vec!["wallet_top".to_string()]),
+            "cached healthy publish must flush the exact cached top-wallet ids instead of issuing a partial publication-state update with published_wallet_ids=None"
         );
         Ok(())
     }
