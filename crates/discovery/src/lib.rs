@@ -1548,6 +1548,33 @@ impl DiscoveryService {
         now: DateTime<Utc>,
     ) -> Result<()> {
         if !publish_due {
+            if runtime_mode != DiscoveryRuntimeMode::Healthy {
+                let existing_publication_state = store.discovery_publication_state_read_only()?;
+                if let Some(existing_publication_state) = existing_publication_state.as_ref() {
+                    if existing_publication_state.runtime_mode == DiscoveryRuntimeMode::Healthy {
+                        warn!(
+                            publication_runtime_surface_refreshed_without_publish = true,
+                            publication_existing_runtime_mode =
+                                existing_publication_state.runtime_mode.as_str(),
+                            publication_existing_reason = existing_publication_state.reason.as_str(),
+                        publication_new_runtime_mode = runtime_mode.as_str(),
+                        publication_new_reason = reason,
+                        publication_scoring_source = scoring_source,
+                        "downgrading a stale healthy publication row during a non-publish-due discovery cycle so incomplete replay recovery cannot keep surfacing healthy publication state without a fresh exact universe flush"
+                    );
+                        store.set_discovery_publication_state(
+                            &DiscoveryPublicationStateUpdate {
+                                runtime_mode,
+                                reason: reason.to_string(),
+                                last_published_at: None,
+                                last_published_window_start: None,
+                                published_scoring_source: Some(scoring_source.to_string()),
+                                published_wallet_ids: None,
+                            },
+                        )?;
+                    }
+                }
+            }
             return Ok(());
         }
         let mut effective_runtime_mode = runtime_mode;
@@ -16272,6 +16299,102 @@ mod tests {
                 .runtime_publication_truth_resolution(&store, now)?
                 .is_none(),
             "healthy publication truth must stay unavailable until exact non-empty wallet ids exist"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_cycle_partial_replay_downgrades_stale_healthy_publication_row_without_publish_due_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-partial-replay-downgrades-stale-healthy-publication-row.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-04T20:28:08Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 10;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (replay_state, metrics_window_start, _) =
+            seed_stage1_partial_sol_leg_replay_checkpoint_fixture(
+                &runtime_store,
+                &discovery,
+                &config,
+                now,
+                401,
+                54,
+            )?;
+        runtime_store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, now)?,
+        )?;
+
+        let stale_published_at = now - Duration::hours(1);
+        runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            reason: "discovery_score_refresh".to_string(),
+            last_published_at: Some(stale_published_at),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+        {
+            let mut state = discovery
+                .window_state
+                .lock()
+                .expect("window_state lock should succeed");
+            state.last_publish_at = Some(now);
+        }
+
+        let summary = discovery.run_cycle(&runtime_store, now)?;
+        assert!(
+            !summary.published,
+            "the reduced live-like replay cycle must stay non-publish-due so the repro exercises stale healthy row retention instead of the exact publish path"
+        );
+        assert!(
+            matches!(
+                summary.runtime_mode,
+                DiscoveryRuntimeMode::FailClosed | DiscoveryRuntimeMode::Degraded
+            ),
+            "the owning cycle should already know it is not currently publishing a fresh healthy universe while replay is incomplete"
+        );
+
+        let publication_state = runtime_store
+            .discovery_publication_state()?
+            .expect("publication state should exist after the partial replay cycle");
+        assert_ne!(
+            publication_state.runtime_mode,
+            DiscoveryRuntimeMode::Healthy,
+            "a partial replay cycle must not leave behind a stale healthy publication row when the persisted rebuild checkpoint is still incomplete"
+        );
+        assert_eq!(
+            publication_state.last_published_at,
+            Some(stale_published_at),
+            "non-publish-due downgrade must preserve the previous exact published timestamp instead of forging a fresh publish"
+        );
+        assert!(
+            publication_state
+                .published_wallet_ids
+                .as_ref()
+                .is_some_and(|wallets| wallets.is_empty()),
+            "the repro should keep the exact empty-wallet-universe shape while only downgrading the stale healthy runtime surface"
+        );
+        assert!(
+            runtime_store.load_discovery_persisted_rebuild_state()?.is_some(),
+            "the reduced live-like repro must still have an incomplete persisted replay checkpoint after the cycle"
+        );
+        assert!(
+            discovery
+                .runtime_publication_truth_resolution(&runtime_store, now)?
+                .is_none(),
+            "export-equivalent runtime truth must remain unavailable until replay really reaches an exact published universe flush"
         );
         Ok(())
     }
