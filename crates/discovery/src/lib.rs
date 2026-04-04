@@ -1550,10 +1550,47 @@ impl DiscoveryService {
         if !publish_due {
             return Ok(());
         }
-        let published_universe = runtime_mode == DiscoveryRuntimeMode::Healthy;
+        let mut effective_runtime_mode = runtime_mode;
+        let mut effective_reason = reason.to_string();
+        let requested_published_wallet_count =
+            published_wallet_ids.map_or(0, |wallets| wallets.len());
+        if runtime_mode == DiscoveryRuntimeMode::Healthy {
+            let incomplete_persisted_checkpoint = store
+                .load_discovery_persisted_rebuild_state()?
+                .map(Self::persisted_stream_rebuild_state_from_row)
+                .transpose()?
+                .filter(|state| state.phase != DiscoveryPersistedRebuildPhase::PublishPending);
+            if let Some(state) = incomplete_persisted_checkpoint.as_ref() {
+                let checkpoint_blocker =
+                    Self::persisted_stream_publishable_checkpoint_blocker_from_state(state);
+                warn!(
+                    publication_healthy_write_withheld = true,
+                    publication_write_reason = reason,
+                    publication_scoring_source = scoring_source,
+                    publication_requested_wallet_count = requested_published_wallet_count,
+                    rebuild_phase = state.phase.as_str(),
+                    rebuild_publishable_checkpoint_blocker = checkpoint_blocker,
+                    "refusing to persist healthy publication state while an incomplete persisted discovery rebuild checkpoint still exists"
+                );
+                effective_runtime_mode = DiscoveryRuntimeMode::FailClosed;
+                effective_reason = format!("publication_truth_withheld_while_{checkpoint_blocker}");
+            } else if requested_published_wallet_count == 0 {
+                warn!(
+                    publication_healthy_write_withheld = true,
+                    publication_write_reason = reason,
+                    publication_scoring_source = scoring_source,
+                    publication_requested_wallet_count = requested_published_wallet_count,
+                    "refusing to persist healthy publication state without an exact non-empty published wallet universe"
+                );
+                effective_runtime_mode = DiscoveryRuntimeMode::FailClosed;
+                effective_reason =
+                    "publication_truth_withheld_missing_exact_published_wallet_ids".to_string();
+            }
+        }
+        let published_universe = effective_runtime_mode == DiscoveryRuntimeMode::Healthy;
         store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
-            runtime_mode,
-            reason: reason.to_string(),
+            runtime_mode: effective_runtime_mode,
+            reason: effective_reason,
             last_published_at: published_universe.then_some(now),
             last_published_window_start: published_universe.then_some(published_window_start),
             published_scoring_source: Some(scoring_source.to_string()),
@@ -16065,6 +16102,176 @@ mod tests {
                 .as_ref()
                 .is_some_and(|wallets| wallets == &vec!["wallet_top".to_string()]),
             "cached healthy publish must flush the exact cached top-wallet ids instead of issuing a partial publication-state update with published_wallet_ids=None"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persist_publication_state_refuses_healthy_write_while_incomplete_replay_checkpoint_exists_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-healthy-publication-withheld-incomplete-replay.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-04T19:06:37Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 10;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (replay_state, metrics_window_start, _) =
+            seed_stage1_partial_sol_leg_replay_checkpoint_fixture(
+                &runtime_store,
+                &discovery,
+                &config,
+                now,
+                64,
+                12,
+            )?;
+        runtime_store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, now)?,
+        )?;
+
+        let previous_published_at = now - Duration::hours(2);
+        let previous_published_window_start = metrics_window_start - Duration::hours(1);
+        runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
+            last_published_at: Some(previous_published_at),
+            last_published_window_start: Some(previous_published_window_start),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        let requested_wallets = vec!["wallet_should_not_publish".to_string()];
+        discovery.persist_publication_state(
+            &runtime_store,
+            DiscoveryRuntimeMode::Healthy,
+            true,
+            metrics_window_start,
+            Some(&requested_wallets),
+            "raw_window_persisted_stream",
+            "discovery_score_refresh",
+            now,
+        )?;
+
+        let publication_state = runtime_store
+            .discovery_publication_state()?
+            .expect("publication state should exist after withheld healthy write");
+        assert_eq!(
+            publication_state.runtime_mode,
+            DiscoveryRuntimeMode::FailClosed
+        );
+        assert_eq!(
+            publication_state.reason,
+            "publication_truth_withheld_while_replay_sol_leg_incomplete"
+        );
+        assert_eq!(
+            publication_state.last_published_at,
+            Some(previous_published_at),
+            "withheld healthy publication writes must not stamp a fresh published timestamp while replay is still incomplete"
+        );
+        assert_eq!(
+            publication_state.last_published_window_start,
+            Some(previous_published_window_start)
+        );
+        assert!(
+            publication_state
+                .published_wallet_ids
+                .as_ref()
+                .is_some_and(|wallets| wallets.is_empty()),
+            "withheld healthy publication writes must not inject a fake published universe while replay is still incomplete"
+        );
+        assert!(
+            discovery
+                .runtime_publication_truth_resolution(&runtime_store, now)?
+                .is_none(),
+            "export-equivalent runtime truth must remain unavailable while the persisted replay checkpoint is still incomplete"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persist_publication_state_refuses_healthy_write_without_exact_wallet_ids_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-healthy-publication-withheld-missing-wallet-ids.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let now = DateTime::parse_from_rfc3339("2026-04-04T19:06:37Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let (_window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 6, 9)?;
+
+        let previous_published_at = now - Duration::hours(3);
+        let previous_published_window_start = metrics_window_start - Duration::hours(1);
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
+            last_published_at: Some(previous_published_at),
+            last_published_window_start: Some(previous_published_window_start),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        let empty_wallets: Vec<String> = Vec::new();
+        discovery.persist_publication_state(
+            &store,
+            DiscoveryRuntimeMode::Healthy,
+            true,
+            metrics_window_start,
+            Some(&empty_wallets),
+            "raw_window",
+            "discovery_score_refresh",
+            now,
+        )?;
+
+        let publication_state = store
+            .discovery_publication_state()?
+            .expect("publication state should exist after withheld empty-wallet healthy write");
+        assert_eq!(
+            publication_state.runtime_mode,
+            DiscoveryRuntimeMode::FailClosed
+        );
+        assert_eq!(
+            publication_state.reason,
+            "publication_truth_withheld_missing_exact_published_wallet_ids"
+        );
+        assert_eq!(
+            publication_state.last_published_at,
+            Some(previous_published_at)
+        );
+        assert_eq!(
+            publication_state.last_published_window_start,
+            Some(previous_published_window_start)
+        );
+        assert!(
+            publication_state
+                .published_wallet_ids
+                .as_ref()
+                .is_some_and(|wallets| wallets.is_empty()),
+            "withheld healthy publication writes must preserve the empty fail-closed universe instead of persisting a bogus healthy row"
+        );
+        assert!(
+            discovery
+                .runtime_publication_truth_resolution(&store, now)?
+                .is_none(),
+            "healthy publication truth must stay unavailable until exact non-empty wallet ids exist"
         );
         Ok(())
     }
