@@ -961,6 +961,8 @@ struct PersistedStreamRebuildPayload {
     #[serde(default)]
     replay_sol_leg_last_partial_cycle_elapsed_ms: u64,
     #[serde(default)]
+    replay_sol_leg_retained_contract_floor_pages: usize,
+    #[serde(default)]
     replay_candidate_activity_backfill_required: bool,
     #[serde(default)]
     replay_candidate_activity_backfill_pending: bool,
@@ -1043,6 +1045,7 @@ struct PersistedStreamProgressTelemetry {
     replay_sol_leg_last_partial_cycle_pages_processed: usize,
     replay_sol_leg_last_partial_cycle_rows_processed: usize,
     replay_sol_leg_last_partial_cycle_elapsed_ms: u64,
+    replay_sol_leg_retained_contract_floor_pages: usize,
     replay_candidate_activity_backfill_required: bool,
     replay_sol_leg_access_path: Option<ObservedSolLegCursorAccessPath>,
     replay_rows_processed: usize,
@@ -2543,6 +2546,22 @@ impl DiscoveryService {
             .saturating_mul(budget_multiplier.min(usize::MAX as u128).max(1) as usize)
     }
 
+    fn replay_sol_leg_time_budget_for_phase_page_limit_floor(
+        &self,
+        fetch_page_limit: usize,
+        phase_page_limit_floor: usize,
+    ) -> StdDuration {
+        let budget_multiplier = phase_page_limit_floor
+            .max(1)
+            .div_ceil(fetch_page_limit.max(1))
+            .max(1) as u128;
+        let budget_ms = budget_multiplier
+            .saturating_mul(self.config.fetch_time_budget_ms.max(1) as u128)
+            .min(DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MAX_TIME_BUDGET_MS as u128)
+            .max(1);
+        StdDuration::from_millis(budget_ms.min(u64::MAX as u128) as u64)
+    }
+
     #[cfg(test)]
     fn deepen_persisted_stream_priority_recovery_contract_for_state(
         &self,
@@ -2686,14 +2705,14 @@ impl DiscoveryService {
         let processed_floor_pages = Self::replay_sol_leg_processed_floor_pages(fetch_limit, state);
         let open_frontier_floor_pages =
             Self::replay_sol_leg_open_frontier_floor_pages(fetch_limit, state);
-        let deep_time_budget = self.deep_replay_sol_leg_target_time_budget(
+        let mut deep_time_budget = self.deep_replay_sol_leg_target_time_budget(
             baseline_time_budget,
             fetch_page_limit,
             processed_floor_pages
                 .saturating_add(open_frontier_floor_pages)
                 .max(processed_floor_pages),
         );
-        let deep_reason =
+        let mut deep_reason =
             if deep_time_budget > baseline_time_budget && open_frontier_floor_pages > 0 {
                 Some("deep_replay_sol_leg_open_frontier_backlog")
             } else if deep_time_budget > baseline_time_budget {
@@ -2701,6 +2720,19 @@ impl DiscoveryService {
             } else {
                 Some("deep_replay_sol_leg_incomplete")
             };
+        let retained_contract_floor_pages =
+            state.payload.replay_sol_leg_retained_contract_floor_pages;
+        if retained_contract_floor_pages > 0 {
+            let retained_contract_floor_budget = self
+                .replay_sol_leg_time_budget_for_phase_page_limit_floor(
+                    fetch_page_limit,
+                    retained_contract_floor_pages,
+                );
+            if retained_contract_floor_budget > deep_time_budget {
+                deep_time_budget = retained_contract_floor_budget;
+                deep_reason = Some("deep_replay_sol_leg_retained_contract_floor");
+            }
+        }
         PersistedStreamPriorityRecoveryContract {
             time_budget: deep_time_budget,
             collect_buy_mints_phase_page_limit_override: Some(
@@ -3307,6 +3339,7 @@ impl DiscoveryService {
         payload.replay_sol_leg_last_partial_cycle_pages_processed = 0;
         payload.replay_sol_leg_last_partial_cycle_rows_processed = 0;
         payload.replay_sol_leg_last_partial_cycle_elapsed_ms = 0;
+        payload.replay_sol_leg_retained_contract_floor_pages = 0;
         payload.replay_candidate_activity_backfill_required = false;
         payload.replay_candidate_activity_backfill_pending = false;
     }
@@ -3328,6 +3361,8 @@ impl DiscoveryService {
             payload.replay_sol_leg_last_partial_cycle_rows_processed;
         let replay_sol_leg_last_partial_cycle_elapsed_ms =
             payload.replay_sol_leg_last_partial_cycle_elapsed_ms;
+        let replay_sol_leg_retained_contract_floor_pages =
+            payload.replay_sol_leg_retained_contract_floor_pages;
         Self::reset_replay_wallet_stats_progress(payload);
         payload.replay_wallet_stats_budget_floor_wallets = replay_wallet_stats_budget_floor_wallets;
         payload.replay_wallet_stats_last_partial_cycle_pages_processed =
@@ -3342,6 +3377,8 @@ impl DiscoveryService {
             replay_sol_leg_last_partial_cycle_rows_processed;
         payload.replay_sol_leg_last_partial_cycle_elapsed_ms =
             replay_sol_leg_last_partial_cycle_elapsed_ms;
+        payload.replay_sol_leg_retained_contract_floor_pages =
+            replay_sol_leg_retained_contract_floor_pages;
     }
 
     fn transition_persisted_stream_from_token_quality_to_replay(
@@ -3378,6 +3415,7 @@ impl DiscoveryService {
             .payload
             .replay_sol_leg_last_partial_cycle_rows_processed = 0;
         state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms = 0;
+        state.payload.replay_sol_leg_retained_contract_floor_pages = 0;
         state.payload.replay_candidate_activity_backfill_required = true;
         state.payload.replay_candidate_activity_backfill_pending = false;
         state.phase_cursor = None;
@@ -3409,6 +3447,7 @@ impl DiscoveryService {
             .payload
             .replay_sol_leg_last_partial_cycle_rows_processed = 0;
         state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms = 0;
+        state.payload.replay_sol_leg_retained_contract_floor_pages = 0;
         state.payload.replay_candidate_activity_backfill_pending = true;
         for acc in state.payload.by_wallet.values_mut() {
             acc.reset_activity_summary_for_exact_backfill();
@@ -3536,6 +3575,11 @@ impl DiscoveryService {
         } else {
             0
         };
+        let carried_replay_sol_leg_retained_contract_floor_pages = if carry_sol_leg_budget_hints {
+            state.payload.replay_sol_leg_retained_contract_floor_pages
+        } else {
+            0
+        };
         let prepass_complete = state.payload.collect_buy_mints_prepass_complete
             || state.phase != DiscoveryPersistedRebuildPhase::CollectBuyMints;
 
@@ -3596,6 +3640,8 @@ impl DiscoveryService {
             carried_replay_sol_leg_last_partial_cycle_rows_processed;
         state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms =
             carried_replay_sol_leg_last_partial_cycle_elapsed_ms;
+        state.payload.replay_sol_leg_retained_contract_floor_pages =
+            carried_replay_sol_leg_retained_contract_floor_pages;
         info!(
             rebuild_previous_phase = old_phase.as_str(),
             rebuild_previous_replay_subphase = Self::replay_subphase(
@@ -3630,6 +3676,8 @@ impl DiscoveryService {
                 state.payload.replay_sol_leg_last_partial_cycle_rows_processed,
             rebuild_replay_sol_leg_last_partial_cycle_elapsed_ms =
                 state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms,
+            rebuild_replay_sol_leg_retained_contract_floor_pages =
+                state.payload.replay_sol_leg_retained_contract_floor_pages,
             "carrying forward exact canonical buy-mint membership progress across metrics bucket rollover; bucket-sensitive quality/replay state reset for fresh target-window rebuild"
         );
         Ok(true)
@@ -3891,6 +3939,7 @@ impl DiscoveryService {
                 .replay_sol_leg_last_partial_cycle_rows_processed
                 == 0
             && state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms == 0
+            && state.payload.replay_sol_leg_retained_contract_floor_pages == 0
         {
             return false;
         }
@@ -3910,6 +3959,8 @@ impl DiscoveryService {
                 state.payload.replay_sol_leg_last_partial_cycle_rows_processed,
             rebuild_replay_sol_leg_last_partial_cycle_elapsed_ms =
                 state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms,
+            rebuild_replay_sol_leg_retained_contract_floor_pages =
+                state.payload.replay_sol_leg_retained_contract_floor_pages,
             "clearing stale replay SOL-leg frontier hints from a resumed checkpoint because the active state is no longer the partial SOL-leg blocker"
         );
         state
@@ -3919,6 +3970,7 @@ impl DiscoveryService {
             .payload
             .replay_sol_leg_last_partial_cycle_rows_processed = 0;
         state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms = 0;
+        state.payload.replay_sol_leg_retained_contract_floor_pages = 0;
         true
     }
 
@@ -4404,6 +4456,9 @@ impl DiscoveryService {
             replay_sol_leg_last_partial_cycle_elapsed_ms: state
                 .payload
                 .replay_sol_leg_last_partial_cycle_elapsed_ms,
+            replay_sol_leg_retained_contract_floor_pages: state
+                .payload
+                .replay_sol_leg_retained_contract_floor_pages,
             replay_candidate_activity_backfill_required: state
                 .payload
                 .replay_candidate_activity_backfill_required,
@@ -4708,6 +4763,8 @@ impl DiscoveryService {
                 telemetry.replay_sol_leg_last_partial_cycle_rows_processed,
             rebuild_replay_sol_leg_last_partial_cycle_elapsed_ms =
                 telemetry.replay_sol_leg_last_partial_cycle_elapsed_ms,
+            rebuild_replay_sol_leg_retained_contract_floor_pages =
+                telemetry.replay_sol_leg_retained_contract_floor_pages,
             rebuild_replay_sol_leg_open_frontier_floor_pages =
                 replay_sol_leg_open_frontier_floor_pages,
             rebuild_replay_sol_leg_remaining_frontier_min_pages =
@@ -5921,6 +5978,7 @@ impl DiscoveryService {
                         .payload
                         .replay_sol_leg_last_partial_cycle_rows_processed = 0;
                     state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms = 0;
+                    state.payload.replay_sol_leg_retained_contract_floor_pages = 0;
                     state.payload.replay_candidate_activity_backfill_required = false;
                     state.payload.replay_candidate_activity_backfill_pending = false;
                     state.phase_cursor = None;
@@ -6015,6 +6073,7 @@ impl DiscoveryService {
                         .payload
                         .replay_sol_leg_last_partial_cycle_rows_processed = 0;
                     state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms = 0;
+                    state.payload.replay_sol_leg_retained_contract_floor_pages = 0;
                     state.phase_cursor = None;
                     return Ok(PersistedStreamPhaseAdvance {
                         rows_processed: replay_rows_processed,
@@ -6175,6 +6234,7 @@ impl DiscoveryService {
                     .payload
                     .replay_sol_leg_last_partial_cycle_rows_processed = 0;
                 state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms = 0;
+                state.payload.replay_sol_leg_retained_contract_floor_pages = 0;
                 return Ok(PersistedStreamPhaseAdvance {
                     rows_processed: replay_rows_processed,
                     pages_processed: replay_pages_processed,
@@ -6247,8 +6307,11 @@ impl DiscoveryService {
 
     fn persist_partial_replay_frontier_hints_after_cycle(
         state: &mut PersistedStreamRebuildState,
+        cycle_started_in_replay_sol_leg: bool,
         cycle_replay_wallet_stats_day_count_source_progress: ReplayWalletStatsDayCountSourceProgress,
         cycle_elapsed_ms: u64,
+        cycle_budget_exhausted_reason: Option<PersistedStreamBudgetExhaustedReason>,
+        cycle_replay_sol_leg_phase_page_limit: Option<usize>,
         cycle_replay_sol_leg_pages_processed: usize,
         cycle_replay_sol_leg_rows_processed: usize,
         cycle_replay_sol_leg_elapsed_ms: u64,
@@ -6279,6 +6342,7 @@ impl DiscoveryService {
         } else if state.phase == DiscoveryPersistedRebuildPhase::Replay
             && state.payload.replay_wallet_stats_complete
             && !state.payload.replay_candidate_activity_backfill_pending
+            && cycle_started_in_replay_sol_leg
             && cycle_replay_sol_leg_pages_processed > 0
         {
             state
@@ -6291,6 +6355,16 @@ impl DiscoveryService {
                 cycle_replay_sol_leg_rows_processed;
             state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms =
                 cycle_replay_sol_leg_elapsed_ms;
+            if let Some(phase_page_limit) = cycle_replay_sol_leg_phase_page_limit.filter(|limit| {
+                cycle_budget_exhausted_reason
+                    == Some(PersistedStreamBudgetExhaustedReason::PageBudget)
+                    && cycle_replay_sol_leg_pages_processed >= (*limit).max(1)
+            }) {
+                state.payload.replay_sol_leg_retained_contract_floor_pages = state
+                    .payload
+                    .replay_sol_leg_retained_contract_floor_pages
+                    .max(phase_page_limit.max(1));
+            }
         }
     }
 
@@ -6378,6 +6452,21 @@ impl DiscoveryService {
             replay_sol_leg_remaining_frontier_min_pages.saturating_mul(fetch_limit);
         let replay_sol_leg_frontier_saturated =
             Self::replay_sol_leg_last_partial_cycle_frontier_saturated(fetch_limit, &state);
+        let replay_sol_leg_target_time_budget_before_retained_contract_floor = self
+            .deep_replay_sol_leg_target_time_budget(
+                requested_contract.time_budget.max(StdDuration::from_millis(
+                    DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MIN_TIME_BUDGET_MS,
+                )),
+                fetch_page_limit,
+                replay_sol_leg_processed_floor_pages
+                    .saturating_add(replay_sol_leg_open_frontier_floor_pages)
+                    .max(replay_sol_leg_processed_floor_pages),
+            );
+        let replay_sol_leg_phase_page_limit_before_retained_contract_floor = self
+            .replay_sol_leg_repair_phase_page_limit(
+                fetch_page_limit,
+                replay_sol_leg_target_time_budget_before_retained_contract_floor,
+            );
         let replay_wallet_stats_target_time_budget_before_publishable_horizon_cap =
             Self::deep_replay_wallet_stats_target_time_budget(
                 requested_contract.time_budget.max(StdDuration::from_millis(
@@ -6403,6 +6492,11 @@ impl DiscoveryService {
             adjusted_contract.replay_wallet_stats_phase_page_limit_override;
         let replay_sol_leg_phase_page_limit_override =
             adjusted_contract.replay_sol_leg_phase_page_limit_override;
+        let cycle_started_in_replay_sol_leg = state.phase == DiscoveryPersistedRebuildPhase::Replay
+            && state.payload.replay_wallet_stats_complete
+            && !state.payload.replay_candidate_activity_backfill_pending;
+        let cycle_replay_sol_leg_phase_page_limit = cycle_started_in_replay_sol_leg
+            .then_some(replay_sol_leg_phase_page_limit_override.unwrap_or(fetch_page_limit));
         if adjusted_contract != requested_contract {
             info!(
                 rebuild_priority_recovery_contract_scope = "checkpoint_specific",
@@ -6465,6 +6559,16 @@ impl DiscoveryService {
                 rebuild_replay_sol_leg_last_partial_cycle_elapsed_ms = state
                     .payload
                     .replay_sol_leg_last_partial_cycle_elapsed_ms,
+                rebuild_replay_sol_leg_retained_contract_floor_pages = state
+                    .payload
+                    .replay_sol_leg_retained_contract_floor_pages,
+                rebuild_replay_sol_leg_target_time_budget_before_retained_contract_floor_ms =
+                    replay_sol_leg_target_time_budget_before_retained_contract_floor.as_millis(),
+                rebuild_replay_sol_leg_phase_page_limit_before_retained_contract_floor =
+                    replay_sol_leg_phase_page_limit_before_retained_contract_floor,
+                rebuild_replay_sol_leg_retained_contract_floor_applied =
+                    adjusted_contract.reason
+                        == Some("deep_replay_sol_leg_retained_contract_floor"),
                 rebuild_replay_wallet_stats_target_time_budget_before_publishable_horizon_cap_ms =
                     replay_wallet_stats_target_time_budget_before_publishable_horizon_cap.as_millis(),
                 rebuild_replay_wallet_stats_publishable_horizon_budget_cap_applied =
@@ -6729,6 +6833,9 @@ impl DiscoveryService {
                 replay_sol_leg_last_partial_cycle_elapsed_ms: state
                     .payload
                     .replay_sol_leg_last_partial_cycle_elapsed_ms,
+                replay_sol_leg_retained_contract_floor_pages: state
+                    .payload
+                    .replay_sol_leg_retained_contract_floor_pages,
                 replay_candidate_activity_backfill_required: state
                     .payload
                     .replay_candidate_activity_backfill_required,
@@ -7118,6 +7225,9 @@ impl DiscoveryService {
                     replay_sol_leg_last_partial_cycle_elapsed_ms: state
                         .payload
                         .replay_sol_leg_last_partial_cycle_elapsed_ms,
+                    replay_sol_leg_retained_contract_floor_pages: state
+                        .payload
+                        .replay_sol_leg_retained_contract_floor_pages,
                     replay_candidate_activity_backfill_required: state
                         .payload
                         .replay_candidate_activity_backfill_required,
@@ -7171,8 +7281,11 @@ impl DiscoveryService {
         let cycle_elapsed_ms = cycle_started.elapsed().as_millis() as u64;
         Self::persist_partial_replay_frontier_hints_after_cycle(
             &mut state,
+            cycle_started_in_replay_sol_leg,
             cycle_replay_wallet_stats_day_count_source_progress,
             cycle_elapsed_ms,
+            budget_exhausted_reason,
+            cycle_replay_sol_leg_phase_page_limit,
             cycle_replay_sol_leg_pages_processed,
             cycle_replay_sol_leg_rows_processed,
             cycle_replay_sol_leg_elapsed_ms,
@@ -7265,6 +7378,9 @@ impl DiscoveryService {
             replay_sol_leg_last_partial_cycle_elapsed_ms: state
                 .payload
                 .replay_sol_leg_last_partial_cycle_elapsed_ms,
+            replay_sol_leg_retained_contract_floor_pages: state
+                .payload
+                .replay_sol_leg_retained_contract_floor_pages,
             replay_candidate_activity_backfill_required: state
                 .payload
                 .replay_candidate_activity_backfill_required,
@@ -10009,6 +10125,7 @@ mod tests {
             replay_sol_leg_last_partial_cycle_pages_processed: 0,
             replay_sol_leg_last_partial_cycle_rows_processed: 0,
             replay_sol_leg_last_partial_cycle_elapsed_ms: 0,
+            replay_sol_leg_retained_contract_floor_pages: 0,
             replay_candidate_activity_backfill_required: false,
             replay_candidate_activity_backfill_pending: false,
             token_quality_cache,
@@ -18224,8 +18341,11 @@ mod tests {
 
         DiscoveryService::persist_partial_replay_frontier_hints_after_cycle(
             &mut replay_state,
+            true,
             mixed_wallet_stats_progress,
             60_002,
+            Some(PersistedStreamBudgetExhaustedReason::TimeBudget),
+            Some(25),
             5,
             500,
             7_250,
@@ -18257,6 +18377,11 @@ mod tests {
             replay_state.payload.replay_wallet_stats_last_partial_cycle_pages_processed,
             27,
             "once the mixed cycle has already crossed wallet_stats and is blocking in sol_leg, the downstream sol_leg hint persistence must not overwrite wallet_stats-specific hint memory"
+        );
+        assert_eq!(
+            replay_state.payload.replay_sol_leg_retained_contract_floor_pages,
+            0,
+            "a partial sol_leg suffix that ended on time budget must not retain the whole lane as already-proven insufficient, because the cycle did not demonstrate that the full 25-page contract was exhausted"
         );
         assert_eq!(
             replay_state.replay_pages_processed,
@@ -18655,6 +18780,84 @@ mod tests {
     }
 
     #[test]
+    fn persisted_stream_replay_sol_leg_retained_contract_floor_requires_page_budgeted_full_lane_stage1(
+    ) {
+        let now = DateTime::parse_from_rfc3339("2026-04-04T12:39:29Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = stage1_runtime_config();
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let window_start = metrics_window_start;
+        let horizon_end = window_start + Duration::days(config.scoring_window_days as i64);
+
+        let base_state = PersistedStreamRebuildState {
+            phase: DiscoveryPersistedRebuildPhase::Replay,
+            window_start,
+            horizon_end,
+            metrics_window_start,
+            phase_cursor: Some(DiscoveryRuntimeCursor {
+                ts_utc: now - Duration::minutes(1),
+                slot: 456,
+                signature: "stage1-sol-leg-retained-floor-threshold".to_string(),
+            }),
+            payload: PersistedStreamRebuildPayload {
+                replay_mode: ReplayMode::WalletStatsThenSolLeg,
+                replay_wallet_stats_complete: true,
+                replay_wallet_stats_milestone_reached: true,
+                replay_candidate_activity_backfill_required: true,
+                by_wallet: HashMap::from_iter([(
+                    "wallet_sol_leg_threshold".to_string(),
+                    WalletAccumulator::default(),
+                )]),
+                ..PersistedStreamRebuildPayload::default()
+            },
+            prepass_rows_processed: 0,
+            prepass_pages_processed: 0,
+            replay_rows_processed: 650,
+            replay_pages_processed: 65,
+            chunks_completed: 0,
+            started_at: now - Duration::minutes(5),
+            updated_at: now - Duration::seconds(1),
+        };
+
+        let mut time_budget_state = base_state.clone();
+        DiscoveryService::persist_partial_replay_frontier_hints_after_cycle(
+            &mut time_budget_state,
+            true,
+            ReplayWalletStatsDayCountSourceProgress::default(),
+            139_747,
+            Some(PersistedStreamBudgetExhaustedReason::TimeBudget),
+            Some(300),
+            60,
+            1_200_000,
+            139_747,
+        );
+        assert_eq!(
+            time_budget_state.payload.replay_sol_leg_retained_contract_floor_pages,
+            0,
+            "a time-budgeted partial sol_leg cycle must not retain the full 300-page lane because it did not prove the whole lane was exhausted"
+        );
+
+        let mut page_budget_state = base_state;
+        DiscoveryService::persist_partial_replay_frontier_hints_after_cycle(
+            &mut page_budget_state,
+            true,
+            ReplayWalletStatsDayCountSourceProgress::default(),
+            139_747,
+            Some(PersistedStreamBudgetExhaustedReason::PageBudget),
+            Some(300),
+            300,
+            3_000_000,
+            139_747,
+        );
+        assert_eq!(
+            page_budget_state.payload.replay_sol_leg_retained_contract_floor_pages,
+            300,
+            "once the pure sol_leg cycle actually spends the full 300-page lane and still yields partial, the retained floor should record that exact proven-insufficient lane for the next checkpoint-specific contract"
+        );
+    }
+
+    #[test]
     fn persisted_stream_priority_recovery_contract_scales_for_open_frontier_resumed_replay_sol_leg_checkpoint_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -18787,6 +18990,96 @@ mod tests {
     }
 
     #[test]
+    fn persisted_stream_priority_recovery_contract_retains_proven_sol_leg_contract_floor_stage1() {
+        let now = DateTime::parse_from_rfc3339("2026-04-04T12:39:36Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 10;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let mut state = discovery.start_persisted_stream_rebuild_state(
+            now - Duration::days(config.scoring_window_days.max(1) as i64),
+            metrics_window_start_for_test(&config, now),
+            now,
+        );
+        state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        state.horizon_end = now;
+        state.phase_cursor = Some(DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::minutes(1),
+            slot: 409_909_030,
+            signature: "stage1-sol-leg-retained-floor".to_string(),
+        });
+        state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        state.payload.replay_wallet_stats_complete = true;
+        state.payload.replay_wallet_stats_milestone_reached = true;
+        state.payload.replay_candidate_activity_backfill_required = true;
+        state.payload.by_wallet.insert(
+            "wallet_sol_leg_retained_floor".to_string(),
+            WalletAccumulator::default(),
+        );
+        state.replay_rows_processed = 650;
+        state.replay_pages_processed = 65;
+        state
+            .payload
+            .replay_sol_leg_last_partial_cycle_pages_processed = 60;
+        state
+            .payload
+            .replay_sol_leg_last_partial_cycle_rows_processed = 600;
+        state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms = 139_747;
+
+        let base_contract = PersistedStreamPriorityRecoveryContract {
+            time_budget: StdDuration::from_secs(60),
+            collect_buy_mints_phase_page_limit_override: Some(160),
+            replay_wallet_stats_phase_page_limit_override: Some(92),
+            replay_sol_leg_phase_page_limit_override: Some(300),
+            reason: Some("runtime_window_complete_stale_publication_truth"),
+        };
+
+        let open_frontier_only_contract = discovery
+            .deepen_persisted_stream_priority_recovery_contract_for_state(
+                &state,
+                config.max_fetch_swaps_per_cycle,
+                config.max_fetch_pages_per_cycle,
+                base_contract,
+            );
+        assert_eq!(
+            open_frontier_only_contract.reason,
+            Some("deep_replay_sol_leg_open_frontier_backlog")
+        );
+        assert_eq!(
+            open_frontier_only_contract.replay_sol_leg_phase_page_limit_override,
+            Some(190),
+            "without retained contract memory, the second sol_leg checkpoint-specific lane shrinks to the 65 + 60 page heuristic even though the prior 300-page lane already proved insufficient on the same blocker"
+        );
+
+        state.payload.replay_sol_leg_retained_contract_floor_pages = 300;
+        let retained_floor_contract = discovery
+            .deepen_persisted_stream_priority_recovery_contract_for_state(
+                &state,
+                config.max_fetch_swaps_per_cycle,
+                config.max_fetch_pages_per_cycle,
+                base_contract,
+            );
+        assert_eq!(
+            retained_floor_contract.reason,
+            Some("deep_replay_sol_leg_retained_contract_floor")
+        );
+        assert_eq!(
+            retained_floor_contract.replay_sol_leg_phase_page_limit_override,
+            Some(300),
+            "once a pure sol_leg checkpoint has already spent a 300-page bounded lane and still stayed blocked on sol_leg source exhaustion, the next contract must not collapse back to 190 pages on the same lineage"
+        );
+        assert_eq!(
+            retained_floor_contract.time_budget,
+            StdDuration::from_millis(900_000),
+            "the retained sol_leg contract floor should preserve the already-proven insufficient 900s lane instead of relearning a smaller open-frontier budget from scratch"
+        );
+    }
+
+    #[test]
     fn run_cycle_live_like_resumed_replay_sol_leg_open_frontier_progress_publishes_after_second_cycle_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -18852,6 +19145,13 @@ mod tests {
                 .payload
                 .replay_sol_leg_last_partial_cycle_rows_processed
                 > 0
+        );
+        assert!(
+            after_first
+                .payload
+                .replay_sol_leg_retained_contract_floor_pages
+                > 0,
+            "once the first pure sol_leg cycle proves the blocker remains, the checkpoint must retain that exact sol_leg contract floor so the next local cycle does not shrink below the already-proven insufficient lane"
         );
         let publication_after_first = runtime_store
             .discovery_publication_state()?
@@ -23605,6 +23905,7 @@ mod tests {
             replay_sol_leg_last_partial_cycle_pages_processed: 0,
             replay_sol_leg_last_partial_cycle_rows_processed: 0,
             replay_sol_leg_last_partial_cycle_elapsed_ms: 0,
+            replay_sol_leg_retained_contract_floor_pages: 0,
             replay_candidate_activity_backfill_required: false,
             replay_sol_leg_access_path: None,
             replay_rows_processed: 0,
