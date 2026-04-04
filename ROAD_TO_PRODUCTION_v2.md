@@ -7569,6 +7569,23 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
          logs, plus
          `rebuild_replay_wallet_stats_complete_carried_forward_into_replay`
          when the target-window replay handoff actually consumes that marker
+     - exact extracted prod fallback state from
+       `.tmp/live_state_extracts/*2026-04-04T10-58-kyiv*` proved a narrower
+       persistence gap:
+       - the carried target-window replay row on disk already had
+         `phase=replay`, `replay_wallet_stats_complete=false`,
+         `replay_candidate_activity_backfill_required=false`, and
+         `published_wallet_ids=[]`
+       - that extracted row did preserve the large wallet-stats budgeting
+         memory, but it had no durable persisted proof that the lineage had
+         already crossed `wallet_stats` the night before
+       - replay now persists a durable
+         `replay_wallet_stats_milestone_reached` marker once the lineage
+         legitimately crosses `wallet_stats`
+       - carry-forward still uses the narrow `replay_sol_leg_reentry_pending`
+         handoff marker, but resume/repair can now auto-heal any future
+         degraded replay row back into `sol_leg` if that durable milestone is
+         present
      - the repair stays fail-closed unless the journal covers the required
        window and the current runtime cursor lineage
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime

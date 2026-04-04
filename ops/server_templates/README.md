@@ -554,6 +554,11 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
          - after token-quality finishes on the new target window, replay
            re-enters directly at `sol_leg` with candidate-activity backfill
            armed instead of silently degrading back to `wallet_stats`
+       - replay now also persists a durable
+         `replay_wallet_stats_milestone_reached` flag once the lineage has
+         already crossed `wallet_stats`; if a future persisted replay row ever
+         degrades back to `wallet_stats` while that flag is still present,
+         resume repair should auto-heal it back into `sol_leg`
        - operators should now expect
          `rebuild_replay_sol_leg_reentry_pending` on rollover / resumed-state
          logs and
