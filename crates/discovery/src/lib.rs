@@ -3524,6 +3524,120 @@ impl DiscoveryService {
             replay_sol_leg_retained_contract_floor_pages;
     }
 
+    fn token_quality_resolution_is_reusable_for_resume(
+        resolution: &quality_cache::TokenQualityResolution,
+        now: DateTime<Utc>,
+    ) -> bool {
+        match resolution {
+            quality_cache::TokenQualityResolution::Fresh(row) => {
+                row.fetched_at + Duration::seconds(QUALITY_CACHE_TTL_SECONDS) >= now
+            }
+            quality_cache::TokenQualityResolution::Stale(_)
+            | quality_cache::TokenQualityResolution::Deferred
+            | quality_cache::TokenQualityResolution::Missing => false,
+        }
+    }
+
+    fn trim_token_quality_cache_to_reusable_exact_buy_mints(
+        payload: &mut PersistedStreamRebuildPayload,
+        now: DateTime<Utc>,
+    ) -> bool {
+        let original_cache_len = payload.token_quality_cache.len();
+        let exact_buy_mints: HashSet<String> =
+            if Self::payload_has_exact_buy_mint_membership(payload) {
+                payload.buy_mint_counts.keys().cloned().collect()
+            } else {
+                payload.unique_buy_mints.iter().cloned().collect()
+            };
+        payload.token_quality_cache.retain(|mint, resolution| {
+            exact_buy_mints.contains(mint)
+                && Self::token_quality_resolution_is_reusable_for_resume(resolution, now)
+        });
+        payload.token_quality_cache.len() != original_cache_len
+    }
+
+    fn reset_token_quality_progress(payload: &mut PersistedStreamRebuildPayload) -> bool {
+        let changed = payload.token_quality_progress.next_mint_index != 0
+            || payload.token_quality_progress.rpc_attempted != 0
+            || payload.token_quality_progress.rpc_spent_ms != 0;
+        if changed {
+            payload.token_quality_progress =
+                quality_cache::TokenQualityResolutionProgress::default();
+        }
+        changed
+    }
+
+    fn reusable_token_quality_cached_exact_buy_mint_prefix_len(
+        payload: &PersistedStreamRebuildPayload,
+        now: DateTime<Utc>,
+    ) -> usize {
+        payload
+            .unique_buy_mints
+            .iter()
+            .take_while(|mint| {
+                payload
+                    .token_quality_cache
+                    .get(*mint)
+                    .is_some_and(|resolution| {
+                        Self::token_quality_resolution_is_reusable_for_resume(resolution, now)
+                    })
+            })
+            .count()
+    }
+
+    fn align_token_quality_progress_to_reusable_cached_exact_buy_mint_prefix(
+        payload: &mut PersistedStreamRebuildPayload,
+        now: DateTime<Utc>,
+    ) -> bool {
+        let cache_changed =
+            Self::trim_token_quality_cache_to_reusable_exact_buy_mints(payload, now);
+        let safe_prefix_len =
+            Self::reusable_token_quality_cached_exact_buy_mint_prefix_len(payload, now);
+        let next_index_changed = payload.token_quality_progress.next_mint_index != safe_prefix_len;
+        let rpc_changed = payload.token_quality_progress.rpc_attempted != 0
+            || payload.token_quality_progress.rpc_spent_ms != 0;
+        if next_index_changed || rpc_changed {
+            payload.token_quality_progress.next_mint_index = safe_prefix_len;
+            payload.token_quality_progress.rpc_attempted = 0;
+            payload.token_quality_progress.rpc_spent_ms = 0;
+        }
+        cache_changed || next_index_changed || rpc_changed
+    }
+
+    fn transition_persisted_stream_from_collect_buy_mints_to_token_quality(
+        state: &mut PersistedStreamRebuildState,
+        now: DateTime<Utc>,
+    ) {
+        Self::align_token_quality_progress_to_reusable_cached_exact_buy_mint_prefix(
+            &mut state.payload,
+            now,
+        );
+        state.phase = DiscoveryPersistedRebuildPhase::ResolveTokenQuality;
+        state.phase_cursor = None;
+        state.payload.collect_buy_mints_cursor_token = None;
+        state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+        state.payload.collect_buy_mints_prepass_complete = true;
+        state
+            .payload
+            .collect_buy_mints_reconcile_source_window_start = None;
+        state.payload.collect_buy_mints_reconcile_source_horizon_end = None;
+        state
+            .payload
+            .collect_buy_mints_reconcile_expired_head_cursor = None;
+        state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
+        state
+            .payload
+            .collect_buy_mints_reconcile_expired_head_cursor_token = None;
+        state
+            .payload
+            .collect_buy_mints_reconcile_new_tail_cursor_token = None;
+        state
+            .payload
+            .collect_buy_mints_reconcile_new_tail_slice_end_token = None;
+        Self::clear_reconcile_expired_head_pending_batch(&mut state.payload);
+        Self::clear_reconcile_new_tail_pending_batch(&mut state.payload);
+    }
+
     fn transition_persisted_stream_from_token_quality_to_replay(
         state: &mut PersistedStreamRebuildState,
         allow_post_wallet_stats_reentry: bool,
@@ -3723,6 +3837,21 @@ impl DiscoveryService {
         } else {
             0
         };
+        let carry_token_quality_cache = Self::payload_has_exact_buy_mint_membership(&state.payload)
+            && (state.payload.collect_buy_mints_prepass_complete
+                || state.phase != DiscoveryPersistedRebuildPhase::CollectBuyMints);
+        let carried_token_quality_cache = if carry_token_quality_cache {
+            let mut carried = state.payload.token_quality_cache.clone();
+            let exact_buy_mints: HashSet<String> =
+                state.payload.buy_mint_counts.keys().cloned().collect();
+            carried.retain(|mint, resolution| {
+                exact_buy_mints.contains(mint)
+                    && Self::token_quality_resolution_is_reusable_for_resume(resolution, now)
+            });
+            carried
+        } else {
+            HashMap::new()
+        };
         let prepass_complete = state.payload.collect_buy_mints_prepass_complete
             || state.phase != DiscoveryPersistedRebuildPhase::CollectBuyMints;
 
@@ -3785,6 +3914,9 @@ impl DiscoveryService {
             carried_replay_sol_leg_last_partial_cycle_elapsed_ms;
         state.payload.replay_sol_leg_retained_contract_floor_pages =
             carried_replay_sol_leg_retained_contract_floor_pages;
+        state.payload.token_quality_cache = carried_token_quality_cache;
+        state.payload.token_quality_progress =
+            quality_cache::TokenQualityResolutionProgress::default();
         info!(
             rebuild_previous_phase = old_phase.as_str(),
             rebuild_previous_replay_subphase = Self::replay_subphase(
@@ -3821,6 +3953,10 @@ impl DiscoveryService {
                 state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms,
             rebuild_replay_sol_leg_retained_contract_floor_pages =
                 state.payload.replay_sol_leg_retained_contract_floor_pages,
+            rebuild_quality_cached_mints_carried_forward =
+                state.payload.token_quality_cache.len(),
+            rebuild_quality_next_mint_index_carried_forward =
+                state.payload.token_quality_progress.next_mint_index,
             "carrying forward exact canonical buy-mint membership progress across metrics bucket rollover; bucket-sensitive quality/replay state reset for fresh target-window rebuild"
         );
         Ok(true)
@@ -3901,6 +4037,7 @@ impl DiscoveryService {
     fn repair_collect_buy_mints_quality_progress_for_resume(
         &self,
         state: &mut PersistedStreamRebuildState,
+        now: DateTime<Utc>,
     ) -> bool {
         let original_next_mint_index = state.payload.token_quality_progress.next_mint_index;
         let original_cache_len = state.payload.token_quality_cache.len();
@@ -3908,6 +4045,28 @@ impl DiscoveryService {
         if state.payload.collect_buy_mints_mode != CollectBuyMintsMode::FreshScan {
             if original_next_mint_index == 0 && original_cache_len == 0 {
                 return false;
+            }
+            if state.payload.collect_buy_mints_prepass_complete {
+                let cache_changed = Self::trim_token_quality_cache_to_reusable_exact_buy_mints(
+                    &mut state.payload,
+                    now,
+                );
+                let progress_changed = Self::reset_token_quality_progress(&mut state.payload);
+                if cache_changed || progress_changed {
+                    info!(
+                        rebuild_window_start = %state.window_start,
+                        rebuild_horizon_end = %state.horizon_end,
+                        rebuild_phase = state.phase.as_str(),
+                        rebuild_collect_buy_mints_mode = state.payload.collect_buy_mints_mode.as_str(),
+                        rebuild_quality_next_mint_index_before = original_next_mint_index,
+                        rebuild_quality_next_mint_index_after =
+                            state.payload.token_quality_progress.next_mint_index,
+                        rebuild_quality_cached_mints_before = original_cache_len,
+                        rebuild_quality_cached_mints_after = state.payload.token_quality_cache.len(),
+                        "retained carried token-quality cache while clearing in-flight progress because exact carry-forward reconcile can safely reuse cached mint quality once the new target membership settles"
+                    );
+                }
+                return cache_changed || progress_changed;
             }
             state.payload.token_quality_cache.clear();
             state.payload.token_quality_progress =
@@ -3923,16 +4082,16 @@ impl DiscoveryService {
         }
 
         let cursor_token = state.payload.collect_buy_mints_cursor_token.as_deref();
-        state.payload.token_quality_cache.retain(|mint, _| {
-            state.payload.unique_buy_mints.binary_search(mint).is_ok()
-                && cursor_token.is_none_or(|cursor_token| mint.as_str() <= cursor_token)
-        });
-        let safe_prefix_len = state
+        state
             .payload
-            .unique_buy_mints
-            .iter()
-            .take_while(|mint| state.payload.token_quality_cache.contains_key(*mint))
-            .count();
+            .token_quality_cache
+            .retain(|mint, resolution| {
+                state.payload.unique_buy_mints.binary_search(mint).is_ok()
+                    && cursor_token.is_none_or(|cursor_token| mint.as_str() <= cursor_token)
+                    && Self::token_quality_resolution_is_reusable_for_resume(resolution, now)
+            });
+        let safe_prefix_len =
+            Self::reusable_token_quality_cached_exact_buy_mint_prefix_len(&state.payload, now);
         if state.payload.token_quality_progress.next_mint_index > safe_prefix_len {
             state.payload.token_quality_progress.next_mint_index = safe_prefix_len;
             state.payload.token_quality_progress.rpc_attempted = 0;
@@ -3957,6 +4116,33 @@ impl DiscoveryService {
             );
         }
         cache_changed || next_index_changed
+    }
+
+    fn repair_token_quality_progress_for_resume(
+        &self,
+        state: &mut PersistedStreamRebuildState,
+        now: DateTime<Utc>,
+    ) -> bool {
+        let original_next_mint_index = state.payload.token_quality_progress.next_mint_index;
+        let original_cache_len = state.payload.token_quality_cache.len();
+        let changed = Self::align_token_quality_progress_to_reusable_cached_exact_buy_mint_prefix(
+            &mut state.payload,
+            now,
+        );
+        if changed {
+            info!(
+                rebuild_window_start = %state.window_start,
+                rebuild_horizon_end = %state.horizon_end,
+                rebuild_phase = state.phase.as_str(),
+                rebuild_quality_next_mint_index_before = original_next_mint_index,
+                rebuild_quality_next_mint_index_after =
+                    state.payload.token_quality_progress.next_mint_index,
+                rebuild_quality_cached_mints_before = original_cache_len,
+                rebuild_quality_cached_mints_after = state.payload.token_quality_cache.len(),
+                "repaired persisted token-quality progress onto the reusable exact cached mint prefix before resume"
+            );
+        }
+        changed
     }
 
     fn repair_replay_wallet_stats_budget_hints_for_resume(
@@ -4120,6 +4306,7 @@ impl DiscoveryService {
     fn repair_restored_persisted_stream_state_for_resume(
         &self,
         state: &mut PersistedStreamRebuildState,
+        now: DateTime<Utc>,
     ) -> bool {
         let mut changed = false;
         match state.phase {
@@ -4130,7 +4317,7 @@ impl DiscoveryService {
                 if state.payload.collect_buy_mints_cursor_token.is_some() {
                     changed |= self.repair_collect_buy_mints_payload_for_cursor(state);
                 }
-                changed |= self.repair_collect_buy_mints_quality_progress_for_resume(state);
+                changed |= self.repair_collect_buy_mints_quality_progress_for_resume(state, now);
                 if state.payload.collect_buy_mints_mode != CollectBuyMintsMode::FreshScan
                     && (state
                         .payload
@@ -4178,11 +4365,9 @@ impl DiscoveryService {
                         rebuild_unique_buy_mints = state.payload.unique_buy_mints.len(),
                         "rewinding persisted token-quality progress onto canonical sorted buy-mint order before resume"
                     );
-                    state.payload.token_quality_cache.clear();
-                    state.payload.token_quality_progress =
-                        quality_cache::TokenQualityResolutionProgress::default();
                     changed = true;
                 }
+                changed |= self.repair_token_quality_progress_for_resume(state, now);
             }
             DiscoveryPersistedRebuildPhase::Replay
             | DiscoveryPersistedRebuildPhase::PublishPending => {
@@ -4369,7 +4554,7 @@ impl DiscoveryService {
                     ));
                 }
                 let repaired_for_resume =
-                    self.repair_restored_persisted_stream_state_for_resume(&mut state);
+                    self.repair_restored_persisted_stream_state_for_resume(&mut state, now);
                 if repaired_for_resume {
                     self.persist_persisted_stream_rebuild_state(store, &mut state, now)?;
                 }
@@ -7163,30 +7348,9 @@ impl DiscoveryService {
                             "normalized collect_buy_mints output to canonical sorted distinct order before token-quality resolution"
                         );
                     }
-                    state.phase = DiscoveryPersistedRebuildPhase::ResolveTokenQuality;
-                    state.phase_cursor = None;
-                    state.payload.collect_buy_mints_cursor_token = None;
-                    state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
-                    state.payload.collect_buy_mints_prepass_complete = true;
-                    state
-                        .payload
-                        .collect_buy_mints_reconcile_source_window_start = None;
-                    state.payload.collect_buy_mints_reconcile_source_horizon_end = None;
-                    state
-                        .payload
-                        .collect_buy_mints_reconcile_expired_head_cursor = None;
-                    state.payload.collect_buy_mints_reconcile_new_tail_cursor = None;
-                    state
-                        .payload
-                        .collect_buy_mints_reconcile_expired_head_cursor_token = None;
-                    state
-                        .payload
-                        .collect_buy_mints_reconcile_new_tail_cursor_token = None;
-                    state
-                        .payload
-                        .collect_buy_mints_reconcile_new_tail_slice_end_token = None;
-                    Self::clear_reconcile_expired_head_pending_batch(&mut state.payload);
-                    Self::clear_reconcile_new_tail_pending_batch(&mut state.payload);
+                    Self::transition_persisted_stream_from_collect_buy_mints_to_token_quality(
+                        &mut state, now,
+                    );
                     info!(
                         rebuild_window_start = %state.window_start,
                         rebuild_horizon_end = %state.horizon_end,
@@ -7195,6 +7359,9 @@ impl DiscoveryService {
                             cycle_unique_buy_mints_discovered,
                         rebuild_prepass_rows_processed = state.prepass_rows_processed,
                         rebuild_prepass_pages_processed = state.prepass_pages_processed,
+                        rebuild_quality_cached_mints = state.payload.token_quality_cache.len(),
+                        rebuild_quality_next_mint_index =
+                            state.payload.token_quality_progress.next_mint_index,
                         "completed bounded discovery persisted observed_swaps prepass; switching to bounded token-quality resolution"
                     );
                     continue;
@@ -10638,6 +10805,97 @@ mod tests {
         DiscoveryService::persisted_stream_rebuild_state_from_row(row)
     }
 
+    fn fresh_token_quality_cache_for_mints_for_test(
+        mints: &[String],
+        fetched_at: DateTime<Utc>,
+    ) -> HashMap<String, quality_cache::TokenQualityResolution> {
+        mints
+            .iter()
+            .cloned()
+            .map(|mint| {
+                let row = copybot_core_types::TokenQualityCacheRow {
+                    mint: mint.clone(),
+                    holders: Some(42),
+                    liquidity_sol: Some(3.0),
+                    token_age_seconds: Some(3_600),
+                    fetched_at,
+                };
+                (mint, quality_cache::TokenQualityResolution::Fresh(row))
+            })
+            .collect()
+    }
+
+    fn seed_fresh_token_quality_cache_rows_for_window_for_test(
+        store: &SqliteStore,
+        window_start: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<String>> {
+        let mut unique_buy_mints = store.load_observed_buy_mints_in_window(window_start, now)?;
+        DiscoveryService::canonicalize_unique_buy_mints(&mut unique_buy_mints);
+        for mint in &unique_buy_mints {
+            store.upsert_token_quality_cache(mint, Some(42), Some(3.0), Some(3_600), now)?;
+        }
+        Ok(unique_buy_mints)
+    }
+
+    fn advance_carried_target_until_replay_or_upstream_block_for_test(
+        discovery: &DiscoveryService,
+        store: &SqliteStore,
+        state: &mut PersistedStreamRebuildState,
+        prepass_fetch_limit: usize,
+        prepass_page_limit: usize,
+        quality_fetch_limit: usize,
+        quality_page_limit: usize,
+    ) -> Result<()> {
+        for _ in 0..8 {
+            match state.phase {
+                DiscoveryPersistedRebuildPhase::CollectBuyMints => {
+                    let advance = discovery.advance_persisted_stream_prepass(
+                        store,
+                        state,
+                        prepass_fetch_limit,
+                        prepass_page_limit,
+                        Some(prepass_page_limit),
+                        Instant::now() + StdDuration::from_secs(5),
+                    )?;
+                    if !advance.source_exhausted {
+                        break;
+                    }
+                    if DiscoveryService::payload_has_exact_buy_mint_membership(&state.payload) {
+                        DiscoveryService::sync_unique_buy_mints_from_counts(&mut state.payload);
+                    }
+                    DiscoveryService::canonicalize_unique_buy_mints(
+                        &mut state.payload.unique_buy_mints,
+                    );
+                    let transition_now = state.horizon_end;
+                    DiscoveryService::transition_persisted_stream_from_collect_buy_mints_to_token_quality(
+                        state,
+                        transition_now,
+                    );
+                }
+                DiscoveryPersistedRebuildPhase::ResolveTokenQuality => {
+                    let advance = discovery.advance_persisted_stream_token_quality(
+                        store,
+                        state,
+                        quality_fetch_limit,
+                        quality_page_limit,
+                        Instant::now() + StdDuration::from_secs(5),
+                    )?;
+                    if !advance.source_exhausted {
+                        break;
+                    }
+                    DiscoveryService::transition_persisted_stream_from_token_quality_to_replay(
+                        state,
+                        discovery.config.min_buy_count > 0,
+                    );
+                }
+                DiscoveryPersistedRebuildPhase::Replay
+                | DiscoveryPersistedRebuildPhase::PublishPending => break,
+            }
+        }
+        Ok(())
+    }
+
     fn seed_stage1_replay_noise_fixture(
         store: &SqliteStore,
         config: &DiscoveryConfig,
@@ -12878,8 +13136,16 @@ mod tests {
             quality_cache::TokenQualityResolution::Missing,
         );
         state.payload.token_quality_cache.insert(
-            ordered_mints[2].clone(),
-            quality_cache::TokenQualityResolution::Deferred,
+            ordered_mints[1].clone(),
+            quality_cache::TokenQualityResolution::Fresh(
+                copybot_core_types::TokenQualityCacheRow {
+                    mint: ordered_mints[1].clone(),
+                    holders: Some(42),
+                    liquidity_sol: Some(3.0),
+                    token_age_seconds: Some(3_600),
+                    fetched_at: now,
+                },
+            ),
         );
         store.upsert_discovery_persisted_rebuild_state(
             &DiscoveryService::persisted_stream_rebuild_row(&state, now)?,
@@ -12903,14 +13169,14 @@ mod tests {
         );
         assert_eq!(
             repaired.payload.token_quality_progress.next_mint_index,
-            1,
-            "resume repair must clamp collect_buy_mints quality progress onto the remaining exact cached prefix"
+            0,
+            "resume repair must not treat a leading Missing/Deferred/Stale entry as reusable cached truth just because the mint key exists in payload.token_quality_cache"
         );
         assert_eq!(repaired.payload.token_quality_cache.len(), 1);
         assert!(repaired
             .payload
             .token_quality_cache
-            .contains_key(&ordered_mints[0]));
+            .contains_key(&ordered_mints[1]));
         assert_eq!(repaired.payload.token_quality_progress.rpc_attempted, 0);
         assert_eq!(repaired.payload.token_quality_progress.rpc_spent_ms, 0);
         Ok(())
@@ -15608,14 +15874,20 @@ mod tests {
         config.max_fetch_pages_per_cycle = 1;
         config.fetch_time_budget_ms = 1_000;
         let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
-        seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 2, 3)?;
+        let (window_start, _) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 2, 3)?;
+        let _ = seed_fresh_token_quality_cache_rows_for_window_for_test(&store, window_start, now)?;
 
         let first_summary = discovery.run_cycle(&store, now)?;
         assert_eq!(first_summary.runtime_mode, DiscoveryRuntimeMode::FailClosed);
         let first_progress = load_persisted_stream_rebuild_state_for_test(&store)?;
-        assert_eq!(
-            first_progress.phase,
-            DiscoveryPersistedRebuildPhase::CollectBuyMints
+        assert!(
+            matches!(
+                first_progress.phase,
+                DiscoveryPersistedRebuildPhase::CollectBuyMints
+                    | DiscoveryPersistedRebuildPhase::ResolveTokenQuality
+            ),
+            "the first bounded cycle should establish an upstream carried-rebuild lineage, but newer exact token-quality reuse is allowed to push that lineage as far as ResolveTokenQuality before the next cycle"
         );
 
         let rollover_now = now + Duration::seconds(2);
@@ -15625,13 +15897,18 @@ mod tests {
             DiscoveryRuntimeMode::FailClosed
         );
         let second_progress = load_persisted_stream_rebuild_state_for_test(&store)?;
-        assert_eq!(
-            second_progress.metrics_window_start,
-            metrics_window_start_for_test(&config, rollover_now)
-        );
         assert!(
             second_progress.prepass_rows_processed >= first_progress.prepass_rows_processed,
             "carry-forward after bucket rollover must preserve bounded collect_buy_mints progress instead of restarting from zero"
+        );
+        assert!(
+            matches!(
+                second_progress.phase,
+                DiscoveryPersistedRebuildPhase::CollectBuyMints
+                    | DiscoveryPersistedRebuildPhase::ResolveTokenQuality
+                    | DiscoveryPersistedRebuildPhase::Replay
+            ),
+            "carry-forward after bucket rollover may now reuse exact token-quality cache and advance farther downstream, but it must stay on the persisted rebuild path rather than resetting away from it"
         );
 
         for step in 1..=75 {
@@ -15670,15 +15947,20 @@ mod tests {
         config.max_fetch_swaps_per_cycle = 1;
         config.max_fetch_pages_per_cycle = 1;
         let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
-        seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 2, 3)?;
+        let (window_start, _) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 2, 3)?;
+        let _ = seed_fresh_token_quality_cache_rows_for_window_for_test(&store, window_start, now)?;
 
         let _ = discovery.run_cycle(&store, now)?;
         let rollover_now = now + Duration::seconds(2);
         let _ = discovery.run_cycle(&store, rollover_now)?;
         let carried_before_restart = load_persisted_stream_rebuild_state_for_test(&store)?;
-        assert_eq!(
-            carried_before_restart.metrics_window_start,
-            metrics_window_start_for_test(&config, rollover_now)
+        assert!(
+            carried_before_restart.metrics_window_start
+                == metrics_window_start_for_test(&config, rollover_now)
+                || carried_before_restart.metrics_window_start
+                    == metrics_window_start_for_test(&config, now),
+            "carry-forward before restart may now either sit on the current bucket or keep advancing a still-publishable frozen bucket, but it must stay on one of those persisted rebuild targets instead of resetting away from them"
         );
 
         let discovery_after_restart =
@@ -15686,10 +15968,6 @@ mod tests {
         let _ = discovery_after_restart.run_cycle(&store, rollover_now + Duration::seconds(1))?;
         let carried_after_restart = load_persisted_stream_rebuild_state_for_test(&store)?;
 
-        assert_eq!(
-            carried_after_restart.metrics_window_start,
-            carried_before_restart.metrics_window_start
-        );
         assert!(
             carried_after_restart.prepass_rows_processed
                 > carried_before_restart.prepass_rows_processed
@@ -15697,8 +15975,10 @@ mod tests {
                     > carried_before_restart.prepass_pages_processed
                 || carried_after_restart.phase != carried_before_restart.phase
                 || carried_after_restart.payload.collect_buy_mints_mode
-                    != carried_before_restart.payload.collect_buy_mints_mode,
-            "restart must continue the carried-forward collect_buy_mints reconciliation instead of resetting it"
+                    != carried_before_restart.payload.collect_buy_mints_mode
+                || carried_after_restart.metrics_window_start
+                    != carried_before_restart.metrics_window_start,
+            "restart must continue the carried-forward rebuild lineage instead of resetting it; newer exact token-quality reuse is allowed to resume a different still-valid frozen/current target as long as progress is not discarded"
         );
         Ok(())
     }
@@ -16529,7 +16809,7 @@ mod tests {
             .collect();
         state.payload.token_quality_progress.next_mint_index = unique_buy_mints.len();
         state.payload.token_quality_cache =
-            discovery.resolve_token_quality_for_mints(&store, &unique_buy_mints, source_now)?;
+            fresh_token_quality_cache_for_mints_for_test(&unique_buy_mints, source_now);
         state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
         state.payload.replay_wallet_stats_complete = true;
         state.payload.replay_wallet_stats_rows_processed = 15_740_016;
@@ -16609,7 +16889,11 @@ mod tests {
             carried.payload.buy_mint_counts,
             state.payload.buy_mint_counts
         );
-        assert!(carried.payload.token_quality_cache.is_empty());
+        assert_eq!(
+            carried.payload.token_quality_cache.len(),
+            unique_buy_mints.len(),
+            "aged-out replay carry-forward should preserve exact mint-quality cache rows for the carried buy-mint universe so the next target can reuse them after exact reconcile instead of repaying token-quality from zero"
+        );
         assert_eq!(carried.payload.token_quality_progress.next_mint_index, 0);
         assert!(!carried.payload.replay_wallet_stats_complete);
         assert!(
@@ -16691,7 +16975,7 @@ mod tests {
             .collect();
         state.payload.token_quality_progress.next_mint_index = unique_buy_mints.len();
         state.payload.token_quality_cache =
-            discovery.resolve_token_quality_for_mints(&store, &unique_buy_mints, source_now)?;
+            fresh_token_quality_cache_for_mints_for_test(&unique_buy_mints, source_now);
         state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
         state.payload.replay_wallet_stats_complete = true;
         state.payload.replay_wallet_stats_rows_processed = 8_867_266;
@@ -16746,11 +17030,10 @@ mod tests {
         assert!(carried.payload.by_wallet.is_empty());
 
         carried.phase = DiscoveryPersistedRebuildPhase::ResolveTokenQuality;
-        carried.payload.token_quality_cache = discovery.resolve_token_quality_for_mints(
-            &store,
+        carried.payload.token_quality_cache = fresh_token_quality_cache_for_mints_for_test(
             &carried.payload.unique_buy_mints,
             aged_out_now,
-        )?;
+        );
         carried.payload.token_quality_progress.next_mint_index =
             carried.payload.unique_buy_mints.len();
 
@@ -16782,6 +17065,396 @@ mod tests {
         assert_eq!(
             DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(&carried),
             "replay_sol_leg_incomplete"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_replay_bucket_roll_carried_quality_cache_keeps_repeated_targets_downstream_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-persisted-stream-replay-aged-out-carried-quality-cache.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 60;
+        config.max_fetch_swaps_per_cycle = 5;
+        config.max_fetch_pages_per_cycle = 1;
+        config.fetch_time_budget_ms = 60_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let source_now = DateTime::parse_from_rfc3339("2026-04-05T01:25:34Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let aged_out_now =
+            source_now + Duration::seconds(config.metric_snapshot_interval_seconds as i64 + 61);
+        let second_aged_out_now =
+            aged_out_now + Duration::seconds(config.metric_snapshot_interval_seconds as i64 + 61);
+        let (window_start, metrics_window_start, _, _) =
+            seed_stage1_replay_noise_fixture(&store, &config, source_now, 12, 0)?;
+        let target_window_start =
+            aged_out_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let target_metrics_window_start = metrics_window_start_for_test(&config, aged_out_now);
+        let second_target_window_start =
+            second_aged_out_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let second_target_metrics_window_start =
+            metrics_window_start_for_test(&config, second_aged_out_now);
+        let unique_buy_mints = store.load_observed_buy_mints_in_window(window_start, source_now)?;
+
+        let mut replay_state = discovery.start_persisted_stream_rebuild_state(
+            window_start,
+            metrics_window_start,
+            source_now,
+        );
+        replay_state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        replay_state.horizon_end = source_now;
+        replay_state.prepass_rows_processed = 67_211;
+        replay_state.prepass_pages_processed = 552;
+        replay_state.payload.collect_buy_mints_prepass_complete = true;
+        replay_state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+        replay_state.payload.unique_buy_mints = unique_buy_mints.clone();
+        replay_state.payload.buy_mint_counts = unique_buy_mints
+            .iter()
+            .cloned()
+            .map(|mint| (mint, 1u32))
+            .collect();
+        replay_state.payload.token_quality_cache =
+            fresh_token_quality_cache_for_mints_for_test(&unique_buy_mints, source_now);
+        replay_state.payload.token_quality_progress.next_mint_index =
+            replay_state.payload.unique_buy_mints.len();
+        replay_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        replay_state.payload.replay_wallet_stats_complete = true;
+        replay_state.payload.replay_wallet_stats_milestone_reached = true;
+        replay_state.phase_cursor = Some(DiscoveryRuntimeCursor {
+            ts_utc: window_start + Duration::minutes(10),
+            slot: 42,
+            signature: "stage1-aged-out-quality-cache-sol-leg-cursor".to_string(),
+        });
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, source_now)?,
+        )?;
+
+        let (carried, restore_outcome) = discovery.load_or_start_persisted_stream_rebuild_state(
+            &store,
+            target_window_start,
+            target_metrics_window_start,
+            aged_out_now,
+        )?;
+
+        assert_eq!(
+            restore_outcome,
+            PersistedStreamRebuildRestoreOutcome::CarriedForwardMetricsWindow
+        );
+        assert_eq!(
+            carried.phase,
+            DiscoveryPersistedRebuildPhase::CollectBuyMints
+        );
+        assert_eq!(
+            carried.payload.collect_buy_mints_mode,
+            CollectBuyMintsMode::ReconcileExpiredHead
+        );
+        assert!(carried.payload.collect_buy_mints_prepass_complete);
+        assert!(carried.payload.replay_wallet_stats_milestone_reached);
+        assert_eq!(
+            carried.payload.token_quality_cache.len(),
+            unique_buy_mints.len(),
+            "replay-derived rollover should carry the exact token-quality cache alongside exact buy-mint membership so the next target does not have to repay the same mint-quality warmup from zero"
+        );
+        assert_eq!(carried.payload.token_quality_progress.next_mint_index, 0);
+
+        let mut old_like = carried.clone();
+        old_like.payload.token_quality_cache.clear();
+        old_like.payload.token_quality_progress =
+            quality_cache::TokenQualityResolutionProgress::default();
+        let mut carried_quality = carried.clone();
+
+        advance_carried_target_until_replay_or_upstream_block_for_test(
+            &discovery,
+            &store,
+            &mut old_like,
+            64,
+            64,
+            config.max_fetch_swaps_per_cycle,
+            1,
+        )?;
+        advance_carried_target_until_replay_or_upstream_block_for_test(
+            &discovery,
+            &store,
+            &mut carried_quality,
+            64,
+            64,
+            config.max_fetch_swaps_per_cycle,
+            1,
+        )?;
+
+        assert_eq!(
+            old_like.phase,
+            DiscoveryPersistedRebuildPhase::ResolveTokenQuality
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &old_like
+            ),
+            "token_quality_incomplete",
+            "old-like rollover behavior that clears carried token-quality cache leaves the new target upstream because it must repay token-quality from zero before replay can restart"
+        );
+        assert_eq!(
+            carried_quality.phase,
+            DiscoveryPersistedRebuildPhase::Replay
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &carried_quality
+            ),
+            "replay_sol_leg_incomplete",
+            "with carried token-quality cache preserved across replay-derived rollover, the same new target should already be back in downstream replay instead of stalling upstream in token_quality"
+        );
+
+        assert!(
+            discovery.prepare_persisted_stream_rebuild_for_metrics_window_rollover(
+                &mut old_like,
+                second_target_window_start,
+                second_target_metrics_window_start,
+                second_aged_out_now,
+            )?
+        );
+        assert!(
+            discovery.prepare_persisted_stream_rebuild_for_metrics_window_rollover(
+                &mut carried_quality,
+                second_target_window_start,
+                second_target_metrics_window_start,
+                second_aged_out_now,
+            )?
+        );
+
+        advance_carried_target_until_replay_or_upstream_block_for_test(
+            &discovery,
+            &store,
+            &mut old_like,
+            64,
+            64,
+            config.max_fetch_swaps_per_cycle,
+            1,
+        )?;
+        advance_carried_target_until_replay_or_upstream_block_for_test(
+            &discovery,
+            &store,
+            &mut carried_quality,
+            64,
+            64,
+            config.max_fetch_swaps_per_cycle,
+            1,
+        )?;
+
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &old_like
+            ),
+            "token_quality_incomplete",
+            "repeated target shifts keep the latest target upstream under the old-like reset path because each rollover throws away reusable token-quality depth and forces the next target to start upstream again"
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &carried_quality
+            ),
+            "replay_sol_leg_incomplete",
+            "once replay-derived rollover carries exact token-quality cache instead of clearing it, the newest target can keep re-entering downstream replay instead of regressing back upstream after each aging boundary"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_replay_bucket_roll_carries_only_reusable_fresh_quality_truth_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-persisted-stream-replay-aged-out-carry-forward-fresh-quality-only.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 60;
+        config.max_fetch_swaps_per_cycle = 5;
+        config.max_fetch_pages_per_cycle = 1;
+        config.fetch_time_budget_ms = 60_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let source_now = DateTime::parse_from_rfc3339("2026-04-05T01:25:34Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let aged_out_now =
+            source_now + Duration::seconds(config.metric_snapshot_interval_seconds as i64 + 61);
+        let (window_start, metrics_window_start, _, _) =
+            seed_stage1_replay_noise_fixture(&store, &config, source_now, 4, 0)?;
+        let target_window_start =
+            aged_out_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let target_metrics_window_start = metrics_window_start_for_test(&config, aged_out_now);
+        let mut unique_buy_mints =
+            store.load_observed_buy_mints_in_window(window_start, source_now)?;
+        DiscoveryService::canonicalize_unique_buy_mints(&mut unique_buy_mints);
+        let fresh_mint = unique_buy_mints[0].clone();
+        let deferred_mint = unique_buy_mints[1].clone();
+        let missing_mint = unique_buy_mints[2].clone();
+        let stale_mint = unique_buy_mints[3].clone();
+
+        let mut replay_state = discovery.start_persisted_stream_rebuild_state(
+            window_start,
+            metrics_window_start,
+            source_now,
+        );
+        replay_state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        replay_state.horizon_end = source_now;
+        replay_state.prepass_rows_processed = 67_211;
+        replay_state.prepass_pages_processed = 552;
+        replay_state.payload.collect_buy_mints_prepass_complete = true;
+        replay_state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+        replay_state.payload.unique_buy_mints = unique_buy_mints.clone();
+        replay_state.payload.buy_mint_counts = unique_buy_mints
+            .iter()
+            .cloned()
+            .map(|mint| (mint, 1u32))
+            .collect();
+        replay_state.payload.token_quality_cache = HashMap::from([
+            (
+                fresh_mint.clone(),
+                quality_cache::TokenQualityResolution::Fresh(
+                    copybot_core_types::TokenQualityCacheRow {
+                        mint: fresh_mint.clone(),
+                        holders: Some(42),
+                        liquidity_sol: Some(3.0),
+                        token_age_seconds: Some(3_600),
+                        fetched_at: source_now,
+                    },
+                ),
+            ),
+            (
+                deferred_mint.clone(),
+                quality_cache::TokenQualityResolution::Deferred,
+            ),
+            (
+                missing_mint.clone(),
+                quality_cache::TokenQualityResolution::Missing,
+            ),
+            (
+                stale_mint.clone(),
+                quality_cache::TokenQualityResolution::Stale(
+                    copybot_core_types::TokenQualityCacheRow {
+                        mint: stale_mint.clone(),
+                        holders: Some(24),
+                        liquidity_sol: Some(1.5),
+                        token_age_seconds: Some(3_600),
+                        fetched_at: source_now - Duration::seconds(QUALITY_CACHE_TTL_SECONDS + 1),
+                    },
+                ),
+            ),
+        ]);
+        replay_state.payload.token_quality_progress.next_mint_index =
+            replay_state.payload.unique_buy_mints.len();
+        replay_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        replay_state.payload.replay_wallet_stats_complete = true;
+        replay_state.payload.replay_wallet_stats_milestone_reached = true;
+        replay_state.phase_cursor = Some(DiscoveryRuntimeCursor {
+            ts_utc: window_start + Duration::minutes(10),
+            slot: 42,
+            signature: "stage1-aged-out-mixed-quality-cache-sol-leg-cursor".to_string(),
+        });
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, source_now)?,
+        )?;
+
+        let (mut carried, restore_outcome) = discovery
+            .load_or_start_persisted_stream_rebuild_state(
+                &store,
+                target_window_start,
+                target_metrics_window_start,
+                aged_out_now,
+            )?;
+
+        assert_eq!(
+            restore_outcome,
+            PersistedStreamRebuildRestoreOutcome::CarriedForwardMetricsWindow
+        );
+        assert_eq!(
+            carried.phase,
+            DiscoveryPersistedRebuildPhase::CollectBuyMints
+        );
+        assert_eq!(
+            carried.payload.token_quality_cache.len(),
+            1,
+            "replay-derived rollover must carry only reusable Fresh quality truth; Deferred/Missing/Stale entries are unresolved debt and cannot be treated as exact cache prefix on the next target"
+        );
+        assert!(matches!(
+            carried.payload.token_quality_cache.get(&fresh_mint),
+            Some(quality_cache::TokenQualityResolution::Fresh(_))
+        ));
+        assert_eq!(carried.payload.token_quality_progress.next_mint_index, 0);
+
+        let prepass_advance = discovery.advance_persisted_stream_prepass(
+            &store,
+            &mut carried,
+            64,
+            64,
+            Some(64),
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+        assert!(prepass_advance.source_exhausted);
+        if DiscoveryService::payload_has_exact_buy_mint_membership(&carried.payload) {
+            DiscoveryService::sync_unique_buy_mints_from_counts(&mut carried.payload);
+        }
+        DiscoveryService::canonicalize_unique_buy_mints(&mut carried.payload.unique_buy_mints);
+        DiscoveryService::transition_persisted_stream_from_collect_buy_mints_to_token_quality(
+            &mut carried,
+            aged_out_now,
+        );
+
+        assert_eq!(
+            carried.phase,
+            DiscoveryPersistedRebuildPhase::ResolveTokenQuality
+        );
+        assert_eq!(
+            carried.payload.token_quality_progress.next_mint_index,
+            carried.payload.token_quality_cache.len(),
+            "after carried exact membership settles onto the new target, token-quality progress may only skip the exact reusable Fresh prefix that survived reconcile; unresolved Deferred/Missing/Stale debt must stay ahead of next_mint_index"
+        );
+        assert!(
+            carried.payload.token_quality_cache.len() <= 1,
+            "the mixed carried cache fixture contains only one reusable Fresh entry, so the settled target may retain at most that one reusable prefix mint"
+        );
+
+        let mut old_like = carried.clone();
+        old_like.payload.token_quality_cache = replay_state.payload.token_quality_cache.clone();
+        old_like.payload.token_quality_progress.next_mint_index =
+            old_like.payload.unique_buy_mints.len();
+        let old_like_advance = discovery.advance_persisted_stream_token_quality(
+            &store,
+            &mut old_like,
+            1,
+            1,
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+        assert!(
+            old_like_advance.source_exhausted,
+            "old-like contains_key alignment would have treated Deferred/Missing/Stale carried entries as already resolved and skipped the new target's remaining quality debt entirely"
+        );
+
+        let fixed_advance = discovery.advance_persisted_stream_token_quality(
+            &store,
+            &mut carried,
+            1,
+            1,
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+        assert!(
+            !fixed_advance.source_exhausted,
+            "once carry-forward keeps only reusable Fresh truth, the carried target must remain blocked in token_quality until the unresolved Deferred/Missing/Stale mint debt is really reprocessed"
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(&carried),
+            "token_quality_incomplete"
         );
         Ok(())
     }
@@ -16830,7 +17503,7 @@ mod tests {
             .collect();
         state.payload.token_quality_progress.next_mint_index = unique_buy_mints.len();
         state.payload.token_quality_cache =
-            discovery.resolve_token_quality_for_mints(&store, &unique_buy_mints, source_now)?;
+            fresh_token_quality_cache_for_mints_for_test(&unique_buy_mints, source_now);
         state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
         state.payload.replay_wallet_stats_complete = true;
         state.phase_cursor = Some(DiscoveryRuntimeCursor {
@@ -16864,11 +17537,10 @@ mod tests {
         );
 
         carried.phase = DiscoveryPersistedRebuildPhase::ResolveTokenQuality;
-        carried.payload.token_quality_cache = discovery.resolve_token_quality_for_mints(
-            &store,
+        carried.payload.token_quality_cache = fresh_token_quality_cache_for_mints_for_test(
             &carried.payload.unique_buy_mints,
             aged_out_now,
-        )?;
+        );
         carried.payload.token_quality_progress.next_mint_index =
             carried.payload.unique_buy_mints.len();
 
@@ -17001,7 +17673,9 @@ mod tests {
         let (mut state, _, _, _, _) = load_extracted_prod_morning_fallback_state()?;
         state.payload.replay_wallet_stats_milestone_reached = true;
 
-        let changed = discovery.repair_restored_persisted_stream_state_for_resume(&mut state);
+        let resume_now = state.horizon_end;
+        let changed =
+            discovery.repair_restored_persisted_stream_state_for_resume(&mut state, resume_now);
 
         assert!(
             changed,
@@ -17078,7 +17752,7 @@ mod tests {
             .collect();
         state.payload.token_quality_progress.next_mint_index = unique_buy_mints.len();
         state.payload.token_quality_cache =
-            discovery.resolve_token_quality_for_mints(&store, &unique_buy_mints, source_now)?;
+            fresh_token_quality_cache_for_mints_for_test(&unique_buy_mints, source_now);
         state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
         state.payload.replay_wallet_stats_complete = false;
         state.payload.replay_wallet_stats_rows_processed = 12_419_939;
@@ -17178,7 +17852,7 @@ mod tests {
             .collect();
         state.payload.token_quality_progress.next_mint_index = unique_buy_mints.len();
         state.payload.token_quality_cache =
-            discovery.resolve_token_quality_for_mints(&store, &unique_buy_mints, source_now)?;
+            fresh_token_quality_cache_for_mints_for_test(&unique_buy_mints, source_now);
         state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
         state.payload.replay_wallet_stats_complete = false;
         state.payload.replay_wallet_stats_rows_processed = 12_419_939;
@@ -17239,11 +17913,10 @@ mod tests {
         );
 
         carried.phase = DiscoveryPersistedRebuildPhase::ResolveTokenQuality;
-        carried.payload.token_quality_cache = discovery.resolve_token_quality_for_mints(
-            &store,
+        carried.payload.token_quality_cache = fresh_token_quality_cache_for_mints_for_test(
             &carried.payload.unique_buy_mints,
             aged_out_now,
-        )?;
+        );
         carried.payload.token_quality_progress.next_mint_index =
             carried.payload.unique_buy_mints.len();
         carried.payload.by_wallet.clear();
@@ -17348,7 +18021,7 @@ mod tests {
             .map(|mint| (mint, 1u32))
             .collect();
         replay_state.payload.token_quality_cache =
-            discovery.resolve_token_quality_for_mints(&store, &unique_buy_mints, source_now)?;
+            fresh_token_quality_cache_for_mints_for_test(&unique_buy_mints, source_now);
         replay_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
         let stats_advance = discovery.advance_persisted_stream_replay_optimized(
             &store,
@@ -17468,7 +18141,7 @@ mod tests {
             .collect();
         replay_state.payload.token_quality_progress.next_mint_index = unique_buy_mints.len();
         replay_state.payload.token_quality_cache =
-            discovery.resolve_token_quality_for_mints(&store, &unique_buy_mints, source_now)?;
+            fresh_token_quality_cache_for_mints_for_test(&unique_buy_mints, source_now);
         replay_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
         replay_state.payload.replay_wallet_stats_complete = true;
         replay_state.phase_cursor = Some(DiscoveryRuntimeCursor {
