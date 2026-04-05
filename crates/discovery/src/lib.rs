@@ -1081,6 +1081,12 @@ struct PersistedStreamPriorityRecoveryContract {
     reason: Option<&'static str>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PublicationStatePersistOutcome {
+    runtime_mode: DiscoveryRuntimeMode,
+    published_universe_persisted: bool,
+}
+
 fn should_request_persisted_stream_catch_up(telemetry: &PersistedStreamProgressTelemetry) -> bool {
     if telemetry.phase == DiscoveryPersistedRebuildPhase::Replay {
         return telemetry.budget_exhausted_reason.is_some();
@@ -1546,7 +1552,7 @@ impl DiscoveryService {
         scoring_source: &'static str,
         reason: &str,
         now: DateTime<Utc>,
-    ) -> Result<()> {
+    ) -> Result<PublicationStatePersistOutcome> {
         if !publish_due {
             if runtime_mode != DiscoveryRuntimeMode::Healthy {
                 let existing_publication_state = store.discovery_publication_state_read_only()?;
@@ -1575,7 +1581,10 @@ impl DiscoveryService {
                     }
                 }
             }
-            return Ok(());
+            return Ok(PublicationStatePersistOutcome {
+                runtime_mode,
+                published_universe_persisted: false,
+            });
         }
         let mut effective_runtime_mode = runtime_mode;
         let mut effective_reason = reason.to_string();
@@ -1626,6 +1635,10 @@ impl DiscoveryService {
             } else {
                 None
             },
+        })?;
+        Ok(PublicationStatePersistOutcome {
+            runtime_mode: effective_runtime_mode,
+            published_universe_persisted: published_universe,
         })
     }
 
@@ -1772,7 +1785,7 @@ impl DiscoveryService {
         if publish_due {
             self.record_live_publish(now);
         }
-        self.persist_publication_state(
+        let _ = self.persist_publication_state(
             store,
             DiscoveryRuntimeMode::Degraded,
             publish_due,
@@ -1881,7 +1894,7 @@ impl DiscoveryService {
             reason,
             now,
         )?;
-        self.persist_publication_state(
+        let _ = self.persist_publication_state(
             store,
             DiscoveryRuntimeMode::FailClosed,
             publish_due,
@@ -8367,7 +8380,7 @@ impl DiscoveryService {
             } => {
                 let active_follow_wallets = store.list_active_follow_wallets()?.len();
                 let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
-                let summary = DiscoverySummary {
+                let mut summary = DiscoverySummary {
                     window_start,
                     wallets_seen: previous_summary.wallets_seen,
                     eligible_wallets: previous_summary.eligible_wallets,
@@ -8382,11 +8395,8 @@ impl DiscoveryService {
                 .with_runtime_mode(previous_summary.runtime_mode)
                 .with_scoring_source(previous_summary.scoring_source)
                 .with_cap_truncation_telemetry(&cap_truncation_telemetry);
-                if publish_due && summary.runtime_mode != DiscoveryRuntimeMode::BootstrapDegraded {
-                    self.record_live_publish(now);
-                }
                 if summary.runtime_mode != DiscoveryRuntimeMode::BootstrapDegraded {
-                    self.persist_publication_state(
+                    let publication_outcome = self.persist_publication_state(
                         store,
                         summary.runtime_mode,
                         publish_due,
@@ -8399,12 +8409,18 @@ impl DiscoveryService {
                         summary.scoring_source,
                         now,
                     )?;
+                    if publish_due && publication_outcome.published_universe_persisted {
+                        self.record_live_publish(now);
+                    }
+                    summary.published =
+                        publish_due && publication_outcome.published_universe_persisted;
+                    summary = summary.with_runtime_mode(publication_outcome.runtime_mode);
                 }
                 let capture_telemetry = self.maybe_persist_in_band_wallet_freshness_capture(
                     store,
                     now,
                     publish_due,
-                    previous_summary.runtime_mode,
+                    summary.runtime_mode,
                     current_raw.map(|current_raw| PrecomputedWalletFreshnessCurrentRawTruth {
                         window_start: current_raw.window_start,
                         observed_swaps_loaded: current_raw.observed_swaps_loaded,
@@ -8981,7 +8997,7 @@ impl DiscoveryService {
         let active_follow_wallets = store.list_active_follow_wallets()?.len();
         let top_wallets = top_wallet_labels(&ranked, 5);
 
-        let summary = DiscoverySummary {
+        let mut summary = DiscoverySummary {
             window_start: effective_window_start,
             wallets_seen: snapshots.len(),
             eligible_wallets: ranked.len(),
@@ -8996,10 +9012,7 @@ impl DiscoveryService {
         .with_runtime_mode(DiscoveryRuntimeMode::Healthy)
         .with_scoring_source(scoring_source)
         .with_cap_truncation_telemetry(&cap_truncation_telemetry);
-        if publish_due {
-            self.record_live_publish(now);
-        }
-        self.persist_publication_state(
+        let publication_outcome = self.persist_publication_state(
             store,
             DiscoveryRuntimeMode::Healthy,
             publish_due,
@@ -9009,11 +9022,16 @@ impl DiscoveryService {
             "discovery_score_refresh",
             now,
         )?;
+        if publish_due && publication_outcome.published_universe_persisted {
+            self.record_live_publish(now);
+        }
+        summary.published = publish_due && publication_outcome.published_universe_persisted;
+        summary = summary.with_runtime_mode(publication_outcome.runtime_mode);
         let capture_telemetry = self.maybe_persist_in_band_wallet_freshness_capture(
             store,
             now,
             publish_due,
-            DiscoveryRuntimeMode::Healthy,
+            summary.runtime_mode,
             Some(current_raw_for_capture.clone()),
         );
         let summary = summary.with_wallet_freshness_capture(&capture_telemetry);
@@ -9068,8 +9086,18 @@ impl DiscoveryService {
             )?;
         }
         store.set_discovery_bootstrap_degraded_state(false, None, None)?;
-        if scoring_source == "raw_window_persisted_stream" {
+        if scoring_source == "raw_window_persisted_stream"
+            && publication_outcome.published_universe_persisted
+        {
             store.clear_discovery_persisted_rebuild_state()?;
+        } else if scoring_source == "raw_window_persisted_stream" {
+            warn!(
+                publication_truth_flush_withheld = true,
+                publication_runtime_mode = summary.runtime_mode.as_str(),
+                publication_requested_wallet_count = desired_wallets.len(),
+                rebuild_publishable_checkpoint_blocker = "publish_pending_flush",
+                "retaining the persisted publish-pending checkpoint because exact publication truth was not materialized"
+            );
         }
         let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
 
@@ -13993,36 +14021,36 @@ mod tests {
         let (window_start, metrics_window_start) =
             seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 6, 9)?;
         let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
-        let rebuild_time_budget = StdDuration::from_millis(config.fetch_time_budget_ms.max(1));
-
-        for idx in 0..30 {
-            let cycle_now = now + Duration::minutes(idx as i64);
-            match discovery.advance_persisted_stream_rebuild(
-                &store,
-                window_start,
-                metrics_window_start,
-                cycle_now,
-                config.max_fetch_swaps_per_cycle.max(1),
-                config.max_fetch_pages_per_cycle.max(1),
-                rebuild_time_budget,
-            )? {
-                PersistedStreamRebuildAdvanceOutcome::Completed { .. } => break,
-                PersistedStreamRebuildAdvanceOutcome::InProgress { .. } => {}
-            }
-        }
-
-        let publish_pending_before_failure = load_persisted_stream_rebuild_state_for_test(&store)?;
-        assert_eq!(
-            publish_pending_before_failure.phase,
-            DiscoveryPersistedRebuildPhase::PublishPending
-        );
-        assert!(
-            !publish_pending_before_failure
-                .payload
-                .completed_snapshots
-                .is_empty(),
-            "publish-pending checkpoint must persist completed snapshots"
-        );
+        let mut publish_pending =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        publish_pending.phase = DiscoveryPersistedRebuildPhase::PublishPending;
+        publish_pending.replay_rows_processed = 100;
+        publish_pending.replay_pages_processed = 5;
+        publish_pending.payload.replay_wallet_stats_complete = true;
+        publish_pending
+            .payload
+            .replay_wallet_stats_milestone_reached = true;
+        publish_pending
+            .payload
+            .completed_snapshots
+            .push(WalletSnapshot {
+                wallet_id: "wallet_publish_failure".to_string(),
+                first_seen: window_start,
+                last_seen: now,
+                pnl_sol: 2.0,
+                win_rate: 1.0,
+                trades: 6,
+                closed_trades: 6,
+                hold_median_seconds: 60,
+                score: 2.0,
+                buy_total: 6,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+                eligible: true,
+            });
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&publish_pending, now)?,
+        )?;
 
         let conn = Connection::open(Path::new(&db_path))?;
         conn.execute_batch(
@@ -14048,15 +14076,15 @@ mod tests {
         );
         assert_eq!(
             publish_pending_after_failure.replay_rows_processed,
-            publish_pending_before_failure.replay_rows_processed
+            publish_pending.replay_rows_processed
         );
         assert_eq!(
             publish_pending_after_failure.window_start,
-            publish_pending_before_failure.window_start
+            publish_pending.window_start
         );
         assert_eq!(
             publish_pending_after_failure.metrics_window_start,
-            publish_pending_before_failure.metrics_window_start
+            publish_pending.metrics_window_start
         );
 
         conn.execute_batch("DROP TRIGGER fail_wallet_metrics_insert;")?;
@@ -16347,6 +16375,131 @@ mod tests {
     }
 
     #[test]
+    fn publish_pending_checkpoint_missing_exact_wallet_ids_stays_pending_stage1() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-publish-pending-missing-wallet-ids-stays-pending.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let now = DateTime::parse_from_rfc3339("2026-04-05T10:03:14Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let (window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 6, 9)?;
+
+        let previous_published_at = now - Duration::hours(4);
+        let previous_published_window_start = metrics_window_start - Duration::hours(1);
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
+            last_published_at: Some(previous_published_at),
+            last_published_window_start: Some(previous_published_window_start),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        let mut publish_pending =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        publish_pending.phase = DiscoveryPersistedRebuildPhase::PublishPending;
+        publish_pending.replay_rows_processed = 473;
+        publish_pending.replay_pages_processed = 21;
+        publish_pending.payload.replay_wallet_stats_complete = true;
+        publish_pending
+            .payload
+            .replay_wallet_stats_milestone_reached = true;
+        publish_pending
+            .payload
+            .completed_snapshots
+            .push(WalletSnapshot {
+                wallet_id: "wallet_ineligible_publish_pending".to_string(),
+                first_seen: window_start,
+                last_seen: now,
+                pnl_sol: 0.5,
+                win_rate: 1.0,
+                trades: 1,
+                closed_trades: 1,
+                hold_median_seconds: 60,
+                score: 0.0,
+                buy_total: 1,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+                eligible: false,
+            });
+        let ranked = rank_follow_candidates(
+            &publish_pending.payload.completed_snapshots,
+            config.min_score,
+        );
+        let desired_wallets = desired_wallets(&ranked, config.follow_top_n);
+        assert!(
+            desired_wallets.is_empty(),
+            "this repro must exercise the exact publish-pending failure class where completed rebuild snapshots still do not materialize an exact non-empty published universe"
+        );
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&publish_pending, now)?,
+        )?;
+
+        let summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(summary.scoring_source, "raw_window_persisted_stream");
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert!(
+            !summary.published,
+            "completed persisted-stream rebuild must not report a successful publication flush when exact published wallet ids are still missing"
+        );
+
+        let retained_publish_pending = load_persisted_stream_rebuild_state_for_test(&store)?;
+        assert_eq!(
+            retained_publish_pending.phase,
+            DiscoveryPersistedRebuildPhase::PublishPending
+        );
+        assert_eq!(
+            retained_publish_pending.payload.completed_snapshots.len(),
+            1,
+            "publish-pending ownership must stay with the persisted rebuild checkpoint until exact publication truth materializes"
+        );
+
+        let publication_state = store
+            .discovery_publication_state()?
+            .expect("publication state should exist after withheld publish-pending flush");
+        assert_eq!(
+            publication_state.runtime_mode,
+            DiscoveryRuntimeMode::FailClosed
+        );
+        assert_eq!(
+            publication_state.reason,
+            "publication_truth_withheld_missing_exact_published_wallet_ids"
+        );
+        assert_eq!(
+            publication_state.last_published_at,
+            Some(previous_published_at),
+            "withheld publish-pending flush must not stamp a fresh published timestamp without an exact universe"
+        );
+        assert_eq!(
+            publication_state.last_published_window_start,
+            Some(previous_published_window_start)
+        );
+        assert!(
+            publication_state
+                .published_wallet_ids
+                .as_ref()
+                .is_some_and(|wallets| wallets.is_empty()),
+            "withheld publish-pending flush must not inject fake published wallet ids"
+        );
+        assert!(
+            discovery
+                .runtime_publication_truth_resolution(&store, now)?
+                .is_none(),
+            "export-equivalent runtime truth must remain unavailable until exact publish-pending truth is really persisted"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn cached_healthy_cycle_flushes_exact_cached_wallet_ids_stage1() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp
@@ -16458,7 +16611,7 @@ mod tests {
         })?;
 
         let requested_wallets = vec!["wallet_should_not_publish".to_string()];
-        discovery.persist_publication_state(
+        let _ = discovery.persist_publication_state(
             &runtime_store,
             DiscoveryRuntimeMode::Healthy,
             true,
@@ -16537,7 +16690,7 @@ mod tests {
         })?;
 
         let empty_wallets: Vec<String> = Vec::new();
-        discovery.persist_publication_state(
+        let _ = discovery.persist_publication_state(
             &store,
             DiscoveryRuntimeMode::Healthy,
             true,
