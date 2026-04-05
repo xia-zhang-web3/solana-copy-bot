@@ -974,6 +974,8 @@ struct PersistedStreamRebuildPayload {
     pending_rug_checks: VecDeque<PendingBuyRugCheck>,
     token_pending_buy_starts: HashMap<String, VecDeque<DateTime<Utc>>>,
     completed_snapshots: Vec<WalletSnapshot>,
+    #[serde(default)]
+    publish_pending_requested_wallet_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1064,6 +1066,7 @@ struct PersistedStreamProgressTelemetry {
     quality_rpc_attempted: usize,
     quality_rpc_spent_ms: u64,
     wallets_buffered: usize,
+    publish_pending_requested_wallet_count: usize,
     started_at: DateTime<Utc>,
     cycle_elapsed_ms: u64,
     total_elapsed_ms: u64,
@@ -1181,6 +1184,7 @@ impl DiscoveryService {
         quality_next_mint_index: usize,
         unique_buy_mints: usize,
         replay_subphase: Option<&'static str>,
+        publish_pending_requested_wallet_count: usize,
     ) -> &'static str {
         match phase {
             DiscoveryPersistedRebuildPhase::CollectBuyMints => match collect_buy_mints_mode {
@@ -1205,7 +1209,13 @@ impl DiscoveryService {
                 Some("sol_leg") => "replay_sol_leg_incomplete",
                 _ => "replay_post_wallet_stats_handoff_pending",
             },
-            DiscoveryPersistedRebuildPhase::PublishPending => "publish_pending_flush",
+            DiscoveryPersistedRebuildPhase::PublishPending => {
+                if publish_pending_requested_wallet_count == 0 {
+                    "publish_pending_exact_publish_set_empty"
+                } else {
+                    "publish_pending_flush"
+                }
+            }
         }
     }
 
@@ -1222,6 +1232,11 @@ impl DiscoveryService {
                 state.payload.replay_wallet_stats_complete,
                 state.payload.replay_candidate_activity_backfill_pending,
             ),
+            state
+                .payload
+                .publish_pending_requested_wallet_ids
+                .as_ref()
+                .map_or(usize::MAX, Vec::len),
         )
     }
 
@@ -1234,6 +1249,7 @@ impl DiscoveryService {
             telemetry.quality_next_mint_index,
             telemetry.unique_buy_mints,
             telemetry.replay_subphase,
+            telemetry.publish_pending_requested_wallet_count,
         )
     }
 
@@ -3756,6 +3772,7 @@ impl DiscoveryService {
         state.payload.pending_rug_checks.clear();
         state.payload.token_pending_buy_starts.clear();
         state.payload.completed_snapshots.clear();
+        state.payload.publish_pending_requested_wallet_ids = None;
     }
 
     fn reset_replay_progress_for_optimized_resume(state: &mut PersistedStreamRebuildState) {
@@ -3771,6 +3788,7 @@ impl DiscoveryService {
         state.payload.pending_rug_checks.clear();
         state.payload.token_pending_buy_starts.clear();
         state.payload.completed_snapshots.clear();
+        state.payload.publish_pending_requested_wallet_ids = None;
     }
 
     fn replay_checkpoint_has_local_progress(state: &PersistedStreamRebuildState) -> bool {
@@ -3992,6 +4010,29 @@ impl DiscoveryService {
 
     fn publish_pending_snapshots(state: &PersistedStreamRebuildState) -> Vec<WalletSnapshot> {
         state.payload.completed_snapshots.clone()
+    }
+
+    fn publish_pending_requested_wallet_ids_from_snapshots(
+        &self,
+        snapshots: &[WalletSnapshot],
+    ) -> Vec<String> {
+        let ranked = rank_follow_candidates(snapshots, self.config.min_score);
+        desired_wallets(&ranked, self.config.follow_top_n)
+    }
+
+    fn publish_pending_requested_wallet_ids_from_state(
+        &self,
+        state: &PersistedStreamRebuildState,
+    ) -> Vec<String> {
+        state
+            .payload
+            .publish_pending_requested_wallet_ids
+            .clone()
+            .unwrap_or_else(|| {
+                self.publish_pending_requested_wallet_ids_from_snapshots(
+                    &state.payload.completed_snapshots,
+                )
+            })
     }
 
     fn persisted_stream_observed_swaps_loaded(state: &PersistedStreamRebuildState) -> usize {
@@ -4384,6 +4425,18 @@ impl DiscoveryService {
             }
             DiscoveryPersistedRebuildPhase::Replay
             | DiscoveryPersistedRebuildPhase::PublishPending => {
+                if state.phase != DiscoveryPersistedRebuildPhase::PublishPending
+                    && state.payload.publish_pending_requested_wallet_ids.is_some()
+                {
+                    info!(
+                        rebuild_window_start = %state.window_start,
+                        rebuild_horizon_end = %state.horizon_end,
+                        rebuild_phase = state.phase.as_str(),
+                        "clearing stale persisted exact publish-set ownership from a non-publish-pending checkpoint before resume"
+                    );
+                    state.payload.publish_pending_requested_wallet_ids = None;
+                    changed = true;
+                }
                 if Self::state_has_replay_wallet_stats_milestone(state)
                     && !state.payload.replay_wallet_stats_milestone_reached
                 {
@@ -4404,6 +4457,24 @@ impl DiscoveryService {
                         "clearing stale carried SOL-leg replay reentry marker from a persisted replay/publish checkpoint because it is only meaningful before token-quality hands the target window back into replay"
                     );
                     state.payload.replay_sol_leg_reentry_pending = false;
+                    changed = true;
+                }
+                if state.phase == DiscoveryPersistedRebuildPhase::PublishPending
+                    && state.payload.publish_pending_requested_wallet_ids.is_none()
+                {
+                    let requested_wallet_ids = self
+                        .publish_pending_requested_wallet_ids_from_snapshots(
+                            &state.payload.completed_snapshots,
+                        );
+                    info!(
+                        rebuild_window_start = %state.window_start,
+                        rebuild_horizon_end = %state.horizon_end,
+                        rebuild_phase = state.phase.as_str(),
+                        rebuild_publish_pending_requested_wallet_count =
+                            requested_wallet_ids.len(),
+                        "backfilling exact publish-set ownership onto a persisted publish-pending checkpoint before resume"
+                    );
+                    state.payload.publish_pending_requested_wallet_ids = Some(requested_wallet_ids);
                     changed = true;
                 }
                 if Self::payload_has_exact_buy_mint_membership(&state.payload) {
@@ -4458,6 +4529,7 @@ impl DiscoveryService {
                     state.payload.pending_rug_checks.clear();
                     state.payload.token_pending_buy_starts.clear();
                     state.payload.completed_snapshots.clear();
+                    state.payload.publish_pending_requested_wallet_ids = None;
                     changed = true;
                 }
                 if self.config.min_buy_count > 0
@@ -4832,6 +4904,14 @@ impl DiscoveryService {
             } else {
                 state.payload.by_wallet.len()
             },
+            publish_pending_requested_wallet_count: if state.phase
+                == DiscoveryPersistedRebuildPhase::PublishPending
+            {
+                self.publish_pending_requested_wallet_ids_from_state(state)
+                    .len()
+            } else {
+                0
+            },
             started_at: state.started_at,
             cycle_elapsed_ms: 0,
             total_elapsed_ms: (now
@@ -5180,6 +5260,8 @@ impl DiscoveryService {
             rebuild_quality_rpc_attempted = telemetry.quality_rpc_attempted,
             rebuild_quality_rpc_spent_ms = telemetry.quality_rpc_spent_ms,
             rebuild_wallets_buffered = telemetry.wallets_buffered,
+            rebuild_publish_pending_requested_wallet_count =
+                telemetry.publish_pending_requested_wallet_count,
             rebuild_chunks_completed = telemetry.chunks_completed,
             rebuild_started_at = %telemetry.started_at,
             rebuild_cycle_elapsed_ms = telemetry.cycle_elapsed_ms,
@@ -7094,6 +7176,9 @@ impl DiscoveryService {
         let mut cycle_replay_sol_leg_access_path = None;
         if state.phase == DiscoveryPersistedRebuildPhase::PublishPending {
             let snapshots = Self::publish_pending_snapshots(&state);
+            let publish_pending_requested_wallet_count = self
+                .publish_pending_requested_wallet_ids_from_state(&state)
+                .len();
             let cycle_elapsed_ms = cycle_started.elapsed().as_millis() as u64;
             let telemetry = PersistedStreamProgressTelemetry {
                 phase: DiscoveryPersistedRebuildPhase::PublishPending,
@@ -7215,6 +7300,7 @@ impl DiscoveryService {
                 quality_rpc_attempted: state.payload.token_quality_progress.rpc_attempted,
                 quality_rpc_spent_ms: state.payload.token_quality_progress.rpc_spent_ms,
                 wallets_buffered: snapshots.len(),
+                publish_pending_requested_wallet_count,
                 started_at: state.started_at,
                 cycle_elapsed_ms,
                 total_elapsed_ms: (now
@@ -7461,9 +7547,13 @@ impl DiscoveryService {
                     state.horizon_end,
                     &empty_token_sol_history,
                 )?;
+                let publish_pending_requested_wallet_ids =
+                    self.publish_pending_requested_wallet_ids_from_snapshots(&snapshots);
                 state.phase = DiscoveryPersistedRebuildPhase::PublishPending;
                 state.phase_cursor = None;
                 state.payload.completed_snapshots = snapshots.clone();
+                state.payload.publish_pending_requested_wallet_ids =
+                    Some(publish_pending_requested_wallet_ids.clone());
                 state.payload.token_quality_cache.clear();
                 state.payload.token_states.clear();
                 state.payload.token_recent_sol_trades.clear();
@@ -7590,6 +7680,8 @@ impl DiscoveryService {
                     quality_rpc_attempted: state.payload.token_quality_progress.rpc_attempted,
                     quality_rpc_spent_ms: state.payload.token_quality_progress.rpc_spent_ms,
                     wallets_buffered: snapshots.len(),
+                    publish_pending_requested_wallet_count: publish_pending_requested_wallet_ids
+                        .len(),
                     started_at: state.started_at,
                     cycle_elapsed_ms,
                     total_elapsed_ms: (now
@@ -7748,6 +7840,14 @@ impl DiscoveryService {
                 state.payload.completed_snapshots.len()
             } else {
                 state.payload.by_wallet.len()
+            },
+            publish_pending_requested_wallet_count: if state.phase
+                == DiscoveryPersistedRebuildPhase::PublishPending
+            {
+                self.publish_pending_requested_wallet_ids_from_state(&state)
+                    .len()
+            } else {
+                0
             },
             started_at: state.started_at,
             cycle_elapsed_ms,
@@ -8977,7 +9077,17 @@ impl DiscoveryService {
         });
 
         let ranked = rank_follow_candidates(&snapshots, self.config.min_score);
-        let desired_wallets = desired_wallets(&ranked, self.config.follow_top_n);
+        let desired_wallets = if scoring_source == "raw_window_persisted_stream" {
+            store
+                .load_discovery_persisted_rebuild_state()?
+                .map(Self::persisted_stream_rebuild_state_from_row)
+                .transpose()?
+                .filter(|state| state.phase == DiscoveryPersistedRebuildPhase::PublishPending)
+                .map(|state| self.publish_pending_requested_wallet_ids_from_state(&state))
+                .unwrap_or_else(|| desired_wallets(&ranked, self.config.follow_top_n))
+        } else {
+            desired_wallets(&ranked, self.config.follow_top_n)
+        };
         let current_raw_for_capture = PrecomputedWalletFreshnessCurrentRawTruth {
             window_start: effective_window_start,
             observed_swaps_loaded: observed_swaps_loaded_for_capture,
@@ -9091,11 +9201,16 @@ impl DiscoveryService {
         {
             store.clear_discovery_persisted_rebuild_state()?;
         } else if scoring_source == "raw_window_persisted_stream" {
+            let publish_pending_blocker = if desired_wallets.is_empty() {
+                "publish_pending_exact_publish_set_empty"
+            } else {
+                "publish_pending_flush"
+            };
             warn!(
                 publication_truth_flush_withheld = true,
                 publication_runtime_mode = summary.runtime_mode.as_str(),
                 publication_requested_wallet_count = desired_wallets.len(),
-                rebuild_publishable_checkpoint_blocker = "publish_pending_flush",
+                rebuild_publishable_checkpoint_blocker = publish_pending_blocker,
                 "retaining the persisted publish-pending checkpoint because exact publication truth was not materialized"
             );
         }
@@ -10533,6 +10648,7 @@ mod tests {
             pending_rug_checks: VecDeque::new(),
             token_pending_buy_starts: HashMap::new(),
             completed_snapshots: Vec::new(),
+            publish_pending_requested_wallet_ids: None,
         };
         serde_json::to_string(&payload).context(
             "failed serializing reduced inline payload for extracted prod morning fallback fixture",
@@ -14004,6 +14120,96 @@ mod tests {
     }
 
     #[test]
+    fn persisted_stream_rebuild_completion_persists_exact_zero_publish_set_before_flush_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-bounded-persisted-stream-zero-publish-set-before-flush.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-05T14:46:50Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = bounded_stage1_runtime_config();
+        config.min_trades = 5;
+        let (window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 2, 1)?;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+
+        let (reference_snapshots, _) = discovery
+            .build_wallet_snapshots_from_persisted_stream_one_shot(&store, window_start, now)?;
+        let expected_requested_wallet_ids =
+            discovery.publish_pending_requested_wallet_ids_from_snapshots(&reference_snapshots);
+        assert!(
+            expected_requested_wallet_ids.is_empty(),
+            "this reduced repro must start from a real completed rebuild shape whose exact publish set is already empty before any publish_pending flush attempt"
+        );
+
+        let rebuild_time_budget = StdDuration::from_millis(config.fetch_time_budget_ms.max(1));
+        let mut completed = false;
+        for idx in 0..30 {
+            let cycle_now = now + Duration::minutes(idx as i64);
+            match discovery.advance_persisted_stream_rebuild(
+                &store,
+                window_start,
+                metrics_window_start,
+                cycle_now,
+                config.max_fetch_swaps_per_cycle.max(1),
+                config.max_fetch_pages_per_cycle.max(1),
+                rebuild_time_budget,
+            )? {
+                PersistedStreamRebuildAdvanceOutcome::Completed {
+                    telemetry,
+                    snapshots,
+                } => {
+                    assert_eq!(
+                        telemetry.phase,
+                        DiscoveryPersistedRebuildPhase::PublishPending
+                    );
+                    assert_eq!(
+                        telemetry.publish_pending_requested_wallet_count, 0,
+                        "completed rebuild telemetry must expose that the exact requested publish set is already empty at the PublishPending handoff"
+                    );
+                    assert!(
+                        discovery
+                            .publish_pending_requested_wallet_ids_from_snapshots(&snapshots)
+                            .is_empty(),
+                        "the replay-to-publish transition must not drop a non-empty publish set later; this repro requires the exact requested publish set to be empty already at completion time"
+                    );
+                    completed = true;
+                    break;
+                }
+                PersistedStreamRebuildAdvanceOutcome::InProgress { .. } => {}
+            }
+        }
+        assert!(
+            completed,
+            "reduced bounded rebuild should reach publish_pending within the test cutoff"
+        );
+
+        let publish_pending = load_persisted_stream_rebuild_state_for_test(&store)?;
+        assert_eq!(
+            publish_pending.phase,
+            DiscoveryPersistedRebuildPhase::PublishPending
+        );
+        assert_eq!(
+            publish_pending.payload.publish_pending_requested_wallet_ids,
+            Some(Vec::new()),
+            "once replay completes, the persisted publish-pending checkpoint must retain the exact empty requested publish set instead of recomputing ownership later at flush time"
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &publish_pending
+            ),
+            "publish_pending_exact_publish_set_empty"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn persisted_stream_rebuild_publish_failure_keeps_publish_pending_checkpoint_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -16077,6 +16283,11 @@ mod tests {
         assert_eq!(resumed.horizon_end, checkpoint_now);
         assert_eq!(resumed.metrics_window_start, metrics_window_start);
         assert_eq!(resumed.payload.completed_snapshots.len(), 1);
+        assert_eq!(
+            resumed.payload.publish_pending_requested_wallet_ids,
+            Some(vec!["wallet_stale".to_string()]),
+            "resume repair must backfill exact publish-set ownership onto legacy publish-pending checkpoints so later flush attempts keep using the same frozen requested publish set"
+        );
         assert!(
             store.load_discovery_persisted_rebuild_state()?.is_some(),
             "long same-bucket restart must keep the persisted checkpoint"
@@ -16440,6 +16651,13 @@ mod tests {
             desired_wallets.is_empty(),
             "this repro must exercise the exact publish-pending failure class where completed rebuild snapshots still do not materialize an exact non-empty published universe"
         );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &publish_pending
+            ),
+            "publish_pending_flush",
+            "old-style publish-pending checkpoints that do not yet persist exact publish-set ownership can only surface the generic flush blocker even when the derived publish set is already empty"
+        );
         store.upsert_discovery_persisted_rebuild_state(
             &DiscoveryService::persisted_stream_rebuild_row(&publish_pending, now)?,
         )?;
@@ -16456,6 +16674,21 @@ mod tests {
         assert_eq!(
             retained_publish_pending.phase,
             DiscoveryPersistedRebuildPhase::PublishPending
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &retained_publish_pending
+            ),
+            "publish_pending_exact_publish_set_empty",
+            "once exact publish-set ownership is backfilled onto the retained publish-pending checkpoint, the blocker must stop masquerading as a generic flush and instead surface that the frozen exact publish set itself is empty"
+        );
+        assert!(
+            retained_publish_pending
+                .payload
+                .publish_pending_requested_wallet_ids
+                .as_ref()
+                .is_some_and(|wallets| wallets.is_empty()),
+            "the retained publish-pending checkpoint must preserve the exact empty requested publish set instead of recomputing a generic flush attempt every cycle"
         );
         assert_eq!(
             retained_publish_pending.payload.completed_snapshots.len(),
@@ -25884,6 +26117,7 @@ mod tests {
             quality_rpc_attempted: 0,
             quality_rpc_spent_ms: 0,
             wallets_buffered: 0,
+            publish_pending_requested_wallet_count: 0,
             started_at: now,
             cycle_elapsed_ms: 0,
             total_elapsed_ms: 0,
