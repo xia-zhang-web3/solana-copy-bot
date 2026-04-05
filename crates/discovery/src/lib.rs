@@ -802,6 +802,8 @@ struct WalletAccumulator {
     buy_total: u32,
     quality_resolved_buys: u32,
     tradable_buys: u32,
+    #[serde(default)]
+    publish_pending_quality_retry_buy_count: u32,
     rug_metrics: RugMetrics,
     buy_observations: Vec<BuyObservation>,
 }
@@ -976,6 +978,8 @@ struct PersistedStreamRebuildPayload {
     completed_snapshots: Vec<WalletSnapshot>,
     #[serde(default)]
     publish_pending_requested_wallet_ids: Option<Vec<String>>,
+    #[serde(default)]
+    publish_pending_quality_retry_mints: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1222,6 +1226,20 @@ impl DiscoveryService {
     fn persisted_stream_publishable_checkpoint_blocker_from_state(
         state: &PersistedStreamRebuildState,
     ) -> &'static str {
+        if state.phase == DiscoveryPersistedRebuildPhase::PublishPending
+            && state
+                .payload
+                .publish_pending_requested_wallet_ids
+                .as_ref()
+                .is_some_and(|wallets| wallets.is_empty())
+            && state
+                .payload
+                .publish_pending_quality_retry_mints
+                .as_ref()
+                .is_some_and(|mints| !mints.is_empty())
+        {
+            return "publish_pending_exact_publish_set_quality_unresolved";
+        }
         Self::persisted_stream_publishable_checkpoint_blocker_for_phase(
             state.phase,
             state.payload.collect_buy_mints_mode,
@@ -3516,6 +3534,30 @@ impl DiscoveryService {
         payload.replay_candidate_activity_backfill_pending = false;
     }
 
+    fn prepare_publish_pending_exact_quality_retry(
+        state: &mut PersistedStreamRebuildState,
+        quality_retry_mints: Vec<String>,
+    ) {
+        state.phase = DiscoveryPersistedRebuildPhase::ResolveTokenQuality;
+        state.phase_cursor = None;
+        state.replay_rows_processed = 0;
+        state.replay_pages_processed = 0;
+        state.payload.replay_sol_leg_reentry_pending = true;
+        state.payload.replay_candidate_activity_backfill_required = true;
+        state.payload.replay_candidate_activity_backfill_pending = false;
+        state.payload.completed_snapshots.clear();
+        state.payload.publish_pending_requested_wallet_ids = None;
+        state.payload.publish_pending_quality_retry_mints = Some(quality_retry_mints);
+        state.payload.token_quality_cache.clear();
+        state.payload.token_quality_progress =
+            quality_cache::TokenQualityResolutionProgress::default();
+        state.payload.by_wallet.clear();
+        state.payload.token_states.clear();
+        state.payload.token_recent_sol_trades.clear();
+        state.payload.pending_rug_checks.clear();
+        state.payload.token_pending_buy_starts.clear();
+    }
+
     fn reset_replay_wallet_stats_progress_preserving_budget_hints(
         payload: &mut PersistedStreamRebuildPayload,
     ) {
@@ -3567,22 +3609,30 @@ impl DiscoveryService {
         }
     }
 
+    fn trim_token_quality_cache_to_reusable_mints(
+        payload: &mut PersistedStreamRebuildPayload,
+        target_mints: &HashSet<String>,
+        now: DateTime<Utc>,
+    ) -> bool {
+        let original_cache_len = payload.token_quality_cache.len();
+        payload.token_quality_cache.retain(|mint, resolution| {
+            target_mints.contains(mint)
+                && Self::token_quality_resolution_is_reusable_for_resume(resolution, now)
+        });
+        payload.token_quality_cache.len() != original_cache_len
+    }
+
     fn trim_token_quality_cache_to_reusable_exact_buy_mints(
         payload: &mut PersistedStreamRebuildPayload,
         now: DateTime<Utc>,
     ) -> bool {
-        let original_cache_len = payload.token_quality_cache.len();
         let exact_buy_mints: HashSet<String> =
             if Self::payload_has_exact_buy_mint_membership(payload) {
                 payload.buy_mint_counts.keys().cloned().collect()
             } else {
                 payload.unique_buy_mints.iter().cloned().collect()
             };
-        payload.token_quality_cache.retain(|mint, resolution| {
-            exact_buy_mints.contains(mint)
-                && Self::token_quality_resolution_is_reusable_for_resume(resolution, now)
-        });
-        payload.token_quality_cache.len() != original_cache_len
+        Self::trim_token_quality_cache_to_reusable_mints(payload, &exact_buy_mints, now)
     }
 
     fn reset_token_quality_progress(payload: &mut PersistedStreamRebuildPayload) -> bool {
@@ -3596,12 +3646,12 @@ impl DiscoveryService {
         changed
     }
 
-    fn reusable_token_quality_cached_exact_buy_mint_prefix_len(
+    fn reusable_token_quality_cached_mint_prefix_len(
+        mints: &[String],
         payload: &PersistedStreamRebuildPayload,
         now: DateTime<Utc>,
     ) -> usize {
-        payload
-            .unique_buy_mints
+        mints
             .iter()
             .take_while(|mint| {
                 payload
@@ -3614,14 +3664,23 @@ impl DiscoveryService {
             .count()
     }
 
-    fn align_token_quality_progress_to_reusable_cached_exact_buy_mint_prefix(
+    fn reusable_token_quality_cached_exact_buy_mint_prefix_len(
+        payload: &PersistedStreamRebuildPayload,
+        now: DateTime<Utc>,
+    ) -> usize {
+        Self::reusable_token_quality_cached_mint_prefix_len(&payload.unique_buy_mints, payload, now)
+    }
+
+    fn align_token_quality_progress_to_reusable_cached_mint_prefix(
         payload: &mut PersistedStreamRebuildPayload,
+        target_mints: &[String],
         now: DateTime<Utc>,
     ) -> bool {
+        let target_mints_set: HashSet<String> = target_mints.iter().cloned().collect();
         let cache_changed =
-            Self::trim_token_quality_cache_to_reusable_exact_buy_mints(payload, now);
+            Self::trim_token_quality_cache_to_reusable_mints(payload, &target_mints_set, now);
         let safe_prefix_len =
-            Self::reusable_token_quality_cached_exact_buy_mint_prefix_len(payload, now);
+            Self::reusable_token_quality_cached_mint_prefix_len(target_mints, payload, now);
         let next_index_changed = payload.token_quality_progress.next_mint_index != safe_prefix_len;
         let rpc_changed = payload.token_quality_progress.rpc_attempted != 0
             || payload.token_quality_progress.rpc_spent_ms != 0;
@@ -3631,6 +3690,17 @@ impl DiscoveryService {
             payload.token_quality_progress.rpc_spent_ms = 0;
         }
         cache_changed || next_index_changed || rpc_changed
+    }
+
+    fn align_token_quality_progress_to_reusable_cached_exact_buy_mint_prefix(
+        payload: &mut PersistedStreamRebuildPayload,
+        now: DateTime<Utc>,
+    ) -> bool {
+        Self::align_token_quality_progress_to_reusable_cached_mint_prefix(
+            payload,
+            &payload.unique_buy_mints.clone(),
+            now,
+        )
     }
 
     fn transition_persisted_stream_from_collect_buy_mints_to_token_quality(
@@ -3663,6 +3733,7 @@ impl DiscoveryService {
         state
             .payload
             .collect_buy_mints_reconcile_new_tail_slice_end_token = None;
+        state.payload.publish_pending_quality_retry_mints = None;
         Self::clear_reconcile_expired_head_pending_batch(&mut state.payload);
         Self::clear_reconcile_new_tail_pending_batch(&mut state.payload);
     }
@@ -3677,6 +3748,7 @@ impl DiscoveryService {
         state.phase = DiscoveryPersistedRebuildPhase::Replay;
         state.phase_cursor = None;
         state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        state.payload.publish_pending_quality_retry_mints = None;
         Self::reset_replay_wallet_stats_progress_preserving_budget_hints(&mut state.payload);
         if allow_post_wallet_stats_reentry
             && (replay_sol_leg_reentry_pending || replay_wallet_stats_milestone_reached)
@@ -3773,6 +3845,7 @@ impl DiscoveryService {
         state.payload.token_pending_buy_starts.clear();
         state.payload.completed_snapshots.clear();
         state.payload.publish_pending_requested_wallet_ids = None;
+        state.payload.publish_pending_quality_retry_mints = None;
     }
 
     fn reset_replay_progress_for_optimized_resume(state: &mut PersistedStreamRebuildState) {
@@ -3789,6 +3862,7 @@ impl DiscoveryService {
         state.payload.token_pending_buy_starts.clear();
         state.payload.completed_snapshots.clear();
         state.payload.publish_pending_requested_wallet_ids = None;
+        state.payload.publish_pending_quality_retry_mints = None;
     }
 
     fn replay_checkpoint_has_local_progress(state: &PersistedStreamRebuildState) -> bool {
@@ -4035,6 +4109,164 @@ impl DiscoveryService {
             })
     }
 
+    fn publish_pending_quality_retry_mints_from_state(
+        state: &PersistedStreamRebuildState,
+    ) -> Vec<String> {
+        state
+            .payload
+            .publish_pending_quality_retry_mints
+            .clone()
+            .unwrap_or_default()
+    }
+
+    fn unresolved_publish_quality_mints(
+        payload: &PersistedStreamRebuildPayload,
+        now: DateTime<Utc>,
+    ) -> Vec<String> {
+        payload
+            .unique_buy_mints
+            .iter()
+            .filter(|mint| {
+                !payload
+                    .token_quality_cache
+                    .get(*mint)
+                    .is_some_and(|resolution| {
+                        Self::token_quality_resolution_is_reusable_for_resume(resolution, now)
+                    })
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn token_quality_resolution_requires_publish_pending_retry(
+        resolution: Option<&quality_cache::TokenQualityResolution>,
+    ) -> bool {
+        !matches!(
+            resolution,
+            Some(quality_cache::TokenQualityResolution::Fresh(_))
+        )
+    }
+
+    fn quality_resolution_can_change_publish_set(&self) -> bool {
+        let quality_sensitive_tradability = self.shadow_quality.quality_gates_enabled
+            && (self.shadow_quality.min_token_age_seconds > 0
+                || self.shadow_quality.min_holders > 0
+                || self.shadow_quality.min_liquidity_sol > 0.0);
+        quality_sensitive_tradability
+            && (self.config.min_tradable_ratio > 0.0 || self.config.min_score > 0.0)
+    }
+
+    fn zero_publish_set_is_likely_quality_blocked(&self, snapshots: &[WalletSnapshot]) -> bool {
+        snapshots.iter().any(|snapshot| {
+            snapshot.buy_total > 0
+                && snapshot.score == 0.0
+                && snapshot.tradable_ratio < 1.0
+                && (snapshot.tradable_ratio < self.config.min_tradable_ratio
+                    || self.config.min_score > 0.0)
+        })
+    }
+
+    fn legacy_publish_pending_quality_retry_backfill_mints(
+        &self,
+        state: &PersistedStreamRebuildState,
+    ) -> Vec<String> {
+        let likely_quality_blocked =
+            self.zero_publish_set_is_likely_quality_blocked(&state.payload.completed_snapshots);
+        if likely_quality_blocked {
+            state.payload.unique_buy_mints.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn replay_completion_publish_quality_retry_mints(
+        &self,
+        store: &SqliteStore,
+        by_wallet: &HashMap<String, WalletAccumulator>,
+        unresolved_mints: &[String],
+        snapshots: &[WalletSnapshot],
+        now: DateTime<Utc>,
+    ) -> Result<Vec<String>> {
+        if unresolved_mints.is_empty()
+            || !self.quality_resolution_can_change_publish_set()
+            || !self.zero_publish_set_is_likely_quality_blocked(snapshots)
+        {
+            return Ok(Vec::new());
+        }
+
+        let candidate_wallet_ids: Vec<String> = snapshots
+            .iter()
+            .filter(|snapshot| {
+                snapshot.buy_total > 0
+                    && (!snapshot.eligible || snapshot.score < self.config.min_score)
+            })
+            .map(|snapshot| snapshot.wallet_id.clone())
+            .collect();
+        if candidate_wallet_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let persisted_active_day_counts = match store.wallet_active_day_counts_since(
+            &candidate_wallet_ids,
+            now - Duration::days(self.config.scoring_window_days.max(1) as i64),
+        ) {
+            Ok(counts) => counts,
+            Err(error) => {
+                if discovery_wallet_activity_day_count_error_requires_abort(&error) {
+                    return Err(error).context(
+                        "failed loading persisted wallet activity-day counts while deciding whether publish-pending exact quality retry is causally required",
+                    );
+                }
+                warn!(
+                    error = %error,
+                    wallet_count = candidate_wallet_ids.len(),
+                    "failed loading persisted wallet activity-day counts while deciding whether publish-pending exact quality retry is causally required; falling back to buffered replay window activity only"
+                );
+                HashMap::new()
+            }
+        };
+        let empty_token_sol_history = HashMap::new();
+
+        let retry_needed = candidate_wallet_ids.iter().any(|wallet_id| {
+            let Some(acc) = by_wallet.get(wallet_id) else {
+                return false;
+            };
+            let retry_buy_count = acc
+                .publish_pending_quality_retry_buy_count
+                .min(acc.buy_total);
+            if retry_buy_count == 0 {
+                return false;
+            }
+            let mut counterfactual = acc.clone();
+            counterfactual.buy_observations.clear();
+            counterfactual.quality_resolved_buys = counterfactual.buy_total;
+            counterfactual.tradable_buys = counterfactual
+                .tradable_buys
+                .saturating_add(retry_buy_count)
+                .min(counterfactual.buy_total);
+            let persisted_active_days = persisted_active_day_counts
+                .get(wallet_id)
+                .copied()
+                .unwrap_or(0);
+            let counterfactual_snapshot = self
+                .snapshot_from_accumulator_with_persisted_active_days(
+                    wallet_id.clone(),
+                    counterfactual,
+                    now,
+                    &empty_token_sol_history,
+                    persisted_active_days,
+                );
+            counterfactual_snapshot.eligible
+                && counterfactual_snapshot.score >= self.config.min_score
+        });
+
+        Ok(if retry_needed {
+            unresolved_mints.to_vec()
+        } else {
+            Vec::new()
+        })
+    }
+
     fn persisted_stream_observed_swaps_loaded(state: &PersistedStreamRebuildState) -> usize {
         match state.payload.replay_mode {
             ReplayMode::LegacyFullWindow => state.replay_rows_processed,
@@ -4179,10 +4411,19 @@ impl DiscoveryService {
     ) -> bool {
         let original_next_mint_index = state.payload.token_quality_progress.next_mint_index;
         let original_cache_len = state.payload.token_quality_cache.len();
-        let changed = Self::align_token_quality_progress_to_reusable_cached_exact_buy_mint_prefix(
-            &mut state.payload,
-            now,
-        );
+        let changed =
+            if let Some(target_mints) = state.payload.publish_pending_quality_retry_mints.clone() {
+                Self::align_token_quality_progress_to_reusable_cached_mint_prefix(
+                    &mut state.payload,
+                    &target_mints,
+                    now,
+                )
+            } else {
+                Self::align_token_quality_progress_to_reusable_cached_exact_buy_mint_prefix(
+                    &mut state.payload,
+                    now,
+                )
+            };
         if changed {
             info!(
                 rebuild_window_start = %state.window_start,
@@ -4421,12 +4662,41 @@ impl DiscoveryService {
                     );
                     changed = true;
                 }
+                if let Some(retry_mints) =
+                    state.payload.publish_pending_quality_retry_mints.as_mut()
+                {
+                    let original_len = retry_mints.len();
+                    retry_mints.sort();
+                    retry_mints.dedup();
+                    retry_mints
+                        .retain(|mint| state.payload.unique_buy_mints.binary_search(mint).is_ok());
+                    if retry_mints.is_empty() {
+                        info!(
+                            rebuild_window_start = %state.window_start,
+                            rebuild_horizon_end = %state.horizon_end,
+                            rebuild_phase = state.phase.as_str(),
+                            "clearing stale exact publish-quality retry ownership from a token-quality checkpoint because its target mint set is now empty"
+                        );
+                        state.payload.publish_pending_quality_retry_mints = None;
+                        changed = true;
+                    } else if retry_mints.len() != original_len {
+                        info!(
+                            rebuild_window_start = %state.window_start,
+                            rebuild_horizon_end = %state.horizon_end,
+                            rebuild_phase = state.phase.as_str(),
+                            rebuild_quality_retry_mints = retry_mints.len(),
+                            "repaired persisted exact publish-quality retry mint set onto canonical sorted exact buy-mint membership before resume"
+                        );
+                        changed = true;
+                    }
+                }
                 changed |= self.repair_token_quality_progress_for_resume(state, now);
             }
             DiscoveryPersistedRebuildPhase::Replay
             | DiscoveryPersistedRebuildPhase::PublishPending => {
                 if state.phase != DiscoveryPersistedRebuildPhase::PublishPending
-                    && state.payload.publish_pending_requested_wallet_ids.is_some()
+                    && (state.payload.publish_pending_requested_wallet_ids.is_some()
+                        || state.payload.publish_pending_quality_retry_mints.is_some())
                 {
                     info!(
                         rebuild_window_start = %state.window_start,
@@ -4435,6 +4705,7 @@ impl DiscoveryService {
                         "clearing stale persisted exact publish-set ownership from a non-publish-pending checkpoint before resume"
                     );
                     state.payload.publish_pending_requested_wallet_ids = None;
+                    state.payload.publish_pending_quality_retry_mints = None;
                     changed = true;
                 }
                 if Self::state_has_replay_wallet_stats_milestone(state)
@@ -4475,6 +4746,46 @@ impl DiscoveryService {
                         "backfilling exact publish-set ownership onto a persisted publish-pending checkpoint before resume"
                     );
                     state.payload.publish_pending_requested_wallet_ids = Some(requested_wallet_ids);
+                    changed = true;
+                }
+                if state.phase == DiscoveryPersistedRebuildPhase::PublishPending
+                    && state
+                        .payload
+                        .publish_pending_requested_wallet_ids
+                        .as_ref()
+                        .is_some_and(|wallets| wallets.is_empty())
+                    && state.payload.publish_pending_quality_retry_mints.is_none()
+                {
+                    let retry_mints =
+                        self.legacy_publish_pending_quality_retry_backfill_mints(state);
+                    if !retry_mints.is_empty() {
+                        info!(
+                            rebuild_window_start = %state.window_start,
+                            rebuild_horizon_end = %state.horizon_end,
+                            rebuild_phase = state.phase.as_str(),
+                            rebuild_publish_pending_requested_wallet_count = 0usize,
+                            rebuild_publish_pending_quality_retry_mint_count = retry_mints.len(),
+                            "backfilling exact publish-quality retry ownership onto a retained zero-wallet publish-pending checkpoint so later cycles can re-resolve missing quality truth instead of looping forever on an empty publish set"
+                        );
+                        state.payload.publish_pending_quality_retry_mints = Some(retry_mints);
+                        changed = true;
+                    }
+                }
+                if state.phase == DiscoveryPersistedRebuildPhase::PublishPending
+                    && state
+                        .payload
+                        .publish_pending_requested_wallet_ids
+                        .as_ref()
+                        .is_some_and(|wallets| !wallets.is_empty())
+                    && state.payload.publish_pending_quality_retry_mints.is_some()
+                {
+                    info!(
+                        rebuild_window_start = %state.window_start,
+                        rebuild_horizon_end = %state.horizon_end,
+                        rebuild_phase = state.phase.as_str(),
+                        "clearing stale exact publish-quality retry ownership from a publish-pending checkpoint that already carries a non-empty exact publish set"
+                    );
+                    state.payload.publish_pending_quality_retry_mints = None;
                     changed = true;
                 }
                 if Self::payload_has_exact_buy_mint_membership(&state.payload) {
@@ -6004,12 +6315,15 @@ impl DiscoveryService {
         fetch_page_limit: usize,
         deadline: Instant,
     ) -> Result<PersistedStreamPhaseAdvance> {
+        let target_mints = state
+            .payload
+            .publish_pending_quality_retry_mints
+            .clone()
+            .unwrap_or_else(|| state.payload.unique_buy_mints.clone());
         let mut rows_processed = 0usize;
         let mut pages_processed = 0usize;
         let budget_exhausted_reason = loop {
-            if state.payload.token_quality_progress.next_mint_index
-                >= state.payload.unique_buy_mints.len()
-            {
+            if state.payload.token_quality_progress.next_mint_index >= target_mints.len() {
                 return Ok(PersistedStreamPhaseAdvance {
                     rows_processed,
                     pages_processed,
@@ -6037,7 +6351,7 @@ impl DiscoveryService {
 
             let outcome = self.resolve_token_quality_for_mints_chunk(
                 store,
-                &state.payload.unique_buy_mints,
+                &target_mints,
                 state.horizon_end,
                 &mut state.payload.token_quality_cache,
                 &mut state.payload.token_quality_progress,
@@ -6219,12 +6533,21 @@ impl DiscoveryService {
                         &state.payload.token_quality_cache,
                         &swap,
                     );
+                    let buy_quality_requires_retry = is_sol_buy(&swap)
+                        && Self::token_quality_resolution_requires_publish_pending_retry(
+                            state.payload.token_quality_cache.get(&swap.token_out),
+                        );
                     let entry = state
                         .payload
                         .by_wallet
                         .entry(swap.wallet.clone())
                         .or_default();
-                    entry.observe_swap_streaming(&swap, self.config.max_tx_per_minute, buy_quality);
+                    entry.observe_swap_streaming(
+                        &swap,
+                        self.config.max_tx_per_minute,
+                        buy_quality,
+                        buy_quality_requires_retry,
+                    );
 
                     let Some(token) = sol_leg_token(&swap) else {
                         rows_processed = rows_processed.saturating_add(1);
@@ -6558,6 +6881,10 @@ impl DiscoveryService {
                         &state.payload.token_quality_cache,
                         &swap,
                     );
+                    let buy_quality_requires_retry = is_sol_buy(&swap)
+                        && Self::token_quality_resolution_requires_publish_pending_retry(
+                            state.payload.token_quality_cache.get(&swap.token_out),
+                        );
                     let entry = state
                         .payload
                         .by_wallet
@@ -6570,6 +6897,7 @@ impl DiscoveryService {
                             swap.amount_in,
                             swap.ts_utc,
                             buy_quality.unwrap_or(BuyTradability::Rejected),
+                            buy_quality_requires_retry,
                         );
                     } else if is_sol_sell(&swap) {
                         entry.observe_sell(
@@ -7175,151 +7503,171 @@ impl DiscoveryService {
         let mut cycle_unique_buy_mints_discovered = 0usize;
         let mut cycle_replay_sol_leg_access_path = None;
         if state.phase == DiscoveryPersistedRebuildPhase::PublishPending {
-            let snapshots = Self::publish_pending_snapshots(&state);
             let publish_pending_requested_wallet_count = self
                 .publish_pending_requested_wallet_ids_from_state(&state)
                 .len();
-            let cycle_elapsed_ms = cycle_started.elapsed().as_millis() as u64;
-            let telemetry = PersistedStreamProgressTelemetry {
-                phase: DiscoveryPersistedRebuildPhase::PublishPending,
-                collect_buy_mints_mode: state.payload.collect_buy_mints_mode,
-                replay_mode: state.payload.replay_mode,
-                replay_subphase: Self::replay_subphase(
-                    DiscoveryPersistedRebuildPhase::PublishPending,
-                    state.payload.replay_wallet_stats_complete,
-                    state.payload.replay_candidate_activity_backfill_pending,
-                ),
-                window_start: state.window_start,
-                horizon_end: state.horizon_end,
-                metrics_window_start: state.metrics_window_start,
-                phase_cursor: None,
-                replay_wallet_stats_wallet_cursor: state
-                    .payload
-                    .replay_wallet_stats_wallet_cursor
-                    .clone(),
-                collect_buy_mints_cursor_token: None,
-                collect_buy_mints_reconcile_source_window_start: state
-                    .payload
-                    .collect_buy_mints_reconcile_source_window_start,
-                collect_buy_mints_reconcile_source_horizon_end: state
-                    .payload
-                    .collect_buy_mints_reconcile_source_horizon_end,
-                collect_buy_mints_reconcile_expired_head_cursor: state
-                    .payload
-                    .collect_buy_mints_reconcile_expired_head_cursor
-                    .clone(),
-                collect_buy_mints_reconcile_new_tail_cursor: state
-                    .payload
-                    .collect_buy_mints_reconcile_new_tail_cursor
-                    .clone(),
-                collect_buy_mints_reconcile_expired_head_cursor_token: state
-                    .payload
-                    .collect_buy_mints_reconcile_expired_head_cursor_token
-                    .clone(),
-                collect_buy_mints_reconcile_new_tail_cursor_token: state
-                    .payload
-                    .collect_buy_mints_reconcile_new_tail_cursor_token
-                    .clone(),
-                collect_buy_mints_reconcile_expired_head_pending_mints: state
-                    .payload
-                    .collect_buy_mints_reconcile_expired_head_pending_mints
-                    .len(),
-                collect_buy_mints_reconcile_new_tail_slice_end_token: state
-                    .payload
-                    .collect_buy_mints_reconcile_new_tail_slice_end_token
-                    .clone(),
-                collect_buy_mints_reconcile_new_tail_pending_mints: state
-                    .payload
-                    .collect_buy_mints_reconcile_new_tail_pending_mints
-                    .len(),
-                prepass_rows_processed: state.prepass_rows_processed,
-                prepass_pages_processed: state.prepass_pages_processed,
-                replay_wallet_stats_complete: state.payload.replay_wallet_stats_complete,
-                replay_wallet_stats_rows_processed: state
-                    .payload
-                    .replay_wallet_stats_rows_processed,
-                replay_wallet_stats_pages_processed: state
-                    .payload
-                    .replay_wallet_stats_pages_processed,
-                replay_wallet_stats_day_count_source_progress: state
-                    .payload
-                    .replay_wallet_stats_day_count_source_progress,
-                replay_wallet_stats_budget_floor_wallets: state
-                    .payload
-                    .replay_wallet_stats_budget_floor_wallets,
-                replay_wallet_stats_last_partial_cycle_pages_processed: state
-                    .payload
-                    .replay_wallet_stats_last_partial_cycle_pages_processed,
-                replay_wallet_stats_last_partial_cycle_wallets_processed: state
-                    .payload
-                    .replay_wallet_stats_last_partial_cycle_wallets_processed,
-                replay_wallet_stats_last_partial_cycle_elapsed_ms: state
-                    .payload
-                    .replay_wallet_stats_last_partial_cycle_elapsed_ms,
-                replay_wallet_stats_publishable_horizon_remaining_ms: self
-                    .replay_wallet_stats_remaining_publishable_horizon_ms(&state, now),
-                replay_wallet_stats_milestone_reached: state
-                    .payload
-                    .replay_wallet_stats_milestone_reached,
-                replay_sol_leg_reentry_pending: state.payload.replay_sol_leg_reentry_pending,
-                replay_sol_leg_last_partial_cycle_pages_processed: state
-                    .payload
-                    .replay_sol_leg_last_partial_cycle_pages_processed,
-                replay_sol_leg_last_partial_cycle_rows_processed: state
-                    .payload
-                    .replay_sol_leg_last_partial_cycle_rows_processed,
-                replay_sol_leg_last_partial_cycle_elapsed_ms: state
-                    .payload
-                    .replay_sol_leg_last_partial_cycle_elapsed_ms,
-                replay_sol_leg_publishable_horizon_remaining_ms: self
-                    .replay_sol_leg_remaining_publishable_horizon_ms(&state, now),
-                replay_sol_leg_retained_contract_floor_pages: state
-                    .payload
-                    .replay_sol_leg_retained_contract_floor_pages,
-                replay_candidate_activity_backfill_required: state
-                    .payload
-                    .replay_candidate_activity_backfill_required,
-                replay_sol_leg_access_path: None,
-                replay_rows_processed: state.replay_rows_processed,
-                replay_pages_processed: state.replay_pages_processed,
-                chunks_completed: state.chunks_completed,
-                cycle_rows_processed: 0,
-                cycle_pages_processed: 0,
-                cycle_replay_wallet_stats_day_count_source_progress:
-                    ReplayWalletStatsDayCountSourceProgress::default(),
-                cycle_replay_wallet_stats_wallet_cursor_before:
-                    cycle_replay_wallet_stats_wallet_cursor_before.clone(),
-                cycle_replay_wallet_stats_wallet_cursor_after: state
-                    .payload
-                    .replay_wallet_stats_wallet_cursor
-                    .clone(),
-                cycle_unique_buy_mints_discovered: 0,
-                observed_swaps_loaded: Self::persisted_stream_observed_swaps_loaded(&state),
-                unique_buy_mints: state.payload.unique_buy_mints.len(),
-                quality_next_mint_index: state.payload.token_quality_progress.next_mint_index,
-                quality_rpc_attempted: state.payload.token_quality_progress.rpc_attempted,
-                quality_rpc_spent_ms: state.payload.token_quality_progress.rpc_spent_ms,
-                wallets_buffered: snapshots.len(),
-                publish_pending_requested_wallet_count,
-                started_at: state.started_at,
-                cycle_elapsed_ms,
-                total_elapsed_ms: (now
-                    .signed_duration_since(state.started_at)
-                    .num_milliseconds()
-                    .max(0) as u64)
-                    .saturating_add(cycle_elapsed_ms),
-                partial: false,
-                completed: true,
-                budget_exhausted_reason: None,
-            };
-            self.log_persisted_stream_progress(
-                &telemetry,
-                "resuming bounded discovery persisted observed_swaps rebuild from publish-pending checkpoint",
-            );
-            return Ok(PersistedStreamRebuildAdvanceOutcome::Completed {
-                snapshots,
-                telemetry,
-            });
+            let publish_pending_quality_retry_mints =
+                Self::publish_pending_quality_retry_mints_from_state(&state);
+            if publish_pending_requested_wallet_count == 0
+                && !publish_pending_quality_retry_mints.is_empty()
+            {
+                info!(
+                    rebuild_window_start = %state.window_start,
+                    rebuild_horizon_end = %state.horizon_end,
+                    rebuild_publish_pending_requested_wallet_count =
+                        publish_pending_requested_wallet_count,
+                    rebuild_publish_pending_quality_retry_mint_count =
+                        publish_pending_quality_retry_mints.len(),
+                    "re-entering exact token-quality resolution for the unresolved mint set that kept the completed rebuild's exact publish set empty"
+                );
+                Self::prepare_publish_pending_exact_quality_retry(
+                    &mut state,
+                    publish_pending_quality_retry_mints,
+                );
+            } else {
+                let snapshots = Self::publish_pending_snapshots(&state);
+                let cycle_elapsed_ms = cycle_started.elapsed().as_millis() as u64;
+                let telemetry = PersistedStreamProgressTelemetry {
+                    phase: DiscoveryPersistedRebuildPhase::PublishPending,
+                    collect_buy_mints_mode: state.payload.collect_buy_mints_mode,
+                    replay_mode: state.payload.replay_mode,
+                    replay_subphase: Self::replay_subphase(
+                        DiscoveryPersistedRebuildPhase::PublishPending,
+                        state.payload.replay_wallet_stats_complete,
+                        state.payload.replay_candidate_activity_backfill_pending,
+                    ),
+                    window_start: state.window_start,
+                    horizon_end: state.horizon_end,
+                    metrics_window_start: state.metrics_window_start,
+                    phase_cursor: None,
+                    replay_wallet_stats_wallet_cursor: state
+                        .payload
+                        .replay_wallet_stats_wallet_cursor
+                        .clone(),
+                    collect_buy_mints_cursor_token: None,
+                    collect_buy_mints_reconcile_source_window_start: state
+                        .payload
+                        .collect_buy_mints_reconcile_source_window_start,
+                    collect_buy_mints_reconcile_source_horizon_end: state
+                        .payload
+                        .collect_buy_mints_reconcile_source_horizon_end,
+                    collect_buy_mints_reconcile_expired_head_cursor: state
+                        .payload
+                        .collect_buy_mints_reconcile_expired_head_cursor
+                        .clone(),
+                    collect_buy_mints_reconcile_new_tail_cursor: state
+                        .payload
+                        .collect_buy_mints_reconcile_new_tail_cursor
+                        .clone(),
+                    collect_buy_mints_reconcile_expired_head_cursor_token: state
+                        .payload
+                        .collect_buy_mints_reconcile_expired_head_cursor_token
+                        .clone(),
+                    collect_buy_mints_reconcile_new_tail_cursor_token: state
+                        .payload
+                        .collect_buy_mints_reconcile_new_tail_cursor_token
+                        .clone(),
+                    collect_buy_mints_reconcile_expired_head_pending_mints: state
+                        .payload
+                        .collect_buy_mints_reconcile_expired_head_pending_mints
+                        .len(),
+                    collect_buy_mints_reconcile_new_tail_slice_end_token: state
+                        .payload
+                        .collect_buy_mints_reconcile_new_tail_slice_end_token
+                        .clone(),
+                    collect_buy_mints_reconcile_new_tail_pending_mints: state
+                        .payload
+                        .collect_buy_mints_reconcile_new_tail_pending_mints
+                        .len(),
+                    prepass_rows_processed: state.prepass_rows_processed,
+                    prepass_pages_processed: state.prepass_pages_processed,
+                    replay_wallet_stats_complete: state.payload.replay_wallet_stats_complete,
+                    replay_wallet_stats_rows_processed: state
+                        .payload
+                        .replay_wallet_stats_rows_processed,
+                    replay_wallet_stats_pages_processed: state
+                        .payload
+                        .replay_wallet_stats_pages_processed,
+                    replay_wallet_stats_day_count_source_progress: state
+                        .payload
+                        .replay_wallet_stats_day_count_source_progress,
+                    replay_wallet_stats_budget_floor_wallets: state
+                        .payload
+                        .replay_wallet_stats_budget_floor_wallets,
+                    replay_wallet_stats_last_partial_cycle_pages_processed: state
+                        .payload
+                        .replay_wallet_stats_last_partial_cycle_pages_processed,
+                    replay_wallet_stats_last_partial_cycle_wallets_processed: state
+                        .payload
+                        .replay_wallet_stats_last_partial_cycle_wallets_processed,
+                    replay_wallet_stats_last_partial_cycle_elapsed_ms: state
+                        .payload
+                        .replay_wallet_stats_last_partial_cycle_elapsed_ms,
+                    replay_wallet_stats_publishable_horizon_remaining_ms: self
+                        .replay_wallet_stats_remaining_publishable_horizon_ms(&state, now),
+                    replay_wallet_stats_milestone_reached: state
+                        .payload
+                        .replay_wallet_stats_milestone_reached,
+                    replay_sol_leg_reentry_pending: state.payload.replay_sol_leg_reentry_pending,
+                    replay_sol_leg_last_partial_cycle_pages_processed: state
+                        .payload
+                        .replay_sol_leg_last_partial_cycle_pages_processed,
+                    replay_sol_leg_last_partial_cycle_rows_processed: state
+                        .payload
+                        .replay_sol_leg_last_partial_cycle_rows_processed,
+                    replay_sol_leg_last_partial_cycle_elapsed_ms: state
+                        .payload
+                        .replay_sol_leg_last_partial_cycle_elapsed_ms,
+                    replay_sol_leg_publishable_horizon_remaining_ms: self
+                        .replay_sol_leg_remaining_publishable_horizon_ms(&state, now),
+                    replay_sol_leg_retained_contract_floor_pages: state
+                        .payload
+                        .replay_sol_leg_retained_contract_floor_pages,
+                    replay_candidate_activity_backfill_required: state
+                        .payload
+                        .replay_candidate_activity_backfill_required,
+                    replay_sol_leg_access_path: None,
+                    replay_rows_processed: state.replay_rows_processed,
+                    replay_pages_processed: state.replay_pages_processed,
+                    chunks_completed: state.chunks_completed,
+                    cycle_rows_processed: 0,
+                    cycle_pages_processed: 0,
+                    cycle_replay_wallet_stats_day_count_source_progress:
+                        ReplayWalletStatsDayCountSourceProgress::default(),
+                    cycle_replay_wallet_stats_wallet_cursor_before:
+                        cycle_replay_wallet_stats_wallet_cursor_before.clone(),
+                    cycle_replay_wallet_stats_wallet_cursor_after: state
+                        .payload
+                        .replay_wallet_stats_wallet_cursor
+                        .clone(),
+                    cycle_unique_buy_mints_discovered: 0,
+                    observed_swaps_loaded: Self::persisted_stream_observed_swaps_loaded(&state),
+                    unique_buy_mints: state.payload.unique_buy_mints.len(),
+                    quality_next_mint_index: state.payload.token_quality_progress.next_mint_index,
+                    quality_rpc_attempted: state.payload.token_quality_progress.rpc_attempted,
+                    quality_rpc_spent_ms: state.payload.token_quality_progress.rpc_spent_ms,
+                    wallets_buffered: snapshots.len(),
+                    publish_pending_requested_wallet_count,
+                    started_at: state.started_at,
+                    cycle_elapsed_ms,
+                    total_elapsed_ms: (now
+                        .signed_duration_since(state.started_at)
+                        .num_milliseconds()
+                        .max(0) as u64)
+                        .saturating_add(cycle_elapsed_ms),
+                    partial: false,
+                    completed: true,
+                    budget_exhausted_reason: None,
+                };
+                self.log_persisted_stream_progress(
+                    &telemetry,
+                    "resuming bounded discovery persisted observed_swaps rebuild from publish-pending checkpoint",
+                );
+                return Ok(PersistedStreamRebuildAdvanceOutcome::Completed {
+                    snapshots,
+                    telemetry,
+                });
+            }
         }
         let budget_exhausted_reason = loop {
             if state.metrics_window_start != metrics_window_start
@@ -7540,20 +7888,37 @@ impl DiscoveryService {
                 );
                 let empty_token_sol_history = HashMap::new();
                 let unique_buy_mints = state.payload.unique_buy_mints.len();
+                let unresolved_publish_quality_mints =
+                    Self::unresolved_publish_quality_mints(&state.payload, state.horizon_end);
                 let by_wallet = std::mem::take(&mut state.payload.by_wallet);
                 let snapshots = self.wallet_snapshots_from_accumulators(
                     store,
-                    by_wallet,
+                    by_wallet.clone(),
                     state.horizon_end,
                     &empty_token_sol_history,
                 )?;
                 let publish_pending_requested_wallet_ids =
                     self.publish_pending_requested_wallet_ids_from_snapshots(&snapshots);
+                let publish_pending_quality_retry_mints =
+                    if publish_pending_requested_wallet_ids.is_empty() {
+                        self.replay_completion_publish_quality_retry_mints(
+                            store,
+                            &by_wallet,
+                            &unresolved_publish_quality_mints,
+                            &snapshots,
+                            state.horizon_end,
+                        )?
+                    } else {
+                        Vec::new()
+                    };
                 state.phase = DiscoveryPersistedRebuildPhase::PublishPending;
                 state.phase_cursor = None;
                 state.payload.completed_snapshots = snapshots.clone();
                 state.payload.publish_pending_requested_wallet_ids =
                     Some(publish_pending_requested_wallet_ids.clone());
+                state.payload.publish_pending_quality_retry_mints =
+                    (!publish_pending_quality_retry_mints.is_empty())
+                        .then_some(publish_pending_quality_retry_mints);
                 state.payload.token_quality_cache.clear();
                 state.payload.token_states.clear();
                 state.payload.token_recent_sol_trades.clear();
@@ -9077,14 +9442,17 @@ impl DiscoveryService {
         });
 
         let ranked = rank_follow_candidates(&snapshots, self.config.min_score);
-        let desired_wallets = if scoring_source == "raw_window_persisted_stream" {
+        let publish_pending_state = if scoring_source == "raw_window_persisted_stream" {
             store
                 .load_discovery_persisted_rebuild_state()?
                 .map(Self::persisted_stream_rebuild_state_from_row)
                 .transpose()?
                 .filter(|state| state.phase == DiscoveryPersistedRebuildPhase::PublishPending)
-                .map(|state| self.publish_pending_requested_wallet_ids_from_state(&state))
-                .unwrap_or_else(|| desired_wallets(&ranked, self.config.follow_top_n))
+        } else {
+            None
+        };
+        let desired_wallets = if let Some(state) = publish_pending_state.as_ref() {
+            self.publish_pending_requested_wallet_ids_from_state(state)
         } else {
             desired_wallets(&ranked, self.config.follow_top_n)
         };
@@ -9201,11 +9569,16 @@ impl DiscoveryService {
         {
             store.clear_discovery_persisted_rebuild_state()?;
         } else if scoring_source == "raw_window_persisted_stream" {
-            let publish_pending_blocker = if desired_wallets.is_empty() {
-                "publish_pending_exact_publish_set_empty"
-            } else {
-                "publish_pending_flush"
-            };
+            let publish_pending_blocker = publish_pending_state
+                .as_ref()
+                .map(Self::persisted_stream_publishable_checkpoint_blocker_from_state)
+                .unwrap_or_else(|| {
+                    if desired_wallets.is_empty() {
+                        "publish_pending_exact_publish_set_empty"
+                    } else {
+                        "publish_pending_flush"
+                    }
+                });
             warn!(
                 publication_truth_flush_withheld = true,
                 publication_runtime_mode = summary.runtime_mode.as_str(),
@@ -9679,8 +10052,17 @@ impl DiscoveryService {
                 &token_quality_cache,
                 swap,
             );
+            let buy_quality_requires_retry = is_sol_buy(swap)
+                && Self::token_quality_resolution_requires_publish_pending_retry(
+                    token_quality_cache.get(&swap.token_out),
+                );
             let entry = by_wallet.entry(swap.wallet.clone()).or_default();
-            entry.observe_swap(swap, self.config.max_tx_per_minute, buy_quality);
+            entry.observe_swap(
+                swap,
+                self.config.max_tx_per_minute,
+                buy_quality,
+                buy_quality_requires_retry,
+            );
         }
 
         self.wallet_snapshots_from_accumulators(store, by_wallet, now, &token_sol_history)
@@ -9711,8 +10093,17 @@ impl DiscoveryService {
                     &token_quality_cache,
                     &swap,
                 );
+                let buy_quality_requires_retry = is_sol_buy(&swap)
+                    && Self::token_quality_resolution_requires_publish_pending_retry(
+                        token_quality_cache.get(&swap.token_out),
+                    );
                 let entry = by_wallet.entry(swap.wallet.clone()).or_default();
-                entry.observe_swap_streaming(&swap, self.config.max_tx_per_minute, buy_quality);
+                entry.observe_swap_streaming(
+                    &swap,
+                    self.config.max_tx_per_minute,
+                    buy_quality,
+                    buy_quality_requires_retry,
+                );
 
                 let Some(token) = sol_leg_token(&swap) else {
                     return Ok(());
@@ -10253,6 +10644,7 @@ impl WalletAccumulator {
         swap: &SwapEvent,
         max_tx_per_minute: u32,
         buy_tradability: Option<BuyTradability>,
+        buy_quality_requires_retry: bool,
     ) {
         self.observe_activity_only(swap, max_tx_per_minute);
 
@@ -10263,6 +10655,7 @@ impl WalletAccumulator {
                 swap.amount_in,
                 swap.ts_utc,
                 buy_tradability.unwrap_or(BuyTradability::Rejected),
+                buy_quality_requires_retry,
             );
             return;
         }
@@ -10281,6 +10674,7 @@ impl WalletAccumulator {
         swap: &SwapEvent,
         max_tx_per_minute: u32,
         buy_tradability: Option<BuyTradability>,
+        buy_quality_requires_retry: bool,
     ) {
         self.observe_activity_only(swap, max_tx_per_minute);
 
@@ -10291,6 +10685,7 @@ impl WalletAccumulator {
                 swap.amount_in,
                 swap.ts_utc,
                 buy_tradability.unwrap_or(BuyTradability::Rejected),
+                buy_quality_requires_retry,
             );
             return;
         }
@@ -10311,6 +10706,7 @@ impl WalletAccumulator {
         cost_sol: f64,
         ts: DateTime<Utc>,
         tradability: BuyTradability,
+        quality_requires_retry: bool,
     ) {
         if qty <= 0.0 || cost_sol <= 0.0 {
             return;
@@ -10326,6 +10722,11 @@ impl WalletAccumulator {
         }
         if tradable {
             self.tradable_buys = self.tradable_buys.saturating_add(1);
+        }
+        if quality_requires_retry && !tradable {
+            self.publish_pending_quality_retry_buy_count = self
+                .publish_pending_quality_retry_buy_count
+                .saturating_add(1);
         }
         self.buy_observations.push(BuyObservation {
             token: token.to_string(),
@@ -10354,6 +10755,7 @@ impl WalletAccumulator {
         cost_sol: f64,
         ts: DateTime<Utc>,
         tradability: BuyTradability,
+        quality_requires_retry: bool,
     ) {
         if qty <= 0.0 || cost_sol <= 0.0 {
             return;
@@ -10369,6 +10771,11 @@ impl WalletAccumulator {
         }
         if tradable {
             self.tradable_buys = self.tradable_buys.saturating_add(1);
+        }
+        if quality_requires_retry && !tradable {
+            self.publish_pending_quality_retry_buy_count = self
+                .publish_pending_quality_retry_buy_count
+                .saturating_add(1);
         }
         self.spent_sol += cost_sol;
         if cost_sol > self.max_buy_notional_sol {
@@ -10649,6 +11056,7 @@ mod tests {
             token_pending_buy_starts: HashMap::new(),
             completed_snapshots: Vec::new(),
             publish_pending_requested_wallet_ids: None,
+            publish_pending_quality_retry_mints: None,
         };
         serde_json::to_string(&payload).context(
             "failed serializing reduced inline payload for extracted prod morning fallback fixture",
@@ -10980,6 +11388,17 @@ mod tests {
             store.upsert_token_quality_cache(mint, Some(42), Some(3.0), Some(3_600), now)?;
         }
         Ok(unique_buy_mints)
+    }
+
+    fn seed_fresh_token_quality_cache_rows_for_mints_for_test(
+        store: &SqliteStore,
+        mints: &[String],
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        for mint in mints {
+            store.upsert_token_quality_cache(mint, Some(42), Some(3.0), Some(3_600), now)?;
+        }
+        Ok(())
     }
 
     fn advance_carried_target_until_replay_or_upstream_block_for_test(
@@ -14205,6 +14624,399 @@ mod tests {
                 &publish_pending
             ),
             "publish_pending_exact_publish_set_empty"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_rebuild_completion_persists_exact_quality_retry_ownership_when_zero_publish_set_is_quality_blocked_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-bounded-persisted-stream-zero-publish-set-quality-blocked.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let reference_temp = tempdir().context("failed to create reference tempdir")?;
+        let reference_db_path = reference_temp
+            .path()
+            .join("stage1-bounded-persisted-stream-zero-publish-set-quality-reference.db");
+        let mut reference_store = SqliteStore::open(Path::new(&reference_db_path))?;
+        reference_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-05T21:55:11Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = bounded_stage1_runtime_config();
+        let (window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 4, 1)?;
+        let (reference_window_start, _) =
+            seed_stage1_persisted_stream_runtime_fixture(&reference_store, &config, now, 4, 1)?;
+        assert_eq!(reference_window_start, window_start);
+
+        let reference_retry_mints = seed_fresh_token_quality_cache_rows_for_window_for_test(
+            &reference_store,
+            window_start,
+            now,
+        )?;
+        let shadow_quality = copybot_config::ShadowConfig::default();
+        let reference_discovery = DiscoveryService::new(config.clone(), shadow_quality.clone());
+        let (reference_snapshots, _) = reference_discovery
+            .build_wallet_snapshots_from_persisted_stream_one_shot(
+                &reference_store,
+                window_start,
+                now,
+            )?;
+        let expected_wallet_ids = reference_discovery
+            .publish_pending_requested_wallet_ids_from_snapshots(&reference_snapshots);
+        assert_eq!(
+            expected_wallet_ids,
+            vec!["wallet_top".to_string()],
+            "with exact fresh token-quality truth available, this reduced fixture must publish the profitable top wallet"
+        );
+
+        let discovery = DiscoveryService::new(config.clone(), shadow_quality);
+        let rebuild_time_budget = StdDuration::from_millis(config.fetch_time_budget_ms.max(1));
+        let mut completed = false;
+        for idx in 0..30 {
+            let cycle_now = now + Duration::minutes(idx as i64);
+            match discovery.advance_persisted_stream_rebuild(
+                &store,
+                window_start,
+                metrics_window_start,
+                cycle_now,
+                config.max_fetch_swaps_per_cycle.max(1),
+                config.max_fetch_pages_per_cycle.max(1),
+                rebuild_time_budget,
+            )? {
+                PersistedStreamRebuildAdvanceOutcome::Completed { telemetry, .. } => {
+                    assert_eq!(
+                        telemetry.phase,
+                        DiscoveryPersistedRebuildPhase::PublishPending
+                    );
+                    assert_eq!(telemetry.publish_pending_requested_wallet_count, 0);
+                    completed = true;
+                    break;
+                }
+                PersistedStreamRebuildAdvanceOutcome::InProgress { .. } => {}
+            }
+        }
+        assert!(
+            completed,
+            "quality-blocked reduced rebuild must still reach a retained publish-pending checkpoint within the test cutoff"
+        );
+
+        let publish_pending = load_persisted_stream_rebuild_state_for_test(&store)?;
+        assert_eq!(
+            publish_pending.phase,
+            DiscoveryPersistedRebuildPhase::PublishPending
+        );
+        assert_eq!(
+            publish_pending.payload.publish_pending_requested_wallet_ids,
+            Some(Vec::new()),
+            "the exact requested publish set must still be empty before the later exact quality retry runs"
+        );
+        assert_eq!(
+            publish_pending.payload.publish_pending_quality_retry_mints,
+            Some(reference_retry_mints),
+            "when replay would otherwise enter PublishPending with an exact zero publish set that is causally explained by unresolved token-quality debt, the checkpoint must now retain the exact mint set that has to be re-resolved before a real publish can exist"
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &publish_pending
+            ),
+            "publish_pending_exact_publish_set_quality_unresolved"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_rebuild_completion_persists_exact_quality_retry_ownership_when_zero_publish_set_is_tradable_ratio_blocked_by_unresolved_quality_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join(
+            "stage1-bounded-persisted-stream-zero-publish-set-tradable-ratio-quality-blocked.db",
+        );
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let reference_temp = tempdir().context("failed to create reference tempdir")?;
+        let reference_db_path = reference_temp.path().join(
+            "stage1-bounded-persisted-stream-zero-publish-set-tradable-ratio-quality-reference.db",
+        );
+        let mut reference_store = SqliteStore::open(Path::new(&reference_db_path))?;
+        reference_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-05T22:25:14Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = bounded_stage1_runtime_config();
+        config.min_tradable_ratio = 0.5;
+        let (window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 4, 1)?;
+        let (reference_window_start, _) =
+            seed_stage1_persisted_stream_runtime_fixture(&reference_store, &config, now, 4, 1)?;
+        assert_eq!(reference_window_start, window_start);
+
+        let reference_retry_mints = seed_fresh_token_quality_cache_rows_for_window_for_test(
+            &reference_store,
+            window_start,
+            now,
+        )?;
+        let partially_resolved_mints: Vec<String> = reference_retry_mints
+            .iter()
+            .filter(|mint| mint.contains("Top00"))
+            .cloned()
+            .collect();
+        assert_eq!(
+            partially_resolved_mints.len(),
+            1,
+            "the reduced fixture should expose exactly one profitable mint to seed as already fresh quality truth"
+        );
+        seed_fresh_token_quality_cache_rows_for_mints_for_test(
+            &store,
+            &partially_resolved_mints,
+            now,
+        )?;
+        let expected_retry_mints: Vec<String> = reference_retry_mints
+            .iter()
+            .filter(|mint| !partially_resolved_mints.contains(mint))
+            .cloned()
+            .collect();
+
+        let shadow_quality = copybot_config::ShadowConfig::default();
+        let reference_discovery = DiscoveryService::new(config.clone(), shadow_quality.clone());
+        let (reference_snapshots, _) = reference_discovery
+            .build_wallet_snapshots_from_persisted_stream_one_shot(
+                &reference_store,
+                window_start,
+                now,
+            )?;
+        let expected_wallet_ids = reference_discovery
+            .publish_pending_requested_wallet_ids_from_snapshots(&reference_snapshots);
+        assert_eq!(
+            expected_wallet_ids,
+            vec!["wallet_top".to_string()],
+            "with exact fresh token-quality truth available, the tradable-ratio-gated reduced fixture must still publish the profitable top wallet"
+        );
+
+        let discovery = DiscoveryService::new(config.clone(), shadow_quality);
+        let rebuild_time_budget = StdDuration::from_millis(config.fetch_time_budget_ms.max(1));
+        let mut completed = false;
+        for idx in 0..30 {
+            let cycle_now = now + Duration::minutes(idx as i64);
+            match discovery.advance_persisted_stream_rebuild(
+                &store,
+                window_start,
+                metrics_window_start,
+                cycle_now,
+                config.max_fetch_swaps_per_cycle.max(1),
+                config.max_fetch_pages_per_cycle.max(1),
+                rebuild_time_budget,
+            )? {
+                PersistedStreamRebuildAdvanceOutcome::Completed { telemetry, .. } => {
+                    assert_eq!(
+                        telemetry.phase,
+                        DiscoveryPersistedRebuildPhase::PublishPending
+                    );
+                    assert_eq!(telemetry.publish_pending_requested_wallet_count, 0);
+                    completed = true;
+                    break;
+                }
+                PersistedStreamRebuildAdvanceOutcome::InProgress { .. } => {}
+            }
+        }
+        assert!(
+            completed,
+            "tradable-ratio-blocked reduced rebuild must still reach a retained publish-pending checkpoint within the test cutoff"
+        );
+
+        let publish_pending = load_persisted_stream_rebuild_state_for_test(&store)?;
+        assert_eq!(
+            publish_pending.phase,
+            DiscoveryPersistedRebuildPhase::PublishPending
+        );
+        let wallet_top_snapshot = publish_pending
+            .payload
+            .completed_snapshots
+            .iter()
+            .find(|snapshot| snapshot.wallet_id == "wallet_top")
+            .expect("completed snapshots should include wallet_top in the tradable-ratio repro");
+        assert!(
+            wallet_top_snapshot.tradable_ratio > 0.0
+                && wallet_top_snapshot.tradable_ratio < config.min_tradable_ratio,
+            "this repro must specifically cover the review-found shape where unresolved quality keeps the publish set empty through a non-zero tradable_ratio below min_tradable_ratio, not through a zero tradable_ratio shortcut"
+        );
+        assert_eq!(
+            publish_pending.payload.publish_pending_requested_wallet_ids,
+            Some(Vec::new()),
+            "the exact requested publish set must still be empty before the later exact quality retry runs"
+        );
+        assert_eq!(
+            publish_pending.payload.publish_pending_quality_retry_mints,
+            Some(expected_retry_mints),
+            "when replay would otherwise enter PublishPending with an exact zero publish set because unresolved quality pushes tradable_ratio below min_tradable_ratio, the checkpoint must retain the unresolved mint set instead of treating that zero publish set as exact final truth"
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &publish_pending
+            ),
+            "publish_pending_exact_publish_set_quality_unresolved"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_zero_publish_set_publish_pending_checkpoint_retries_exact_quality_and_publishes_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-publish-pending-quality-retry-publishes.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-05T21:55:11Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = bounded_stage1_runtime_config();
+        let (window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 4, 1)?;
+        let shadow_quality = copybot_config::ShadowConfig::default();
+        let discovery = DiscoveryService::new(config.clone(), shadow_quality.clone());
+        let rebuild_time_budget = StdDuration::from_millis(config.fetch_time_budget_ms.max(1));
+
+        let mut completed = false;
+        for idx in 0..30 {
+            let cycle_now = now + Duration::minutes(idx as i64);
+            match discovery.advance_persisted_stream_rebuild(
+                &store,
+                window_start,
+                metrics_window_start,
+                cycle_now,
+                config.max_fetch_swaps_per_cycle.max(1),
+                config.max_fetch_pages_per_cycle.max(1),
+                rebuild_time_budget,
+            )? {
+                PersistedStreamRebuildAdvanceOutcome::Completed { .. } => {
+                    completed = true;
+                    break;
+                }
+                PersistedStreamRebuildAdvanceOutcome::InProgress { .. } => {}
+            }
+        }
+        assert!(completed);
+
+        let mut legacy_publish_pending = load_persisted_stream_rebuild_state_for_test(&store)?;
+        legacy_publish_pending
+            .payload
+            .publish_pending_quality_retry_mints = None;
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&legacy_publish_pending, now)?,
+        )?;
+
+        let (repaired, restore_outcome) = discovery.load_or_start_persisted_stream_rebuild_state(
+            &store,
+            window_start,
+            metrics_window_start,
+            now + Duration::minutes(1),
+        )?;
+        assert_eq!(
+            restore_outcome,
+            PersistedStreamRebuildRestoreOutcome::ResumedExisting
+        );
+        assert_eq!(
+            repaired.phase,
+            DiscoveryPersistedRebuildPhase::PublishPending
+        );
+        assert!(
+            repaired
+                .payload
+                .publish_pending_quality_retry_mints
+                .as_ref()
+                .is_some_and(|mints| !mints.is_empty()),
+            "resume repair must backfill exact quality-retry ownership onto the retained zero-wallet publish-pending checkpoint so the next cycle can retry exact quality truth instead of looping forever on an empty requested publish set"
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(&repaired),
+            "publish_pending_exact_publish_set_quality_unresolved"
+        );
+
+        let expected_wallet_ids = {
+            let reference_temp = tempdir().context("failed to create publish reference tempdir")?;
+            let reference_db_path = reference_temp
+                .path()
+                .join("stage1-publish-pending-quality-retry-reference.db");
+            let mut reference_store = SqliteStore::open(Path::new(&reference_db_path))?;
+            reference_store.run_migrations(&migration_dir)?;
+            let (reference_window_start, _) =
+                seed_stage1_persisted_stream_runtime_fixture(&reference_store, &config, now, 4, 1)?;
+            assert_eq!(reference_window_start, window_start);
+            seed_fresh_token_quality_cache_rows_for_window_for_test(
+                &reference_store,
+                window_start,
+                now + Duration::minutes(1),
+            )?;
+            let reference_discovery = DiscoveryService::new(config.clone(), shadow_quality.clone());
+            let (reference_snapshots, _) = reference_discovery
+                .build_wallet_snapshots_from_persisted_stream_one_shot(
+                    &reference_store,
+                    window_start,
+                    now + Duration::minutes(1),
+                )?;
+            reference_discovery
+                .publish_pending_requested_wallet_ids_from_snapshots(&reference_snapshots)
+        };
+        assert_eq!(expected_wallet_ids, vec!["wallet_top".to_string()]);
+
+        seed_fresh_token_quality_cache_rows_for_window_for_test(
+            &store,
+            window_start,
+            now + Duration::minutes(1),
+        )?;
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "publication_truth_withheld_missing_exact_published_wallet_ids".to_string(),
+            last_published_at: Some(now - Duration::hours(2)),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        let mut published_summary = None;
+        for idx in 1..=12 {
+            let cycle_now = now + Duration::minutes(idx as i64);
+            let summary = discovery.run_cycle(&store, cycle_now)?;
+            if summary.published {
+                published_summary = Some(summary);
+                break;
+            }
+        }
+        let summary = published_summary.expect(
+            "once exact fresh token-quality truth arrives for the retained zero-wallet publish-pending checkpoint, the retry path should eventually rebuild a real non-empty publish set and publish it",
+        );
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert!(summary.published);
+
+        let publication_state = store
+            .discovery_publication_state()?
+            .expect("publication state should exist after exact publish truth materializes");
+        assert_eq!(
+            publication_state.runtime_mode,
+            DiscoveryRuntimeMode::Healthy
+        );
+        assert_eq!(
+            publication_state.published_wallet_ids.unwrap_or_default(),
+            expected_wallet_ids,
+            "after exact quality retry replays the completed lineage with real fresh truth, publication must persist the same exact wallet universe that one-shot semantics would select"
+        );
+        assert!(
+            store.load_discovery_persisted_rebuild_state()?.is_none(),
+            "once exact publication truth materializes after the publish-pending quality retry, the retained checkpoint must finally clear"
         );
         Ok(())
     }
@@ -20510,6 +21322,7 @@ mod tests {
             1.0,
             window_start + Duration::days(1) + Duration::hours(2),
             BuyTradability::Tradable,
+            false,
         );
         acc.observe_sell(
             token,
