@@ -11242,6 +11242,30 @@ mod tests {
         config
     }
 
+    fn live_shadow_blocker_discovery_config_for_tests() -> DiscoveryConfig {
+        let mut config = DiscoveryConfig::default();
+        config.scoring_window_days = 5;
+        config.decay_window_days = 5;
+        config.observed_swaps_retention_days = 7;
+        config.follow_top_n = 15;
+        config.min_leader_notional_sol = 0.5;
+        config.min_trades = 10;
+        config.min_active_days = 3;
+        config.min_score = 0.4;
+        config.max_tx_per_minute = 50;
+        config.min_buy_count = 10;
+        config.min_tradable_ratio = 0.25;
+        config.max_rug_ratio = 1.0;
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_window_swaps_in_memory = 100_000;
+        config.max_fetch_swaps_per_cycle = 20_000;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        config.thin_market_min_volume_sol = 0.0;
+        config.thin_market_min_unique_traders = 0;
+        config
+    }
+
     fn bounded_stage1_runtime_config() -> DiscoveryConfig {
         let mut config = stage1_runtime_config();
         config.metric_snapshot_interval_seconds = 3_600;
@@ -11268,6 +11292,481 @@ mod tests {
                 .all(|pair| pair[0].as_str() <= pair[1].as_str()),
             "expected canonical sorted strings, got {values:?}"
         );
+    }
+
+    fn buy_observations_for_quality_mix(
+        now: DateTime<Utc>,
+        buy_total: u32,
+        quality_resolved_buys: u32,
+        tradable_buys: u32,
+    ) -> Vec<BuyObservation> {
+        (0..buy_total)
+            .map(|idx| BuyObservation {
+                token: format!("TokenLivePublishGate{idx:02}11111111111111111111111"),
+                ts: now - Duration::minutes(i64::from(buy_total.saturating_sub(idx))),
+                tradable: idx < tradable_buys,
+                quality_resolved: idx < quality_resolved_buys,
+            })
+            .collect()
+    }
+
+    fn live_publish_gate_wallet_accumulator(
+        now: DateTime<Utc>,
+        trades: u32,
+        active_days: u32,
+        buy_total: u32,
+        quality_resolved_buys: u32,
+        tradable_buys: u32,
+        realized_pnl_sol: f64,
+        wins: u32,
+        closed_trades: u32,
+        hold_median_seconds: i64,
+        max_buy_notional_sol: f64,
+    ) -> WalletAccumulator {
+        let mut acc = WalletAccumulator::default();
+        acc.first_seen = Some(now - Duration::days(4));
+        acc.last_seen = Some(now - Duration::minutes(5));
+        acc.trades = trades;
+        acc.exact_active_day_count = Some(active_days);
+        acc.spent_sol = 10.0;
+        acc.realized_pnl_sol = realized_pnl_sol;
+        acc.max_buy_notional_sol = max_buy_notional_sol;
+        acc.wins = wins;
+        acc.closed_trades = closed_trades;
+        acc.hold_samples_sec = vec![hold_median_seconds; closed_trades.max(1) as usize];
+        for idx in 0..active_days {
+            acc.realized_pnl_by_day.insert(
+                (now - Duration::days(idx as i64)).date_naive(),
+                if realized_pnl_sol >= 0.0 { 1.0 } else { -0.5 },
+            );
+        }
+        acc.buy_observations =
+            buy_observations_for_quality_mix(now, buy_total, quality_resolved_buys, tradable_buys);
+        acc
+    }
+
+    fn live_publish_gate_fixture_wallets(now: DateTime<Utc>) -> Vec<(String, WalletAccumulator)> {
+        let mut wallets = Vec::new();
+        for idx in 0..10 {
+            wallets.push((
+                format!("wallet_pass_{idx:02}"),
+                live_publish_gate_wallet_accumulator(now, 12, 3, 10, 10, 10, 2.5, 7, 10, 120, 1.0),
+            ));
+        }
+        wallets.push((
+            "wallet_fail_min_active_days".to_string(),
+            live_publish_gate_wallet_accumulator(now, 12, 2, 10, 10, 10, 2.5, 7, 10, 120, 1.0),
+        ));
+        wallets.push((
+            "wallet_fail_min_buy_count".to_string(),
+            live_publish_gate_wallet_accumulator(now, 12, 3, 9, 9, 9, 2.5, 7, 10, 120, 1.0),
+        ));
+        wallets.push((
+            "wallet_fail_tradable_ratio".to_string(),
+            live_publish_gate_wallet_accumulator(now, 12, 3, 10, 4, 1, 2.5, 7, 10, 120, 1.0),
+        ));
+        wallets.push((
+            "wallet_fail_score".to_string(),
+            live_publish_gate_wallet_accumulator(now, 12, 3, 10, 10, 10, -2.0, 0, 10, 10, 1.0),
+        ));
+        wallets.push((
+            "wallet_fail_min_leader_notional".to_string(),
+            live_publish_gate_wallet_accumulator(now, 12, 3, 10, 10, 10, 2.5, 7, 10, 120, 0.4),
+        ));
+        let mut fail_decay =
+            live_publish_gate_wallet_accumulator(now, 12, 3, 10, 10, 10, 2.5, 7, 10, 120, 1.0);
+        fail_decay.last_seen = Some(now - Duration::days(6));
+        wallets.push(("wallet_fail_decay".to_string(), fail_decay));
+        let mut fail_suspicious =
+            live_publish_gate_wallet_accumulator(now, 12, 3, 10, 10, 10, 2.5, 7, 10, 120, 1.0);
+        fail_suspicious.suspicious = true;
+        wallets.push(("wallet_fail_suspicious".to_string(), fail_suspicious));
+        wallets
+    }
+
+    fn live_publish_gate_fixture_wallets_with_decay_boundary(
+        now: DateTime<Utc>,
+    ) -> Vec<(String, WalletAccumulator)> {
+        let mut wallets = live_publish_gate_fixture_wallets(now);
+        let (_, acc) = wallets
+            .iter_mut()
+            .find(|(wallet_id, _)| wallet_id == "wallet_pass_09")
+            .expect("borderline decay fixture wallet should exist");
+        acc.first_seen = Some(now - Duration::days(5) + Duration::minutes(10));
+        acc.last_seen = Some(now - Duration::days(5) + Duration::minutes(50));
+        wallets
+    }
+
+    fn desired_wallets_from_live_publish_gate_fixture(
+        config: DiscoveryConfig,
+        entries: &[(String, WalletAccumulator)],
+        now: DateTime<Utc>,
+    ) -> (Vec<WalletSnapshot>, Vec<String>) {
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let snapshots = entries
+            .iter()
+            .map(|(wallet_id, acc)| {
+                discovery.snapshot_from_accumulator(
+                    wallet_id.clone(),
+                    acc.clone(),
+                    now,
+                    &HashMap::new(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let ranked = rank_follow_candidates(&snapshots, config.min_score);
+        let desired = desired_wallets(&ranked, config.follow_top_n);
+        (snapshots, desired)
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct LivePublishGateAttributionCounts {
+        total_snapshots: usize,
+        removed_by_min_trades: usize,
+        removed_by_min_active_days: usize,
+        removed_by_suspicious: usize,
+        removed_by_min_leader_notional_sol: usize,
+        removed_by_decay_window_days: usize,
+        removed_by_min_buy_count: usize,
+        removed_by_min_tradable_ratio: usize,
+        removed_by_min_score: usize,
+        published_wallets: usize,
+    }
+
+    fn live_publish_gate_attribution_counts(
+        config: &DiscoveryConfig,
+        entries: &[(String, WalletAccumulator)],
+        snapshots: &[WalletSnapshot],
+        now: DateTime<Utc>,
+    ) -> LivePublishGateAttributionCounts {
+        let snapshot_by_wallet: HashMap<&str, &WalletSnapshot> = snapshots
+            .iter()
+            .map(|snapshot| (snapshot.wallet_id.as_str(), snapshot))
+            .collect();
+        let total_snapshots = entries.len();
+        let mut remaining: Vec<(&String, &WalletAccumulator)> = entries
+            .iter()
+            .map(|(wallet_id, acc)| (wallet_id, acc))
+            .collect();
+
+        let before = remaining.len();
+        remaining.retain(|(_, acc)| acc.trades >= config.min_trades);
+        let removed_by_min_trades = before - remaining.len();
+
+        let before = remaining.len();
+        remaining.retain(|(_, acc)| {
+            let active_days = acc
+                .exact_active_day_count
+                .unwrap_or(acc.active_days.len() as u32);
+            active_days >= config.min_active_days
+        });
+        let removed_by_min_active_days = before - remaining.len();
+
+        let before = remaining.len();
+        remaining.retain(|(_, acc)| !acc.suspicious);
+        let removed_by_suspicious = before - remaining.len();
+
+        let before = remaining.len();
+        remaining.retain(|(_, acc)| acc.max_buy_notional_sol >= config.min_leader_notional_sol);
+        let removed_by_min_leader_notional_sol = before - remaining.len();
+
+        let decay_cutoff = now - Duration::days(config.decay_window_days.max(1) as i64);
+        let before = remaining.len();
+        remaining.retain(|(_, acc)| acc.last_seen.unwrap_or(now) >= decay_cutoff);
+        let removed_by_decay_window_days = before - remaining.len();
+
+        let before = remaining.len();
+        remaining.retain(|(wallet_id, _)| {
+            snapshot_by_wallet
+                .get(wallet_id.as_str())
+                .is_some_and(|snapshot| snapshot.buy_total >= config.min_buy_count)
+        });
+        let removed_by_min_buy_count = before - remaining.len();
+
+        let before = remaining.len();
+        remaining.retain(|(wallet_id, _)| {
+            snapshot_by_wallet
+                .get(wallet_id.as_str())
+                .is_some_and(|snapshot| snapshot.tradable_ratio >= config.min_tradable_ratio)
+        });
+        let removed_by_min_tradable_ratio = before - remaining.len();
+
+        let before = remaining.len();
+        remaining.retain(|(wallet_id, _)| {
+            snapshot_by_wallet
+                .get(wallet_id.as_str())
+                .is_some_and(|snapshot| snapshot.score >= config.min_score)
+        });
+        let removed_by_min_score = before - remaining.len();
+
+        LivePublishGateAttributionCounts {
+            total_snapshots,
+            removed_by_min_trades,
+            removed_by_min_active_days,
+            removed_by_suspicious,
+            removed_by_min_leader_notional_sol,
+            removed_by_decay_window_days,
+            removed_by_min_buy_count,
+            removed_by_min_tradable_ratio,
+            removed_by_min_score,
+            published_wallets: remaining.len(),
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+    enum LivePublishGateRelaxation {
+        MinActiveDays,
+        MinLeaderNotionalSol,
+        DecayWindowDays,
+        MinBuyCount,
+        MinTradableRatio,
+        MinScore,
+        Suspicious,
+    }
+
+    impl LivePublishGateRelaxation {
+        fn label(self) -> &'static str {
+            match self {
+                Self::MinActiveDays => "min_active_days",
+                Self::MinLeaderNotionalSol => "min_leader_notional_sol",
+                Self::DecayWindowDays => "decay_window_days",
+                Self::MinBuyCount => "min_buy_count",
+                Self::MinTradableRatio => "min_tradable_ratio",
+                Self::MinScore => "min_score",
+                Self::Suspicious => "suspicious",
+            }
+        }
+    }
+
+    fn relaxed_live_shadow_blocker_config_for_tests(
+        base: &DiscoveryConfig,
+        relaxations: &[LivePublishGateRelaxation],
+    ) -> DiscoveryConfig {
+        let mut config = base.clone();
+        for relaxation in relaxations {
+            match relaxation {
+                LivePublishGateRelaxation::MinActiveDays => config.min_active_days = 2,
+                LivePublishGateRelaxation::MinLeaderNotionalSol => {
+                    config.min_leader_notional_sol = 0.4;
+                }
+                LivePublishGateRelaxation::DecayWindowDays => config.decay_window_days = 7,
+                LivePublishGateRelaxation::MinBuyCount => config.min_buy_count = 9,
+                LivePublishGateRelaxation::MinTradableRatio => config.min_tradable_ratio = 0.0,
+                LivePublishGateRelaxation::MinScore => config.min_score = 0.0,
+                LivePublishGateRelaxation::Suspicious => {}
+            }
+        }
+        config
+    }
+
+    fn live_publish_gate_fixture_with_relaxations(
+        base_entries: &[(String, WalletAccumulator)],
+        relaxations: &[LivePublishGateRelaxation],
+    ) -> Vec<(String, WalletAccumulator)> {
+        let mut entries = base_entries.to_vec();
+        if relaxations.contains(&LivePublishGateRelaxation::Suspicious) {
+            let (_, suspicious_acc) = entries
+                .iter_mut()
+                .find(|(wallet_id, _)| wallet_id == "wallet_fail_suspicious")
+                .expect("suspicious fixture wallet should exist");
+            suspicious_acc.suspicious = false;
+        }
+        entries
+    }
+
+    fn live_publish_gate_desired_wallets_for_relaxations(
+        base_config: &DiscoveryConfig,
+        base_entries: &[(String, WalletAccumulator)],
+        relaxations: &[LivePublishGateRelaxation],
+        now: DateTime<Utc>,
+    ) -> Vec<String> {
+        let config = relaxed_live_shadow_blocker_config_for_tests(base_config, relaxations);
+        let entries = live_publish_gate_fixture_with_relaxations(base_entries, relaxations);
+        let (_, desired) = desired_wallets_from_live_publish_gate_fixture(config, &entries, now);
+        desired
+    }
+
+    fn live_restored_rug_policy_discovery_config_for_tests() -> DiscoveryConfig {
+        let mut config = live_shadow_blocker_discovery_config_for_tests();
+        let defaults = DiscoveryConfig::default();
+        config.max_rug_ratio = defaults.max_rug_ratio;
+        config.thin_market_min_volume_sol = defaults.thin_market_min_volume_sol;
+        config.thin_market_min_unique_traders = defaults.thin_market_min_unique_traders;
+        config
+    }
+
+    fn clustered_thin_market_fixture_swaps(
+        now: DateTime<Utc>,
+        include_independent_wallets: bool,
+    ) -> (Vec<SwapEvent>, Vec<String>, Vec<String>) {
+        let clustered_wallet_ids: Vec<String> = (0..9)
+            .map(|idx| format!("wallet_clustered_{idx:02}"))
+            .collect();
+        let independent_wallet_ids: Vec<String> = if include_independent_wallets {
+            (0..3)
+                .map(|idx| format!("wallet_independent_{idx:02}"))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let clustered_token = "TokenClusteredVdor111111111111111111111111";
+        let phase_bases = [
+            now - Duration::days(2),
+            now - Duration::days(1),
+            now - Duration::hours(2),
+        ];
+        let rounds_per_phase = 4;
+        let mut swaps = Vec::new();
+
+        for (phase_idx, phase_base) in phase_bases.into_iter().enumerate() {
+            for round in 0..rounds_per_phase {
+                let round_offset_minutes = (round * 20) as i64;
+                for (wallet_idx, wallet_id) in clustered_wallet_ids.iter().enumerate() {
+                    let buy_ts =
+                        phase_base + Duration::minutes(round_offset_minutes + wallet_idx as i64);
+                    let sell_ts = buy_ts + Duration::minutes(5);
+                    swaps.push(swap(
+                        wallet_id,
+                        &format!("clustered-{phase_idx}-{round}-{wallet_idx}-buy"),
+                        buy_ts,
+                        SOL_MINT,
+                        clustered_token,
+                        1.0,
+                        100.0,
+                    ));
+                    swaps.push(swap(
+                        wallet_id,
+                        &format!("clustered-{phase_idx}-{round}-{wallet_idx}-sell"),
+                        sell_ts,
+                        clustered_token,
+                        SOL_MINT,
+                        100.0,
+                        1.3,
+                    ));
+                }
+
+                for (wallet_idx, wallet_id) in independent_wallet_ids.iter().enumerate() {
+                    let token = format!("TokenIndependent{wallet_idx:02}11111111111111111111");
+                    let buy_ts = phase_base
+                        + Duration::minutes(round_offset_minutes + 12 + wallet_idx as i64);
+                    let sell_ts = buy_ts + Duration::minutes(5);
+                    swaps.push(swap(
+                        wallet_id,
+                        &format!("independent-{phase_idx}-{round}-{wallet_idx}-buy"),
+                        buy_ts,
+                        SOL_MINT,
+                        token.as_str(),
+                        1.0,
+                        100.0,
+                    ));
+                    swaps.push(swap(
+                        wallet_id,
+                        &format!("independent-{phase_idx}-{round}-{wallet_idx}-sell"),
+                        sell_ts,
+                        token.as_str(),
+                        SOL_MINT,
+                        100.0,
+                        1.25,
+                    ));
+                    for noise_idx in 0..10 {
+                        swaps.push(swap(
+                            &format!(
+                                "wallet_independent_noise_{phase_idx:02}_{round:02}_{wallet_idx:02}_{noise_idx:02}"
+                            ),
+                            &format!(
+                                "independent-noise-{phase_idx}-{round}-{wallet_idx}-{noise_idx}"
+                            ),
+                            buy_ts + Duration::seconds(30 + noise_idx as i64),
+                            SOL_MINT,
+                            token.as_str(),
+                            0.4,
+                            40.0,
+                        ));
+                    }
+                }
+            }
+        }
+
+        swaps.sort_by(|a, b| {
+            a.ts_utc
+                .cmp(&b.ts_utc)
+                .then_with(|| a.signature.cmp(&b.signature))
+        });
+        (swaps, clustered_wallet_ids, independent_wallet_ids)
+    }
+
+    fn wallet_entries_and_token_history_from_swaps(
+        config: &DiscoveryConfig,
+        swaps: &[SwapEvent],
+    ) -> (
+        Vec<(String, WalletAccumulator)>,
+        HashMap<String, Vec<SolLegTrade>>,
+    ) {
+        let mut by_wallet: HashMap<String, WalletAccumulator> = HashMap::new();
+        let mut token_sol_history: HashMap<String, Vec<SolLegTrade>> = HashMap::new();
+
+        for swap in swaps {
+            by_wallet
+                .entry(swap.wallet.clone())
+                .or_default()
+                .observe_swap(
+                    swap,
+                    config.max_tx_per_minute,
+                    is_sol_buy(swap).then_some(BuyTradability::Tradable),
+                    false,
+                );
+            if let Some(token) = sol_leg_token(swap) {
+                token_sol_history
+                    .entry(token.to_string())
+                    .or_default()
+                    .push(SolLegTrade {
+                        ts: swap.ts_utc,
+                        wallet_id: swap.wallet.clone(),
+                        sol_notional: if is_sol_buy(swap) {
+                            swap.amount_in
+                        } else {
+                            swap.amount_out
+                        },
+                    });
+            }
+        }
+
+        for trades in token_sol_history.values_mut() {
+            trades.sort_by(|a, b| a.ts.cmp(&b.ts).then_with(|| a.wallet_id.cmp(&b.wallet_id)));
+        }
+
+        let mut entries: Vec<(String, WalletAccumulator)> = by_wallet.into_iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        (entries, token_sol_history)
+    }
+
+    fn desired_wallets_from_clustered_thin_market_fixture(
+        config: DiscoveryConfig,
+        swaps: &[SwapEvent],
+        now: DateTime<Utc>,
+    ) -> (
+        Vec<WalletSnapshot>,
+        Vec<String>,
+        Vec<(String, WalletAccumulator)>,
+        HashMap<String, Vec<SolLegTrade>>,
+    ) {
+        let (entries, token_sol_history) =
+            wallet_entries_and_token_history_from_swaps(&config, swaps);
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let snapshots = entries
+            .iter()
+            .map(|(wallet_id, acc)| {
+                discovery.snapshot_from_accumulator(
+                    wallet_id.clone(),
+                    acc.clone(),
+                    now,
+                    &token_sol_history,
+                )
+            })
+            .collect::<Vec<_>>();
+        let ranked = rank_follow_candidates(&snapshots, config.min_score);
+        let desired = desired_wallets(&ranked, config.follow_top_n);
+        (snapshots, desired, entries, token_sol_history)
     }
 
     fn seed_stage1_persisted_stream_runtime_fixture(
@@ -12228,6 +12727,798 @@ mod tests {
         let active = store.list_active_follow_wallets()?;
         assert!(active.contains("wallet_a"));
         assert!(!active.contains("wallet_b"));
+        Ok(())
+    }
+
+    #[test]
+    fn live_like_complete_publication_truth_persists_only_ten_wallets_when_pre_rank_selection_gates_leave_ten_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("live-like-small-published-universe.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-06T06:37:24Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = live_shadow_blocker_discovery_config_for_tests();
+        assert_eq!(config.follow_top_n, 15);
+        let entries = live_publish_gate_fixture_wallets(now);
+        let (snapshots, desired) =
+            desired_wallets_from_live_publish_gate_fixture(config.clone(), &entries, now);
+
+        assert_eq!(
+            rank_follow_candidates(&snapshots, config.min_score).len(),
+            10,
+            "the live-like field must already collapse to ten wallets before top-N truncation"
+        );
+        assert_eq!(
+            desired.len(),
+            10,
+            "published universe must stay at ten because only ten wallets survive exact eligibility and score gates"
+        );
+        assert!(
+            !desired.contains(&"wallet_fail_min_active_days".to_string()),
+            "wallet below min_active_days must not reach publication truth"
+        );
+        assert!(
+            !desired.contains(&"wallet_fail_min_buy_count".to_string()),
+            "wallet below min_buy_count must not reach publication truth"
+        );
+        assert!(
+            !desired.contains(&"wallet_fail_tradable_ratio".to_string()),
+            "wallet below min_tradable_ratio must not reach publication truth"
+        );
+        assert!(
+            !desired.contains(&"wallet_fail_score".to_string()),
+            "wallet below min_score must not reach publication truth"
+        );
+        assert!(
+            !desired.contains(&"wallet_fail_min_leader_notional".to_string()),
+            "wallet below min_leader_notional_sol must not reach publication truth"
+        );
+        assert!(
+            !desired.contains(&"wallet_fail_decay".to_string()),
+            "wallet outside decay_window_days must not reach publication truth"
+        );
+        assert!(
+            !desired.contains(&"wallet_fail_suspicious".to_string()),
+            "suspicious wallet must not reach publication truth"
+        );
+
+        let fail_tradable_snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.wallet_id == "wallet_fail_tradable_ratio")
+            .expect("tradable-ratio failure snapshot should exist");
+        assert!(
+            fail_tradable_snapshot.tradable_ratio < config.min_tradable_ratio,
+            "tradable-ratio gate must be the causal filter for wallet_fail_tradable_ratio"
+        );
+        assert!(
+            !fail_tradable_snapshot.eligible,
+            "wallet below min_tradable_ratio must already be ineligible before ranking"
+        );
+
+        let fail_score_snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.wallet_id == "wallet_fail_score")
+            .expect("score failure snapshot should exist");
+        assert!(
+            fail_score_snapshot.eligible,
+            "wallet_fail_score must pass hard eligibility so the repro isolates the min_score ranking filter"
+        );
+        assert!(
+            fail_score_snapshot.score < config.min_score,
+            "wallet_fail_score must specifically fail the score floor"
+        );
+
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let publication_outcome = discovery.persist_publication_state(
+            &store,
+            DiscoveryRuntimeMode::Healthy,
+            true,
+            metrics_window_start,
+            Some(&desired),
+            "raw_window_persisted_stream",
+            "discovery_score_refresh",
+            now,
+        )?;
+        assert!(
+            publication_outcome.published_universe_persisted,
+            "once the exact desired wallet set is non-empty, publication truth should persist it as-is"
+        );
+        let publication_state = store
+            .discovery_publication_state_read_only()?
+            .expect("publication state should be present");
+        assert_eq!(
+            publication_state.published_wallet_ids.unwrap_or_default(),
+            desired,
+            "the persisted publication truth must exactly mirror the pre-ranked wallet set"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn live_like_small_published_universe_gate_attribution_counts_stage1() {
+        let now = DateTime::parse_from_rfc3339("2026-04-06T06:37:24Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = live_shadow_blocker_discovery_config_for_tests();
+        let entries = live_publish_gate_fixture_wallets(now);
+        let (snapshots, desired) =
+            desired_wallets_from_live_publish_gate_fixture(config.clone(), &entries, now);
+        let counts = live_publish_gate_attribution_counts(&config, &entries, &snapshots, now);
+
+        assert_eq!(
+            counts,
+            LivePublishGateAttributionCounts {
+                total_snapshots: 17,
+                removed_by_min_trades: 0,
+                removed_by_min_active_days: 1,
+                removed_by_suspicious: 1,
+                removed_by_min_leader_notional_sol: 1,
+                removed_by_decay_window_days: 1,
+                removed_by_min_buy_count: 1,
+                removed_by_min_tradable_ratio: 1,
+                removed_by_min_score: 1,
+                published_wallets: 10,
+            },
+            "the live-like reduced field must lose seven wallets before top-N: one each to min_active_days, suspicious, min_leader_notional_sol, decay_window_days, min_buy_count, min_tradable_ratio, and min_score"
+        );
+        assert_eq!(
+            desired.len(),
+            counts.published_wallets,
+            "published wallet count should exactly match the post-gate count"
+        );
+    }
+
+    #[test]
+    fn live_like_small_published_universe_is_caused_by_exact_pre_rank_gates_not_top_n_stage1() {
+        let now = DateTime::parse_from_rfc3339("2026-04-06T06:37:24Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = live_shadow_blocker_discovery_config_for_tests();
+        let entries = live_publish_gate_fixture_wallets(now);
+
+        let (_, base_desired) =
+            desired_wallets_from_live_publish_gate_fixture(config.clone(), &entries, now);
+        assert_eq!(base_desired.len(), 10);
+        assert_eq!(config.follow_top_n, 15);
+
+        let mut relaxed_active_days = config.clone();
+        relaxed_active_days.min_active_days = 2;
+        let (_, active_days_desired) =
+            desired_wallets_from_live_publish_gate_fixture(relaxed_active_days, &entries, now);
+        assert_eq!(active_days_desired.len(), 11);
+        assert!(
+            active_days_desired.contains(&"wallet_fail_min_active_days".to_string()),
+            "lowering only min_active_days should recover exactly the wallet gated by recency breadth"
+        );
+
+        let mut relaxed_buy_count = config.clone();
+        relaxed_buy_count.min_buy_count = 9;
+        let (_, buy_count_desired) =
+            desired_wallets_from_live_publish_gate_fixture(relaxed_buy_count, &entries, now);
+        assert_eq!(buy_count_desired.len(), 11);
+        assert!(
+            buy_count_desired.contains(&"wallet_fail_min_buy_count".to_string()),
+            "lowering only min_buy_count should recover exactly the wallet gated by insufficient SOL buys"
+        );
+
+        let mut relaxed_tradable_ratio = config.clone();
+        relaxed_tradable_ratio.min_tradable_ratio = 0.0;
+        let (_, tradable_ratio_desired) =
+            desired_wallets_from_live_publish_gate_fixture(relaxed_tradable_ratio, &entries, now);
+        assert_eq!(
+            tradable_ratio_desired.len(),
+            10,
+            "relaxing only min_tradable_ratio is still insufficient because the same tradability debt also drags score below min_score"
+        );
+        assert!(
+            !tradable_ratio_desired.contains(&"wallet_fail_tradable_ratio".to_string()),
+            "quality/tradability debt should still block publication when the score floor remains intact"
+        );
+
+        let mut relaxed_tradable_ratio_and_score = config.clone();
+        relaxed_tradable_ratio_and_score.min_tradable_ratio = 0.0;
+        relaxed_tradable_ratio_and_score.min_score = 0.0;
+        let (_, tradable_ratio_and_score_desired) = desired_wallets_from_live_publish_gate_fixture(
+            relaxed_tradable_ratio_and_score,
+            &entries,
+            now,
+        );
+        assert_eq!(tradable_ratio_and_score_desired.len(), 12);
+        assert!(
+            tradable_ratio_and_score_desired.contains(&"wallet_fail_tradable_ratio".to_string()),
+            "lowering the exact tradability floor and the coupled score floor should recover the wallet blocked by exact quality/tradability debt"
+        );
+        assert!(
+            tradable_ratio_and_score_desired.contains(&"wallet_fail_score".to_string()),
+            "once the score floor is also relaxed, the separately score-blocked wallet should recover too"
+        );
+
+        let mut relaxed_score = config.clone();
+        relaxed_score.min_score = 0.0;
+        let (_, score_desired) =
+            desired_wallets_from_live_publish_gate_fixture(relaxed_score, &entries, now);
+        assert_eq!(score_desired.len(), 11);
+        assert!(
+            score_desired.contains(&"wallet_fail_score".to_string()),
+            "lowering only min_score should recover exactly the wallet gated by ranking quality"
+        );
+
+        let mut relaxed_notional = config.clone();
+        relaxed_notional.min_leader_notional_sol = 0.4;
+        let (_, notional_desired) =
+            desired_wallets_from_live_publish_gate_fixture(relaxed_notional, &entries, now);
+        assert_eq!(notional_desired.len(), 11);
+        assert!(
+            notional_desired.contains(&"wallet_fail_min_leader_notional".to_string()),
+            "lowering only min_leader_notional_sol should recover exactly the wallet gated by leader trade size"
+        );
+
+        let mut relaxed_decay = config.clone();
+        relaxed_decay.decay_window_days = 7;
+        let (_, decay_desired) =
+            desired_wallets_from_live_publish_gate_fixture(relaxed_decay, &entries, now);
+        assert_eq!(decay_desired.len(), 11);
+        assert!(
+            decay_desired.contains(&"wallet_fail_decay".to_string()),
+            "widening only decay_window_days should recover exactly the wallet gated by last_seen recency"
+        );
+
+        let mut unsuspicious_entries = entries.clone();
+        let (_, suspicious_acc) = unsuspicious_entries
+            .iter_mut()
+            .find(|(wallet_id, _)| wallet_id == "wallet_fail_suspicious")
+            .expect("suspicious fixture wallet should exist");
+        suspicious_acc.suspicious = false;
+        let (_, suspicious_desired) =
+            desired_wallets_from_live_publish_gate_fixture(config, &unsuspicious_entries, now);
+        assert_eq!(suspicious_desired.len(), 11);
+        assert!(
+            suspicious_desired.contains(&"wallet_fail_suspicious".to_string()),
+            "clearing only the suspicious marker should recover exactly the wallet blocked by the spam gate"
+        );
+    }
+
+    #[test]
+    fn live_like_window_shift_can_reduce_exact_publication_truth_from_ten_to_nine_via_decay_gate_stage1(
+    ) {
+        let baseline_now = DateTime::parse_from_rfc3339("2026-04-06T06:37:24Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let later_now = baseline_now + Duration::hours(2);
+        let config = live_shadow_blocker_discovery_config_for_tests();
+        let entries = live_publish_gate_fixture_wallets_with_decay_boundary(baseline_now);
+
+        let (baseline_snapshots, baseline_desired) =
+            desired_wallets_from_live_publish_gate_fixture(config.clone(), &entries, baseline_now);
+        let baseline_counts = live_publish_gate_attribution_counts(
+            &config,
+            &entries,
+            &baseline_snapshots,
+            baseline_now,
+        );
+        assert_eq!(baseline_desired.len(), 10);
+        assert!(
+            baseline_desired.contains(&"wallet_pass_09".to_string()),
+            "the borderline wallet must still survive the exact full-publication gate set before the decay cutoff advances"
+        );
+        assert_eq!(
+            baseline_counts.removed_by_decay_window_days, 1,
+            "baseline field should only lose the dedicated recency-fail wallet at the decay gate"
+        );
+
+        let (later_snapshots, later_desired) =
+            desired_wallets_from_live_publish_gate_fixture(config.clone(), &entries, later_now);
+        let later_counts =
+            live_publish_gate_attribution_counts(&config, &entries, &later_snapshots, later_now);
+        assert_eq!(later_desired.len(), 9);
+        assert!(
+            !later_desired.contains(&"wallet_pass_09".to_string()),
+            "once the exact decay cutoff advances past the borderline wallet, the later exact publication truth must shrink to nine"
+        );
+        assert_eq!(
+            later_counts,
+            LivePublishGateAttributionCounts {
+                total_snapshots: 17,
+                removed_by_min_trades: 0,
+                removed_by_min_active_days: 1,
+                removed_by_suspicious: 1,
+                removed_by_min_leader_notional_sol: 1,
+                removed_by_decay_window_days: 2,
+                removed_by_min_buy_count: 1,
+                removed_by_min_tradable_ratio: 1,
+                removed_by_min_score: 1,
+                published_wallets: 9,
+            },
+            "the exact 10 -> 9 delta on the same live-like policy surface should be explained by one additional wallet crossing only the decay_window_days recency gate"
+        );
+    }
+
+    #[test]
+    fn degraded_runtime_preserves_latest_exact_nine_wallet_publication_truth_after_boundary_decay_drop_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("live-like-degraded-published-universe-preserves-latest-nine.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let published_ten_at = DateTime::parse_from_rfc3339("2026-04-06T06:37:24Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let published_nine_at = published_ten_at + Duration::hours(2);
+        let degraded_now = published_nine_at + Duration::minutes(5);
+        let mut config = live_shadow_blocker_discovery_config_for_tests();
+        config.max_window_swaps_in_memory = 8;
+        let entries = live_publish_gate_fixture_wallets_with_decay_boundary(published_ten_at);
+
+        let (_, desired_ten) = desired_wallets_from_live_publish_gate_fixture(
+            config.clone(),
+            &entries,
+            published_ten_at,
+        );
+        let (_, desired_nine) = desired_wallets_from_live_publish_gate_fixture(
+            config.clone(),
+            &entries,
+            published_nine_at,
+        );
+        assert_eq!(desired_ten.len(), 10);
+        assert_eq!(desired_nine.len(), 9);
+        assert!(
+            desired_ten.contains(&"wallet_pass_09".to_string())
+                && !desired_nine.contains(&"wallet_pass_09".to_string()),
+            "the later exact publish must drop only the borderline decay wallet"
+        );
+
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let published_ten_window_start = metrics_window_start_for_test(&config, published_ten_at);
+        let published_nine_window_start = metrics_window_start_for_test(&config, published_nine_at);
+        let first_publication = discovery.persist_publication_state(
+            &store,
+            DiscoveryRuntimeMode::Healthy,
+            true,
+            published_ten_window_start,
+            Some(&desired_ten),
+            "raw_window_persisted_stream",
+            "test_exact_ten_wallet_publish",
+            published_ten_at,
+        )?;
+        assert!(first_publication.published_universe_persisted);
+        let second_publication = discovery.persist_publication_state(
+            &store,
+            DiscoveryRuntimeMode::Healthy,
+            true,
+            published_nine_window_start,
+            Some(&desired_nine),
+            "raw_window_persisted_stream",
+            "test_exact_nine_wallet_publish_after_decay_shift",
+            published_nine_at,
+        )?;
+        assert!(second_publication.published_universe_persisted);
+
+        let mut latest_cursor: Option<DiscoveryRuntimeCursor> = None;
+        for idx in 0..9 {
+            let ts = degraded_now - Duration::minutes(9) + Duration::minutes(idx as i64);
+            let swap = swap(
+                "wallet_noise",
+                &format!("live-like-degraded-noise-{idx}"),
+                ts,
+                SOL_MINT,
+                "TokenLiveLikeDegradedNoise111111111111111",
+                0.2,
+                20.0,
+            );
+            latest_cursor = Some(DiscoveryRuntimeCursor {
+                ts_utc: swap.ts_utc,
+                slot: swap.slot,
+                signature: swap.signature.clone(),
+            });
+            store.insert_observed_swap(&swap)?;
+        }
+        store.upsert_discovery_runtime_cursor(
+            &latest_cursor.expect("latest cursor should be present"),
+        )?;
+
+        let summary = discovery.run_cycle(&store, degraded_now)?;
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Degraded);
+        assert_eq!(
+            summary.scoring_source, "published_universe_raw_window_degraded",
+            "when the raw window is incomplete, degraded runtime must surface the most recent exact published universe rather than recomputing a new one"
+        );
+        assert_eq!(summary.active_follow_wallets, 9);
+        assert_eq!(
+            store.list_active_follow_wallets()?,
+            desired_nine.iter().cloned().collect(),
+            "degraded followlist surface must preserve the latest exact nine-wallet publication universe, not the earlier ten-wallet publish and not any current partial raw ranking"
+        );
+
+        let publication_state = store
+            .discovery_publication_state_read_only()?
+            .expect("publication state should exist");
+        assert_eq!(
+            publication_state.runtime_mode,
+            DiscoveryRuntimeMode::Degraded
+        );
+        assert_eq!(
+            publication_state.reason, "published_universe_raw_window_degraded",
+            "degraded cycle should surface the raw-window-degraded reason while preserving exact publication truth ownership"
+        );
+        assert_eq!(
+            publication_state.last_published_at,
+            Some(published_nine_at),
+            "degraded publication state should keep the latest exact publish timestamp rather than reverting to the older ten-wallet publish"
+        );
+        assert_eq!(
+            publication_state.last_published_window_start,
+            Some(published_nine_window_start),
+            "degraded publication state should keep the latest exact publish window"
+        );
+        assert_eq!(
+            publication_state.published_wallet_ids.unwrap_or_default(),
+            desired_nine,
+            "degraded publication state should preserve the exact nine-wallet control-plane universe from the latest exact publish"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn live_like_small_published_universe_requires_five_policy_surfaces_to_reach_fifteen_stage1() {
+        let now = DateTime::parse_from_rfc3339("2026-04-06T06:37:24Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = live_shadow_blocker_discovery_config_for_tests();
+        let entries = live_publish_gate_fixture_wallets(now);
+        let relaxable_surfaces = [
+            LivePublishGateRelaxation::MinActiveDays,
+            LivePublishGateRelaxation::MinLeaderNotionalSol,
+            LivePublishGateRelaxation::DecayWindowDays,
+            LivePublishGateRelaxation::MinBuyCount,
+            LivePublishGateRelaxation::MinTradableRatio,
+            LivePublishGateRelaxation::MinScore,
+            LivePublishGateRelaxation::Suspicious,
+        ];
+
+        let mut smallest_surface_count_reaching_fifteen: Option<usize> = None;
+        let mut five_surface_combos_reaching_fifteen = Vec::new();
+        for mask in 1usize..(1usize << relaxable_surfaces.len()) {
+            let relaxations = relaxable_surfaces
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, relaxation)| {
+                    ((mask & (1usize << idx)) != 0).then_some(*relaxation)
+                })
+                .collect::<Vec<_>>();
+            let desired = live_publish_gate_desired_wallets_for_relaxations(
+                &config,
+                &entries,
+                &relaxations,
+                now,
+            );
+            if desired.len() >= 15 {
+                smallest_surface_count_reaching_fifteen = Some(
+                    smallest_surface_count_reaching_fifteen
+                        .map_or(relaxations.len(), |best| best.min(relaxations.len())),
+                );
+                if relaxations.len() == 5 {
+                    five_surface_combos_reaching_fifteen.push(
+                        relaxations
+                            .iter()
+                            .map(|relaxation| relaxation.label())
+                            .collect::<Vec<_>>(),
+                    );
+                }
+            }
+        }
+
+        assert_eq!(
+            smallest_surface_count_reaching_fifteen,
+            Some(5),
+            "there is no one/two/three/four-surface discovery policy tweak that reaches 15+ on the live-like reduced field; the minimal path is already five surfaces wide"
+        );
+        assert!(
+            five_surface_combos_reaching_fifteen.iter().any(|combo| combo
+                == &vec![
+                    "min_active_days",
+                    "min_leader_notional_sol",
+                    "decay_window_days",
+                    "min_buy_count",
+                    "min_score",
+                ]),
+            "at least one minimal path to 15+ must avoid touching the suspicious/spam gate entirely"
+        );
+    }
+
+    #[test]
+    fn live_like_small_published_universe_can_reach_fifteen_without_relaxing_spam_or_tradability_stage1(
+    ) {
+        let now = DateTime::parse_from_rfc3339("2026-04-06T06:37:24Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = live_shadow_blocker_discovery_config_for_tests();
+        let entries = live_publish_gate_fixture_wallets(now);
+        let desired = live_publish_gate_desired_wallets_for_relaxations(
+            &config,
+            &entries,
+            &[
+                LivePublishGateRelaxation::MinActiveDays,
+                LivePublishGateRelaxation::MinLeaderNotionalSol,
+                LivePublishGateRelaxation::DecayWindowDays,
+                LivePublishGateRelaxation::MinBuyCount,
+                LivePublishGateRelaxation::MinScore,
+            ],
+            now,
+        );
+
+        assert_eq!(
+            desired.len(),
+            15,
+            "a minimal live-like path to 15 should exist without relaxing the suspicious gate or the tradability hard floor"
+        );
+        assert!(
+            desired.contains(&"wallet_fail_min_active_days".to_string()),
+            "lowering min_active_days should recover the active-days miss"
+        );
+        assert!(
+            desired.contains(&"wallet_fail_min_leader_notional".to_string()),
+            "lowering min_leader_notional_sol should recover the notional miss"
+        );
+        assert!(
+            desired.contains(&"wallet_fail_decay".to_string()),
+            "widening decay_window_days should recover the recency miss"
+        );
+        assert!(
+            desired.contains(&"wallet_fail_min_buy_count".to_string()),
+            "lowering min_buy_count should recover the buy-count miss"
+        );
+        assert!(
+            desired.contains(&"wallet_fail_score".to_string()),
+            "lowering min_score should recover the score-only miss"
+        );
+        assert!(
+            !desired.contains(&"wallet_fail_suspicious".to_string()),
+            "the spam/suspicious gate can remain intact on this minimal 15-wallet path"
+        );
+        assert!(
+            !desired.contains(&"wallet_fail_tradable_ratio".to_string()),
+            "the tradability floor can remain intact on this minimal 15-wallet path"
+        );
+    }
+
+    #[test]
+    fn live_like_clustered_fully_liquidated_wallets_publish_under_current_rug_disabled_policy_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("clustered-fully-liquidated-wallets-publish-under-live-policy.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-06T10:26:22Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = live_shadow_blocker_discovery_config_for_tests();
+        let (swaps, clustered_wallet_ids, independent_wallet_ids) =
+            clustered_thin_market_fixture_swaps(now, false);
+        assert!(
+            independent_wallet_ids.is_empty(),
+            "this exact failure-class repro should isolate only the clustered drained cohort"
+        );
+
+        let (snapshots, desired, entries, _) =
+            desired_wallets_from_clustered_thin_market_fixture(config.clone(), &swaps, now);
+        assert_eq!(
+            desired.len(),
+            clustered_wallet_ids.len(),
+            "with the current live policy surfaces, the fully liquidated clustered cohort should still become the entire published universe"
+        );
+        assert_eq!(
+            desired, clustered_wallet_ids,
+            "current live policy should publish the exact clustered cohort because top-N is not binding and rug/thin-market gating is disabled"
+        );
+
+        for wallet_id in &clustered_wallet_ids {
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| snapshot.wallet_id == *wallet_id)
+                .expect("clustered wallet snapshot should exist");
+            assert!(
+                snapshot.eligible,
+                "the clustered wallet should still satisfy current historical eligibility when live rug gating is disabled"
+            );
+            assert!(
+                snapshot.score >= config.min_score,
+                "the clustered wallet should still clear the score floor under the current live policy"
+            );
+            assert!(
+                snapshot.rug_ratio.abs() < 1e-9,
+                "with thin-market thresholds disabled at 0/0, the clustered wallet should look fully healthy to the current live policy despite sharing the exact clustered token path"
+            );
+            let (_, acc) = entries
+                .iter()
+                .find(|(entry_wallet_id, _)| entry_wallet_id == wallet_id)
+                .expect("clustered wallet accumulator should exist");
+            assert!(
+                acc.positions.values().all(|lots| lots.is_empty()),
+                "the repro must specifically cover the live-observed class where the wallets already fully drained all tracked lots before publication"
+            );
+        }
+
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let publication_outcome = discovery.persist_publication_state(
+            &store,
+            DiscoveryRuntimeMode::Healthy,
+            true,
+            metrics_window_start,
+            Some(&desired),
+            "raw_window_persisted_stream",
+            "clustered_thin_market_live_policy_publish",
+            now,
+        )?;
+        assert!(
+            publication_outcome.published_universe_persisted,
+            "current live policy should currently materialize the clustered cohort into exact publication truth once it becomes the desired set"
+        );
+        let publication_state = store
+            .discovery_publication_state_read_only()?
+            .expect("publication state should exist");
+        assert_eq!(
+            publication_state.published_wallet_ids.unwrap_or_default(),
+            clustered_wallet_ids,
+            "published wallet ids must exactly mirror the clustered cohort under the current live policy"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn live_like_clustered_wallets_require_both_rug_policy_surfaces_to_be_excluded_stage1() {
+        let now = DateTime::parse_from_rfc3339("2026-04-06T10:26:22Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let live_config = live_shadow_blocker_discovery_config_for_tests();
+        let default_config = DiscoveryConfig::default();
+        let restored_config = live_restored_rug_policy_discovery_config_for_tests();
+        let (swaps, clustered_wallet_ids, _) = clustered_thin_market_fixture_swaps(now, false);
+
+        let (_, live_desired, _, _) =
+            desired_wallets_from_clustered_thin_market_fixture(live_config.clone(), &swaps, now);
+        assert_eq!(live_desired, clustered_wallet_ids);
+
+        let mut rug_only_config = live_config.clone();
+        rug_only_config.max_rug_ratio = default_config.max_rug_ratio;
+        let (rug_only_snapshots, rug_only_desired, _, _) =
+            desired_wallets_from_clustered_thin_market_fixture(rug_only_config, &swaps, now);
+        assert_eq!(
+            rug_only_desired, clustered_wallet_ids,
+            "lowering only max_rug_ratio cannot help while thin-market thresholds stay disabled at 0/0"
+        );
+        assert!(
+            rug_only_snapshots
+                .iter()
+                .filter(|snapshot| snapshot.wallet_id.starts_with("wallet_clustered_"))
+                .all(|snapshot| snapshot.rug_ratio.abs() < 1e-9),
+            "with thin-market thresholds still disabled, the clustered cohort should no longer look rugged at all"
+        );
+
+        let mut thin_market_only_config = live_config.clone();
+        thin_market_only_config.thin_market_min_volume_sol =
+            default_config.thin_market_min_volume_sol;
+        thin_market_only_config.thin_market_min_unique_traders =
+            default_config.thin_market_min_unique_traders;
+        let (thin_market_only_snapshots, thin_market_only_desired, _, _) =
+            desired_wallets_from_clustered_thin_market_fixture(
+                thin_market_only_config,
+                &swaps,
+                now,
+            );
+        assert_eq!(
+            thin_market_only_desired, clustered_wallet_ids,
+            "restoring only thin-market thresholds still cannot exclude the cohort while live policy keeps rug gating bypassed at max_rug_ratio=1.0"
+        );
+        assert!(
+            thin_market_only_snapshots
+                .iter()
+                .filter(|snapshot| snapshot.wallet_id.starts_with("wallet_clustered_"))
+                .all(|snapshot| (snapshot.rug_ratio - 1.0).abs() < 1e-9),
+            "with thin-market thresholds restored, the clustered cohort should immediately look fully rugged"
+        );
+
+        let (_, restored_desired, _, _) =
+            desired_wallets_from_clustered_thin_market_fixture(restored_config, &swaps, now);
+        assert!(
+            restored_desired.is_empty(),
+            "only the combined restore of the existing rug gate and thin-market thresholds should exclude the clustered cohort"
+        );
+    }
+
+    #[test]
+    fn live_like_restored_rug_policy_excludes_clustered_wallets_while_preserving_independent_wallets_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("restored-rug-policy-preserves-independent-wallets.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-06T10:26:22Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let live_config = live_shadow_blocker_discovery_config_for_tests();
+        let restored_config = live_restored_rug_policy_discovery_config_for_tests();
+        let (swaps, clustered_wallet_ids, independent_wallet_ids) =
+            clustered_thin_market_fixture_swaps(now, true);
+        assert_eq!(clustered_wallet_ids.len(), 9);
+        assert_eq!(independent_wallet_ids.len(), 3);
+
+        let (_, live_desired, _, _) =
+            desired_wallets_from_clustered_thin_market_fixture(live_config.clone(), &swaps, now);
+        assert_eq!(
+            live_desired.len(),
+            clustered_wallet_ids.len() + independent_wallet_ids.len(),
+            "with live rug gating disabled, both the clustered cohort and the independent profitable wallets should publish together"
+        );
+        for wallet_id in &clustered_wallet_ids {
+            assert!(
+                live_desired.contains(wallet_id),
+                "current live policy should still publish the clustered wallet {wallet_id}"
+            );
+        }
+        for wallet_id in &independent_wallet_ids {
+            assert!(
+                live_desired.contains(wallet_id),
+                "current live policy should also keep the independent profitable wallet {wallet_id}"
+            );
+        }
+
+        let (_, restored_desired, _, _) = desired_wallets_from_clustered_thin_market_fixture(
+            restored_config.clone(),
+            &swaps,
+            now,
+        );
+        assert_eq!(
+            restored_desired, independent_wallet_ids,
+            "restoring the existing rug/thin-market policy should exclude only the clustered thin-market cohort while preserving the independent profitable wallets"
+        );
+
+        let discovery = DiscoveryService::new(restored_config.clone(), permissive_shadow_quality());
+        let metrics_window_start = metrics_window_start_for_test(&restored_config, now);
+        let publication_outcome = discovery.persist_publication_state(
+            &store,
+            DiscoveryRuntimeMode::Healthy,
+            true,
+            metrics_window_start,
+            Some(&restored_desired),
+            "raw_window_persisted_stream",
+            "clustered_thin_market_policy_restore_publish",
+            now,
+        )?;
+        assert!(
+            publication_outcome.published_universe_persisted,
+            "once the clustered cohort is excluded for an exact thin-market ruggedness reason, the remaining independent universe should still materialize as exact publication truth"
+        );
+        let publication_state = store
+            .discovery_publication_state_read_only()?
+            .expect("publication state should exist");
+        assert_eq!(
+            publication_state.published_wallet_ids.unwrap_or_default(),
+            independent_wallet_ids,
+            "publication truth should persist only the surviving independent wallets after the policy restore"
+        );
+
         Ok(())
     }
 

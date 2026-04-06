@@ -3,6 +3,60 @@
 
 # solana-copy-bot
 
+## Live Update (`2026-04-06`)
+
+The Stage 3 discovery fail-closed publication recovery incident is now closed
+on the live host, but shadow trading is still intentionally blocked because the
+current published wallet universe looks low-quality.
+
+Current live truth:
+
+- `copybot-discovery-runtime-export.service` successfully wrote runtime
+  artifacts at:
+  - `2026-04-06 09:01:33 Europe/Kiev`
+  - `2026-04-06 09:13:02 Europe/Kiev`
+- exact publication truth now exists on live:
+  - `publication_truth_complete = true`
+  - earlier exact publishes reached `published_wallet_count = 10`
+- a later degraded artifact on
+  `2026-04-06 15:07:22 Europe/Kiev` still surfaced a real exact published
+  universe, but only `9` wallets:
+  - `publication_state.runtime_mode = Degraded`
+  - `publication_state.reason = published_universe_raw_window_degraded`
+  - `published_wallet_ids.len() = 9`
+- temporary policy experiment `8302bcd` lowered shadow universe minimums from
+  `15/80` to `9/9` and correctly proved the active shadow blocker was purely
+  threshold-driven:
+  - `active_follow_wallets = 9`
+  - `eligible_wallets = 9`
+  - the old `shadow risk universe stop activated` warning disappeared
+  - no lots opened during the experiment
+- manual live wallet inspection then showed the published 9-wallet universe was
+  low-quality:
+  - all sampled wallets had `SOL Balance = 0` and `Total Value = $0`
+  - they showed a highly similar synchronized unwind / drain pattern
+  - recent transfers and account closes happened at nearly the same times
+  - this looks like a clustered junk universe, not a trustworthy trading set
+- the threshold experiment was therefore rolled back with `41d0b7a`:
+  - `Restore shadow universe minimums`
+  - live config is back to `min_active_follow_wallets = 15`
+  - live config is back to `min_eligible_wallets = 80`
+  - rollback is live since `2026-04-06 15:26:07 Europe/Kiev`
+- practical result:
+  - Stage 3 recovery is closed
+  - the current blocker is no longer publication truth or shadow threshold
+    logic
+  - the current blocker is discovery selection quality: exclude drained /
+    clustered junk wallets before they enter the published universe
+  - current local causal proof points to live discovery policy explicitly
+    disabling the existing rug / thin-market gate:
+    - previous live config had `max_rug_ratio = 1.0`
+    - previous live config had `thin_market_min_volume_sol = 0.0`
+    - previous live config had `thin_market_min_unique_traders = 0`
+    - local reduced repro now shows that this exact policy hole allows the
+      clustered thin-market cohort to publish
+  - shadow trading should remain blocked until that quality issue is fixed
+
 ## Incident Update (`2026-03-30`)
 
 The acute `recent_raw` startup deadlock on the live host has been removed, but
