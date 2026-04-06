@@ -75,6 +75,8 @@ const DISCOVERY_PUBLICATION_TRUTH_REPLAY_WALLET_STATS_FRONTIER_SATURATION_NUMERA
 const DISCOVERY_PUBLICATION_TRUTH_REPLAY_WALLET_STATS_FRONTIER_SATURATION_DENOMINATOR: usize = 20;
 const DISCOVERY_PUBLICATION_TRUTH_REPLAY_WALLET_STATS_PUBLISHABLE_HORIZON_PROGRESS_MULTIPLIER:
     usize = 4;
+const ACTIONABLE_OPEN_POSITION_HOLD_MULTIPLIER: i64 = 4;
+const ACTIONABLE_OPEN_POSITION_MIN_HOLD_SAMPLES: usize = 3;
 #[cfg(test)]
 const POST_BOOTSTRAP_ROTATION_BLOCKED_REASON: &str =
     "post_bootstrap_rotation_blocked_cap_truncated";
@@ -10598,7 +10600,8 @@ impl DiscoveryService {
         let active_days = acc
             .exact_active_day_count
             .unwrap_or(acc.active_days.len() as u32);
-        let has_open_positions = acc.has_open_positions();
+        let has_actionable_open_positions =
+            acc.has_actionable_open_positions(now, self.config.metric_snapshot_interval_seconds);
         let eligibility_active_days = active_days.max(persisted_active_days);
         let (buy_total, quality_resolved_buys, tradable_buys, rug_metrics) =
             if acc.buy_observations.is_empty() {
@@ -10644,7 +10647,7 @@ impl DiscoveryService {
             rug_metrics,
             now,
         );
-        if self.config.require_open_positions_for_publication && !has_open_positions {
+        if self.config.require_open_positions_for_publication && !has_actionable_open_positions {
             snapshot.eligible = false;
             snapshot.score = 0.0;
         }
@@ -10720,11 +10723,46 @@ impl DiscoveryService {
 }
 
 impl WalletAccumulator {
+    #[cfg(test)]
     fn has_open_positions(&self) -> bool {
         self.positions
             .values()
             .flatten()
             .any(|lot| lot.qty > 1e-12 && lot.cost_sol > 1e-12)
+    }
+
+    fn actionable_open_position_max_age_seconds(
+        &self,
+        metric_snapshot_interval_seconds: u64,
+    ) -> Option<i64> {
+        if self.hold_samples_sec.len() < ACTIONABLE_OPEN_POSITION_MIN_HOLD_SAMPLES {
+            return None;
+        }
+        let cadence_floor_seconds =
+            i64::try_from(metric_snapshot_interval_seconds.max(1)).unwrap_or(i64::MAX);
+        let historical_hold_allowance_seconds = self
+            .hold_samples_sec
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .saturating_mul(ACTIONABLE_OPEN_POSITION_HOLD_MULTIPLIER);
+        Some(cadence_floor_seconds.max(historical_hold_allowance_seconds))
+    }
+
+    fn has_actionable_open_positions(
+        &self,
+        now: DateTime<Utc>,
+        metric_snapshot_interval_seconds: u64,
+    ) -> bool {
+        let max_open_age_seconds =
+            self.actionable_open_position_max_age_seconds(metric_snapshot_interval_seconds);
+        self.positions.values().flatten().any(|lot| {
+            lot.qty > 1e-12
+                && lot.cost_sol > 1e-12
+                && max_open_age_seconds
+                    .is_none_or(|age_limit| (now - lot.opened_at).num_seconds().max(0) <= age_limit)
+        })
     }
 
     fn reset_activity_summary_for_exact_backfill(&mut self) {
@@ -11521,6 +11559,86 @@ mod tests {
         wallets
     }
 
+    fn refill_drain_wallet_accumulator(
+        now: DateTime<Utc>,
+        open_lot_age: Duration,
+        hold_median_seconds: i64,
+        token: &str,
+    ) -> WalletAccumulator {
+        let mut acc = WalletAccumulator::default();
+        acc.first_seen = Some(now - Duration::days(4));
+        acc.last_seen = Some(now - open_lot_age);
+        acc.trades = 25;
+        acc.exact_active_day_count = Some(4);
+        acc.spent_sol = 13.0;
+        acc.realized_pnl_sol = 4.5;
+        acc.max_buy_notional_sol = 1.1;
+        acc.wins = 10;
+        acc.closed_trades = 12;
+        acc.hold_samples_sec = vec![hold_median_seconds; acc.closed_trades as usize];
+        for idx in 0..4 {
+            acc.realized_pnl_by_day
+                .insert((now - Duration::days(idx)).date_naive(), 1.0);
+        }
+        acc.buy_total = 13;
+        acc.quality_resolved_buys = 13;
+        acc.tradable_buys = 13;
+        acc.rug_metrics = RugMetrics {
+            evaluated: 13,
+            rugged: 0,
+            unevaluated: 0,
+        };
+        acc.positions
+            .entry(token.to_string())
+            .or_default()
+            .push_back(Lot {
+                qty: 100.0,
+                cost_sol: 1.0,
+                opened_at: now - open_lot_age,
+            });
+        acc
+    }
+
+    fn refill_drain_open_lot_fixture_wallets(
+        now: DateTime<Utc>,
+        include_independent_wallets: bool,
+    ) -> (Vec<(String, WalletAccumulator)>, Vec<String>, Vec<String>) {
+        let stale_cluster_wallet_ids: Vec<String> = (0..7)
+            .map(|idx| format!("wallet_refill_drain_cluster_{idx:02}"))
+            .collect();
+        let independent_wallet_ids: Vec<String> = if include_independent_wallets {
+            (0..3)
+                .map(|idx| format!("wallet_independent_recent_open_{idx:02}"))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut entries = Vec::new();
+        for wallet_id in &stale_cluster_wallet_ids {
+            entries.push((
+                wallet_id.clone(),
+                refill_drain_wallet_accumulator(
+                    now,
+                    Duration::hours(2),
+                    5 * 60,
+                    "TokenRefillDrainCluster1111111111111111111",
+                ),
+            ));
+        }
+        for wallet_id in &independent_wallet_ids {
+            entries.push((
+                wallet_id.clone(),
+                refill_drain_wallet_accumulator(
+                    now,
+                    Duration::minutes(20),
+                    20 * 60,
+                    "TokenIndependentCarry111111111111111111111",
+                ),
+            ));
+        }
+        (entries, stale_cluster_wallet_ids, independent_wallet_ids)
+    }
+
     fn desired_wallets_from_live_publish_gate_fixture(
         config: DiscoveryConfig,
         entries: &[(String, WalletAccumulator)],
@@ -11541,6 +11659,108 @@ mod tests {
         let ranked = rank_follow_candidates(&snapshots, config.min_score);
         let desired = desired_wallets(&ranked, config.follow_top_n);
         (snapshots, desired)
+    }
+
+    fn desired_wallets_from_refill_drain_fixture_with_open_position_semantics(
+        config: DiscoveryConfig,
+        entries: &[(String, WalletAccumulator)],
+        now: DateTime<Utc>,
+        require_actionable_open_positions: bool,
+    ) -> (Vec<WalletSnapshot>, Vec<String>) {
+        let mut ungated_config = config.clone();
+        ungated_config.require_open_positions_for_publication = false;
+        let discovery = DiscoveryService::new(ungated_config, permissive_shadow_quality());
+        let snapshots = entries
+            .iter()
+            .map(|(wallet_id, acc)| {
+                let mut snapshot = discovery.snapshot_from_accumulator(
+                    wallet_id.clone(),
+                    acc.clone(),
+                    now,
+                    &HashMap::new(),
+                );
+                if config.require_open_positions_for_publication {
+                    let gate_passed = if require_actionable_open_positions {
+                        acc.has_actionable_open_positions(
+                            now,
+                            config.metric_snapshot_interval_seconds,
+                        )
+                    } else {
+                        acc.has_open_positions()
+                    };
+                    if !gate_passed {
+                        snapshot.eligible = false;
+                        snapshot.score = 0.0;
+                    }
+                }
+                snapshot
+            })
+            .collect::<Vec<_>>();
+        let ranked = rank_follow_candidates(&snapshots, config.min_score);
+        let desired = desired_wallets(&ranked, config.follow_top_n);
+        (snapshots, desired)
+    }
+
+    fn old_actionable_open_position_gate_passes(
+        acc: &WalletAccumulator,
+        now: DateTime<Utc>,
+        metric_snapshot_interval_seconds: u64,
+    ) -> bool {
+        let cadence_floor_seconds =
+            i64::try_from(metric_snapshot_interval_seconds.max(1)).unwrap_or(i64::MAX);
+        let historical_hold_allowance_seconds = acc
+            .hold_samples_sec
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .saturating_mul(ACTIONABLE_OPEN_POSITION_HOLD_MULTIPLIER);
+        let max_open_age_seconds = cadence_floor_seconds.max(historical_hold_allowance_seconds);
+        acc.positions.values().flatten().any(|lot| {
+            lot.qty > 1e-12
+                && lot.cost_sol > 1e-12
+                && (now - lot.opened_at).num_seconds().max(0) <= max_open_age_seconds
+        })
+    }
+
+    fn leader_with_open_position_and_hold_history(
+        now: DateTime<Utc>,
+        open_lot_age: Duration,
+        closed_trades: u32,
+        hold_samples: &[i64],
+    ) -> WalletAccumulator {
+        let mut acc = WalletAccumulator::default();
+        acc.first_seen = Some(now - Duration::days(4));
+        acc.last_seen = Some(now - Duration::minutes(5));
+        acc.trades = 18;
+        acc.exact_active_day_count = Some(4);
+        acc.spent_sol = 9.0;
+        acc.realized_pnl_sol = 2.5;
+        acc.max_buy_notional_sol = 1.0;
+        acc.wins = closed_trades.min(6);
+        acc.closed_trades = closed_trades;
+        acc.hold_samples_sec = hold_samples.to_vec();
+        for idx in 0..4 {
+            acc.realized_pnl_by_day
+                .insert((now - Duration::days(idx)).date_naive(), 0.8);
+        }
+        acc.buy_total = 12;
+        acc.quality_resolved_buys = 12;
+        acc.tradable_buys = 12;
+        acc.rug_metrics = RugMetrics {
+            evaluated: 12,
+            rugged: 0,
+            unevaluated: 0,
+        };
+        acc.positions
+            .entry("TokenLegitCarry1111111111111111111111111".to_string())
+            .or_default()
+            .push_back(Lot {
+                qty: 100.0,
+                cost_sol: 1.0,
+                opened_at: now - open_lot_age,
+            });
+        acc
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -14048,6 +14268,247 @@ mod tests {
             "publication truth must persist only the surviving independent wallets after the new gate"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn live_like_refill_drain_wallets_with_stale_phantom_open_lots_pass_old_open_position_gate_stage1(
+    ) {
+        let now = DateTime::parse_from_rfc3339("2026-04-06T17:59:22Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        let (entries, stale_cluster_wallet_ids, independent_wallet_ids) =
+            refill_drain_open_lot_fixture_wallets(now, false);
+        assert!(independent_wallet_ids.is_empty());
+
+        let (old_snapshots, old_desired) =
+            desired_wallets_from_refill_drain_fixture_with_open_position_semantics(
+                config.clone(),
+                &entries,
+                now,
+                false,
+            );
+        assert_eq!(
+            old_desired, stale_cluster_wallet_ids,
+            "under the old gate semantics, any unmatched buy lot keeps the refill/drain wallet publishable even when that lot already looks stale relative to the wallet's own realized hold behavior"
+        );
+
+        for wallet_id in &stale_cluster_wallet_ids {
+            let (_, acc) = entries
+                .iter()
+                .find(|(entry_wallet_id, _)| entry_wallet_id == wallet_id)
+                .expect("stale refill/drain wallet accumulator should exist");
+            assert!(
+                acc.has_open_positions(),
+                "the exact failure class requires the refill/drain wallet {wallet_id} to still carry a phantom open lot in swap-derived state"
+            );
+            assert!(
+                !acc.has_actionable_open_positions(now, config.metric_snapshot_interval_seconds),
+                "the same phantom open lot for {wallet_id} should already be stale relative to the wallet's realized hold envelope and current metric bucket cadence"
+            );
+            let snapshot = old_snapshots
+                .iter()
+                .find(|snapshot| snapshot.wallet_id == *wallet_id)
+                .expect("old-gate snapshot should exist");
+            assert!(
+                snapshot.eligible && snapshot.score >= config.min_score,
+                "historical scoring should still keep the refill/drain wallet {wallet_id} publishable before the tighter actionable-open-position semantics run"
+            );
+        }
+    }
+
+    #[test]
+    fn actionable_open_position_gate_preserves_legitimate_open_leader_without_realized_hold_history_stage1(
+    ) {
+        let now = DateTime::parse_from_rfc3339("2026-04-06T17:59:22Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        let wallet_id = "wallet_legit_open_no_history".to_string();
+        let acc = leader_with_open_position_and_hold_history(now, Duration::hours(2), 0, &[]);
+
+        assert!(
+            !old_actionable_open_position_gate_passes(
+                &acc,
+                now,
+                config.metric_snapshot_interval_seconds,
+            ),
+            "the old gate would wrongly kill a leader with a genuine long-lived open position but no realized sell history because it collapsed the allowed age to a single metric bucket"
+        );
+        assert!(
+            acc.has_actionable_open_positions(now, config.metric_snapshot_interval_seconds),
+            "without an established realized hold profile, discovery must treat the open lot as still actionable instead of inferring staleness from missing sell history"
+        );
+
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let snapshot = discovery.snapshot_from_accumulator(
+            wallet_id.clone(),
+            acc.clone(),
+            now,
+            &HashMap::new(),
+        );
+        assert!(
+            snapshot.eligible && snapshot.score >= config.min_score,
+            "the tightened gate must preserve legitimate open-position leaders when there is no realized hold history yet"
+        );
+        let snapshots = [snapshot];
+        let ranked = rank_follow_candidates(&snapshots, config.min_score);
+        let desired = desired_wallets(&ranked, config.follow_top_n);
+        assert_eq!(desired, vec![wallet_id]);
+    }
+
+    #[test]
+    fn actionable_open_position_gate_preserves_legitimate_open_leader_with_insufficient_hold_samples_stage1(
+    ) {
+        let now = DateTime::parse_from_rfc3339("2026-04-06T17:59:22Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        let wallet_id = "wallet_legit_open_low_history".to_string();
+        let acc = leader_with_open_position_and_hold_history(
+            now,
+            Duration::hours(2),
+            2,
+            &[5 * 60, 7 * 60],
+        );
+
+        assert!(
+            !old_actionable_open_position_gate_passes(
+                &acc,
+                now,
+                config.metric_snapshot_interval_seconds,
+            ),
+            "the old gate would also wrongly kill a leader with only a couple of realized exits because two short samples do not establish a trustworthy hold envelope"
+        );
+        assert!(
+            acc.has_actionable_open_positions(now, config.metric_snapshot_interval_seconds),
+            "with fewer than the minimum hold samples, discovery must not infer that the remaining open lot is stale"
+        );
+
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let snapshot = discovery.snapshot_from_accumulator(
+            wallet_id.clone(),
+            acc.clone(),
+            now,
+            &HashMap::new(),
+        );
+        assert!(
+            snapshot.eligible && snapshot.score >= config.min_score,
+            "the actionable-open-position gate must preserve leaders with insufficient realized hold history until a real hold profile exists"
+        );
+        let snapshots = [snapshot];
+        let ranked = rank_follow_candidates(&snapshots, config.min_score);
+        let desired = desired_wallets(&ranked, config.follow_top_n);
+        assert_eq!(desired, vec![wallet_id]);
+    }
+
+    #[test]
+    fn live_like_actionable_open_position_gate_excludes_refill_drain_wallets_while_preserving_recent_independent_leaders_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("actionable-open-position-gate-excludes-refill-drain-wallets.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-06T17:59:22Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        let (entries, stale_cluster_wallet_ids, independent_wallet_ids) =
+            refill_drain_open_lot_fixture_wallets(now, true);
+        assert_eq!(stale_cluster_wallet_ids.len(), 7);
+        assert_eq!(independent_wallet_ids.len(), 3);
+
+        let (_, old_desired) =
+            desired_wallets_from_refill_drain_fixture_with_open_position_semantics(
+                config.clone(),
+                &entries,
+                now,
+                false,
+            );
+        for wallet_id in &stale_cluster_wallet_ids {
+            assert!(
+                old_desired.contains(wallet_id),
+                "old open-position semantics should still publish the refill/drain wallet {wallet_id}"
+            );
+        }
+        for wallet_id in &independent_wallet_ids {
+            assert!(
+                old_desired.contains(wallet_id),
+                "the positive-control independent leader {wallet_id} should also publish under the old semantics"
+            );
+        }
+
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let new_snapshots = entries
+            .iter()
+            .map(|(wallet_id, acc)| {
+                discovery.snapshot_from_accumulator(
+                    wallet_id.clone(),
+                    acc.clone(),
+                    now,
+                    &HashMap::new(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let new_ranked = rank_follow_candidates(&new_snapshots, config.min_score);
+        let new_desired = desired_wallets(&new_ranked, config.follow_top_n);
+        assert_eq!(
+            new_desired, independent_wallet_ids,
+            "the actionable-open-position gate should exclude only the refill/drain wallets whose phantom lots already outlived their realized hold envelope, while preserving recent independent leaders"
+        );
+        for wallet_id in &stale_cluster_wallet_ids {
+            let snapshot = new_snapshots
+                .iter()
+                .find(|snapshot| snapshot.wallet_id == *wallet_id)
+                .expect("new-gate stale wallet snapshot should exist");
+            assert!(
+                !snapshot.eligible && snapshot.score.abs() < 1e-9,
+                "the stale refill/drain wallet {wallet_id} must be demoted before ranking once its only open lot is no longer actionable"
+            );
+        }
+        for wallet_id in &independent_wallet_ids {
+            let snapshot = new_snapshots
+                .iter()
+                .find(|snapshot| snapshot.wallet_id == *wallet_id)
+                .expect("new-gate independent snapshot should exist");
+            assert!(
+                snapshot.eligible && snapshot.score >= config.min_score,
+                "the actionable-open-position gate must preserve the recent independent leader {wallet_id}"
+            );
+        }
+
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let publication_outcome = discovery.persist_publication_state(
+            &store,
+            DiscoveryRuntimeMode::Healthy,
+            true,
+            metrics_window_start,
+            Some(&new_desired),
+            "raw_window_persisted_stream",
+            "actionable_open_position_gate_refill_drain_filter",
+            now,
+        )?;
+        assert!(
+            publication_outcome.published_universe_persisted,
+            "once the refill/drain wallets are excluded for a stale-actionable-state reason, the remaining independent leaders must still materialize as exact publication truth"
+        );
+        let publication_state = store
+            .discovery_publication_state_read_only()?
+            .expect("publication state should exist");
+        assert_eq!(
+            publication_state.published_wallet_ids.unwrap_or_default(),
+            independent_wallet_ids,
+            "publication truth must persist only the recent independent leaders after the actionable-open-position gate"
+        );
         Ok(())
     }
 
