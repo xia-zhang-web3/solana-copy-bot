@@ -719,7 +719,9 @@ impl SqliteStore {
         self.discovery_publication_state_query()
     }
 
-    fn discovery_publication_state_query(&self) -> Result<Option<DiscoveryPublicationStateRow>> {
+    fn discovery_publication_state_query_with_policy(
+        &self,
+    ) -> Result<Option<(DiscoveryPublicationStateRow, Option<String>)>> {
         let raw = self
             .conn
             .query_row(
@@ -730,6 +732,7 @@ impl SqliteStore {
                     publication_last_published_window_start,
                     publication_scoring_source,
                     publication_wallet_ids_json,
+                    publication_policy_fingerprint,
                     updated_at
                  FROM discovery_strategy_state
                  WHERE id = 1",
@@ -742,7 +745,8 @@ impl SqliteStore {
                         row.get::<_, Option<String>>(3)?,
                         row.get::<_, Option<String>>(4)?,
                         row.get::<_, Option<String>>(5)?,
-                        row.get::<_, String>(6)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, String>(7)?,
                     ))
                 },
             )
@@ -756,37 +760,57 @@ impl SqliteStore {
                 last_published_window_start_raw,
                 published_scoring_source,
                 published_wallet_ids_raw,
+                publication_policy_fingerprint,
                 updated_at_raw,
             )| {
-                Ok(DiscoveryPublicationStateRow {
-                    runtime_mode: DiscoveryRuntimeMode::parse(&runtime_mode_raw)?,
-                    reason,
-                    last_published_at: parse_optional_rfc3339_utc(
-                        last_published_at_raw,
-                        "discovery_strategy_state.publication_last_published_at",
-                    )?,
-                    last_published_window_start: parse_optional_rfc3339_utc(
-                        last_published_window_start_raw,
-                        "discovery_strategy_state.publication_last_published_window_start",
-                    )?,
-                    published_scoring_source,
-                    published_wallet_ids: parse_optional_wallet_ids_json(
-                        published_wallet_ids_raw,
-                        "discovery_strategy_state.publication_wallet_ids_json",
-                    )?,
-                    updated_at: parse_rfc3339_utc(
-                        &updated_at_raw,
-                        "discovery_strategy_state.updated_at",
-                    )?,
-                })
+                Ok((
+                    DiscoveryPublicationStateRow {
+                        runtime_mode: DiscoveryRuntimeMode::parse(&runtime_mode_raw)?,
+                        reason,
+                        last_published_at: parse_optional_rfc3339_utc(
+                            last_published_at_raw,
+                            "discovery_strategy_state.publication_last_published_at",
+                        )?,
+                        last_published_window_start: parse_optional_rfc3339_utc(
+                            last_published_window_start_raw,
+                            "discovery_strategy_state.publication_last_published_window_start",
+                        )?,
+                        published_scoring_source,
+                        published_wallet_ids: parse_optional_wallet_ids_json(
+                            published_wallet_ids_raw,
+                            "discovery_strategy_state.publication_wallet_ids_json",
+                        )?,
+                        publication_policy_fingerprint: publication_policy_fingerprint.clone(),
+                        updated_at: parse_rfc3339_utc(
+                            &updated_at_raw,
+                            "discovery_strategy_state.updated_at",
+                        )?,
+                    },
+                    publication_policy_fingerprint,
+                ))
             },
         )
         .transpose()
     }
 
+    fn discovery_publication_state_query(&self) -> Result<Option<DiscoveryPublicationStateRow>> {
+        Ok(self
+            .discovery_publication_state_query_with_policy()?
+            .map(|(state, _)| state))
+    }
+
     pub fn set_discovery_publication_state(
         &self,
         update: &DiscoveryPublicationStateUpdate,
+    ) -> Result<()> {
+        self.set_discovery_publication_state_with_options(update, false, None)
+    }
+
+    pub fn set_discovery_publication_state_with_options(
+        &self,
+        update: &DiscoveryPublicationStateUpdate,
+        clear_published_truth: bool,
+        policy_fingerprint: Option<&str>,
     ) -> Result<()> {
         self.ensure_discovery_strategy_state_table()?;
         let published_wallet_ids_json = update
@@ -808,24 +832,41 @@ impl SqliteStore {
                     publication_last_published_window_start,
                     publication_scoring_source,
                     publication_wallet_ids_json,
+                    publication_policy_fingerprint,
                     updated_at
-                 ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT(id) DO UPDATE SET
                     publication_runtime_mode = excluded.publication_runtime_mode,
                     publication_reason = excluded.publication_reason,
-                    publication_last_published_at = COALESCE(
-                        excluded.publication_last_published_at,
-                        discovery_strategy_state.publication_last_published_at
-                    ),
-                    publication_last_published_window_start = COALESCE(
-                        excluded.publication_last_published_window_start,
-                        discovery_strategy_state.publication_last_published_window_start
-                    ),
+                    publication_last_published_at = CASE
+                        WHEN ?9 THEN NULL
+                        ELSE COALESCE(
+                            excluded.publication_last_published_at,
+                            discovery_strategy_state.publication_last_published_at
+                        )
+                    END,
+                    publication_last_published_window_start = CASE
+                        WHEN ?9 THEN NULL
+                        ELSE COALESCE(
+                            excluded.publication_last_published_window_start,
+                            discovery_strategy_state.publication_last_published_window_start
+                        )
+                    END,
                     publication_scoring_source = excluded.publication_scoring_source,
-                    publication_wallet_ids_json = COALESCE(
-                        excluded.publication_wallet_ids_json,
-                        discovery_strategy_state.publication_wallet_ids_json
-                    ),
+                    publication_wallet_ids_json = CASE
+                        WHEN ?9 THEN NULL
+                        ELSE COALESCE(
+                            excluded.publication_wallet_ids_json,
+                            discovery_strategy_state.publication_wallet_ids_json
+                        )
+                    END,
+                    publication_policy_fingerprint = CASE
+                        WHEN ?9 THEN NULL
+                        ELSE COALESCE(
+                            excluded.publication_policy_fingerprint,
+                            discovery_strategy_state.publication_policy_fingerprint
+                        )
+                    END,
                     updated_at = excluded.updated_at",
                 params![
                     update.runtime_mode.as_str(),
@@ -836,12 +877,24 @@ impl SqliteStore {
                         .map(canonical_wallet_metrics_window_start),
                     update.published_scoring_source.as_deref(),
                     published_wallet_ids_json.as_deref(),
+                    policy_fingerprint,
                     Utc::now().to_rfc3339(),
+                    clear_published_truth,
                 ],
             )
         })
         .context("failed updating discovery publication state")?;
         Ok(())
+    }
+
+    pub fn discovery_publication_state_with_policy_read_only(
+        &self,
+    ) -> Result<Option<(DiscoveryPublicationStateRow, Option<String>)>> {
+        self.ensure_discovery_strategy_state_table()?;
+        if !self.sqlite_table_exists("discovery_strategy_state")? {
+            return Ok(None);
+        }
+        self.discovery_publication_state_query_with_policy()
     }
 
     pub fn discovery_bootstrap_degraded_state(&self) -> Result<DiscoveryBootstrapDegradedStateRow> {
@@ -1966,6 +2019,7 @@ impl SqliteStore {
                     publication_last_published_window_start,
                     publication_scoring_source,
                     publication_wallet_ids_json,
+                    publication_policy_fingerprint,
                     updated_at
                  ) VALUES (
                     ?1,
@@ -1985,7 +2039,8 @@ impl SqliteStore {
                     ?15,
                     ?16,
                     ?17,
-                    ?18
+                    ?18,
+                    ?19
                  )",
                 params![
                     1_i64,
@@ -2011,6 +2066,10 @@ impl SqliteStore {
                         .map(canonical_wallet_metrics_window_start),
                     artifact.publication_state.published_scoring_source.as_deref(),
                     published_wallet_ids_json.as_str(),
+                    artifact
+                        .publication_state
+                        .publication_policy_fingerprint
+                        .as_deref(),
                     artifact.publication_state.updated_at.to_rfc3339(),
                 ],
             )
@@ -2935,6 +2994,7 @@ impl SqliteStore {
                     publication_last_published_window_start TEXT,
                     publication_scoring_source TEXT,
                     publication_wallet_ids_json TEXT,
+                    publication_policy_fingerprint TEXT,
                     updated_at TEXT NOT NULL
                 )",
             )
@@ -3082,6 +3142,15 @@ impl SqliteStore {
                     [],
                 )
                 .context("failed adding discovery_strategy_state.publication_wallet_ids_json")?;
+        }
+        if !columns.contains("publication_policy_fingerprint") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN publication_policy_fingerprint TEXT",
+                    [],
+                )
+                .context("failed adding discovery_strategy_state.publication_policy_fingerprint")?;
         }
         Ok(())
     }

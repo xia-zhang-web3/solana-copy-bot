@@ -1197,6 +1197,8 @@ pub struct DiscoveryPublicationStateRow {
     pub last_published_window_start: Option<DateTime<Utc>>,
     pub published_scoring_source: Option<String>,
     pub published_wallet_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_policy_fingerprint: Option<String>,
     pub updated_at: DateTime<Utc>,
 }
 

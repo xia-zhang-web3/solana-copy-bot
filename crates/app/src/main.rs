@@ -3203,16 +3203,24 @@ async fn run_app_loop(
                 discovery_handle = None;
                 match discovery_result.expect("guard ensures discovery task exists") {
                     Ok(Ok(discovery_output)) => {
+                        let active_follow_wallets_before_clear = follow_snapshot.active.len();
+                        let fail_closed_runtime_surface =
+                            apply_fail_closed_runtime_follow_surface_if_needed(
+                                &mut follow_snapshot,
+                                &mut open_shadow_lots,
+                                &mut shadow_strategy_fail_closed,
+                                &discovery_output,
+                            );
+                        if fail_closed_runtime_surface && !discovery_output.published {
+                            warn!(
+                                discovery_runtime_mode = discovery_output.runtime_mode.as_str(),
+                                discovery_scoring_source = discovery_output.scoring_source,
+                                active_follow_wallets_before_clear,
+                                "clearing runtime follow snapshot because discovery no longer has a publishable universe to keep in memory"
+                            );
+                        }
                         if discovery_output.published {
-                            if matches!(
-                                discovery_output.runtime_mode,
-                                DiscoveryRuntimeMode::FailClosed
-                                    | DiscoveryRuntimeMode::BootstrapDegraded
-                            ) {
-                                shadow_strategy_fail_closed = true;
-                                follow_snapshot = Arc::new(FollowSnapshot::default());
-                                open_shadow_lots.clear();
-                            } else {
+                            if !fail_closed_runtime_surface {
                                 let mut snapshot = (*follow_snapshot).clone();
                                 apply_follow_snapshot_update(
                                     &mut snapshot,
@@ -4378,6 +4386,24 @@ fn startup_runtime_publication_truth(
     discovery.runtime_publication_truth_resolution(store, now)
 }
 
+fn apply_fail_closed_runtime_follow_surface_if_needed(
+    follow_snapshot: &mut Arc<FollowSnapshot>,
+    open_shadow_lots: &mut HashSet<(String, String)>,
+    shadow_strategy_fail_closed: &mut bool,
+    discovery_output: &DiscoveryTaskOutput,
+) -> bool {
+    if !matches!(
+        discovery_output.runtime_mode,
+        DiscoveryRuntimeMode::FailClosed | DiscoveryRuntimeMode::BootstrapDegraded
+    ) {
+        return false;
+    }
+    *shadow_strategy_fail_closed = true;
+    *follow_snapshot = Arc::new(FollowSnapshot::default());
+    open_shadow_lots.clear();
+    true
+}
+
 fn validate_bootstrap_degraded_execution_contract(
     store: &SqliteStore,
     execution_runtime: &ExecutionRuntime,
@@ -4562,6 +4588,43 @@ mod app_tests {
         Ok(path)
     }
 
+    fn test_publication_policy_fingerprint(config: &copybot_config::DiscoveryConfig) -> String {
+        format!(
+            concat!(
+                "follow_top_n={};",
+                "scoring_window_days={};",
+                "decay_window_days={};",
+                "min_leader_notional_sol={:.6};",
+                "min_trades={};",
+                "min_active_days={};",
+                "min_score={:.6};",
+                "max_tx_per_minute={};",
+                "min_buy_count={};",
+                "min_tradable_ratio={:.6};",
+                "require_open_positions_for_publication={};",
+                "max_rug_ratio={:.6};",
+                "rug_lookahead_seconds={};",
+                "thin_market_min_volume_sol={:.6};",
+                "thin_market_min_unique_traders={}"
+            ),
+            config.follow_top_n,
+            config.scoring_window_days,
+            config.decay_window_days,
+            config.min_leader_notional_sol,
+            config.min_trades,
+            config.min_active_days,
+            config.min_score,
+            config.max_tx_per_minute,
+            config.min_buy_count,
+            config.min_tradable_ratio,
+            config.require_open_positions_for_publication,
+            config.max_rug_ratio,
+            config.rug_lookahead_seconds,
+            config.thin_market_min_volume_sol,
+            config.thin_market_min_unique_traders,
+        )
+    }
+
     fn write_temp_secret_dir(name: &str) -> Result<PathBuf> {
         let dir = std::env::temp_dir().join(format!(
             "copybot-secret-dir-{}-{}-{}",
@@ -4694,6 +4757,28 @@ mod app_tests {
             published: false,
             runtime_mode: DiscoveryRuntimeMode::Degraded,
             scoring_source: "published_universe_raw_window_degraded",
+            raw_window_cap_truncated: false,
+            cap_truncation_deactivation_guard_active: false,
+            cap_truncation_deactivation_guard_reason: None,
+            cap_truncation_deactivation_guard_started_at: None,
+            cap_truncation_floor_ts_utc: None,
+            cap_truncation_floor_signature: None,
+            persisted_stream_catch_up_requested: false,
+            persisted_stream_catch_up_pressure_override_requested: false,
+        }
+    }
+
+    fn live_like_fail_closed_no_recent_published_universe_output(
+        now: DateTime<Utc>,
+    ) -> DiscoveryTaskOutput {
+        DiscoveryTaskOutput {
+            active_wallets: HashSet::new(),
+            cycle_ts: now,
+            eligible_wallets: 0,
+            active_follow_wallets: 0,
+            published: false,
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            scoring_source: "raw_window_incomplete_no_recent_published_universe",
             raw_window_cap_truncated: false,
             cap_truncation_deactivation_guard_active: false,
             cap_truncation_deactivation_guard_reason: None,
@@ -7144,7 +7229,8 @@ mod app_tests {
     #[test]
     fn risk_guard_exact_live_nine_wallet_degraded_published_universe_blocks_under_current_policy_stage1(
     ) -> Result<()> {
-        let (store, db_path) = make_test_store("universe-stop-exact-live-nine-nine-current-policy")?;
+        let (store, db_path) =
+            make_test_store("universe-stop-exact-live-nine-nine-current-policy")?;
         let mut cfg = RiskConfig::default();
         cfg.shadow_universe_min_active_follow_wallets = 15;
         cfg.shadow_universe_min_eligible_wallets = 80;
@@ -7300,7 +7386,11 @@ mod app_tests {
         }
         assert!(small_active_guard.universe_blocked);
         assert!(matches!(
-            small_active_guard.can_open_buy(&small_active_store, now + chrono::Duration::minutes(7), true),
+            small_active_guard.can_open_buy(
+                &small_active_store,
+                now + chrono::Duration::minutes(7),
+                true
+            ),
             BuyRiskDecision::Blocked {
                 reason: BuyRiskBlockReason::Universe,
                 ..
@@ -7322,7 +7412,11 @@ mod app_tests {
         }
         assert!(small_eligible_guard.universe_blocked);
         assert!(matches!(
-            small_eligible_guard.can_open_buy(&small_eligible_store, now + chrono::Duration::minutes(7), true),
+            small_eligible_guard.can_open_buy(
+                &small_eligible_store,
+                now + chrono::Duration::minutes(7),
+                true
+            ),
             BuyRiskDecision::Blocked {
                 reason: BuyRiskBlockReason::Universe,
                 ..
@@ -10364,6 +10458,83 @@ mod app_tests {
     }
 
     #[test]
+    fn nonpublished_fail_closed_discovery_cycle_clears_startup_recent_follow_snapshot() {
+        let recent_active_wallets = HashSet::from([
+            "wallet-a".to_string(),
+            "wallet-b".to_string(),
+            "wallet-c".to_string(),
+        ]);
+        let recent_truth = RuntimePublicationTruthResolution::Recent(
+            copybot_discovery::RuntimePublishedUniverseTruth {
+                runtime_mode: DiscoveryRuntimeMode::Healthy,
+                reason: "recent_publication".to_string(),
+                last_published_at: Utc::now(),
+                last_published_window_start: Utc::now(),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: recent_active_wallets.iter().cloned().collect(),
+            },
+        );
+        let (initial_snapshot, _recovered_active_wallets, mut shadow_strategy_fail_closed) =
+            startup_follow_snapshot_from_publication_truth(HashSet::new(), Some(&recent_truth));
+        let mut follow_snapshot = Arc::new(initial_snapshot);
+        let mut open_shadow_lots = HashSet::from([("wallet-a".to_string(), "token-a".to_string())]);
+        let discovery_output =
+            live_like_fail_closed_no_recent_published_universe_output(Utc::now());
+
+        assert_eq!(follow_snapshot.active, recent_active_wallets);
+        assert!(!shadow_strategy_fail_closed);
+        assert!(!open_shadow_lots.is_empty());
+        assert!(
+            apply_fail_closed_runtime_follow_surface_if_needed(
+                &mut follow_snapshot,
+                &mut open_shadow_lots,
+                &mut shadow_strategy_fail_closed,
+                &discovery_output,
+            ),
+            "a non-published fail-closed discovery cycle must clear stale startup publication truth out of runtime memory"
+        );
+        assert!(shadow_strategy_fail_closed);
+        assert!(follow_snapshot.active.is_empty());
+        assert!(open_shadow_lots.is_empty());
+    }
+
+    #[test]
+    fn nonpublished_degraded_discovery_cycle_preserves_startup_recent_follow_snapshot() {
+        let recent_active_wallets = HashSet::from(["wallet-a".to_string(), "wallet-b".to_string()]);
+        let recent_truth = RuntimePublicationTruthResolution::Recent(
+            copybot_discovery::RuntimePublishedUniverseTruth {
+                runtime_mode: DiscoveryRuntimeMode::Healthy,
+                reason: "recent_publication".to_string(),
+                last_published_at: Utc::now(),
+                last_published_window_start: Utc::now(),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: recent_active_wallets.iter().cloned().collect(),
+            },
+        );
+        let (initial_snapshot, _recovered_active_wallets, mut shadow_strategy_fail_closed) =
+            startup_follow_snapshot_from_publication_truth(HashSet::new(), Some(&recent_truth));
+        let mut follow_snapshot = Arc::new(initial_snapshot);
+        let mut open_shadow_lots = HashSet::from([("wallet-a".to_string(), "token-a".to_string())]);
+        let discovery_output = live_like_degraded_published_universe_output(Utc::now(), 2, 2);
+
+        assert!(
+            !apply_fail_closed_runtime_follow_surface_if_needed(
+                &mut follow_snapshot,
+                &mut open_shadow_lots,
+                &mut shadow_strategy_fail_closed,
+                &discovery_output,
+            ),
+            "degraded unpublished runtime should preserve the still-recent published universe in memory"
+        );
+        assert!(!shadow_strategy_fail_closed);
+        assert_eq!(follow_snapshot.active, recent_active_wallets);
+        assert_eq!(
+            open_shadow_lots,
+            HashSet::from([("wallet-a".to_string(), "token-a".to_string())])
+        );
+    }
+
+    #[test]
     fn startup_recent_published_universe_ignores_stale_followlist_residue() -> Result<()> {
         let (store, db_path) =
             make_test_store("startup-published-universe-ignores-stale-followlist")?;
@@ -10410,14 +10581,19 @@ mod app_tests {
             "wallet_published_exact".to_string(),
             "wallet_published_second".to_string(),
         ];
-        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
-            runtime_mode: DiscoveryRuntimeMode::Healthy,
-            reason: "startup_recent_published_universe".to_string(),
-            last_published_at: Some(now - chrono::Duration::minutes(10)),
-            last_published_window_start: Some(metrics_window_start),
-            published_scoring_source: Some("raw_window".to_string()),
-            published_wallet_ids: Some(expected_published_wallets.clone()),
-        })?;
+        let publication_policy_fingerprint = test_publication_policy_fingerprint(&config);
+        store.set_discovery_publication_state_with_options(
+            &DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::Healthy,
+                reason: "startup_recent_published_universe".to_string(),
+                last_published_at: Some(now - chrono::Duration::minutes(10)),
+                last_published_window_start: Some(metrics_window_start),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(expected_published_wallets.clone()),
+            },
+            false,
+            Some(publication_policy_fingerprint.as_str()),
+        )?;
 
         let discovery = DiscoveryService::new(config, permissive_shadow_quality());
         let startup_published_truth = startup_runtime_publication_truth(&discovery, &store, now)?
@@ -10469,17 +10645,22 @@ mod app_tests {
             now - chrono::Duration::minutes(20),
             "legacy_bootstrap_residue",
         )?;
-        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
-            runtime_mode: DiscoveryRuntimeMode::Healthy,
-            reason: "stale_imported_runtime_artifact".to_string(),
-            last_published_at: Some(now - chrono::Duration::minutes(61)),
-            last_published_window_start: Some(metrics_window_start),
-            published_scoring_source: Some("raw_window".to_string()),
-            published_wallet_ids: Some(vec![
-                "wallet_bootstrap_exact".to_string(),
-                "wallet_bootstrap_second".to_string(),
-            ]),
-        })?;
+        let publication_policy_fingerprint = test_publication_policy_fingerprint(&config);
+        store.set_discovery_publication_state_with_options(
+            &DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::Healthy,
+                reason: "stale_imported_runtime_artifact".to_string(),
+                last_published_at: Some(now - chrono::Duration::minutes(61)),
+                last_published_window_start: Some(metrics_window_start),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(vec![
+                    "wallet_bootstrap_exact".to_string(),
+                    "wallet_bootstrap_second".to_string(),
+                ]),
+            },
+            false,
+            Some(publication_policy_fingerprint.as_str()),
+        )?;
         store.set_discovery_bootstrap_degraded_state(
             true,
             Some("runtime_artifact_restore_bootstrap_degraded"),

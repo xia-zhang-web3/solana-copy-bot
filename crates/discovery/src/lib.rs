@@ -1494,6 +1494,97 @@ impl DiscoveryService {
         self.config.metric_snapshot_interval_seconds
     }
 
+    fn publication_selection_policy_fingerprint(&self) -> String {
+        format!(
+            concat!(
+                "follow_top_n={};",
+                "scoring_window_days={};",
+                "decay_window_days={};",
+                "min_leader_notional_sol={:.6};",
+                "min_trades={};",
+                "min_active_days={};",
+                "min_score={:.6};",
+                "max_tx_per_minute={};",
+                "min_buy_count={};",
+                "min_tradable_ratio={:.6};",
+                "require_open_positions_for_publication={};",
+                "max_rug_ratio={:.6};",
+                "rug_lookahead_seconds={};",
+                "thin_market_min_volume_sol={:.6};",
+                "thin_market_min_unique_traders={}"
+            ),
+            self.config.follow_top_n,
+            self.config.scoring_window_days,
+            self.config.decay_window_days,
+            self.config.min_leader_notional_sol,
+            self.config.min_trades,
+            self.config.min_active_days,
+            self.config.min_score,
+            self.config.max_tx_per_minute,
+            self.config.min_buy_count,
+            self.config.min_tradable_ratio,
+            self.config.require_open_positions_for_publication,
+            self.config.max_rug_ratio,
+            self.config.rug_lookahead_seconds,
+            self.config.thin_market_min_volume_sol,
+            self.config.thin_market_min_unique_traders,
+        )
+    }
+
+    fn invalidate_incompatible_recent_publication_truth_if_needed(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let Some((publication_state, stored_policy_fingerprint)) =
+            store.discovery_publication_state_with_policy_read_only()?
+        else {
+            return Ok(false);
+        };
+        if publication_state.runtime_mode == DiscoveryRuntimeMode::FailClosed {
+            return Ok(false);
+        }
+        if Self::runtime_publication_truth_from_state(publication_state.clone()).is_none() {
+            return Ok(false);
+        }
+
+        let current_policy_fingerprint = self.publication_selection_policy_fingerprint();
+        if stored_policy_fingerprint.as_deref() == Some(current_policy_fingerprint.as_str()) {
+            return Ok(false);
+        }
+
+        let reason = "publication_truth_invalidated_selection_policy_mismatch";
+        warn!(
+            publication_truth_invalidated_selection_policy_mismatch = true,
+            publication_previous_runtime_mode = publication_state.runtime_mode.as_str(),
+            publication_previous_reason = publication_state.reason.as_str(),
+            publication_previous_last_published_at = ?publication_state.last_published_at,
+            publication_previous_published_wallet_count = publication_state
+                .published_wallet_ids
+                .as_ref()
+                .map_or(0, |wallets| wallets.len()),
+            publication_previous_policy_fingerprint =
+                stored_policy_fingerprint.as_deref(),
+            publication_current_policy_fingerprint =
+                current_policy_fingerprint.as_str(),
+            "invalidating recent exact publication truth because the current discovery selection policy no longer matches the policy that produced the published universe"
+        );
+        store.persist_discovery_cycle(&[], &[], &[], false, false, now, reason)?;
+        store.set_discovery_publication_state_with_options(
+            &DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::FailClosed,
+                reason: reason.to_string(),
+                last_published_at: None,
+                last_published_window_start: None,
+                published_scoring_source: publication_state.published_scoring_source.clone(),
+                published_wallet_ids: None,
+            },
+            true,
+            None,
+        )?;
+        Ok(true)
+    }
+
     fn runtime_publication_truth_from_state(
         publication_state: DiscoveryPublicationStateRow,
     ) -> Option<RuntimePublishedUniverseTruth> {
@@ -1514,6 +1605,9 @@ impl DiscoveryService {
         store: &SqliteStore,
         now: DateTime<Utc>,
     ) -> Result<Option<RuntimePublicationTruthResolution>> {
+        if self.invalidate_incompatible_recent_publication_truth_if_needed(store, now)? {
+            return Ok(None);
+        }
         let Some(publication_state) = store.discovery_publication_state_read_only()? else {
             return Ok(None);
         };
@@ -1602,7 +1696,7 @@ impl DiscoveryService {
                         publication_scoring_source = scoring_source,
                         "downgrading a stale healthy publication row during a non-publish-due discovery cycle so incomplete replay recovery cannot keep surfacing healthy publication state without a fresh exact universe flush"
                     );
-                        store.set_discovery_publication_state(
+                        store.set_discovery_publication_state_with_options(
                             &DiscoveryPublicationStateUpdate {
                                 runtime_mode,
                                 reason: reason.to_string(),
@@ -1611,6 +1705,8 @@ impl DiscoveryService {
                                 published_scoring_source: Some(scoring_source.to_string()),
                                 published_wallet_ids: None,
                             },
+                            false,
+                            None,
                         )?;
                     }
                 }
@@ -1658,18 +1754,24 @@ impl DiscoveryService {
             }
         }
         let published_universe = effective_runtime_mode == DiscoveryRuntimeMode::Healthy;
-        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
-            runtime_mode: effective_runtime_mode,
-            reason: effective_reason,
-            last_published_at: published_universe.then_some(now),
-            last_published_window_start: published_universe.then_some(published_window_start),
-            published_scoring_source: Some(scoring_source.to_string()),
-            published_wallet_ids: if published_universe {
-                published_wallet_ids.map(|wallet_ids| wallet_ids.to_vec())
-            } else {
-                None
+        store.set_discovery_publication_state_with_options(
+            &DiscoveryPublicationStateUpdate {
+                runtime_mode: effective_runtime_mode,
+                reason: effective_reason,
+                last_published_at: published_universe.then_some(now),
+                last_published_window_start: published_universe.then_some(published_window_start),
+                published_scoring_source: Some(scoring_source.to_string()),
+                published_wallet_ids: if published_universe {
+                    published_wallet_ids.map(|wallet_ids| wallet_ids.to_vec())
+                } else {
+                    None
+                },
             },
-        })?;
+            false,
+            published_universe
+                .then(|| self.publication_selection_policy_fingerprint())
+                .as_deref(),
+        )?;
         Ok(PublicationStatePersistOutcome {
             runtime_mode: effective_runtime_mode,
             published_universe_persisted: published_universe,
@@ -11163,20 +11265,29 @@ mod tests {
     }
 
     fn seed_recent_published_universe(
+        discovery: &DiscoveryService,
         store: &SqliteStore,
         now: DateTime<Utc>,
         metrics_window_start: DateTime<Utc>,
         scoring_source: &str,
         published_wallet_ids: &HashSet<String>,
     ) -> Result<()> {
-        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
-            runtime_mode: DiscoveryRuntimeMode::Healthy,
-            reason: "test_recent_published_universe".to_string(),
-            last_published_at: Some(now),
-            last_published_window_start: Some(metrics_window_start),
-            published_scoring_source: Some(scoring_source.to_string()),
-            published_wallet_ids: Some(published_wallet_ids.iter().cloned().collect()),
-        })
+        store.set_discovery_publication_state_with_options(
+            &DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::Healthy,
+                reason: "test_recent_published_universe".to_string(),
+                last_published_at: Some(now),
+                last_published_window_start: Some(metrics_window_start),
+                published_scoring_source: Some(scoring_source.to_string()),
+                published_wallet_ids: Some(published_wallet_ids.iter().cloned().collect()),
+            },
+            false,
+            Some(
+                discovery
+                    .publication_selection_policy_fingerprint()
+                    .as_str(),
+            ),
+        )
     }
 
     fn seed_published_wallet_metrics_snapshot(
@@ -24529,7 +24640,9 @@ mod tests {
         };
         let expected_active_wallets =
             seed_published_wallet_metrics_snapshot(&store, metrics_window_start, 80, 15)?;
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
         seed_recent_published_universe(
+            &discovery,
             &store,
             now - Duration::seconds(30),
             metrics_window_start,
@@ -24539,8 +24652,6 @@ mod tests {
         store.upsert_discovery_runtime_cursor(
             &latest_cursor.expect("latest cursor should be present"),
         )?;
-
-        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
         let summary = discovery.run_cycle(&store, now)?;
 
         assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Degraded);
@@ -24655,15 +24766,15 @@ mod tests {
         };
         let expected_active_wallets =
             seed_published_wallet_metrics_snapshot(&store, metrics_window_start, 80, 15)?;
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
         seed_recent_published_universe(
+            &discovery,
             &store,
             now - Duration::seconds(30),
             metrics_window_start,
             "raw_window",
             &expected_active_wallets,
         )?;
-
-        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
         let summary = discovery.run_cycle(&store, now)?;
 
         assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Degraded);
@@ -24705,7 +24816,9 @@ mod tests {
         };
         let published_active_wallets =
             seed_published_wallet_metrics_snapshot(&store, metrics_window_start, 6, 3)?;
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
         seed_recent_published_universe(
+            &discovery,
             &store,
             now - Duration::seconds(30),
             metrics_window_start,
@@ -24717,8 +24830,6 @@ mod tests {
             now - Duration::minutes(10),
             "legacy_bootstrap_residue",
         )?;
-
-        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
         let summary = discovery.run_cycle(&store, now)?;
 
         assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Degraded);
@@ -24789,7 +24900,9 @@ mod tests {
             "wallet_published_exact".to_string(),
             "wallet_published_second".to_string(),
         ]);
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
         seed_recent_published_universe(
+            &discovery,
             &store,
             now - Duration::seconds(30),
             metrics_window_start,
@@ -24801,8 +24914,6 @@ mod tests {
             now - Duration::minutes(10),
             "legacy_bootstrap_residue",
         )?;
-
-        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
         let summary = discovery.run_cycle(&store, now)?;
 
         assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Degraded);
@@ -24821,6 +24932,148 @@ mod tests {
         assert!(
             !store.list_active_follow_wallets()?.contains("wallet_ranked_now"),
             "degraded restart must read the exact published universe control plane, not reconstruct it from current wallet_metrics ranking"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn policy_tightening_invalidates_recent_exact_publication_truth_before_degraded_reuse_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-policy-tightening-invalidates-recent-publication-truth.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-06T14:49:22Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let old_publish_at = now - Duration::minutes(9);
+        let mut old_config = live_restored_rug_policy_discovery_config_for_tests();
+        old_config.max_window_swaps_in_memory = 8;
+        let mut tightened_config = old_config.clone();
+        tightened_config.require_open_positions_for_publication = true;
+
+        let (swaps, _removed_wallet_ids, surviving_wallet_ids, _independent_wallet_ids) =
+            clustered_partial_survival_fixture_swaps(now, false);
+        let (_, old_desired, _, _) =
+            desired_wallets_from_clustered_thin_market_fixture(old_config.clone(), &swaps, now);
+        assert_eq!(
+            old_desired, surviving_wallet_ids,
+            "the old exact publication truth for this repro must be the same six drained cluster survivors that remained after the rug/thin-market restore"
+        );
+
+        store.persist_discovery_cycle(
+            &[],
+            &[],
+            &old_desired,
+            false,
+            false,
+            old_publish_at,
+            "seed_old_clustered_publication_truth",
+        )?;
+        let metrics_window_start = metrics_window_start_for_test(&old_config, old_publish_at);
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            reason: "seed_old_clustered_publication_truth".to_string(),
+            last_published_at: Some(old_publish_at),
+            last_published_window_start: Some(metrics_window_start),
+            published_scoring_source: Some("raw_window_persisted_stream".to_string()),
+            published_wallet_ids: Some(old_desired.clone()),
+        })?;
+
+        let mut latest_cursor: Option<DiscoveryRuntimeCursor> = None;
+        for idx in 0..9 {
+            let ts = now - Duration::minutes(9) + Duration::minutes(idx as i64);
+            let swap = swap(
+                "wallet_noise",
+                &format!("stage1-policy-tightening-noise-{idx}"),
+                ts,
+                SOL_MINT,
+                "TokenStage1PolicyTighteningNoise11111111111",
+                0.2,
+                20.0,
+            );
+            latest_cursor = Some(DiscoveryRuntimeCursor {
+                ts_utc: swap.ts_utc,
+                slot: swap.slot,
+                signature: swap.signature.clone(),
+            });
+            store.insert_observed_swap(&swap)?;
+        }
+        store.upsert_discovery_runtime_cursor(
+            &latest_cursor.expect("latest cursor should be present"),
+        )?;
+
+        let publication_state_before = store
+            .discovery_publication_state_read_only()?
+            .expect("old publication state should exist");
+        let tightened_discovery =
+            DiscoveryService::new(tightened_config.clone(), permissive_shadow_quality());
+        let tightened_gate = tightened_discovery.publication_freshness_gate();
+        assert!(publication_state_before.has_complete_publication_truth());
+        assert!(
+            publication_state_before.is_fresh_under_gate(tightened_gate, now),
+            "under the old pre-fix contract, the old six-wallet exact publish would still have been considered recent enough to reuse after the policy change"
+        );
+        assert!(
+            !publication_state_before.is_fresh_under_gate(
+                tightened_gate,
+                old_publish_at + tightened_discovery.runtime_published_universe_max_age()
+                    + Duration::seconds(1),
+            ),
+            "the old truth would only have stopped being reusable once freshness expired, which is the exact live failure class this batch is addressing"
+        );
+        assert!(
+            publication_state_before
+                .publication_policy_fingerprint
+                .is_none(),
+            "the exact live failure class is a legacy exact publish that predates the new policy-fingerprint contract entirely"
+        );
+
+        assert!(
+            tightened_discovery
+                .runtime_publication_truth_resolution(&store, now)?
+                .is_none(),
+            "tightened selection policy must invalidate the old six-wallet exact truth before degraded runtime reuse"
+        );
+        let invalidated_publication_state = store
+            .discovery_publication_state_read_only()?
+            .expect("publication state should still exist after invalidation");
+        assert_eq!(
+            invalidated_publication_state.runtime_mode,
+            DiscoveryRuntimeMode::FailClosed
+        );
+        assert_eq!(
+            invalidated_publication_state.reason,
+            "publication_truth_invalidated_selection_policy_mismatch"
+        );
+        assert!(
+            !invalidated_publication_state.has_complete_publication_truth(),
+            "policy mismatch invalidation must clear the stale exact publish instead of leaving the old truth complete until expiry"
+        );
+        assert!(
+            store.list_active_follow_wallets()?.is_empty(),
+            "policy mismatch invalidation must also clear the old active followlist surface before degraded reuse can leak it back into runtime"
+        );
+
+        let summary = tightened_discovery.run_cycle(&store, now)?;
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert!(summary.trusted_selection_fail_closed);
+        assert_eq!(
+            summary.scoring_source,
+            "raw_window_incomplete_no_recent_published_universe"
+        );
+        assert_eq!(summary.eligible_wallets, 0);
+        assert_eq!(summary.active_follow_wallets, 0);
+        assert!(
+            !store
+                .discovery_publication_state_read_only()?
+                .expect("publication state should remain readable after fail-closed cycle")
+                .has_complete_publication_truth(),
+            "with no recent exact truth left after policy mismatch invalidation, the tightened runtime must not end the cycle with a reusable published universe"
         );
         Ok(())
     }
@@ -27518,7 +27771,9 @@ mod tests {
             rug_ratio: 0.0,
         })?;
         let published_wallets = HashSet::from(["wallet_leader".to_string()]);
+        let discovery_after_restart = DiscoveryService::new(config, permissive_shadow_quality());
         seed_recent_published_universe(
+            &discovery_after_restart,
             &store,
             now - Duration::seconds(30),
             metrics_window_start,
@@ -27526,7 +27781,6 @@ mod tests {
             &published_wallets,
         )?;
 
-        let discovery_after_restart = DiscoveryService::new(config, permissive_shadow_quality());
         let summary = discovery_after_restart.run_cycle(&store, now)?;
         assert_eq!(
             summary.metrics_written, 0,
@@ -28166,7 +28420,9 @@ mod tests {
         let metrics_window_start = metrics_window_start_for_test(&config, now);
         let expected_active_wallets =
             seed_published_wallet_metrics_snapshot(&store, metrics_window_start, 4, 1)?;
+        let discovery_for_seed = DiscoveryService::new(config.clone(), permissive_shadow_quality());
         seed_recent_published_universe(
+            &discovery_for_seed,
             &store,
             now - Duration::seconds(30),
             metrics_window_start,
