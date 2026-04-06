@@ -827,6 +827,7 @@ pub struct DiscoveryConfig {
     pub max_tx_per_minute: u32,
     pub min_buy_count: u32,
     pub min_tradable_ratio: f64,
+    pub require_open_positions_for_publication: bool,
     pub max_rug_ratio: f64,
     pub rug_lookahead_seconds: u64,
     pub metric_snapshot_interval_seconds: u64,
@@ -858,6 +859,7 @@ impl Default for DiscoveryConfig {
             max_tx_per_minute: 50,
             min_buy_count: 10,
             min_tradable_ratio: 0.25,
+            require_open_positions_for_publication: false,
             max_rug_ratio: 0.60,
             rug_lookahead_seconds: 30 * 60,
             metric_snapshot_interval_seconds: 30 * 60,
@@ -894,6 +896,10 @@ impl fmt::Debug for DiscoveryConfig {
             .field("max_tx_per_minute", &self.max_tx_per_minute)
             .field("min_buy_count", &self.min_buy_count)
             .field("min_tradable_ratio", &self.min_tradable_ratio)
+            .field(
+                "require_open_positions_for_publication",
+                &self.require_open_positions_for_publication,
+            )
             .field("max_rug_ratio", &self.max_rug_ratio)
             .field("rug_lookahead_seconds", &self.rug_lookahead_seconds)
             .field(

@@ -10496,6 +10496,7 @@ impl DiscoveryService {
         let active_days = acc
             .exact_active_day_count
             .unwrap_or(acc.active_days.len() as u32);
+        let has_open_positions = acc.has_open_positions();
         let eligibility_active_days = active_days.max(persisted_active_days);
         let (buy_total, quality_resolved_buys, tradable_buys, rug_metrics) =
             if acc.buy_observations.is_empty() {
@@ -10521,7 +10522,7 @@ impl DiscoveryService {
                     self.compute_rug_metrics(&acc.buy_observations, token_sol_history, now);
                 (buy_total, quality_resolved_buys, tradable_buys, rug_metrics)
             };
-        self.snapshot_from_components(
+        let mut snapshot = self.snapshot_from_components(
             wallet_id,
             first_seen,
             last_seen,
@@ -10540,7 +10541,12 @@ impl DiscoveryService {
             tradable_buys,
             rug_metrics,
             now,
-        )
+        );
+        if self.config.require_open_positions_for_publication && !has_open_positions {
+            snapshot.eligible = false;
+            snapshot.score = 0.0;
+        }
+        snapshot
     }
 
     fn snapshot_from_persisted_metrics(
@@ -10612,6 +10618,13 @@ impl DiscoveryService {
 }
 
 impl WalletAccumulator {
+    fn has_open_positions(&self) -> bool {
+        self.positions
+            .values()
+            .flatten()
+            .any(|lot| lot.qty > 1e-12 && lot.cost_sol > 1e-12)
+    }
+
     fn reset_activity_summary_for_exact_backfill(&mut self) {
         self.first_seen = None;
         self.last_seen = None;
@@ -11693,6 +11706,181 @@ mod tests {
                 .then_with(|| a.signature.cmp(&b.signature))
         });
         (swaps, clustered_wallet_ids, independent_wallet_ids)
+    }
+
+    fn clustered_partial_survival_fixture_swaps(
+        now: DateTime<Utc>,
+        include_independent_wallets_with_open_positions: bool,
+    ) -> (Vec<SwapEvent>, Vec<String>, Vec<String>, Vec<String>) {
+        let removed_wallet_ids: Vec<String> = (0..3)
+            .map(|idx| format!("wallet_clustered_removed_{idx:02}"))
+            .collect();
+        let surviving_wallet_ids: Vec<String> = (0..6)
+            .map(|idx| format!("wallet_clustered_surviving_{idx:02}"))
+            .collect();
+        let independent_wallet_ids: Vec<String> = if include_independent_wallets_with_open_positions
+        {
+            (0..3)
+                .map(|idx| format!("wallet_independent_open_{idx:02}"))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let removed_token = "TokenClusteredThinEdge111111111111111111111";
+        let surviving_token = "TokenClusteredThickEdge11111111111111111111";
+        let phase_bases = [
+            now - Duration::days(2),
+            now - Duration::days(1),
+            now - Duration::hours(2),
+        ];
+        let rounds_per_phase = 4;
+        let mut swaps = Vec::new();
+
+        for (phase_idx, phase_base) in phase_bases.into_iter().enumerate() {
+            for round in 0..rounds_per_phase {
+                let round_offset_minutes = (round * 20) as i64;
+
+                for (wallet_idx, wallet_id) in removed_wallet_ids.iter().enumerate() {
+                    let buy_ts =
+                        phase_base + Duration::minutes(round_offset_minutes + wallet_idx as i64);
+                    let sell_ts = buy_ts + Duration::minutes(5);
+                    swaps.push(swap(
+                        wallet_id,
+                        &format!("removed-{phase_idx}-{round}-{wallet_idx}-buy"),
+                        buy_ts,
+                        SOL_MINT,
+                        removed_token,
+                        1.0,
+                        100.0,
+                    ));
+                    swaps.push(swap(
+                        wallet_id,
+                        &format!("removed-{phase_idx}-{round}-{wallet_idx}-sell"),
+                        sell_ts,
+                        removed_token,
+                        SOL_MINT,
+                        100.0,
+                        1.3,
+                    ));
+                }
+
+                for (wallet_idx, wallet_id) in surviving_wallet_ids.iter().enumerate() {
+                    let buy_ts = phase_base
+                        + Duration::minutes(round_offset_minutes + 6 + wallet_idx as i64);
+                    let sell_ts = buy_ts + Duration::minutes(5);
+                    swaps.push(swap(
+                        wallet_id,
+                        &format!("surviving-{phase_idx}-{round}-{wallet_idx}-buy"),
+                        buy_ts,
+                        SOL_MINT,
+                        surviving_token,
+                        1.0,
+                        100.0,
+                    ));
+                    swaps.push(swap(
+                        wallet_id,
+                        &format!("surviving-{phase_idx}-{round}-{wallet_idx}-sell"),
+                        sell_ts,
+                        surviving_token,
+                        SOL_MINT,
+                        100.0,
+                        1.3,
+                    ));
+                }
+
+                for noise_idx in 0..4 {
+                    let noise_buy_ts = phase_base
+                        + Duration::minutes(round_offset_minutes + 14 + noise_idx as i64);
+                    swaps.push(swap(
+                        &format!(
+                            "wallet_clustered_surviving_noise_{phase_idx:02}_{round:02}_{noise_idx:02}"
+                        ),
+                        &format!("surviving-noise-{phase_idx}-{round}-{noise_idx}"),
+                        noise_buy_ts,
+                        SOL_MINT,
+                        surviving_token,
+                        0.4,
+                        40.0,
+                    ));
+                }
+
+                for (wallet_idx, wallet_id) in independent_wallet_ids.iter().enumerate() {
+                    let token = format!("TokenIndependentOpen{wallet_idx:02}111111111111111111");
+                    let buy_ts = phase_base
+                        + Duration::minutes(round_offset_minutes + 22 + wallet_idx as i64);
+                    let final_round =
+                        phase_idx == phase_bases.len() - 1 && round == rounds_per_phase - 1;
+                    swaps.push(swap(
+                        wallet_id,
+                        &format!("independent-open-{phase_idx}-{round}-{wallet_idx}-buy"),
+                        buy_ts,
+                        SOL_MINT,
+                        token.as_str(),
+                        1.0,
+                        100.0,
+                    ));
+                    if !final_round {
+                        swaps.push(swap(
+                            wallet_id,
+                            &format!("independent-open-{phase_idx}-{round}-{wallet_idx}-sell"),
+                            buy_ts + Duration::minutes(5),
+                            token.as_str(),
+                            SOL_MINT,
+                            100.0,
+                            1.25,
+                        ));
+                    }
+                    for noise_idx in 0..10 {
+                        swaps.push(swap(
+                            &format!(
+                                "wallet_independent_open_noise_{phase_idx:02}_{round:02}_{wallet_idx:02}_{noise_idx:02}"
+                            ),
+                            &format!(
+                                "independent-open-noise-{phase_idx}-{round}-{wallet_idx}-{noise_idx}"
+                            ),
+                            buy_ts + Duration::seconds(30 + noise_idx as i64),
+                            SOL_MINT,
+                            token.as_str(),
+                            0.4,
+                            40.0,
+                        ));
+                    }
+                }
+            }
+        }
+
+        swaps.sort_by(|a, b| {
+            a.ts_utc
+                .cmp(&b.ts_utc)
+                .then_with(|| a.signature.cmp(&b.signature))
+        });
+        (
+            swaps,
+            removed_wallet_ids,
+            surviving_wallet_ids,
+            independent_wallet_ids,
+        )
+    }
+
+    fn sol_leg_window_volume_and_unique_traders(
+        token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
+        token: &str,
+        window_start: DateTime<Utc>,
+        window_end: DateTime<Utc>,
+    ) -> (f64, usize) {
+        let Some(trades) = token_sol_history.get(token) else {
+            return (0.0, 0);
+        };
+        let mut volume_sol = 0.0;
+        let mut unique_traders = HashSet::new();
+        for trade in trades {
+            if trade.ts < window_start || trade.ts > window_end {
+                continue;
+            }
+            volume_sol += trade.sol_notional;
+            unique_traders.insert(trade.wallet_id.as_str());
+        }
+        (volume_sol, unique_traders.len())
     }
 
     fn wallet_entries_and_token_history_from_swaps(
@@ -13517,6 +13705,236 @@ mod tests {
             publication_state.published_wallet_ids.unwrap_or_default(),
             independent_wallet_ids,
             "publication truth should persist only the surviving independent wallets after the policy restore"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn live_like_restored_rug_policy_removes_only_three_of_nine_drained_clustered_wallets_stage1() {
+        let now = DateTime::parse_from_rfc3339("2026-04-06T16:55:36Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = live_restored_rug_policy_discovery_config_for_tests();
+        let (swaps, removed_wallet_ids, surviving_wallet_ids, independent_wallet_ids) =
+            clustered_partial_survival_fixture_swaps(now, false);
+        assert!(
+            independent_wallet_ids.is_empty(),
+            "the exact partial-survival repro should isolate only the clustered drained cohort"
+        );
+
+        let removed_token = "TokenClusteredThinEdge111111111111111111111";
+        let surviving_token = "TokenClusteredThickEdge11111111111111111111";
+        let (snapshots, desired, entries, token_sol_history) =
+            desired_wallets_from_clustered_thin_market_fixture(config.clone(), &swaps, now);
+        assert_eq!(
+            desired, surviving_wallet_ids,
+            "restored rug/thin-market policy should remove only the thin three while the thicker six still survive on historical score"
+        );
+        assert_eq!(removed_wallet_ids.len(), 3);
+        assert_eq!(surviving_wallet_ids.len(), 6);
+
+        let removed_first_buy_ts = swaps
+            .iter()
+            .find(|swap| {
+                swap.wallet == removed_wallet_ids[0]
+                    && swap.token_out == removed_token
+                    && swap.token_in == SOL_MINT
+            })
+            .expect("removed-cluster buy should exist")
+            .ts_utc;
+        let surviving_first_buy_ts = swaps
+            .iter()
+            .find(|swap| {
+                swap.wallet == surviving_wallet_ids[0]
+                    && swap.token_out == surviving_token
+                    && swap.token_in == SOL_MINT
+            })
+            .expect("surviving-cluster buy should exist")
+            .ts_utc;
+        let lookahead = Duration::seconds(config.rug_lookahead_seconds as i64);
+        let (removed_volume, removed_unique_traders) = sol_leg_window_volume_and_unique_traders(
+            &token_sol_history,
+            removed_token,
+            removed_first_buy_ts,
+            removed_first_buy_ts + lookahead,
+        );
+        let (surviving_volume, surviving_unique_traders) = sol_leg_window_volume_and_unique_traders(
+            &token_sol_history,
+            surviving_token,
+            surviving_first_buy_ts,
+            surviving_first_buy_ts + lookahead,
+        );
+        assert!(
+            removed_volume + 1e-12 < config.thin_market_min_volume_sol
+                || removed_unique_traders < config.thin_market_min_unique_traders as usize,
+            "the removed thin subgroup must fail the restored thin-market floor in the exact replay window"
+        );
+        assert!(
+            surviving_volume + 1e-12 >= config.thin_market_min_volume_sol,
+            "the surviving subgroup must clear the restored thin-market volume floor"
+        );
+        assert!(
+            surviving_unique_traders >= config.thin_market_min_unique_traders as usize,
+            "the surviving subgroup must clear the restored unique-trader floor"
+        );
+
+        for wallet_id in &removed_wallet_ids {
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| snapshot.wallet_id == *wallet_id)
+                .expect("removed wallet snapshot should exist");
+            assert!(
+                snapshot.rug_ratio > config.max_rug_ratio,
+                "the removed subgroup must be excluded by the restored rug/thin-market gate itself"
+            );
+            assert!(
+                !snapshot.eligible,
+                "the removed subgroup must already be ineligible before ranking"
+            );
+            let (_, acc) = entries
+                .iter()
+                .find(|(entry_wallet_id, _)| entry_wallet_id == wallet_id)
+                .expect("removed wallet accumulator should exist");
+            assert!(
+                !acc.has_open_positions(),
+                "the removed subgroup should share the same fully drained state as the surviving junk cohort"
+            );
+        }
+
+        for wallet_id in &surviving_wallet_ids {
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| snapshot.wallet_id == *wallet_id)
+                .expect("surviving wallet snapshot should exist");
+            assert!(
+                snapshot.rug_ratio <= config.max_rug_ratio,
+                "the surviving subgroup should currently clear the restored rug gate"
+            );
+            assert!(
+                snapshot.eligible && snapshot.score >= config.min_score,
+                "the surviving subgroup should still publish today because current selection is historical-score driven"
+            );
+            let (_, acc) = entries
+                .iter()
+                .find(|(entry_wallet_id, _)| entry_wallet_id == wallet_id)
+                .expect("surviving wallet accumulator should exist");
+            assert!(
+                !acc.has_open_positions(),
+                "the surviving subgroup must still be fully drained, which is the exact stale-actionable-state gap this batch is addressing"
+            );
+        }
+    }
+
+    #[test]
+    fn live_like_open_position_publication_gate_excludes_drained_cluster_survivors_while_preserving_independent_wallets_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("open-position-publication-gate-excludes-drained-cluster-survivors.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-06T16:55:36Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let base_config = live_restored_rug_policy_discovery_config_for_tests();
+        let mut gated_config = base_config.clone();
+        gated_config.require_open_positions_for_publication = true;
+        let (swaps, removed_wallet_ids, surviving_wallet_ids, independent_wallet_ids) =
+            clustered_partial_survival_fixture_swaps(now, true);
+        assert_eq!(removed_wallet_ids.len(), 3);
+        assert_eq!(surviving_wallet_ids.len(), 6);
+        assert_eq!(independent_wallet_ids.len(), 3);
+
+        let (_, base_desired, base_entries, _) =
+            desired_wallets_from_clustered_thin_market_fixture(base_config.clone(), &swaps, now);
+        assert_eq!(
+            base_desired.len(),
+            surviving_wallet_ids.len() + independent_wallet_ids.len(),
+            "before the new publication gate, restored rug policy should still publish the six drained cluster survivors plus the valid independent wallets"
+        );
+        for wallet_id in &surviving_wallet_ids {
+            assert!(
+                base_desired.contains(wallet_id),
+                "the exact live blocker requires the drained clustered survivor {wallet_id} to still pass current restored policy"
+            );
+            let (_, acc) = base_entries
+                .iter()
+                .find(|(entry_wallet_id, _)| entry_wallet_id == wallet_id)
+                .expect("surviving wallet accumulator should exist");
+            assert!(
+                !acc.has_open_positions(),
+                "the drained clustered survivor {wallet_id} must have no open tracked lots before the new gate"
+            );
+        }
+        for wallet_id in &independent_wallet_ids {
+            assert!(
+                base_desired.contains(wallet_id),
+                "valid independent wallet {wallet_id} should already be publishable before the new gate"
+            );
+            let (_, acc) = base_entries
+                .iter()
+                .find(|(entry_wallet_id, _)| entry_wallet_id == wallet_id)
+                .expect("independent wallet accumulator should exist");
+            assert!(
+                acc.has_open_positions(),
+                "the positive-control independent wallet {wallet_id} must keep an actionable open lot"
+            );
+        }
+
+        let (gated_snapshots, gated_desired, _, _) =
+            desired_wallets_from_clustered_thin_market_fixture(gated_config.clone(), &swaps, now);
+        assert_eq!(
+            gated_desired, independent_wallet_ids,
+            "requiring an open tracked position for publication should exclude only the drained clustered survivors while preserving independent wallets with live actionable state"
+        );
+        for wallet_id in &surviving_wallet_ids {
+            let snapshot = gated_snapshots
+                .iter()
+                .find(|snapshot| snapshot.wallet_id == *wallet_id)
+                .expect("gated surviving wallet snapshot should exist");
+            assert!(
+                !snapshot.eligible && snapshot.score.abs() < 1e-9,
+                "the new gate must demote the drained clustered survivor {wallet_id} before ranking rather than relying on top-N"
+            );
+        }
+        for wallet_id in &independent_wallet_ids {
+            let snapshot = gated_snapshots
+                .iter()
+                .find(|snapshot| snapshot.wallet_id == *wallet_id)
+                .expect("gated independent wallet snapshot should exist");
+            assert!(
+                snapshot.eligible && snapshot.score >= gated_config.min_score,
+                "the new gate must preserve the legitimate independent wallet {wallet_id}"
+            );
+        }
+
+        let discovery = DiscoveryService::new(gated_config.clone(), permissive_shadow_quality());
+        let metrics_window_start = metrics_window_start_for_test(&gated_config, now);
+        let publication_outcome = discovery.persist_publication_state(
+            &store,
+            DiscoveryRuntimeMode::Healthy,
+            true,
+            metrics_window_start,
+            Some(&gated_desired),
+            "raw_window_persisted_stream",
+            "open_position_publication_gate_cluster_filter",
+            now,
+        )?;
+        assert!(
+            publication_outcome.published_universe_persisted,
+            "once the drained clustered survivors are excluded for a tracked actionable-state reason, the remaining independent universe must still materialize as exact publication truth"
+        );
+        let publication_state = store
+            .discovery_publication_state_read_only()?
+            .expect("publication state should exist");
+        assert_eq!(
+            publication_state.published_wallet_ids.unwrap_or_default(),
+            independent_wallet_ids,
+            "publication truth must persist only the surviving independent wallets after the new gate"
         );
 
         Ok(())

@@ -93,6 +93,7 @@ min_score = 0.4
 max_tx_per_minute = 50
 min_buy_count = 10
 min_tradable_ratio = 0.25
+require_open_positions_for_publication = true
 max_rug_ratio = 0.60
 rug_lookahead_seconds = 900
 metric_snapshot_interval_seconds = 3600

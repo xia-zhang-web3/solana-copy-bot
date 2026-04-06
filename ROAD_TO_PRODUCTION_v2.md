@@ -57,6 +57,16 @@ Current live verdict:
     - previous live config had `thin_market_min_unique_traders = 0`
     - local reduced repro now shows that this exact policy hole allows the
       clustered thin-market cohort to publish
+  - live rollout `84ae773` restored those rug / thin-market gates and partially
+    worked:
+    - the junk cluster shrank from `9` wallets to `6`
+    - runtime export stayed `healthy` / `publication_truth_complete = true`
+    - but the surviving `6` were still the same drained cluster
+  - the currently accepted next fix is to require actionable open tracked lots
+    for publication on live:
+    - `require_open_positions_for_publication = true`
+    - local reduced repro proves this excludes the surviving drained cluster
+      while preserving independent wallets with real open positions
   - next production-moving work must filter out drained / clustered junk
     wallets before they enter the published universe
   - shadow trading should remain blocked until that quality issue is solved
