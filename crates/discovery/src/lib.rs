@@ -10288,21 +10288,96 @@ impl DiscoveryService {
             }
         };
 
-        Ok(by_wallet
+        let mut snapshots = Vec::with_capacity(by_wallet.len());
+        let mut snapshot_indexes_by_wallet = HashMap::with_capacity(by_wallet.len());
+        let mut pre_gate_candidate_wallet_ids = Vec::new();
+        for (wallet_id, acc) in &by_wallet {
+            let persisted_active_days = persisted_active_day_counts
+                .get(wallet_id)
+                .copied()
+                .unwrap_or(0);
+            let snapshot = self.snapshot_from_accumulator_with_persisted_active_days_internal(
+                wallet_id.clone(),
+                acc.clone(),
+                now,
+                token_sol_history,
+                persisted_active_days,
+                false,
+            );
+            if snapshot.eligible {
+                pre_gate_candidate_wallet_ids.push(wallet_id.clone());
+            }
+            snapshot_indexes_by_wallet.insert(wallet_id.clone(), snapshots.len());
+            snapshots.push(snapshot);
+        }
+        if !self.config.require_open_positions_for_publication
+            || pre_gate_candidate_wallet_ids.is_empty()
+        {
+            return Ok(snapshots);
+        }
+
+        let reconstructed_positions_by_wallet = self
+            .reconstruct_retention_window_positions_for_wallets(
+                store,
+                &pre_gate_candidate_wallet_ids,
+                now,
+            )?;
+        for wallet_id in pre_gate_candidate_wallet_ids {
+            let Some(acc) = by_wallet.get(&wallet_id) else {
+                continue;
+            };
+            let mut gated_acc = acc.clone();
+            if let Some(reconstructed_positions) = reconstructed_positions_by_wallet.get(&wallet_id)
+            {
+                gated_acc.positions = reconstructed_positions.clone();
+            }
+            let persisted_active_days = persisted_active_day_counts
+                .get(&wallet_id)
+                .copied()
+                .unwrap_or(0);
+            let gated_snapshot = self.snapshot_from_accumulator_with_persisted_active_days(
+                wallet_id.clone(),
+                gated_acc,
+                now,
+                token_sol_history,
+                persisted_active_days,
+            );
+            if let Some(index) = snapshot_indexes_by_wallet.get(&wallet_id).copied() {
+                snapshots[index] = gated_snapshot;
+            }
+        }
+
+        Ok(snapshots)
+    }
+
+    fn reconstruct_retention_window_positions_for_wallets(
+        &self,
+        store: &SqliteStore,
+        wallet_ids: &[String],
+        now: DateTime<Utc>,
+    ) -> Result<HashMap<String, HashMap<String, VecDeque<Lot>>>> {
+        let retention_days = self.config.observed_swaps_retention_days.max(1);
+        let scoring_days = self.config.scoring_window_days.max(1);
+        if retention_days <= scoring_days || wallet_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let retention_window_start = now - Duration::days(retention_days as i64);
+        let wallet_filter: HashSet<&str> = wallet_ids.iter().map(String::as_str).collect();
+        let mut positions_by_wallet: HashMap<String, WalletAccumulator> = HashMap::new();
+        store.for_each_observed_swap_in_window(retention_window_start, now, |swap| {
+            if wallet_filter.contains(swap.wallet.as_str()) {
+                positions_by_wallet
+                    .entry(swap.wallet.clone())
+                    .or_default()
+                    .observe_position_only(&swap);
+            }
+            Ok(())
+        })?;
+
+        Ok(positions_by_wallet
             .into_iter()
-            .map(|(wallet_id, acc)| {
-                let persisted_active_days = persisted_active_day_counts
-                    .get(&wallet_id)
-                    .copied()
-                    .unwrap_or(0);
-                self.snapshot_from_accumulator_with_persisted_active_days(
-                    wallet_id,
-                    acc,
-                    now,
-                    &token_sol_history,
-                    persisted_active_days,
-                )
-            })
+            .map(|(wallet_id, acc)| (wallet_id, acc.positions))
             .collect())
     }
 
@@ -10595,6 +10670,25 @@ impl DiscoveryService {
         token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
         persisted_active_days: u32,
     ) -> WalletSnapshot {
+        self.snapshot_from_accumulator_with_persisted_active_days_internal(
+            wallet_id,
+            acc,
+            now,
+            token_sol_history,
+            persisted_active_days,
+            true,
+        )
+    }
+
+    fn snapshot_from_accumulator_with_persisted_active_days_internal(
+        &self,
+        wallet_id: String,
+        acc: WalletAccumulator,
+        now: DateTime<Utc>,
+        token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
+        persisted_active_days: u32,
+        apply_open_position_gate: bool,
+    ) -> WalletSnapshot {
         let first_seen = acc.first_seen.unwrap_or(now);
         let last_seen = acc.last_seen.unwrap_or(now);
         let active_days = acc
@@ -10647,7 +10741,10 @@ impl DiscoveryService {
             rug_metrics,
             now,
         );
-        if self.config.require_open_positions_for_publication && !has_actionable_open_positions {
+        if apply_open_position_gate
+            && self.config.require_open_positions_for_publication
+            && !has_actionable_open_positions
+        {
             snapshot.eligible = false;
             snapshot.score = 0.0;
         }
@@ -10763,6 +10860,80 @@ impl WalletAccumulator {
                 && max_open_age_seconds
                     .is_none_or(|age_limit| (now - lot.opened_at).num_seconds().max(0) <= age_limit)
         })
+    }
+
+    fn observe_position_only(&mut self, swap: &SwapEvent) {
+        if is_sol_buy(swap) {
+            self.observe_position_only_buy(
+                swap.token_out.as_str(),
+                swap.amount_out,
+                swap.amount_in,
+                swap.ts_utc,
+            );
+            return;
+        }
+        if is_sol_sell(swap) {
+            self.observe_position_only_sell(swap.token_in.as_str(), swap.amount_in);
+        }
+    }
+
+    fn observe_position_only_buy(
+        &mut self,
+        token: &str,
+        qty: f64,
+        cost_sol: f64,
+        ts: DateTime<Utc>,
+    ) {
+        if qty <= 0.0 || cost_sol <= 0.0 {
+            return;
+        }
+        self.positions
+            .entry(token.to_string())
+            .or_default()
+            .push_back(Lot {
+                qty,
+                cost_sol,
+                opened_at: ts,
+            });
+    }
+
+    fn observe_position_only_sell(&mut self, token: &str, qty: f64) {
+        if qty <= 0.0 {
+            return;
+        }
+        let Some(lots) = self.positions.get_mut(token) else {
+            return;
+        };
+
+        let mut qty_remaining = qty;
+        while qty_remaining > 1e-12 {
+            if lots.front().is_none() {
+                break;
+            }
+            if lots.front().map(|lot| lot.qty <= 1e-12).unwrap_or(false) {
+                let _ = lots.pop_front();
+                continue;
+            }
+
+            let should_remove = {
+                let front_lot = lots.front_mut().expect("checked non-empty above");
+                let take_qty = qty_remaining.min(front_lot.qty);
+                let original_qty = front_lot.qty;
+                let lot_fraction = take_qty / original_qty;
+                let cost_part = front_lot.cost_sol * lot_fraction;
+                front_lot.qty -= take_qty;
+                front_lot.cost_sol -= cost_part;
+                qty_remaining -= take_qty;
+                front_lot.qty <= 1e-12
+            };
+            if should_remove {
+                let _ = lots.pop_front();
+            }
+        }
+
+        if lots.is_empty() {
+            self.positions.remove(token);
+        }
     }
 
     fn reset_activity_summary_for_exact_backfill(&mut self) {
@@ -11761,6 +11932,82 @@ mod tests {
                 opened_at: now - open_lot_age,
             });
         acc
+    }
+
+    fn prewindow_carry_leader_scoring_window_accumulator(now: DateTime<Utc>) -> WalletAccumulator {
+        let mut acc = live_publish_gate_wallet_accumulator(
+            now,
+            20,
+            4,
+            10,
+            10,
+            10,
+            4.5,
+            8,
+            10,
+            48 * 60 * 60,
+            1.0,
+        );
+        acc.first_seen = Some(now - Duration::days(6));
+        acc.last_seen = Some(now - Duration::hours(20));
+        acc.buy_total = 10;
+        acc.quality_resolved_buys = 10;
+        acc.tradable_buys = 10;
+        acc.buy_observations.clear();
+        acc.rug_metrics = RugMetrics {
+            evaluated: 10,
+            rugged: 0,
+            unevaluated: 0,
+        };
+        acc.positions.clear();
+        acc
+    }
+
+    fn seed_prewindow_carry_leader_position_history(
+        store: &SqliteStore,
+        config: &DiscoveryConfig,
+        now: DateTime<Utc>,
+        wallet_ids: &[String],
+    ) -> Result<()> {
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        for (wallet_idx, wallet_id) in wallet_ids.iter().enumerate() {
+            let carry_token = format!("TokenCarryAnchor{wallet_idx:02}111111111111111111111");
+            let cycle_token = format!("TokenCarryCycle{wallet_idx:02}1111111111111111111111");
+            store.insert_observed_swap(&swap(
+                wallet_id,
+                &format!("stage1-prewindow-carry-buy-{wallet_idx}"),
+                window_start - Duration::hours(18) + Duration::minutes(wallet_idx as i64),
+                SOL_MINT,
+                &carry_token,
+                1.2,
+                120.0,
+            ))?;
+            for round in 0..10 {
+                let buy_ts = window_start
+                    + Duration::hours((round * 4) as i64 + 1)
+                    + Duration::minutes(wallet_idx as i64);
+                let sell_ts = buy_ts + Duration::hours(48);
+                store.insert_observed_swap(&swap(
+                    wallet_id,
+                    &format!("stage1-carry-cycle-buy-{wallet_idx}-{round}"),
+                    buy_ts,
+                    SOL_MINT,
+                    &cycle_token,
+                    1.0,
+                    100.0,
+                ))?;
+                store.insert_observed_swap(&swap(
+                    wallet_id,
+                    &format!("stage1-carry-cycle-sell-{wallet_idx}-{round}"),
+                    sell_ts,
+                    &cycle_token,
+                    SOL_MINT,
+                    100.0,
+                    1.25,
+                ))?;
+            }
+        }
+        Ok(())
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -14508,6 +14755,216 @@ mod tests {
             publication_state.published_wallet_ids.unwrap_or_default(),
             independent_wallet_ids,
             "publication truth must persist only the recent independent leaders after the actionable-open-position gate"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn live_like_scoring_window_only_actionable_gate_collapses_prewindow_carry_leaders_to_zero_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("actionable-open-position-gate-collapses-prewindow-carry-leaders.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-06T22:59:22Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        let legit_wallet_ids: Vec<String> = (0..3)
+            .map(|idx| format!("wallet_legit_prewindow_carry_{idx:02}"))
+            .collect();
+        seed_prewindow_carry_leader_position_history(&store, &config, now, &legit_wallet_ids)?;
+        let (junk_entries, stale_cluster_wallet_ids, independent_wallet_ids) =
+            refill_drain_open_lot_fixture_wallets(now, false);
+        assert!(independent_wallet_ids.is_empty());
+
+        let mut entries = junk_entries;
+        for wallet_id in &legit_wallet_ids {
+            entries.push((
+                wallet_id.clone(),
+                prewindow_carry_leader_scoring_window_accumulator(now),
+            ));
+        }
+        let by_wallet: HashMap<String, WalletAccumulator> = entries.iter().cloned().collect();
+
+        let mut ungated_config = config.clone();
+        ungated_config.require_open_positions_for_publication = false;
+        let ungated_discovery =
+            DiscoveryService::new(ungated_config.clone(), permissive_shadow_quality());
+        let ungated_snapshots = entries
+            .iter()
+            .map(|(wallet_id, acc)| {
+                ungated_discovery.snapshot_from_accumulator(
+                    wallet_id.clone(),
+                    acc.clone(),
+                    now,
+                    &HashMap::new(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let ungated_ranked = rank_follow_candidates(&ungated_snapshots, ungated_config.min_score);
+        let ungated_desired = desired_wallets(&ungated_ranked, ungated_config.follow_top_n);
+        for wallet_id in &legit_wallet_ids {
+            assert!(
+                ungated_desired.contains(wallet_id),
+                "before the actionable-open-position gate runs, the same pre-window carry leader {wallet_id} should still rank into the historical top set"
+            );
+        }
+        for wallet_id in &stale_cluster_wallet_ids {
+            assert!(
+                ungated_desired.contains(wallet_id),
+                "before the tighter gate, the same refill/drain wallet {wallet_id} should still ride historical score into the candidate set"
+            );
+        }
+
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let current_snapshots = entries
+            .iter()
+            .map(|(wallet_id, acc)| {
+                discovery.snapshot_from_accumulator(
+                    wallet_id.clone(),
+                    acc.clone(),
+                    now,
+                    &HashMap::new(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let current_ranked = rank_follow_candidates(&current_snapshots, config.min_score);
+        let current_desired = desired_wallets(&current_ranked, config.follow_top_n);
+        assert!(
+            current_desired.is_empty(),
+            "the current c284388 semantics should collapse this live-shaped mixed field to zero because legit carry leaders lose their only actionable state on the scoring-window-only accumulator path while the refill/drain cluster is demoted by stale-lot inference"
+        );
+        for wallet_id in &legit_wallet_ids {
+            let snapshot = current_snapshots
+                .iter()
+                .find(|snapshot| snapshot.wallet_id == *wallet_id)
+                .expect("current legit carry snapshot should exist");
+            assert!(
+                !snapshot.eligible && snapshot.score.abs() < 1e-9,
+                "without retention-window position reconstruction, the legit pre-window carry leader {wallet_id} must be zeroed only because the scoring-window accumulator cannot represent its still-open carry lot"
+            );
+        }
+        for wallet_id in &stale_cluster_wallet_ids {
+            let snapshot = current_snapshots
+                .iter()
+                .find(|snapshot| snapshot.wallet_id == *wallet_id)
+                .expect("current junk snapshot should exist");
+            assert!(
+                !snapshot.eligible && snapshot.score.abs() < 1e-9,
+                "the same junk refill/drain wallet {wallet_id} must still be demoted under the current actionable-open-position rule"
+            );
+        }
+
+        let reconstructed_snapshots = discovery.wallet_snapshots_from_accumulators(
+            &store,
+            by_wallet,
+            now,
+            &HashMap::new(),
+        )?;
+        let reconstructed_ranked =
+            rank_follow_candidates(&reconstructed_snapshots, config.min_score);
+        let reconstructed_desired = desired_wallets(&reconstructed_ranked, config.follow_top_n);
+        assert_eq!(
+            reconstructed_desired, legit_wallet_ids,
+            "once the same store-backed raw path reconstructs positions across the retention-only prefix, only the legit pre-window carry leaders should remain publishable while the junk refill/drain cluster stays out"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn live_like_retention_position_reconstruction_restores_legit_carry_leaders_without_readmitting_refill_drain_junk_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("retention-position-reconstruction-restores-legit-carry-leaders.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-06T22:59:22Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        let legit_wallet_ids: Vec<String> = (0..3)
+            .map(|idx| format!("wallet_legit_prewindow_carry_{idx:02}"))
+            .collect();
+        seed_prewindow_carry_leader_position_history(&store, &config, now, &legit_wallet_ids)?;
+        let (junk_entries, stale_cluster_wallet_ids, independent_wallet_ids) =
+            refill_drain_open_lot_fixture_wallets(now, false);
+        assert!(independent_wallet_ids.is_empty());
+
+        let mut by_wallet: HashMap<String, WalletAccumulator> = junk_entries.into_iter().collect();
+        for wallet_id in &legit_wallet_ids {
+            by_wallet.insert(
+                wallet_id.clone(),
+                prewindow_carry_leader_scoring_window_accumulator(now),
+            );
+        }
+
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let snapshots = discovery.wallet_snapshots_from_accumulators(
+            &store,
+            by_wallet,
+            now,
+            &HashMap::new(),
+        )?;
+        let ranked = rank_follow_candidates(&snapshots, config.min_score);
+        let desired = desired_wallets(&ranked, config.follow_top_n);
+        assert_eq!(
+            desired, legit_wallet_ids,
+            "the retention-window position reconstruction should restore only the legit carry leaders whose actionable lot predates the scoring window"
+        );
+        for wallet_id in &legit_wallet_ids {
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| snapshot.wallet_id == *wallet_id)
+                .expect("restored legit carry snapshot should exist");
+            assert!(
+                snapshot.eligible && snapshot.score >= config.min_score,
+                "the reconstructed pre-window carry leader {wallet_id} should remain publishable once its retained carry lot is visible to the actionable gate"
+            );
+        }
+        for wallet_id in &stale_cluster_wallet_ids {
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| snapshot.wallet_id == *wallet_id)
+                .expect("junk snapshot should exist");
+            assert!(
+                !snapshot.eligible && snapshot.score.abs() < 1e-9,
+                "retention-window position reconstruction must not re-admit the stale refill/drain wallet {wallet_id}"
+            );
+        }
+
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let publication_outcome = discovery.persist_publication_state(
+            &store,
+            DiscoveryRuntimeMode::Healthy,
+            true,
+            metrics_window_start,
+            Some(&desired),
+            "raw_window_persisted_stream",
+            "retention_window_actionable_open_position_reconstruction",
+            now,
+        )?;
+        assert!(
+            publication_outcome.published_universe_persisted,
+            "once the legit carry leaders are restored for a deterministic retained-position reason, publication truth must materialize as exact wallet ids"
+        );
+        let publication_state = store
+            .discovery_publication_state_read_only()?
+            .expect("publication state should exist");
+        assert_eq!(
+            publication_state.published_wallet_ids.unwrap_or_default(),
+            legit_wallet_ids,
+            "publication truth must persist only the restored legit carry leaders after retained-position reconstruction"
         );
         Ok(())
     }
