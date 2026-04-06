@@ -4650,6 +4650,61 @@ mod app_tests {
         }
     }
 
+    fn live_like_published_discovery_output(
+        now: DateTime<Utc>,
+        active_follow_wallets: usize,
+        eligible_wallets: usize,
+        raw_window_cap_truncated: bool,
+    ) -> DiscoveryTaskOutput {
+        let active_wallets = (0..active_follow_wallets)
+            .map(|idx| format!("wallet-{idx}"))
+            .collect();
+        DiscoveryTaskOutput {
+            active_wallets,
+            cycle_ts: now,
+            eligible_wallets,
+            active_follow_wallets,
+            published: true,
+            runtime_mode: DiscoveryRuntimeMode::Degraded,
+            scoring_source: "raw_window_persisted_stream",
+            raw_window_cap_truncated,
+            cap_truncation_deactivation_guard_active: false,
+            cap_truncation_deactivation_guard_reason: None,
+            cap_truncation_deactivation_guard_started_at: None,
+            cap_truncation_floor_ts_utc: None,
+            cap_truncation_floor_signature: None,
+            persisted_stream_catch_up_requested: false,
+            persisted_stream_catch_up_pressure_override_requested: false,
+        }
+    }
+
+    fn live_like_degraded_published_universe_output(
+        now: DateTime<Utc>,
+        active_follow_wallets: usize,
+        eligible_wallets: usize,
+    ) -> DiscoveryTaskOutput {
+        let active_wallets = (0..active_follow_wallets)
+            .map(|idx| format!("wallet-{idx}"))
+            .collect();
+        DiscoveryTaskOutput {
+            active_wallets,
+            cycle_ts: now,
+            eligible_wallets,
+            active_follow_wallets,
+            published: false,
+            runtime_mode: DiscoveryRuntimeMode::Degraded,
+            scoring_source: "published_universe_raw_window_degraded",
+            raw_window_cap_truncated: false,
+            cap_truncation_deactivation_guard_active: false,
+            cap_truncation_deactivation_guard_reason: None,
+            cap_truncation_deactivation_guard_started_at: None,
+            cap_truncation_floor_ts_utc: None,
+            cap_truncation_floor_signature: None,
+            persisted_stream_catch_up_requested: false,
+            persisted_stream_catch_up_pressure_override_requested: false,
+        }
+    }
+
     fn test_swap(signature: &str) -> SwapEvent {
         SwapEvent {
             wallet: "wallet-test".to_string(),
@@ -6932,6 +6987,373 @@ mod app_tests {
         assert!(!guard.universe_blocked);
 
         let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_complete_published_universe_below_policy_minimum_blocks_shadow_buys_stage1(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("universe-stop-complete-published-below-policy")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_universe_min_active_follow_wallets = 15;
+        cfg.shadow_universe_min_eligible_wallets = 80;
+        cfg.shadow_universe_breach_cycles = 3;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        let discovery_output = live_like_published_discovery_output(now, 10, 10, true);
+
+        for minute in [0_i64, 3, 6] {
+            guard.observe_discovery_cycle(
+                &store,
+                now + chrono::Duration::minutes(minute),
+                discovery_output.eligible_wallets,
+                discovery_output.active_follow_wallets,
+                Some(&discovery_output),
+            )?;
+        }
+
+        assert!(
+            guard.universe_blocked,
+            "a complete but tiny published universe must still trip the hard shadow policy minimums"
+        );
+        let decision = guard.can_open_buy(&store, now + chrono::Duration::minutes(7), true);
+        match decision {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::Universe,
+                detail,
+            } => {
+                assert!(
+                    detail.contains("universe_breach_streak=3"),
+                    "unexpected universe block detail: {detail}"
+                );
+            }
+            other => panic!("expected universe block, got {other:?}"),
+        }
+        let universe_stops = store.list_risk_events_by_type_desc("shadow_risk_universe_stop")?;
+        assert_eq!(universe_stops.len(), 1);
+        let details_json = universe_stops[0]
+            .details_json
+            .as_deref()
+            .expect("universe stop event must include details_json");
+        let details: serde_json::Value = serde_json::from_str(details_json)
+            .context("failed to parse universe stop details_json")?;
+        assert_eq!(details["active_follow_wallets"], serde_json::json!(10));
+        assert_eq!(details["eligible_wallets"], serde_json::json!(10));
+        assert_eq!(details["min_active_follow_wallets"], serde_json::json!(15));
+        assert_eq!(details["min_eligible_wallets"], serde_json::json!(80));
+        assert_eq!(
+            details["discovery_runtime_mode"],
+            serde_json::json!("degraded")
+        );
+        assert_eq!(details["raw_window_cap_truncated"], serde_json::json!(true));
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_complete_published_universe_stop_is_threshold_driven_not_cap_truncation_driven_stage1(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("universe-stop-complete-published-threshold-only")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_universe_min_active_follow_wallets = 15;
+        cfg.shadow_universe_min_eligible_wallets = 80;
+        cfg.shadow_universe_breach_cycles = 3;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        let discovery_output = live_like_published_discovery_output(now, 10, 10, false);
+
+        for minute in [0_i64, 3, 6] {
+            guard.observe_discovery_cycle(
+                &store,
+                now + chrono::Duration::minutes(minute),
+                discovery_output.eligible_wallets,
+                discovery_output.active_follow_wallets,
+                Some(&discovery_output),
+            )?;
+        }
+
+        assert!(
+            guard.universe_blocked,
+            "the exact live stop class is driven by policy minimums, not by raw-window truncation context"
+        );
+        match guard.can_open_buy(&store, now + chrono::Duration::minutes(7), true) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::Universe,
+                ..
+            } => {}
+            other => panic!("expected universe block, got {other:?}"),
+        }
+        let universe_stops = store.list_risk_events_by_type_desc("shadow_risk_universe_stop")?;
+        assert_eq!(universe_stops.len(), 1);
+        let details_json = universe_stops[0]
+            .details_json
+            .as_deref()
+            .expect("universe stop event must include details_json");
+        let details: serde_json::Value = serde_json::from_str(details_json)
+            .context("failed to parse universe stop details_json")?;
+        assert!(
+            details.get("raw_window_cap_truncated").is_none(),
+            "cap-truncation context should be absent here, but the stop must still arm: {details_json}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_complete_published_universe_at_policy_minimum_allows_shadow_buys_stage1(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("universe-stop-complete-published-at-policy")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_universe_min_active_follow_wallets = 15;
+        cfg.shadow_universe_min_eligible_wallets = 80;
+        cfg.shadow_universe_breach_cycles = 3;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        let discovery_output = live_like_published_discovery_output(now, 15, 80, true);
+
+        for minute in [0_i64, 3, 6] {
+            guard.observe_discovery_cycle(
+                &store,
+                now + chrono::Duration::minutes(minute),
+                discovery_output.eligible_wallets,
+                discovery_output.active_follow_wallets,
+                Some(&discovery_output),
+            )?;
+        }
+
+        assert!(
+            !guard.universe_blocked,
+            "a complete published universe that meets the configured minimums must not be blocked"
+        );
+        match guard.can_open_buy(&store, now + chrono::Duration::minutes(7), true) {
+            BuyRiskDecision::Allow => {}
+            other => panic!("expected buy risk allow, got {other:?}"),
+        }
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_risk_universe_stop")?,
+            0,
+            "policy-satisfying complete truth must not emit a universe stop"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_exact_live_nine_wallet_degraded_published_universe_blocks_under_current_policy_stage1(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("universe-stop-exact-live-nine-nine-current-policy")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_universe_min_active_follow_wallets = 15;
+        cfg.shadow_universe_min_eligible_wallets = 80;
+        cfg.shadow_universe_breach_cycles = 3;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        let discovery_output = live_like_degraded_published_universe_output(now, 9, 9);
+
+        for minute in [0_i64, 3, 6] {
+            guard.observe_discovery_cycle(
+                &store,
+                now + chrono::Duration::minutes(minute),
+                discovery_output.eligible_wallets,
+                discovery_output.active_follow_wallets,
+                Some(&discovery_output),
+            )?;
+        }
+
+        assert!(
+            guard.universe_blocked,
+            "the exact current live class must still block under the shipped 15/80 universe minimums"
+        );
+        match guard.can_open_buy(&store, now + chrono::Duration::minutes(7), true) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::Universe,
+                ..
+            } => {}
+            other => panic!("expected universe block, got {other:?}"),
+        }
+        let universe_stops = store.list_risk_events_by_type_desc("shadow_risk_universe_stop")?;
+        assert_eq!(universe_stops.len(), 1);
+        let details_json = universe_stops[0]
+            .details_json
+            .as_deref()
+            .expect("universe stop event must include details_json");
+        let details: serde_json::Value = serde_json::from_str(details_json)
+            .context("failed to parse universe stop details_json")?;
+        assert_eq!(details["active_follow_wallets"], serde_json::json!(9));
+        assert_eq!(details["eligible_wallets"], serde_json::json!(9));
+        assert_eq!(
+            details["discovery_runtime_mode"],
+            serde_json::json!("degraded")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_exact_live_nine_wallet_degraded_published_universe_requires_both_minimums_to_move_stage1(
+    ) -> Result<()> {
+        let now = Utc::now();
+        let discovery_output = live_like_degraded_published_universe_output(now, 9, 9);
+
+        let (active_only_store, active_only_db_path) =
+            make_test_store("universe-stop-exact-live-nine-nine-active-only")?;
+        let mut active_only_cfg = RiskConfig::default();
+        active_only_cfg.shadow_universe_min_active_follow_wallets = 9;
+        active_only_cfg.shadow_universe_min_eligible_wallets = 80;
+        active_only_cfg.shadow_universe_breach_cycles = 3;
+        let mut active_only_guard = ShadowRiskGuard::new(active_only_cfg);
+        for minute in [0_i64, 3, 6] {
+            active_only_guard.observe_discovery_cycle(
+                &active_only_store,
+                now + chrono::Duration::minutes(minute),
+                discovery_output.eligible_wallets,
+                discovery_output.active_follow_wallets,
+                Some(&discovery_output),
+            )?;
+        }
+        assert!(
+            active_only_guard.universe_blocked,
+            "lowering only min_active_follow_wallets must still block because eligible_wallets remains below the configured floor"
+        );
+
+        let (eligible_only_store, eligible_only_db_path) =
+            make_test_store("universe-stop-exact-live-nine-nine-eligible-only")?;
+        let mut eligible_only_cfg = RiskConfig::default();
+        eligible_only_cfg.shadow_universe_min_active_follow_wallets = 15;
+        eligible_only_cfg.shadow_universe_min_eligible_wallets = 9;
+        eligible_only_cfg.shadow_universe_breach_cycles = 3;
+        let mut eligible_only_guard = ShadowRiskGuard::new(eligible_only_cfg);
+        for minute in [0_i64, 3, 6] {
+            eligible_only_guard.observe_discovery_cycle(
+                &eligible_only_store,
+                now + chrono::Duration::minutes(minute),
+                discovery_output.eligible_wallets,
+                discovery_output.active_follow_wallets,
+                Some(&discovery_output),
+            )?;
+        }
+        assert!(
+            eligible_only_guard.universe_blocked,
+            "lowering only min_eligible_wallets must still block because active_follow_wallets remains below the configured floor"
+        );
+
+        let (both_store, both_db_path) =
+            make_test_store("universe-stop-exact-live-nine-nine-both-minimums")?;
+        let mut both_cfg = RiskConfig::default();
+        both_cfg.shadow_universe_min_active_follow_wallets = 9;
+        both_cfg.shadow_universe_min_eligible_wallets = 9;
+        both_cfg.shadow_universe_breach_cycles = 3;
+        let mut both_guard = ShadowRiskGuard::new(both_cfg);
+        for minute in [0_i64, 3, 6] {
+            both_guard.observe_discovery_cycle(
+                &both_store,
+                now + chrono::Duration::minutes(minute),
+                discovery_output.eligible_wallets,
+                discovery_output.active_follow_wallets,
+                Some(&discovery_output),
+            )?;
+        }
+        assert!(
+            !both_guard.universe_blocked,
+            "moving both minimums to the exact current live discovery surface is the smallest policy change that clears the universe stop"
+        );
+        match both_guard.can_open_buy(&both_store, now + chrono::Duration::minutes(7), true) {
+            BuyRiskDecision::Allow => {}
+            other => panic!("expected buy risk allow, got {other:?}"),
+        }
+        assert_eq!(
+            both_store.risk_event_count_by_type("shadow_risk_universe_stop")?,
+            0,
+            "the exact-live 9/9 universe should not emit a universe stop once both minimums match that current discovery surface"
+        );
+
+        let _ = std::fs::remove_file(active_only_db_path);
+        let _ = std::fs::remove_file(eligible_only_db_path);
+        let _ = std::fs::remove_file(both_db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_nine_nine_policy_still_blocks_smaller_or_missing_universe_stage1() -> Result<()> {
+        let now = Utc::now();
+
+        let (small_active_store, small_active_db_path) =
+            make_test_store("universe-stop-nine-nine-small-active")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_universe_min_active_follow_wallets = 9;
+        cfg.shadow_universe_min_eligible_wallets = 9;
+        cfg.shadow_universe_breach_cycles = 3;
+        let mut small_active_guard = ShadowRiskGuard::new(cfg.clone());
+        let small_active_output = live_like_degraded_published_universe_output(now, 8, 9);
+        for minute in [0_i64, 3, 6] {
+            small_active_guard.observe_discovery_cycle(
+                &small_active_store,
+                now + chrono::Duration::minutes(minute),
+                small_active_output.eligible_wallets,
+                small_active_output.active_follow_wallets,
+                Some(&small_active_output),
+            )?;
+        }
+        assert!(small_active_guard.universe_blocked);
+        assert!(matches!(
+            small_active_guard.can_open_buy(&small_active_store, now + chrono::Duration::minutes(7), true),
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::Universe,
+                ..
+            }
+        ));
+
+        let (small_eligible_store, small_eligible_db_path) =
+            make_test_store("universe-stop-nine-nine-small-eligible")?;
+        let mut small_eligible_guard = ShadowRiskGuard::new(cfg.clone());
+        let small_eligible_output = live_like_degraded_published_universe_output(now, 9, 8);
+        for minute in [0_i64, 3, 6] {
+            small_eligible_guard.observe_discovery_cycle(
+                &small_eligible_store,
+                now + chrono::Duration::minutes(minute),
+                small_eligible_output.eligible_wallets,
+                small_eligible_output.active_follow_wallets,
+                Some(&small_eligible_output),
+            )?;
+        }
+        assert!(small_eligible_guard.universe_blocked);
+        assert!(matches!(
+            small_eligible_guard.can_open_buy(&small_eligible_store, now + chrono::Duration::minutes(7), true),
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::Universe,
+                ..
+            }
+        ));
+
+        let (missing_store, missing_db_path) =
+            make_test_store("universe-stop-nine-nine-no-published-universe")?;
+        let mut missing_guard = ShadowRiskGuard::new(cfg);
+        let missing_output = discovery_output_for_catch_up_tests(false);
+        for minute in [0_i64, 3, 6] {
+            missing_guard.observe_discovery_cycle(
+                &missing_store,
+                now + chrono::Duration::minutes(minute),
+                missing_output.eligible_wallets,
+                missing_output.active_follow_wallets,
+                Some(&missing_output),
+            )?;
+        }
+        assert!(missing_guard.universe_blocked);
+        assert!(matches!(
+            missing_guard.can_open_buy(&missing_store, now + chrono::Duration::minutes(7), true),
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::Universe,
+                ..
+            }
+        ));
+
+        let _ = std::fs::remove_file(small_active_db_path);
+        let _ = std::fs::remove_file(small_eligible_db_path);
+        let _ = std::fs::remove_file(missing_db_path);
         Ok(())
     }
 
