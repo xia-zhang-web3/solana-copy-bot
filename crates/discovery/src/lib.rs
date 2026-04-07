@@ -12147,6 +12147,14 @@ mod tests {
         (swaps, legit_wallet_ids, junk_wallet_ids)
     }
 
+    fn omit_nonfollowed_legit_market_context_swaps(swaps: &[SwapEvent]) -> Vec<SwapEvent> {
+        swaps
+            .iter()
+            .filter(|swap| !swap.wallet.starts_with("wallet_legit_long_cycle_noise_"))
+            .cloned()
+            .collect()
+    }
+
     fn insert_observed_swaps_and_seed_runtime_cursor(
         store: &SqliteStore,
         swaps: &[SwapEvent],
@@ -15306,6 +15314,91 @@ mod tests {
             legit_wallet_ids,
             "the widened retained horizon should materialize exact publication truth only for the restored legit carry leaders"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn live_like_fourteen_day_retention_without_nonfollowed_market_context_still_collapses_store_backed_raw_window_to_zero_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("live-like-fourteen-day-retention-missing-market-context-zero-wallets.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-07T13:02:39Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        config.observed_swaps_retention_days = 14;
+        config.max_window_swaps_in_memory = 64;
+        let (full_swaps, legit_wallet_ids, junk_wallet_ids) =
+            long_horizon_carry_vs_refill_drain_fixture_swaps(&config, now);
+        let partial_swaps = omit_nonfollowed_legit_market_context_swaps(&full_swaps);
+        assert!(
+            partial_swaps.len() < full_swaps.len(),
+            "reduced repro must remove only the not-followed SOL-leg context swaps while keeping the same candidate wallets"
+        );
+        insert_observed_swaps_and_seed_runtime_cursor(&store, &partial_swaps)?;
+
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let reconstructed_positions = discovery
+            .reconstruct_retention_window_positions_for_wallets(&store, &legit_wallet_ids, now)?;
+        for wallet_id in &legit_wallet_ids {
+            let positions = reconstructed_positions
+                .get(wallet_id)
+                .cloned()
+                .unwrap_or_default();
+            assert!(
+                !positions.is_empty(),
+                "fourteen-day retention should still reconstruct the legit carry for {wallet_id}; the zero-wallet collapse must happen after retained-position reconstruction"
+            );
+        }
+
+        let summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(summary.scoring_source, "raw_window_persisted_stream");
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert!(summary.metrics_written > 0);
+        assert_eq!(summary.eligible_wallets, 0);
+        assert!(summary.top_wallets.is_empty());
+        assert!(!summary.published);
+
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let (snapshots, observed_swaps_loaded) = discovery
+            .build_wallet_snapshots_from_persisted_stream_one_shot(&store, window_start, now)?;
+        assert!(
+            observed_swaps_loaded > legit_wallet_ids.len() + junk_wallet_ids.len(),
+            "the reduced live-like repro must still operate on a non-trivial persisted field even though the non-followed market-context swaps are missing"
+        );
+        let ranked = rank_follow_candidates(&snapshots, config.min_score);
+        assert!(ranked.is_empty());
+        for wallet_id in &legit_wallet_ids {
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| snapshot.wallet_id == *wallet_id)
+                .expect("legit carry snapshot should exist");
+            assert!(
+                !snapshot.eligible && snapshot.score.abs() < 1e-9,
+                "legit carry leader {wallet_id} should still be eliminated on the fourteen-day path once the supporting non-followed SOL-leg market context is absent"
+            );
+            assert!(
+                snapshot.rug_ratio > config.max_rug_ratio,
+                "the missing non-followed context for {wallet_id} must manifest as a rug/thin-market failure rather than another open-position failure"
+            );
+        }
+        for wallet_id in &junk_wallet_ids {
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| snapshot.wallet_id == *wallet_id)
+                .expect("junk snapshot should exist");
+            assert!(
+                !snapshot.eligible && snapshot.score.abs() < 1e-9,
+                "junk refill/drain wallet {wallet_id} must stay excluded even when the legit market-context swaps are missing"
+            );
+        }
         Ok(())
     }
 

@@ -16,8 +16,9 @@ use std::time::{Duration as StdDuration, Instant};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
-const OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY: usize = 4096;
+pub(crate) const OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY: usize = 4096;
 const OBSERVED_SWAP_BATCH_MAX_SIZE: usize = 128;
+const OBSERVED_SWAP_WRITER_DISCOVERY_CRITICAL_RESERVED_BATCHES: usize = 1;
 pub(crate) const OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL: StdDuration =
     StdDuration::from_secs(15 * 60);
 pub(crate) const OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL: StdDuration =
@@ -457,6 +458,7 @@ impl ObservedSwapWriterTelemetry {
 
 pub(crate) struct ObservedSwapWriter {
     sender: mpsc::Sender<ObservedSwapWriteRequest>,
+    normal_try_enqueue_soft_limit: usize,
     raw_worker: Option<thread::JoinHandle<Result<()>>>,
     aggregate_worker: Option<thread::JoinHandle<Result<()>>>,
     journal_worker: Option<thread::JoinHandle<Result<()>>>,
@@ -525,6 +527,11 @@ impl ObservedSwapWriter {
         let (sender, receiver) = mpsc::channel(config.channel_capacity);
         let telemetry = Arc::new(ObservedSwapWriterTelemetry::default());
         let terminal_failure_message = Arc::new(Mutex::new(None));
+        let discovery_critical_reserve_requests =
+            observed_swap_writer_discovery_critical_reserve_requests(&config);
+        let normal_try_enqueue_soft_limit = config
+            .channel_capacity
+            .saturating_sub(discovery_critical_reserve_requests);
         let aggregate_queue_capacity_batches =
             observed_swap_writer_aggregate_queue_capacity(&config);
         telemetry
@@ -663,6 +670,7 @@ impl ObservedSwapWriter {
 
         Ok(Self {
             sender,
+            normal_try_enqueue_soft_limit,
             raw_worker: Some(raw_worker),
             aggregate_worker,
             journal_worker,
@@ -703,6 +711,19 @@ impl ObservedSwapWriter {
 
     #[allow(dead_code)]
     pub(crate) fn try_enqueue(&self, swap: &SwapEvent) -> Result<bool> {
+        if self.telemetry.pending_requests.load(Ordering::Relaxed)
+            >= self.normal_try_enqueue_soft_limit
+        {
+            return Ok(false);
+        }
+        self.try_enqueue_without_soft_limit(swap)
+    }
+
+    pub(crate) fn try_enqueue_discovery_critical(&self, swap: &SwapEvent) -> Result<bool> {
+        self.try_enqueue_without_soft_limit(swap)
+    }
+
+    fn try_enqueue_without_soft_limit(&self, swap: &SwapEvent) -> Result<bool> {
         self.ensure_running()?;
         match self.sender.try_reserve() {
             Ok(permit) => {
@@ -1590,6 +1611,15 @@ fn observed_swap_writer_aggregate_queue_capacity(config: &ObservedSwapWriterConf
         .div_ceil(config.batch_max_size.max(1))
 }
 
+fn observed_swap_writer_discovery_critical_reserve_requests(
+    config: &ObservedSwapWriterConfig,
+) -> usize {
+    let reserved_requests = OBSERVED_SWAP_WRITER_DISCOVERY_CRITICAL_RESERVED_BATCHES
+        .max(1)
+        .saturating_mul(config.batch_max_size.max(1));
+    reserved_requests.min(config.channel_capacity.saturating_sub(1))
+}
+
 fn observed_swap_retention_protection_load_error_requires_abort(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
@@ -2088,6 +2118,107 @@ mod tests {
         blocker_conn.execute_batch("COMMIT")?;
         std::thread::sleep(StdDuration::from_millis(50));
         writer.shutdown()?;
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_discovery_critical_enqueue_uses_reserved_capacity_before_full_stage1(
+    ) -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-critical-reserve-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+
+        let blocker_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open blocker sqlite connection")?;
+        blocker_conn
+            .busy_timeout(StdDuration::from_millis(1))
+            .context("failed to shorten blocker busy timeout")?;
+        blocker_conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let writer = ObservedSwapWriter::start_with_config(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            ObservedSwapWriterConfig {
+                channel_capacity: 2,
+                batch_max_size: 1,
+                aggregate_writes_enabled: false,
+                aggregate_write_config: aggregate_write_config(),
+                recent_raw_journal: None,
+            },
+        )?;
+
+        let normal_swap = SwapEvent {
+            wallet: "wallet-critical-reserve".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-critical-reserve-normal".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-critical-reserve-normal".to_string(),
+            slot: 125,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-14T12:12:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+        let discovery_critical_swap = SwapEvent {
+            token_out: "token-critical-reserve-priority".to_string(),
+            signature: "sig-critical-reserve-priority".to_string(),
+            slot: 126,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-14T12:12:01Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            ..normal_swap.clone()
+        };
+
+        assert!(writer.try_enqueue(&normal_swap)?);
+        assert!(
+            !writer.try_enqueue(&SwapEvent {
+                token_out: "token-critical-reserve-blocked".to_string(),
+                signature: "sig-critical-reserve-blocked".to_string(),
+                slot: 127,
+                ts_utc: DateTime::parse_from_rfc3339("2026-03-14T12:12:02Z")
+                    .expect("timestamp")
+                    .with_timezone(&Utc),
+                ..normal_swap.clone()
+            })?,
+            "normal best-effort enqueue should yield once the reserved discovery-critical capacity is the only space left"
+        );
+        assert!(
+            writer.try_enqueue_discovery_critical(&discovery_critical_swap)?,
+            "discovery-critical enqueue should still claim the reserved writer slot"
+        );
+
+        blocker_conn.execute_batch("COMMIT")?;
+        std::thread::sleep(StdDuration::from_millis(50));
+        writer.shutdown()?;
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let swaps = verify_store.load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-14T12:11:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )?;
+        assert_eq!(swaps.len(), 2);
+        assert!(
+            swaps
+                .iter()
+                .any(|swap| swap.signature == "sig-critical-reserve-priority"),
+            "the discovery-critical swap should still persist after the raw writer unblocks"
+        );
+
         let _ = std::fs::remove_file(db_path);
         Ok(())
     }
