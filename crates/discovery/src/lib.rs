@@ -15403,6 +15403,200 @@ mod tests {
     }
 
     #[test]
+    fn live_like_fourteen_day_retention_full_market_context_rebuild_reaches_publish_pending_with_nonempty_exact_publish_set_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("live-like-fourteen-day-retention-full-market-context-bounded-publish.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-07T15:56:19Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        config.observed_swaps_retention_days = 14;
+        config.max_window_swaps_in_memory = 64;
+        let (swaps, legit_wallet_ids, junk_wallet_ids) =
+            long_horizon_carry_vs_refill_drain_fixture_swaps(&config, now);
+        insert_observed_swaps_and_seed_runtime_cursor(&store, &swaps)?;
+
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let rebuild_time_budget = StdDuration::from_millis(config.fetch_time_budget_ms.max(1));
+        let mut completed = None;
+        for idx in 0..30 {
+            let cycle_now = now + Duration::minutes(idx as i64);
+            match discovery.advance_persisted_stream_rebuild(
+                &store,
+                window_start,
+                metrics_window_start,
+                cycle_now,
+                config.max_fetch_swaps_per_cycle.max(1),
+                config.max_fetch_pages_per_cycle.max(1),
+                rebuild_time_budget,
+            )? {
+                PersistedStreamRebuildAdvanceOutcome::Completed {
+                    telemetry,
+                    snapshots,
+                } => {
+                    completed = Some((telemetry, snapshots));
+                    break;
+                }
+                PersistedStreamRebuildAdvanceOutcome::InProgress { .. } => {}
+            }
+        }
+        let (telemetry, snapshots) = completed.context(
+            "bounded fourteen-day retained raw rebuild should reach PublishPending within the test cutoff when full market context is present",
+        )?;
+        assert_eq!(
+            telemetry.phase,
+            DiscoveryPersistedRebuildPhase::PublishPending
+        );
+        assert!(
+            telemetry.observed_swaps_loaded > legit_wallet_ids.len() + junk_wallet_ids.len(),
+            "the bounded repro must still operate on a non-trivial rebuilt field before it materializes the exact publish set"
+        );
+        assert_eq!(
+            telemetry.publish_pending_requested_wallet_count,
+            legit_wallet_ids.len(),
+            "once the required non-followed SOL-leg market context is durably present, the exact requested publish set should survive all the way to the bounded PublishPending handoff"
+        );
+        assert_eq!(
+            discovery.publish_pending_requested_wallet_ids_from_snapshots(&snapshots),
+            legit_wallet_ids,
+            "the same bounded rebuild should hand off only the legit carry leaders as the exact publish set"
+        );
+
+        let publish_pending = load_persisted_stream_rebuild_state_for_test(&store)?;
+        assert_eq!(
+            publish_pending.phase,
+            DiscoveryPersistedRebuildPhase::PublishPending
+        );
+        assert_eq!(
+            publish_pending.payload.publish_pending_requested_wallet_ids,
+            Some(legit_wallet_ids.clone()),
+            "the persisted publish-pending checkpoint must retain the non-empty exact publish set when full market context is present"
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &publish_pending
+            ),
+            "publish_pending_flush"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn live_like_fourteen_day_retention_missing_market_context_rebuild_reaches_publish_pending_with_exact_empty_publish_set_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join(
+            "live-like-fourteen-day-retention-missing-market-context-bounded-zero-publish.db",
+        );
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-07T15:56:19Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        config.observed_swaps_retention_days = 14;
+        config.max_window_swaps_in_memory = 64;
+        let (full_swaps, legit_wallet_ids, junk_wallet_ids) =
+            long_horizon_carry_vs_refill_drain_fixture_swaps(&config, now);
+        let partial_swaps = omit_nonfollowed_legit_market_context_swaps(&full_swaps);
+        insert_observed_swaps_and_seed_runtime_cursor(&store, &partial_swaps)?;
+
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let rebuild_time_budget = StdDuration::from_millis(config.fetch_time_budget_ms.max(1));
+        let mut completed = None;
+        for idx in 0..30 {
+            let cycle_now = now + Duration::minutes(idx as i64);
+            match discovery.advance_persisted_stream_rebuild(
+                &store,
+                window_start,
+                metrics_window_start,
+                cycle_now,
+                config.max_fetch_swaps_per_cycle.max(1),
+                config.max_fetch_pages_per_cycle.max(1),
+                rebuild_time_budget,
+            )? {
+                PersistedStreamRebuildAdvanceOutcome::Completed {
+                    telemetry,
+                    snapshots,
+                } => {
+                    completed = Some((telemetry, snapshots));
+                    break;
+                }
+                PersistedStreamRebuildAdvanceOutcome::InProgress { .. } => {}
+            }
+        }
+        let (telemetry, snapshots) = completed.context(
+            "bounded fourteen-day retained raw rebuild should still reach PublishPending within the test cutoff even when the required non-followed market context is missing",
+        )?;
+        assert_eq!(
+            telemetry.phase,
+            DiscoveryPersistedRebuildPhase::PublishPending
+        );
+        assert!(
+            telemetry.observed_swaps_loaded > legit_wallet_ids.len() + junk_wallet_ids.len(),
+            "the bounded repro must still rebuild a non-trivial raw field before the exact publish set collapses"
+        );
+        assert!(telemetry.wallets_buffered > 0);
+        assert_eq!(
+            telemetry.publish_pending_requested_wallet_count, 0,
+            "with the legit non-followed SOL-leg context still absent, the bounded rebuild should reproduce the exact live class by reaching PublishPending with an empty exact requested publish set"
+        );
+        assert!(
+            discovery
+                .publish_pending_requested_wallet_ids_from_snapshots(&snapshots)
+                .is_empty(),
+            "the empty requested publish set must already be present at bounded replay completion, not introduced later by flush"
+        );
+        for wallet_id in &legit_wallet_ids {
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| snapshot.wallet_id == *wallet_id)
+                .expect("legit carry snapshot should exist in the bounded missing-context repro");
+            assert!(
+                !snapshot.eligible && snapshot.score.abs() < 1e-9,
+                "the legit carry leader {wallet_id} should still be zeroed at bounded completion once the non-followed market context is missing"
+            );
+            assert!(
+                snapshot.rug_ratio > config.max_rug_ratio,
+                "the same legit carry leader {wallet_id} must fail bounded PublishPending for the exact thin-market/rug reason, not because retained carry reconstruction disappeared"
+            );
+        }
+
+        let publish_pending = load_persisted_stream_rebuild_state_for_test(&store)?;
+        assert_eq!(
+            publish_pending.phase,
+            DiscoveryPersistedRebuildPhase::PublishPending
+        );
+        assert_eq!(
+            publish_pending.payload.publish_pending_requested_wallet_ids,
+            Some(Vec::new()),
+            "the persisted publish-pending checkpoint must retain the exact empty requested publish set on the same missing-market-context lineage"
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &publish_pending
+            ),
+            "publish_pending_exact_publish_set_empty"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn run_cycle_recovers_from_poisoned_window_mutex() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("test-poison.db");

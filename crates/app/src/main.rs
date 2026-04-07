@@ -17,6 +17,7 @@ use copybot_storage::{
     StartupStepProgress, StartupStepProgressReporter, StartupStepRuntimePolicy,
     StartupStepTimeoutBehavior,
 };
+use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::env;
 #[cfg(test)]
@@ -932,11 +933,27 @@ fn irrelevant_observed_swap_requires_discovery_critical_persistence(
     follow_snapshot: &FollowSnapshot,
     open_shadow_lots: &HashSet<(String, String)>,
     shadow_strategy_fail_closed: bool,
+    discovery_critical_target_buy_mints: &HashSet<String>,
 ) -> bool {
-    shadow_strategy_fail_closed
-        && follow_snapshot.active.is_empty()
-        && open_shadow_lots.is_empty()
-        && classify_swap_side(swap).is_some()
+    if !zero_universe_fail_closed_discovery_market_context_mode(
+        follow_snapshot,
+        open_shadow_lots,
+        shadow_strategy_fail_closed,
+    ) {
+        return false;
+    }
+
+    match classify_swap_side(swap) {
+        Some(ShadowSwapSide::Buy) => {
+            discovery_critical_target_buy_mints.is_empty()
+                || discovery_critical_target_buy_mints.contains(swap.token_out.as_str())
+        }
+        Some(ShadowSwapSide::Sell) => {
+            !discovery_critical_target_buy_mints.is_empty()
+                && discovery_critical_target_buy_mints.contains(swap.token_in.as_str())
+        }
+        None => false,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -954,10 +971,158 @@ struct PendingIrrelevantObservedSwap {
     last_backpressure_log_at: Option<StdInstant>,
 }
 
+#[derive(Debug, Deserialize)]
+struct DiscoveryCriticalPersistedRebuildPayloadTargetMints {
+    #[serde(default)]
+    unique_buy_mints: Vec<String>,
+}
+
+fn zero_universe_fail_closed_discovery_market_context_mode(
+    follow_snapshot: &FollowSnapshot,
+    open_shadow_lots: &HashSet<(String, String)>,
+    shadow_strategy_fail_closed: bool,
+) -> bool {
+    shadow_strategy_fail_closed && follow_snapshot.active.is_empty() && open_shadow_lots.is_empty()
+}
+
+fn load_discovery_critical_target_buy_mints(store: &SqliteStore) -> Result<HashSet<String>> {
+    let Some(state_row) = store.load_discovery_persisted_rebuild_state_read_only()? else {
+        return Ok(HashSet::new());
+    };
+    let payload: DiscoveryCriticalPersistedRebuildPayloadTargetMints =
+        serde_json::from_str(&state_row.state_json).context(
+            "failed parsing discovery persisted rebuild payload while loading target buy mints for critical market-context persistence",
+        )?;
+    Ok(payload.unique_buy_mints.into_iter().collect())
+}
+
+fn refresh_discovery_critical_target_buy_mints_or_warn(
+    store: &SqliteStore,
+    target_buy_mints: &mut HashSet<String>,
+) -> Result<()> {
+    match load_discovery_critical_target_buy_mints(store) {
+        Ok(loaded) => {
+            *target_buy_mints = loaded;
+            Ok(())
+        }
+        Err(error) => {
+            if is_fatal_sqlite_anyhow_error(&error) {
+                return Err(error).context(
+                    "failed refreshing discovery-critical target buy mints with fatal sqlite I/O",
+                );
+            }
+            warn!(
+                error = %error,
+                "failed refreshing discovery-critical target buy mints; keeping the previous target set"
+            );
+            Ok(())
+        }
+    }
+}
+
+fn refresh_discovery_critical_irrelevant_persistence_for_backpressure(
+    store: &SqliteStore,
+    swap: &SwapEvent,
+    follow_snapshot: &FollowSnapshot,
+    open_shadow_lots: &HashSet<(String, String)>,
+    shadow_strategy_fail_closed: bool,
+    discovery_critical_target_buy_mints: &mut HashSet<String>,
+) -> Result<bool> {
+    if !zero_universe_fail_closed_discovery_market_context_mode(
+        follow_snapshot,
+        open_shadow_lots,
+        shadow_strategy_fail_closed,
+    ) {
+        return Ok(
+            irrelevant_observed_swap_requires_discovery_critical_persistence(
+                swap,
+                follow_snapshot,
+                open_shadow_lots,
+                shadow_strategy_fail_closed,
+                discovery_critical_target_buy_mints,
+            ),
+        );
+    }
+
+    refresh_discovery_critical_target_buy_mints_or_warn(
+        store,
+        discovery_critical_target_buy_mints,
+    )?;
+    Ok(
+        irrelevant_observed_swap_requires_discovery_critical_persistence(
+            swap,
+            follow_snapshot,
+            open_shadow_lots,
+            shadow_strategy_fail_closed,
+            discovery_critical_target_buy_mints,
+        ),
+    )
+}
+
+fn should_buffer_backpressured_irrelevant_observed_swap(
+    discovery_critical: bool,
+    follow_snapshot: &FollowSnapshot,
+    open_shadow_lots: &HashSet<(String, String)>,
+    shadow_strategy_fail_closed: bool,
+) -> bool {
+    !zero_universe_fail_closed_discovery_market_context_mode(
+        follow_snapshot,
+        open_shadow_lots,
+        shadow_strategy_fail_closed,
+    ) || discovery_critical
+}
+
 fn pending_irrelevant_swap_backpressure_blocks_ingestion(
     pending_irrelevant_swaps: &VecDeque<PendingIrrelevantObservedSwap>,
 ) -> bool {
     pending_irrelevant_swaps.len() >= DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY
+}
+
+fn prune_noncritical_zero_universe_pending_irrelevant_swaps(
+    pending_irrelevant_swaps: &mut VecDeque<PendingIrrelevantObservedSwap>,
+    recent_signatures: &mut HashSet<String>,
+    recent_signature_order: &mut VecDeque<String>,
+    app_consumer_loop_telemetry: &mut AppConsumerLoopTelemetry,
+    follow_snapshot: &FollowSnapshot,
+    open_shadow_lots: &HashSet<(String, String)>,
+    shadow_strategy_fail_closed: bool,
+    discovery_critical_target_buy_mints: &HashSet<String>,
+) -> usize {
+    if !zero_universe_fail_closed_discovery_market_context_mode(
+        follow_snapshot,
+        open_shadow_lots,
+        shadow_strategy_fail_closed,
+    ) {
+        return 0;
+    }
+
+    let mut retained = VecDeque::with_capacity(pending_irrelevant_swaps.len());
+    let mut dropped = 0usize;
+    while let Some(mut pending) = pending_irrelevant_swaps.pop_front() {
+        let still_discovery_critical =
+            irrelevant_observed_swap_requires_discovery_critical_persistence(
+                &pending.swap,
+                follow_snapshot,
+                open_shadow_lots,
+                shadow_strategy_fail_closed,
+                discovery_critical_target_buy_mints,
+            );
+        if still_discovery_critical {
+            pending.discovery_critical = true;
+            retained.push_back(pending);
+            continue;
+        }
+
+        forget_recent_swap_signature(
+            recent_signatures,
+            recent_signature_order,
+            &pending.swap.signature,
+        );
+        app_consumer_loop_telemetry.note_processing_started_at(pending.processing_started_at);
+        dropped = dropped.saturating_add(1);
+    }
+    *pending_irrelevant_swaps = retained;
+    dropped
 }
 
 fn enqueue_irrelevant_observed_swap_immediately(
@@ -3090,6 +3255,11 @@ async fn run_app_loop(
     let mut recent_swap_signatures: HashSet<String> = HashSet::new();
     let mut recent_swap_signature_order: VecDeque<String> = VecDeque::new();
     let mut pending_irrelevant_swaps: VecDeque<PendingIrrelevantObservedSwap> = VecDeque::new();
+    let mut discovery_critical_target_buy_mints = HashSet::new();
+    refresh_discovery_critical_target_buy_mints_or_warn(
+        &store,
+        &mut discovery_critical_target_buy_mints,
+    )?;
     let mut discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>> = None;
     let mut discovery_catch_up_pending = false;
     let mut shadow_scheduler = ShadowScheduler::new();
@@ -3386,6 +3556,10 @@ async fn run_app_loop(
                                 "bounded partial discovery rebuild requested catch-up, but runtime pressure gate deferred immediate retrigger"
                             );
                         }
+                        refresh_discovery_critical_target_buy_mints_or_warn(
+                            &store,
+                            &mut discovery_critical_target_buy_mints,
+                        )?;
                     }
                     Ok(Err(error)) => {
                         discovery_catch_up_pending = false;
@@ -3848,6 +4022,30 @@ async fn run_app_loop(
                 ingestion_backoff_until = None;
             }
             _ = time::sleep(OBSERVED_SWAP_WRITER_BACKPRESSURE_RETRY_INTERVAL), if !pending_irrelevant_swaps.is_empty() => {
+                refresh_discovery_critical_target_buy_mints_or_warn(
+                    &store,
+                    &mut discovery_critical_target_buy_mints,
+                )?;
+                let dropped_noncritical_pending =
+                    prune_noncritical_zero_universe_pending_irrelevant_swaps(
+                        &mut pending_irrelevant_swaps,
+                        &mut recent_swap_signatures,
+                        &mut recent_swap_signature_order,
+                        &mut app_consumer_loop_telemetry,
+                        &follow_snapshot,
+                        &open_shadow_lots,
+                        shadow_strategy_fail_closed,
+                        &discovery_critical_target_buy_mints,
+                    );
+                if dropped_noncritical_pending > 0 {
+                    info!(
+                        dropped_noncritical_pending_irrelevant_swaps =
+                            dropped_noncritical_pending,
+                        pending_irrelevant_swap_queue_depth_after_prune =
+                            pending_irrelevant_swaps.len(),
+                        "dropped stale non-target irrelevant swap backlog after refreshing the exact rebuild target-mint set"
+                    );
+                }
                 loop {
                     let Some(mut pending) = pending_irrelevant_swaps.pop_front() else {
                         break;
@@ -3999,6 +4197,7 @@ async fn run_app_loop(
                                 &follow_snapshot,
                                 &open_shadow_lots,
                                 shadow_strategy_fail_closed,
+                                &discovery_critical_target_buy_mints,
                             );
                         match persist_irrelevant_observed_swap(
                             &observed_swap_writer,
@@ -4033,6 +4232,34 @@ async fn run_app_loop(
                                         .unwrap_or(0.0),
                                     "observed swap writer queue is saturated; deferring irrelevant observed swap persistence without restarting runtime"
                                 );
+                                let discovery_critical_irrelevant_persistence =
+                                    refresh_discovery_critical_irrelevant_persistence_for_backpressure(
+                                        &store,
+                                        &swap,
+                                        &follow_snapshot,
+                                        &open_shadow_lots,
+                                        shadow_strategy_fail_closed,
+                                        &mut discovery_critical_target_buy_mints,
+                                    )?;
+                                if !should_buffer_backpressured_irrelevant_observed_swap(
+                                    discovery_critical_irrelevant_persistence,
+                                    &follow_snapshot,
+                                    &open_shadow_lots,
+                                    shadow_strategy_fail_closed,
+                                ) {
+                                    forget_recent_swap_signature(
+                                        &mut recent_swap_signatures,
+                                        &mut recent_swap_signature_order,
+                                        &swap.signature,
+                                    );
+                                    app_consumer_loop_telemetry
+                                        .note_processing_started_at(swap_processing_started_at);
+                                    debug!(
+                                        signature = %swap.signature,
+                                        "dropping non-critical irrelevant observed swap under zero-universe fail-closed writer backpressure"
+                                    );
+                                    continue;
+                                }
                                 pending_irrelevant_swaps.push_back(PendingIrrelevantObservedSwap {
                                     swap,
                                     discovery_critical: discovery_critical_irrelevant_persistence,
@@ -4095,6 +4322,7 @@ async fn run_app_loop(
                                 &follow_snapshot,
                                 &open_shadow_lots,
                                 shadow_strategy_fail_closed,
+                                &discovery_critical_target_buy_mints,
                             );
                         match persist_irrelevant_observed_swap(
                             &observed_swap_writer,
@@ -4129,6 +4357,34 @@ async fn run_app_loop(
                                         .unwrap_or(0.0),
                                     "observed swap writer queue is saturated; deferring irrelevant observed swap persistence without restarting runtime"
                                 );
+                                let discovery_critical_irrelevant_persistence =
+                                    refresh_discovery_critical_irrelevant_persistence_for_backpressure(
+                                        &store,
+                                        &swap,
+                                        &follow_snapshot,
+                                        &open_shadow_lots,
+                                        shadow_strategy_fail_closed,
+                                        &mut discovery_critical_target_buy_mints,
+                                    )?;
+                                if !should_buffer_backpressured_irrelevant_observed_swap(
+                                    discovery_critical_irrelevant_persistence,
+                                    &follow_snapshot,
+                                    &open_shadow_lots,
+                                    shadow_strategy_fail_closed,
+                                ) {
+                                    forget_recent_swap_signature(
+                                        &mut recent_swap_signatures,
+                                        &mut recent_swap_signature_order,
+                                        &swap.signature,
+                                    );
+                                    app_consumer_loop_telemetry
+                                        .note_processing_started_at(swap_processing_started_at);
+                                    debug!(
+                                        signature = %swap.signature,
+                                        "dropping non-critical irrelevant observed swap under zero-universe fail-closed writer backpressure"
+                                    );
+                                    continue;
+                                }
                                 pending_irrelevant_swaps.push_back(PendingIrrelevantObservedSwap {
                                     swap,
                                     discovery_critical: discovery_critical_irrelevant_persistence,
@@ -4639,6 +4895,7 @@ struct DiscoveryTaskOutput {
 mod app_tests {
     use super::*;
     use copybot_storage::{
+        DiscoveryPersistedRebuildPhase, DiscoveryPersistedRebuildStateRow,
         DiscoveryPublicationStateUpdate, DiscoveryRuntimeMode,
         DiscoveryTrustedSelectionStateUpdate, TrustedSelectionState, TrustedSnapshotSourceKind,
         WalletMetricRow,
@@ -4682,6 +4939,34 @@ mod app_tests {
             std::fs::set_permissions(&path, perms)?;
         }
         Ok(path)
+    }
+
+    fn seed_test_discovery_critical_target_buy_mints(
+        store: &SqliteStore,
+        target_buy_mints: &[&str],
+    ) -> Result<()> {
+        let now = DateTime::parse_from_rfc3339("2026-03-14T16:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        store.upsert_discovery_persisted_rebuild_state(&DiscoveryPersistedRebuildStateRow {
+            phase: DiscoveryPersistedRebuildPhase::CollectBuyMints,
+            window_start: now - chrono::Duration::days(5),
+            horizon_end: now,
+            metrics_window_start: now - chrono::Duration::hours(1),
+            phase_cursor: None,
+            prepass_rows_processed: 0,
+            prepass_pages_processed: 0,
+            replay_rows_processed: 0,
+            replay_pages_processed: 0,
+            chunks_completed: 0,
+            state_json: serde_json::json!({
+                "unique_buy_mints": target_buy_mints,
+            })
+            .to_string(),
+            started_at: now,
+            updated_at: now,
+        })?;
+        Ok(())
     }
 
     fn test_publication_policy_fingerprint(config: &copybot_config::DiscoveryConfig) -> String {
@@ -11936,6 +12221,9 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
             snapshot.active.insert("wallet-test".to_string());
             snapshot
         };
+        let buy_target_mints = HashSet::from([buy_swap.token_out.clone()]);
+        let sell_target_mints = HashSet::from([sell_swap.token_in.clone()]);
+        let unrelated_target_mints = HashSet::from(["token-other".to_string()]);
         let open_shadow_lots =
             HashSet::from([("wallet-test".to_string(), "token-test".to_string())]);
 
@@ -11945,14 +12233,16 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
                 &empty_follow_snapshot,
                 &HashSet::new(),
                 true,
+                &HashSet::new(),
             )
         );
         assert!(
-            irrelevant_observed_swap_requires_discovery_critical_persistence(
+            !irrelevant_observed_swap_requires_discovery_critical_persistence(
                 &sell_swap,
                 &empty_follow_snapshot,
                 &HashSet::new(),
                 true,
+                &HashSet::new(),
             )
         );
         assert!(
@@ -11961,6 +12251,7 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
                 &empty_follow_snapshot,
                 &HashSet::new(),
                 false,
+                &HashSet::new(),
             )
         );
         assert!(
@@ -11969,6 +12260,7 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
                 &populated_follow_snapshot,
                 &HashSet::new(),
                 true,
+                &HashSet::new(),
             )
         );
         assert!(
@@ -11977,6 +12269,7 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
                 &empty_follow_snapshot,
                 &open_shadow_lots,
                 true,
+                &HashSet::new(),
             )
         );
         assert!(
@@ -11985,8 +12278,198 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
                 &empty_follow_snapshot,
                 &HashSet::new(),
                 true,
+                &HashSet::new(),
             )
         );
+        assert!(
+            irrelevant_observed_swap_requires_discovery_critical_persistence(
+                &buy_swap,
+                &empty_follow_snapshot,
+                &HashSet::new(),
+                true,
+                &buy_target_mints,
+            )
+        );
+        assert!(
+            !irrelevant_observed_swap_requires_discovery_critical_persistence(
+                &buy_swap,
+                &empty_follow_snapshot,
+                &HashSet::new(),
+                true,
+                &unrelated_target_mints,
+            )
+        );
+        assert!(
+            irrelevant_observed_swap_requires_discovery_critical_persistence(
+                &sell_swap,
+                &empty_follow_snapshot,
+                &HashSet::new(),
+                true,
+                &sell_target_mints,
+            )
+        );
+        assert!(
+            !irrelevant_observed_swap_requires_discovery_critical_persistence(
+                &sell_swap,
+                &empty_follow_snapshot,
+                &HashSet::new(),
+                true,
+                &buy_target_mints,
+            )
+        );
+    }
+
+    #[test]
+    fn discovery_critical_irrelevant_backpressure_refresh_narrows_stale_empty_target_set_stage1(
+    ) -> Result<()> {
+        let (store, db_path) =
+            make_test_store("discovery-critical-backpressure-refresh-target-mints")?;
+        seed_test_discovery_critical_target_buy_mints(&store, &["token-target"])?;
+
+        let empty_follow_snapshot = FollowSnapshot::default();
+        let mut stale_target_buy_mints = HashSet::new();
+        let mut generic_buy = test_swap("sig-generic-buy");
+        generic_buy.token_out = "token-generic".to_string();
+        let mut target_buy = test_swap("sig-target-buy");
+        target_buy.token_out = "token-target".to_string();
+
+        assert!(
+            irrelevant_observed_swap_requires_discovery_critical_persistence(
+                &generic_buy,
+                &empty_follow_snapshot,
+                &HashSet::new(),
+                true,
+                &stale_target_buy_mints,
+            ),
+            "with a stale empty in-memory target set, the old zero-universe fail-closed ownership would still treat every SOL buy as discovery-critical"
+        );
+        assert!(
+            !refresh_discovery_critical_irrelevant_persistence_for_backpressure(
+                &store,
+                &generic_buy,
+                &empty_follow_snapshot,
+                &HashSet::new(),
+                true,
+                &mut stale_target_buy_mints,
+            )?,
+            "once the exact rebuild target mints are refreshed from persisted state, the same generic SOL buy must stop being treated as discovery-critical"
+        );
+        assert_eq!(
+            stale_target_buy_mints,
+            HashSet::from(["token-target".to_string()]),
+            "refresh should narrow the in-memory target mint ownership onto the persisted rebuild exact buy-mint set"
+        );
+        assert!(
+            refresh_discovery_critical_irrelevant_persistence_for_backpressure(
+                &store,
+                &target_buy,
+                &empty_follow_snapshot,
+                &HashSet::new(),
+                true,
+                &mut stale_target_buy_mints,
+            )?,
+            "a SOL buy into the persisted rebuild target mint must remain discovery-critical after refresh"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn stale_empty_target_set_pending_queue_prunes_generic_backpressure_before_later_target_context_stage1(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("pending-irrelevant-prune-after-target-refresh")?;
+        seed_test_discovery_critical_target_buy_mints(&store, &["token-target"])?;
+
+        let empty_follow_snapshot = FollowSnapshot::default();
+        let mut recent_signatures = HashSet::new();
+        let mut recent_signature_order = VecDeque::new();
+        let mut telemetry = AppConsumerLoopTelemetry::default();
+        let processing_started_at = StdInstant::now();
+        let backpressure_started_at = StdInstant::now();
+        let mut pending_irrelevant_swaps = VecDeque::new();
+
+        for idx in 0..DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY.saturating_sub(1) {
+            let mut generic_swap = test_swap(&format!("sig-generic-pending-{idx:04}"));
+            generic_swap.token_out = format!("token-generic-{idx:04}");
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &generic_swap.signature,
+            ));
+            pending_irrelevant_swaps.push_back(PendingIrrelevantObservedSwap {
+                swap: generic_swap,
+                discovery_critical: true,
+                processing_started_at,
+                backpressure_started_at,
+                last_backpressure_log_at: None,
+            });
+        }
+        let mut target_swap = test_swap("sig-target-pending");
+        target_swap.token_out = "token-target".to_string();
+        assert!(note_recent_swap_signature(
+            &mut recent_signatures,
+            &mut recent_signature_order,
+            &target_swap.signature,
+        ));
+        pending_irrelevant_swaps.push_back(PendingIrrelevantObservedSwap {
+            swap: target_swap.clone(),
+            discovery_critical: true,
+            processing_started_at,
+            backpressure_started_at,
+            last_backpressure_log_at: None,
+        });
+
+        assert!(
+            pending_irrelevant_swap_backpressure_blocks_ingestion(&pending_irrelevant_swaps),
+            "under the stale empty-target ownership, generic SOL buys can fully contaminate the bounded pending queue and pause ingestion before the later target-mint context is retried"
+        );
+
+        let mut refreshed_target_buy_mints = HashSet::new();
+        refresh_discovery_critical_target_buy_mints_or_warn(
+            &store,
+            &mut refreshed_target_buy_mints,
+        )?;
+        let dropped = prune_noncritical_zero_universe_pending_irrelevant_swaps(
+            &mut pending_irrelevant_swaps,
+            &mut recent_signatures,
+            &mut recent_signature_order,
+            &mut telemetry,
+            &empty_follow_snapshot,
+            &HashSet::new(),
+            true,
+            &refreshed_target_buy_mints,
+        );
+        assert_eq!(
+            dropped,
+            DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY.saturating_sub(1),
+            "once the exact rebuild target mints materialize, the app must drop the stale generic backlog instead of letting it keep the bounded queue full"
+        );
+        assert_eq!(pending_irrelevant_swaps.len(), 1);
+        assert_eq!(
+            pending_irrelevant_swaps
+                .front()
+                .expect("target swap should remain queued")
+                .swap
+                .signature,
+            target_swap.signature,
+            "pruning must preserve the still-relevant target-mint market-context swap rather than wiping the queue indiscriminately"
+        );
+        assert!(
+            !pending_irrelevant_swap_backpressure_blocks_ingestion(&pending_irrelevant_swaps),
+            "after stale generic backlog is pruned, ingestion should no longer be paused before the later target-mint context can be retried"
+        );
+        assert!(
+            recent_signatures.contains(&target_swap.signature),
+            "the preserved target-mint swap must stay inside recent-signature dedupe state until it is retried"
+        );
+        assert!(
+            !recent_signatures.contains("sig-generic-pending-0000"),
+            "dropped stale generic backlog must release recent-signature ownership so those swaps do not stay artificially pinned forever"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
     }
 
     #[test]
