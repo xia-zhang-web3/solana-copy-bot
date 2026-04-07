@@ -12010,6 +12010,162 @@ mod tests {
         Ok(())
     }
 
+    fn long_horizon_carry_vs_refill_drain_fixture_swaps(
+        config: &DiscoveryConfig,
+        now: DateTime<Utc>,
+    ) -> (Vec<SwapEvent>, Vec<String>, Vec<String>) {
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let legit_wallet_ids: Vec<String> = (0..3)
+            .map(|idx| format!("wallet_legit_long_horizon_carry_{idx:02}"))
+            .collect();
+        let junk_wallet_ids: Vec<String> = (0..7)
+            .map(|idx| format!("wallet_refill_drain_stale_{idx:02}"))
+            .collect();
+        let mut swaps = Vec::new();
+
+        for (wallet_idx, wallet_id) in legit_wallet_ids.iter().enumerate() {
+            let carry_token =
+                format!("TokenLongHorizonCarry{wallet_idx:02}11111111111111111111111");
+            let cycle_token =
+                format!("TokenLongHorizonCycle{wallet_idx:02}11111111111111111111111");
+            swaps.push(swap(
+                wallet_id,
+                &format!("legit-long-carry-open-{wallet_idx}"),
+                now - Duration::days(9) + Duration::minutes(wallet_idx as i64),
+                SOL_MINT,
+                carry_token.as_str(),
+                1.2,
+                120.0,
+            ));
+            for round in 0..10 {
+                let buy_ts = window_start
+                    + Duration::hours((round * 6) as i64 + 1)
+                    + Duration::minutes(wallet_idx as i64);
+                let sell_ts = buy_ts + Duration::hours(60);
+                swaps.push(swap(
+                    wallet_id,
+                    &format!("legit-long-cycle-buy-{wallet_idx}-{round}"),
+                    buy_ts,
+                    SOL_MINT,
+                    cycle_token.as_str(),
+                    1.0,
+                    100.0,
+                ));
+                for noise_idx in 0..10 {
+                    swaps.push(swap(
+                        &format!(
+                            "wallet_legit_long_cycle_noise_{wallet_idx:02}_{round:02}_{noise_idx:02}"
+                        ),
+                        &format!("legit-long-cycle-noise-{wallet_idx}-{round}-{noise_idx}"),
+                        buy_ts + Duration::seconds(30 + noise_idx as i64),
+                        SOL_MINT,
+                        cycle_token.as_str(),
+                        0.4,
+                        40.0,
+                    ));
+                }
+                swaps.push(swap(
+                    wallet_id,
+                    &format!("legit-long-cycle-sell-{wallet_idx}-{round}"),
+                    sell_ts,
+                    cycle_token.as_str(),
+                    SOL_MINT,
+                    100.0,
+                    1.3,
+                ));
+            }
+        }
+
+        for (wallet_idx, wallet_id) in junk_wallet_ids.iter().enumerate() {
+            let junk_token =
+                format!("TokenRefillDrainStale{wallet_idx:02}111111111111111111111111");
+            for round in 0..10 {
+                let buy_ts = window_start
+                    + Duration::hours((round * 8) as i64 + 2)
+                    + Duration::minutes(wallet_idx as i64);
+                let sell_ts = buy_ts + Duration::minutes(5);
+                swaps.push(swap(
+                    wallet_id,
+                    &format!("junk-refill-drain-buy-{wallet_idx}-{round}"),
+                    buy_ts,
+                    SOL_MINT,
+                    junk_token.as_str(),
+                    1.0,
+                    100.0,
+                ));
+                for noise_idx in 0..10 {
+                    swaps.push(swap(
+                        &format!(
+                            "wallet_junk_refill_drain_noise_{wallet_idx:02}_{round:02}_{noise_idx:02}"
+                        ),
+                        &format!("junk-refill-drain-noise-{wallet_idx}-{round}-{noise_idx}"),
+                        buy_ts + Duration::seconds(30 + noise_idx as i64),
+                        SOL_MINT,
+                        junk_token.as_str(),
+                        0.4,
+                        40.0,
+                    ));
+                }
+                swaps.push(swap(
+                    wallet_id,
+                    &format!("junk-refill-drain-sell-{wallet_idx}-{round}"),
+                    sell_ts,
+                    junk_token.as_str(),
+                    SOL_MINT,
+                    100.0,
+                    1.25,
+                ));
+            }
+            let stale_open_buy_ts = now - Duration::hours(2) + Duration::minutes(wallet_idx as i64);
+            swaps.push(swap(
+                wallet_id,
+                &format!("junk-refill-drain-stale-open-{wallet_idx}"),
+                stale_open_buy_ts,
+                SOL_MINT,
+                junk_token.as_str(),
+                1.0,
+                100.0,
+            ));
+            for noise_idx in 0..10 {
+                swaps.push(swap(
+                    &format!("wallet_junk_refill_drain_stale_noise_{wallet_idx:02}_{noise_idx:02}"),
+                    &format!("junk-refill-drain-stale-noise-{wallet_idx}-{noise_idx}"),
+                    stale_open_buy_ts + Duration::seconds(30 + noise_idx as i64),
+                    SOL_MINT,
+                    junk_token.as_str(),
+                    0.4,
+                    40.0,
+                ));
+            }
+        }
+
+        swaps.sort_by(|a, b| {
+            a.ts_utc
+                .cmp(&b.ts_utc)
+                .then_with(|| a.signature.cmp(&b.signature))
+        });
+        (swaps, legit_wallet_ids, junk_wallet_ids)
+    }
+
+    fn insert_observed_swaps_and_seed_runtime_cursor(
+        store: &SqliteStore,
+        swaps: &[SwapEvent],
+    ) -> Result<()> {
+        let mut latest_cursor = None;
+        for swap in swaps {
+            latest_cursor = Some(DiscoveryRuntimeCursor {
+                ts_utc: swap.ts_utc,
+                slot: swap.slot,
+                signature: swap.signature.clone(),
+            });
+            store.insert_observed_swap(swap)?;
+        }
+        store.upsert_discovery_runtime_cursor(
+            &latest_cursor.expect("fixture swaps should include a latest cursor"),
+        )?;
+        Ok(())
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct LivePublishGateAttributionCounts {
         total_snapshots: usize,
@@ -14965,6 +15121,190 @@ mod tests {
             publication_state.published_wallet_ids.unwrap_or_default(),
             legit_wallet_ids,
             "publication truth must persist only the restored legit carry leaders after retained-position reconstruction"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn live_like_seven_day_retention_collapses_store_backed_raw_window_to_zero_even_after_reconstruction_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("live-like-seven-day-retention-zero-wallets.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-07T09:31:20Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut ungated_config = live_restored_rug_policy_discovery_config_for_tests();
+        ungated_config.require_open_positions_for_publication = false;
+        let mut current_config = live_restored_rug_policy_discovery_config_for_tests();
+        current_config.require_open_positions_for_publication = true;
+        current_config.max_window_swaps_in_memory = 64;
+        assert_eq!(current_config.observed_swaps_retention_days, 7);
+        let (swaps, legit_wallet_ids, junk_wallet_ids) =
+            long_horizon_carry_vs_refill_drain_fixture_swaps(&current_config, now);
+        insert_observed_swaps_and_seed_runtime_cursor(&store, &swaps)?;
+
+        let window_start = now - Duration::days(current_config.scoring_window_days.max(1) as i64);
+
+        let ungated_discovery =
+            DiscoveryService::new(ungated_config.clone(), permissive_shadow_quality());
+        let (ungated_snapshots, observed_swaps_loaded) = ungated_discovery
+            .build_wallet_snapshots_from_persisted_stream_one_shot(&store, window_start, now)?;
+        let ungated_ranked = rank_follow_candidates(&ungated_snapshots, ungated_config.min_score);
+        let ungated_desired = desired_wallets(&ungated_ranked, ungated_config.follow_top_n);
+        assert!(
+            observed_swaps_loaded > legit_wallet_ids.len() + junk_wallet_ids.len(),
+            "the reduced live-like store-backed repro must still observe a non-trivial raw field before the open-position gate collapses it"
+        );
+        for wallet_id in &legit_wallet_ids {
+            assert!(
+                ungated_desired.contains(wallet_id),
+                "before the actionable-open-position gate runs, the long-horizon carry leader {wallet_id} should still rank into the historical desired set"
+            );
+        }
+        for wallet_id in &junk_wallet_ids {
+            assert!(
+                ungated_desired.contains(wallet_id),
+                "before the actionable-open-position gate runs, the same refill/drain wallet {wallet_id} should still ride historical score into the desired set"
+            );
+        }
+
+        let current_discovery =
+            DiscoveryService::new(current_config.clone(), permissive_shadow_quality());
+        let reconstructed_positions = current_discovery
+            .reconstruct_retention_window_positions_for_wallets(&store, &legit_wallet_ids, now)?;
+        for wallet_id in &legit_wallet_ids {
+            let positions = reconstructed_positions
+                .get(wallet_id)
+                .cloned()
+                .unwrap_or_default();
+            assert!(
+                positions.is_empty(),
+                "with only seven days of retained raw swaps, the still-open carry for {wallet_id} must be invisible to retained-position reconstruction because it predates the retained horizon"
+            );
+        }
+        let junk_positions = current_discovery.reconstruct_retention_window_positions_for_wallets(
+            &store,
+            &junk_wallet_ids,
+            now,
+        )?;
+        for wallet_id in &junk_wallet_ids {
+            let positions = junk_positions.get(wallet_id).cloned().unwrap_or_default();
+            assert!(
+                !positions.is_empty(),
+                "the junk refill/drain wallet {wallet_id} must still have its recent stale phantom lot reconstructed inside the seven-day horizon so the zero-wallet collapse is not caused by missing junk state"
+            );
+        }
+
+        let (current_snapshots, current_observed_swaps_loaded) = current_discovery
+            .build_wallet_snapshots_from_persisted_stream_one_shot(&store, window_start, now)?;
+        let current_ranked = rank_follow_candidates(&current_snapshots, current_config.min_score);
+        let current_desired = desired_wallets(&current_ranked, current_config.follow_top_n);
+        assert!(
+            current_observed_swaps_loaded > legit_wallet_ids.len() + junk_wallet_ids.len(),
+            "the current seven-day retained raw path must still see a non-trivial persisted raw field before it collapses to zero publishable wallets"
+        );
+        assert_eq!(current_ranked.len(), 0);
+        assert!(current_desired.is_empty());
+        assert!(
+            top_wallet_labels(&current_ranked, 5).is_empty(),
+            "the current seven-day retained raw path must mirror the live post-df41d82 symptom by recomputing a non-trivial field yet still surfacing top_wallets=[]"
+        );
+        assert!(
+            current_snapshots
+                .iter()
+                .filter(|snapshot| snapshot.eligible)
+                .collect::<Vec<_>>()
+                .is_empty(),
+            "with seven-day retained raw history, the current live-like store-backed path must still collapse to zero eligible wallets because both the long-horizon carry leaders and the refill/drain junk wallets are filtered out for different actionable-state reasons"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn live_like_fourteen_day_retention_restores_legit_carry_leaders_without_readmitting_refill_drain_junk_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("live-like-fourteen-day-retention-restores-carry-leaders.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-07T09:31:20Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut widened_config = live_restored_rug_policy_discovery_config_for_tests();
+        widened_config.require_open_positions_for_publication = true;
+        widened_config.observed_swaps_retention_days = 14;
+        widened_config.max_window_swaps_in_memory = 64;
+        let (swaps, legit_wallet_ids, junk_wallet_ids) =
+            long_horizon_carry_vs_refill_drain_fixture_swaps(&widened_config, now);
+        insert_observed_swaps_and_seed_runtime_cursor(&store, &swaps)?;
+
+        let widened_discovery =
+            DiscoveryService::new(widened_config.clone(), permissive_shadow_quality());
+        let reconstructed_positions = widened_discovery
+            .reconstruct_retention_window_positions_for_wallets(&store, &legit_wallet_ids, now)?;
+        for wallet_id in &legit_wallet_ids {
+            let positions = reconstructed_positions
+                .get(wallet_id)
+                .cloned()
+                .unwrap_or_default();
+            assert!(
+                !positions.is_empty(),
+                "once retained raw history extends to fourteen days, the same still-open carry for {wallet_id} should become visible to the actionable gate"
+            );
+        }
+
+        let window_start = now - Duration::days(widened_config.scoring_window_days.max(1) as i64);
+        let (snapshots, observed_swaps_loaded) = widened_discovery
+            .build_wallet_snapshots_from_persisted_stream_one_shot(&store, window_start, now)?;
+        assert!(
+            observed_swaps_loaded > legit_wallet_ids.len() + junk_wallet_ids.len(),
+            "the widened-retention repro must still operate on the same non-trivial store-backed raw field"
+        );
+        let ranked = rank_follow_candidates(&snapshots, widened_config.min_score);
+        let desired = desired_wallets(&ranked, widened_config.follow_top_n);
+        assert_eq!(
+            desired, legit_wallet_ids,
+            "widening the retained raw horizon should restore only the legit long-horizon carry leaders while the junk refill/drain wallets remain excluded"
+        );
+        for wallet_id in &junk_wallet_ids {
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| snapshot.wallet_id == *wallet_id)
+                .expect("junk snapshot should exist");
+            assert!(
+                !snapshot.eligible && snapshot.score.abs() < 1e-9,
+                "the widened horizon must not re-admit the junk refill/drain wallet {wallet_id}; its stale phantom lot should remain non-actionable"
+            );
+        }
+
+        let summary = widened_discovery.run_cycle(&store, now)?;
+        assert_eq!(summary.scoring_source, "raw_window_persisted_stream");
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert_eq!(summary.eligible_wallets, legit_wallet_ids.len());
+        assert_eq!(summary.active_follow_wallets, legit_wallet_ids.len());
+        assert!(summary.published);
+
+        let publication_state = store
+            .discovery_publication_state_read_only()?
+            .expect("publication state should exist after widened-retention publish");
+        assert_eq!(
+            publication_state.runtime_mode,
+            DiscoveryRuntimeMode::Healthy
+        );
+        assert_eq!(
+            publication_state.published_wallet_ids.unwrap_or_default(),
+            legit_wallet_ids,
+            "the widened retained horizon should materialize exact publication truth only for the restored legit carry leaders"
         );
         Ok(())
     }
