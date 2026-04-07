@@ -974,6 +974,8 @@ struct PendingIrrelevantObservedSwap {
 #[derive(Debug, Deserialize)]
 struct DiscoveryCriticalPersistedRebuildPayloadTargetMints {
     #[serde(default)]
+    discovery_critical_target_buy_mints: Vec<String>,
+    #[serde(default)]
     unique_buy_mints: Vec<String>,
 }
 
@@ -993,7 +995,12 @@ fn load_discovery_critical_target_buy_mints(store: &SqliteStore) -> Result<HashS
         serde_json::from_str(&state_row.state_json).context(
             "failed parsing discovery persisted rebuild payload while loading target buy mints for critical market-context persistence",
         )?;
-    Ok(payload.unique_buy_mints.into_iter().collect())
+    let target_buy_mints = if payload.discovery_critical_target_buy_mints.is_empty() {
+        payload.unique_buy_mints
+    } else {
+        payload.discovery_critical_target_buy_mints
+    };
+    Ok(target_buy_mints.into_iter().collect())
 }
 
 fn refresh_discovery_critical_target_buy_mints_or_warn(
@@ -4944,6 +4951,7 @@ mod app_tests {
     fn seed_test_discovery_critical_target_buy_mints(
         store: &SqliteStore,
         target_buy_mints: &[&str],
+        unique_buy_mints: &[&str],
     ) -> Result<()> {
         let now = DateTime::parse_from_rfc3339("2026-03-14T16:00:00Z")
             .expect("timestamp")
@@ -4960,7 +4968,8 @@ mod app_tests {
             replay_pages_processed: 0,
             chunks_completed: 0,
             state_json: serde_json::json!({
-                "unique_buy_mints": target_buy_mints,
+                "discovery_critical_target_buy_mints": target_buy_mints,
+                "unique_buy_mints": unique_buy_mints,
             })
             .to_string(),
             started_at: now,
@@ -12324,7 +12333,11 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     ) -> Result<()> {
         let (store, db_path) =
             make_test_store("discovery-critical-backpressure-refresh-target-mints")?;
-        seed_test_discovery_critical_target_buy_mints(&store, &["token-target"])?;
+        seed_test_discovery_critical_target_buy_mints(
+            &store,
+            &["token-target"],
+            &["token-generic-a", "token-generic-b", "token-target"],
+        )?;
 
         let empty_follow_snapshot = FollowSnapshot::default();
         let mut stale_target_buy_mints = HashSet::new();
@@ -12376,10 +12389,44 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     }
 
     #[test]
+    fn load_discovery_critical_target_buy_mints_prefers_exact_candidate_targets_over_broad_unique_buy_universe_stage1(
+    ) -> Result<()> {
+        let (store, db_path) =
+            make_test_store("load-discovery-critical-target-buy-mints-prefers-exact-surface")?;
+        seed_test_discovery_critical_target_buy_mints(
+            &store,
+            &["token-target-a", "token-target-b"],
+            &[
+                "token-generic-a",
+                "token-generic-b",
+                "token-target-a",
+                "token-target-b",
+            ],
+        )?;
+
+        let loaded = load_discovery_critical_target_buy_mints(&store)?;
+        assert_eq!(
+            loaded,
+            HashSet::from([
+                "token-target-a".to_string(),
+                "token-target-b".to_string(),
+            ]),
+            "once discovery persists an exact candidate target-mint surface, app must prefer it over the much broader unique-buy-mint universe when deciding which irrelevant SOL legs are discovery-critical under pressure"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn stale_empty_target_set_pending_queue_prunes_generic_backpressure_before_later_target_context_stage1(
     ) -> Result<()> {
         let (store, db_path) = make_test_store("pending-irrelevant-prune-after-target-refresh")?;
-        seed_test_discovery_critical_target_buy_mints(&store, &["token-target"])?;
+        seed_test_discovery_critical_target_buy_mints(
+            &store,
+            &["token-target"],
+            &["token-target"],
+        )?;
 
         let empty_follow_snapshot = FollowSnapshot::default();
         let mut recent_signatures = HashSet::new();
@@ -12466,6 +12513,92 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
         assert!(
             !recent_signatures.contains("sig-generic-pending-0000"),
             "dropped stale generic backlog must release recent-signature ownership so those swaps do not stay artificially pinned forever"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn broad_unique_buy_universe_target_set_keeps_generic_backpressure_and_blocks_later_exact_context_stage1(
+    ) -> Result<()> {
+        let (store, db_path) =
+            make_test_store("pending-irrelevant-broad-unique-buy-universe-targets")?;
+        let broad_unique_buy_mints: Vec<String> = (0
+            ..DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY)
+            .map(|idx| format!("token-generic-{idx:04}"))
+            .chain(std::iter::once("token-target".to_string()))
+            .collect();
+        let broad_unique_buy_mint_refs: Vec<&str> =
+            broad_unique_buy_mints.iter().map(String::as_str).collect();
+        seed_test_discovery_critical_target_buy_mints(&store, &[], &broad_unique_buy_mint_refs)?;
+
+        let empty_follow_snapshot = FollowSnapshot::default();
+        let mut recent_signatures = HashSet::new();
+        let mut recent_signature_order = VecDeque::new();
+        let mut telemetry = AppConsumerLoopTelemetry::default();
+        let processing_started_at = StdInstant::now();
+        let backpressure_started_at = StdInstant::now();
+        let mut pending_irrelevant_swaps = VecDeque::new();
+
+        for idx in 0..DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY.saturating_sub(1) {
+            let mut generic_swap = test_swap(&format!("sig-broad-generic-pending-{idx:04}"));
+            generic_swap.token_out = format!("token-generic-{idx:04}");
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &generic_swap.signature,
+            ));
+            pending_irrelevant_swaps.push_back(PendingIrrelevantObservedSwap {
+                swap: generic_swap,
+                discovery_critical: true,
+                processing_started_at,
+                backpressure_started_at,
+                last_backpressure_log_at: None,
+            });
+        }
+        let mut target_swap = test_swap("sig-broad-target-pending");
+        target_swap.token_out = "token-target".to_string();
+        assert!(note_recent_swap_signature(
+            &mut recent_signatures,
+            &mut recent_signature_order,
+            &target_swap.signature,
+        ));
+        pending_irrelevant_swaps.push_back(PendingIrrelevantObservedSwap {
+            swap: target_swap,
+            discovery_critical: true,
+            processing_started_at,
+            backpressure_started_at,
+            last_backpressure_log_at: None,
+        });
+
+        let mut refreshed_target_buy_mints = HashSet::new();
+        refresh_discovery_critical_target_buy_mints_or_warn(
+            &store,
+            &mut refreshed_target_buy_mints,
+        )?;
+        assert_eq!(
+            refreshed_target_buy_mints.len(),
+            broad_unique_buy_mints.len(),
+            "without an exact candidate target surface, refresh still reloads the full unique-buy-mint universe"
+        );
+        let dropped = prune_noncritical_zero_universe_pending_irrelevant_swaps(
+            &mut pending_irrelevant_swaps,
+            &mut recent_signatures,
+            &mut recent_signature_order,
+            &mut telemetry,
+            &empty_follow_snapshot,
+            &HashSet::new(),
+            true,
+            &refreshed_target_buy_mints,
+        );
+        assert_eq!(
+            dropped, 0,
+            "when the persisted target set is still the whole unique-buy-mint universe, generic backlog remains discovery-critical and cannot be pruned away"
+        );
+        assert!(
+            pending_irrelevant_swap_backpressure_blocks_ingestion(&pending_irrelevant_swaps),
+            "the same broad target-mint ownership leaves the bounded pending queue saturated, so later exact target context still cannot make forward progress"
         );
 
         let _ = std::fs::remove_file(db_path);

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::cell::Cell;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant};
 use tracing::{info, warn};
@@ -801,6 +801,8 @@ struct WalletAccumulator {
     tx_per_minute: HashMap<i64, u32>,
     suspicious: bool,
     positions: HashMap<String, VecDeque<Lot>>,
+    #[serde(default)]
+    buy_mints: BTreeSet<String>,
     buy_total: u32,
     quality_resolved_buys: u32,
     tradable_buys: u32,
@@ -908,6 +910,8 @@ impl ReplayWalletStatsDayCountSourceProgress {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct PersistedStreamRebuildPayload {
     unique_buy_mints: Vec<String>,
+    #[serde(default)]
+    discovery_critical_target_buy_mints: Vec<String>,
     #[serde(default)]
     buy_mint_counts: BTreeMap<String, u32>,
     #[serde(default)]
@@ -3650,6 +3654,7 @@ impl DiscoveryService {
         state.payload.replay_candidate_activity_backfill_required = true;
         state.payload.replay_candidate_activity_backfill_pending = false;
         state.payload.completed_snapshots.clear();
+        state.payload.discovery_critical_target_buy_mints.clear();
         state.payload.publish_pending_requested_wallet_ids = None;
         state.payload.publish_pending_quality_retry_mints = Some(quality_retry_mints);
         state.payload.token_quality_cache.clear();
@@ -3948,6 +3953,7 @@ impl DiscoveryService {
         state.payload.pending_rug_checks.clear();
         state.payload.token_pending_buy_starts.clear();
         state.payload.completed_snapshots.clear();
+        state.payload.discovery_critical_target_buy_mints.clear();
         state.payload.publish_pending_requested_wallet_ids = None;
         state.payload.publish_pending_quality_retry_mints = None;
     }
@@ -3965,6 +3971,7 @@ impl DiscoveryService {
         state.payload.pending_rug_checks.clear();
         state.payload.token_pending_buy_starts.clear();
         state.payload.completed_snapshots.clear();
+        state.payload.discovery_critical_target_buy_mints.clear();
         state.payload.publish_pending_requested_wallet_ids = None;
         state.payload.publish_pending_quality_retry_mints = None;
     }
@@ -4944,6 +4951,7 @@ impl DiscoveryService {
                     state.payload.pending_rug_checks.clear();
                     state.payload.token_pending_buy_starts.clear();
                     state.payload.completed_snapshots.clear();
+                    state.payload.discovery_critical_target_buy_mints.clear();
                     state.payload.publish_pending_requested_wallet_ids = None;
                     changed = true;
                 }
@@ -5187,6 +5195,18 @@ impl DiscoveryService {
         state: &mut PersistedStreamRebuildState,
         updated_at: DateTime<Utc>,
     ) -> Result<()> {
+        if matches!(
+            state.phase,
+            DiscoveryPersistedRebuildPhase::Replay | DiscoveryPersistedRebuildPhase::PublishPending
+        ) && !state.payload.by_wallet.is_empty()
+        {
+            state.payload.discovery_critical_target_buy_mints = self
+                .discovery_critical_target_buy_mints_from_accumulators(
+                    store,
+                    &state.payload.by_wallet,
+                    state.horizon_end,
+                )?;
+        }
         state.updated_at = updated_at;
         let row = Self::persisted_stream_rebuild_row(state, updated_at)?;
         store.upsert_discovery_persisted_rebuild_state(&row)
@@ -7994,6 +8014,12 @@ impl DiscoveryService {
                 let unique_buy_mints = state.payload.unique_buy_mints.len();
                 let unresolved_publish_quality_mints =
                     Self::unresolved_publish_quality_mints(&state.payload, state.horizon_end);
+                state.payload.discovery_critical_target_buy_mints = self
+                    .discovery_critical_target_buy_mints_from_accumulators(
+                        store,
+                        &state.payload.by_wallet,
+                        state.horizon_end,
+                    )?;
                 let by_wallet = std::mem::take(&mut state.payload.by_wallet);
                 let snapshots = self.wallet_snapshots_from_accumulators(
                     store,
@@ -10268,25 +10294,8 @@ impl DiscoveryService {
         token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
     ) -> Result<Vec<WalletSnapshot>> {
         let wallet_ids: Vec<String> = by_wallet.keys().cloned().collect();
-        let persisted_active_day_counts = match store.wallet_active_day_counts_since(
-            &wallet_ids,
-            now - Duration::days(self.config.scoring_window_days.max(1) as i64),
-        ) {
-            Ok(counts) => counts,
-            Err(error) => {
-                if discovery_wallet_activity_day_count_error_requires_abort(&error) {
-                    return Err(error).context(
-                        "failed loading persisted wallet activity-day counts with fatal sqlite I/O",
-                    );
-                }
-                warn!(
-                    error = %error,
-                    wallet_count = wallet_ids.len(),
-                    "failed loading persisted wallet activity-day counts; falling back to cached discovery window"
-                );
-                HashMap::new()
-            }
-        };
+        let persisted_active_day_counts =
+            self.load_persisted_active_day_counts_for_wallet_ids(store, &wallet_ids, now)?;
 
         let mut snapshots = Vec::with_capacity(by_wallet.len());
         let mut snapshot_indexes_by_wallet = HashMap::with_capacity(by_wallet.len());
@@ -10302,6 +10311,7 @@ impl DiscoveryService {
                 now,
                 token_sol_history,
                 persisted_active_days,
+                false,
                 false,
             );
             if snapshot.eligible {
@@ -10348,6 +10358,108 @@ impl DiscoveryService {
         }
 
         Ok(snapshots)
+    }
+
+    fn load_persisted_active_day_counts_for_wallet_ids(
+        &self,
+        store: &SqliteStore,
+        wallet_ids: &[String],
+        now: DateTime<Utc>,
+    ) -> Result<HashMap<String, u32>> {
+        match store.wallet_active_day_counts_since(
+            wallet_ids,
+            now - Duration::days(self.config.scoring_window_days.max(1) as i64),
+        ) {
+            Ok(counts) => Ok(counts),
+            Err(error) => {
+                if discovery_wallet_activity_day_count_error_requires_abort(&error) {
+                    return Err(error).context(
+                        "failed loading persisted wallet activity-day counts with fatal sqlite I/O",
+                    );
+                }
+                warn!(
+                    error = %error,
+                    wallet_count = wallet_ids.len(),
+                    "failed loading persisted wallet activity-day counts; falling back to cached discovery window"
+                );
+                Ok(HashMap::new())
+            }
+        }
+    }
+
+    fn discovery_critical_target_buy_mints_from_accumulators(
+        &self,
+        store: &SqliteStore,
+        by_wallet: &HashMap<String, WalletAccumulator>,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<String>> {
+        if by_wallet.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let wallet_ids: Vec<String> = by_wallet.keys().cloned().collect();
+        let persisted_active_day_counts =
+            self.load_persisted_active_day_counts_for_wallet_ids(store, &wallet_ids, now)?;
+        let empty_token_sol_history = HashMap::new();
+        let mut counterfactual_open_gate_candidate_wallet_ids = Vec::new();
+        for (wallet_id, acc) in by_wallet {
+            let persisted_active_days = persisted_active_day_counts
+                .get(wallet_id)
+                .copied()
+                .unwrap_or(0);
+            let snapshot = self.snapshot_from_accumulator_with_persisted_active_days_internal(
+                wallet_id.clone(),
+                acc.clone(),
+                now,
+                &empty_token_sol_history,
+                persisted_active_days,
+                false,
+                true,
+            );
+            if snapshot.eligible && snapshot.score >= self.config.min_score {
+                counterfactual_open_gate_candidate_wallet_ids.push(wallet_id.clone());
+            }
+        }
+
+        if counterfactual_open_gate_candidate_wallet_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let reconstructed_positions_by_wallet = self
+            .reconstruct_retention_window_positions_for_wallets(
+                store,
+                &counterfactual_open_gate_candidate_wallet_ids,
+                now,
+            )?;
+        let mut target_buy_mints = BTreeSet::new();
+        for wallet_id in counterfactual_open_gate_candidate_wallet_ids {
+            let Some(acc) = by_wallet.get(&wallet_id) else {
+                continue;
+            };
+            let mut gated_acc = acc.clone();
+            if let Some(reconstructed_positions) = reconstructed_positions_by_wallet.get(&wallet_id)
+            {
+                gated_acc.positions = reconstructed_positions.clone();
+            }
+            let persisted_active_days = persisted_active_day_counts
+                .get(&wallet_id)
+                .copied()
+                .unwrap_or(0);
+            let snapshot = self.snapshot_from_accumulator_with_persisted_active_days_internal(
+                wallet_id.clone(),
+                gated_acc,
+                now,
+                &empty_token_sol_history,
+                persisted_active_days,
+                true,
+                true,
+            );
+            if snapshot.eligible && snapshot.score >= self.config.min_score {
+                target_buy_mints.extend(acc.buy_mints.iter().cloned());
+            }
+        }
+
+        Ok(target_buy_mints.into_iter().collect())
     }
 
     fn reconstruct_retention_window_positions_for_wallets(
@@ -10677,6 +10789,7 @@ impl DiscoveryService {
             token_sol_history,
             persisted_active_days,
             true,
+            false,
         )
     }
 
@@ -10688,6 +10801,7 @@ impl DiscoveryService {
         token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
         persisted_active_days: u32,
         apply_open_position_gate: bool,
+        ignore_rug_gate: bool,
     ) -> WalletSnapshot {
         let first_seen = acc.first_seen.unwrap_or(now);
         let last_seen = acc.last_seen.unwrap_or(now);
@@ -10738,7 +10852,11 @@ impl DiscoveryService {
             buy_total,
             quality_resolved_buys,
             tradable_buys,
-            rug_metrics,
+            if ignore_rug_gate {
+                RugMetrics::default()
+            } else {
+                rug_metrics
+            },
             now,
         );
         if apply_open_position_gate
@@ -11052,6 +11170,7 @@ impl WalletAccumulator {
                 .publish_pending_quality_retry_buy_count
                 .saturating_add(1);
         }
+        self.buy_mints.insert(token.to_string());
         self.buy_observations.push(BuyObservation {
             token: token.to_string(),
             ts,
@@ -11101,6 +11220,7 @@ impl WalletAccumulator {
                 .publish_pending_quality_retry_buy_count
                 .saturating_add(1);
         }
+        self.buy_mints.insert(token.to_string());
         self.spent_sol += cost_sol;
         if cost_sol > self.max_buy_notional_sol {
             self.max_buy_notional_sol = cost_sol;
@@ -11328,6 +11448,7 @@ mod tests {
                 .collect();
         let payload = PersistedStreamRebuildPayload {
             unique_buy_mints,
+            discovery_critical_target_buy_mints: Vec::new(),
             buy_mint_counts,
             collect_buy_mints_cursor_token: None,
             collect_buy_mints_prepass_complete: true,
@@ -12155,6 +12276,28 @@ mod tests {
             .collect()
     }
 
+    fn omit_nonfollowed_market_context_swaps_except_tokens(
+        swaps: &[SwapEvent],
+        allowed_tokens: &HashSet<String>,
+    ) -> Vec<SwapEvent> {
+        swaps
+            .iter()
+            .filter(|swap| {
+                let is_nonfollowed_market_context =
+                    swap.wallet.starts_with("wallet_legit_long_cycle_noise_")
+                        || swap.wallet.starts_with("wallet_junk_refill_drain_noise_")
+                        || swap
+                            .wallet
+                            .starts_with("wallet_junk_refill_drain_stale_noise_");
+                if !is_nonfollowed_market_context {
+                    return true;
+                }
+                sol_leg_token(swap).is_some_and(|token| allowed_tokens.contains(token))
+            })
+            .cloned()
+            .collect()
+    }
+
     fn insert_observed_swaps_and_seed_runtime_cursor(
         store: &SqliteStore,
         swaps: &[SwapEvent],
@@ -12172,6 +12315,194 @@ mod tests {
             &latest_cursor.expect("fixture swaps should include a latest cursor"),
         )?;
         Ok(())
+    }
+
+    fn replay_streaming_wallet_accumulators_from_swaps_for_test(
+        discovery: &DiscoveryService,
+        swaps: &[SwapEvent],
+        now: DateTime<Utc>,
+    ) -> HashMap<String, WalletAccumulator> {
+        let window_start = now - Duration::days(discovery.config.scoring_window_days.max(1) as i64);
+        let mut unique_buy_mints: Vec<String> = swaps
+            .iter()
+            .filter(|swap| swap.ts_utc >= window_start && swap.ts_utc <= now)
+            .filter(|swap| is_sol_buy(swap))
+            .map(|swap| swap.token_out.clone())
+            .collect();
+        DiscoveryService::canonicalize_unique_buy_mints(&mut unique_buy_mints);
+        let token_quality_cache =
+            fresh_token_quality_cache_for_mints_for_test(&unique_buy_mints, now);
+        let mut by_wallet: HashMap<String, WalletAccumulator> = HashMap::new();
+        let mut token_states = HashMap::new();
+        let mut token_recent_sol_trades = HashMap::new();
+        let mut pending_rug_checks = VecDeque::new();
+        let mut token_pending_buy_starts = HashMap::new();
+        let lookahead = Duration::seconds(discovery.config.rug_lookahead_seconds.max(1) as i64);
+
+        for (idx, swap) in swaps
+            .iter()
+            .filter(|swap| swap.ts_utc >= window_start && swap.ts_utc <= now)
+            .enumerate()
+        {
+            let buy_quality = discovery.update_token_quality_state_streaming(
+                &mut token_states,
+                &mut token_recent_sol_trades,
+                &token_quality_cache,
+                swap,
+            );
+            by_wallet
+                .entry(swap.wallet.clone())
+                .or_default()
+                .observe_swap_streaming(
+                    swap,
+                    discovery.config.max_tx_per_minute,
+                    buy_quality,
+                    false,
+                );
+
+            let Some(token) = sol_leg_token(swap) else {
+                continue;
+            };
+            discovery.finalize_streaming_rug_metrics_up_to(
+                &mut by_wallet,
+                token,
+                &mut token_recent_sol_trades,
+                &mut pending_rug_checks,
+                &mut token_pending_buy_starts,
+                swap.ts_utc,
+                lookahead,
+                now,
+            );
+            if is_sol_buy(swap) {
+                pending_rug_checks.push_back(PendingBuyRugCheck {
+                    token: token.to_string(),
+                    wallet_id: swap.wallet.clone(),
+                    buy_ts: swap.ts_utc,
+                });
+                token_pending_buy_starts
+                    .entry(token.to_string())
+                    .or_default()
+                    .push_back(swap.ts_utc);
+            }
+            if (idx + 1) % STREAMING_RUG_TRADE_SWEEP_INTERVAL_SWAPS == 0 {
+                discovery.evict_idle_streaming_rug_trade_history(
+                    &mut token_recent_sol_trades,
+                    &token_pending_buy_starts,
+                    swap.ts_utc - lookahead,
+                );
+            }
+        }
+        discovery.finalize_all_streaming_rug_metrics(
+            &mut by_wallet,
+            &mut token_recent_sol_trades,
+            &mut pending_rug_checks,
+            &mut token_pending_buy_starts,
+            now,
+            lookahead,
+        );
+        by_wallet
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct PostRebuildGateAttributionCounts {
+        wallets_seen: usize,
+        before_actionable_open_position_gate: usize,
+        after_actionable_open_position_gate: usize,
+        after_rug_gate: usize,
+        after_score_min_filters: usize,
+        after_ranking_top_n: usize,
+    }
+
+    fn post_rebuild_gate_attribution_counts_for_store_backed_lineage(
+        discovery: &DiscoveryService,
+        store: &SqliteStore,
+        by_wallet: &HashMap<String, WalletAccumulator>,
+        now: DateTime<Utc>,
+    ) -> Result<PostRebuildGateAttributionCounts> {
+        let wallet_ids: Vec<String> = by_wallet.keys().cloned().collect();
+        let persisted_active_day_counts =
+            discovery.load_persisted_active_day_counts_for_wallet_ids(store, &wallet_ids, now)?;
+        let empty_token_sol_history = HashMap::new();
+        let mut before_actionable_open_position_gate = 0usize;
+        let mut counterfactual_open_gate_candidate_wallet_ids = Vec::new();
+        for (wallet_id, acc) in by_wallet {
+            let persisted_active_days = persisted_active_day_counts
+                .get(wallet_id)
+                .copied()
+                .unwrap_or(0);
+            let snapshot = discovery.snapshot_from_accumulator_with_persisted_active_days_internal(
+                wallet_id.clone(),
+                acc.clone(),
+                now,
+                &empty_token_sol_history,
+                persisted_active_days,
+                false,
+                true,
+            );
+            if snapshot.eligible && snapshot.score >= discovery.config.min_score {
+                before_actionable_open_position_gate =
+                    before_actionable_open_position_gate.saturating_add(1);
+                counterfactual_open_gate_candidate_wallet_ids.push(wallet_id.clone());
+            }
+        }
+
+        let reconstructed_positions_by_wallet = discovery
+            .reconstruct_retention_window_positions_for_wallets(
+                store,
+                &counterfactual_open_gate_candidate_wallet_ids,
+                now,
+            )?;
+        let mut after_actionable_open_position_gate = 0usize;
+        for wallet_id in counterfactual_open_gate_candidate_wallet_ids {
+            let Some(acc) = by_wallet.get(&wallet_id) else {
+                continue;
+            };
+            let mut gated_acc = acc.clone();
+            if let Some(reconstructed_positions) = reconstructed_positions_by_wallet.get(&wallet_id)
+            {
+                gated_acc.positions = reconstructed_positions.clone();
+            }
+            let persisted_active_days = persisted_active_day_counts
+                .get(&wallet_id)
+                .copied()
+                .unwrap_or(0);
+            let snapshot = discovery.snapshot_from_accumulator_with_persisted_active_days_internal(
+                wallet_id,
+                gated_acc,
+                now,
+                &empty_token_sol_history,
+                persisted_active_days,
+                true,
+                true,
+            );
+            if snapshot.eligible && snapshot.score >= discovery.config.min_score {
+                after_actionable_open_position_gate =
+                    after_actionable_open_position_gate.saturating_add(1);
+            }
+        }
+
+        let current_snapshots = discovery.wallet_snapshots_from_accumulators(
+            store,
+            by_wallet.clone(),
+            now,
+            &empty_token_sol_history,
+        )?;
+        let after_rug_gate = current_snapshots
+            .iter()
+            .filter(|snapshot| snapshot.eligible)
+            .count();
+        let ranked = rank_follow_candidates(&current_snapshots, discovery.config.min_score);
+        let after_score_min_filters = ranked.len();
+        let after_ranking_top_n = desired_wallets(&ranked, discovery.config.follow_top_n).len();
+
+        Ok(PostRebuildGateAttributionCounts {
+            wallets_seen: by_wallet.len(),
+            before_actionable_open_position_gate,
+            after_actionable_open_position_gate,
+            after_rug_gate,
+            after_score_min_filters,
+            after_ranking_top_n,
+        })
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -15403,6 +15734,158 @@ mod tests {
     }
 
     #[test]
+    fn live_like_fourteen_day_retention_missing_market_context_zero_publish_set_dies_at_rug_after_actionable_gate_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("live-like-fourteen-day-retention-missing-market-context-gate-attribution.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-07T17:38:43Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        config.observed_swaps_retention_days = 14;
+        config.max_window_swaps_in_memory = 64;
+        let (full_swaps, _legit_wallet_ids, _junk_wallet_ids) =
+            long_horizon_carry_vs_refill_drain_fixture_swaps(&config, now);
+        let partial_swaps = omit_nonfollowed_legit_market_context_swaps(&full_swaps);
+        insert_observed_swaps_and_seed_runtime_cursor(&store, &partial_swaps)?;
+
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let by_wallet = replay_streaming_wallet_accumulators_from_swaps_for_test(
+            &discovery,
+            &partial_swaps,
+            now,
+        );
+        let counts = post_rebuild_gate_attribution_counts_for_store_backed_lineage(
+            &discovery, &store, &by_wallet, now,
+        )?;
+        assert_eq!(
+            counts,
+            PostRebuildGateAttributionCounts {
+                wallets_seen: 780,
+                before_actionable_open_position_gate: 10,
+                after_actionable_open_position_gate: 3,
+                after_rug_gate: 0,
+                after_score_min_filters: 0,
+                after_ranking_top_n: 0,
+            },
+            "on the exact post-rebuild missing-market-context lineage, the actionable-open-position gate should already narrow the field onto the legit carry leaders, and the final collapse to zero should then happen at rug/thin-market gating rather than at ranking or top-N"
+        );
+
+        let target_buy_mints = discovery
+            .discovery_critical_target_buy_mints_from_accumulators(&store, &by_wallet, now)?;
+        assert_eq!(
+            target_buy_mints,
+            (0..3)
+                .map(|idx| format!("TokenLongHorizonCycle{idx:02}11111111111111111111111"))
+                .collect::<Vec<_>>(),
+            "the exact rebuild-owned target-mint surface should isolate only the legit non-rug candidate cycle mints instead of the full unique buy-mint universe"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn live_like_fourteen_day_retention_exact_target_market_context_only_rebuild_restores_nonempty_publish_pending_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join(
+            "live-like-fourteen-day-retention-exact-target-market-context-only-bounded-publish.db",
+        );
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-07T17:38:43Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        config.observed_swaps_retention_days = 14;
+        config.max_window_swaps_in_memory = 64;
+        let (full_swaps, legit_wallet_ids, _junk_wallet_ids) =
+            long_horizon_carry_vs_refill_drain_fixture_swaps(&config, now);
+
+        let helper_store_path = temp
+            .path()
+            .join("live-like-fourteen-day-retention-exact-target-market-context-helper.db");
+        let mut helper_store = SqliteStore::open(Path::new(&helper_store_path))?;
+        helper_store.run_migrations(&migration_dir)?;
+        insert_observed_swaps_and_seed_runtime_cursor(&helper_store, &full_swaps)?;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let helper_by_wallet =
+            replay_streaming_wallet_accumulators_from_swaps_for_test(&discovery, &full_swaps, now);
+        let exact_target_buy_mints = discovery
+            .discovery_critical_target_buy_mints_from_accumulators(
+                &helper_store,
+                &helper_by_wallet,
+                now,
+            )?;
+        assert_eq!(exact_target_buy_mints.len(), legit_wallet_ids.len());
+        let exact_target_buy_mint_set: HashSet<String> =
+            exact_target_buy_mints.iter().cloned().collect();
+
+        let partial_swaps = omit_nonfollowed_market_context_swaps_except_tokens(
+            &full_swaps,
+            &exact_target_buy_mint_set,
+        );
+        assert!(
+            partial_swaps.len() < full_swaps.len(),
+            "the exact-target repro must still omit non-followed market context for non-candidate mints so the A/B only restores the exact target-mint surface"
+        );
+        insert_observed_swaps_and_seed_runtime_cursor(&store, &partial_swaps)?;
+
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let rebuild_time_budget = StdDuration::from_millis(config.fetch_time_budget_ms.max(1));
+        let mut completed = None;
+        for idx in 0..30 {
+            let cycle_now = now + Duration::minutes(idx as i64);
+            match discovery.advance_persisted_stream_rebuild(
+                &store,
+                window_start,
+                metrics_window_start,
+                cycle_now,
+                config.max_fetch_swaps_per_cycle.max(1),
+                config.max_fetch_pages_per_cycle.max(1),
+                rebuild_time_budget,
+            )? {
+                PersistedStreamRebuildAdvanceOutcome::Completed {
+                    telemetry,
+                    snapshots,
+                } => {
+                    completed = Some((telemetry, snapshots));
+                    break;
+                }
+                PersistedStreamRebuildAdvanceOutcome::InProgress { .. } => {}
+            }
+        }
+        let (telemetry, snapshots) = completed.context(
+            "exact target-mint market context alone should be sufficient for the bounded rebuild to recover a non-empty publish set on the same live-like lineage",
+        )?;
+        assert_eq!(
+            telemetry.phase,
+            DiscoveryPersistedRebuildPhase::PublishPending
+        );
+        assert_eq!(
+            telemetry.publish_pending_requested_wallet_count,
+            legit_wallet_ids.len(),
+            "once the exact candidate target-mint market context is present, the bounded rebuild should recover the legit publish set without needing the entire broad unique-buy-mint context surface"
+        );
+        assert_eq!(
+            discovery.publish_pending_requested_wallet_ids_from_snapshots(&snapshots),
+            legit_wallet_ids,
+            "the recovered exact publish set must still contain only the legit carry leaders"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn live_like_fourteen_day_retention_full_market_context_rebuild_reaches_publish_pending_with_nonempty_exact_publish_set_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -15481,6 +15964,13 @@ mod tests {
             publish_pending.payload.publish_pending_requested_wallet_ids,
             Some(legit_wallet_ids.clone()),
             "the persisted publish-pending checkpoint must retain the non-empty exact publish set when full market context is present"
+        );
+        assert_eq!(
+            publish_pending.payload.discovery_critical_target_buy_mints,
+            (0..3)
+                .map(|idx| format!("TokenLongHorizonCycle{idx:02}11111111111111111111111"))
+                .collect::<Vec<_>>(),
+            "the persisted rebuild state should carry the same exact candidate target-mint surface that app must prioritize under pressure"
         );
         assert_eq!(
             DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
@@ -15586,6 +16076,13 @@ mod tests {
             publish_pending.payload.publish_pending_requested_wallet_ids,
             Some(Vec::new()),
             "the persisted publish-pending checkpoint must retain the exact empty requested publish set on the same missing-market-context lineage"
+        );
+        assert_eq!(
+            publish_pending.payload.discovery_critical_target_buy_mints,
+            (0..3)
+                .map(|idx| format!("TokenLongHorizonCycle{idx:02}11111111111111111111111"))
+                .collect::<Vec<_>>(),
+            "even on the exact empty publish-set lineage, rebuild state should still retain the narrow non-rug candidate target mints so app does not fall back to the full unique-buy-mint universe"
         );
         assert_eq!(
             DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
