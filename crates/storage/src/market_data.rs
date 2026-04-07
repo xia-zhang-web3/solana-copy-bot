@@ -1314,6 +1314,84 @@ impl SqliteStore {
         })
     }
 
+    pub fn for_each_observed_swap_in_window_paged<F>(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        limit: usize,
+        mut on_swap: F,
+    ) -> Result<usize>
+    where
+        F: FnMut(SwapEvent) -> Result<()>,
+    {
+        Ok(self
+            .for_each_observed_swap_in_window_paged_with_budget(
+                since,
+                until,
+                limit,
+                Instant::now() + StdDuration::from_secs(24 * 60 * 60),
+                |swap| on_swap(swap),
+            )?
+            .rows_seen)
+    }
+
+    pub fn for_each_observed_swap_in_window_paged_with_budget<F>(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        limit: usize,
+        deadline: Instant,
+        mut on_swap: F,
+    ) -> Result<ObservedSwapCursorPage>
+    where
+        F: FnMut(SwapEvent) -> Result<()>,
+    {
+        if limit == 0 {
+            return Ok(ObservedSwapCursorPage::default());
+        }
+        if Instant::now() >= deadline {
+            return Ok(ObservedSwapCursorPage {
+                rows_seen: 0,
+                time_budget_exhausted: true,
+            });
+        }
+
+        let mut total_rows_seen = 0usize;
+        let mut time_budget_exhausted = false;
+        let mut cursor: Option<DiscoveryRuntimeCursor> = None;
+
+        loop {
+            let page_cursor = cursor.clone();
+            let mut next_cursor = page_cursor.clone();
+            let page = self.for_each_observed_swap_in_window_after_cursor_with_budget(
+                since,
+                until,
+                page_cursor.as_ref(),
+                limit,
+                deadline,
+                |swap| {
+                    next_cursor = Some(DiscoveryRuntimeCursor {
+                        ts_utc: swap.ts_utc,
+                        slot: swap.slot,
+                        signature: swap.signature.clone(),
+                    });
+                    on_swap(swap)
+                },
+            )?;
+            cursor = next_cursor;
+            total_rows_seen = total_rows_seen.saturating_add(page.rows_seen);
+            time_budget_exhausted |= page.time_budget_exhausted;
+            if page.time_budget_exhausted || page.rows_seen < limit {
+                break;
+            }
+        }
+
+        Ok(ObservedSwapCursorPage {
+            rows_seen: total_rows_seen,
+            time_budget_exhausted,
+        })
+    }
+
     pub fn observed_wallet_activity_page_in_window_with_budget(
         &self,
         since: DateTime<Utc>,
@@ -3419,6 +3497,10 @@ mod tests {
     use super::*;
     use copybot_core_types::SwapEvent;
     use std::path::Path;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::{Duration as StdDuration, Instant};
     use tempfile::tempdir;
 
     #[test]
@@ -3547,6 +3629,237 @@ mod tests {
             slot,
             ts_utc,
         }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct CheckpointRecurrenceSummary {
+        writes_before_reader: usize,
+        writes_during_reader: usize,
+        max_backlog_frames: i64,
+    }
+
+    fn run_checkpoint_recurrence_scenario(
+        use_paged_reader: bool,
+    ) -> Result<CheckpointRecurrenceSummary> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join(if use_paged_reader {
+            "observed-swap-window-paged-recurrence.db"
+        } else {
+            "observed-swap-window-unpaged-recurrence.db"
+        });
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-04-07T18:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let reader_window_start = now - Duration::days(2);
+        let reader_window_end = now - Duration::hours(1);
+        let mut seed_rows = Vec::new();
+        for idx in 0..512usize {
+            seed_rows.push(swap(
+                &format!("sig-checkpoint-seed-{idx:04}"),
+                &format!("wallet-seed-{:03}", idx % 24),
+                reader_window_start + Duration::seconds(idx as i64),
+                SOL_MINT,
+                &format!("TokenCheckpointSeed{idx:04}"),
+                10_000 + idx as u64,
+            ));
+        }
+        seed_store.insert_observed_swaps_batch_with_activity_days(&seed_rows)?;
+        seed_store.checkpoint_wal_truncate()?;
+
+        let writes_completed = Arc::new(AtomicUsize::new(0));
+        let stop_writes = Arc::new(AtomicBool::new(false));
+        let writer_db_path = db_path.clone();
+        let writer_writes_completed = Arc::clone(&writes_completed);
+        let writer_stop = Arc::clone(&stop_writes);
+        let writer = thread::spawn(move || -> Result<()> {
+            let writer_store = SqliteStore::open(Path::new(&writer_db_path))?;
+            writer_store
+                .conn
+                .pragma_update(None, "wal_autocheckpoint", 1_i64)
+                .context(
+                    "failed to force aggressive wal_autocheckpoint for recurrence test writer",
+                )?;
+            let mut counter = 0usize;
+            while !writer_stop.load(Ordering::Relaxed) {
+                let swap = swap(
+                    &format!("sig-checkpoint-live-{counter:06}"),
+                    &format!("wallet-live-{:03}", counter % 32),
+                    now + Duration::milliseconds(counter as i64),
+                    SOL_MINT,
+                    &format!("TokenCheckpointLive{:06}", counter % 64),
+                    20_000 + counter as u64,
+                );
+                writer_store.insert_observed_swaps_batch_with_activity_days(&[swap])?;
+                writer_writes_completed.fetch_add(1, Ordering::Relaxed);
+                counter = counter.saturating_add(1);
+            }
+            Ok(())
+        });
+
+        let baseline_started = Instant::now();
+        while writes_completed.load(Ordering::Relaxed) < 32 {
+            if baseline_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!("writer failed to establish post-checkpoint baseline throughput");
+            }
+            thread::sleep(StdDuration::from_millis(10));
+        }
+        let writes_before_reader = writes_completed.load(Ordering::Relaxed);
+
+        let reader_started = Arc::new(AtomicBool::new(false));
+        let reader_db_path = db_path.clone();
+        let reader_started_flag = Arc::clone(&reader_started);
+        let reader = thread::spawn(move || -> Result<()> {
+            let reader_store = SqliteStore::open_read_only(Path::new(&reader_db_path))?;
+            if use_paged_reader {
+                reader_store.for_each_observed_swap_in_window_paged(
+                    reader_window_start,
+                    reader_window_end,
+                    32,
+                    |swap| {
+                        if !reader_started_flag.swap(true, Ordering::Relaxed) {
+                            let _ = swap.signature.as_str();
+                        }
+                        thread::sleep(StdDuration::from_millis(1));
+                        Ok(())
+                    },
+                )?;
+            } else {
+                reader_store.for_each_observed_swap_in_window(
+                    reader_window_start,
+                    reader_window_end,
+                    |swap| {
+                        if !reader_started_flag.swap(true, Ordering::Relaxed) {
+                            let _ = swap.signature.as_str();
+                        }
+                        thread::sleep(StdDuration::from_millis(1));
+                        Ok(())
+                    },
+                )?;
+            }
+            Ok(())
+        });
+
+        let reader_started_wait = Instant::now();
+        while !reader_started.load(Ordering::Relaxed) {
+            if reader_started_wait.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!("reader failed to start recurrence scenario");
+            }
+            thread::sleep(StdDuration::from_millis(5));
+        }
+
+        let monitor_store = SqliteStore::open(Path::new(&db_path))?;
+        let mut max_backlog_frames = 0i64;
+        while !reader.is_finished() {
+            let (_, log_frames, checkpointed_frames) = monitor_store.checkpoint_wal_passive()?;
+            max_backlog_frames =
+                max_backlog_frames.max(log_frames.saturating_sub(checkpointed_frames));
+            thread::sleep(StdDuration::from_millis(10));
+        }
+        reader
+            .join()
+            .expect("reader thread panicked")
+            .context("reader recurrence scenario failed")?;
+
+        stop_writes.store(true, Ordering::Relaxed);
+        writer
+            .join()
+            .expect("writer thread panicked")
+            .context("writer recurrence scenario failed")?;
+
+        let writes_during_reader = writes_completed
+            .load(Ordering::Relaxed)
+            .saturating_sub(writes_before_reader);
+        monitor_store.checkpoint_wal_truncate()?;
+
+        Ok(CheckpointRecurrenceSummary {
+            writes_before_reader,
+            writes_during_reader,
+            max_backlog_frames,
+        })
+    }
+
+    #[test]
+    fn observed_swap_window_paged_reader_matches_unpaged_stream_results_stage1() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("observed-swap-window-paged-equivalence.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-04-07T18:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let since = now - Duration::hours(2);
+        let until = now;
+        let swaps = (0..257usize)
+            .map(|idx| {
+                swap(
+                    &format!("sig-window-paged-equivalence-{idx:04}"),
+                    &format!("wallet-window-{:03}", idx % 7),
+                    since + Duration::seconds(idx as i64),
+                    SOL_MINT,
+                    &format!("TokenWindowEquivalence{idx:04}"),
+                    40_000 + idx as u64,
+                )
+            })
+            .collect::<Vec<_>>();
+        store.insert_observed_swaps_batch_with_activity_days(&swaps)?;
+
+        let mut unpaged_signatures = Vec::new();
+        store.for_each_observed_swap_in_window(since, until, |swap| {
+            unpaged_signatures.push(swap.signature);
+            Ok(())
+        })?;
+
+        let mut paged_signatures = Vec::new();
+        let summary = store.for_each_observed_swap_in_window_paged_with_budget(
+            since,
+            until,
+            32,
+            Instant::now() + StdDuration::from_secs(5),
+            |swap| {
+                paged_signatures.push(swap.signature);
+                Ok(())
+            },
+        )?;
+
+        assert_eq!(summary.rows_seen, unpaged_signatures.len());
+        assert!(!summary.time_budget_exhausted);
+        assert_eq!(paged_signatures, unpaged_signatures);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_window_paged_reader_prevents_post_checkpoint_recurrence_stage1() -> Result<()>
+    {
+        let unpaged = run_checkpoint_recurrence_scenario(false)?;
+        let paged = run_checkpoint_recurrence_scenario(true)?;
+
+        assert!(
+            unpaged.writes_before_reader >= 32,
+            "clean checkpoint should permit an immediate post-start write baseline before the long reader begins: {unpaged:?}"
+        );
+        assert!(
+            paged.writes_before_reader >= 32,
+            "paged scenario should also establish the same clean post-checkpoint baseline: {paged:?}"
+        );
+        assert!(
+            unpaged.max_backlog_frames >= paged.max_backlog_frames.saturating_mul(2),
+            "the current single-statement reader should strand materially more WAL frames behind the oldest reader mark than the paged reader: unpaged={unpaged:?} paged={paged:?}"
+        );
+        assert!(
+            unpaged.max_backlog_frames.saturating_sub(paged.max_backlog_frames) >= 5_000,
+            "the long reader should create a materially larger checkpoint debt even when scheduler jitter makes raw write counts noisy: unpaged={unpaged:?} paged={paged:?}"
+        );
+        assert!(
+            unpaged.writes_during_reader > 0 && paged.writes_during_reader > 0,
+            "both scenarios should continue writing after the clean checkpoint baseline so the recurrence is exercised under active writer load: unpaged={unpaged:?} paged={paged:?}"
+        );
+        Ok(())
     }
 
     #[test]

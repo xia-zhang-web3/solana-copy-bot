@@ -77,6 +77,7 @@ const DISCOVERY_PUBLICATION_TRUTH_REPLAY_WALLET_STATS_PUBLISHABLE_HORIZON_PROGRE
     usize = 4;
 const ACTIONABLE_OPEN_POSITION_HOLD_MULTIPLIER: i64 = 4;
 const ACTIONABLE_OPEN_POSITION_MIN_HOLD_SAMPLES: usize = 3;
+const OBSERVED_SWAP_WINDOW_PAGED_READ_LIMIT: usize = 256;
 #[cfg(test)]
 const POST_BOOTSTRAP_ROTATION_BLOCKED_REASON: &str =
     "post_bootstrap_rotation_blocked_cap_truncated";
@@ -10214,8 +10215,11 @@ impl DiscoveryService {
         let mut pending_rug_checks = VecDeque::new();
         let mut token_pending_buy_starts: HashMap<String, VecDeque<DateTime<Utc>>> = HashMap::new();
         let mut processed_swaps = 0usize;
-        let observed_swaps_loaded =
-            store.for_each_observed_swap_in_window(window_start, now, |swap| {
+        let observed_swaps_loaded = store.for_each_observed_swap_in_window_paged(
+            window_start,
+            now,
+            OBSERVED_SWAP_WINDOW_PAGED_READ_LIMIT,
+            |swap| {
                 processed_swaps = processed_swaps.saturating_add(1);
                 let buy_quality = self.update_token_quality_state_streaming(
                     &mut token_states,
@@ -10267,7 +10271,8 @@ impl DiscoveryService {
                     );
                 }
                 Ok(())
-            })?;
+            },
+        )?;
         self.finalize_all_streaming_rug_metrics(
             &mut by_wallet,
             &mut token_recent_sol_trades,
@@ -10477,15 +10482,20 @@ impl DiscoveryService {
         let retention_window_start = now - Duration::days(retention_days as i64);
         let wallet_filter: HashSet<&str> = wallet_ids.iter().map(String::as_str).collect();
         let mut positions_by_wallet: HashMap<String, WalletAccumulator> = HashMap::new();
-        store.for_each_observed_swap_in_window(retention_window_start, now, |swap| {
-            if wallet_filter.contains(swap.wallet.as_str()) {
-                positions_by_wallet
-                    .entry(swap.wallet.clone())
-                    .or_default()
-                    .observe_position_only(&swap);
-            }
-            Ok(())
-        })?;
+        store.for_each_observed_swap_in_window_paged(
+            retention_window_start,
+            now,
+            OBSERVED_SWAP_WINDOW_PAGED_READ_LIMIT,
+            |swap| {
+                if wallet_filter.contains(swap.wallet.as_str()) {
+                    positions_by_wallet
+                        .entry(swap.wallet.clone())
+                        .or_default()
+                        .observe_position_only(&swap);
+                }
+                Ok(())
+            },
+        )?;
 
         Ok(positions_by_wallet
             .into_iter()
