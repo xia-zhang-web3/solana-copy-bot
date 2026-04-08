@@ -1086,15 +1086,11 @@ fn refresh_discovery_critical_irrelevant_persistence_for_backpressure(
 
 fn should_buffer_backpressured_irrelevant_observed_swap(
     discovery_critical: bool,
-    follow_snapshot: &FollowSnapshot,
-    open_shadow_lots: &HashSet<(String, String)>,
-    shadow_strategy_fail_closed: bool,
+    _follow_snapshot: &FollowSnapshot,
+    _open_shadow_lots: &HashSet<(String, String)>,
+    _shadow_strategy_fail_closed: bool,
 ) -> bool {
-    !zero_universe_fail_closed_discovery_market_context_mode(
-        follow_snapshot,
-        open_shadow_lots,
-        shadow_strategy_fail_closed,
-    ) || discovery_critical
+    discovery_critical
 }
 
 fn pending_irrelevant_swap_backpressure_blocks_ingestion(
@@ -4296,7 +4292,7 @@ async fn run_app_loop(
                                         .note_processing_started_at(swap_processing_started_at);
                                     debug!(
                                         signature = %swap.signature,
-                                        "dropping non-critical irrelevant observed swap under zero-universe fail-closed writer backpressure"
+                                        "dropping non-critical irrelevant observed swap under writer backpressure"
                                     );
                                     continue;
                                 }
@@ -4421,7 +4417,7 @@ async fn run_app_loop(
                                         .note_processing_started_at(swap_processing_started_at);
                                     debug!(
                                         signature = %swap.signature,
-                                        "dropping non-critical irrelevant observed swap under zero-universe fail-closed writer backpressure"
+                                        "dropping non-critical irrelevant observed swap under writer backpressure"
                                     );
                                     continue;
                                 }
@@ -4956,6 +4952,8 @@ mod app_tests {
     use std::io::Write;
     use std::path::{Path, PathBuf};
 
+    const TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE: usize = 128;
+
     fn make_test_store(name: &str) -> Result<(SqliteStore, PathBuf)> {
         let unique = format!(
             "{}-{}-{}",
@@ -5244,6 +5242,289 @@ mod app_tests {
                 .with_timezone(&Utc),
             exact_amounts: None,
         }
+    }
+
+    fn irrelevant_backpressure_swap(
+        signature: &str,
+        idx: usize,
+        base_ts: DateTime<Utc>,
+    ) -> SwapEvent {
+        let mut swap = test_swap(signature);
+        swap.wallet = format!("wallet-irrelevant-{idx:05}");
+        swap.token_out = format!("token-irrelevant-{idx:05}");
+        swap.slot = 50_000 + idx as u64;
+        swap.ts_utc = base_ts + chrono::Duration::milliseconds(idx as i64);
+        swap
+    }
+
+    fn seed_runtime_raw_insert_backpressure(db_path: &Path) -> Result<()> {
+        let conn = rusqlite::Connection::open(db_path)?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS raw_writer_backpressure_pad(
+                id INTEGER PRIMARY KEY,
+                payload BLOB NOT NULL
+             );
+             CREATE TRIGGER slow_observed_swaps_insert
+             AFTER INSERT ON observed_swaps
+             BEGIN
+                 INSERT INTO raw_writer_backpressure_pad(payload)
+                 WITH RECURSIVE cnt(x) AS (
+                     SELECT 1
+                     UNION ALL
+                     SELECT x + 1 FROM cnt WHERE x < 8
+                 )
+                 SELECT randomblob(4096) FROM cnt;
+             END;",
+        )?;
+        Ok(())
+    }
+
+    fn should_buffer_backpressured_irrelevant_observed_swap_old(
+        discovery_critical: bool,
+        follow_snapshot: &FollowSnapshot,
+        open_shadow_lots: &HashSet<(String, String)>,
+        shadow_strategy_fail_closed: bool,
+    ) -> bool {
+        !zero_universe_fail_closed_discovery_market_context_mode(
+            follow_snapshot,
+            open_shadow_lots,
+            shadow_strategy_fail_closed,
+        ) || discovery_critical
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct NoncriticalIrrelevantBackpressureSummary {
+        baseline_rows_persisted: usize,
+        first_backpressure_pending_requests: usize,
+        max_pending_requests_before_pause: usize,
+        pending_irrelevant_queue_depth_at_pause: usize,
+        upstream_queue_depth_shortly_after_pause: usize,
+        upstream_queue_depth_after_escalation: usize,
+        runtime_wal_bytes_at_pause: u64,
+        sqlite_write_retry_delta: u64,
+        sqlite_busy_error_delta: u64,
+        aggregate_queue_depth_at_pause: usize,
+        journal_queue_depth_at_pause: usize,
+        dropped_noncritical_irrelevant_swaps: usize,
+        ingestion_paused_by_pending_irrelevant_queue: bool,
+    }
+
+    fn run_noncritical_irrelevant_backpressure_plateau_scenario(
+        buffer_noncritical_on_backpressure: bool,
+    ) -> Result<NoncriticalIrrelevantBackpressureSummary> {
+        let (_store, db_path) = make_test_store("noncritical-irrelevant-backpressure-plateau")?;
+        seed_runtime_raw_insert_backpressure(&db_path)?;
+        let runtime_store = SqliteStore::open(Path::new(&db_path))?;
+        runtime_store.checkpoint_wal_truncate()?;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let writer = ObservedSwapWriter::start_for_test(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            false,
+            DiscoveryAggregateWriteConfig::default(),
+        )?;
+        runtime_store.checkpoint_wal_truncate()?;
+
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-08T11:47:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let follow_snapshot = {
+            let mut snapshot = FollowSnapshot::default();
+            snapshot.active.insert("wallet-followed".to_string());
+            snapshot
+        };
+        let open_shadow_lots = HashSet::new();
+        let shadow_strategy_fail_closed = false;
+        let contention_before = sqlite_contention_snapshot();
+        let mut recent_signatures = HashSet::new();
+        let mut recent_signature_order = VecDeque::new();
+        let mut pending_irrelevant_swaps = VecDeque::new();
+        let processing_started_at = StdInstant::now();
+
+        for idx in 0..64usize {
+            let swap = irrelevant_backpressure_swap(
+                &format!("sig-irrelevant-baseline-{idx:04}"),
+                idx,
+                scenario_now,
+            );
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            let outcome = runtime.block_on(async {
+                persist_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    false,
+                )
+                .await
+            })?;
+            assert_eq!(outcome, IrrelevantObservedSwapEnqueueOutcome::Enqueued);
+            std::thread::sleep(StdDuration::from_millis(1));
+        }
+
+        let baseline_started = StdInstant::now();
+        let baseline_rows_persisted = loop {
+            let rows = runtime_store
+                .load_observed_swaps_since(scenario_now - chrono::Duration::minutes(1))?
+                .len();
+            if rows >= 32 {
+                break rows;
+            }
+            if baseline_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!(
+                    "writer failed to establish clean post-checkpoint throughput before non-critical irrelevant backpressure scenario"
+                );
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        };
+
+        let normal_irrelevant_soft_limit =
+            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
+                .saturating_sub(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE);
+        let mut first_backpressure_pending_requests = 0usize;
+        let mut max_pending_requests_before_pause = 0usize;
+        let mut dropped_noncritical_irrelevant_swaps = 0usize;
+        let mut next_idx = 64usize;
+        let max_consumer_swaps = 64
+            + normal_irrelevant_soft_limit
+            + DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY
+            + 4_096;
+
+        while next_idx < max_consumer_swaps
+            && !pending_irrelevant_swap_backpressure_blocks_ingestion(&pending_irrelevant_swaps)
+        {
+            let swap = irrelevant_backpressure_swap(
+                &format!("sig-irrelevant-burst-{next_idx:05}"),
+                next_idx,
+                scenario_now,
+            );
+            next_idx = next_idx.saturating_add(1);
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            let outcome = runtime.block_on(async {
+                persist_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    false,
+                )
+                .await
+            })?;
+            let writer_snapshot = writer.snapshot();
+            max_pending_requests_before_pause = max_pending_requests_before_pause
+                .max(writer_snapshot.pending_requests);
+            match outcome {
+                IrrelevantObservedSwapEnqueueOutcome::Enqueued => {}
+                IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure => {
+                    if first_backpressure_pending_requests == 0 {
+                        first_backpressure_pending_requests = writer_snapshot.pending_requests;
+                    }
+                    let should_buffer = if buffer_noncritical_on_backpressure {
+                        should_buffer_backpressured_irrelevant_observed_swap_old(
+                            false,
+                            &follow_snapshot,
+                            &open_shadow_lots,
+                            shadow_strategy_fail_closed,
+                        )
+                    } else {
+                        should_buffer_backpressured_irrelevant_observed_swap(
+                            false,
+                            &follow_snapshot,
+                            &open_shadow_lots,
+                            shadow_strategy_fail_closed,
+                        )
+                    };
+                    if should_buffer {
+                        pending_irrelevant_swaps.push_back(PendingIrrelevantObservedSwap {
+                            swap,
+                            discovery_critical: false,
+                            processing_started_at,
+                            backpressure_started_at: StdInstant::now(),
+                            last_backpressure_log_at: None,
+                        });
+                    } else {
+                        dropped_noncritical_irrelevant_swaps =
+                            dropped_noncritical_irrelevant_swaps.saturating_add(1);
+                        forget_recent_swap_signature(
+                            &mut recent_signatures,
+                            &mut recent_signature_order,
+                            &swap.signature,
+                        );
+                    }
+                }
+            }
+        }
+
+        let snapshot_at_pause = writer.snapshot();
+        let runtime_wal_bytes_at_pause = std::fs::metadata(format!("{}-wal", db_path.display()))
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let ingestion_paused_by_pending_irrelevant_queue =
+            pending_irrelevant_swap_backpressure_blocks_ingestion(&pending_irrelevant_swaps);
+        let mut upstream = VecDeque::new();
+        let mut upstream_queue_depth_shortly_after_pause = 0usize;
+        if ingestion_paused_by_pending_irrelevant_queue {
+            while upstream.len() < 49 {
+                let idx = next_idx;
+                next_idx = next_idx.saturating_add(1);
+                upstream.push_back(irrelevant_backpressure_swap(
+                    &format!("sig-irrelevant-upstream-short-{idx:05}"),
+                    idx,
+                    scenario_now,
+                ));
+            }
+            upstream_queue_depth_shortly_after_pause = upstream.len();
+            while upstream.len() < 2_048 {
+                let idx = next_idx;
+                next_idx = next_idx.saturating_add(1);
+                upstream.push_back(irrelevant_backpressure_swap(
+                    &format!("sig-irrelevant-upstream-long-{idx:05}"),
+                    idx,
+                    scenario_now,
+                ));
+            }
+        }
+        writer.shutdown()?;
+        let contention_after = sqlite_contention_snapshot();
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+
+        Ok(NoncriticalIrrelevantBackpressureSummary {
+            baseline_rows_persisted,
+            first_backpressure_pending_requests,
+            max_pending_requests_before_pause,
+            pending_irrelevant_queue_depth_at_pause: pending_irrelevant_swaps.len(),
+            upstream_queue_depth_shortly_after_pause,
+            upstream_queue_depth_after_escalation: upstream.len(),
+            runtime_wal_bytes_at_pause,
+            sqlite_write_retry_delta: contention_after
+                .write_retry_total
+                .saturating_sub(contention_before.write_retry_total),
+            sqlite_busy_error_delta: contention_after
+                .busy_error_total
+                .saturating_sub(contention_before.busy_error_total),
+            aggregate_queue_depth_at_pause: snapshot_at_pause.aggregate_queue_depth_batches,
+            journal_queue_depth_at_pause: snapshot_at_pause.journal_queue_depth_batches,
+            dropped_noncritical_irrelevant_swaps,
+            ingestion_paused_by_pending_irrelevant_queue,
+        })
     }
 
     #[test]
@@ -13178,6 +13459,149 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
         assert_eq!(swaps.len(), expected_persisted);
 
         let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn should_buffer_backpressured_irrelevant_observed_swap_only_for_discovery_critical_stage1() {
+        let mut follow_snapshot = FollowSnapshot::default();
+        follow_snapshot.active.insert("wallet-followed".to_string());
+
+        assert!(
+            should_buffer_backpressured_irrelevant_observed_swap(
+                true,
+                &follow_snapshot,
+                &HashSet::new(),
+                false,
+            ),
+            "discovery-critical irrelevant swaps must still stay bufferable under writer backpressure"
+        );
+        assert!(
+            !should_buffer_backpressured_irrelevant_observed_swap(
+                false,
+                &follow_snapshot,
+                &HashSet::new(),
+                false,
+            ),
+            "non-critical irrelevant swaps should no longer consume the bounded pending queue under writer backpressure"
+        );
+    }
+
+    #[test]
+    fn noncritical_irrelevant_backpressure_recreates_clean_start_plateau_before_upstream_saturation_stage1(
+    ) -> Result<()> {
+        let summary = run_noncritical_irrelevant_backpressure_plateau_scenario(true)?;
+        let normal_irrelevant_soft_limit =
+            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
+                .saturating_sub(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE);
+
+        assert!(
+            summary.baseline_rows_persisted >= 32,
+            "clean checkpoint baseline should permit immediate raw persistence before the non-critical irrelevant plateau forms: {summary:?}"
+        );
+        assert_eq!(
+            summary.first_backpressure_pending_requests,
+            normal_irrelevant_soft_limit,
+            "the first plateau should begin exactly at the normal irrelevant writer soft limit, which explains the live 3968 pending plateau on a 4096-capacity writer with one reserved 128-swap batch: {summary:?}"
+        );
+        assert_eq!(
+            summary.max_pending_requests_before_pause,
+            normal_irrelevant_soft_limit,
+            "the same normal irrelevant enqueue contract should cap pending requests at the soft limit before any upstream queue saturation is needed: {summary:?}"
+        );
+        assert_eq!(
+            summary.pending_irrelevant_queue_depth_at_pause,
+            DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY,
+            "current logic should then fill the bounded in-memory irrelevant queue to its full 4096-swap capacity before ingestion polling stops: {summary:?}"
+        );
+        assert!(
+            summary.upstream_queue_depth_shortly_after_pause > 0
+                && summary.upstream_queue_depth_shortly_after_pause <= 64,
+            "the exact incident class needs a still-small upstream queue when local pending_irrelevant first reaches capacity, matching the clean-start live plateau shape before later full escalation: {summary:?}"
+        );
+        assert_eq!(
+            summary.aggregate_queue_depth_at_pause, 0,
+            "aggregate queue backlog must stay inactive in this repro so aggregate theory is ruled out for this exact class: {summary:?}"
+        );
+        assert_eq!(
+            summary.journal_queue_depth_at_pause, 0,
+            "recent_raw journal backlog must stay inactive in this repro so journal theory is ruled out for this exact class: {summary:?}"
+        );
+        assert!(
+            summary.runtime_wal_bytes_at_pause < 16 * 1024 * 1024,
+            "the plateau must happen while WAL is still tiny, before any giant WAL explanation is available: {summary:?}"
+        );
+        assert_eq!(
+            summary.sqlite_write_retry_delta, 0,
+            "the plateau must reproduce without sqlite retry growth: {summary:?}"
+        );
+        assert_eq!(
+            summary.sqlite_busy_error_delta, 0,
+            "the plateau must reproduce without sqlite busy-error churn: {summary:?}"
+        );
+        assert!(
+            summary.ingestion_paused_by_pending_irrelevant_queue,
+            "the app should pause ingestion only after its own pending irrelevant queue fills, which explains why upstream queue growth starts small and only later escalates: {summary:?}"
+        );
+        assert_eq!(
+            summary.upstream_queue_depth_after_escalation, 2_048,
+            "once the app pauses on its own full pending_irrelevant queue, the modeled upstream queue should be free to grow to its own capacity and reproduce the later live escalation step: {summary:?}"
+        );
+        assert_eq!(
+            summary.dropped_noncritical_irrelevant_swaps, 0,
+            "old/current contract buffers non-critical irrelevant swaps instead of dropping them, which is the exact plateau-forming behavior under test: {summary:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_noncritical_irrelevant_backpressure_prevents_clean_start_plateau_stage1(
+    ) -> Result<()> {
+        let old = run_noncritical_irrelevant_backpressure_plateau_scenario(true)?;
+        let new = run_noncritical_irrelevant_backpressure_plateau_scenario(false)?;
+
+        assert_eq!(
+            old.first_backpressure_pending_requests,
+            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
+                .saturating_sub(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE),
+            "the old side of the A/B must reproduce the exact soft-limit plateau first: old={old:?}"
+        );
+        assert!(
+            new.dropped_noncritical_irrelevant_swaps > 0,
+            "the new contract must explicitly drop non-critical irrelevant swaps under writer backpressure instead of silently buffering them: new={new:?}"
+        );
+        assert_eq!(
+            new.pending_irrelevant_queue_depth_at_pause, 0,
+            "the fix should prevent the local pending_irrelevant queue from becoming the primary choke for non-critical irrelevant swaps: old={old:?} new={new:?}"
+        );
+        assert!(
+            !new.ingestion_paused_by_pending_irrelevant_queue,
+            "without the full local pending_irrelevant plateau, the app should not self-pause ingestion on this same reduced workload: old={old:?} new={new:?}"
+        );
+        assert_eq!(
+            new.upstream_queue_depth_after_escalation, 0,
+            "the same reduced workload should no longer re-escalate into a saturated upstream queue once non-critical irrelevant swaps are dropped instead of buffered: old={old:?} new={new:?}"
+        );
+        assert_eq!(
+            new.aggregate_queue_depth_at_pause, 0,
+            "the fix should stay on the raw-writer / irrelevant-buffering path and not depend on aggregate backlog changes: old={old:?} new={new:?}"
+        );
+        assert_eq!(
+            new.journal_queue_depth_at_pause, 0,
+            "the fix should stay on the raw-writer / irrelevant-buffering path and not depend on recent_raw journal backlog changes: old={old:?} new={new:?}"
+        );
+        assert_eq!(
+            new.sqlite_write_retry_delta, 0,
+            "the fix should not require new sqlite retry churn: new={new:?}"
+        );
+        assert_eq!(
+            new.sqlite_busy_error_delta, 0,
+            "the fix should not require sqlite busy errors to improve the plateau: new={new:?}"
+        );
+        assert!(
+            new.runtime_wal_bytes_at_pause <= old.runtime_wal_bytes_at_pause * 2 + 1,
+            "the fix should not merely trade the plateau for runaway WAL growth: old={old:?} new={new:?}"
+        );
         Ok(())
     }
 
