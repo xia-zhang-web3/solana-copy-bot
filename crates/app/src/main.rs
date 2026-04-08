@@ -660,6 +660,12 @@ fn sqlite_maintenance_block_reason(
             observed_swap_writer_snapshot.aggregate_queue_depth_batches
         ));
     }
+    if observed_swap_writer_snapshot.aggregate_overflow_depth_batches > 0 {
+        return Some(format!(
+            "aggregate_overflow_depth_batches={}",
+            observed_swap_writer_snapshot.aggregate_overflow_depth_batches
+        ));
+    }
 
     if observed_swap_writer_snapshot.journal_queue_depth_batches > 0 {
         return Some(format!(
@@ -712,6 +718,8 @@ fn sqlite_maintenance_block_reason_key(reason: &str) -> &'static str {
         "writer_pending_requests"
     } else if reason.starts_with("aggregate_queue_depth_batches=") {
         "aggregate_queue_depth_batches"
+    } else if reason.starts_with("aggregate_overflow_depth_batches=") {
+        "aggregate_overflow_depth_batches"
     } else if reason.starts_with("journal_queue_depth_batches=") {
         "journal_queue_depth_batches"
     } else if reason.starts_with("journal_overflow_depth_batches=") {
@@ -3893,6 +3901,10 @@ async fn run_app_loop(
                         observed_swap_writer_snapshot.aggregate_queue_depth_batches,
                     observed_swap_writer_aggregate_queue_capacity_batches =
                         observed_swap_writer_snapshot.aggregate_queue_capacity_batches,
+                    observed_swap_writer_aggregate_overflow_depth_batches =
+                        observed_swap_writer_snapshot.aggregate_overflow_depth_batches,
+                    observed_swap_writer_aggregate_overflow_capacity_batches =
+                        observed_swap_writer_snapshot.aggregate_overflow_capacity_batches,
                     observed_swap_writer_journal_queue_depth_batches =
                         observed_swap_writer_snapshot.journal_queue_depth_batches,
                     observed_swap_writer_journal_queue_capacity_batches =
@@ -4809,6 +4821,7 @@ enum DiscoveryCatchUpBlockReason {
     ShadowQueueFull,
     WriterPendingRequests,
     WriterAggregateQueueDepth,
+    WriterAggregateOverflowDepth,
     WriterJournalQueueDepth,
     WriterJournalOverflowDepth,
     YellowstoneOutputQueueFill,
@@ -4820,6 +4833,7 @@ impl DiscoveryCatchUpBlockReason {
             Self::ShadowQueueFull => "shadow_queue_full",
             Self::WriterPendingRequests => "writer_pending_requests",
             Self::WriterAggregateQueueDepth => "writer_aggregate_queue_depth_batches",
+            Self::WriterAggregateOverflowDepth => "writer_aggregate_overflow_depth_batches",
             Self::WriterJournalQueueDepth => "writer_journal_queue_depth_batches",
             Self::WriterJournalOverflowDepth => "writer_journal_overflow_depth_batches",
             Self::YellowstoneOutputQueueFill => "yellowstone_output_queue_fill_ratio",
@@ -4831,6 +4845,7 @@ fn discovery_catch_up_has_writer_queue_pressure(
     observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
 ) -> bool {
     observed_swap_writer_snapshot.aggregate_queue_depth_batches > 0
+        || observed_swap_writer_snapshot.aggregate_overflow_depth_batches > 0
         || observed_swap_writer_snapshot.journal_queue_depth_batches > 0
         || observed_swap_writer_snapshot.journal_overflow_depth_batches > 0
 }
@@ -4868,6 +4883,9 @@ fn discovery_catch_up_block_reason(
     }
     if observed_swap_writer_snapshot.aggregate_queue_depth_batches > 0 {
         return Some(DiscoveryCatchUpBlockReason::WriterAggregateQueueDepth);
+    }
+    if observed_swap_writer_snapshot.aggregate_overflow_depth_batches > 0 {
+        return Some(DiscoveryCatchUpBlockReason::WriterAggregateOverflowDepth);
     }
     if observed_swap_writer_snapshot.journal_queue_depth_batches > 0 {
         return Some(DiscoveryCatchUpBlockReason::WriterJournalQueueDepth);
@@ -5084,6 +5102,8 @@ mod app_tests {
             worker_busy_ms_p95: 0,
             aggregate_queue_depth_batches: 0,
             aggregate_queue_capacity_batches: 32,
+            aggregate_overflow_depth_batches: 0,
+            aggregate_overflow_capacity_batches: 128,
             journal_queue_depth_batches: 0,
             journal_queue_capacity_batches: 32,
             journal_overflow_depth_batches: 0,
@@ -11651,6 +11671,24 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
         )
         .expect("aggregate backlog should block sqlite maintenance");
         assert_eq!(reason, "aggregate_queue_depth_batches=2");
+    }
+
+    #[test]
+    fn sqlite_maintenance_block_reason_blocks_on_aggregate_overflow_backlog() {
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.aggregate_overflow_depth_batches = 3;
+        let reason = sqlite_maintenance_block_reason(
+            SqliteMaintenanceTask::ObservedSwapRetention,
+            StdInstant::now() - OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL,
+            StdInstant::now(),
+            &writer_snapshot,
+            SqliteContentionSnapshot::default(),
+            SqliteContentionSnapshot::default(),
+            None,
+        )
+        .expect("aggregate overflow backlog should block sqlite maintenance");
+
+        assert_eq!(reason, "aggregate_overflow_depth_batches=3");
     }
 
     #[test]

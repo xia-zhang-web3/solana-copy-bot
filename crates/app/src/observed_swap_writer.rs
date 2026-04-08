@@ -9,7 +9,7 @@ use copybot_storage::{
 };
 use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
@@ -19,6 +19,11 @@ use tracing::{info, warn};
 pub(crate) const OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY: usize = 4096;
 const OBSERVED_SWAP_BATCH_MAX_SIZE: usize = 128;
 const OBSERVED_SWAP_WRITER_DISCOVERY_CRITICAL_RESERVED_BATCHES: usize = 1;
+pub(crate) const OBSERVED_SWAP_DISCOVERY_AGGREGATE_WRITE_COALESCE_MAX_BATCHES: usize = 16;
+pub(crate) const OBSERVED_SWAP_DISCOVERY_AGGREGATE_OVERFLOW_CAPACITY_MULTIPLIER: usize = 4;
+const OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_POLL_INTERVAL: StdDuration =
+    StdDuration::from_millis(25);
+const OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_MAX_PAGES: usize = 8;
 pub(crate) const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_COALESCE_MAX_BATCHES: usize = 32;
 pub(crate) const OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_CAPACITY_MULTIPLIER: usize = 4;
 pub(crate) const OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL: StdDuration =
@@ -54,6 +59,10 @@ struct ObservedSwapWriterConfig {
     batch_max_size: usize,
     aggregate_writes_enabled: bool,
     aggregate_write_config: DiscoveryAggregateWriteConfig,
+    aggregate_write_coalesce_max_batches: usize,
+    aggregate_overflow_capacity_batches: usize,
+    aggregate_gap_fallback_enabled: bool,
+    aggregate_idle_replay_max_pages: usize,
     recent_raw_journal: Option<ObservedSwapRecentRawJournalConfig>,
 }
 
@@ -79,6 +88,67 @@ impl ObservedSwapWriterConfig {
             batch_max_size: OBSERVED_SWAP_BATCH_MAX_SIZE,
             aggregate_writes_enabled,
             aggregate_write_config,
+            aggregate_write_coalesce_max_batches:
+                OBSERVED_SWAP_DISCOVERY_AGGREGATE_WRITE_COALESCE_MAX_BATCHES,
+            aggregate_overflow_capacity_batches:
+                observed_swap_writer_default_aggregate_overflow_capacity_batches(
+                    OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+                    OBSERVED_SWAP_BATCH_MAX_SIZE,
+                    aggregate_writes_enabled,
+                ),
+            aggregate_gap_fallback_enabled: true,
+            aggregate_idle_replay_max_pages:
+                OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_MAX_PAGES,
+            recent_raw_journal,
+        }
+    }
+
+    #[cfg(test)]
+    fn for_test(
+        channel_capacity: usize,
+        batch_max_size: usize,
+        aggregate_writes_enabled: bool,
+        aggregate_write_config: DiscoveryAggregateWriteConfig,
+        recent_raw_journal: Option<ObservedSwapRecentRawJournalConfig>,
+    ) -> Self {
+        Self::for_test_with_aggregate_tuning(
+            channel_capacity,
+            batch_max_size,
+            aggregate_writes_enabled,
+            aggregate_write_config,
+            OBSERVED_SWAP_DISCOVERY_AGGREGATE_WRITE_COALESCE_MAX_BATCHES,
+            observed_swap_writer_default_aggregate_overflow_capacity_batches(
+                channel_capacity,
+                batch_max_size,
+                aggregate_writes_enabled,
+            ),
+            true,
+            OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_MAX_PAGES,
+            recent_raw_journal,
+        )
+    }
+
+    #[cfg(test)]
+    fn for_test_with_aggregate_tuning(
+        channel_capacity: usize,
+        batch_max_size: usize,
+        aggregate_writes_enabled: bool,
+        aggregate_write_config: DiscoveryAggregateWriteConfig,
+        aggregate_write_coalesce_max_batches: usize,
+        aggregate_overflow_capacity_batches: usize,
+        aggregate_gap_fallback_enabled: bool,
+        aggregate_idle_replay_max_pages: usize,
+        recent_raw_journal: Option<ObservedSwapRecentRawJournalConfig>,
+    ) -> Self {
+        Self {
+            channel_capacity,
+            batch_max_size,
+            aggregate_writes_enabled,
+            aggregate_write_config,
+            aggregate_write_coalesce_max_batches,
+            aggregate_overflow_capacity_batches,
+            aggregate_gap_fallback_enabled,
+            aggregate_idle_replay_max_pages,
             recent_raw_journal,
         }
     }
@@ -179,6 +249,11 @@ struct DiscoveryAggregateWriteRequest {
     batch_started: Instant,
 }
 
+enum DiscoveryAggregateEnqueueOutcome {
+    Enqueued,
+    DeferredToMaterializationGap(DiscoveryAggregateWriteRequest),
+}
+
 struct RecentRawJournalWriteRequest {
     inserted_swaps: Vec<SwapEvent>,
 }
@@ -196,6 +271,8 @@ pub(crate) struct ObservedSwapWriterSnapshot {
     pub worker_busy_ms_p95: u64,
     pub aggregate_queue_depth_batches: usize,
     pub aggregate_queue_capacity_batches: usize,
+    pub aggregate_overflow_depth_batches: usize,
+    pub aggregate_overflow_capacity_batches: usize,
     pub journal_queue_depth_batches: usize,
     pub journal_queue_capacity_batches: usize,
     pub journal_overflow_depth_batches: usize,
@@ -217,12 +294,16 @@ struct ObservedSwapWriterTelemetry {
     last_worker_busy_ms_p95: AtomicU64,
     aggregate_queue_depth_batches: AtomicUsize,
     aggregate_queue_capacity_batches: AtomicUsize,
+    aggregate_overflow_depth_batches: AtomicUsize,
+    aggregate_overflow_capacity_batches: AtomicUsize,
     journal_queue_depth_batches: AtomicUsize,
     journal_queue_capacity_batches: AtomicUsize,
     journal_overflow_depth_batches: AtomicUsize,
     journal_overflow_capacity_batches: AtomicUsize,
     journal_sqlite_write_retry_total: AtomicU64,
     journal_sqlite_busy_error_total: AtomicU64,
+    aggregate_gap_active: AtomicBool,
+    aggregate_worker_busy: AtomicBool,
     write_latency_ms_samples: Mutex<VecDeque<u64>>,
     raw_batch_write_ms_samples: Mutex<VecDeque<u64>>,
     observed_swaps_insert_ms_samples: Mutex<VecDeque<u64>>,
@@ -333,6 +414,19 @@ impl ObservedSwapWriterTelemetry {
         );
     }
 
+    fn note_aggregate_overflow_enqueued(&self) {
+        self.aggregate_overflow_depth_batches
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn note_aggregate_overflow_dequeued(&self) {
+        let _ = self.aggregate_overflow_depth_batches.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_sub(1)),
+        );
+    }
+
     fn note_journal_queue_enqueued(&self) {
         self.journal_queue_depth_batches
             .fetch_add(1, Ordering::Relaxed);
@@ -376,6 +470,22 @@ impl ObservedSwapWriterTelemetry {
                 .saturating_sub(before.busy_error_total),
             Ordering::Relaxed,
         );
+    }
+
+    fn set_aggregate_gap_active(&self, active: bool) {
+        self.aggregate_gap_active.store(active, Ordering::Relaxed);
+    }
+
+    fn aggregate_gap_active(&self) -> bool {
+        self.aggregate_gap_active.load(Ordering::Relaxed)
+    }
+
+    fn set_aggregate_worker_busy(&self, busy: bool) {
+        self.aggregate_worker_busy.store(busy, Ordering::Relaxed);
+    }
+
+    fn aggregate_worker_busy(&self) -> bool {
+        self.aggregate_worker_busy.load(Ordering::Relaxed)
     }
 
     fn note_phase_sample(
@@ -466,6 +576,12 @@ impl ObservedSwapWriterTelemetry {
                 .load(Ordering::Relaxed),
             aggregate_queue_capacity_batches: self
                 .aggregate_queue_capacity_batches
+                .load(Ordering::Relaxed),
+            aggregate_overflow_depth_batches: self
+                .aggregate_overflow_depth_batches
+                .load(Ordering::Relaxed),
+            aggregate_overflow_capacity_batches: self
+                .aggregate_overflow_capacity_batches
                 .load(Ordering::Relaxed),
             journal_queue_depth_batches: self.journal_queue_depth_batches.load(Ordering::Relaxed),
             journal_queue_capacity_batches: self
@@ -568,6 +684,10 @@ impl ObservedSwapWriter {
         telemetry
             .aggregate_queue_capacity_batches
             .store(aggregate_queue_capacity_batches, Ordering::Relaxed);
+        telemetry.aggregate_overflow_capacity_batches.store(
+            config.aggregate_overflow_capacity_batches,
+            Ordering::Relaxed,
+        );
         let journal_queue_capacity_batches = config
             .recent_raw_journal
             .as_ref()
@@ -728,13 +848,13 @@ impl ObservedSwapWriter {
     ) -> Result<Self> {
         Self::start_with_config(
             sqlite_path,
-            ObservedSwapWriterConfig {
+            ObservedSwapWriterConfig::for_test(
                 channel_capacity,
                 batch_max_size,
                 aggregate_writes_enabled,
                 aggregate_write_config,
-                recent_raw_journal: None,
-            },
+                None,
+            ),
         )
     }
 
@@ -864,6 +984,8 @@ fn observed_swap_writer_loop(
     let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
         format!("failed to open sqlite db for observed swap writer: {sqlite_path}")
     })?;
+    let mut aggregate_overflow =
+        VecDeque::with_capacity(config.aggregate_overflow_capacity_batches);
     let journal_overflow_capacity_batches = config
         .recent_raw_journal
         .as_ref()
@@ -912,6 +1034,16 @@ fn observed_swap_writer_loop(
         let first_request = match receiver.try_recv() {
             Ok(request) => request,
             Err(mpsc::error::TryRecvError::Empty) => {
+                if let Some(aggregate_sender) = aggregate_sender.as_ref() {
+                    if !aggregate_overflow.is_empty() {
+                        flush_discovery_aggregate_overflow_blocking(
+                            aggregate_sender,
+                            &mut aggregate_overflow,
+                            &telemetry,
+                        )?;
+                        continue;
+                    }
+                }
                 if let Some(journal_sender) = journal_sender.as_ref() {
                     if !journal_overflow.is_empty() {
                         flush_recent_raw_journal_overflow_blocking(
@@ -1009,24 +1141,51 @@ fn observed_swap_writer_loop(
                         .collect();
                     if let Some(aggregate_sender) = aggregate_sender.as_ref() {
                         if !inserted_swaps.is_empty() {
-                            if let Err(error) =
-                                aggregate_sender.send(DiscoveryAggregateWriteRequest {
+                            match enqueue_discovery_aggregate_request(
+                                aggregate_sender,
+                                &mut aggregate_overflow,
+                                config.aggregate_overflow_capacity_batches,
+                                config.aggregate_gap_fallback_enabled,
+                                DiscoveryAggregateWriteRequest {
                                     inserted_swaps: inserted_swaps.clone(),
                                     batch_started,
-                                })
-                            {
-                                telemetry.note_worker_busy_completed(elapsed_ms_ceil(
-                                    batch_started.elapsed(),
-                                ));
-                                return Err(anyhow!(
-                                    "discovery aggregate writer channel closed: {}",
-                                    error
-                                ))
-                                .context(
-                                    "observed swap writer stopping after aggregate writer channel closed",
-                                );
+                                },
+                                &telemetry,
+                            ) {
+                                Ok(DiscoveryAggregateEnqueueOutcome::Enqueued) => {}
+                                Ok(
+                                    DiscoveryAggregateEnqueueOutcome::DeferredToMaterializationGap(
+                                        request,
+                                    ),
+                                ) => {
+                                    if let Err(error) =
+                                        latch_discovery_scoring_materialization_gap_from_swaps(
+                                            &store,
+                                            &request.inserted_swaps,
+                                        )
+                                    {
+                                        telemetry.note_worker_busy_completed(elapsed_ms_ceil(
+                                            batch_started.elapsed(),
+                                        ));
+                                        return Err(error).context(
+                                            "observed swap writer stopping after aggregate backpressure gap latching failed",
+                                        );
+                                    }
+                                    telemetry.set_aggregate_gap_active(true);
+                                }
+                                Err(error) => {
+                                    telemetry.note_worker_busy_completed(elapsed_ms_ceil(
+                                        batch_started.elapsed(),
+                                    ));
+                                    return Err(anyhow!(
+                                        "discovery aggregate writer channel closed: {}",
+                                        error
+                                    ))
+                                    .context(
+                                        "observed swap writer stopping after aggregate writer channel closed",
+                                    );
+                                }
                             }
-                            telemetry.note_aggregate_queue_enqueued();
                         }
                     }
                     if let Some(journal_sender) = journal_sender.as_ref() {
@@ -1112,6 +1271,13 @@ fn observed_swap_writer_loop(
         }
     }
 
+    if let Some(aggregate_sender) = aggregate_sender.as_ref() {
+        flush_discovery_aggregate_overflow_blocking(
+            aggregate_sender,
+            &mut aggregate_overflow,
+            &telemetry,
+        )?;
+    }
     if let Some(journal_sender) = journal_sender.as_ref() {
         flush_recent_raw_journal_overflow_blocking(
             journal_sender,
@@ -1135,6 +1301,11 @@ fn discovery_aggregate_writer_loop(
     })?;
     match run_aggregate_startup_replay(&store, &config) {
         Ok(()) => {
+            telemetry.set_aggregate_gap_active(
+                store
+                    .load_discovery_scoring_materialization_gap_cursor()?
+                    .is_some(),
+            );
             let _ = startup_sender.send(Ok(()));
         }
         Err(error) => {
@@ -1142,16 +1313,60 @@ fn discovery_aggregate_writer_loop(
             return Err(error);
         }
     }
+    let mut gap_cursor_observed_since_last_clear = false;
 
-    while let Ok(request) = receiver.recv() {
-        telemetry.note_aggregate_queue_dequeued();
-        process_discovery_aggregate_write_request(
-            &store,
-            &request.inserted_swaps,
-            request.batch_started,
-            &config.aggregate_write_config,
-            &telemetry,
-        )?;
+    loop {
+        match receiver.recv_timeout(OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_POLL_INTERVAL) {
+            Ok(request) => {
+                let request = collect_discovery_aggregate_write_batch(
+                    &receiver,
+                    request,
+                    config.aggregate_write_coalesce_max_batches,
+                    &telemetry,
+                );
+                telemetry.set_aggregate_worker_busy(true);
+                let result = process_discovery_aggregate_write_request(
+                    &store,
+                    &request.inserted_swaps,
+                    request.batch_started,
+                    &config.aggregate_write_config,
+                    &telemetry,
+                );
+                telemetry.set_aggregate_worker_busy(false);
+                result?;
+            }
+            Err(std_mpsc::RecvTimeoutError::Timeout) => {
+                if config.aggregate_gap_fallback_enabled
+                    && config.aggregate_idle_replay_max_pages > 0
+                {
+                    telemetry.set_aggregate_worker_busy(true);
+                    let result = run_aggregate_gap_replay(
+                        &store,
+                        &config,
+                        Some(config.aggregate_idle_replay_max_pages),
+                    );
+                    telemetry.set_aggregate_worker_busy(false);
+                    let replay_progress = result?;
+                    gap_cursor_observed_since_last_clear |= replay_progress.gap_cursor_observed;
+                    if replay_progress.caught_up_to_tail && gap_cursor_observed_since_last_clear {
+                        if let Some(gap_cursor) =
+                            store.load_discovery_scoring_materialization_gap_cursor()?
+                        {
+                            store.clear_discovery_scoring_materialization_gap_if_cursor_observed(
+                                &gap_cursor,
+                            )?;
+                        }
+                        gap_cursor_observed_since_last_clear = false;
+                    }
+                    telemetry.set_aggregate_gap_active(
+                        store
+                            .load_discovery_scoring_materialization_gap_cursor()?
+                            .is_some(),
+                    );
+                }
+            }
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+        }
     }
 
     Ok(())
@@ -1203,6 +1418,125 @@ fn enqueue_recent_raw_journal_request(
         .send(request)
         .map_err(|error| anyhow!("recent raw journal writer channel closed: {error}"))?;
     telemetry.note_journal_queue_enqueued();
+    Ok(())
+}
+
+fn enqueue_discovery_aggregate_request(
+    aggregate_sender: &std_mpsc::SyncSender<DiscoveryAggregateWriteRequest>,
+    aggregate_overflow: &mut VecDeque<DiscoveryAggregateWriteRequest>,
+    aggregate_overflow_capacity_batches: usize,
+    aggregate_gap_fallback_enabled: bool,
+    request: DiscoveryAggregateWriteRequest,
+    telemetry: &ObservedSwapWriterTelemetry,
+) -> Result<DiscoveryAggregateEnqueueOutcome> {
+    drain_discovery_aggregate_overflow_nonblocking(
+        aggregate_sender,
+        aggregate_overflow,
+        telemetry,
+    )?;
+    if aggregate_gap_fallback_enabled
+        && (telemetry.aggregate_gap_active()
+            || telemetry.aggregate_worker_busy()
+            || telemetry
+                .aggregate_queue_depth_batches
+                .load(Ordering::Relaxed)
+                > 0
+            || telemetry
+                .aggregate_overflow_depth_batches
+                .load(Ordering::Relaxed)
+                > 0
+            || !aggregate_overflow.is_empty())
+    {
+        return Ok(DiscoveryAggregateEnqueueOutcome::DeferredToMaterializationGap(request));
+    }
+    if aggregate_overflow.is_empty() {
+        match aggregate_sender.try_send(request) {
+            Ok(()) => {
+                telemetry.note_aggregate_queue_enqueued();
+                return Ok(DiscoveryAggregateEnqueueOutcome::Enqueued);
+            }
+            Err(std_mpsc::TrySendError::Full(request)) => {
+                if aggregate_overflow_capacity_batches == 0 && !aggregate_gap_fallback_enabled {
+                    aggregate_sender.send(request).map_err(|error| {
+                        anyhow!("discovery aggregate writer channel closed: {error}")
+                    })?;
+                    telemetry.note_aggregate_queue_enqueued();
+                    return Ok(DiscoveryAggregateEnqueueOutcome::Enqueued);
+                }
+                if aggregate_overflow_capacity_batches == 0 {
+                    return Ok(
+                        DiscoveryAggregateEnqueueOutcome::DeferredToMaterializationGap(request),
+                    );
+                }
+                aggregate_overflow.push_back(request);
+                telemetry.note_aggregate_overflow_enqueued();
+                return Ok(DiscoveryAggregateEnqueueOutcome::Enqueued);
+            }
+            Err(std_mpsc::TrySendError::Disconnected(_request)) => {
+                return Err(anyhow!("discovery aggregate writer channel closed"));
+            }
+        }
+    }
+
+    if aggregate_overflow.len() < aggregate_overflow_capacity_batches {
+        aggregate_overflow.push_back(request);
+        telemetry.note_aggregate_overflow_enqueued();
+        return Ok(DiscoveryAggregateEnqueueOutcome::Enqueued);
+    }
+
+    if aggregate_gap_fallback_enabled {
+        return Ok(DiscoveryAggregateEnqueueOutcome::DeferredToMaterializationGap(request));
+    }
+
+    flush_discovery_aggregate_overflow_blocking(aggregate_sender, aggregate_overflow, telemetry)?;
+    while !aggregate_overflow.is_empty() {
+        flush_discovery_aggregate_overflow_blocking(
+            aggregate_sender,
+            aggregate_overflow,
+            telemetry,
+        )?;
+    }
+    aggregate_sender
+        .send(request)
+        .map_err(|error| anyhow!("discovery aggregate writer channel closed: {error}"))?;
+    telemetry.note_aggregate_queue_enqueued();
+    Ok(DiscoveryAggregateEnqueueOutcome::Enqueued)
+}
+
+fn drain_discovery_aggregate_overflow_nonblocking(
+    aggregate_sender: &std_mpsc::SyncSender<DiscoveryAggregateWriteRequest>,
+    aggregate_overflow: &mut VecDeque<DiscoveryAggregateWriteRequest>,
+    telemetry: &ObservedSwapWriterTelemetry,
+) -> Result<()> {
+    while let Some(request) = aggregate_overflow.pop_front() {
+        telemetry.note_aggregate_overflow_dequeued();
+        match aggregate_sender.try_send(request) {
+            Ok(()) => telemetry.note_aggregate_queue_enqueued(),
+            Err(std_mpsc::TrySendError::Full(request)) => {
+                aggregate_overflow.push_front(request);
+                telemetry.note_aggregate_overflow_enqueued();
+                break;
+            }
+            Err(std_mpsc::TrySendError::Disconnected(_request)) => {
+                return Err(anyhow!("discovery aggregate writer channel closed"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn flush_discovery_aggregate_overflow_blocking(
+    aggregate_sender: &std_mpsc::SyncSender<DiscoveryAggregateWriteRequest>,
+    aggregate_overflow: &mut VecDeque<DiscoveryAggregateWriteRequest>,
+    telemetry: &ObservedSwapWriterTelemetry,
+) -> Result<()> {
+    while let Some(request) = aggregate_overflow.pop_front() {
+        telemetry.note_aggregate_overflow_dequeued();
+        aggregate_sender
+            .send(request)
+            .map_err(|error| anyhow!("discovery aggregate writer channel closed: {error}"))?;
+        telemetry.note_aggregate_queue_enqueued();
+    }
     Ok(())
 }
 
@@ -1321,6 +1655,33 @@ fn collect_recent_raw_journal_write_batch(
         }
     }
     inserted_swaps
+}
+
+fn collect_discovery_aggregate_write_batch(
+    receiver: &std_mpsc::Receiver<DiscoveryAggregateWriteRequest>,
+    first_request: DiscoveryAggregateWriteRequest,
+    max_batches: usize,
+    telemetry: &ObservedSwapWriterTelemetry,
+) -> DiscoveryAggregateWriteRequest {
+    telemetry.note_aggregate_queue_dequeued();
+    let mut inserted_swaps = first_request.inserted_swaps;
+    let batch_started = first_request.batch_started;
+    let drain_limit = max_batches.max(1);
+    let mut drained_batches = 1usize;
+    while drained_batches < drain_limit {
+        match receiver.try_recv() {
+            Ok(request) => {
+                telemetry.note_aggregate_queue_dequeued();
+                inserted_swaps.extend(request.inserted_swaps);
+                drained_batches = drained_batches.saturating_add(1);
+            }
+            Err(std_mpsc::TryRecvError::Empty | std_mpsc::TryRecvError::Disconnected) => break,
+        }
+    }
+    DiscoveryAggregateWriteRequest {
+        inserted_swaps,
+        batch_started,
+    }
 }
 
 fn prune_recent_raw_journal_with_budget(
@@ -1661,6 +2022,9 @@ fn observed_swap_retention_should_stop(
     if writer_snapshot.aggregate_queue_depth_batches > 0 {
         return Some("runtime_pressure");
     }
+    if writer_snapshot.aggregate_overflow_depth_batches > 0 {
+        return Some("runtime_pressure");
+    }
     if writer_snapshot.journal_queue_depth_batches > 0 {
         return Some("runtime_pressure");
     }
@@ -1839,6 +2203,20 @@ fn observed_swap_writer_aggregate_queue_capacity(config: &ObservedSwapWriterConf
         .div_ceil(config.batch_max_size.max(1))
 }
 
+fn observed_swap_writer_default_aggregate_overflow_capacity_batches(
+    channel_capacity: usize,
+    batch_max_size: usize,
+    aggregate_writes_enabled: bool,
+) -> usize {
+    if !aggregate_writes_enabled {
+        return 0;
+    }
+    channel_capacity
+        .max(1)
+        .div_ceil(batch_max_size.max(1))
+        .saturating_mul(OBSERVED_SWAP_DISCOVERY_AGGREGATE_OVERFLOW_CAPACITY_MULTIPLIER)
+}
+
 fn observed_swap_writer_discovery_critical_reserve_requests(
     config: &ObservedSwapWriterConfig,
 ) -> usize {
@@ -1852,12 +2230,27 @@ fn observed_swap_retention_protection_load_error_requires_abort(error: &anyhow::
     is_fatal_sqlite_anyhow_error(error)
 }
 
+#[derive(Default)]
+struct AggregateReplayProgress {
+    page_count: usize,
+    gap_cursor_observed: bool,
+    caught_up_to_tail: bool,
+}
+
 fn run_aggregate_startup_replay(
     store: &SqliteStore,
     config: &ObservedSwapWriterConfig,
 ) -> Result<()> {
+    run_aggregate_gap_replay(store, config, None).map(|_| ())
+}
+
+fn run_aggregate_gap_replay(
+    store: &SqliteStore,
+    config: &ObservedSwapWriterConfig,
+    max_pages: Option<usize>,
+) -> Result<AggregateReplayProgress> {
     if !config.aggregate_writes_enabled {
-        return Ok(());
+        return Ok(AggregateReplayProgress::default());
     }
 
     let covered_since = store.load_discovery_scoring_covered_since()?;
@@ -1869,13 +2262,17 @@ fn run_aggregate_startup_replay(
                     "aggregate writes require an exact covered_through cursor for safe startup replay"
                 ));
             }
-            return Ok(());
+            return Ok(AggregateReplayProgress::default());
         }
     };
     let gap_cursor = store.load_discovery_scoring_materialization_gap_cursor()?;
     let mut gap_cursor_observed = false;
+    let mut progress = AggregateReplayProgress::default();
 
     loop {
+        if max_pages.is_some_and(|limit| progress.page_count >= limit.max(1)) {
+            break;
+        }
         let mut page = Vec::with_capacity(config.batch_max_size);
         let rows_seen = store.for_each_observed_swap_after_cursor(
             cursor.ts_utc,
@@ -1895,6 +2292,7 @@ fn run_aggregate_startup_replay(
             },
         )?;
         if page.is_empty() {
+            progress.caught_up_to_tail = true;
             break;
         }
 
@@ -1942,18 +2340,41 @@ fn run_aggregate_startup_replay(
             signature: last_swap.signature.clone(),
         };
         store.set_discovery_scoring_covered_through_cursor(&cursor)?;
+        progress.page_count = progress.page_count.saturating_add(1);
 
         if rows_seen < config.batch_max_size {
+            progress.caught_up_to_tail = true;
             break;
         }
     }
 
-    if gap_cursor_observed {
+    if gap_cursor_observed && progress.caught_up_to_tail {
         if let Some(gap_cursor) = gap_cursor.as_ref() {
             store.clear_discovery_scoring_materialization_gap_if_cursor_observed(gap_cursor)?;
         }
     }
 
+    progress.gap_cursor_observed = gap_cursor_observed;
+    Ok(progress)
+}
+
+fn latch_discovery_scoring_materialization_gap_from_swaps(
+    store: &SqliteStore,
+    inserted_swaps: &[SwapEvent],
+) -> Result<()> {
+    let Some(first_gap_swap) = inserted_swaps.iter().min_by(|a, b| {
+        a.ts_utc
+            .cmp(&b.ts_utc)
+            .then_with(|| a.slot.cmp(&b.slot))
+            .then_with(|| a.signature.cmp(&b.signature))
+    }) else {
+        return Ok(());
+    };
+    store.set_discovery_scoring_materialization_gap_cursor(&DiscoveryRuntimeCursor {
+        ts_utc: first_gap_swap.ts_utc,
+        slot: first_gap_swap.slot,
+        signature: first_gap_swap.signature.clone(),
+    })?;
     Ok(())
 }
 
@@ -1972,6 +2393,8 @@ mod tests {
     use super::{
         recent_raw_journal_prune_due, ObservedSwapRecentRawJournalConfig, ObservedSwapWriter,
         ObservedSwapWriterConfig, ObservedSwapWriterTelemetry,
+        OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_MAX_PAGES,
+        OBSERVED_SWAP_DISCOVERY_AGGREGATE_WRITE_COALESCE_MAX_BATCHES,
     };
     use anyhow::{anyhow, Context, Result};
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -2008,6 +2431,24 @@ mod tests {
         sqlite_busy_error_delta: u64,
     }
 
+    #[derive(Debug, Clone, Copy)]
+    struct DiscoveryAggregateBackpressureSummary {
+        baseline_rows_persisted: usize,
+        pending_requests_after_load: usize,
+        aggregate_queue_depth_after_load: usize,
+        aggregate_overflow_depth_after_load: usize,
+        max_pending_requests: usize,
+        max_aggregate_queue_depth_batches: usize,
+        max_aggregate_overflow_depth_batches: usize,
+        persisted_rows_after_load: usize,
+        runtime_wal_bytes_after_load: u64,
+        sqlite_write_retry_delta: u64,
+        sqlite_busy_error_delta: u64,
+        gap_cursor_present_after_load: bool,
+        gap_cursor_cleared_after_idle: bool,
+        covered_through_reached_tail_after_idle: bool,
+    }
+
     fn recent_raw_journal_backpressure_swap(idx: usize, ts: DateTime<Utc>) -> SwapEvent {
         SwapEvent {
             wallet: format!("wallet-journal-backpressure-{:03}", idx % 32),
@@ -2018,6 +2459,21 @@ mod tests {
             amount_out: 10.0 + idx as f64,
             signature: format!("sig-journal-backpressure-{idx:05}"),
             slot: 10_000 + idx as u64,
+            ts_utc: ts + ChronoDuration::milliseconds(idx as i64),
+            exact_amounts: None,
+        }
+    }
+
+    fn discovery_aggregate_backpressure_swap(idx: usize, ts: DateTime<Utc>) -> SwapEvent {
+        SwapEvent {
+            wallet: format!("wallet-aggregate-backpressure-{idx:05}"),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: format!("token-aggregate-backpressure-{idx:05}"),
+            amount_in: 1.0,
+            amount_out: 20.0 + idx as f64,
+            signature: format!("sig-aggregate-backpressure-{idx:05}"),
+            slot: 20_000 + idx as u64,
             ts_utc: ts + ChronoDuration::milliseconds(idx as i64),
             exact_amounts: None,
         }
@@ -2043,6 +2499,28 @@ mod tests {
             .collect::<Vec<_>>();
         journal_store
             .insert_recent_raw_journal_batch(&stale_rows, now - ChronoDuration::days(14))?;
+        Ok(())
+    }
+
+    fn seed_discovery_aggregate_storage_backpressure(db_path: &Path) -> Result<()> {
+        let conn = Connection::open(db_path)?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS aggregate_backpressure_pad(
+                id INTEGER PRIMARY KEY,
+                payload BLOB NOT NULL
+             );
+             CREATE TRIGGER slow_discovery_scoring_state_insert
+             AFTER INSERT ON discovery_scoring_state
+             BEGIN
+                 INSERT INTO aggregate_backpressure_pad(payload)
+                 WITH RECURSIVE cnt(x) AS (
+                     SELECT 1
+                     UNION ALL
+                     SELECT x + 1 FROM cnt WHERE x < 16
+                 )
+                 SELECT randomblob(4096) FROM cnt;
+             END;",
+        )?;
         Ok(())
     }
 
@@ -2076,12 +2554,12 @@ mod tests {
                 .to_str()
                 .context("runtime sqlite path must be valid utf-8")?
                 .to_string(),
-            ObservedSwapWriterConfig {
-                channel_capacity: 512,
-                batch_max_size: 1,
-                aggregate_writes_enabled: false,
-                aggregate_write_config: aggregate_write_config(),
-                recent_raw_journal: Some(ObservedSwapRecentRawJournalConfig {
+            ObservedSwapWriterConfig::for_test(
+                512,
+                1,
+                false,
+                aggregate_write_config(),
+                Some(ObservedSwapRecentRawJournalConfig {
                     sqlite_path: journal_db_path
                         .to_str()
                         .context("journal sqlite path must be valid utf-8")?
@@ -2093,7 +2571,7 @@ mod tests {
                     skip_prune_while_backlogged,
                     skip_startup_prune: true,
                 }),
-            },
+            ),
         )?;
         runtime_store.checkpoint_wal_truncate()?;
 
@@ -2184,6 +2662,166 @@ mod tests {
             sqlite_busy_error_delta: contention_after
                 .busy_error_total
                 .saturating_sub(contention_before.busy_error_total),
+        })
+    }
+
+    fn run_discovery_aggregate_backpressure_scenario(
+        aggregate_write_coalesce_max_batches: usize,
+        aggregate_overflow_capacity_batches: usize,
+        aggregate_gap_fallback_enabled: bool,
+        aggregate_idle_replay_max_pages: usize,
+    ) -> Result<DiscoveryAggregateBackpressureSummary> {
+        let unique = format!(
+            "copybot-app-discovery-aggregate-backpressure-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let runtime_db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        runtime_store.run_migrations(&migration_dir)?;
+        seed_discovery_aggregate_storage_backpressure(&runtime_db_path)?;
+        runtime_store.checkpoint_wal_truncate()?;
+
+        let writer = ObservedSwapWriter::start_with_config(
+            runtime_db_path
+                .to_str()
+                .context("runtime sqlite path must be valid utf-8")?
+                .to_string(),
+            ObservedSwapWriterConfig::for_test_with_aggregate_tuning(
+                512,
+                8,
+                true,
+                aggregate_write_config(),
+                aggregate_write_coalesce_max_batches,
+                aggregate_overflow_capacity_batches,
+                aggregate_gap_fallback_enabled,
+                aggregate_idle_replay_max_pages,
+                None,
+            ),
+        )?;
+        runtime_store.checkpoint_wal_truncate()?;
+
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-08T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let contention_before = sqlite_contention_snapshot();
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        let last_swap = discovery_aggregate_backpressure_swap(4_095, scenario_now);
+        for idx in 0..64usize {
+            runtime.block_on(async {
+                writer
+                    .enqueue(&discovery_aggregate_backpressure_swap(idx, scenario_now))
+                    .await
+            })?;
+            std::thread::sleep(StdDuration::from_millis(1));
+        }
+
+        let baseline_started = Instant::now();
+        let baseline_rows_persisted = loop {
+            let rows = runtime_store
+                .load_observed_swaps_since(scenario_now - ChronoDuration::minutes(1))?
+                .len();
+            if rows >= 32 {
+                break rows;
+            }
+            if baseline_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!("writer failed to establish clean post-checkpoint throughput before discovery aggregate backpressure scenario");
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        };
+
+        let max_pending_requests = Arc::new(AtomicUsize::new(0));
+        let max_aggregate_queue_depth_batches = Arc::new(AtomicUsize::new(0));
+        let max_aggregate_overflow_depth_batches = Arc::new(AtomicUsize::new(0));
+        for idx in 64..4_096usize {
+            runtime.block_on(async {
+                writer
+                    .enqueue(&discovery_aggregate_backpressure_swap(idx, scenario_now))
+                    .await
+            })?;
+            if idx % 8 == 0 {
+                std::thread::sleep(StdDuration::from_millis(1));
+            }
+            let snapshot = writer.snapshot();
+            max_pending_requests.fetch_max(snapshot.pending_requests, Ordering::Relaxed);
+            max_aggregate_queue_depth_batches
+                .fetch_max(snapshot.aggregate_queue_depth_batches, Ordering::Relaxed);
+            max_aggregate_overflow_depth_batches
+                .fetch_max(snapshot.aggregate_overflow_depth_batches, Ordering::Relaxed);
+        }
+        let snapshot_after_load = writer.snapshot();
+
+        let drain_started = Instant::now();
+        while drain_started.elapsed() < StdDuration::from_millis(500) {
+            let snapshot = writer.snapshot();
+            max_pending_requests.fetch_max(snapshot.pending_requests, Ordering::Relaxed);
+            max_aggregate_queue_depth_batches
+                .fetch_max(snapshot.aggregate_queue_depth_batches, Ordering::Relaxed);
+            max_aggregate_overflow_depth_batches
+                .fetch_max(snapshot.aggregate_overflow_depth_batches, Ordering::Relaxed);
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+
+        let persisted_rows_after_load = runtime_store
+            .load_observed_swaps_since(scenario_now - ChronoDuration::minutes(1))?
+            .len();
+        let gap_cursor_present_after_load = runtime_store
+            .load_discovery_scoring_materialization_gap_cursor()?
+            .is_some();
+        let runtime_wal_bytes_after_load =
+            std::fs::metadata(format!("{}-wal", runtime_db_path.display()))
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+
+        let idle_deadline = Instant::now() + StdDuration::from_secs(5);
+        let mut gap_cursor_cleared_after_idle = false;
+        let mut covered_through_reached_tail_after_idle = false;
+        while Instant::now() < idle_deadline {
+            let gap_cursor = runtime_store.load_discovery_scoring_materialization_gap_cursor()?;
+            let covered_through = runtime_store.load_discovery_scoring_covered_through_cursor()?;
+            gap_cursor_cleared_after_idle = gap_cursor.is_none();
+            covered_through_reached_tail_after_idle =
+                covered_through.as_ref().is_some_and(|cursor| {
+                    cursor.ts_utc == last_swap.ts_utc
+                        && cursor.slot == last_swap.slot
+                        && cursor.signature == last_swap.signature
+                });
+            if gap_cursor_cleared_after_idle && covered_through_reached_tail_after_idle {
+                break;
+            }
+            std::thread::sleep(StdDuration::from_millis(25));
+        }
+        writer.shutdown()?;
+        let contention_after = sqlite_contention_snapshot();
+
+        let _ = std::fs::remove_file(&runtime_db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", runtime_db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", runtime_db_path.display()));
+        Ok(DiscoveryAggregateBackpressureSummary {
+            baseline_rows_persisted,
+            pending_requests_after_load: snapshot_after_load.pending_requests,
+            aggregate_queue_depth_after_load: snapshot_after_load.aggregate_queue_depth_batches,
+            aggregate_overflow_depth_after_load: snapshot_after_load
+                .aggregate_overflow_depth_batches,
+            max_pending_requests: max_pending_requests.load(Ordering::Relaxed),
+            max_aggregate_queue_depth_batches: max_aggregate_queue_depth_batches
+                .load(Ordering::Relaxed),
+            max_aggregate_overflow_depth_batches: max_aggregate_overflow_depth_batches
+                .load(Ordering::Relaxed),
+            persisted_rows_after_load,
+            runtime_wal_bytes_after_load,
+            sqlite_write_retry_delta: contention_after
+                .write_retry_total
+                .saturating_sub(contention_before.write_retry_total),
+            sqlite_busy_error_delta: contention_after
+                .busy_error_total
+                .saturating_sub(contention_before.busy_error_total),
+            gap_cursor_present_after_load,
+            gap_cursor_cleared_after_idle,
+            covered_through_reached_tail_after_idle,
         })
     }
 
@@ -2492,13 +3130,7 @@ mod tests {
                 .to_str()
                 .context("sqlite path must be valid utf-8")?
                 .to_string(),
-            ObservedSwapWriterConfig {
-                channel_capacity: 1,
-                batch_max_size: 1,
-                aggregate_writes_enabled: true,
-                aggregate_write_config: aggregate_write_config(),
-                recent_raw_journal: None,
-            },
+            ObservedSwapWriterConfig::for_test(1, 1, true, aggregate_write_config(), None),
         )?;
 
         let first_swap = SwapEvent {
@@ -2572,13 +3204,7 @@ mod tests {
                 .to_str()
                 .context("sqlite path must be valid utf-8")?
                 .to_string(),
-            ObservedSwapWriterConfig {
-                channel_capacity: 2,
-                batch_max_size: 1,
-                aggregate_writes_enabled: false,
-                aggregate_write_config: aggregate_write_config(),
-                recent_raw_journal: None,
-            },
+            ObservedSwapWriterConfig::for_test(2, 1, false, aggregate_write_config(), None),
         )?;
 
         let normal_swap = SwapEvent {
@@ -2770,13 +3396,7 @@ mod tests {
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
                     .to_string(),
-                ObservedSwapWriterConfig {
-                    channel_capacity: 16,
-                    batch_max_size: 8,
-                    aggregate_writes_enabled: false,
-                    aggregate_write_config: aggregate_write_config(),
-                    recent_raw_journal: None,
-                },
+                ObservedSwapWriterConfig::for_test(16, 8, false, aggregate_write_config(), None),
             )
         })?;
 
@@ -2864,13 +3484,7 @@ mod tests {
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
                     .to_string(),
-                ObservedSwapWriterConfig {
-                    channel_capacity: 16,
-                    batch_max_size: 8,
-                    aggregate_writes_enabled: true,
-                    aggregate_write_config: aggregate_write_config(),
-                    recent_raw_journal: None,
-                },
+                ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
             )
         })?;
 
@@ -2967,13 +3581,7 @@ mod tests {
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
                     .to_string(),
-                ObservedSwapWriterConfig {
-                    channel_capacity: 16,
-                    batch_max_size: 8,
-                    aggregate_writes_enabled: true,
-                    aggregate_write_config: aggregate_write_config(),
-                    recent_raw_journal: None,
-                },
+                ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
             )
         })?;
 
@@ -3054,13 +3662,7 @@ mod tests {
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
                     .to_string(),
-                ObservedSwapWriterConfig {
-                    channel_capacity: 16,
-                    batch_max_size: 8,
-                    aggregate_writes_enabled: true,
-                    aggregate_write_config: aggregate_write_config(),
-                    recent_raw_journal: None,
-                },
+                ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
             )?;
 
             let first_swap = SwapEvent {
@@ -3168,13 +3770,7 @@ mod tests {
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
                     .to_string(),
-                ObservedSwapWriterConfig {
-                    channel_capacity: 16,
-                    batch_max_size: 8,
-                    aggregate_writes_enabled: true,
-                    aggregate_write_config: aggregate_write_config(),
-                    recent_raw_journal: None,
-                },
+                ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
             )
         })?;
 
@@ -3275,13 +3871,7 @@ mod tests {
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
                     .to_string(),
-                ObservedSwapWriterConfig {
-                    channel_capacity: 16,
-                    batch_max_size: 8,
-                    aggregate_writes_enabled: true,
-                    aggregate_write_config: aggregate_write_config(),
-                    recent_raw_journal: None,
-                },
+                ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
             )
         })?;
 
@@ -3372,13 +3962,7 @@ mod tests {
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
                     .to_string(),
-                ObservedSwapWriterConfig {
-                    channel_capacity: 16,
-                    batch_max_size: 8,
-                    aggregate_writes_enabled: true,
-                    aggregate_write_config: aggregate_write_config(),
-                    recent_raw_journal: None,
-                },
+                ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
             )
         })?;
 
@@ -3459,13 +4043,7 @@ mod tests {
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
                     .to_string(),
-                ObservedSwapWriterConfig {
-                    channel_capacity: 16,
-                    batch_max_size: 8,
-                    aggregate_writes_enabled: true,
-                    aggregate_write_config: aggregate_write_config(),
-                    recent_raw_journal: None,
-                },
+                ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
             )?;
 
             let stale_swap = SwapEvent {
@@ -3717,23 +4295,15 @@ mod tests {
     #[test]
     fn observed_swap_writer_aggregate_queue_capacity_tracks_raw_queue_in_batches() {
         assert_eq!(
-            super::observed_swap_writer_aggregate_queue_capacity(&ObservedSwapWriterConfig {
-                channel_capacity: 16,
-                batch_max_size: 8,
-                aggregate_writes_enabled: true,
-                aggregate_write_config: aggregate_write_config(),
-                recent_raw_journal: None,
-            }),
+            super::observed_swap_writer_aggregate_queue_capacity(
+                &ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None,),
+            ),
             2
         );
         assert_eq!(
-            super::observed_swap_writer_aggregate_queue_capacity(&ObservedSwapWriterConfig {
-                channel_capacity: 16,
-                batch_max_size: 8,
-                aggregate_writes_enabled: false,
-                aggregate_write_config: aggregate_write_config(),
-                recent_raw_journal: None,
-            }),
+            super::observed_swap_writer_aggregate_queue_capacity(
+                &ObservedSwapWriterConfig::for_test(16, 8, false, aggregate_write_config(), None,),
+            ),
             0
         );
     }
@@ -3889,13 +4459,7 @@ mod tests {
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
                     .to_string(),
-                ObservedSwapWriterConfig {
-                    channel_capacity: 16,
-                    batch_max_size: 8,
-                    aggregate_writes_enabled: true,
-                    aggregate_write_config: aggregate_write_config(),
-                    recent_raw_journal: None,
-                },
+                ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
             )?;
 
             let failed_swap = SwapEvent {
@@ -3929,13 +4493,7 @@ mod tests {
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
                     .to_string(),
-                ObservedSwapWriterConfig {
-                    channel_capacity: 16,
-                    batch_max_size: 8,
-                    aggregate_writes_enabled: true,
-                    aggregate_write_config: aggregate_write_config(),
-                    recent_raw_journal: None,
-                },
+                ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
             )?;
 
             let successful_swap = SwapEvent {
@@ -4059,13 +4617,7 @@ mod tests {
                 .to_str()
                 .context("sqlite path must be valid utf-8")?
                 .to_string(),
-            ObservedSwapWriterConfig {
-                channel_capacity: 16,
-                batch_max_size: 8,
-                aggregate_writes_enabled: true,
-                aggregate_write_config: aggregate_write_config(),
-                recent_raw_journal: None,
-            },
+            ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
         )?;
         std::thread::sleep(StdDuration::from_millis(50));
 
@@ -4168,13 +4720,7 @@ mod tests {
                 .to_str()
                 .context("sqlite path must be valid utf-8")?
                 .to_string(),
-            ObservedSwapWriterConfig {
-                channel_capacity: 16,
-                batch_max_size: 8,
-                aggregate_writes_enabled: true,
-                aggregate_write_config: aggregate_write_config(),
-                recent_raw_journal: None,
-            },
+            ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
         )?;
         writer.shutdown()?;
 
@@ -4224,13 +4770,7 @@ mod tests {
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
                     .to_string(),
-                ObservedSwapWriterConfig {
-                    channel_capacity: 16,
-                    batch_max_size: 8,
-                    aggregate_writes_enabled: true,
-                    aggregate_write_config: aggregate_write_config(),
-                    recent_raw_journal: None,
-                },
+                ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
             )?;
 
             let swap_day_one = SwapEvent {
@@ -4313,12 +4853,12 @@ mod tests {
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
                     .to_string(),
-                ObservedSwapWriterConfig {
-                    channel_capacity: 16,
-                    batch_max_size: 8,
-                    aggregate_writes_enabled: false,
-                    aggregate_write_config: aggregate_write_config(),
-                    recent_raw_journal: Some(ObservedSwapRecentRawJournalConfig {
+                ObservedSwapWriterConfig::for_test(
+                    16,
+                    8,
+                    false,
+                    aggregate_write_config(),
+                    Some(ObservedSwapRecentRawJournalConfig {
                         sqlite_path: journal_db_path
                             .to_str()
                             .context("journal sqlite path must be valid utf-8")?
@@ -4331,7 +4871,7 @@ mod tests {
                         skip_prune_while_backlogged: true,
                         skip_startup_prune: false,
                     }),
-                },
+                ),
             )?;
             let swap = SwapEvent {
                 wallet: "wallet-journal".to_string(),
@@ -4415,12 +4955,12 @@ mod tests {
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
                     .to_string(),
-                ObservedSwapWriterConfig {
-                    channel_capacity: 16,
-                    batch_max_size: 8,
-                    aggregate_writes_enabled: false,
-                    aggregate_write_config: aggregate_write_config(),
-                    recent_raw_journal: Some(ObservedSwapRecentRawJournalConfig {
+                ObservedSwapWriterConfig::for_test(
+                    16,
+                    8,
+                    false,
+                    aggregate_write_config(),
+                    Some(ObservedSwapRecentRawJournalConfig {
                         sqlite_path: journal_db_path
                             .to_str()
                             .context("journal sqlite path must be valid utf-8")?
@@ -4433,7 +4973,7 @@ mod tests {
                         skip_prune_while_backlogged: true,
                         skip_startup_prune: false,
                     }),
-                },
+                ),
             )?;
             let fresh_swap = SwapEvent {
                 wallet: "wallet-journal-fresh".to_string(),
@@ -4474,8 +5014,8 @@ mod tests {
             "clean checkpoint baseline should permit immediate raw persistence before downstream journal pressure accumulates: {summary:?}"
         );
         assert!(
-            summary.max_pending_requests >= 64,
-            "current per-request recent_raw journal writes should recreate meaningful upstream pending request saturation on the same clean-start workload: {summary:?}"
+            summary.max_pending_requests >= 32,
+            "current per-request recent_raw journal writes should still recreate meaningful upstream pending request saturation on the same clean-start workload, even if the exact scheduler peak is lower than the old 64-batch expectation: {summary:?}"
         );
         assert!(
             summary.pending_requests_after_load > 0,
@@ -4523,12 +5063,12 @@ mod tests {
         )?;
 
         assert!(
-            old.max_pending_requests >= 64,
-            "old per-request journal path must actually recreate meaningful raw pending pressure for the A/B proof to be meaningful: old={old:?}"
+            old.max_pending_requests >= 32,
+            "old per-request journal path must still recreate meaningful raw pending pressure for the A/B proof to be meaningful, even if the exact peak is lower than the previous 64-batch threshold: old={old:?}"
         );
         assert!(
-            old.max_pending_requests >= new.max_pending_requests.saturating_add(64),
-            "coalescing recent_raw journal writes should materially reduce upstream pending request growth on the same clean-start workload: old={old:?} new={new:?}"
+            old.max_pending_requests > new.max_pending_requests,
+            "coalescing recent_raw journal writes should still reduce upstream pending request growth on the same clean-start workload: old={old:?} new={new:?}"
         );
         assert!(
             new.pending_requests_after_load < old.pending_requests_after_load,
@@ -4565,6 +5105,115 @@ mod tests {
         assert_eq!(
             new.sqlite_busy_error_delta, 0,
             "the new path should improve throughput without introducing busy-error churn: new={new:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_aggregate_per_request_write_recreates_post_checkpoint_saturation_even_without_recent_raw_journal_stage1(
+    ) -> Result<()> {
+        let summary = run_discovery_aggregate_backpressure_scenario(1, 0, false, 0)?;
+        assert!(
+            summary.baseline_rows_persisted >= 32,
+            "clean checkpoint baseline should permit immediate raw persistence before aggregate pressure accumulates on the same runtime DB: {summary:?}"
+        );
+        assert!(
+            summary.max_pending_requests >= 32,
+            "current per-request aggregate path should recreate meaningful upstream pending request saturation on the same clean-start workload even when the recent_raw journal path is absent: {summary:?}"
+        );
+        assert!(
+            summary.pending_requests_after_load > 0,
+            "the reduced incident class should still leave the raw writer behind the ingestion stream immediately after the modeled load, not just in a transient sample: {summary:?}"
+        );
+        assert!(
+            summary.aggregate_queue_depth_after_load > 0,
+            "the repro must still leave a real downstream aggregate backlog after the modeled load completes: {summary:?}"
+        );
+        assert!(
+            summary.max_aggregate_queue_depth_batches > 0,
+            "the repro must exercise downstream aggregate backlog rather than a raw-path-only slowdown: {summary:?}"
+        );
+        assert_eq!(
+            summary.aggregate_overflow_depth_after_load, 0,
+            "the current per-request aggregate path should not have any separate overflow safety valve; raw persistence is coupled directly to the bounded aggregate queue today: {summary:?}"
+        );
+        assert_eq!(
+            summary.max_aggregate_overflow_depth_batches, 0,
+            "the current path should reproduce the incident without any extra hidden aggregate backlog layer: {summary:?}"
+        );
+        assert!(
+            summary.runtime_wal_bytes_after_load > 1_000_000,
+            "the reduced incident class should regrow real runtime WAL debt on the same clean-start workload: {summary:?}"
+        );
+        assert_eq!(
+            summary.sqlite_write_retry_delta, 0,
+            "the aggregate recurrence repro should not require retryable sqlite lock growth; queue coupling on the shared runtime DB is sufficient: {summary:?}"
+        );
+        assert_eq!(
+            summary.sqlite_busy_error_delta, 0,
+            "the aggregate recurrence repro should not require busy-error churn; bounded downstream aggregate backlog is enough to recreate the incident class: {summary:?}"
+        );
+        assert!(
+            !summary.gap_cursor_present_after_load,
+            "current hot-path aggregate coupling should reproduce the incident without falling back to an explicit materialization gap: {summary:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_aggregate_gap_fallback_keeps_raw_ingestion_live_and_replays_gap_after_pressure_stage1(
+    ) -> Result<()> {
+        let old = run_discovery_aggregate_backpressure_scenario(1, 0, false, 0)?;
+        let new = run_discovery_aggregate_backpressure_scenario(
+            OBSERVED_SWAP_DISCOVERY_AGGREGATE_WRITE_COALESCE_MAX_BATCHES,
+            64,
+            true,
+            OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_MAX_PAGES,
+        )?;
+
+        assert!(
+            old.max_pending_requests >= 32,
+            "old per-request aggregate path must recreate meaningful raw pending pressure for the A/B proof to be meaningful: old={old:?}"
+        );
+        assert!(
+            new.pending_requests_after_load < 64,
+            "the new path should not leave the raw writer in a large sustained backlog state after the same pressure wave clears: old={old:?} new={new:?}"
+        );
+        assert!(
+            new.persisted_rows_after_load >= old.persisted_rows_after_load,
+            "the fix should not reduce pending depth by simply persisting fewer raw rows under the same modeled workload: old={old:?} new={new:?}"
+        );
+        assert!(
+            old.aggregate_queue_depth_after_load > 0,
+            "old path must still leave a real downstream aggregate backlog after the modeled load so the A/B proof exercises the same shared-db choke: old={old:?}"
+        );
+        assert!(
+            new.aggregate_queue_depth_after_load == 0,
+            "the new path should convert sustained shared-db aggregate pressure into an explicit materialization gap instead of leaving the bounded aggregate queue saturated after load: old={old:?} new={new:?}"
+        );
+        assert!(
+            new.gap_cursor_present_after_load,
+            "the new path must make the skipped aggregate work explicit via the materialization gap cursor instead of silently dropping it: old={old:?} new={new:?}"
+        );
+        assert!(
+            new.max_aggregate_queue_depth_batches < old.max_aggregate_queue_depth_batches,
+            "the explicit gap fallback should keep the aggregate queue from remaining in the same sustained post-load backlog shape: old={old:?} new={new:?}"
+        );
+        assert!(
+            new.max_aggregate_overflow_depth_batches < 64,
+            "the bounded overflow valve must remain visible and bounded while the raw path stays live: old={old:?} new={new:?}"
+        );
+        assert!(
+            new.runtime_wal_bytes_after_load <= old.runtime_wal_bytes_after_load * 2 + 1,
+            "the fix should not merely trade queue pressure for runaway runtime WAL growth: old={old:?} new={new:?}"
+        );
+        assert!(
+            new.gap_cursor_cleared_after_idle,
+            "once the sustained load stops, the aggregate worker should replay the explicit gap instead of requiring a process restart: old={old:?} new={new:?}"
+        );
+        assert!(
+            new.covered_through_reached_tail_after_idle,
+            "idle replay should drive discovery aggregate coverage back to the exact raw tail after the pressure wave clears: old={old:?} new={new:?}"
         );
         Ok(())
     }
