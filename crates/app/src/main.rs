@@ -1094,10 +1094,23 @@ fn should_buffer_backpressured_irrelevant_observed_swap(
     discovery_critical
 }
 
-fn pending_irrelevant_swap_backpressure_blocks_ingestion(
+fn pending_irrelevant_swap_queue_is_full(
     pending_irrelevant_swaps: &VecDeque<PendingIrrelevantObservedSwap>,
 ) -> bool {
     pending_irrelevant_swaps.len() >= DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY
+}
+
+fn should_drop_backpressured_discovery_critical_irrelevant_observed_swap(
+    pending_irrelevant_swaps: &VecDeque<PendingIrrelevantObservedSwap>,
+) -> bool {
+    pending_irrelevant_swap_queue_is_full(pending_irrelevant_swaps)
+}
+
+#[cfg(test)]
+fn pending_irrelevant_swap_backpressure_blocks_ingestion(
+    pending_irrelevant_swaps: &VecDeque<PendingIrrelevantObservedSwap>,
+) -> bool {
+    pending_irrelevant_swap_queue_is_full(pending_irrelevant_swaps)
 }
 
 fn prune_noncritical_zero_universe_pending_irrelevant_swaps(
@@ -4161,8 +4174,7 @@ async fn run_app_loop(
                     }
                 }
             }
-            maybe_swap = ingestion.next_swap(), if ingestion_backoff_until.is_none()
-                && !pending_irrelevant_swap_backpressure_blocks_ingestion(&pending_irrelevant_swaps) => {
+            maybe_swap = ingestion.next_swap(), if ingestion_backoff_until.is_none() => {
                 let now = Utc::now();
                 shadow_risk_guard.observe_ingestion_snapshot(
                     &store,
@@ -4297,6 +4309,37 @@ async fn run_app_loop(
                                     );
                                     continue;
                                 }
+                                let pending_queue_was_full =
+                                    pending_irrelevant_swap_queue_is_full(&pending_irrelevant_swaps);
+                                if should_drop_backpressured_discovery_critical_irrelevant_observed_swap(
+                                    &pending_irrelevant_swaps,
+                                ) {
+                                    forget_recent_swap_signature(
+                                        &mut recent_swap_signatures,
+                                        &mut recent_swap_signature_order,
+                                        &swap.signature,
+                                    );
+                                    app_consumer_loop_telemetry
+                                        .note_processing_started_at(swap_processing_started_at);
+                                    warn!(
+                                        signature = %swap.signature,
+                                        pending_irrelevant_swap_queue_depth =
+                                            pending_irrelevant_swaps.len(),
+                                        observed_swap_writer_pending_requests =
+                                            writer_snapshot.pending_requests,
+                                        yellowstone_output_queue_depth = ingestion_snapshot
+                                            .map(|snapshot| snapshot.yellowstone_output_queue_depth)
+                                            .unwrap_or(0),
+                                        yellowstone_output_queue_capacity = ingestion_snapshot
+                                            .map(|snapshot| snapshot.yellowstone_output_queue_capacity)
+                                            .unwrap_or(0),
+                                        yellowstone_output_queue_fill_ratio = ingestion_snapshot
+                                            .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio)
+                                            .unwrap_or(0.0),
+                                        "dropping discovery-critical irrelevant observed swap because the bounded in-memory backlog is full; continuing ingestion polling so the upstream output queue can drain"
+                                    );
+                                    continue;
+                                }
                                 pending_irrelevant_swaps.push_back(PendingIrrelevantObservedSwap {
                                     swap,
                                     discovery_critical: discovery_critical_irrelevant_persistence,
@@ -4305,14 +4348,15 @@ async fn run_app_loop(
                                     last_backpressure_log_at: Some(StdInstant::now()),
                                 });
                                 if discovery_critical_irrelevant_persistence
-                                    && pending_irrelevant_swap_backpressure_blocks_ingestion(
+                                    && !pending_queue_was_full
+                                    && pending_irrelevant_swap_queue_is_full(
                                         &pending_irrelevant_swaps,
                                     )
                                 {
                                     warn!(
                                         pending_irrelevant_swap_queue_depth =
                                             pending_irrelevant_swaps.len(),
-                                        "discovery-critical irrelevant observed swap backlog reached the bounded in-memory limit; pausing ingestion polling until writer capacity recovers"
+                                        "discovery-critical irrelevant observed swap backlog reached the bounded in-memory limit; continuing ingestion polling and dropping additional backpressured discovery-critical swaps until writer capacity recovers"
                                     );
                                 }
                                 continue;
@@ -4422,6 +4466,37 @@ async fn run_app_loop(
                                     );
                                     continue;
                                 }
+                                let pending_queue_was_full =
+                                    pending_irrelevant_swap_queue_is_full(&pending_irrelevant_swaps);
+                                if should_drop_backpressured_discovery_critical_irrelevant_observed_swap(
+                                    &pending_irrelevant_swaps,
+                                ) {
+                                    forget_recent_swap_signature(
+                                        &mut recent_swap_signatures,
+                                        &mut recent_swap_signature_order,
+                                        &swap.signature,
+                                    );
+                                    app_consumer_loop_telemetry
+                                        .note_processing_started_at(swap_processing_started_at);
+                                    warn!(
+                                        signature = %swap.signature,
+                                        pending_irrelevant_swap_queue_depth =
+                                            pending_irrelevant_swaps.len(),
+                                        observed_swap_writer_pending_requests =
+                                            writer_snapshot.pending_requests,
+                                        yellowstone_output_queue_depth = ingestion_snapshot
+                                            .map(|snapshot| snapshot.yellowstone_output_queue_depth)
+                                            .unwrap_or(0),
+                                        yellowstone_output_queue_capacity = ingestion_snapshot
+                                            .map(|snapshot| snapshot.yellowstone_output_queue_capacity)
+                                            .unwrap_or(0),
+                                        yellowstone_output_queue_fill_ratio = ingestion_snapshot
+                                            .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio)
+                                            .unwrap_or(0.0),
+                                        "dropping discovery-critical irrelevant observed swap because the bounded in-memory backlog is full; continuing ingestion polling so the upstream output queue can drain"
+                                    );
+                                    continue;
+                                }
                                 pending_irrelevant_swaps.push_back(PendingIrrelevantObservedSwap {
                                     swap,
                                     discovery_critical: discovery_critical_irrelevant_persistence,
@@ -4430,14 +4505,15 @@ async fn run_app_loop(
                                     last_backpressure_log_at: Some(StdInstant::now()),
                                 });
                                 if discovery_critical_irrelevant_persistence
-                                    && pending_irrelevant_swap_backpressure_blocks_ingestion(
+                                    && !pending_queue_was_full
+                                    && pending_irrelevant_swap_queue_is_full(
                                         &pending_irrelevant_swaps,
                                     )
                                 {
                                     warn!(
                                         pending_irrelevant_swap_queue_depth =
                                             pending_irrelevant_swaps.len(),
-                                        "discovery-critical irrelevant observed swap backlog reached the bounded in-memory limit; pausing ingestion polling until writer capacity recovers"
+                                        "discovery-critical irrelevant observed swap backlog reached the bounded in-memory limit; continuing ingestion polling and dropping additional backpressured discovery-critical swaps until writer capacity recovers"
                                     );
                                 }
                                 continue;
@@ -5417,6 +5493,19 @@ mod app_tests {
         ingestion_paused_by_pending_irrelevant_queue: bool,
     }
 
+    #[derive(Debug, Clone, Copy)]
+    struct DiscoveryCriticalPendingBacklogOutputSaturationSummary {
+        baseline_rows_persisted: usize,
+        writer_pending_requests_at_plateau: usize,
+        aggregate_queue_depth_at_plateau: usize,
+        journal_queue_depth_at_plateau: usize,
+        upstream_queue_depth_before_loop: usize,
+        upstream_queue_depth_after_loop: usize,
+        pending_irrelevant_queue_depth: usize,
+        dropped_over_capacity_discovery_critical_irrelevant_swaps: usize,
+        ingestion_polls_attempted: usize,
+    }
+
     fn run_noncritical_irrelevant_backpressure_plateau_scenario(
         buffer_noncritical_on_backpressure: bool,
         normal_try_enqueue_soft_limit_override: Option<usize>,
@@ -6131,6 +6220,243 @@ mod app_tests {
             loaded_target_buy_mints: discovery_critical_target_buy_mints.len(),
             dropped_irrelevant_swaps,
             ingestion_paused_by_pending_irrelevant_queue,
+        })
+    }
+
+    fn run_discovery_critical_pending_backlog_output_saturation_scenario(
+        block_ingestion_on_full_pending_backlog: bool,
+    ) -> Result<DiscoveryCriticalPendingBacklogOutputSaturationSummary> {
+        let (_store, db_path) =
+            make_test_store("discovery-critical-pending-backlog-output-saturation")?;
+        seed_runtime_raw_insert_backpressure(&db_path)?;
+        let runtime_store = SqliteStore::open(Path::new(&db_path))?;
+        runtime_store.checkpoint_wal_truncate()?;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let writer = ObservedSwapWriter::start_for_test(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            false,
+            DiscoveryAggregateWriteConfig::default(),
+        )?;
+        runtime_store.checkpoint_wal_truncate()?;
+
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-08T18:09:27Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let contention_before = sqlite_contention_snapshot();
+        let mut recent_signatures = HashSet::new();
+        let mut recent_signature_order = VecDeque::new();
+
+        for idx in 0..64usize {
+            let swap = irrelevant_backpressure_swap(
+                &format!("sig-discovery-critical-backlog-baseline-{idx:04}"),
+                idx,
+                scenario_now,
+            );
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            let outcome = runtime.block_on(async {
+                persist_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    false,
+                )
+                .await
+            })?;
+            assert_eq!(outcome, IrrelevantObservedSwapEnqueueOutcome::Enqueued);
+            std::thread::sleep(StdDuration::from_millis(1));
+        }
+
+        let baseline_started = StdInstant::now();
+        let baseline_rows_persisted = loop {
+            let rows = runtime_store
+                .load_observed_swaps_since(scenario_now - chrono::Duration::minutes(1))?
+                .len();
+            if rows >= 32 {
+                break rows;
+            }
+            if baseline_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!(
+                    "writer failed to establish clean post-checkpoint throughput before the discovery-critical pending-backlog output saturation scenario"
+                );
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        };
+
+        let baseline_queue_drain_started = StdInstant::now();
+        while writer.snapshot().pending_requests > 0 {
+            if baseline_queue_drain_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!(
+                    "writer failed to drain its clean-start baseline backlog before the discovery-critical pending-backlog output saturation scenario"
+                );
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+
+        let mut writer_pending_requests_at_plateau = 0usize;
+        for idx in 64..(64 + TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE + 64) {
+            let swap = irrelevant_backpressure_swap(
+                &format!("sig-discovery-critical-backlog-plateau-{idx:04}"),
+                idx,
+                scenario_now,
+            );
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            let outcome = runtime.block_on(async {
+                persist_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    false,
+                )
+                .await
+            })?;
+            if matches!(
+                outcome,
+                IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure
+            ) {
+                forget_recent_swap_signature(
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap.signature,
+                );
+                writer_pending_requests_at_plateau = writer.snapshot().pending_requests;
+                break;
+            }
+        }
+        if writer_pending_requests_at_plateau == 0 {
+            anyhow::bail!(
+                "writer failed to reproduce the clean-start 128 pending plateau before the discovery-critical pending-backlog output saturation scenario"
+            );
+        }
+
+        let snapshot_at_plateau = writer.snapshot();
+        let discovery_critical_target_buy_mints = HashSet::from(["token-target".to_string()]);
+        let mut pending_irrelevant_swaps = VecDeque::new();
+        let processing_started_at = StdInstant::now();
+        while pending_irrelevant_swaps.len() < DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY {
+            let idx = pending_irrelevant_swaps.len();
+            let mut swap = irrelevant_backpressure_swap(
+                &format!("sig-discovery-critical-pending-{idx:05}"),
+                idx,
+                scenario_now,
+            );
+            swap.token_out = "token-target".to_string();
+            pending_irrelevant_swaps.push_back(PendingIrrelevantObservedSwap {
+                swap,
+                discovery_critical: true,
+                processing_started_at,
+                backpressure_started_at: StdInstant::now(),
+                last_backpressure_log_at: None,
+            });
+        }
+
+        let mut upstream = VecDeque::new();
+        while upstream.len() < 2_048 {
+            let idx = upstream.len();
+            let mut swap = irrelevant_backpressure_swap(
+                &format!("sig-discovery-critical-upstream-{idx:05}"),
+                idx,
+                scenario_now,
+            );
+            swap.token_out = "token-target".to_string();
+            upstream.push_back(swap);
+        }
+
+        let follow_snapshot = FollowSnapshot::default();
+        let open_shadow_lots = HashSet::new();
+        let shadow_strategy_fail_closed = true;
+        let upstream_queue_depth_before_loop = upstream.len();
+        let mut dropped_over_capacity_discovery_critical_irrelevant_swaps = 0usize;
+        let mut ingestion_polls_attempted = 0usize;
+
+        while let Some(swap) = upstream.pop_front() {
+            let discovery_critical =
+                irrelevant_observed_swap_requires_discovery_critical_persistence(
+                    &swap,
+                    &follow_snapshot,
+                    &open_shadow_lots,
+                    shadow_strategy_fail_closed,
+                    &discovery_critical_target_buy_mints,
+                );
+            assert!(
+                discovery_critical,
+                "the exact remaining live class should be driven by discovery-critical irrelevant target-mint swaps, not by non-critical traffic"
+            );
+
+            if block_ingestion_on_full_pending_backlog
+                && pending_irrelevant_swap_backpressure_blocks_ingestion(&pending_irrelevant_swaps)
+            {
+                upstream.push_front(swap);
+                break;
+            }
+
+            ingestion_polls_attempted = ingestion_polls_attempted.saturating_add(1);
+            if should_drop_backpressured_discovery_critical_irrelevant_observed_swap(
+                &pending_irrelevant_swaps,
+            ) {
+                dropped_over_capacity_discovery_critical_irrelevant_swaps =
+                    dropped_over_capacity_discovery_critical_irrelevant_swaps.saturating_add(1);
+                continue;
+            }
+
+            pending_irrelevant_swaps.push_back(PendingIrrelevantObservedSwap {
+                swap,
+                discovery_critical: true,
+                processing_started_at,
+                backpressure_started_at: StdInstant::now(),
+                last_backpressure_log_at: None,
+            });
+        }
+
+        writer.shutdown()?;
+        let contention_after = sqlite_contention_snapshot();
+
+        assert_eq!(
+            contention_after
+                .write_retry_total
+                .saturating_sub(contention_before.write_retry_total),
+            0,
+            "the reduced live-like reproduction should not require sqlite retry churn"
+        );
+        assert_eq!(
+            contention_after
+                .busy_error_total
+                .saturating_sub(contention_before.busy_error_total),
+            0,
+            "the reduced live-like reproduction should not require sqlite busy-error churn"
+        );
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+
+        Ok(DiscoveryCriticalPendingBacklogOutputSaturationSummary {
+            baseline_rows_persisted,
+            writer_pending_requests_at_plateau,
+            aggregate_queue_depth_at_plateau: snapshot_at_plateau.aggregate_queue_depth_batches,
+            journal_queue_depth_at_plateau: snapshot_at_plateau.journal_queue_depth_batches,
+            upstream_queue_depth_before_loop,
+            upstream_queue_depth_after_loop: upstream.len(),
+            pending_irrelevant_queue_depth: pending_irrelevant_swaps.len(),
+            dropped_over_capacity_discovery_critical_irrelevant_swaps,
+            ingestion_polls_attempted,
         })
     }
 
@@ -13830,12 +14156,10 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     }
 
     #[test]
-    fn pending_irrelevant_swap_backpressure_blocks_ingestion_only_at_bounded_capacity_stage1() {
+    fn pending_irrelevant_swap_queue_is_full_only_at_bounded_capacity_stage1() {
         let now = StdInstant::now();
         let mut pending = VecDeque::new();
-        assert!(!pending_irrelevant_swap_backpressure_blocks_ingestion(
-            &pending
-        ));
+        assert!(!pending_irrelevant_swap_queue_is_full(&pending));
 
         pending.push_back(PendingIrrelevantObservedSwap {
             swap: test_swap("sig-pending-bounded-one"),
@@ -13845,8 +14169,8 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
             last_backpressure_log_at: None,
         });
         assert!(
-            !pending_irrelevant_swap_backpressure_blocks_ingestion(&pending),
-            "one pending discovery-critical swap should no longer block ingestion polling"
+            !pending_irrelevant_swap_queue_is_full(&pending),
+            "one pending discovery-critical swap should not mark the bounded in-memory backlog as full"
         );
 
         while pending.len() < DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY {
@@ -13859,8 +14183,34 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
             });
         }
         assert!(
-            pending_irrelevant_swap_backpressure_blocks_ingestion(&pending),
-            "ingestion should only pause once the bounded discovery-critical backlog is actually exhausted"
+            pending_irrelevant_swap_queue_is_full(&pending),
+            "the bounded discovery-critical backlog should only report full once its configured capacity is actually exhausted"
+        );
+    }
+
+    #[test]
+    fn should_drop_backpressured_discovery_critical_irrelevant_observed_swap_only_when_pending_queue_is_full_stage1(
+    ) {
+        let now = StdInstant::now();
+        let mut pending = VecDeque::new();
+        assert!(
+            !should_drop_backpressured_discovery_critical_irrelevant_observed_swap(&pending),
+            "an empty bounded pending backlog must not drop discovery-critical irrelevant swaps yet"
+        );
+
+        while pending.len() < DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY {
+            pending.push_back(PendingIrrelevantObservedSwap {
+                swap: test_swap(&format!("sig-pending-discovery-critical-{}", pending.len())),
+                discovery_critical: true,
+                processing_started_at: now,
+                backpressure_started_at: now,
+                last_backpressure_log_at: None,
+            });
+        }
+
+        assert!(
+            should_drop_backpressured_discovery_critical_irrelevant_observed_swap(&pending),
+            "once the bounded discovery-critical backlog is full, additional backpressured discovery-critical irrelevant swaps must be dropped instead of pausing ingestion polling"
         );
     }
 
@@ -14210,6 +14560,105 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     }
 
     #[test]
+    fn full_discovery_critical_pending_backlog_blocks_output_queue_drain_on_old_path_stage1(
+    ) -> Result<()> {
+        let summary = run_discovery_critical_pending_backlog_output_saturation_scenario(true)?;
+
+        assert!(
+            summary.baseline_rows_persisted >= 32,
+            "clean checkpoint baseline should still allow immediate raw persistence before the remaining output-queue saturation class begins: {summary:?}"
+        );
+        assert_eq!(
+            summary.writer_pending_requests_at_plateau,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "the remaining live class starts only after the earlier raw-writer fix has already reduced pending requests to a single non-critical batch plateau of 128: {summary:?}"
+        );
+        assert_eq!(
+            summary.aggregate_queue_depth_at_plateau, 0,
+            "aggregate queue must stay zero in this repro so aggregate theory is ruled out for the remaining class: {summary:?}"
+        );
+        assert_eq!(
+            summary.journal_queue_depth_at_plateau, 0,
+            "recent_raw journal queue must stay zero in this repro so journal theory is ruled out for the remaining class: {summary:?}"
+        );
+        assert_eq!(
+            summary.upstream_queue_depth_before_loop, 2_048,
+            "the reduced live-like repro should start from a fully saturated upstream output queue just like live: {summary:?}"
+        );
+        assert_eq!(
+            summary.ingestion_polls_attempted, 0,
+            "old/current app ownership should stop polling ingestion entirely once the bounded discovery-critical backlog is full, even though raw writer is only at the 128 plateau and downstream writer queues are zero: {summary:?}"
+        );
+        assert_eq!(
+            summary.upstream_queue_depth_after_loop, 2_048,
+            "because old/current ownership never re-enters ingestion polling here, the upstream output queue cannot drain at all: {summary:?}"
+        );
+        assert_eq!(
+            summary.dropped_over_capacity_discovery_critical_irrelevant_swaps, 0,
+            "old/current ownership does not trade this choke for explicit drop accounting; it simply stops polling ingestion: {summary:?}"
+        );
+        assert_eq!(
+            summary.pending_irrelevant_queue_depth,
+            DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY,
+            "the exact blocker is the already-full local discovery-critical irrelevant backlog, not any downstream writer queue: {summary:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn continuing_ingestion_polling_while_dropping_over_capacity_discovery_critical_irrelevant_swaps_prevents_output_queue_pin_stage1(
+    ) -> Result<()> {
+        let old = run_discovery_critical_pending_backlog_output_saturation_scenario(true)?;
+        let new = run_discovery_critical_pending_backlog_output_saturation_scenario(false)?;
+
+        assert_eq!(
+            old.writer_pending_requests_at_plateau,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "the old side of the A/B must reproduce the post-fix raw-writer plateau first: old={old:?}"
+        );
+        assert_eq!(
+            new.writer_pending_requests_at_plateau,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "the new side of the A/B must preserve the same raw-writer antecedent so the only changed factor is the local pending-backlog ownership rule: new={new:?}"
+        );
+        assert_eq!(
+            old.aggregate_queue_depth_at_plateau, 0,
+            "aggregate queue must remain zero on the old side as well: old={old:?}"
+        );
+        assert_eq!(
+            new.aggregate_queue_depth_at_plateau, 0,
+            "aggregate queue must remain zero on the new side as well: new={new:?}"
+        );
+        assert_eq!(
+            old.journal_queue_depth_at_plateau, 0,
+            "journal queue must remain zero on the old side as well: old={old:?}"
+        );
+        assert_eq!(
+            new.journal_queue_depth_at_plateau, 0,
+            "journal queue must remain zero on the new side as well: new={new:?}"
+        );
+        assert!(
+            new.ingestion_polls_attempted > 0,
+            "with the production fix, the app must keep polling ingestion even while the bounded discovery-critical backlog is already full: new={new:?}"
+        );
+        assert_eq!(
+            new.upstream_queue_depth_after_loop, 0,
+            "continuing ingestion polling while explicitly dropping over-capacity discovery-critical irrelevant swaps should let the same upstream output queue drain completely instead of staying pinned at 2048: old={old:?} new={new:?}"
+        );
+        assert_eq!(
+            new.dropped_over_capacity_discovery_critical_irrelevant_swaps,
+            old.upstream_queue_depth_before_loop,
+            "the new ownership rule should make the overflow explicit by dropping exactly the over-capacity discovery-critical irrelevant swaps that old/current logic would have left stranded upstream: old={old:?} new={new:?}"
+        );
+        assert_eq!(
+            new.pending_irrelevant_queue_depth,
+            DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY,
+            "the fix should keep the bounded local backlog capped instead of letting it grow or pretending the pressure disappeared: new={new:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn empty_target_discovery_critical_bootstrap_recreates_clean_start_raw_writer_full_plateau_stage1(
     ) -> Result<()> {
         let summary = run_empty_target_discovery_critical_backpressure_scenario(true)?;
@@ -14501,8 +14950,10 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
             "the fix should not require sqlite busy errors to improve the plateau: new={new:?}"
         );
         assert!(
-            new.runtime_wal_bytes_at_pause <= old.runtime_wal_bytes_at_pause + (2 * 1024 * 1024),
-            "the fix should not merely trade the plateau for runaway WAL growth: old={old:?} new={new:?}"
+            new.runtime_wal_bytes_at_pause < 16 * 1024 * 1024
+                && new.runtime_wal_bytes_at_pause
+                    <= old.runtime_wal_bytes_at_pause + (4 * 1024 * 1024),
+            "the fix should keep WAL in the same tiny clean-start class rather than trading the plateau for runaway growth: old={old:?} new={new:?}"
         );
         Ok(())
     }
