@@ -961,15 +961,13 @@ fn irrelevant_observed_swap_requires_discovery_critical_persistence(
         return false;
     }
 
+    if discovery_critical_target_buy_mints.is_empty() {
+        return false;
+    }
+
     match classify_swap_side(swap) {
-        Some(ShadowSwapSide::Buy) => {
-            discovery_critical_target_buy_mints.is_empty()
-                || discovery_critical_target_buy_mints.contains(swap.token_out.as_str())
-        }
-        Some(ShadowSwapSide::Sell) => {
-            !discovery_critical_target_buy_mints.is_empty()
-                && discovery_critical_target_buy_mints.contains(swap.token_in.as_str())
-        }
+        Some(ShadowSwapSide::Buy) => discovery_critical_target_buy_mints.contains(swap.token_out.as_str()),
+        Some(ShadowSwapSide::Sell) => discovery_critical_target_buy_mints.contains(swap.token_in.as_str()),
         None => false,
     }
 }
@@ -5292,6 +5290,34 @@ mod app_tests {
         ) || discovery_critical
     }
 
+    fn irrelevant_observed_swap_requires_discovery_critical_persistence_old(
+        swap: &SwapEvent,
+        follow_snapshot: &FollowSnapshot,
+        open_shadow_lots: &HashSet<(String, String)>,
+        shadow_strategy_fail_closed: bool,
+        discovery_critical_target_buy_mints: &HashSet<String>,
+    ) -> bool {
+        if !zero_universe_fail_closed_discovery_market_context_mode(
+            follow_snapshot,
+            open_shadow_lots,
+            shadow_strategy_fail_closed,
+        ) {
+            return false;
+        }
+
+        match classify_swap_side(swap) {
+            Some(ShadowSwapSide::Buy) => {
+                discovery_critical_target_buy_mints.is_empty()
+                    || discovery_critical_target_buy_mints.contains(swap.token_out.as_str())
+            }
+            Some(ShadowSwapSide::Sell) => {
+                !discovery_critical_target_buy_mints.is_empty()
+                    && discovery_critical_target_buy_mints.contains(swap.token_in.as_str())
+            }
+            None => false,
+        }
+    }
+
     #[derive(Debug, Clone, Copy)]
     struct NoncriticalIrrelevantBackpressureSummary {
         baseline_rows_persisted: usize,
@@ -5306,6 +5332,23 @@ mod app_tests {
         aggregate_queue_depth_at_pause: usize,
         journal_queue_depth_at_pause: usize,
         dropped_noncritical_irrelevant_swaps: usize,
+        ingestion_paused_by_pending_irrelevant_queue: bool,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct EmptyTargetDiscoveryCriticalBackpressureSummary {
+        baseline_rows_persisted: usize,
+        first_backpressure_pending_requests: usize,
+        max_pending_requests_before_pause: usize,
+        pending_irrelevant_queue_depth_at_pause: usize,
+        upstream_queue_depth_shortly_after_pause: usize,
+        upstream_queue_depth_after_escalation: usize,
+        runtime_wal_bytes_at_pause: u64,
+        sqlite_write_retry_delta: u64,
+        sqlite_busy_error_delta: u64,
+        aggregate_queue_depth_at_pause: usize,
+        journal_queue_depth_at_pause: usize,
+        dropped_irrelevant_swaps: usize,
         ingestion_paused_by_pending_irrelevant_queue: bool,
     }
 
@@ -5523,6 +5566,243 @@ mod app_tests {
             aggregate_queue_depth_at_pause: snapshot_at_pause.aggregate_queue_depth_batches,
             journal_queue_depth_at_pause: snapshot_at_pause.journal_queue_depth_batches,
             dropped_noncritical_irrelevant_swaps,
+            ingestion_paused_by_pending_irrelevant_queue,
+        })
+    }
+
+    fn run_empty_target_discovery_critical_backpressure_scenario(
+        broad_empty_target_bootstrap_enabled: bool,
+    ) -> Result<EmptyTargetDiscoveryCriticalBackpressureSummary> {
+        let (_store, db_path) =
+            make_test_store("empty-target-discovery-critical-backpressure-plateau")?;
+        seed_runtime_raw_insert_backpressure(&db_path)?;
+        let runtime_store = SqliteStore::open(Path::new(&db_path))?;
+        runtime_store.checkpoint_wal_truncate()?;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let writer = ObservedSwapWriter::start_for_test(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            false,
+            DiscoveryAggregateWriteConfig::default(),
+        )?;
+        runtime_store.checkpoint_wal_truncate()?;
+
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-08T11:47:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let follow_snapshot = FollowSnapshot::default();
+        let open_shadow_lots = HashSet::new();
+        let shadow_strategy_fail_closed = true;
+        let discovery_critical_target_buy_mints = HashSet::new();
+        let contention_before = sqlite_contention_snapshot();
+        let mut recent_signatures = HashSet::new();
+        let mut recent_signature_order = VecDeque::new();
+        let mut pending_irrelevant_swaps = VecDeque::new();
+        let processing_started_at = StdInstant::now();
+
+        for idx in 0..64usize {
+            let swap = irrelevant_backpressure_swap(
+                &format!("sig-empty-target-baseline-{idx:04}"),
+                idx,
+                scenario_now,
+            );
+            let discovery_critical = if broad_empty_target_bootstrap_enabled {
+                irrelevant_observed_swap_requires_discovery_critical_persistence_old(
+                    &swap,
+                    &follow_snapshot,
+                    &open_shadow_lots,
+                    shadow_strategy_fail_closed,
+                    &discovery_critical_target_buy_mints,
+                )
+            } else {
+                irrelevant_observed_swap_requires_discovery_critical_persistence(
+                    &swap,
+                    &follow_snapshot,
+                    &open_shadow_lots,
+                    shadow_strategy_fail_closed,
+                    &discovery_critical_target_buy_mints,
+                )
+            };
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            let outcome = runtime.block_on(async {
+                persist_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    discovery_critical,
+                )
+                .await
+            })?;
+            assert_eq!(outcome, IrrelevantObservedSwapEnqueueOutcome::Enqueued);
+            std::thread::sleep(StdDuration::from_millis(1));
+        }
+
+        let baseline_started = StdInstant::now();
+        let baseline_rows_persisted = loop {
+            let rows = runtime_store
+                .load_observed_swaps_since(scenario_now - chrono::Duration::minutes(1))?
+                .len();
+            if rows >= 32 {
+                break rows;
+            }
+            if baseline_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!(
+                    "writer failed to establish clean post-checkpoint throughput before empty-target discovery-critical backpressure scenario"
+                );
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        };
+
+        let mut first_backpressure_pending_requests = 0usize;
+        let mut max_pending_requests_before_pause = 0usize;
+        let mut dropped_irrelevant_swaps = 0usize;
+        let mut next_idx = 64usize;
+        let max_consumer_swaps = 64
+            + OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
+            + DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY
+            + 4_096;
+
+        while next_idx < max_consumer_swaps
+            && !pending_irrelevant_swap_backpressure_blocks_ingestion(&pending_irrelevant_swaps)
+        {
+            let swap = irrelevant_backpressure_swap(
+                &format!("sig-empty-target-burst-{next_idx:05}"),
+                next_idx,
+                scenario_now,
+            );
+            next_idx = next_idx.saturating_add(1);
+            let discovery_critical = if broad_empty_target_bootstrap_enabled {
+                irrelevant_observed_swap_requires_discovery_critical_persistence_old(
+                    &swap,
+                    &follow_snapshot,
+                    &open_shadow_lots,
+                    shadow_strategy_fail_closed,
+                    &discovery_critical_target_buy_mints,
+                )
+            } else {
+                irrelevant_observed_swap_requires_discovery_critical_persistence(
+                    &swap,
+                    &follow_snapshot,
+                    &open_shadow_lots,
+                    shadow_strategy_fail_closed,
+                    &discovery_critical_target_buy_mints,
+                )
+            };
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            let outcome = runtime.block_on(async {
+                persist_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    discovery_critical,
+                )
+                .await
+            })?;
+            let writer_snapshot = writer.snapshot();
+            max_pending_requests_before_pause = max_pending_requests_before_pause
+                .max(writer_snapshot.pending_requests);
+            match outcome {
+                IrrelevantObservedSwapEnqueueOutcome::Enqueued => {}
+                IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure => {
+                    if first_backpressure_pending_requests == 0 {
+                        first_backpressure_pending_requests = writer_snapshot.pending_requests;
+                    }
+                    if should_buffer_backpressured_irrelevant_observed_swap(
+                        discovery_critical,
+                        &follow_snapshot,
+                        &open_shadow_lots,
+                        shadow_strategy_fail_closed,
+                    ) {
+                        pending_irrelevant_swaps.push_back(PendingIrrelevantObservedSwap {
+                            swap,
+                            discovery_critical,
+                            processing_started_at,
+                            backpressure_started_at: StdInstant::now(),
+                            last_backpressure_log_at: None,
+                        });
+                    } else {
+                        dropped_irrelevant_swaps =
+                            dropped_irrelevant_swaps.saturating_add(1);
+                        forget_recent_swap_signature(
+                            &mut recent_signatures,
+                            &mut recent_signature_order,
+                            &swap.signature,
+                        );
+                    }
+                }
+            }
+        }
+
+        let snapshot_at_pause = writer.snapshot();
+        let runtime_wal_bytes_at_pause = std::fs::metadata(format!("{}-wal", db_path.display()))
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let ingestion_paused_by_pending_irrelevant_queue =
+            pending_irrelevant_swap_backpressure_blocks_ingestion(&pending_irrelevant_swaps);
+        let mut upstream = VecDeque::new();
+        let mut upstream_queue_depth_shortly_after_pause = 0usize;
+        if ingestion_paused_by_pending_irrelevant_queue {
+            while upstream.len() < 49 {
+                let idx = next_idx;
+                next_idx = next_idx.saturating_add(1);
+                upstream.push_back(irrelevant_backpressure_swap(
+                    &format!("sig-empty-target-upstream-short-{idx:05}"),
+                    idx,
+                    scenario_now,
+                ));
+            }
+            upstream_queue_depth_shortly_after_pause = upstream.len();
+            while upstream.len() < 2_048 {
+                let idx = next_idx;
+                next_idx = next_idx.saturating_add(1);
+                upstream.push_back(irrelevant_backpressure_swap(
+                    &format!("sig-empty-target-upstream-long-{idx:05}"),
+                    idx,
+                    scenario_now,
+                ));
+            }
+        }
+        writer.shutdown()?;
+        let contention_after = sqlite_contention_snapshot();
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+
+        Ok(EmptyTargetDiscoveryCriticalBackpressureSummary {
+            baseline_rows_persisted,
+            first_backpressure_pending_requests,
+            max_pending_requests_before_pause,
+            pending_irrelevant_queue_depth_at_pause: pending_irrelevant_swaps.len(),
+            upstream_queue_depth_shortly_after_pause,
+            upstream_queue_depth_after_escalation: upstream.len(),
+            runtime_wal_bytes_at_pause,
+            sqlite_write_retry_delta: contention_after
+                .write_retry_total
+                .saturating_sub(contention_before.write_retry_total),
+            sqlite_busy_error_delta: contention_after
+                .busy_error_total
+                .saturating_sub(contention_before.busy_error_total),
+            aggregate_queue_depth_at_pause: snapshot_at_pause.aggregate_queue_depth_batches,
+            journal_queue_depth_at_pause: snapshot_at_pause.journal_queue_depth_batches,
+            dropped_irrelevant_swaps,
             ingestion_paused_by_pending_irrelevant_queue,
         })
     }
@@ -12604,7 +12884,7 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
             HashSet::from([("wallet-test".to_string(), "token-test".to_string())]);
 
         assert!(
-            irrelevant_observed_swap_requires_discovery_critical_persistence(
+            !irrelevant_observed_swap_requires_discovery_critical_persistence(
                 &buy_swap,
                 &empty_follow_snapshot,
                 &HashSet::new(),
@@ -12714,14 +12994,14 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
         target_buy.token_out = "token-target".to_string();
 
         assert!(
-            irrelevant_observed_swap_requires_discovery_critical_persistence(
+            !irrelevant_observed_swap_requires_discovery_critical_persistence(
                 &generic_buy,
                 &empty_follow_snapshot,
                 &HashSet::new(),
                 true,
                 &stale_target_buy_mints,
             ),
-            "with a stale empty in-memory target set, the old zero-universe fail-closed ownership would still treat every SOL buy as discovery-critical"
+            "current app-side ownership should not escalate a stale empty target set into broad discovery-critical SOL-buy persistence anymore"
         );
         assert!(
             !refresh_discovery_critical_irrelevant_persistence_for_backpressure(
@@ -13485,6 +13765,135 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
             ),
             "non-critical irrelevant swaps should no longer consume the bounded pending queue under writer backpressure"
         );
+    }
+
+    #[test]
+    fn empty_target_discovery_critical_bootstrap_recreates_clean_start_raw_writer_full_plateau_stage1(
+    ) -> Result<()> {
+        let summary = run_empty_target_discovery_critical_backpressure_scenario(true)?;
+        let raw_writer_full_with_single_inflight_batch =
+            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY + TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE;
+
+        assert!(
+            summary.baseline_rows_persisted >= 32,
+            "clean checkpoint baseline should permit immediate raw persistence before the empty-target discovery-critical plateau forms: {summary:?}"
+        );
+        assert!(
+            summary.first_backpressure_pending_requests >= OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
+                && summary.first_backpressure_pending_requests
+                    <= raw_writer_full_with_single_inflight_batch,
+            "with the broad empty-target bootstrap contract, generic SOL-leg buys bypass the normal soft limit and fill the raw writer to a full 4096 queued requests, plus at most one in-flight raw batch before the first backpressure event: {summary:?}"
+        );
+        assert!(
+            summary.max_pending_requests_before_pause >= OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
+                && summary.max_pending_requests_before_pause
+                    <= raw_writer_full_with_single_inflight_batch,
+            "the same empty-target discovery-critical request class should keep pending requests pinned at a full raw writer plus at most one in-flight batch, matching the live 4096 plateau with aggregate/journal queues still at zero: {summary:?}"
+        );
+        assert_eq!(
+            summary.pending_irrelevant_queue_depth_at_pause,
+            DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY,
+            "after raw pending hits 4096, the app keeps buffering those same broad discovery-critical irrelevant swaps until the local bounded queue also reaches 4096: {summary:?}"
+        );
+        assert!(
+            summary.upstream_queue_depth_shortly_after_pause > 0
+                && summary.upstream_queue_depth_shortly_after_pause <= 64,
+            "the exact incident class needs a still-small upstream queue when the local pending_irrelevant queue first forces ingestion pause, matching the live 49-depth plateau before later upstream saturation: {summary:?}"
+        );
+        assert_eq!(
+            summary.upstream_queue_depth_after_escalation,
+            2_048,
+            "once the app pauses on the full local discovery-critical backlog, the modeled upstream queue should be able to reach its own 2048 capacity just like live: {summary:?}"
+        );
+        assert_eq!(
+            summary.aggregate_queue_depth_at_pause, 0,
+            "aggregate queue must stay zero in this repro so aggregate theory is ruled out for the exact class under test: {summary:?}"
+        );
+        assert_eq!(
+            summary.journal_queue_depth_at_pause, 0,
+            "recent_raw journal queue must stay zero in this repro so journal theory is ruled out for the exact class under test: {summary:?}"
+        );
+        assert!(
+            summary.runtime_wal_bytes_at_pause < 16 * 1024 * 1024,
+            "the plateau must reproduce while WAL is still tiny, before any giant-WAL explanation is available: {summary:?}"
+        );
+        assert_eq!(
+            summary.sqlite_write_retry_delta, 0,
+            "the plateau must reproduce without sqlite retry churn: {summary:?}"
+        );
+        assert_eq!(
+            summary.sqlite_busy_error_delta, 0,
+            "the plateau must reproduce without sqlite busy-error churn: {summary:?}"
+        );
+        assert!(
+            summary.ingestion_paused_by_pending_irrelevant_queue,
+            "the app should pause ingestion only after it has fully buffered the same broad discovery-critical irrelevant class locally, which explains why the upstream queue is small first and only later saturates: {summary:?}"
+        );
+        assert_eq!(
+            summary.dropped_irrelevant_swaps, 0,
+            "old/current empty-target bootstrap never drops these broad discovery-critical irrelevant buys under backpressure; it buffers them instead: {summary:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn removing_empty_target_discovery_critical_bootstrap_prevents_clean_start_raw_writer_full_plateau_stage1(
+    ) -> Result<()> {
+        let old = run_empty_target_discovery_critical_backpressure_scenario(true)?;
+        let new = run_empty_target_discovery_critical_backpressure_scenario(false)?;
+        let normal_irrelevant_soft_limit =
+            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
+                .saturating_sub(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE);
+        let raw_writer_full_with_single_inflight_batch =
+            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY + TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE;
+
+        assert!(
+            old.first_backpressure_pending_requests >= OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
+                && old.first_backpressure_pending_requests
+                    <= raw_writer_full_with_single_inflight_batch,
+            "the old side of the A/B must reproduce a full raw-writer plateau first, with at most one in-flight batch on top of the 4096 queued requests: old={old:?}"
+        );
+        assert!(
+            new.dropped_irrelevant_swaps > 0,
+            "without the broad empty-target bootstrap, the app must explicitly drop those backpressured generic irrelevant buys instead of buffering them as discovery-critical: new={new:?}"
+        );
+        assert!(
+            new.first_backpressure_pending_requests <= normal_irrelevant_soft_limit,
+            "the fix must stop empty-target generic irrelevant buys from consuming the reserved raw-writer capacity and reduce the first plateau back below 4096: old={old:?} new={new:?}"
+        );
+        assert_eq!(
+            new.pending_irrelevant_queue_depth_at_pause, 0,
+            "with the broad empty-target bootstrap removed, those generic buys should no longer fill the bounded pending_irrelevant queue at all: old={old:?} new={new:?}"
+        );
+        assert!(
+            !new.ingestion_paused_by_pending_irrelevant_queue,
+            "the same reduced workload should no longer self-pause ingestion on a local 4096 discovery-critical irrelevant backlog: old={old:?} new={new:?}"
+        );
+        assert_eq!(
+            new.upstream_queue_depth_after_escalation, 0,
+            "without the local self-pause, the same workload should not re-escalate into a 2048 upstream queue: old={old:?} new={new:?}"
+        );
+        assert_eq!(
+            new.aggregate_queue_depth_at_pause, 0,
+            "the fix should stay on the raw-writer request-class ownership path and not depend on aggregate queue changes: old={old:?} new={new:?}"
+        );
+        assert_eq!(
+            new.journal_queue_depth_at_pause, 0,
+            "the fix should stay on the raw-writer request-class ownership path and not depend on journal queue changes: old={old:?} new={new:?}"
+        );
+        assert_eq!(
+            new.sqlite_write_retry_delta, 0,
+            "the fix should not require new sqlite retry churn: new={new:?}"
+        );
+        assert_eq!(
+            new.sqlite_busy_error_delta, 0,
+            "the fix should not require sqlite busy-error churn: new={new:?}"
+        );
+        assert!(
+            new.runtime_wal_bytes_at_pause <= old.runtime_wal_bytes_at_pause * 2 + 1,
+            "the fix should not just trade the plateau for runaway WAL growth: old={old:?} new={new:?}"
+        );
+        Ok(())
     }
 
     #[test]
