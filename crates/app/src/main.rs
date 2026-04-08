@@ -3567,6 +3567,11 @@ async fn run_app_loop(
                                 &observed_swap_writer_snapshot,
                                 ingestion_snapshot.as_ref(),
                             );
+                        let pending_requests_only_raw_plateau =
+                            discovery_catch_up_pending_requests_is_only_raw_plateau(
+                                &observed_swap_writer_snapshot,
+                                ingestion_snapshot.as_ref(),
+                            );
                         discovery_catch_up_pending = should_schedule_discovery_catch_up(
                             &discovery_output,
                             shadow_queue_full,
@@ -3593,6 +3598,8 @@ async fn run_app_loop(
                                         observed_swap_writer_snapshot.journal_queue_depth_batches,
                                     discovery_catch_up_pending_requests_only_pressure_bypassed =
                                         pending_requests_only_pressure,
+                                    discovery_catch_up_pending_requests_only_raw_plateau_bypassed =
+                                        pending_requests_only_raw_plateau,
                                     yellowstone_output_queue_fill_ratio =
                                         ingestion_snapshot
                                             .as_ref()
@@ -3614,6 +3621,8 @@ async fn run_app_loop(
                                         observed_swap_writer_snapshot.aggregate_queue_depth_batches,
                                     writer_journal_queue_depth_batches =
                                         observed_swap_writer_snapshot.journal_queue_depth_batches,
+                                    discovery_catch_up_pending_requests_only_raw_plateau_bypassed =
+                                        pending_requests_only_raw_plateau,
                                     yellowstone_output_queue_fill_ratio =
                                         ingestion_snapshot
                                             .as_ref()
@@ -3641,6 +3650,8 @@ async fn run_app_loop(
                                     .map(DiscoveryCatchUpBlockReason::as_str),
                                 discovery_catch_up_pending_requests_only_blocker =
                                     pending_requests_only_pressure,
+                                discovery_catch_up_pending_requests_only_raw_plateau =
+                                    pending_requests_only_raw_plateau,
                                 yellowstone_output_queue_fill_ratio =
                                     ingestion_snapshot
                                         .as_ref()
@@ -4998,6 +5009,16 @@ fn discovery_catch_up_pending_requests_only_pressure(
         && !discovery_catch_up_has_ingestion_pressure(ingestion_runtime_snapshot)
 }
 
+fn discovery_catch_up_pending_requests_is_only_raw_plateau(
+    observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
+    ingestion_runtime_snapshot: Option<&IngestionRuntimeSnapshot>,
+) -> bool {
+    observed_swap_writer_snapshot.pending_requests
+        == DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD
+        && !discovery_catch_up_has_writer_queue_pressure(observed_swap_writer_snapshot)
+        && !discovery_catch_up_has_ingestion_pressure(ingestion_runtime_snapshot)
+}
+
 fn discovery_catch_up_block_reason(
     discovery_output: &DiscoveryTaskOutput,
     shadow_queue_full: bool,
@@ -5026,6 +5047,12 @@ fn discovery_catch_up_block_reason(
         return Some(DiscoveryCatchUpBlockReason::YellowstoneOutputQueueFill);
     }
     if discovery_output.persisted_stream_catch_up_pressure_override_requested {
+        return None;
+    }
+    if discovery_catch_up_pending_requests_is_only_raw_plateau(
+        observed_swap_writer_snapshot,
+        ingestion_runtime_snapshot,
+    ) {
         return None;
     }
     if observed_swap_writer_snapshot.pending_requests
@@ -5358,6 +5385,44 @@ mod app_tests {
             persisted_stream_catch_up_requested: false,
             persisted_stream_catch_up_pressure_override_requested: false,
         }
+    }
+
+    fn legacy_discovery_catch_up_block_reason_for_test(
+        discovery_output: &DiscoveryTaskOutput,
+        shadow_queue_full: bool,
+        observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
+        ingestion_runtime_snapshot: Option<&IngestionRuntimeSnapshot>,
+    ) -> Option<DiscoveryCatchUpBlockReason> {
+        if !discovery_output.persisted_stream_catch_up_requested {
+            return None;
+        }
+        if shadow_queue_full {
+            return Some(DiscoveryCatchUpBlockReason::ShadowQueueFull);
+        }
+        if observed_swap_writer_snapshot.aggregate_queue_depth_batches > 0 {
+            return Some(DiscoveryCatchUpBlockReason::WriterAggregateQueueDepth);
+        }
+        if observed_swap_writer_snapshot.aggregate_overflow_depth_batches > 0 {
+            return Some(DiscoveryCatchUpBlockReason::WriterAggregateOverflowDepth);
+        }
+        if observed_swap_writer_snapshot.journal_queue_depth_batches > 0 {
+            return Some(DiscoveryCatchUpBlockReason::WriterJournalQueueDepth);
+        }
+        if observed_swap_writer_snapshot.journal_overflow_depth_batches > 0 {
+            return Some(DiscoveryCatchUpBlockReason::WriterJournalOverflowDepth);
+        }
+        if discovery_catch_up_has_ingestion_pressure(ingestion_runtime_snapshot) {
+            return Some(DiscoveryCatchUpBlockReason::YellowstoneOutputQueueFill);
+        }
+        if discovery_output.persisted_stream_catch_up_pressure_override_requested {
+            return None;
+        }
+        if observed_swap_writer_snapshot.pending_requests
+            >= DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD
+        {
+            return Some(DiscoveryCatchUpBlockReason::WriterPendingRequests);
+        }
+        None
     }
 
     fn test_swap(signature: &str) -> SwapEvent {
@@ -6850,13 +6915,86 @@ mod app_tests {
         let mut discovery_output = discovery_output_for_catch_up_tests(true);
         discovery_output.persisted_stream_catch_up_pressure_override_requested = true;
         let mut writer_snapshot = maintenance_test_writer_snapshot();
-        writer_snapshot.pending_requests = DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD;
+        writer_snapshot.pending_requests =
+            DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD.saturating_add(1);
 
         assert!(should_schedule_discovery_catch_up(
             &discovery_output,
             false,
             &writer_snapshot,
             Some(&maintenance_test_ingestion_snapshot(0.0)),
+        ));
+    }
+
+    #[test]
+    fn discovery_catch_up_scheduler_allows_exact_raw_writer_plateau_when_it_is_the_only_remaining_blocker(
+    ) {
+        let discovery_output = discovery_output_for_catch_up_tests(true);
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.pending_requests = DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD;
+
+        assert!(discovery_catch_up_pending_requests_only_pressure(
+            &writer_snapshot,
+            Some(&maintenance_test_ingestion_snapshot(0.0)),
+        ));
+        assert!(discovery_catch_up_pending_requests_is_only_raw_plateau(
+            &writer_snapshot,
+            Some(&maintenance_test_ingestion_snapshot(0.0)),
+        ));
+        assert!(should_schedule_discovery_catch_up(
+            &discovery_output,
+            false,
+            &writer_snapshot,
+            Some(&maintenance_test_ingestion_snapshot(0.0)),
+        ));
+        assert_eq!(
+            discovery_catch_up_block_reason(
+                &discovery_output,
+                false,
+                &writer_snapshot,
+                Some(&maintenance_test_ingestion_snapshot(0.0)),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn replay_fail_closed_catch_up_is_no_longer_deferred_by_the_fixed_one_batch_raw_plateau_stage1()
+    {
+        let mut discovery_output =
+            live_like_fail_closed_no_recent_published_universe_output(Utc::now());
+        discovery_output.persisted_stream_catch_up_requested = true;
+        discovery_output.persisted_stream_catch_up_pressure_override_requested = false;
+
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.pending_requests = DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD;
+        let ingestion_snapshot = maintenance_test_ingestion_snapshot(0.0);
+
+        assert_eq!(
+            legacy_discovery_catch_up_block_reason_for_test(
+                &discovery_output,
+                false,
+                &writer_snapshot,
+                Some(&ingestion_snapshot),
+            ),
+            Some(DiscoveryCatchUpBlockReason::WriterPendingRequests),
+            "the pre-fix runtime gate treated the fixed one-batch raw plateau as hard pressure and deferred the immediate replay catch-up that would have resumed the fail-closed persisted rebuild"
+        );
+        assert_eq!(
+            discovery_catch_up_block_reason(
+                &discovery_output,
+                false,
+                &writer_snapshot,
+                Some(&ingestion_snapshot),
+            ),
+            None,
+            "the fixed runtime gate should allow the immediate replay catch-up once the only remaining signal is the intentional one-batch raw plateau"
+        );
+        assert!(should_schedule_discovery_catch_up(
+            &discovery_output,
+            false,
+            &writer_snapshot,
+            Some(&ingestion_snapshot),
         ));
     }
 
@@ -6895,7 +7033,8 @@ mod app_tests {
         let mut discovery_output = discovery_output_for_catch_up_tests(true);
         discovery_output.persisted_stream_catch_up_pressure_override_requested = true;
         let mut writer_snapshot = maintenance_test_writer_snapshot();
-        writer_snapshot.pending_requests = DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD;
+        writer_snapshot.pending_requests =
+            DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD.saturating_add(1);
         writer_snapshot.aggregate_queue_depth_batches = 1;
 
         assert!(!should_schedule_discovery_catch_up(
@@ -6920,7 +7059,8 @@ mod app_tests {
     fn discovery_catch_up_scheduler_skips_when_writer_crosses_threshold() {
         let discovery_output = discovery_output_for_catch_up_tests(true);
         let mut writer_snapshot = maintenance_test_writer_snapshot();
-        writer_snapshot.pending_requests = DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD;
+        writer_snapshot.pending_requests =
+            DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD.saturating_add(1);
 
         assert!(!should_schedule_discovery_catch_up(
             &discovery_output,

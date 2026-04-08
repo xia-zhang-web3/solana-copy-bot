@@ -26457,6 +26457,111 @@ mod tests {
     }
 
     #[test]
+    fn run_cycle_partial_replay_wallet_stats_fail_closes_with_zero_wallets_seen_while_rows_are_present_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-run-cycle-partial-replay-activity-backfill.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-08T16:44:37Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 20_000;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let noise_wallets = 60_000usize;
+        let (window_start, metrics_window_start) =
+            seed_stage1_live_like_wallet_stats_backlog_fixture(
+                &runtime_store,
+                &config,
+                now,
+                noise_wallets,
+                "stage1-post-recovery-fail-closed",
+            )?;
+
+        let mut replay_state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        replay_state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        replay_state.horizon_end = now;
+        replay_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        replay_state.payload.unique_buy_mints =
+            runtime_store.load_observed_buy_mints_in_window(window_start, now)?;
+        replay_state.payload.token_quality_progress.next_mint_index =
+            replay_state.payload.unique_buy_mints.len();
+
+        let partial = discovery.advance_persisted_stream_replay_wallet_stats(
+            &runtime_store,
+            &mut replay_state,
+            config.max_fetch_swaps_per_cycle,
+            8,
+            Instant::now() + StdDuration::from_secs(30),
+        )?;
+        replay_state.payload.replay_wallet_stats_rows_processed = replay_state
+            .payload
+            .replay_wallet_stats_rows_processed
+            .saturating_add(partial.replay_wallet_stats_rows_processed);
+        replay_state.payload.replay_wallet_stats_pages_processed = replay_state
+            .payload
+            .replay_wallet_stats_pages_processed
+            .saturating_add(partial.replay_wallet_stats_pages_processed);
+        replay_state
+            .payload
+            .replay_wallet_stats_day_count_source_progress
+            .merge(partial.replay_wallet_stats_day_count_source_progress);
+
+        runtime_store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, now)?,
+        )?;
+        runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_incomplete_no_recent_published_universe".to_string(),
+            last_published_at: Some(
+                now - discovery.runtime_published_universe_max_age() - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        let summary = discovery.run_cycle(&runtime_store, now)?;
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert_eq!(
+            summary.scoring_source,
+            "raw_window_incomplete_no_recent_published_universe"
+        );
+        assert_eq!(summary.wallets_seen, 0);
+        assert_eq!(summary.eligible_wallets, 0);
+        assert_eq!(summary.metrics_written, 0);
+        assert!(summary.persisted_stream_catch_up_requested);
+
+        let rebuild = load_persisted_stream_rebuild_state_for_test(&runtime_store)?;
+        assert_eq!(rebuild.phase, DiscoveryPersistedRebuildPhase::Replay);
+        assert!(
+            rebuild.payload.replay_wallet_stats_rows_processed
+                > replay_state.payload.replay_wallet_stats_rows_processed,
+            "the reduced live-like replay checkpoint must record additional wallet-stats progress even while the fail-closed summary reports wallets_seen=0"
+        );
+        assert!(
+            rebuild.payload.replay_wallet_stats_pages_processed
+                > replay_state.payload.replay_wallet_stats_pages_processed,
+            "the replay checkpoint must advance pages so the zero-summary class cannot be misread as a no-work/no-row path"
+        );
+        assert!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(&rebuild)
+                .starts_with("replay_"),
+            "the exact fail-closed class should still be blocked inside replay after the bounded cycle yields"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn repair_recent_raw_journal_head_gap_refuses_foreign_runtime_cursor_lineage() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let runtime_db_path = temp
