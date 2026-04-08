@@ -966,8 +966,12 @@ fn irrelevant_observed_swap_requires_discovery_critical_persistence(
     }
 
     match classify_swap_side(swap) {
-        Some(ShadowSwapSide::Buy) => discovery_critical_target_buy_mints.contains(swap.token_out.as_str()),
-        Some(ShadowSwapSide::Sell) => discovery_critical_target_buy_mints.contains(swap.token_in.as_str()),
+        Some(ShadowSwapSide::Buy) => {
+            discovery_critical_target_buy_mints.contains(swap.token_out.as_str())
+        }
+        Some(ShadowSwapSide::Sell) => {
+            discovery_critical_target_buy_mints.contains(swap.token_in.as_str())
+        }
         None => false,
     }
 }
@@ -5317,7 +5321,9 @@ mod app_tests {
         }
     }
 
-    fn load_discovery_critical_target_buy_mints_old(store: &SqliteStore) -> Result<HashSet<String>> {
+    fn load_discovery_critical_target_buy_mints_old(
+        store: &SqliteStore,
+    ) -> Result<HashSet<String>> {
         let Some(state_row) = store.load_discovery_persisted_rebuild_state_read_only()? else {
             return Ok(HashSet::new());
         };
@@ -5361,6 +5367,8 @@ mod app_tests {
     struct NoncriticalIrrelevantBackpressureSummary {
         baseline_rows_persisted: usize,
         first_backpressure_pending_requests: usize,
+        first_backpressure_discovery_critical: bool,
+        upstream_queue_depth_at_first_backpressure: usize,
         max_pending_requests_before_pause: usize,
         pending_irrelevant_queue_depth_at_pause: usize,
         upstream_queue_depth_shortly_after_pause: usize,
@@ -5411,6 +5419,7 @@ mod app_tests {
 
     fn run_noncritical_irrelevant_backpressure_plateau_scenario(
         buffer_noncritical_on_backpressure: bool,
+        normal_try_enqueue_soft_limit_override: Option<usize>,
     ) -> Result<NoncriticalIrrelevantBackpressureSummary> {
         let (_store, db_path) = make_test_store("noncritical-irrelevant-backpressure-plateau")?;
         seed_runtime_raw_insert_backpressure(&db_path)?;
@@ -5420,16 +5429,28 @@ mod app_tests {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let writer = ObservedSwapWriter::start_for_test(
-            db_path
-                .to_str()
-                .context("sqlite path must be valid utf-8")?
-                .to_string(),
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-            false,
-            DiscoveryAggregateWriteConfig::default(),
-        )?;
+        let sqlite_path = db_path
+            .to_str()
+            .context("sqlite path must be valid utf-8")?
+            .to_string();
+        let writer = if let Some(limit) = normal_try_enqueue_soft_limit_override {
+            ObservedSwapWriter::start_for_test_with_normal_try_enqueue_soft_limit(
+                sqlite_path,
+                OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+                TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+                false,
+                DiscoveryAggregateWriteConfig::default(),
+                limit,
+            )?
+        } else {
+            ObservedSwapWriter::start_for_test(
+                sqlite_path,
+                OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+                TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+                false,
+                DiscoveryAggregateWriteConfig::default(),
+            )?
+        };
         runtime_store.checkpoint_wal_truncate()?;
 
         let scenario_now = DateTime::parse_from_rfc3339("2026-04-08T11:47:00Z")
@@ -5489,10 +5510,20 @@ mod app_tests {
             std::thread::sleep(StdDuration::from_millis(10));
         };
 
-        let normal_irrelevant_soft_limit =
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
-                .saturating_sub(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE);
+        let baseline_queue_drain_started = StdInstant::now();
+        while writer.snapshot().pending_requests > 0 {
+            if baseline_queue_drain_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!(
+                    "writer failed to drain its clean-start baseline backlog before the non-critical irrelevant plateau scenario"
+                );
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+
+        let normal_irrelevant_soft_limit = normal_try_enqueue_soft_limit_override
+            .unwrap_or(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE);
         let mut first_backpressure_pending_requests = 0usize;
+        let mut first_backpressure_discovery_critical = false;
         let mut max_pending_requests_before_pause = 0usize;
         let mut dropped_noncritical_irrelevant_swaps = 0usize;
         let mut next_idx = 64usize;
@@ -5526,13 +5557,14 @@ mod app_tests {
                 .await
             })?;
             let writer_snapshot = writer.snapshot();
-            max_pending_requests_before_pause = max_pending_requests_before_pause
-                .max(writer_snapshot.pending_requests);
+            max_pending_requests_before_pause =
+                max_pending_requests_before_pause.max(writer_snapshot.pending_requests);
             match outcome {
                 IrrelevantObservedSwapEnqueueOutcome::Enqueued => {}
                 IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure => {
                     if first_backpressure_pending_requests == 0 {
                         first_backpressure_pending_requests = writer_snapshot.pending_requests;
+                        first_backpressure_discovery_critical = false;
                     }
                     let should_buffer = if buffer_noncritical_on_backpressure {
                         should_buffer_backpressured_irrelevant_observed_swap_old(
@@ -5609,6 +5641,8 @@ mod app_tests {
         Ok(NoncriticalIrrelevantBackpressureSummary {
             baseline_rows_persisted,
             first_backpressure_pending_requests,
+            first_backpressure_discovery_critical,
+            upstream_queue_depth_at_first_backpressure: 0,
             max_pending_requests_before_pause,
             pending_irrelevant_queue_depth_at_pause: pending_irrelevant_swaps.len(),
             upstream_queue_depth_shortly_after_pause,
@@ -5773,8 +5807,8 @@ mod app_tests {
                 .await
             })?;
             let writer_snapshot = writer.snapshot();
-            max_pending_requests_before_pause = max_pending_requests_before_pause
-                .max(writer_snapshot.pending_requests);
+            max_pending_requests_before_pause =
+                max_pending_requests_before_pause.max(writer_snapshot.pending_requests);
             match outcome {
                 IrrelevantObservedSwapEnqueueOutcome::Enqueued => {}
                 IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure => {
@@ -5795,8 +5829,7 @@ mod app_tests {
                             last_backpressure_log_at: None,
                         });
                     } else {
-                        dropped_irrelevant_swaps =
-                            dropped_irrelevant_swaps.saturating_add(1);
+                        dropped_irrelevant_swaps = dropped_irrelevant_swaps.saturating_add(1);
                         forget_recent_swap_signature(
                             &mut recent_signatures,
                             &mut recent_signature_order,
@@ -5867,13 +5900,11 @@ mod app_tests {
     fn run_broad_unique_buy_fallback_backpressure_scenario(
         broad_unique_buy_fallback_enabled: bool,
     ) -> Result<BroadUniqueBuyFallbackBackpressureSummary> {
-        let (store, db_path) =
-            make_test_store("broad-unique-buy-fallback-backpressure-plateau")?;
+        let (store, db_path) = make_test_store("broad-unique-buy-fallback-backpressure-plateau")?;
         seed_runtime_raw_insert_backpressure(&db_path)?;
-        let broad_unique_buy_mints: Vec<String> = (0
-            ..(OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
-                + DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY
-                + 4_096))
+        let broad_unique_buy_mints: Vec<String> = (0..(OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
+            + DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY
+            + 4_096))
             .map(|idx| format!("token-irrelevant-{idx:05}"))
             .collect();
         let broad_unique_buy_mint_refs: Vec<&str> =
@@ -5927,13 +5958,14 @@ mod app_tests {
                 idx,
                 scenario_now,
             );
-            let discovery_critical = irrelevant_observed_swap_requires_discovery_critical_persistence(
-                &swap,
-                &follow_snapshot,
-                &open_shadow_lots,
-                shadow_strategy_fail_closed,
-                &discovery_critical_target_buy_mints,
-            );
+            let discovery_critical =
+                irrelevant_observed_swap_requires_discovery_critical_persistence(
+                    &swap,
+                    &follow_snapshot,
+                    &open_shadow_lots,
+                    shadow_strategy_fail_closed,
+                    &discovery_critical_target_buy_mints,
+                );
             assert!(note_recent_swap_signature(
                 &mut recent_signatures,
                 &mut recent_signature_order,
@@ -5987,13 +6019,14 @@ mod app_tests {
                 scenario_now,
             );
             next_idx = next_idx.saturating_add(1);
-            let discovery_critical = irrelevant_observed_swap_requires_discovery_critical_persistence(
-                &swap,
-                &follow_snapshot,
-                &open_shadow_lots,
-                shadow_strategy_fail_closed,
-                &discovery_critical_target_buy_mints,
-            );
+            let discovery_critical =
+                irrelevant_observed_swap_requires_discovery_critical_persistence(
+                    &swap,
+                    &follow_snapshot,
+                    &open_shadow_lots,
+                    shadow_strategy_fail_closed,
+                    &discovery_critical_target_buy_mints,
+                );
             assert!(note_recent_swap_signature(
                 &mut recent_signatures,
                 &mut recent_signature_order,
@@ -6010,8 +6043,8 @@ mod app_tests {
                 .await
             })?;
             let writer_snapshot = writer.snapshot();
-            max_pending_requests_before_pause = max_pending_requests_before_pause
-                .max(writer_snapshot.pending_requests);
+            max_pending_requests_before_pause =
+                max_pending_requests_before_pause.max(writer_snapshot.pending_requests);
             match outcome {
                 IrrelevantObservedSwapEnqueueOutcome::Enqueued => {}
                 IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure => {
@@ -6032,8 +6065,7 @@ mod app_tests {
                             last_backpressure_log_at: None,
                         });
                     } else {
-                        dropped_irrelevant_swaps =
-                            dropped_irrelevant_swaps.saturating_add(1);
+                        dropped_irrelevant_swaps = dropped_irrelevant_swaps.saturating_add(1);
                         forget_recent_swap_signature(
                             &mut recent_signatures,
                             &mut recent_signature_order,
@@ -13569,8 +13601,8 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     }
 
     #[test]
-    fn broad_unique_buy_fallback_recreates_clean_start_raw_writer_full_plateau_stage1(
-    ) -> Result<()> {
+    fn broad_unique_buy_fallback_recreates_clean_start_raw_writer_full_plateau_stage1() -> Result<()>
+    {
         let summary = run_broad_unique_buy_fallback_backpressure_scenario(true)?;
         let raw_writer_full_with_single_inflight_batch =
             OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY + TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE;
@@ -13621,9 +13653,8 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     ) -> Result<()> {
         let old = run_broad_unique_buy_fallback_backpressure_scenario(true)?;
         let new = run_broad_unique_buy_fallback_backpressure_scenario(false)?;
-        let normal_irrelevant_soft_limit =
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
-                .saturating_sub(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE);
+        let normal_irrelevant_soft_limit = OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
+            .saturating_sub(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE);
         let raw_writer_full_with_single_inflight_batch =
             OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY + TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE;
 
@@ -14252,9 +14283,8 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     ) -> Result<()> {
         let old = run_empty_target_discovery_critical_backpressure_scenario(true)?;
         let new = run_empty_target_discovery_critical_backpressure_scenario(false)?;
-        let normal_irrelevant_soft_limit =
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
-                .saturating_sub(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE);
+        let normal_irrelevant_soft_limit = OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
+            .saturating_sub(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE);
         let raw_writer_full_with_single_inflight_batch =
             OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY + TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE;
 
@@ -14308,12 +14338,14 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     }
 
     #[test]
-    fn noncritical_irrelevant_backpressure_recreates_clean_start_plateau_before_upstream_saturation_stage1(
+    fn legacy_noncritical_irrelevant_backpressure_recreates_clean_start_plateau_before_upstream_saturation_stage1(
     ) -> Result<()> {
-        let summary = run_noncritical_irrelevant_backpressure_plateau_scenario(true)?;
-        let normal_irrelevant_soft_limit =
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
-                .saturating_sub(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE);
+        let legacy_noncritical_irrelevant_soft_limit = OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
+            .saturating_sub(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE);
+        let summary = run_noncritical_irrelevant_backpressure_plateau_scenario(
+            true,
+            Some(legacy_noncritical_irrelevant_soft_limit),
+        )?;
 
         assert!(
             summary.baseline_rows_persisted >= 32,
@@ -14321,12 +14353,21 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
         );
         assert_eq!(
             summary.first_backpressure_pending_requests,
-            normal_irrelevant_soft_limit,
+            legacy_noncritical_irrelevant_soft_limit,
             "the first plateau should begin exactly at the normal irrelevant writer soft limit, which explains the live 3968 pending plateau on a 4096-capacity writer with one reserved 128-swap batch: {summary:?}"
+        );
+        assert!(
+            !summary.first_backpressure_discovery_critical,
+            "the exact clean-start 3968 plateau must be occupied by non-critical irrelevant requests, not discovery-critical ones: {summary:?}"
+        );
+        assert_eq!(
+            summary.upstream_queue_depth_at_first_backpressure,
+            0,
+            "the exact clean-start plateau must happen before upstream queue growth begins, matching the live 3968/aggregate=0/upstream=0 slice: {summary:?}"
         );
         assert_eq!(
             summary.max_pending_requests_before_pause,
-            normal_irrelevant_soft_limit,
+            legacy_noncritical_irrelevant_soft_limit,
             "the same normal irrelevant enqueue contract should cap pending requests at the soft limit before any upstream queue saturation is needed: {summary:?}"
         );
         assert_eq!(
@@ -14375,40 +14416,81 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     }
 
     #[test]
-    fn dropping_noncritical_irrelevant_backpressure_prevents_clean_start_plateau_stage1(
+    fn legacy_noncritical_irrelevant_requests_occupy_clean_start_soft_limit_plateau_with_zero_upstream_stage1(
     ) -> Result<()> {
-        let old = run_noncritical_irrelevant_backpressure_plateau_scenario(true)?;
-        let new = run_noncritical_irrelevant_backpressure_plateau_scenario(false)?;
+        let legacy_noncritical_irrelevant_soft_limit = OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
+            .saturating_sub(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE);
+        let summary = run_noncritical_irrelevant_backpressure_plateau_scenario(
+            true,
+            Some(legacy_noncritical_irrelevant_soft_limit),
+        )?;
+
+        assert_eq!(
+            summary.first_backpressure_pending_requests,
+            legacy_noncritical_irrelevant_soft_limit
+        );
+        assert!(!summary.first_backpressure_discovery_critical);
+        assert_eq!(summary.upstream_queue_depth_at_first_backpressure, 0);
+        assert_eq!(summary.aggregate_queue_depth_at_pause, 0);
+        assert_eq!(summary.journal_queue_depth_at_pause, 0);
+        assert_eq!(summary.sqlite_write_retry_delta, 0);
+        assert_eq!(summary.sqlite_busy_error_delta, 0);
+        assert!(
+            summary.runtime_wal_bytes_at_pause < 16 * 1024 * 1024,
+            "the soft-limit plateau must reproduce while WAL is still small: {summary:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_noncritical_irrelevant_try_enqueue_budget_prevents_clean_start_plateau_stage1(
+    ) -> Result<()> {
+        let legacy_noncritical_irrelevant_soft_limit = OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
+            .saturating_sub(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE);
+        let old = run_noncritical_irrelevant_backpressure_plateau_scenario(
+            false,
+            Some(legacy_noncritical_irrelevant_soft_limit),
+        )?;
+        let new = run_noncritical_irrelevant_backpressure_plateau_scenario(false, None)?;
 
         assert_eq!(
             old.first_backpressure_pending_requests,
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY
-                .saturating_sub(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE),
+            legacy_noncritical_irrelevant_soft_limit,
             "the old side of the A/B must reproduce the exact soft-limit plateau first: old={old:?}"
         );
         assert!(
             new.dropped_noncritical_irrelevant_swaps > 0,
-            "the new contract must explicitly drop non-critical irrelevant swaps under writer backpressure instead of silently buffering them: new={new:?}"
+            "the new runtime contract must explicitly drop non-critical irrelevant swaps once the bounded raw-writer budget is exhausted: new={new:?}"
+        );
+        assert_eq!(
+            new.first_backpressure_pending_requests,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "the production writer fix should start backpressure after a single non-critical irrelevant raw batch instead of allowing a 3968-request plateau: old={old:?} new={new:?}"
+        );
+        assert_eq!(
+            new.max_pending_requests_before_pause,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "the same reduced workload should no longer let non-critical irrelevant requests occupy more than one raw batch before backpressure starts: old={old:?} new={new:?}"
         );
         assert_eq!(
             new.pending_irrelevant_queue_depth_at_pause, 0,
-            "the fix should prevent the local pending_irrelevant queue from becoming the primary choke for non-critical irrelevant swaps: old={old:?} new={new:?}"
+            "with the bounded raw-writer budget plus the existing non-critical drop contract, the local pending_irrelevant queue should stay empty on the same workload: old={old:?} new={new:?}"
         );
         assert!(
             !new.ingestion_paused_by_pending_irrelevant_queue,
-            "without the full local pending_irrelevant plateau, the app should not self-pause ingestion on this same reduced workload: old={old:?} new={new:?}"
+            "without the 3968 raw plateau, the app should not self-pause ingestion on this same reduced workload: old={old:?} new={new:?}"
         );
         assert_eq!(
             new.upstream_queue_depth_after_escalation, 0,
-            "the same reduced workload should no longer re-escalate into a saturated upstream queue once non-critical irrelevant swaps are dropped instead of buffered: old={old:?} new={new:?}"
+            "the same reduced workload should no longer re-escalate into a saturated upstream queue once non-critical irrelevant swaps can only consume one raw batch before being dropped: old={old:?} new={new:?}"
         );
         assert_eq!(
             new.aggregate_queue_depth_at_pause, 0,
-            "the fix should stay on the raw-writer / irrelevant-buffering path and not depend on aggregate backlog changes: old={old:?} new={new:?}"
+            "the fix should stay on the raw-writer request-budget path and not depend on aggregate backlog changes: old={old:?} new={new:?}"
         );
         assert_eq!(
             new.journal_queue_depth_at_pause, 0,
-            "the fix should stay on the raw-writer / irrelevant-buffering path and not depend on recent_raw journal backlog changes: old={old:?} new={new:?}"
+            "the fix should stay on the raw-writer request-budget path and not depend on recent_raw journal backlog changes: old={old:?} new={new:?}"
         );
         assert_eq!(
             new.sqlite_write_retry_delta, 0,
@@ -14419,7 +14501,7 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
             "the fix should not require sqlite busy errors to improve the plateau: new={new:?}"
         );
         assert!(
-            new.runtime_wal_bytes_at_pause <= old.runtime_wal_bytes_at_pause * 2 + 1,
+            new.runtime_wal_bytes_at_pause <= old.runtime_wal_bytes_at_pause + (2 * 1024 * 1024),
             "the fix should not merely trade the plateau for runaway WAL growth: old={old:?} new={new:?}"
         );
         Ok(())

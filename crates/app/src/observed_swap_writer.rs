@@ -19,6 +19,7 @@ use tracing::{info, warn};
 pub(crate) const OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY: usize = 4096;
 const OBSERVED_SWAP_BATCH_MAX_SIZE: usize = 128;
 const OBSERVED_SWAP_WRITER_DISCOVERY_CRITICAL_RESERVED_BATCHES: usize = 1;
+const OBSERVED_SWAP_WRITER_NONCRITICAL_IRRELEVANT_MAX_QUEUED_BATCHES: usize = 1;
 pub(crate) const OBSERVED_SWAP_DISCOVERY_AGGREGATE_WRITE_COALESCE_MAX_BATCHES: usize = 16;
 pub(crate) const OBSERVED_SWAP_DISCOVERY_AGGREGATE_OVERFLOW_CAPACITY_MULTIPLIER: usize = 4;
 const OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_POLL_INTERVAL: StdDuration =
@@ -57,6 +58,7 @@ pub(crate) const OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT: &str =
 struct ObservedSwapWriterConfig {
     channel_capacity: usize,
     batch_max_size: usize,
+    normal_try_enqueue_soft_limit_override: Option<usize>,
     aggregate_writes_enabled: bool,
     aggregate_write_config: DiscoveryAggregateWriteConfig,
     aggregate_write_coalesce_max_batches: usize,
@@ -86,6 +88,7 @@ impl ObservedSwapWriterConfig {
         Self {
             channel_capacity: OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
             batch_max_size: OBSERVED_SWAP_BATCH_MAX_SIZE,
+            normal_try_enqueue_soft_limit_override: None,
             aggregate_writes_enabled,
             aggregate_write_config,
             aggregate_write_coalesce_max_batches:
@@ -143,6 +146,7 @@ impl ObservedSwapWriterConfig {
         Self {
             channel_capacity,
             batch_max_size,
+            normal_try_enqueue_soft_limit_override: None,
             aggregate_writes_enabled,
             aggregate_write_config,
             aggregate_write_coalesce_max_batches,
@@ -151,6 +155,12 @@ impl ObservedSwapWriterConfig {
             aggregate_idle_replay_max_pages,
             recent_raw_journal,
         }
+    }
+
+    #[cfg(test)]
+    fn with_normal_try_enqueue_soft_limit(mut self, limit: usize) -> Self {
+        self.normal_try_enqueue_soft_limit_override = Some(limit.max(1));
+        self
     }
 }
 
@@ -613,6 +623,28 @@ pub(crate) struct ObservedSwapWriter {
     terminal_failure_message: Arc<Mutex<Option<String>>>,
 }
 
+fn observed_swap_writer_normal_try_enqueue_soft_limit(config: &ObservedSwapWriterConfig) -> usize {
+    if let Some(limit) = config.normal_try_enqueue_soft_limit_override {
+        return limit.max(1);
+    }
+
+    let discovery_critical_reserve_requests =
+        observed_swap_writer_discovery_critical_reserve_requests(config);
+    let normal_capacity = config
+        .channel_capacity
+        .saturating_sub(discovery_critical_reserve_requests)
+        .max(1);
+    // `try_enqueue()` is only used by non-critical irrelevant swaps. One queued raw batch is
+    // enough to preserve best-effort persistence without letting this lowest-priority class
+    // consume the entire normal writer budget before backpressure starts.
+    let noncritical_irrelevant_budget =
+        OBSERVED_SWAP_WRITER_NONCRITICAL_IRRELEVANT_MAX_QUEUED_BATCHES
+            .saturating_mul(config.batch_max_size.max(1))
+            .max(1);
+
+    noncritical_irrelevant_budget.min(normal_capacity)
+}
+
 impl ObservedSwapWriter {
     fn terminal_failure_error(&self) -> Option<anyhow::Error> {
         self.terminal_failure_message
@@ -674,11 +706,8 @@ impl ObservedSwapWriter {
         let (sender, receiver) = mpsc::channel(config.channel_capacity);
         let telemetry = Arc::new(ObservedSwapWriterTelemetry::default());
         let terminal_failure_message = Arc::new(Mutex::new(None));
-        let discovery_critical_reserve_requests =
-            observed_swap_writer_discovery_critical_reserve_requests(&config);
-        let normal_try_enqueue_soft_limit = config
-            .channel_capacity
-            .saturating_sub(discovery_critical_reserve_requests);
+        let normal_try_enqueue_soft_limit =
+            observed_swap_writer_normal_try_enqueue_soft_limit(&config);
         let aggregate_queue_capacity_batches =
             observed_swap_writer_aggregate_queue_capacity(&config);
         telemetry
@@ -855,6 +884,28 @@ impl ObservedSwapWriter {
                 aggregate_write_config,
                 None,
             ),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_for_test_with_normal_try_enqueue_soft_limit(
+        sqlite_path: String,
+        channel_capacity: usize,
+        batch_max_size: usize,
+        aggregate_writes_enabled: bool,
+        aggregate_write_config: DiscoveryAggregateWriteConfig,
+        normal_try_enqueue_soft_limit: usize,
+    ) -> Result<Self> {
+        Self::start_with_config(
+            sqlite_path,
+            ObservedSwapWriterConfig::for_test(
+                channel_capacity,
+                batch_max_size,
+                aggregate_writes_enabled,
+                aggregate_write_config,
+                None,
+            )
+            .with_normal_try_enqueue_soft_limit(normal_try_enqueue_soft_limit),
         )
     }
 
