@@ -90,6 +90,7 @@ const DISCOVERY_CRITICAL_TARGET_BUY_MINTS_BACKPRESSURE_REFRESH_INTERVAL: StdDura
     StdDuration::from_secs(1);
 const DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY: usize =
     OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY;
+const NONCRITICAL_IRRELEVANT_OUTPUT_PRESSURE_DROP_MIN_FILL_RATIO: f64 = 0.5;
 const STALE_LOT_CLEANUP_BATCH_LIMIT: u32 = 300;
 const HARD_STOP_CLEAR_HEALTHY_REFRESHES: u64 = 6;
 const SQLITE_MAINTENANCE_MAX_YELLOWSTONE_OUTPUT_QUEUE_FILL_RATIO: f64 = 0.25;
@@ -1161,6 +1162,31 @@ fn should_buffer_backpressured_irrelevant_observed_swap(
     _shadow_strategy_fail_closed: bool,
 ) -> bool {
     discovery_critical
+}
+
+fn should_preemptively_drop_noncritical_irrelevant_observed_swap_under_output_pressure(
+    discovery_critical: bool,
+    follow_snapshot: &FollowSnapshot,
+    open_shadow_lots: &HashSet<(String, String)>,
+    shadow_strategy_fail_closed: bool,
+    ingestion_snapshot: Option<IngestionRuntimeSnapshot>,
+) -> bool {
+    if discovery_critical {
+        return false;
+    }
+    if !zero_universe_fail_closed_discovery_market_context_mode(
+        follow_snapshot,
+        open_shadow_lots,
+        shadow_strategy_fail_closed,
+    ) {
+        return false;
+    }
+    let Some(ingestion_snapshot) = ingestion_snapshot else {
+        return false;
+    };
+    ingestion_snapshot.yellowstone_output_queue_capacity > 0
+        && ingestion_snapshot.yellowstone_output_queue_fill_ratio
+            >= NONCRITICAL_IRRELEVANT_OUTPUT_PRESSURE_DROP_MIN_FILL_RATIO
 }
 
 fn pending_irrelevant_swap_queue_is_full(
@@ -4267,10 +4293,11 @@ async fn run_app_loop(
             }
             maybe_swap = ingestion.next_swap(), if ingestion_backoff_until.is_none() => {
                 let now = Utc::now();
+                let ingestion_snapshot = ingestion.runtime_snapshot();
                 shadow_risk_guard.observe_ingestion_snapshot(
                     &store,
                     now,
-                    ingestion.runtime_snapshot(),
+                    ingestion_snapshot,
                 ).context("shadow risk ingestion snapshot infra event failed with fatal sqlite I/O")?;
                 let swap = match maybe_swap {
                     Ok(Some(swap)) => {
@@ -4339,6 +4366,35 @@ async fn run_app_loop(
                                 shadow_strategy_fail_closed,
                                 &discovery_critical_target_buy_mints,
                             );
+                        if should_preemptively_drop_noncritical_irrelevant_observed_swap_under_output_pressure(
+                            discovery_critical_irrelevant_persistence,
+                            &follow_snapshot,
+                            &open_shadow_lots,
+                            shadow_strategy_fail_closed,
+                            ingestion_snapshot,
+                        ) {
+                            forget_recent_swap_signature(
+                                &mut recent_swap_signatures,
+                                &mut recent_swap_signature_order,
+                                &swap.signature,
+                            );
+                            app_consumer_loop_telemetry
+                                .note_processing_started_at(swap_processing_started_at);
+                            debug!(
+                                signature = %swap.signature,
+                                yellowstone_output_queue_depth = ingestion_snapshot
+                                    .map(|snapshot| snapshot.yellowstone_output_queue_depth)
+                                    .unwrap_or(0),
+                                yellowstone_output_queue_capacity = ingestion_snapshot
+                                    .map(|snapshot| snapshot.yellowstone_output_queue_capacity)
+                                    .unwrap_or(0),
+                                yellowstone_output_queue_fill_ratio = ingestion_snapshot
+                                    .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio)
+                                    .unwrap_or(0.0),
+                                "dropping non-critical irrelevant observed swap under Yellowstone output pressure"
+                            );
+                            continue;
+                        }
                         match persist_irrelevant_observed_swap(
                             &observed_swap_writer,
                             &mut recent_swap_signatures,
@@ -4354,7 +4410,6 @@ async fn run_app_loop(
                             }
                             Ok(IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure) => {
                                 let writer_snapshot = observed_swap_writer.snapshot();
-                                let ingestion_snapshot = ingestion.runtime_snapshot();
                                 warn!(
                                     signature = %swap.signature,
                                     observed_swap_writer_pending_requests =
@@ -4497,6 +4552,35 @@ async fn run_app_loop(
                                 shadow_strategy_fail_closed,
                                 &discovery_critical_target_buy_mints,
                             );
+                        if should_preemptively_drop_noncritical_irrelevant_observed_swap_under_output_pressure(
+                            discovery_critical_irrelevant_persistence,
+                            &follow_snapshot,
+                            &open_shadow_lots,
+                            shadow_strategy_fail_closed,
+                            ingestion_snapshot,
+                        ) {
+                            forget_recent_swap_signature(
+                                &mut recent_swap_signatures,
+                                &mut recent_swap_signature_order,
+                                &swap.signature,
+                            );
+                            app_consumer_loop_telemetry
+                                .note_processing_started_at(swap_processing_started_at);
+                            debug!(
+                                signature = %swap.signature,
+                                yellowstone_output_queue_depth = ingestion_snapshot
+                                    .map(|snapshot| snapshot.yellowstone_output_queue_depth)
+                                    .unwrap_or(0),
+                                yellowstone_output_queue_capacity = ingestion_snapshot
+                                    .map(|snapshot| snapshot.yellowstone_output_queue_capacity)
+                                    .unwrap_or(0),
+                                yellowstone_output_queue_fill_ratio = ingestion_snapshot
+                                    .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio)
+                                    .unwrap_or(0.0),
+                                "dropping non-critical irrelevant observed swap under Yellowstone output pressure"
+                            );
+                            continue;
+                        }
                         match persist_irrelevant_observed_swap(
                             &observed_swap_writer,
                             &mut recent_swap_signatures,
@@ -4512,7 +4596,6 @@ async fn run_app_loop(
                             }
                             Ok(IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure) => {
                                 let writer_snapshot = observed_swap_writer.snapshot();
-                                let ingestion_snapshot = ingestion.runtime_snapshot();
                                 warn!(
                                     signature = %swap.signature,
                                     observed_swap_writer_pending_requests =
@@ -5606,6 +5689,19 @@ mod app_tests {
     }
 
     #[derive(Debug, Clone, Copy)]
+    struct NoncriticalIrrelevantOutputPressureWaveSummary {
+        baseline_rows_persisted: usize,
+        writer_pending_requests_at_wave_peak: usize,
+        aggregate_queue_depth_at_wave_peak: usize,
+        journal_queue_depth_at_wave_peak: usize,
+        upstream_queue_depth_before_loop: usize,
+        upstream_queue_depth_after_loop: usize,
+        accepted_noncritical_irrelevant_swaps: usize,
+        dropped_noncritical_irrelevant_swaps: usize,
+        completed_waves: usize,
+    }
+
+    #[derive(Debug, Clone, Copy)]
     struct EmptyTargetDiscoveryCriticalBackpressureSummary {
         baseline_rows_persisted: usize,
         first_backpressure_pending_requests: usize,
@@ -5909,6 +6005,209 @@ mod app_tests {
             journal_queue_depth_at_pause: snapshot_at_pause.journal_queue_depth_batches,
             dropped_noncritical_irrelevant_swaps,
             ingestion_paused_by_pending_irrelevant_queue,
+        })
+    }
+
+    fn run_noncritical_irrelevant_output_pressure_wave_scenario(
+        preemptive_drop_under_output_pressure: bool,
+    ) -> Result<NoncriticalIrrelevantOutputPressureWaveSummary> {
+        let (_store, db_path) = make_test_store("noncritical-irrelevant-output-pressure-wave")?;
+        seed_runtime_raw_insert_backpressure(&db_path)?;
+        let runtime_store = SqliteStore::open(Path::new(&db_path))?;
+        runtime_store.checkpoint_wal_truncate()?;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let writer = ObservedSwapWriter::start_for_test_with_normal_try_enqueue_soft_limit(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            false,
+            DiscoveryAggregateWriteConfig::default(),
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+        )?;
+        runtime_store.checkpoint_wal_truncate()?;
+
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-09T10:42:44Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let mut recent_signatures = HashSet::new();
+        let mut recent_signature_order = VecDeque::new();
+
+        for idx in 0..64usize {
+            let swap = irrelevant_backpressure_swap(
+                &format!("sig-noncritical-output-pressure-baseline-{idx:04}"),
+                idx,
+                scenario_now,
+            );
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            let outcome = runtime.block_on(async {
+                persist_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    false,
+                )
+                .await
+            })?;
+            assert_eq!(outcome, IrrelevantObservedSwapEnqueueOutcome::Enqueued);
+            std::thread::sleep(StdDuration::from_millis(1));
+        }
+
+        let baseline_started = StdInstant::now();
+        let baseline_rows_persisted = loop {
+            let rows = runtime_store
+                .load_observed_swaps_since(scenario_now - chrono::Duration::minutes(1))?
+                .len();
+            if rows >= 32 {
+                break rows;
+            }
+            if baseline_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!(
+                    "writer failed to establish clean post-checkpoint throughput before the non-critical output-pressure wave scenario"
+                );
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        };
+
+        let baseline_queue_drain_started = StdInstant::now();
+        while writer.snapshot().pending_requests > 0 {
+            if baseline_queue_drain_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!(
+                    "writer failed to drain its clean-start baseline backlog before the non-critical output-pressure wave scenario"
+                );
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+
+        let follow_snapshot = FollowSnapshot::default();
+        let open_shadow_lots = HashSet::new();
+        let shadow_strategy_fail_closed = true;
+        let ingestion_snapshot = Some(infra_snapshot_with_yellowstone_queue(
+            scenario_now,
+            2_048,
+            0,
+            2_048,
+            2_048,
+            20_000,
+        ));
+        let mut upstream = VecDeque::new();
+        while upstream.len() < 2_048 {
+            let idx = upstream.len();
+            upstream.push_back(irrelevant_backpressure_swap(
+                &format!("sig-noncritical-output-pressure-upstream-{idx:05}"),
+                idx,
+                scenario_now,
+            ));
+        }
+        let upstream_queue_depth_before_loop = upstream.len();
+        let mut writer_pending_requests_at_wave_peak = 0usize;
+        let mut aggregate_queue_depth_at_wave_peak = 0usize;
+        let mut journal_queue_depth_at_wave_peak = 0usize;
+        let mut accepted_noncritical_irrelevant_swaps = 0usize;
+        let mut dropped_noncritical_irrelevant_swaps = 0usize;
+        let mut completed_waves = 0usize;
+
+        while let Some(swap) = upstream.pop_front() {
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+
+            if preemptive_drop_under_output_pressure
+                && should_preemptively_drop_noncritical_irrelevant_observed_swap_under_output_pressure(
+                    false,
+                    &follow_snapshot,
+                    &open_shadow_lots,
+                    shadow_strategy_fail_closed,
+                    ingestion_snapshot,
+                )
+            {
+                forget_recent_swap_signature(
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap.signature,
+                );
+                dropped_noncritical_irrelevant_swaps =
+                    dropped_noncritical_irrelevant_swaps.saturating_add(1);
+                continue;
+            }
+
+            let outcome = runtime.block_on(async {
+                persist_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    false,
+                )
+                .await
+            })?;
+
+            match outcome {
+                IrrelevantObservedSwapEnqueueOutcome::Enqueued => {
+                    accepted_noncritical_irrelevant_swaps =
+                        accepted_noncritical_irrelevant_swaps.saturating_add(1);
+                    let snapshot = writer.snapshot();
+                    if snapshot.pending_requests > writer_pending_requests_at_wave_peak {
+                        writer_pending_requests_at_wave_peak = snapshot.pending_requests;
+                        aggregate_queue_depth_at_wave_peak = snapshot.aggregate_queue_depth_batches;
+                        journal_queue_depth_at_wave_peak = snapshot.journal_queue_depth_batches;
+                    }
+                    if snapshot.pending_requests >= TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE {
+                        completed_waves = completed_waves.saturating_add(1);
+                        let drain_started = StdInstant::now();
+                        while writer.snapshot().pending_requests > 0 {
+                            if drain_started.elapsed() > StdDuration::from_secs(10) {
+                                anyhow::bail!(
+                                    "writer failed to drain a bounded non-critical output-pressure wave"
+                                );
+                            }
+                            std::thread::sleep(StdDuration::from_millis(20));
+                        }
+                        if completed_waves >= 4 {
+                            break;
+                        }
+                    }
+                }
+                IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure => {
+                    forget_recent_swap_signature(
+                        &mut recent_signatures,
+                        &mut recent_signature_order,
+                        &swap.signature,
+                    );
+                    dropped_noncritical_irrelevant_swaps =
+                        dropped_noncritical_irrelevant_swaps.saturating_add(1);
+                }
+            }
+        }
+
+        writer.shutdown()?;
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+
+        Ok(NoncriticalIrrelevantOutputPressureWaveSummary {
+            baseline_rows_persisted,
+            writer_pending_requests_at_wave_peak,
+            aggregate_queue_depth_at_wave_peak,
+            journal_queue_depth_at_wave_peak,
+            upstream_queue_depth_before_loop,
+            upstream_queue_depth_after_loop: upstream.len(),
+            accepted_noncritical_irrelevant_swaps,
+            dropped_noncritical_irrelevant_swaps,
+            completed_waves,
         })
     }
 
@@ -16015,6 +16314,162 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
                 && new.runtime_wal_bytes_at_pause
                     <= old.runtime_wal_bytes_at_pause + (4 * 1024 * 1024),
             "the fix should keep WAL in the same tiny clean-start class rather than trading the plateau for runaway growth: old={old:?} new={new:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn noncritical_irrelevant_output_pressure_drop_targets_only_zero_universe_fail_closed_stage1() {
+        let followed_snapshot = {
+            let mut snapshot = FollowSnapshot::default();
+            snapshot.active.insert("wallet-followed".to_string());
+            snapshot
+        };
+        let pressured_snapshot = Some(infra_snapshot_with_yellowstone_queue(
+            Utc::now(),
+            2_048,
+            0,
+            2_048,
+            2_048,
+            20_000,
+        ));
+
+        assert!(
+            should_preemptively_drop_noncritical_irrelevant_observed_swap_under_output_pressure(
+                false,
+                &FollowSnapshot::default(),
+                &HashSet::new(),
+                true,
+                pressured_snapshot,
+            ),
+            "zero-universe fail-closed Yellowstone output pressure should preemptively drop non-critical irrelevant swaps"
+        );
+        assert!(
+            !should_preemptively_drop_noncritical_irrelevant_observed_swap_under_output_pressure(
+                true,
+                &FollowSnapshot::default(),
+                &HashSet::new(),
+                true,
+                pressured_snapshot,
+            ),
+            "discovery-critical irrelevant swaps must never be preemptively dropped by the non-critical pressure path"
+        );
+        assert!(
+            !should_preemptively_drop_noncritical_irrelevant_observed_swap_under_output_pressure(
+                false,
+                &followed_snapshot,
+                &HashSet::new(),
+                true,
+                pressured_snapshot,
+            ),
+            "followed universes must not take the zero-universe fail-closed fast drop path"
+        );
+        assert!(
+            !should_preemptively_drop_noncritical_irrelevant_observed_swap_under_output_pressure(
+                false,
+                &FollowSnapshot::default(),
+                &HashSet::new(),
+                true,
+                Some(infra_snapshot_with_yellowstone_queue(
+                    Utc::now(),
+                    1,
+                    0,
+                    512,
+                    2_048,
+                    10,
+                )),
+            ),
+            "light Yellowstone queue pressure must not activate the fast drop path"
+        );
+    }
+
+    #[test]
+    fn noncritical_irrelevant_output_pressure_waves_recreate_post_recovery_2048_repin_stage1(
+    ) -> Result<()> {
+        let summary = run_noncritical_irrelevant_output_pressure_wave_scenario(false)?;
+
+        assert!(
+            summary.baseline_rows_persisted >= 32,
+            "clean checkpoint baseline should still write normally before the non-critical output-pressure wave scenario begins: {summary:?}"
+        );
+        assert_eq!(
+            summary.writer_pending_requests_at_wave_peak,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "the exact live class must hit the one-batch non-critical irrelevant soft-limit peak of 128 before each wave drains back down: {summary:?}"
+        );
+        assert_eq!(
+            summary.aggregate_queue_depth_at_wave_peak, 0,
+            "aggregate queue must stay zero in this reduced live-like repro so aggregate backlog remains ruled out: {summary:?}"
+        );
+        assert!(
+            summary.journal_queue_depth_at_wave_peak <= 1,
+            "journal queue must stay in the low 0..1 class while the output queue remains pinned: {summary:?}"
+        );
+        assert_eq!(
+            summary.upstream_queue_depth_before_loop, 2_048,
+            "the reduced live-like repro should begin from the same 2048 upstream queue saturation as live: {summary:?}"
+        );
+        assert_eq!(
+            summary.completed_waves, 4,
+            "the current path should keep re-entering bounded 128-request non-critical waves instead of clearing the saturated upstream queue in one pass: {summary:?}"
+        );
+        assert!(
+            summary.accepted_noncritical_irrelevant_swaps
+                >= TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE * summary.completed_waves,
+            "current logic must keep burning real raw-writer work on non-critical irrelevant swaps in each wave: {summary:?}"
+        );
+        assert!(
+            summary.upstream_queue_depth_after_loop > 0,
+            "after the same bounded number of waves the upstream queue should still remain pinned, matching the live oscillation class: {summary:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn preemptive_noncritical_irrelevant_output_pressure_drop_eliminates_post_recovery_repin_stage1(
+    ) -> Result<()> {
+        let old = run_noncritical_irrelevant_output_pressure_wave_scenario(false)?;
+        let new = run_noncritical_irrelevant_output_pressure_wave_scenario(true)?;
+
+        assert_eq!(
+            old.writer_pending_requests_at_wave_peak, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "old side must reproduce the exact 128 non-critical wave peak first: old={old:?}"
+        );
+        assert_eq!(
+            old.aggregate_queue_depth_at_wave_peak, 0,
+            "aggregate queue must remain zero on the old side: old={old:?}"
+        );
+        assert!(
+            old.journal_queue_depth_at_wave_peak <= 1,
+            "journal queue must remain in the same low 0..1 class on the old side: old={old:?}"
+        );
+        assert_eq!(
+            old.upstream_queue_depth_before_loop, 2_048,
+            "old side must begin from the same saturated upstream queue: old={old:?}"
+        );
+        assert_eq!(
+            new.accepted_noncritical_irrelevant_swaps, 0,
+            "with the production fix, non-critical irrelevant swaps should stop consuming raw-writer budget once Yellowstone output pressure is already severe: new={new:?}"
+        );
+        assert_eq!(
+            new.writer_pending_requests_at_wave_peak, 0,
+            "the fix should eliminate the recurring one-batch non-critical wave entirely rather than merely shrinking it: new={new:?}"
+        );
+        assert_eq!(
+            new.upstream_queue_depth_after_loop, 0,
+            "the same saturated upstream queue should drain completely once non-critical irrelevant swaps are dropped immediately under severe Yellowstone output pressure: old={old:?} new={new:?}"
+        );
+        assert!(
+            new.dropped_noncritical_irrelevant_swaps >= old.upstream_queue_depth_before_loop,
+            "the fix should make the tradeoff explicit by dropping the non-critical irrelevant class instead of burning repeated raw-writer waves on it: old={old:?} new={new:?}"
+        );
+        assert_eq!(
+            new.aggregate_queue_depth_at_wave_peak, 0,
+            "the fix must stay off the aggregate path: new={new:?}"
+        );
+        assert_eq!(
+            new.journal_queue_depth_at_wave_peak, 0,
+            "the fix must stay off the recent_raw journal path: new={new:?}"
         );
         Ok(())
     }
