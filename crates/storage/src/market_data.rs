@@ -18,6 +18,8 @@ use std::time::{Duration as StdDuration, Instant};
 const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const OBSERVED_SWAP_CURSOR_PROGRESS_OPS: i32 = 2_000;
+const OBSERVED_SWAP_CURSOR_QUERY_PAGE_LIMIT: usize = 2_048;
+const OBSERVED_SOL_LEG_CURSOR_QUERY_PAGE_LIMIT: usize = 2_048;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ObservedSwapCursorPage {
@@ -1243,6 +1245,71 @@ impl SqliteStore {
             });
         }
 
+        let mut total_rows_seen = 0usize;
+        let mut time_budget_exhausted = false;
+        let mut page_cursor = cursor.cloned();
+
+        while total_rows_seen < limit && Instant::now() < deadline {
+            let page_limit = limit
+                .saturating_sub(total_rows_seen)
+                .min(OBSERVED_SWAP_CURSOR_QUERY_PAGE_LIMIT);
+            let mut next_cursor = page_cursor.clone();
+            let page = self
+                .for_each_observed_swap_in_window_after_cursor_single_statement_with_budget(
+                    since,
+                    until,
+                    page_cursor.as_ref(),
+                    page_limit,
+                    deadline,
+                    |swap| {
+                        next_cursor = Some(DiscoveryRuntimeCursor {
+                            ts_utc: swap.ts_utc,
+                            slot: swap.slot,
+                            signature: swap.signature.clone(),
+                        });
+                        on_swap(swap)
+                    },
+                )?;
+            total_rows_seen = total_rows_seen.saturating_add(page.rows_seen);
+            time_budget_exhausted |= page.time_budget_exhausted;
+            if page.time_budget_exhausted || page.rows_seen < page_limit {
+                break;
+            }
+            page_cursor = next_cursor;
+        }
+
+        if Instant::now() >= deadline && total_rows_seen < limit {
+            time_budget_exhausted = true;
+        }
+
+        Ok(ObservedSwapCursorPage {
+            rows_seen: total_rows_seen,
+            time_budget_exhausted,
+        })
+    }
+
+    fn for_each_observed_swap_in_window_after_cursor_single_statement_with_budget<F>(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        cursor: Option<&DiscoveryRuntimeCursor>,
+        limit: usize,
+        deadline: Instant,
+        mut on_swap: F,
+    ) -> Result<ObservedSwapCursorPage>
+    where
+        F: FnMut(SwapEvent) -> Result<()>,
+    {
+        if limit == 0 {
+            return Ok(ObservedSwapCursorPage::default());
+        }
+        if Instant::now() >= deadline {
+            return Ok(ObservedSwapCursorPage {
+                rows_seen: 0,
+                time_budget_exhausted: true,
+            });
+        }
+
         let limit = (limit.min(i64::MAX as usize)) as i64;
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
         let (query, params): (&str, Vec<rusqlite::types::Value>) = match cursor {
@@ -1927,27 +1994,14 @@ impl SqliteStore {
     where
         F: FnMut(SwapEvent) -> Result<()>,
     {
+        let access_path = self.observed_sol_leg_cursor_access_path()?;
         if limit == 0 {
             return Ok(ObservedSolLegCursorPage {
                 rows_seen: 0,
                 time_budget_exhausted: false,
-                access_path: ObservedSolLegCursorAccessPath::TsCursorFallback,
+                access_path,
             });
         }
-        let access_path =
-            if self.sqlite_index_exists("idx_observed_swaps_sol_leg_ts_slot_signature")? {
-                ObservedSolLegCursorAccessPath::SolLegPartialIndex
-            } else {
-                ObservedSolLegCursorAccessPath::TsCursorFallback
-            };
-        let index_hint = match access_path {
-            ObservedSolLegCursorAccessPath::SolLegPartialIndex => {
-                "INDEXED BY idx_observed_swaps_sol_leg_ts_slot_signature"
-            }
-            ObservedSolLegCursorAccessPath::TsCursorFallback => {
-                "INDEXED BY idx_observed_swaps_ts_slot_signature"
-            }
-        };
         if Instant::now() >= deadline {
             return Ok(ObservedSolLegCursorPage {
                 rows_seen: 0,
@@ -1956,6 +2010,100 @@ impl SqliteStore {
             });
         }
 
+        let mut total_rows_seen = 0usize;
+        let mut time_budget_exhausted = false;
+        let mut page_cursor = cursor.cloned();
+
+        while total_rows_seen < limit && Instant::now() < deadline {
+            let page_limit = limit
+                .saturating_sub(total_rows_seen)
+                .min(OBSERVED_SOL_LEG_CURSOR_QUERY_PAGE_LIMIT);
+            let mut next_cursor = page_cursor.clone();
+            let page = self
+                .for_each_observed_sol_leg_swap_in_window_after_cursor_single_statement_with_budget(
+                    since,
+                    until,
+                    page_cursor.as_ref(),
+                    page_limit,
+                    deadline,
+                    |swap| {
+                        next_cursor = Some(DiscoveryRuntimeCursor {
+                            ts_utc: swap.ts_utc,
+                            slot: swap.slot,
+                            signature: swap.signature.clone(),
+                        });
+                        on_swap(swap)
+                    },
+                )?;
+            total_rows_seen = total_rows_seen.saturating_add(page.rows_seen);
+            time_budget_exhausted |= page.time_budget_exhausted;
+            if page.time_budget_exhausted || page.rows_seen < page_limit {
+                return Ok(ObservedSolLegCursorPage {
+                    rows_seen: total_rows_seen,
+                    time_budget_exhausted,
+                    access_path,
+                });
+            }
+            page_cursor = next_cursor;
+        }
+
+        if Instant::now() >= deadline && total_rows_seen < limit {
+            time_budget_exhausted = true;
+        }
+
+        Ok(ObservedSolLegCursorPage {
+            rows_seen: total_rows_seen,
+            time_budget_exhausted,
+            access_path,
+        })
+    }
+
+    fn observed_sol_leg_cursor_access_path(&self) -> Result<ObservedSolLegCursorAccessPath> {
+        Ok(
+            if self.sqlite_index_exists("idx_observed_swaps_sol_leg_ts_slot_signature")? {
+                ObservedSolLegCursorAccessPath::SolLegPartialIndex
+            } else {
+                ObservedSolLegCursorAccessPath::TsCursorFallback
+            },
+        )
+    }
+
+    fn for_each_observed_sol_leg_swap_in_window_after_cursor_single_statement_with_budget<F>(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        cursor: Option<&DiscoveryRuntimeCursor>,
+        limit: usize,
+        deadline: Instant,
+        mut on_swap: F,
+    ) -> Result<ObservedSolLegCursorPage>
+    where
+        F: FnMut(SwapEvent) -> Result<()>,
+    {
+        let access_path = self.observed_sol_leg_cursor_access_path()?;
+        if limit == 0 {
+            return Ok(ObservedSolLegCursorPage {
+                rows_seen: 0,
+                time_budget_exhausted: false,
+                access_path,
+            });
+        }
+        if Instant::now() >= deadline {
+            return Ok(ObservedSolLegCursorPage {
+                rows_seen: 0,
+                time_budget_exhausted: true,
+                access_path,
+            });
+        }
+
+        let index_hint = match access_path {
+            ObservedSolLegCursorAccessPath::SolLegPartialIndex => {
+                "INDEXED BY idx_observed_swaps_sol_leg_ts_slot_signature"
+            }
+            ObservedSolLegCursorAccessPath::TsCursorFallback => {
+                "INDEXED BY idx_observed_swaps_ts_slot_signature"
+            }
+        };
         let limit = (limit.min(i64::MAX as usize)) as i64;
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
         let (query, params): (String, Vec<rusqlite::types::Value>) = match cursor {
@@ -2488,6 +2636,74 @@ impl SqliteStore {
                 time_budget_exhausted: true,
             });
         }
+        let mut total_rows_seen = 0usize;
+        let mut time_budget_exhausted = false;
+        let mut page_cursor = DiscoveryRuntimeCursor {
+            ts_utc: cursor_ts,
+            slot: cursor_slot,
+            signature: cursor_signature.to_string(),
+        };
+
+        while total_rows_seen < limit && Instant::now() < deadline {
+            let page_limit = limit
+                .saturating_sub(total_rows_seen)
+                .min(OBSERVED_SWAP_CURSOR_QUERY_PAGE_LIMIT);
+            let mut next_cursor = page_cursor.clone();
+            let page = self.for_each_observed_swap_after_cursor_single_statement_with_budget(
+                page_cursor.ts_utc,
+                page_cursor.slot,
+                page_cursor.signature.as_str(),
+                page_limit,
+                deadline,
+                |swap| {
+                    next_cursor = DiscoveryRuntimeCursor {
+                        ts_utc: swap.ts_utc,
+                        slot: swap.slot,
+                        signature: swap.signature.clone(),
+                    };
+                    on_swap(swap)
+                },
+            )?;
+            total_rows_seen = total_rows_seen.saturating_add(page.rows_seen);
+            time_budget_exhausted |= page.time_budget_exhausted;
+            if page.time_budget_exhausted || page.rows_seen < page_limit {
+                break;
+            }
+            page_cursor = next_cursor;
+        }
+
+        if Instant::now() >= deadline && total_rows_seen < limit {
+            time_budget_exhausted = true;
+        }
+
+        Ok(ObservedSwapCursorPage {
+            rows_seen: total_rows_seen,
+            time_budget_exhausted,
+        })
+    }
+
+    fn for_each_observed_swap_after_cursor_single_statement_with_budget<F>(
+        &self,
+        cursor_ts: DateTime<Utc>,
+        cursor_slot: u64,
+        cursor_signature: &str,
+        limit: usize,
+        deadline: Instant,
+        mut on_swap: F,
+    ) -> Result<ObservedSwapCursorPage>
+    where
+        F: FnMut(SwapEvent) -> Result<()>,
+    {
+        if limit == 0 {
+            return Ok(ObservedSwapCursorPage::default());
+        }
+        if Instant::now() >= deadline {
+            return Ok(ObservedSwapCursorPage {
+                rows_seen: 0,
+                time_budget_exhausted: true,
+            });
+        }
+
         let limit = (limit.min(i64::MAX as usize)) as i64;
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
         let mut stmt = self
@@ -3638,6 +3854,29 @@ mod tests {
         max_backlog_frames: i64,
     }
 
+    #[derive(Debug, Clone, Copy)]
+    enum CursorCheckpointRecurrenceReader {
+        LegacyAfterCursorSingleStatement,
+        ChunkedAfterCursor,
+        LegacySolLegSingleStatement,
+        ChunkedSolLeg,
+    }
+
+    impl CursorCheckpointRecurrenceReader {
+        fn db_name(self) -> &'static str {
+            match self {
+                Self::LegacyAfterCursorSingleStatement => {
+                    "observed-swap-after-cursor-single-statement-recurrence.db"
+                }
+                Self::ChunkedAfterCursor => "observed-swap-after-cursor-chunked-recurrence.db",
+                Self::LegacySolLegSingleStatement => {
+                    "observed-sol-leg-single-statement-recurrence.db"
+                }
+                Self::ChunkedSolLeg => "observed-sol-leg-chunked-recurrence.db",
+            }
+        }
+    }
+
     fn run_checkpoint_recurrence_scenario(
         use_paged_reader: bool,
     ) -> Result<CheckpointRecurrenceSummary> {
@@ -3781,6 +4020,200 @@ mod tests {
         })
     }
 
+    fn run_cursor_checkpoint_recurrence_scenario(
+        reader_mode: CursorCheckpointRecurrenceReader,
+    ) -> Result<CheckpointRecurrenceSummary> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join(reader_mode.db_name());
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-04-09T18:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let reader_window_start = now - Duration::days(2);
+        let reader_window_end = now - Duration::hours(1);
+        let mut seed_rows = Vec::new();
+        for idx in 0..8_192usize {
+            let token_in = if idx % 2 == 0 {
+                SOL_MINT.to_string()
+            } else {
+                format!("TokenCursorSeedIn{idx:05}")
+            };
+            let token_out = if idx % 2 == 0 {
+                format!("TokenCursorSeedOut{idx:05}")
+            } else {
+                SOL_MINT.to_string()
+            };
+            seed_rows.push(swap(
+                &format!("sig-cursor-checkpoint-seed-{idx:05}"),
+                &format!("wallet-cursor-seed-{:03}", idx % 96),
+                reader_window_start + Duration::seconds(idx as i64),
+                &token_in,
+                &token_out,
+                30_000 + idx as u64,
+            ));
+        }
+        seed_store.insert_observed_swaps_batch_with_activity_days(&seed_rows)?;
+        seed_store.checkpoint_wal_truncate()?;
+
+        let writes_completed = Arc::new(AtomicUsize::new(0));
+        let stop_writes = Arc::new(AtomicBool::new(false));
+        let writer_db_path = db_path.clone();
+        let writer_writes_completed = Arc::clone(&writes_completed);
+        let writer_stop = Arc::clone(&stop_writes);
+        let writer = thread::spawn(move || -> Result<()> {
+            let writer_store = SqliteStore::open(Path::new(&writer_db_path))?;
+            writer_store
+                .conn
+                .pragma_update(None, "wal_autocheckpoint", 1_i64)
+                .context(
+                    "failed to force aggressive wal_autocheckpoint for cursor recurrence test writer",
+                )?;
+            let mut counter = 0usize;
+            while !writer_stop.load(Ordering::Relaxed) {
+                let live_swap = swap(
+                    &format!("sig-cursor-checkpoint-live-{counter:06}"),
+                    &format!("wallet-cursor-live-{:03}", counter % 64),
+                    now + Duration::milliseconds(counter as i64),
+                    SOL_MINT,
+                    &format!("TokenCursorLive{:06}", counter % 128),
+                    50_000 + counter as u64,
+                );
+                writer_store.insert_observed_swaps_batch_with_activity_days(&[live_swap])?;
+                writer_writes_completed.fetch_add(1, Ordering::Relaxed);
+                counter = counter.saturating_add(1);
+            }
+            Ok(())
+        });
+
+        let baseline_started = Instant::now();
+        while writes_completed.load(Ordering::Relaxed) < 32 {
+            if baseline_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!(
+                    "writer failed to establish post-checkpoint baseline throughput for cursor recurrence scenario"
+                );
+            }
+            thread::sleep(StdDuration::from_millis(10));
+        }
+        let writes_before_reader = writes_completed.load(Ordering::Relaxed);
+
+        let reader_started = Arc::new(AtomicBool::new(false));
+        let reader_db_path = db_path.clone();
+        let reader_started_flag = Arc::clone(&reader_started);
+        let reader = thread::spawn(move || -> Result<()> {
+            let reader_store = SqliteStore::open_read_only(Path::new(&reader_db_path))?;
+            let reader_deadline = Instant::now() + StdDuration::from_secs(30);
+            match reader_mode {
+                CursorCheckpointRecurrenceReader::LegacyAfterCursorSingleStatement => {
+                    reader_store.for_each_observed_swap_after_cursor_single_statement_with_budget(
+                        reader_window_start - Duration::seconds(1),
+                        0,
+                        "",
+                        4_096,
+                        reader_deadline,
+                        |swap| {
+                            if !reader_started_flag.swap(true, Ordering::Relaxed) {
+                                let _ = swap.signature.as_str();
+                            }
+                            thread::sleep(StdDuration::from_millis(1));
+                            Ok(())
+                        },
+                    )?;
+                }
+                CursorCheckpointRecurrenceReader::ChunkedAfterCursor => {
+                    reader_store.for_each_observed_swap_after_cursor_with_budget(
+                        reader_window_start - Duration::seconds(1),
+                        0,
+                        "",
+                        4_096,
+                        reader_deadline,
+                        |swap| {
+                            if !reader_started_flag.swap(true, Ordering::Relaxed) {
+                                let _ = swap.signature.as_str();
+                            }
+                            thread::sleep(StdDuration::from_millis(1));
+                            Ok(())
+                        },
+                    )?;
+                }
+                CursorCheckpointRecurrenceReader::LegacySolLegSingleStatement => {
+                    reader_store
+                        .for_each_observed_sol_leg_swap_in_window_after_cursor_single_statement_with_budget(
+                            reader_window_start,
+                            reader_window_end,
+                            None,
+                            4_096,
+                            reader_deadline,
+                            |swap| {
+                                if !reader_started_flag.swap(true, Ordering::Relaxed) {
+                                    let _ = swap.signature.as_str();
+                                }
+                                thread::sleep(StdDuration::from_millis(1));
+                                Ok(())
+                            },
+                        )?;
+                }
+                CursorCheckpointRecurrenceReader::ChunkedSolLeg => {
+                    reader_store
+                        .for_each_observed_sol_leg_swap_in_window_after_cursor_with_budget(
+                            reader_window_start,
+                            reader_window_end,
+                            None,
+                            4_096,
+                            reader_deadline,
+                            |swap| {
+                                if !reader_started_flag.swap(true, Ordering::Relaxed) {
+                                    let _ = swap.signature.as_str();
+                                }
+                                thread::sleep(StdDuration::from_millis(1));
+                                Ok(())
+                            },
+                        )?;
+                }
+            }
+            Ok(())
+        });
+
+        let reader_started_wait = Instant::now();
+        while !reader_started.load(Ordering::Relaxed) {
+            if reader_started_wait.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!("reader failed to start cursor recurrence scenario");
+            }
+            thread::sleep(StdDuration::from_millis(5));
+        }
+
+        let monitor_store = SqliteStore::open(Path::new(&db_path))?;
+        let mut max_backlog_frames = 0i64;
+        while !reader.is_finished() {
+            let (_, log_frames, checkpointed_frames) = monitor_store.checkpoint_wal_passive()?;
+            max_backlog_frames =
+                max_backlog_frames.max(log_frames.saturating_sub(checkpointed_frames));
+            thread::sleep(StdDuration::from_millis(10));
+        }
+        reader
+            .join()
+            .expect("reader thread panicked")
+            .context("cursor recurrence scenario reader failed")?;
+
+        stop_writes.store(true, Ordering::Relaxed);
+        writer
+            .join()
+            .expect("writer thread panicked")
+            .context("cursor recurrence scenario writer failed")?;
+
+        let writes_during_reader = writes_completed
+            .load(Ordering::Relaxed)
+            .saturating_sub(writes_before_reader);
+        monitor_store.checkpoint_wal_truncate()?;
+
+        Ok(CheckpointRecurrenceSummary {
+            writes_before_reader,
+            writes_during_reader,
+            max_backlog_frames,
+        })
+    }
+
     #[test]
     fn observed_swap_window_paged_reader_matches_unpaged_stream_results_stage1() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -3859,6 +4292,142 @@ mod tests {
             unpaged.writes_during_reader > 0 && paged.writes_during_reader > 0,
             "both scenarios should continue writing after the clean checkpoint baseline so the recurrence is exercised under active writer load: unpaged={unpaged:?} paged={paged:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_after_cursor_chunked_reader_prevents_post_checkpoint_recurrence_stage1(
+    ) -> Result<()> {
+        let legacy = run_cursor_checkpoint_recurrence_scenario(
+            CursorCheckpointRecurrenceReader::LegacyAfterCursorSingleStatement,
+        )?;
+        let chunked = run_cursor_checkpoint_recurrence_scenario(
+            CursorCheckpointRecurrenceReader::ChunkedAfterCursor,
+        )?;
+
+        assert!(
+            legacy.writes_before_reader >= 32 && chunked.writes_before_reader >= 32,
+            "both cursor scenarios should establish the same clean post-checkpoint write baseline before the long reader begins: legacy={legacy:?} chunked={chunked:?}"
+        );
+        assert!(
+            legacy.max_backlog_frames
+                >= chunked
+                    .max_backlog_frames
+                    .saturating_mul(15)
+                    .saturating_add(9)
+                    / 10,
+            "the legacy single-statement after-cursor reader should strand materially more WAL frames than the chunked production reader: legacy={legacy:?} chunked={chunked:?}"
+        );
+        assert!(
+            legacy.max_backlog_frames.saturating_sub(chunked.max_backlog_frames) >= 250_000,
+            "the chunked after-cursor reader should materially reduce checkpoint debt on the same active-writer workload: legacy={legacy:?} chunked={chunked:?}"
+        );
+        assert!(
+            legacy.writes_during_reader > 0 && chunked.writes_during_reader > 0,
+            "both cursor scenarios should continue writing after the clean checkpoint baseline so the recurrence is exercised under active writer load: legacy={legacy:?} chunked={chunked:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn observed_sol_leg_cursor_chunked_reader_prevents_post_checkpoint_recurrence_stage1(
+    ) -> Result<()> {
+        let legacy = run_cursor_checkpoint_recurrence_scenario(
+            CursorCheckpointRecurrenceReader::LegacySolLegSingleStatement,
+        )?;
+        let chunked = run_cursor_checkpoint_recurrence_scenario(
+            CursorCheckpointRecurrenceReader::ChunkedSolLeg,
+        )?;
+
+        assert!(
+            legacy.writes_before_reader >= 32 && chunked.writes_before_reader >= 32,
+            "both SOL-leg cursor scenarios should establish the same clean post-checkpoint write baseline before the long reader begins: legacy={legacy:?} chunked={chunked:?}"
+        );
+        assert!(
+            legacy.max_backlog_frames
+                >= chunked
+                    .max_backlog_frames
+                    .saturating_mul(15)
+                    .saturating_add(9)
+                    / 10,
+            "the legacy single-statement SOL-leg cursor reader should strand materially more WAL frames than the chunked production reader: legacy={legacy:?} chunked={chunked:?}"
+        );
+        assert!(
+            legacy.max_backlog_frames.saturating_sub(chunked.max_backlog_frames) >= 250_000,
+            "the chunked SOL-leg reader should materially reduce checkpoint debt on the same active-writer workload: legacy={legacy:?} chunked={chunked:?}"
+        );
+        assert!(
+            legacy.writes_during_reader > 0 && chunked.writes_during_reader > 0,
+            "both SOL-leg scenarios should continue writing after the clean checkpoint baseline so the recurrence is exercised under active writer load: legacy={legacy:?} chunked={chunked:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_window_after_cursor_chunked_reader_preserves_resume_order_stage1() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("observed-swap-window-after-cursor-resume-order.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let base = DateTime::parse_from_rfc3339("2026-04-09T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        for (idx, signature) in ["sig-a", "sig-b", "sig-c", "sig-d"].into_iter().enumerate() {
+            assert!(store.insert_observed_swap(&SwapEvent {
+                signature: signature.to_string(),
+                wallet: format!("wallet-window-cursor-{idx:02}"),
+                dex: "raydium".to_string(),
+                token_in: SOL_MINT.to_string(),
+                token_out: format!("TokenWindowCursor{idx:02}"),
+                amount_in: 1.0,
+                amount_out: 10.0 + idx as f64,
+                slot: 10 + idx as u64,
+                ts_utc: base + Duration::seconds(idx as i64),
+                exact_amounts: None,
+            })?);
+        }
+
+        let mut first_page = Vec::new();
+        let first = store.for_each_observed_swap_in_window_after_cursor_with_budget(
+            base,
+            base + Duration::seconds(10),
+            None,
+            2,
+            Instant::now() + StdDuration::from_secs(1),
+            |swap| {
+                first_page.push(swap.signature);
+                Ok(())
+            },
+        )?;
+        assert_eq!(first.rows_seen, 2);
+        assert!(!first.time_budget_exhausted);
+        assert_eq!(first_page, vec!["sig-a".to_string(), "sig-b".to_string()]);
+
+        let cursor = DiscoveryRuntimeCursor {
+            ts_utc: base + Duration::seconds(1),
+            slot: 11,
+            signature: "sig-b".to_string(),
+        };
+        let mut second_page = Vec::new();
+        let second = store.for_each_observed_swap_in_window_after_cursor_with_budget(
+            base,
+            base + Duration::seconds(10),
+            Some(&cursor),
+            2,
+            Instant::now() + StdDuration::from_secs(1),
+            |swap| {
+                second_page.push(swap.signature);
+                Ok(())
+            },
+        )?;
+        assert_eq!(second.rows_seen, 2);
+        assert!(!second.time_budget_exhausted);
+        assert_eq!(second_page, vec!["sig-c".to_string(), "sig-d".to_string()]);
         Ok(())
     }
 
