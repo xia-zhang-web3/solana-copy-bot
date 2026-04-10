@@ -1189,6 +1189,58 @@ fn should_preemptively_drop_noncritical_irrelevant_observed_swap_under_output_pr
             >= NONCRITICAL_IRRELEVANT_OUTPUT_PRESSURE_DROP_MIN_FILL_RATIO
 }
 
+fn zero_universe_empty_target_noncritical_irrelevant_context(
+    discovery_critical: bool,
+    follow_snapshot: &FollowSnapshot,
+    open_shadow_lots: &HashSet<(String, String)>,
+    shadow_strategy_fail_closed: bool,
+    discovery_critical_target_buy_mints: &HashSet<String>,
+) -> bool {
+    !discovery_critical
+        && discovery_critical_target_buy_mints.is_empty()
+        && zero_universe_fail_closed_discovery_market_context_mode(
+            follow_snapshot,
+            open_shadow_lots,
+            shadow_strategy_fail_closed,
+        )
+}
+
+fn should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
+    discovery_critical: bool,
+    follow_snapshot: &FollowSnapshot,
+    open_shadow_lots: &HashSet<(String, String)>,
+    shadow_strategy_fail_closed: bool,
+    discovery_critical_target_buy_mints: &HashSet<String>,
+    best_effort_budget_exhausted: bool,
+) -> bool {
+    best_effort_budget_exhausted
+        && zero_universe_empty_target_noncritical_irrelevant_context(
+            discovery_critical,
+            follow_snapshot,
+            open_shadow_lots,
+            shadow_strategy_fail_closed,
+            discovery_critical_target_buy_mints,
+        )
+}
+
+fn reset_zero_universe_empty_target_noncritical_best_effort_exhaustion_if_context_changed(
+    best_effort_budget_exhausted: &mut bool,
+    follow_snapshot: &FollowSnapshot,
+    open_shadow_lots: &HashSet<(String, String)>,
+    shadow_strategy_fail_closed: bool,
+    discovery_critical_target_buy_mints: &HashSet<String>,
+) {
+    if !zero_universe_empty_target_noncritical_irrelevant_context(
+        false,
+        follow_snapshot,
+        open_shadow_lots,
+        shadow_strategy_fail_closed,
+        discovery_critical_target_buy_mints,
+    ) {
+        *best_effort_budget_exhausted = false;
+    }
+}
+
 fn pending_irrelevant_swap_queue_is_full(
     pending_irrelevant_swaps: &VecDeque<PendingIrrelevantObservedSwap>,
 ) -> bool {
@@ -3388,6 +3440,7 @@ async fn run_app_loop(
     let mut discovery_critical_target_buy_mints = HashSet::new();
     let mut discovery_critical_target_buy_mints_backpressure_refresh_state =
         DiscoveryCriticalTargetBuyMintsBackpressureRefreshState::default();
+    let mut zero_universe_empty_target_noncritical_best_effort_budget_exhausted = false;
     refresh_discovery_critical_target_buy_mints_or_warn(
         &store,
         &mut discovery_critical_target_buy_mints,
@@ -4193,6 +4246,13 @@ async fn run_app_loop(
                     &mut discovery_critical_target_buy_mints_backpressure_refresh_state,
                     StdInstant::now(),
                 )?;
+                reset_zero_universe_empty_target_noncritical_best_effort_exhaustion_if_context_changed(
+                    &mut zero_universe_empty_target_noncritical_best_effort_budget_exhausted,
+                    &follow_snapshot,
+                    &open_shadow_lots,
+                    shadow_strategy_fail_closed,
+                    &discovery_critical_target_buy_mints,
+                );
                 let dropped_noncritical_pending =
                     prune_noncritical_zero_universe_pending_irrelevant_swaps(
                         &mut pending_irrelevant_swaps,
@@ -4294,6 +4354,13 @@ async fn run_app_loop(
             maybe_swap = ingestion.next_swap(), if ingestion_backoff_until.is_none() => {
                 let now = Utc::now();
                 let ingestion_snapshot = ingestion.runtime_snapshot();
+                reset_zero_universe_empty_target_noncritical_best_effort_exhaustion_if_context_changed(
+                    &mut zero_universe_empty_target_noncritical_best_effort_budget_exhausted,
+                    &follow_snapshot,
+                    &open_shadow_lots,
+                    shadow_strategy_fail_closed,
+                    &discovery_critical_target_buy_mints,
+                );
                 shadow_risk_guard.observe_ingestion_snapshot(
                     &store,
                     now,
@@ -4366,6 +4433,27 @@ async fn run_app_loop(
                                 shadow_strategy_fail_closed,
                                 &discovery_critical_target_buy_mints,
                             );
+                        if should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
+                            discovery_critical_irrelevant_persistence,
+                            &follow_snapshot,
+                            &open_shadow_lots,
+                            shadow_strategy_fail_closed,
+                            &discovery_critical_target_buy_mints,
+                            zero_universe_empty_target_noncritical_best_effort_budget_exhausted,
+                        ) {
+                            forget_recent_swap_signature(
+                                &mut recent_swap_signatures,
+                                &mut recent_swap_signature_order,
+                                &swap.signature,
+                            );
+                            app_consumer_loop_telemetry
+                                .note_processing_started_at(swap_processing_started_at);
+                            debug!(
+                                signature = %swap.signature,
+                                "dropping non-critical irrelevant observed swap after the empty-target zero-universe best-effort writer budget was already exhausted"
+                            );
+                            continue;
+                        }
                         if should_preemptively_drop_noncritical_irrelevant_observed_swap_under_output_pressure(
                             discovery_critical_irrelevant_persistence,
                             &follow_snapshot,
@@ -4437,6 +4525,13 @@ async fn run_app_loop(
                                         &mut discovery_critical_target_buy_mints,
                                         &mut discovery_critical_target_buy_mints_backpressure_refresh_state,
                                     )?;
+                                reset_zero_universe_empty_target_noncritical_best_effort_exhaustion_if_context_changed(
+                                    &mut zero_universe_empty_target_noncritical_best_effort_budget_exhausted,
+                                    &follow_snapshot,
+                                    &open_shadow_lots,
+                                    shadow_strategy_fail_closed,
+                                    &discovery_critical_target_buy_mints,
+                                );
                                 if !should_buffer_backpressured_irrelevant_observed_swap(
                                     discovery_critical_irrelevant_persistence,
                                     &follow_snapshot,
@@ -4454,6 +4549,15 @@ async fn run_app_loop(
                                         signature = %swap.signature,
                                         "dropping non-critical irrelevant observed swap under writer backpressure"
                                     );
+                                    if zero_universe_empty_target_noncritical_irrelevant_context(
+                                        discovery_critical_irrelevant_persistence,
+                                        &follow_snapshot,
+                                        &open_shadow_lots,
+                                        shadow_strategy_fail_closed,
+                                        &discovery_critical_target_buy_mints,
+                                    ) {
+                                        zero_universe_empty_target_noncritical_best_effort_budget_exhausted = true;
+                                    }
                                     continue;
                                 }
                                 let pending_queue_was_full =
@@ -4552,6 +4656,27 @@ async fn run_app_loop(
                                 shadow_strategy_fail_closed,
                                 &discovery_critical_target_buy_mints,
                             );
+                        if should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
+                            discovery_critical_irrelevant_persistence,
+                            &follow_snapshot,
+                            &open_shadow_lots,
+                            shadow_strategy_fail_closed,
+                            &discovery_critical_target_buy_mints,
+                            zero_universe_empty_target_noncritical_best_effort_budget_exhausted,
+                        ) {
+                            forget_recent_swap_signature(
+                                &mut recent_swap_signatures,
+                                &mut recent_swap_signature_order,
+                                &swap.signature,
+                            );
+                            app_consumer_loop_telemetry
+                                .note_processing_started_at(swap_processing_started_at);
+                            debug!(
+                                signature = %swap.signature,
+                                "dropping non-critical irrelevant observed swap after the empty-target zero-universe best-effort writer budget was already exhausted"
+                            );
+                            continue;
+                        }
                         if should_preemptively_drop_noncritical_irrelevant_observed_swap_under_output_pressure(
                             discovery_critical_irrelevant_persistence,
                             &follow_snapshot,
@@ -4623,6 +4748,13 @@ async fn run_app_loop(
                                         &mut discovery_critical_target_buy_mints,
                                         &mut discovery_critical_target_buy_mints_backpressure_refresh_state,
                                     )?;
+                                reset_zero_universe_empty_target_noncritical_best_effort_exhaustion_if_context_changed(
+                                    &mut zero_universe_empty_target_noncritical_best_effort_budget_exhausted,
+                                    &follow_snapshot,
+                                    &open_shadow_lots,
+                                    shadow_strategy_fail_closed,
+                                    &discovery_critical_target_buy_mints,
+                                );
                                 if !should_buffer_backpressured_irrelevant_observed_swap(
                                     discovery_critical_irrelevant_persistence,
                                     &follow_snapshot,
@@ -4640,6 +4772,15 @@ async fn run_app_loop(
                                         signature = %swap.signature,
                                         "dropping non-critical irrelevant observed swap under writer backpressure"
                                     );
+                                    if zero_universe_empty_target_noncritical_irrelevant_context(
+                                        discovery_critical_irrelevant_persistence,
+                                        &follow_snapshot,
+                                        &open_shadow_lots,
+                                        shadow_strategy_fail_closed,
+                                        &discovery_critical_target_buy_mints,
+                                    ) {
+                                        zero_universe_empty_target_noncritical_best_effort_budget_exhausted = true;
+                                    }
                                     continue;
                                 }
                                 let pending_queue_was_full =
@@ -5702,6 +5843,22 @@ mod app_tests {
     }
 
     #[derive(Debug, Clone, Copy)]
+    struct ZeroUniverseNoncriticalIrrelevantZeroOutputPressureSummary {
+        baseline_rows_persisted: usize,
+        first_backpressure_pending_requests: usize,
+        writer_pending_requests_peak: usize,
+        aggregate_queue_depth_at_peak: usize,
+        journal_queue_depth_at_peak: usize,
+        yellowstone_output_queue_depth: u64,
+        yellowstone_output_queue_fill_ratio: f64,
+        accepted_noncritical_irrelevant_swaps: usize,
+        dropped_noncritical_irrelevant_swaps: usize,
+        first_backpressure_discovery_critical: bool,
+        completed_waves: usize,
+        best_effort_budget_exhausted: bool,
+    }
+
+    #[derive(Debug, Clone, Copy)]
     struct EmptyTargetDiscoveryCriticalBackpressureSummary {
         baseline_rows_persisted: usize,
         first_backpressure_pending_requests: usize,
@@ -6208,6 +6365,252 @@ mod app_tests {
             accepted_noncritical_irrelevant_swaps,
             dropped_noncritical_irrelevant_swaps,
             completed_waves,
+        })
+    }
+
+    fn run_zero_universe_empty_target_noncritical_irrelevant_refill_scenario(
+        drop_after_empty_target_best_effort_budget_exhaustion: bool,
+    ) -> Result<ZeroUniverseNoncriticalIrrelevantZeroOutputPressureSummary> {
+        let (_store, db_path) =
+            make_test_store("zero-universe-noncritical-irrelevant-zero-output-pressure")?;
+        seed_runtime_raw_insert_backpressure(&db_path)?;
+        let runtime_store = SqliteStore::open(Path::new(&db_path))?;
+        runtime_store.checkpoint_wal_truncate()?;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let writer = ObservedSwapWriter::start_for_test(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            false,
+            DiscoveryAggregateWriteConfig::default(),
+        )?;
+        runtime_store.checkpoint_wal_truncate()?;
+
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-09T12:06:48Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let mut recent_signatures = HashSet::new();
+        let mut recent_signature_order = VecDeque::new();
+
+        for idx in 0..64usize {
+            let swap = irrelevant_backpressure_swap(
+                &format!("sig-zero-output-pressure-baseline-{idx:04}"),
+                idx,
+                scenario_now,
+            );
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            let outcome = runtime.block_on(async {
+                persist_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    false,
+                )
+                .await
+            })?;
+            assert_eq!(outcome, IrrelevantObservedSwapEnqueueOutcome::Enqueued);
+            std::thread::sleep(StdDuration::from_millis(1));
+        }
+
+        let baseline_started = StdInstant::now();
+        let baseline_rows_persisted = loop {
+            let rows = runtime_store
+                .load_observed_swaps_since(scenario_now - chrono::Duration::minutes(1))?
+                .len();
+            if rows >= 32 {
+                break rows;
+            }
+            if baseline_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!(
+                    "writer failed to establish clean post-checkpoint throughput before the zero-output-pressure non-critical scenario"
+                );
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        };
+
+        let baseline_queue_drain_started = StdInstant::now();
+        while writer.snapshot().pending_requests > 0 {
+            if baseline_queue_drain_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!(
+                    "writer failed to drain its clean-start baseline backlog before the zero-output-pressure non-critical scenario"
+                );
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+
+        let follow_snapshot = FollowSnapshot::default();
+        let open_shadow_lots = HashSet::new();
+        let shadow_strategy_fail_closed = true;
+        let discovery_critical_target_buy_mints = HashSet::new();
+        let ingestion_snapshot = Some(infra_snapshot_with_yellowstone_queue(
+            scenario_now,
+            0,
+            0,
+            0,
+            2_048,
+            0,
+        ));
+
+        let mut empty_target_best_effort_budget_exhausted = false;
+        let mut first_backpressure_pending_requests = 0usize;
+        let mut writer_pending_requests_peak = 0usize;
+        let mut aggregate_queue_depth_at_peak = 0usize;
+        let mut journal_queue_depth_at_peak = 0usize;
+        let mut accepted_noncritical_irrelevant_swaps = 0usize;
+        let mut dropped_noncritical_irrelevant_swaps = 0usize;
+        let mut first_backpressure_discovery_critical = false;
+        let mut completed_waves = 0usize;
+
+        for idx in 64..(64 + TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE * 8) {
+            let swap = irrelevant_backpressure_swap(
+                &format!("sig-zero-output-pressure-burst-{idx:05}"),
+                idx,
+                scenario_now,
+            );
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            let discovery_critical =
+                irrelevant_observed_swap_requires_discovery_critical_persistence(
+                    &swap,
+                    &follow_snapshot,
+                    &open_shadow_lots,
+                    shadow_strategy_fail_closed,
+                    &discovery_critical_target_buy_mints,
+                );
+            assert!(
+                !discovery_critical,
+                "the exact 7093fa4 class must stay on non-critical irrelevant ownership, not discovery-critical persistence"
+            );
+            assert!(
+                !should_preemptively_drop_noncritical_irrelevant_observed_swap_under_output_pressure(
+                    discovery_critical,
+                    &follow_snapshot,
+                    &open_shadow_lots,
+                    shadow_strategy_fail_closed,
+                    ingestion_snapshot,
+                ),
+                "the exact 7093fa4 class must reproduce with yellowstone_output_queue_depth=0 so the output-pressure path is provably inactive"
+            );
+
+            if drop_after_empty_target_best_effort_budget_exhaustion
+                && should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
+                    discovery_critical,
+                    &follow_snapshot,
+                    &open_shadow_lots,
+                    shadow_strategy_fail_closed,
+                    &discovery_critical_target_buy_mints,
+                    empty_target_best_effort_budget_exhausted,
+                )
+            {
+                dropped_noncritical_irrelevant_swaps =
+                    dropped_noncritical_irrelevant_swaps.saturating_add(1);
+                forget_recent_swap_signature(
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap.signature,
+                );
+                continue;
+            }
+
+            let outcome = runtime.block_on(async {
+                persist_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    discovery_critical,
+                )
+                .await
+            })?;
+            let snapshot = writer.snapshot();
+            writer_pending_requests_peak =
+                writer_pending_requests_peak.max(snapshot.pending_requests);
+            aggregate_queue_depth_at_peak =
+                aggregate_queue_depth_at_peak.max(snapshot.aggregate_queue_depth_batches);
+            journal_queue_depth_at_peak =
+                journal_queue_depth_at_peak.max(snapshot.journal_queue_depth_batches);
+
+            match outcome {
+                IrrelevantObservedSwapEnqueueOutcome::Enqueued => {
+                    accepted_noncritical_irrelevant_swaps =
+                        accepted_noncritical_irrelevant_swaps.saturating_add(1);
+                }
+                IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure => {
+                    dropped_noncritical_irrelevant_swaps =
+                        dropped_noncritical_irrelevant_swaps.saturating_add(1);
+                    if first_backpressure_pending_requests == 0 {
+                        first_backpressure_pending_requests = snapshot.pending_requests;
+                        first_backpressure_discovery_critical = discovery_critical;
+                    }
+                    if zero_universe_empty_target_noncritical_irrelevant_context(
+                        discovery_critical,
+                        &follow_snapshot,
+                        &open_shadow_lots,
+                        shadow_strategy_fail_closed,
+                        &discovery_critical_target_buy_mints,
+                    ) {
+                        empty_target_best_effort_budget_exhausted = true;
+                    }
+                    forget_recent_swap_signature(
+                        &mut recent_signatures,
+                        &mut recent_signature_order,
+                        &swap.signature,
+                    );
+                    completed_waves = completed_waves.saturating_add(1);
+                    let drain_started = StdInstant::now();
+                    while writer.snapshot().pending_requests > 0 {
+                        if drain_started.elapsed() > StdDuration::from_secs(10) {
+                            anyhow::bail!(
+                                "writer failed to drain a bounded zero-output-pressure non-critical wave after first backpressure"
+                            );
+                        }
+                        std::thread::sleep(StdDuration::from_millis(20));
+                    }
+                    if completed_waves >= 4
+                        && !drop_after_empty_target_best_effort_budget_exhaustion
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+
+        writer.shutdown()?;
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+
+        Ok(ZeroUniverseNoncriticalIrrelevantZeroOutputPressureSummary {
+            baseline_rows_persisted,
+            first_backpressure_pending_requests,
+            writer_pending_requests_peak,
+            aggregate_queue_depth_at_peak,
+            journal_queue_depth_at_peak,
+            yellowstone_output_queue_depth: ingestion_snapshot
+                .map(|snapshot| snapshot.yellowstone_output_queue_depth)
+                .unwrap_or(0),
+            yellowstone_output_queue_fill_ratio: ingestion_snapshot
+                .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio)
+                .unwrap_or(0.0),
+            accepted_noncritical_irrelevant_swaps,
+            dropped_noncritical_irrelevant_swaps,
+            first_backpressure_discovery_critical,
+            completed_waves,
+            best_effort_budget_exhausted: empty_target_best_effort_budget_exhausted,
         })
     }
 
@@ -16315,6 +16718,273 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
                     <= old.runtime_wal_bytes_at_pause + (4 * 1024 * 1024),
             "the fix should keep WAL in the same tiny clean-start class rather than trading the plateau for runaway growth: old={old:?} new={new:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn zero_universe_empty_target_noncritical_exhaustion_gate_targets_only_exact_request_class_stage1(
+    ) {
+        let followed_snapshot = {
+            let mut snapshot = FollowSnapshot::default();
+            snapshot.active.insert("wallet-followed".to_string());
+            snapshot
+        };
+        let open_shadow_lots =
+            HashSet::from([("wallet-open".to_string(), "token-open".to_string())]);
+        let empty_target_buy_mints = HashSet::new();
+        let populated_target_buy_mints = HashSet::from(["token-target".to_string()]);
+
+        assert!(
+            should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
+                false,
+                &FollowSnapshot::default(),
+                &HashSet::new(),
+                true,
+                &empty_target_buy_mints,
+                true,
+            ),
+            "once the first empty-target best-effort batch is already exhausted, the exact same zero-universe non-critical irrelevant class should be dropped before it can refill the one-batch writer budget"
+        );
+        assert!(
+            !should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
+                true,
+                &FollowSnapshot::default(),
+                &HashSet::new(),
+                true,
+                &empty_target_buy_mints,
+                true,
+            ),
+            "discovery-critical irrelevant swaps must keep their reserved raw-writer path"
+        );
+        assert!(
+            !should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
+                false,
+                &followed_snapshot,
+                &HashSet::new(),
+                true,
+                &empty_target_buy_mints,
+                true,
+            ),
+            "followed universes must not take the empty-target non-critical refill-drop path"
+        );
+        assert!(
+            !should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
+                false,
+                &FollowSnapshot::default(),
+                &open_shadow_lots,
+                true,
+                &empty_target_buy_mints,
+                true,
+            ),
+            "open-lot recovery must not take the empty-target non-critical refill-drop path"
+        );
+        assert!(
+            !should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
+                false,
+                &FollowSnapshot::default(),
+                &HashSet::new(),
+                false,
+                &empty_target_buy_mints,
+                true,
+            ),
+            "non-fail-closed modes must not take the empty-target non-critical refill-drop path"
+        );
+        assert!(
+            !should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
+                false,
+                &FollowSnapshot::default(),
+                &HashSet::new(),
+                true,
+                &populated_target_buy_mints,
+                true,
+            ),
+            "once exact discovery-critical target mints exist, the generic non-critical class must get its normal best-effort writer contract back"
+        );
+    }
+
+    #[test]
+    fn zero_universe_empty_target_noncritical_zero_output_pressure_recreates_repeated_128_refill_waves_stage1(
+    ) -> Result<()> {
+        let summary = run_zero_universe_empty_target_noncritical_irrelevant_refill_scenario(false)?;
+
+        assert!(
+            summary.baseline_rows_persisted >= 32,
+            "clean checkpoint baseline should still write normally before the exact 7093fa4 class begins: {summary:?}"
+        );
+        assert_eq!(
+            summary.yellowstone_output_queue_depth, 0,
+            "the exact 7093fa4 repro must keep Yellowstone output queue depth at zero so the last output-pressure theory is ruled out for this batch: {summary:?}"
+        );
+        assert_eq!(
+            summary.yellowstone_output_queue_fill_ratio, 0.0,
+            "the exact 7093fa4 repro must keep Yellowstone output queue fill ratio at zero so no pressure-gated drop path is active: {summary:?}"
+        );
+        assert_eq!(
+            summary.first_backpressure_pending_requests,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "the remaining live class must still hit the one-batch raw-writer soft limit of 128 before any output pressure appears: {summary:?}"
+        );
+        assert_eq!(
+            summary.writer_pending_requests_peak,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "the zero-output-pressure class should saturate exactly at the one-batch non-critical writer budget, not above it: {summary:?}"
+        );
+        assert!(
+            !summary.first_backpressure_discovery_critical,
+            "the exact 7093fa4 class must be occupied by non-critical irrelevant swaps, not discovery-critical ones: {summary:?}"
+        );
+        assert!(
+            summary.best_effort_budget_exhausted,
+            "the reduced live-like repro must actually hit the post-backpressure refill condition, not only the initial one-batch plateau: {summary:?}"
+        );
+        assert_eq!(
+            summary.aggregate_queue_depth_at_peak, 0,
+            "aggregate queue must stay zero in the exact 7093fa4 repro: {summary:?}"
+        );
+        assert!(
+            summary.journal_queue_depth_at_peak <= 1,
+            "journal queue must remain in the same low 0..1 class in the exact 7093fa4 repro: {summary:?}"
+        );
+        assert!(
+            summary.accepted_noncritical_irrelevant_swaps
+                >= TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "current logic must actually spend the full one-batch raw-writer budget on non-critical irrelevant swaps before first backpressure: {summary:?}"
+        );
+        assert!(
+            summary.completed_waves >= 4,
+            "old/current logic must keep refilling the same one-batch plateau in repeated zero-output-pressure waves once the writer drains, which is the exact surviving live class: {summary:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn zero_universe_empty_target_noncritical_exhaustion_preserves_first_batch_and_stops_zero_output_pressure_refill_waves_stage1(
+    ) -> Result<()> {
+        let old = run_zero_universe_empty_target_noncritical_irrelevant_refill_scenario(false)?;
+        let new = run_zero_universe_empty_target_noncritical_irrelevant_refill_scenario(true)?;
+
+        assert_eq!(
+            old.first_backpressure_pending_requests, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "old side must reproduce the exact zero-output-pressure 128 plateau first: old={old:?}"
+        );
+        assert_eq!(
+            old.aggregate_queue_depth_at_peak, 0,
+            "old side must keep aggregate queue at zero: old={old:?}"
+        );
+        assert!(
+            old.journal_queue_depth_at_peak <= 1,
+            "old side must keep journal queue in the low 0..1 class: old={old:?}"
+        );
+        assert_eq!(
+            old.yellowstone_output_queue_depth, 0,
+            "old side must keep Yellowstone output queue at zero: old={old:?}"
+        );
+        assert_eq!(
+            old.yellowstone_output_queue_fill_ratio, 0.0,
+            "old side must keep Yellowstone output pressure inactive: old={old:?}"
+        );
+        assert_eq!(
+            new.first_backpressure_pending_requests, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "the fix must preserve the intended first one-batch best-effort raw persistence contract for exact empty-target zero-universe generic traffic: new={new:?}"
+        );
+        assert!(
+            new.accepted_noncritical_irrelevant_swaps
+                >= TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE
+                && new.accepted_noncritical_irrelevant_swaps
+                    <= TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE + 1,
+            "the fix must still persist the initial one-batch best-effort generic slice, plus at most one reclaimed slot, before the exact refill gate engages: new={new:?}"
+        );
+        assert_eq!(
+            new.writer_pending_requests_peak, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "the fix must preserve the initial one-batch raw-writer occupancy rather than globally bypassing the generic best-effort contract: new={new:?}"
+        );
+        assert!(
+            new.dropped_noncritical_irrelevant_swaps > 0,
+            "after the first batch is exhausted, the fix should make the ownership change explicit by dropping only the later refill waves of the same exact non-critical irrelevant class: new={new:?}"
+        );
+        assert_eq!(
+            new.aggregate_queue_depth_at_peak, 0,
+            "the fix must stay off the aggregate path: new={new:?}"
+        );
+        assert_eq!(
+            new.journal_queue_depth_at_peak, 0,
+            "the fix must stay off the journal path for this exact class: new={new:?}"
+        );
+        assert_eq!(
+            new.completed_waves, 1,
+            "the fix should keep exactly one best-effort batch for the empty-target zero-universe class, then stop the repeated refill waves that old/current logic kept re-arming: old={old:?} new={new:?}"
+        );
+        assert!(
+            old.completed_waves > new.completed_waves,
+            "A/B must prove the surviving class was repeated post-backpressure refill of the same empty-target non-critical batch, not the initial preserved one-batch contract itself: old={old:?} new={new:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn zero_universe_empty_target_noncritical_exhaustion_clears_when_store_backed_exact_target_mints_appear_stage1(
+    ) -> Result<()> {
+        let (store, db_path) =
+            make_test_store("zero-universe-empty-target-noncritical-exhaustion-clears")?;
+        seed_test_discovery_critical_target_buy_mints(&store, &["token-target"], &[])?;
+        let mut exhausted = true;
+        let follow_snapshot = FollowSnapshot::default();
+        let open_shadow_lots = HashSet::new();
+        let mut target_buy_mints = HashSet::new();
+        let mut target_swap = test_swap("sig-empty-target-exhaustion-clears");
+        target_swap.token_out = "token-target".to_string();
+
+        reset_zero_universe_empty_target_noncritical_best_effort_exhaustion_if_context_changed(
+            &mut exhausted,
+            &follow_snapshot,
+            &open_shadow_lots,
+            true,
+            &target_buy_mints,
+        );
+        assert!(
+            exhausted,
+            "the exact empty-target zero-universe context should keep the refill gate armed until the context itself changes"
+        );
+
+        refresh_discovery_critical_target_buy_mints_or_warn(&store, &mut target_buy_mints)?;
+        assert_eq!(
+            target_buy_mints,
+            HashSet::from(["token-target".to_string()]),
+            "the same store-backed persisted rebuild seam that app uses at runtime must surface the exact target-mint set before the refill gate can clear"
+        );
+        reset_zero_universe_empty_target_noncritical_best_effort_exhaustion_if_context_changed(
+            &mut exhausted,
+            &follow_snapshot,
+            &open_shadow_lots,
+            true,
+            &target_buy_mints,
+        );
+        assert!(
+            !exhausted,
+            "once exact target mints appear, the empty-target non-critical refill gate must clear so recovery can proceed on the precise discovery-critical path"
+        );
+        assert!(
+            irrelevant_observed_swap_requires_discovery_critical_persistence(
+                &target_swap,
+                &follow_snapshot,
+                &open_shadow_lots,
+                true,
+                &target_buy_mints,
+            ),
+            "the same context change that clears the refill gate must simultaneously make the exact target-mint SOL buy discovery-critical"
+        );
+        assert!(
+            !should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
+                true,
+                &follow_snapshot,
+                &open_shadow_lots,
+                true,
+                &target_buy_mints,
+                true,
+            ),
+            "the exact discovery-critical recovery path must not be blocked by the earlier empty-target refill gate"
+        );
+        let _ = std::fs::remove_file(db_path);
         Ok(())
     }
 

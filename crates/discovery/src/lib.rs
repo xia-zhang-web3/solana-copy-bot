@@ -15896,6 +15896,140 @@ mod tests {
     }
 
     #[test]
+    fn live_like_fourteen_day_retention_exact_target_surface_and_publish_progress_do_not_depend_on_generic_non_target_refill_tail_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let full_store_path = temp
+            .path()
+            .join("live-like-fourteen-day-retention-full-market-context-no-generic-tail-proof.db");
+        let exact_target_only_store_path = temp
+            .path()
+            .join("live-like-fourteen-day-retention-exact-target-only-no-generic-tail-proof.db");
+        let mut full_store = SqliteStore::open(Path::new(&full_store_path))?;
+        let mut exact_target_only_store =
+            SqliteStore::open(Path::new(&exact_target_only_store_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        full_store.run_migrations(&migration_dir)?;
+        exact_target_only_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-07T17:38:43Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        config.observed_swaps_retention_days = 14;
+        config.max_window_swaps_in_memory = 64;
+        let (full_swaps, legit_wallet_ids, _junk_wallet_ids) =
+            long_horizon_carry_vs_refill_drain_fixture_swaps(&config, now);
+        insert_observed_swaps_and_seed_runtime_cursor(&full_store, &full_swaps)?;
+
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let helper_by_wallet =
+            replay_streaming_wallet_accumulators_from_swaps_for_test(&discovery, &full_swaps, now);
+        let exact_target_buy_mints = discovery
+            .discovery_critical_target_buy_mints_from_accumulators(
+                &full_store,
+                &helper_by_wallet,
+                now,
+            )?;
+        assert_eq!(exact_target_buy_mints.len(), legit_wallet_ids.len());
+        let exact_target_buy_mint_set: HashSet<String> =
+            exact_target_buy_mints.iter().cloned().collect();
+
+        let exact_target_only_swaps = omit_nonfollowed_market_context_swaps_except_tokens(
+            &full_swaps,
+            &exact_target_buy_mint_set,
+        );
+        assert!(
+            exact_target_only_swaps.len() < full_swaps.len(),
+            "the proof must actually omit the broad generic non-target refill tail rather than replaying the full retained raw field"
+        );
+        insert_observed_swaps_and_seed_runtime_cursor(
+            &exact_target_only_store,
+            &exact_target_only_swaps,
+        )?;
+
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let rebuild_time_budget = StdDuration::from_millis(config.fetch_time_budget_ms.max(1));
+        let advance_to_publish_pending = |store: &SqliteStore| -> Result<(
+            PersistedStreamProgressTelemetry,
+            Vec<WalletSnapshot>,
+            PersistedStreamRebuildState,
+        )> {
+            let mut completed = None;
+            for idx in 0..30 {
+                let cycle_now = now + Duration::minutes(idx as i64);
+                match discovery.advance_persisted_stream_rebuild(
+                    store,
+                    window_start,
+                    metrics_window_start,
+                    cycle_now,
+                    config.max_fetch_swaps_per_cycle.max(1),
+                    config.max_fetch_pages_per_cycle.max(1),
+                    rebuild_time_budget,
+                )? {
+                    PersistedStreamRebuildAdvanceOutcome::Completed {
+                        telemetry,
+                        snapshots,
+                    } => {
+                        completed = Some((telemetry, snapshots));
+                        break;
+                    }
+                    PersistedStreamRebuildAdvanceOutcome::InProgress { .. } => {}
+                }
+            }
+            let (telemetry, snapshots) = completed.context(
+                    "bounded rebuild should still reach PublishPending within the cutoff while proving that the omitted generic non-target refill tail is not required",
+                )?;
+            let state = load_persisted_stream_rebuild_state_for_test(store)?;
+            Ok((telemetry, snapshots, state))
+        };
+
+        let (full_telemetry, full_snapshots, full_state) = advance_to_publish_pending(&full_store)?;
+        let (exact_only_telemetry, exact_only_snapshots, exact_only_state) =
+            advance_to_publish_pending(&exact_target_only_store)?;
+
+        for (label, telemetry, snapshots, state) in [
+            ("full", &full_telemetry, &full_snapshots, &full_state),
+            (
+                "exact_target_only",
+                &exact_only_telemetry,
+                &exact_only_snapshots,
+                &exact_only_state,
+            ),
+        ] {
+            assert_eq!(
+                telemetry.phase,
+                DiscoveryPersistedRebuildPhase::PublishPending,
+                "{label} lineage must reach the same PublishPending handoff"
+            );
+            assert_eq!(
+                telemetry.publish_pending_requested_wallet_count,
+                legit_wallet_ids.len(),
+                "{label} lineage must recover the same non-empty exact publish set"
+            );
+            assert_eq!(
+                discovery.publish_pending_requested_wallet_ids_from_snapshots(snapshots),
+                legit_wallet_ids,
+                "{label} lineage must keep the same legit publishable wallets"
+            );
+            assert_eq!(
+                state.payload.publish_pending_requested_wallet_ids,
+                Some(legit_wallet_ids.clone()),
+                "{label} persisted rebuild checkpoint must retain the same requested publish set"
+            );
+            assert_eq!(
+                state.payload.discovery_critical_target_buy_mints,
+                exact_target_buy_mints,
+                "{label} persisted rebuild checkpoint must retain the same exact candidate target-mint surface"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn live_like_fourteen_day_retention_full_market_context_rebuild_reaches_publish_pending_with_nonempty_exact_publish_set_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
