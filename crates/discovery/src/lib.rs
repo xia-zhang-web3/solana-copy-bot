@@ -3249,6 +3249,23 @@ impl DiscoveryService {
             && self.horizon_end_remains_publishable_under_gate(state.horizon_end, now)
     }
 
+    fn state_can_pin_stale_metrics_window_until_first_publishable_checkpoint(
+        state: &PersistedStreamRebuildState,
+    ) -> bool {
+        state.phase == DiscoveryPersistedRebuildPhase::Replay
+            && Self::payload_has_exact_buy_mint_membership(&state.payload)
+            && state.payload.replay_wallet_stats_milestone_reached
+            && state.payload.replay_wallet_stats_complete
+            && !state.payload.replay_candidate_activity_backfill_pending
+            && state.phase_cursor.is_some()
+            && (state
+                .payload
+                .replay_sol_leg_last_partial_cycle_pages_processed
+                > 0
+                || state.payload.replay_sol_leg_budget_floor_pages > 0
+                || state.payload.replay_sol_leg_retained_contract_floor_pages > 0)
+    }
+
     fn stale_reconcile_token_batch_size(fetch_limit: usize) -> usize {
         fetch_limit.max(1).min(STALE_RECONCILE_TOKEN_BATCH_CAP)
     }
@@ -5190,6 +5207,32 @@ impl DiscoveryService {
                             restart_reason =
                                 "metrics_window_start_changed_but_existing_replay_target_still_publishable_under_gate",
                             "resuming stale metrics-window replay/token-quality progress on its frozen target window until the next publishable checkpoint instead of rewinding back into collect_buy_mints"
+                        );
+                        return Ok((
+                            state,
+                            PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow,
+                        ));
+                    }
+                    if Self::state_can_pin_stale_metrics_window_until_first_publishable_checkpoint(
+                        &state,
+                    ) {
+                        warn!(
+                            persisted_window_start = %state.window_start,
+                            persisted_metrics_window_start = %state.metrics_window_start,
+                            persisted_horizon_end = %state.horizon_end,
+                            current_window_start = %window_start,
+                            current_metrics_window_start = %metrics_window_start,
+                            current_now = %now,
+                            rebuild_phase = state.phase.as_str(),
+                            rebuild_replay_subphase =
+                                Self::replay_subphase(
+                                    state.phase,
+                                    state.payload.replay_wallet_stats_complete,
+                                    state.payload.replay_candidate_activity_backfill_pending,
+                                ),
+                            restart_reason =
+                                "metrics_window_start_changed_downstream_replay_target_pinned_until_first_publishable_checkpoint",
+                            "resuming stale downstream replay/token-quality progress on its frozen target window until the first exact publishable checkpoint instead of rebasing the same carried lineage onto a newer moving target"
                         );
                         return Ok((
                             state,
@@ -7936,6 +7979,15 @@ impl DiscoveryService {
             {
                 // Keep advancing the still-publishable frozen replay/token-quality target until
                 // it either reaches a publishable checkpoint or truly ages out of the gate.
+            } else if state.metrics_window_start != metrics_window_start
+                && Self::state_can_pin_stale_metrics_window_until_first_publishable_checkpoint(
+                    &state,
+                )
+            {
+                // Once a carried replay lineage has already crossed wallet_stats and owns exact
+                // buy-mint membership, rebasing it onto a newer moving target would discard the
+                // exact downstream replay frontier and reopen replay_sol_leg_incomplete. Keep the
+                // frozen target alive until it reaches its first exact publishable checkpoint.
             } else if state.metrics_window_start != metrics_window_start
                 && self.prepare_persisted_stream_rebuild_for_metrics_window_rollover(
                     &mut state,
@@ -22111,6 +22163,175 @@ mod tests {
     }
 
     #[test]
+    fn persisted_stream_replay_bucket_roll_aged_out_post_wallet_stats_target_pins_frozen_lineage_until_first_publishable_checkpoint_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-persisted-stream-aged-out-post-wallet-stats-frozen-lineage.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-10T15:45:35Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 60;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 25_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let target_one_now =
+            now + Duration::seconds(config.metric_snapshot_interval_seconds as i64 + 61);
+        let target_one_window_start =
+            target_one_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let target_one_metrics_window_start =
+            metrics_window_start_for_test(&config, target_one_now);
+        let target_two_now =
+            target_one_now + Duration::seconds(config.metric_snapshot_interval_seconds as i64 + 61);
+        let target_two_window_start =
+            target_two_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let target_two_metrics_window_start =
+            metrics_window_start_for_test(&config, target_two_now);
+
+        let (mut source_state, _source_metrics_window_start) =
+            seed_stage1_dense_partial_sol_leg_replay_checkpoint_fixture(
+                &store, &discovery, &config, now, 8_000, 20,
+            )?;
+        assert!(
+            discovery.prepare_persisted_stream_rebuild_for_metrics_window_rollover(
+                &mut source_state,
+                target_one_window_start,
+                target_one_metrics_window_start,
+                target_one_now,
+            )?
+        );
+        advance_carried_target_until_replay_or_upstream_block_for_test(
+            &discovery,
+            &store,
+            &mut source_state,
+            64,
+            64,
+            config.max_fetch_swaps_per_cycle,
+            config.max_fetch_pages_per_cycle,
+        )?;
+        assert_eq!(source_state.phase, DiscoveryPersistedRebuildPhase::Replay);
+        assert!(source_state.payload.replay_wallet_stats_complete);
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &source_state
+            ),
+            "replay_sol_leg_incomplete"
+        );
+        let advance_partial_sol_leg_once = |state: &mut PersistedStreamRebuildState,
+                                            cycle_now: DateTime<Utc>|
+         -> Result<PersistedStreamPhaseAdvance> {
+            let contract = discovery
+                .deepen_persisted_stream_priority_recovery_contract_for_state_at(
+                    state,
+                    config.max_fetch_swaps_per_cycle,
+                    config.max_fetch_pages_per_cycle,
+                    PersistedStreamPriorityRecoveryContract {
+                        time_budget: StdDuration::from_secs(60),
+                        collect_buy_mints_phase_page_limit_override: Some(160),
+                        replay_wallet_stats_phase_page_limit_override: Some(92),
+                        replay_sol_leg_phase_page_limit_override: Some(300),
+                        reason: Some("runtime_window_complete_stale_publication_truth"),
+                    },
+                    Some(cycle_now),
+                );
+            let advance = discovery
+                .advance_persisted_stream_replay_optimized_with_wallet_stats_phase_page_limit(
+                    &store,
+                    state,
+                    config.max_fetch_swaps_per_cycle,
+                    config.max_fetch_pages_per_cycle,
+                    contract.replay_wallet_stats_phase_page_limit_override,
+                    contract.replay_sol_leg_phase_page_limit_override,
+                    false,
+                    Instant::now() + StdDuration::from_secs(30),
+                )?;
+            state.replay_rows_processed = state
+                .replay_rows_processed
+                .saturating_add(advance.rows_processed);
+            state.replay_pages_processed = state
+                .replay_pages_processed
+                .saturating_add(advance.pages_processed);
+            state.phase_cursor = advance.phase_cursor.clone();
+            DiscoveryService::persist_partial_replay_frontier_hints_after_cycle(
+                state,
+                config.max_fetch_swaps_per_cycle,
+                true,
+                ReplayWalletStatsDayCountSourceProgress::default(),
+                advance.replay_sol_leg_elapsed_ms.max(1),
+                advance.budget_exhausted_reason,
+                contract.replay_sol_leg_phase_page_limit_override,
+                advance.replay_sol_leg_pages_processed,
+                advance.replay_sol_leg_rows_processed,
+                advance.replay_sol_leg_elapsed_ms,
+            );
+            Ok(advance)
+        };
+        let first_partial_sol_leg_advance =
+            advance_partial_sol_leg_once(&mut source_state, target_one_now)?;
+        assert!(
+            !first_partial_sol_leg_advance.source_exhausted,
+            "the first frozen-target cycle must stay mid-sol-leg so the next bucket can reproduce the moving-goalpost seam instead of trivially exhausting the source"
+        );
+        let second_partial_sol_leg_advance =
+            advance_partial_sol_leg_once(&mut source_state, target_one_now)?;
+        assert!(
+            !second_partial_sol_leg_advance.source_exhausted,
+            "the frozen-target lineage must still own a materially advanced downstream sol-leg frontier after the second bounded cycle; otherwise the next bucket would not reproduce the exact moving-goalpost blocker"
+        );
+        assert!(
+            !discovery.state_can_resume_stale_metrics_window_until_publish_checkpoint(
+                &source_state,
+                target_two_now,
+            ),
+            "this reduced live-like checkpoint must already be aged out of the ordinary publishable-gate resume path before the new frozen-lineage pinning branch is exercised"
+        );
+        store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&source_state, target_one_now)?,
+        )?;
+
+        let (resumed, restore_outcome) = discovery.load_or_start_persisted_stream_rebuild_state(
+            &store,
+            target_two_window_start,
+            target_two_metrics_window_start,
+            target_two_now,
+        )?;
+
+        assert_eq!(
+            restore_outcome,
+            PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow,
+            "once the post-wallet-stats downstream target ages out before its first exact checkpoint, the new behavior must keep the frozen lineage alive instead of rebasing it onto another moving target"
+        );
+        assert_eq!(resumed.phase, DiscoveryPersistedRebuildPhase::Replay);
+        assert_eq!(resumed.window_start, source_state.window_start);
+        assert_eq!(
+            resumed.metrics_window_start,
+            source_state.metrics_window_start
+        );
+        assert_eq!(resumed.horizon_end, source_state.horizon_end);
+        assert_eq!(resumed.phase_cursor, source_state.phase_cursor);
+        assert_eq!(
+            resumed.replay_rows_processed,
+            source_state.replay_rows_processed
+        );
+        assert_eq!(
+            resumed.replay_pages_processed,
+            source_state.replay_pages_processed
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(&resumed),
+            "replay_sol_leg_incomplete"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn persisted_stream_replay_bucket_roll_aged_out_checkpoint_carries_forward_exact_membership_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -22189,7 +22410,7 @@ mod tests {
             &DiscoveryService::persisted_stream_rebuild_row(&state, source_now)?,
         )?;
 
-        let (carried, restore_outcome) = discovery.load_or_start_persisted_stream_rebuild_state(
+        let (resumed, restore_outcome) = discovery.load_or_start_persisted_stream_rebuild_state(
             &store,
             target_window_start,
             target_metrics_window_start,
@@ -22198,80 +22419,63 @@ mod tests {
 
         assert_eq!(
             restore_outcome,
-            PersistedStreamRebuildRestoreOutcome::CarriedForwardMetricsWindow
+            PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow
         );
+        assert_eq!(resumed.phase, DiscoveryPersistedRebuildPhase::Replay);
+        assert_eq!(resumed.window_start, window_start);
+        assert_eq!(resumed.metrics_window_start, metrics_window_start);
+        assert_eq!(resumed.horizon_end, source_now);
+        assert_eq!(resumed.prepass_rows_processed, state.prepass_rows_processed);
         assert_eq!(
-            carried.phase,
-            DiscoveryPersistedRebuildPhase::CollectBuyMints
-        );
-        assert_eq!(
-            carried.payload.collect_buy_mints_mode,
-            CollectBuyMintsMode::ReconcileExpiredHead,
-            "once stale replay ages out of the publish gate, restart should carry forward exact buy-mint membership onto target-window reconcile instead of discarding back to fresh-scan"
-        );
-        assert_eq!(carried.window_start, target_window_start);
-        assert_eq!(carried.metrics_window_start, target_metrics_window_start);
-        assert_eq!(carried.horizon_end, aged_out_now);
-        assert_eq!(carried.prepass_rows_processed, state.prepass_rows_processed);
-        assert_eq!(
-            carried.prepass_pages_processed,
+            resumed.prepass_pages_processed,
             state.prepass_pages_processed
         );
-        assert_eq!(carried.phase_cursor, None);
+        assert_eq!(resumed.phase_cursor, state.phase_cursor);
+        assert_eq!(resumed.payload.unique_buy_mints, unique_buy_mints);
         assert_eq!(
-            carried
-                .payload
-                .collect_buy_mints_reconcile_source_window_start,
-            Some(window_start)
-        );
-        assert_eq!(
-            carried
-                .payload
-                .collect_buy_mints_reconcile_source_horizon_end,
-            Some(source_now)
-        );
-        assert_eq!(carried.payload.unique_buy_mints, unique_buy_mints);
-        assert_eq!(
-            carried.payload.buy_mint_counts,
+            resumed.payload.buy_mint_counts,
             state.payload.buy_mint_counts
         );
         assert_eq!(
-            carried.payload.token_quality_cache.len(),
+            resumed.payload.token_quality_cache.len(),
             unique_buy_mints.len(),
-            "aged-out replay carry-forward should preserve exact mint-quality cache rows for the carried buy-mint universe so the next target can reuse them after exact reconcile instead of repaying token-quality from zero"
+            "once an aged-out replay checkpoint already carries an exact downstream SOL-leg frontier, restart should keep that frozen lineage alive together with the exact mint-quality cache instead of rebasing the same lineage onto a newer target"
         );
-        assert_eq!(carried.payload.token_quality_progress.next_mint_index, 0);
-        assert!(!carried.payload.replay_wallet_stats_complete);
-        assert!(
-            carried.payload.replay_wallet_stats_milestone_reached,
-            "when rollover rebases a replay checkpoint that had already crossed wallet_stats, the carried target-window state must persist a durable proof of that milestone instead of relying only on ephemeral in-memory logs"
-        );
-        assert!(
-            carried.payload.replay_sol_leg_reentry_pending,
-            "once a stale replay checkpoint had already crossed wallet_stats on the old target window, carry-forward must remember that the next target-window replay can safely re-enter at SOL-leg instead of silently degrading to wallet_stats again"
-        );
-        assert_eq!(carried.replay_rows_processed, 0);
-        assert_eq!(carried.replay_pages_processed, 0);
         assert_eq!(
-            carried.payload.replay_wallet_stats_budget_floor_wallets,
+            resumed.payload.token_quality_progress.next_mint_index,
+            state.payload.token_quality_progress.next_mint_index
+        );
+        assert!(resumed.payload.replay_wallet_stats_complete);
+        assert!(
+            resumed.payload.replay_wallet_stats_milestone_reached,
+            "when an aged-out replay checkpoint has already crossed wallet_stats and built a downstream SOL-leg frontier, restart must keep the durable milestone on the frozen lineage instead of rebasing it onto a new target"
+        );
+        assert!(
+            !resumed.payload.replay_sol_leg_reentry_pending,
+            "the frozen downstream replay lineage should stay inside active replay; the pre-token-quality reentry marker is only for newer target carry-forward, not for an already active frozen SOL-leg frontier"
+        );
+        assert_eq!(resumed.replay_rows_processed, state.replay_rows_processed);
+        assert_eq!(resumed.replay_pages_processed, state.replay_pages_processed);
+        assert_eq!(
+            resumed.payload.replay_wallet_stats_budget_floor_wallets,
             703_826,
-            "aged-out replay rebases may reset bucket-sensitive wallet_stats truth, but they must preserve the observed wallet frontier size as a pure budgeting hint for the next target-window replay"
+            "pinning the frozen downstream replay target must still preserve the carried wallet frontier budgeting proof"
         );
         assert_eq!(
-            carried
+            resumed
                 .payload
                 .replay_wallet_stats_last_partial_cycle_pages_processed,
             406
         );
         assert_eq!(
-            carried
+            resumed
                 .payload
                 .replay_wallet_stats_last_partial_cycle_elapsed_ms,
             817_313
         );
         assert!(
-            carried.payload.by_wallet.is_empty(),
-            "bucket-sensitive replay accumulators must be cleared when stale replay is rebased onto the current target window"
+            !resumed.payload.by_wallet.is_empty(),
+            "pinning the frozen downstream replay target must keep the exact SOL-leg accumulators alive; clearing them would reopen the same moving-goalpost blocker"
         );
         Ok(())
     }
@@ -26802,6 +27006,221 @@ mod tests {
             carried_floor.payload.replay_candidate_activity_backfill_pending
                 || carried_floor_advance.source_exhausted,
             "moving beyond the blocker must mean the wider carried-floor lane exhausted the remaining SOL-leg source and entered exact candidate-wallet backfill, not just that the checkpoint logged a different metric"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pinned_stale_post_wallet_stats_replay_target_beats_old_like_retargeted_sol_leg_restart_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-pinned-vs-retargeted-stale-sol-leg-replay.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-10T15:45:35Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 60;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 25_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let target_one_now =
+            now + Duration::seconds(config.metric_snapshot_interval_seconds as i64 + 61);
+        let target_one_window_start =
+            target_one_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let target_one_metrics_window_start =
+            metrics_window_start_for_test(&config, target_one_now);
+        let target_two_now =
+            target_one_now + Duration::seconds(config.metric_snapshot_interval_seconds as i64 + 61);
+        let target_two_window_start =
+            target_two_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let target_two_metrics_window_start =
+            metrics_window_start_for_test(&config, target_two_now);
+
+        let (mut target_one_state, _source_metrics_window_start) =
+            seed_stage1_dense_partial_sol_leg_replay_checkpoint_fixture(
+                &runtime_store,
+                &discovery,
+                &config,
+                now,
+                8_000,
+                20,
+            )?;
+        assert!(
+            discovery.prepare_persisted_stream_rebuild_for_metrics_window_rollover(
+                &mut target_one_state,
+                target_one_window_start,
+                target_one_metrics_window_start,
+                target_one_now,
+            )?
+        );
+        advance_carried_target_until_replay_or_upstream_block_for_test(
+            &discovery,
+            &runtime_store,
+            &mut target_one_state,
+            64,
+            64,
+            config.max_fetch_swaps_per_cycle,
+            config.max_fetch_pages_per_cycle,
+        )?;
+        assert_eq!(
+            target_one_state.phase,
+            DiscoveryPersistedRebuildPhase::Replay
+        );
+        assert!(target_one_state.payload.replay_wallet_stats_complete);
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &target_one_state
+            ),
+            "replay_sol_leg_incomplete"
+        );
+
+        let advance_partial_sol_leg_once = |state: &mut PersistedStreamRebuildState,
+                                            cycle_now: DateTime<Utc>|
+         -> Result<PersistedStreamPhaseAdvance> {
+            let contract = discovery
+                .deepen_persisted_stream_priority_recovery_contract_for_state_at(
+                    state,
+                    config.max_fetch_swaps_per_cycle,
+                    config.max_fetch_pages_per_cycle,
+                    PersistedStreamPriorityRecoveryContract {
+                        time_budget: StdDuration::from_secs(60),
+                        collect_buy_mints_phase_page_limit_override: Some(160),
+                        replay_wallet_stats_phase_page_limit_override: Some(92),
+                        replay_sol_leg_phase_page_limit_override: Some(300),
+                        reason: Some("runtime_window_complete_stale_publication_truth"),
+                    },
+                    Some(cycle_now),
+                );
+            let advance = discovery
+                .advance_persisted_stream_replay_optimized_with_wallet_stats_phase_page_limit(
+                    &runtime_store,
+                    state,
+                    config.max_fetch_swaps_per_cycle,
+                    config.max_fetch_pages_per_cycle,
+                    contract.replay_wallet_stats_phase_page_limit_override,
+                    contract.replay_sol_leg_phase_page_limit_override,
+                    false,
+                    Instant::now() + StdDuration::from_secs(30),
+                )?;
+            state.replay_rows_processed = state
+                .replay_rows_processed
+                .saturating_add(advance.rows_processed);
+            state.replay_pages_processed = state
+                .replay_pages_processed
+                .saturating_add(advance.pages_processed);
+            state.phase_cursor = advance.phase_cursor.clone();
+            DiscoveryService::persist_partial_replay_frontier_hints_after_cycle(
+                state,
+                config.max_fetch_swaps_per_cycle,
+                true,
+                ReplayWalletStatsDayCountSourceProgress::default(),
+                advance.replay_sol_leg_elapsed_ms.max(1),
+                advance.budget_exhausted_reason,
+                contract.replay_sol_leg_phase_page_limit_override,
+                advance.replay_sol_leg_pages_processed,
+                advance.replay_sol_leg_rows_processed,
+                advance.replay_sol_leg_elapsed_ms,
+            );
+            Ok(advance)
+        };
+
+        let target_one_advance =
+            advance_partial_sol_leg_once(&mut target_one_state, target_one_now)?;
+        assert!(
+            !target_one_advance.source_exhausted,
+            "the first carried target must still be mid-sol-leg so the second bucket can reproduce the moving-goalpost seam"
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &target_one_state
+            ),
+            "replay_sol_leg_incomplete"
+        );
+        assert!(target_one_state.phase_cursor.is_some());
+        assert!(target_one_state.replay_rows_processed > 0);
+        let target_one_second_advance =
+            advance_partial_sol_leg_once(&mut target_one_state, target_one_now)?;
+        assert!(
+            !target_one_second_advance.source_exhausted,
+            "the first carried target must still remain mid-sol-leg after a second bounded cycle so the next bucket can reproduce the moving-goalpost reset against a materially advanced frozen cursor"
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &target_one_state
+            ),
+            "replay_sol_leg_incomplete"
+        );
+
+        let mut old_like = target_one_state.clone();
+        assert!(
+            discovery.prepare_persisted_stream_rebuild_for_metrics_window_rollover(
+                &mut old_like,
+                target_two_window_start,
+                target_two_metrics_window_start,
+                target_two_now,
+            )?,
+            "old behavior must rebase the aged-out downstream replay target onto the newer moving window before the A/B can compare it to the pinned frozen target"
+        );
+        advance_carried_target_until_replay_or_upstream_block_for_test(
+            &discovery,
+            &runtime_store,
+            &mut old_like,
+            64,
+            64,
+            config.max_fetch_swaps_per_cycle,
+            config.max_fetch_pages_per_cycle,
+        )?;
+        assert_eq!(old_like.phase, DiscoveryPersistedRebuildPhase::Replay);
+        let _old_like_advance = advance_partial_sol_leg_once(&mut old_like, target_two_now)?;
+        assert_eq!(
+            old_like.metrics_window_start,
+            target_two_metrics_window_start
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &old_like
+            ),
+            "replay_sol_leg_incomplete",
+            "old rollover behavior reproduces the exact moving-goalpost failure: once the target rebases, the replay checkpoint loses its frozen downstream cursor/accumulators and stays on replay_sol_leg_incomplete"
+        );
+
+        runtime_store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&target_one_state, target_one_now)?,
+        )?;
+        let (mut pinned, restore_outcome) = discovery
+            .load_or_start_persisted_stream_rebuild_state(
+                &runtime_store,
+                target_two_window_start,
+                target_two_metrics_window_start,
+                target_two_now,
+            )?;
+        assert_eq!(
+            restore_outcome,
+            PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow
+        );
+        assert_eq!(pinned.metrics_window_start, target_one_metrics_window_start);
+        assert_eq!(pinned.phase_cursor, target_one_state.phase_cursor);
+        let pinned_advance = advance_partial_sol_leg_once(&mut pinned, target_two_now)?;
+
+        assert!(
+            pinned.replay_rows_processed > old_like.replay_rows_processed,
+            "keeping the frozen downstream target alive must preserve and extend the exact sol-leg replay prefix instead of resetting it onto the newer moving target"
+        );
+        assert_ne!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(&pinned),
+            "replay_sol_leg_incomplete",
+            "pinning the frozen post-wallet-stats target until its first exact checkpoint should move the same lineage beyond replay_sol_leg_incomplete instead of reopening the blocker on each bucket roll"
+        );
+        assert!(
+            pinned.payload.replay_candidate_activity_backfill_pending || pinned_advance.source_exhausted,
+            "moving beyond the blocker must mean the frozen target exhausted the remaining sol-leg source and entered exact candidate activity backfill, not merely that a different metric changed"
         );
         Ok(())
     }
