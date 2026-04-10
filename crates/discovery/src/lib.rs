@@ -67,6 +67,7 @@ const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_MAX_OBSERVED_M
     5_000;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MIN_TIME_BUDGET_MS: u64 = 180_000;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MAX_TIME_BUDGET_MS: u64 = 900_000;
+const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MAX_OBSERVED_MS_PER_PAGE: u64 = 10_000;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_NUMERATOR: usize =
     3;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_DENOMINATOR: usize =
@@ -2768,11 +2769,48 @@ impl DiscoveryService {
         (remaining_ms > 0).then_some(remaining_ms)
     }
 
-    fn deep_replay_sol_leg_target_time_budget_uncapped(
-        &self,
-        baseline_time_budget: StdDuration,
+    fn replay_sol_leg_target_ms_per_page_from_observed_cycle(
+        fetch_time_budget_ms: u64,
         fetch_page_limit: usize,
+        last_partial_cycle_pages_processed: usize,
+        last_partial_cycle_elapsed_ms: u64,
+    ) -> u64 {
+        let baseline_target_ms_per_page = fetch_time_budget_ms
+            .max(1)
+            .div_ceil(fetch_page_limit.max(1) as u64);
+        let observed_ms_per_page = if last_partial_cycle_pages_processed > 0
+            && last_partial_cycle_elapsed_ms > 0
+        {
+            last_partial_cycle_elapsed_ms.div_ceil(last_partial_cycle_pages_processed.max(1) as u64)
+        } else {
+            baseline_target_ms_per_page
+        };
+        observed_ms_per_page.clamp(
+            baseline_target_ms_per_page,
+            DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MAX_OBSERVED_MS_PER_PAGE
+                .max(baseline_target_ms_per_page),
+        )
+    }
+
+    fn replay_sol_leg_target_ms_per_page(
+        &self,
+        fetch_page_limit: usize,
+        state: &PersistedStreamRebuildState,
+    ) -> u64 {
+        Self::replay_sol_leg_target_ms_per_page_from_observed_cycle(
+            self.config.fetch_time_budget_ms,
+            fetch_page_limit,
+            state
+                .payload
+                .replay_sol_leg_last_partial_cycle_pages_processed,
+            state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms,
+        )
+    }
+
+    fn deep_replay_sol_leg_target_time_budget_uncapped(
+        baseline_time_budget: StdDuration,
         target_floor_pages: usize,
+        target_ms_per_page: u64,
     ) -> StdDuration {
         let floor_pages_with_headroom = target_floor_pages
             .saturating_mul(
@@ -2781,29 +2819,25 @@ impl DiscoveryService {
             .div_ceil(
                 DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_DENOMINATOR,
             );
-        let base_fetch_budget_ms = self.config.fetch_time_budget_ms.max(1) as u128;
-        let floor_budget_ms = (floor_pages_with_headroom as u128)
-            .saturating_mul(base_fetch_budget_ms)
-            .div_ceil(fetch_page_limit.max(1) as u128);
+        let floor_budget_ms =
+            (floor_pages_with_headroom as u128).saturating_mul(target_ms_per_page.max(1) as u128);
         let target_budget_ms = baseline_time_budget.as_millis().max(floor_budget_ms).max(1);
         StdDuration::from_millis(target_budget_ms.min(u64::MAX as u128) as u64)
     }
 
     fn deep_replay_sol_leg_target_time_budget(
-        &self,
         baseline_time_budget: StdDuration,
-        fetch_page_limit: usize,
         target_floor_pages: usize,
+        target_ms_per_page: u64,
     ) -> StdDuration {
-        let target_budget_ms = self
-            .deep_replay_sol_leg_target_time_budget_uncapped(
-                baseline_time_budget,
-                fetch_page_limit,
-                target_floor_pages,
-            )
-            .as_millis()
-            .min(DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MAX_TIME_BUDGET_MS as u128)
-            .max(1);
+        let target_budget_ms = Self::deep_replay_sol_leg_target_time_budget_uncapped(
+            baseline_time_budget,
+            target_floor_pages,
+            target_ms_per_page,
+        )
+        .as_millis()
+        .min(DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MAX_TIME_BUDGET_MS as u128)
+        .max(1);
         StdDuration::from_millis(target_budget_ms.min(u64::MAX as u128) as u64)
     }
 
@@ -2940,10 +2974,12 @@ impl DiscoveryService {
             ));
             let processed_floor_pages =
                 Self::replay_sol_leg_processed_floor_pages(fetch_limit, state);
-            let deep_time_budget = self.deep_replay_sol_leg_target_time_budget(
+            let target_ms_per_page =
+                self.replay_sol_leg_target_ms_per_page(fetch_page_limit, state);
+            let deep_time_budget = Self::deep_replay_sol_leg_target_time_budget(
                 baseline_time_budget,
-                fetch_page_limit,
                 processed_floor_pages,
+                target_ms_per_page,
             );
             let deep_reason = if deep_time_budget > baseline_time_budget {
                 Some("deep_replay_candidate_activity_backfill_large_processed_backlog")
@@ -2982,10 +3018,11 @@ impl DiscoveryService {
         let target_floor_pages = processed_floor_pages
             .saturating_add(open_frontier_floor_pages)
             .max(processed_floor_pages);
-        let mut deep_time_budget = self.deep_replay_sol_leg_target_time_budget(
+        let target_ms_per_page = self.replay_sol_leg_target_ms_per_page(fetch_page_limit, state);
+        let mut deep_time_budget = Self::deep_replay_sol_leg_target_time_budget(
             baseline_time_budget,
-            fetch_page_limit,
             target_floor_pages,
+            target_ms_per_page,
         );
         let mut deep_reason =
             if deep_time_budget > baseline_time_budget && open_frontier_floor_pages > 0 {
@@ -3014,10 +3051,10 @@ impl DiscoveryService {
             let remaining_publishable_horizon_budget =
                 StdDuration::from_millis(remaining_publishable_horizon_ms.max(1));
             let deep_time_budget_before_publishable_horizon_adjustment = deep_time_budget;
-            let uncapped_frontier_budget = self.deep_replay_sol_leg_target_time_budget_uncapped(
+            let uncapped_frontier_budget = Self::deep_replay_sol_leg_target_time_budget_uncapped(
                 baseline_time_budget,
-                fetch_page_limit,
                 target_floor_pages,
+                target_ms_per_page,
             );
             let publishable_horizon_budget = uncapped_frontier_budget
                 .max(deep_time_budget_before_publishable_horizon_adjustment)
@@ -5479,6 +5516,13 @@ impl DiscoveryService {
         let replay_sol_leg_remaining_frontier_min_rows =
             replay_sol_leg_remaining_frontier_min_pages
                 .saturating_mul(self.config.max_fetch_swaps_per_cycle.max(1));
+        let replay_sol_leg_target_ms_per_page =
+            Self::replay_sol_leg_target_ms_per_page_from_observed_cycle(
+                self.config.fetch_time_budget_ms,
+                self.config.max_fetch_pages_per_cycle,
+                telemetry.replay_sol_leg_last_partial_cycle_pages_processed,
+                telemetry.replay_sol_leg_last_partial_cycle_elapsed_ms,
+            );
         info!(
             rebuild_phase = telemetry.phase.as_str(),
             rebuild_collect_buy_mints_mode = telemetry.collect_buy_mints_mode.as_str(),
@@ -5622,6 +5666,8 @@ impl DiscoveryService {
                 telemetry.replay_sol_leg_last_partial_cycle_rows_processed,
             rebuild_replay_sol_leg_last_partial_cycle_elapsed_ms =
                 telemetry.replay_sol_leg_last_partial_cycle_elapsed_ms,
+            rebuild_replay_sol_leg_target_ms_per_page =
+                replay_sol_leg_target_ms_per_page,
             rebuild_replay_sol_leg_publishable_horizon_remaining_ms =
                 telemetry.replay_sol_leg_publishable_horizon_remaining_ms,
             rebuild_replay_sol_leg_retained_contract_floor_pages =
@@ -7332,15 +7378,17 @@ impl DiscoveryService {
             replay_sol_leg_remaining_frontier_min_pages.saturating_mul(fetch_limit);
         let replay_sol_leg_frontier_saturated =
             Self::replay_sol_leg_last_partial_cycle_frontier_saturated(fetch_limit, &state);
-        let replay_sol_leg_target_time_budget_before_retained_contract_floor = self
-            .deep_replay_sol_leg_target_time_budget(
+        let replay_sol_leg_target_ms_per_page =
+            self.replay_sol_leg_target_ms_per_page(fetch_page_limit, &state);
+        let replay_sol_leg_target_time_budget_before_retained_contract_floor =
+            Self::deep_replay_sol_leg_target_time_budget(
                 requested_contract.time_budget.max(StdDuration::from_millis(
                     DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MIN_TIME_BUDGET_MS,
                 )),
-                fetch_page_limit,
                 replay_sol_leg_processed_floor_pages
                     .saturating_add(replay_sol_leg_open_frontier_floor_pages)
                     .max(replay_sol_leg_processed_floor_pages),
+                replay_sol_leg_target_ms_per_page,
             );
         let replay_sol_leg_phase_page_limit_before_retained_contract_floor = self
             .replay_sol_leg_repair_phase_page_limit(
@@ -7444,6 +7492,8 @@ impl DiscoveryService {
                     .replay_sol_leg_retained_contract_floor_pages,
                 rebuild_replay_sol_leg_publishable_horizon_remaining_ms = self
                     .replay_sol_leg_remaining_publishable_horizon_ms(&state, now),
+                rebuild_replay_sol_leg_target_ms_per_page =
+                    replay_sol_leg_target_ms_per_page,
                 rebuild_replay_sol_leg_target_time_budget_before_retained_contract_floor_ms =
                     replay_sol_leg_target_time_budget_before_retained_contract_floor.as_millis(),
                 rebuild_replay_sol_leg_phase_page_limit_before_retained_contract_floor =
@@ -25870,12 +25920,124 @@ mod tests {
         );
         assert_eq!(
             publishable_horizon_contract.time_budget,
-            StdDuration::from_millis(2_178_000),
-            "the same reduced live-shaped sol_leg checkpoint needs the full frontier-derived 726-page lane once the stale target still has 3_600_000ms of publishable lifetime left"
+            StdDuration::from_millis(3_267_726),
+            "the same reduced live-shaped sol_leg checkpoint must budget against its observed 4_501ms/page replay cost, not the nominal 3_000ms/page fetch contract, once the stale target still has enough publishable lifetime left"
         );
         assert_eq!(
             publishable_horizon_contract.replay_sol_leg_phase_page_limit_override,
-            Some(730)
+            Some(1_090)
+        );
+    }
+
+    #[test]
+    fn persisted_stream_priority_recovery_contract_live_like_slow_replay_sol_leg_requires_observed_page_cost_stage1(
+    ) {
+        let now = DateTime::parse_from_rfc3339("2026-04-04T14:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 20_000;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let current_metrics_window_start = metrics_window_start_for_test(&config, now);
+        let stale_metrics_window_start = current_metrics_window_start
+            - Duration::seconds(config.metric_snapshot_interval_seconds as i64);
+        let mut state = discovery.start_persisted_stream_rebuild_state(
+            now - Duration::days(config.scoring_window_days.max(1) as i64),
+            stale_metrics_window_start,
+            now,
+        );
+        state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        state.horizon_end = now;
+        state.phase_cursor = Some(DiscoveryRuntimeCursor {
+            ts_utc: now - Duration::minutes(1),
+            slot: 409_909_030,
+            signature: "stage1-sol-leg-observed-ms-per-page".to_string(),
+        });
+        state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        state.payload.replay_wallet_stats_complete = true;
+        state.payload.replay_wallet_stats_milestone_reached = true;
+        state.payload.replay_candidate_activity_backfill_required = true;
+        state.payload.unique_buy_mints =
+            vec!["TokenReplaySolLegObserved1111111111111111111".to_string()];
+        state.payload.buy_mint_counts = state
+            .payload
+            .unique_buy_mints
+            .iter()
+            .cloned()
+            .map(|mint| (mint, 1u32))
+            .collect();
+        state.payload.by_wallet.insert(
+            "wallet_replay_sol_leg_observed_cost".to_string(),
+            WalletAccumulator::default(),
+        );
+        state.replay_rows_processed = 5_921_305;
+        state.replay_pages_processed = 298;
+        state
+            .payload
+            .replay_sol_leg_last_partial_cycle_pages_processed = 186;
+        state
+            .payload
+            .replay_sol_leg_last_partial_cycle_rows_processed = 3_706_494;
+        state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms = 837_001;
+
+        let target_floor_pages = DiscoveryService::replay_sol_leg_processed_floor_pages(
+            config.max_fetch_swaps_per_cycle,
+            &state,
+        )
+        .saturating_add(DiscoveryService::replay_sol_leg_open_frontier_floor_pages(
+            config.max_fetch_swaps_per_cycle,
+            &state,
+        ))
+        .max(DiscoveryService::replay_sol_leg_processed_floor_pages(
+            config.max_fetch_swaps_per_cycle,
+            &state,
+        ));
+        let floor_pages_with_headroom = target_floor_pages
+            .saturating_mul(
+                DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_NUMERATOR,
+            )
+            .div_ceil(
+                DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_DENOMINATOR,
+            );
+        let legacy_target_ms_per_page = config
+            .fetch_time_budget_ms
+            .div_ceil(config.max_fetch_pages_per_cycle as u64);
+        let observed_target_ms_per_page =
+            discovery.replay_sol_leg_target_ms_per_page(config.max_fetch_pages_per_cycle, &state);
+        assert_eq!(legacy_target_ms_per_page, 3_000);
+        assert_eq!(observed_target_ms_per_page, 4_501);
+
+        let legacy_floor_budget_ms = floor_pages_with_headroom as u64 * legacy_target_ms_per_page;
+        let legacy_coverable_pages_under_observed_cost =
+            legacy_floor_budget_ms / observed_target_ms_per_page.max(1);
+        assert!(
+            legacy_coverable_pages_under_observed_cost < floor_pages_with_headroom as u64,
+            "the old static sol-leg contract underbudgets this live-like replay checkpoint: it only covers {legacy_coverable_pages_under_observed_cost} of {floor_pages_with_headroom} required headroom pages once the stored 4_501ms/page replay cost is honored"
+        );
+
+        let publishable_horizon_contract = discovery
+            .deepen_persisted_stream_priority_recovery_contract_for_state_at(
+                &state,
+                config.max_fetch_swaps_per_cycle,
+                config.max_fetch_pages_per_cycle,
+                PersistedStreamPriorityRecoveryContract {
+                    time_budget: StdDuration::from_secs(60),
+                    collect_buy_mints_phase_page_limit_override: Some(160),
+                    replay_wallet_stats_phase_page_limit_override: Some(92),
+                    replay_sol_leg_phase_page_limit_override: Some(300),
+                    reason: Some("runtime_window_complete_stale_publication_truth"),
+                },
+                Some(now),
+            );
+        let new_coverable_pages_under_observed_cost =
+            publishable_horizon_contract.time_budget.as_millis() as u64
+                / observed_target_ms_per_page.max(1);
+        assert!(
+            new_coverable_pages_under_observed_cost >= floor_pages_with_headroom as u64,
+            "the observed-cost-aware contract must budget enough time for the same live-like frontier instead of leaving it mathematically underprovisioned on the stored replay cost"
         );
     }
 
@@ -26154,8 +26316,8 @@ mod tests {
         );
         assert_eq!(
             adjusted_contract.replay_sol_leg_phase_page_limit_override,
-            Some(730),
-            "the reduced live-like resumed sol_leg checkpoint should widen past the static 300-page cap once the remaining open frontier still fits safely inside the publishable horizon"
+            Some(1_090),
+            "the reduced live-like resumed sol_leg checkpoint should now widen past the static 300-page cap using its observed sol-leg replay cost, not just nominal fetch-time page math, once the remaining open frontier still fits safely inside the publishable horizon"
         );
 
         runtime_store.upsert_discovery_persisted_rebuild_state(
