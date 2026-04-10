@@ -9934,6 +9934,137 @@ mod tests {
     }
 
     #[test]
+    fn observed_sol_leg_swap_cursor_query_for_target_buy_mints_skips_non_target_tail_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("observed-sol-leg-target-mint-filter-query.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let base = DateTime::parse_from_rfc3339("2026-04-10T20:04:38Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        for swap in [
+            SwapEvent {
+                signature: "target-buy-1".to_string(),
+                wallet: "wallet-target".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-target".to_string(),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                slot: 10,
+                ts_utc: base + Duration::seconds(1),
+                exact_amounts: None,
+            },
+            SwapEvent {
+                signature: "target-sell-1".to_string(),
+                wallet: "wallet-target".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "token-target".to_string(),
+                token_out: "So11111111111111111111111111111111111111112".to_string(),
+                amount_in: 10.0,
+                amount_out: 1.2,
+                slot: 11,
+                ts_utc: base + Duration::seconds(2),
+                exact_amounts: None,
+            },
+            SwapEvent {
+                signature: "noise-buy-1".to_string(),
+                wallet: "wallet-noise".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-noise-a".to_string(),
+                amount_in: 0.5,
+                amount_out: 5.0,
+                slot: 12,
+                ts_utc: base + Duration::seconds(3),
+                exact_amounts: None,
+            },
+            SwapEvent {
+                signature: "noise-sell-1".to_string(),
+                wallet: "wallet-noise".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "token-noise-a".to_string(),
+                token_out: "So11111111111111111111111111111111111111112".to_string(),
+                amount_in: 5.0,
+                amount_out: 0.4,
+                slot: 13,
+                ts_utc: base + Duration::seconds(4),
+                exact_amounts: None,
+            },
+            SwapEvent {
+                signature: "noise-buy-2".to_string(),
+                wallet: "wallet-noise".to_string(),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: "token-noise-b".to_string(),
+                amount_in: 0.7,
+                amount_out: 7.0,
+                slot: 14,
+                ts_utc: base + Duration::seconds(5),
+                exact_amounts: None,
+            },
+        ] {
+            assert!(store.insert_observed_swap(&swap)?);
+        }
+
+        let cursor = DiscoveryRuntimeCursor {
+            ts_utc: base + Duration::seconds(2),
+            slot: 11,
+            signature: "target-sell-1".to_string(),
+        };
+
+        let mut broad_tail = Vec::new();
+        let broad = store.for_each_observed_sol_leg_swap_in_window_after_cursor_with_budget(
+            base,
+            base + Duration::seconds(10),
+            Some(&cursor),
+            10,
+            std::time::Instant::now() + StdDuration::from_secs(1),
+            |swap| {
+                broad_tail.push(swap.signature);
+                Ok(())
+            },
+        )?;
+        assert_eq!(broad.rows_seen, 3);
+        assert_eq!(
+            broad_tail,
+            vec![
+                "noise-buy-1".to_string(),
+                "noise-sell-1".to_string(),
+                "noise-buy-2".to_string()
+            ]
+        );
+
+        let mut filtered_tail = Vec::new();
+        let filtered = store
+            .for_each_observed_sol_leg_swap_in_window_after_cursor_for_target_buy_mints_with_budget(
+                base,
+                base + Duration::seconds(10),
+                Some(&cursor),
+                &["token-target".to_string()],
+                10,
+                std::time::Instant::now() + StdDuration::from_secs(1),
+                |swap| {
+                    filtered_tail.push(swap.signature);
+                    Ok(())
+                },
+            )?;
+        assert_eq!(filtered.rows_seen, 0);
+        assert!(filtered_tail.is_empty());
+        assert_eq!(
+            filtered.access_path,
+            ObservedSolLegCursorAccessPath::SolLegPartialIndex
+        );
+        Ok(())
+    }
+
+    #[test]
     fn observed_sol_leg_swap_cursor_query_works_before_and_after_deferred_index_migration(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;

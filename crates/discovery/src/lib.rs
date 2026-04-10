@@ -7147,95 +7147,133 @@ impl DiscoveryService {
             let sol_leg_page_started = Instant::now();
             let mut page_last_cursor = cursor.clone();
             let base_replay_rows_processed = state.replay_rows_processed;
-            let page = store.for_each_observed_sol_leg_swap_in_window_after_cursor_with_budget(
-                state.window_start,
-                state.horizon_end,
-                cursor.as_ref(),
-                fetch_limit,
-                deadline,
-                |swap| {
-                    page_last_cursor = Some(DiscoveryRuntimeCursor {
-                        ts_utc: swap.ts_utc,
-                        slot: swap.slot,
-                        signature: swap.signature.clone(),
-                    });
-                    let buy_quality = self.update_token_quality_state_streaming(
-                        &mut state.payload.token_states,
-                        &mut state.payload.token_recent_sol_trades,
-                        &state.payload.token_quality_cache,
-                        &swap,
+            let on_swap = |swap: SwapEvent,
+                           state: &mut PersistedStreamRebuildState,
+                           page_last_cursor: &mut Option<DiscoveryRuntimeCursor>,
+                           replay_rows_processed: &mut usize,
+                           replay_sol_leg_rows_processed: &mut usize|
+             -> Result<()> {
+                *page_last_cursor = Some(DiscoveryRuntimeCursor {
+                    ts_utc: swap.ts_utc,
+                    slot: swap.slot,
+                    signature: swap.signature.clone(),
+                });
+                let buy_quality = self.update_token_quality_state_streaming(
+                    &mut state.payload.token_states,
+                    &mut state.payload.token_recent_sol_trades,
+                    &state.payload.token_quality_cache,
+                    &swap,
+                );
+                let buy_quality_requires_retry = is_sol_buy(&swap)
+                    && Self::token_quality_resolution_requires_publish_pending_retry(
+                        state.payload.token_quality_cache.get(&swap.token_out),
                     );
-                    let buy_quality_requires_retry = is_sol_buy(&swap)
-                        && Self::token_quality_resolution_requires_publish_pending_retry(
-                            state.payload.token_quality_cache.get(&swap.token_out),
-                        );
-                    let entry = state
-                        .payload
-                        .by_wallet
-                        .entry(swap.wallet.clone())
-                        .or_default();
-                    if is_sol_buy(&swap) {
-                        entry.observe_buy_streaming(
-                            swap.token_out.as_str(),
-                            swap.amount_out,
-                            swap.amount_in,
-                            swap.ts_utc,
-                            buy_quality.unwrap_or(BuyTradability::Rejected),
-                            buy_quality_requires_retry,
-                        );
-                    } else if is_sol_sell(&swap) {
-                        entry.observe_sell(
-                            swap.token_in.as_str(),
-                            swap.amount_in,
-                            swap.amount_out,
-                            swap.ts_utc,
-                        );
-                    }
-
-                    let Some(token) = sol_leg_token(&swap) else {
-                        return Ok(());
-                    };
-                    self.finalize_streaming_rug_metrics_up_to(
-                        &mut state.payload.by_wallet,
-                        token,
-                        &mut state.payload.token_recent_sol_trades,
-                        &mut state.payload.pending_rug_checks,
-                        &mut state.payload.token_pending_buy_starts,
+                let entry = state
+                    .payload
+                    .by_wallet
+                    .entry(swap.wallet.clone())
+                    .or_default();
+                if is_sol_buy(&swap) {
+                    entry.observe_buy_streaming(
+                        swap.token_out.as_str(),
+                        swap.amount_out,
+                        swap.amount_in,
                         swap.ts_utc,
-                        lookahead,
-                        state.horizon_end,
+                        buy_quality.unwrap_or(BuyTradability::Rejected),
+                        buy_quality_requires_retry,
                     );
-                    if is_sol_buy(&swap) {
-                        state
-                            .payload
-                            .pending_rug_checks
-                            .push_back(PendingBuyRugCheck {
-                                token: token.to_string(),
-                                wallet_id: swap.wallet.clone(),
-                                buy_ts: swap.ts_utc,
-                            });
-                        state
-                            .payload
-                            .token_pending_buy_starts
-                            .entry(token.to_string())
-                            .or_default()
-                            .push_back(swap.ts_utc);
-                    }
-                    let processed_total = base_replay_rows_processed
-                        .saturating_add(replay_rows_processed)
-                        .saturating_add(1);
-                    if processed_total % STREAMING_RUG_TRADE_SWEEP_INTERVAL_SWAPS == 0 {
-                        self.evict_idle_streaming_rug_trade_history(
-                            &mut state.payload.token_recent_sol_trades,
-                            &state.payload.token_pending_buy_starts,
-                            swap.ts_utc - lookahead,
-                        );
-                    }
-                    replay_rows_processed = replay_rows_processed.saturating_add(1);
-                    replay_sol_leg_rows_processed = replay_sol_leg_rows_processed.saturating_add(1);
-                    Ok(())
-                },
-            )?;
+                } else if is_sol_sell(&swap) {
+                    entry.observe_sell(
+                        swap.token_in.as_str(),
+                        swap.amount_in,
+                        swap.amount_out,
+                        swap.ts_utc,
+                    );
+                }
+
+                let Some(token) = sol_leg_token(&swap) else {
+                    return Ok(());
+                };
+                self.finalize_streaming_rug_metrics_up_to(
+                    &mut state.payload.by_wallet,
+                    token,
+                    &mut state.payload.token_recent_sol_trades,
+                    &mut state.payload.pending_rug_checks,
+                    &mut state.payload.token_pending_buy_starts,
+                    swap.ts_utc,
+                    lookahead,
+                    state.horizon_end,
+                );
+                if is_sol_buy(&swap) {
+                    state
+                        .payload
+                        .pending_rug_checks
+                        .push_back(PendingBuyRugCheck {
+                            token: token.to_string(),
+                            wallet_id: swap.wallet.clone(),
+                            buy_ts: swap.ts_utc,
+                        });
+                    state
+                        .payload
+                        .token_pending_buy_starts
+                        .entry(token.to_string())
+                        .or_default()
+                        .push_back(swap.ts_utc);
+                }
+                let processed_total = base_replay_rows_processed
+                    .saturating_add(*replay_rows_processed)
+                    .saturating_add(1);
+                if processed_total % STREAMING_RUG_TRADE_SWEEP_INTERVAL_SWAPS == 0 {
+                    self.evict_idle_streaming_rug_trade_history(
+                        &mut state.payload.token_recent_sol_trades,
+                        &state.payload.token_pending_buy_starts,
+                        swap.ts_utc - lookahead,
+                    );
+                }
+                *replay_rows_processed = (*replay_rows_processed).saturating_add(1);
+                *replay_sol_leg_rows_processed = (*replay_sol_leg_rows_processed).saturating_add(1);
+                Ok(())
+            };
+            let exact_target_buy_mints =
+                (state.payload.replay_candidate_activity_backfill_required
+                    && !state.payload.discovery_critical_target_buy_mints.is_empty())
+                .then(|| state.payload.discovery_critical_target_buy_mints.clone());
+            let page = if let Some(exact_target_buy_mints) = exact_target_buy_mints.as_ref() {
+                store.for_each_observed_sol_leg_swap_in_window_after_cursor_for_target_buy_mints_with_budget(
+                    state.window_start,
+                    state.horizon_end,
+                    cursor.as_ref(),
+                    exact_target_buy_mints,
+                    fetch_limit,
+                    deadline,
+                    |swap| {
+                        on_swap(
+                            swap,
+                            state,
+                            &mut page_last_cursor,
+                            &mut replay_rows_processed,
+                            &mut replay_sol_leg_rows_processed,
+                        )
+                    },
+                )?
+            } else {
+                store.for_each_observed_sol_leg_swap_in_window_after_cursor_with_budget(
+                    state.window_start,
+                    state.horizon_end,
+                    cursor.as_ref(),
+                    fetch_limit,
+                    deadline,
+                    |swap| {
+                        on_swap(
+                            swap,
+                            state,
+                            &mut page_last_cursor,
+                            &mut replay_rows_processed,
+                            &mut replay_sol_leg_rows_processed,
+                        )
+                    },
+                )?
+            };
             replay_sol_leg_elapsed_ms = replay_sol_leg_elapsed_ms
                 .saturating_add(sol_leg_page_started.elapsed().as_millis() as u64);
             replay_sol_leg_access_path = Some(page.access_path);
@@ -27222,6 +27260,263 @@ mod tests {
             pinned.payload.replay_candidate_activity_backfill_pending || pinned_advance.source_exhausted,
             "moving beyond the blocker must mean the frozen target exhausted the remaining sol-leg source and entered exact candidate activity backfill, not merely that a different metric changed"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn exact_target_filtered_sol_leg_replay_beats_broad_tail_on_pinned_lineage_stage1() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-exact-target-filtered-sol-leg-replay.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let source_now = DateTime::parse_from_rfc3339("2026-04-07T17:38:43Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        config.observed_swaps_retention_days = 14;
+        config.max_window_swaps_in_memory = 64;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 25_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (full_swaps, legit_wallet_ids, _junk_wallet_ids) =
+            long_horizon_carry_vs_refill_drain_fixture_swaps(&config, source_now);
+        insert_observed_swaps_and_seed_runtime_cursor(&runtime_store, &full_swaps)?;
+
+        let helper_by_wallet = replay_streaming_wallet_accumulators_from_swaps_for_test(
+            &discovery,
+            &full_swaps,
+            source_now,
+        );
+        let exact_target_buy_mints = discovery
+            .discovery_critical_target_buy_mints_from_accumulators(
+                &runtime_store,
+                &helper_by_wallet,
+                source_now,
+            )?;
+        assert!(
+            !exact_target_buy_mints.is_empty(),
+            "the reduced live-like lineage must first recover a non-empty exact target-mint surface before the remaining replay seam can be attributed to the broad non-target SOL-leg tail"
+        );
+        let exact_target_buy_mint_set: HashSet<String> =
+            exact_target_buy_mints.iter().cloned().collect();
+        let exact_target_only_swaps = omit_nonfollowed_market_context_swaps_except_tokens(
+            &full_swaps,
+            &exact_target_buy_mint_set,
+        );
+        assert!(
+            exact_target_only_swaps.len() < full_swaps.len(),
+            "the reduced live-like seam must actually leave a generic non-target SOL-leg tail behind for the old broad replay path to consume"
+        );
+        let last_exact_target_sol_leg = full_swaps
+            .iter()
+            .rev()
+            .find(|swap| {
+                sol_leg_token(swap).is_some_and(|token| exact_target_buy_mint_set.contains(token))
+            })
+            .cloned()
+            .context("missing last exact-target SOL-leg swap in reduced live-like fixture")?;
+
+        let window_start = source_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let source_metrics_window_start = metrics_window_start_for_test(&config, source_now);
+        let target_now =
+            source_now + Duration::seconds(config.metric_snapshot_interval_seconds as i64 + 61);
+        let target_window_start =
+            target_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let target_metrics_window_start = metrics_window_start_for_test(&config, target_now);
+        let mut replay_state = discovery.start_persisted_stream_rebuild_state(
+            window_start,
+            source_metrics_window_start,
+            source_now,
+        );
+        replay_state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        replay_state.horizon_end = source_now;
+        replay_state.phase_cursor = Some(DiscoveryRuntimeCursor {
+            ts_utc: last_exact_target_sol_leg.ts_utc,
+            slot: last_exact_target_sol_leg.slot,
+            signature: last_exact_target_sol_leg.signature.clone(),
+        });
+        replay_state.payload.collect_buy_mints_prepass_complete = true;
+        replay_state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+        replay_state.payload.unique_buy_mints =
+            runtime_store.load_observed_buy_mints_in_window(window_start, source_now)?;
+        replay_state.payload.buy_mint_counts = replay_state
+            .payload
+            .unique_buy_mints
+            .iter()
+            .cloned()
+            .map(|mint| (mint, 1u32))
+            .collect();
+        replay_state.payload.token_quality_cache = fresh_token_quality_cache_for_mints_for_test(
+            &replay_state.payload.unique_buy_mints,
+            source_now,
+        );
+        replay_state.payload.token_quality_progress.next_mint_index =
+            replay_state.payload.unique_buy_mints.len();
+        replay_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        replay_state.payload.replay_wallet_stats_complete = true;
+        replay_state.payload.replay_wallet_stats_milestone_reached = true;
+        replay_state
+            .payload
+            .replay_candidate_activity_backfill_required = true;
+        replay_state.payload.discovery_critical_target_buy_mints = exact_target_buy_mints.clone();
+        replay_state.payload.by_wallet = replay_streaming_wallet_accumulators_from_swaps_for_test(
+            &discovery,
+            &exact_target_only_swaps,
+            source_now,
+        );
+        replay_state.replay_rows_processed = exact_target_only_swaps.len();
+        replay_state.replay_pages_processed = replay_state
+            .replay_rows_processed
+            .div_ceil(config.max_fetch_swaps_per_cycle.max(1));
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_pages_processed = 306;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_rows_processed = 6_106_144;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_elapsed_ms = 2_511_710;
+        replay_state.payload.replay_sol_leg_budget_floor_pages = 326;
+
+        runtime_store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, source_now)?,
+        )?;
+        let (resumed, restore_outcome) = discovery.load_or_start_persisted_stream_rebuild_state(
+            &runtime_store,
+            target_window_start,
+            target_metrics_window_start,
+            target_now,
+        )?;
+        assert_eq!(
+            restore_outcome,
+            PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow,
+            "the reduced live-like checkpoint must first resume on the pinned stale target so the remaining blocker is attributed to the exact post-c9c7f01 seam, not to pre-pin rollover rebasing"
+        );
+        let adjusted_contract = discovery
+            .deepen_persisted_stream_priority_recovery_contract_for_state_at(
+                &resumed,
+                config.max_fetch_swaps_per_cycle,
+                config.max_fetch_pages_per_cycle,
+                PersistedStreamPriorityRecoveryContract {
+                    time_budget: StdDuration::from_secs(60),
+                    collect_buy_mints_phase_page_limit_override: Some(160),
+                    replay_wallet_stats_phase_page_limit_override: Some(92),
+                    replay_sol_leg_phase_page_limit_override: Some(300),
+                    reason: Some("runtime_window_complete_stale_publication_truth"),
+                },
+                Some(target_now),
+            );
+        assert!(
+            adjusted_contract
+                .replay_sol_leg_phase_page_limit_override
+                .is_some_and(|limit| limit > config.max_fetch_pages_per_cycle),
+            "the reduced live-like seam must keep the already-landed deep sol-leg recovery contract active while the A/B isolates the remaining source-exhaustion boundary"
+        );
+        let broad_tail_row_count = adjusted_contract
+            .replay_sol_leg_phase_page_limit_override
+            .unwrap_or(config.max_fetch_pages_per_cycle)
+            .saturating_mul(config.max_fetch_swaps_per_cycle.max(1))
+            .saturating_add(config.max_fetch_swaps_per_cycle.max(1));
+        let tail_base_ts = last_exact_target_sol_leg.ts_utc + Duration::seconds(1);
+        for idx in 0..broad_tail_row_count {
+            let ts = tail_base_ts + Duration::seconds((idx / 2) as i64);
+            let token = format!("TokenStage1BroadTailNoise{idx:04}11111111111111111111");
+            let (token_in, token_out, amount_in, amount_out) = if idx % 2 == 0 {
+                (SOL_MINT.to_string(), token.clone(), 0.5, 50.0)
+            } else {
+                (token.clone(), SOL_MINT.to_string(), 50.0, 0.4)
+            };
+            let swap = SwapEvent {
+                signature: format!("stage1-broad-tail-noise-{idx:04}"),
+                wallet: format!("wallet_stage1_broad_tail_noise_{:04}", idx / 2),
+                dex: "raydium".to_string(),
+                token_in,
+                token_out,
+                amount_in,
+                amount_out,
+                slot: 9_000_000 + idx as u64,
+                ts_utc: ts.min(source_now),
+                exact_amounts: None,
+            };
+            runtime_store.insert_observed_swap(&swap)?;
+        }
+        let latest_tail_cursor = DiscoveryRuntimeCursor {
+            ts_utc: (tail_base_ts
+                + Duration::seconds((broad_tail_row_count.saturating_sub(1) / 2) as i64))
+            .min(source_now),
+            slot: 9_000_000 + broad_tail_row_count.saturating_sub(1) as u64,
+            signature: format!(
+                "stage1-broad-tail-noise-{:04}",
+                broad_tail_row_count.saturating_sub(1)
+            ),
+        };
+        runtime_store.upsert_discovery_runtime_cursor(&latest_tail_cursor)?;
+
+        let mut old_like = resumed.clone();
+        old_like.payload.discovery_critical_target_buy_mints.clear();
+        let old_like_advance = discovery
+            .advance_persisted_stream_replay_optimized_with_wallet_stats_phase_page_limit(
+                &runtime_store,
+                &mut old_like,
+                config.max_fetch_swaps_per_cycle,
+                config.max_fetch_pages_per_cycle,
+                adjusted_contract.replay_wallet_stats_phase_page_limit_override,
+                adjusted_contract.replay_sol_leg_phase_page_limit_override,
+                false,
+                Instant::now() + StdDuration::from_secs(30),
+            )?;
+        assert!(
+            !old_like_advance.source_exhausted,
+            "current broad replay semantics must still stay mid-sol-leg on the reduced live-like lineage because the remaining generic non-target tail keeps the source-exhaustion boundary moving"
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &old_like
+            ),
+            "replay_sol_leg_incomplete",
+            "without the persisted exact target-mint filter, the same pinned lineage should keep scanning the broad non-target SOL-leg tail and remain on the exact live blocker"
+        );
+
+        let mut filtered = resumed;
+        let filtered_advance = discovery
+            .advance_persisted_stream_replay_optimized_with_wallet_stats_phase_page_limit(
+                &runtime_store,
+                &mut filtered,
+                config.max_fetch_swaps_per_cycle,
+                config.max_fetch_pages_per_cycle,
+                adjusted_contract.replay_wallet_stats_phase_page_limit_override,
+                adjusted_contract.replay_sol_leg_phase_page_limit_override,
+                false,
+                Instant::now() + StdDuration::from_secs(30),
+            )?;
+        assert_ne!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &filtered
+            ),
+            "replay_sol_leg_incomplete",
+            "once the same pinned lineage replays only its persisted exact target-mint surface, the remaining broad non-target SOL-leg tail should stop blocking the handoff beyond replay_sol_leg_incomplete"
+        );
+        assert!(
+            filtered.payload.replay_candidate_activity_backfill_pending
+                || filtered_advance.source_exhausted
+                || filtered.phase == DiscoveryPersistedRebuildPhase::PublishPending,
+            "moving beyond the blocker must mean the exact-target-filtered replay exhausted the relevant SOL-leg source and entered candidate backfill or publish-pending, not merely that a different metric changed"
+        );
+        if filtered.phase == DiscoveryPersistedRebuildPhase::PublishPending {
+            assert_eq!(
+                filtered.payload.publish_pending_requested_wallet_ids,
+                Some(legit_wallet_ids),
+                "if the exact-target-filtered replay can finish candidate backfill in the same reduced live-like cycle, it must preserve the real non-empty publish set instead of fabricating a new one"
+            );
+        }
         Ok(())
     }
 
