@@ -24,6 +24,10 @@ const OBSERVED_SOL_LEG_CURSOR_QUERY_PAGE_LIMIT: usize = 2_048;
 const OBSERVED_SOL_LEG_TARGET_BUY_MINT_TEMP_TABLE: &str = "temp_discovery_replay_target_buy_mints";
 const OBSERVED_SOL_LEG_TARGET_BUY_MINT_TEMP_META_TABLE: &str =
     "temp_discovery_replay_target_buy_mints_meta";
+const OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_TABLE: &str =
+    "temp_discovery_replay_candidate_wallets";
+const OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_META_TABLE: &str =
+    "temp_discovery_replay_candidate_wallets_meta";
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ObservedSwapCursorPage {
@@ -90,6 +94,12 @@ pub struct ObservedWalletActivityPage {
     pub rows_seen: usize,
     pub time_budget_exhausted: bool,
     pub active_day_count_source: Option<ObservedWalletActivityDayCountSource>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ObservedWalletActivityWalletIdPage {
+    wallet_ids: Vec<String>,
+    time_budget_exhausted: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1535,21 +1545,109 @@ impl SqliteStore {
             .conn
             .prepare(wallet_ids_query)
             .context("failed to prepare observed wallet activity wallet-id page query")?;
-        let mut wallet_ids_rows = wallet_ids_stmt
+        let wallet_ids_rows = wallet_ids_stmt
             .query(rusqlite::params_from_iter(wallet_ids_params))
             .context("failed querying observed wallet activity wallet-id page")?;
-        let mut wallet_ids = Vec::new();
+        let wallet_id_page =
+            self.load_observed_wallet_activity_wallet_id_page_from_rows(wallet_ids_rows)?;
+        if wallet_id_page.time_budget_exhausted {
+            return Ok(ObservedWalletActivityPage {
+                rows: Vec::new(),
+                rows_seen: 0,
+                time_budget_exhausted: true,
+                active_day_count_source: None,
+            });
+        }
+        self.observed_wallet_activity_page_for_wallet_ids_in_window_with_budget(
+            &wallet_id_page.wallet_ids,
+            since,
+            until,
+            max_tx_per_minute,
+            deadline,
+        )
+    }
+
+    pub fn observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
+        &self,
+        exact_wallet_ids: &[String],
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        wallet_cursor: Option<&str>,
+        wallet_limit: usize,
+        max_tx_per_minute: u32,
+        deadline: Instant,
+    ) -> Result<ObservedWalletActivityPage> {
+        if exact_wallet_ids.is_empty() || wallet_limit == 0 {
+            return Ok(ObservedWalletActivityPage::default());
+        }
+        if Instant::now() >= deadline {
+            return Ok(ObservedWalletActivityPage {
+                rows: Vec::new(),
+                rows_seen: 0,
+                time_budget_exhausted: true,
+                active_day_count_source: None,
+            });
+        }
+
+        self.ensure_loaded_observed_wallet_activity_target_wallet_filter(exact_wallet_ids)?;
+        let wallet_limit = wallet_limit.min(900).max(1) as i64;
+        let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
+        let (wallet_ids_query, wallet_ids_params): (&str, Vec<rusqlite::types::Value>) =
+            match wallet_cursor {
+                Some(wallet_cursor) => (
+                    "SELECT wallet_id
+                     FROM temp_discovery_replay_candidate_wallets
+                     WHERE wallet_id > ?1
+                     ORDER BY wallet_id ASC
+                     LIMIT ?2",
+                    vec![wallet_cursor.to_string().into(), wallet_limit.into()],
+                ),
+                None => (
+                    "SELECT wallet_id
+                     FROM temp_discovery_replay_candidate_wallets
+                     ORDER BY wallet_id ASC
+                     LIMIT ?1",
+                    vec![wallet_limit.into()],
+                ),
+            };
+        let mut wallet_ids_stmt = self
+            .conn
+            .prepare(wallet_ids_query)
+            .context("failed to prepare exact observed wallet activity wallet-id page query")?;
+        let wallet_ids_rows = wallet_ids_stmt
+            .query(rusqlite::params_from_iter(wallet_ids_params))
+            .context("failed querying exact observed wallet activity wallet-id page")?;
+        let wallet_id_page =
+            self.load_observed_wallet_activity_wallet_id_page_from_rows(wallet_ids_rows)?;
+        if wallet_id_page.time_budget_exhausted {
+            return Ok(ObservedWalletActivityPage {
+                rows: Vec::new(),
+                rows_seen: 0,
+                time_budget_exhausted: true,
+                active_day_count_source: None,
+            });
+        }
+        self.observed_wallet_activity_page_for_wallet_ids_in_window_with_budget(
+            &wallet_id_page.wallet_ids,
+            since,
+            until,
+            max_tx_per_minute,
+            deadline,
+        )
+    }
+
+    fn load_observed_wallet_activity_wallet_id_page_from_rows(
+        &self,
+        mut wallet_ids_rows: rusqlite::Rows<'_>,
+    ) -> Result<ObservedWalletActivityWalletIdPage> {
+        let mut wallet_id_page = ObservedWalletActivityWalletIdPage::default();
         loop {
             let next_row = match wallet_ids_rows.next() {
                 Ok(row) => row,
                 Err(error) => {
                     if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
-                        return Ok(ObservedWalletActivityPage {
-                            rows: Vec::new(),
-                            rows_seen: 0,
-                            time_budget_exhausted: true,
-                            active_day_count_source: None,
-                        });
+                        wallet_id_page.time_budget_exhausted = true;
+                        return Ok(wallet_id_page);
                     }
                     return Err(error)
                         .context("failed iterating observed wallet activity wallet-id rows");
@@ -1558,12 +1656,22 @@ impl SqliteStore {
             let Some(row) = next_row else {
                 break;
             };
-            wallet_ids.push(
+            wallet_id_page.wallet_ids.push(
                 row.get::<_, String>(0)
                     .context("failed reading observed wallet activity wallet_id")?,
             );
         }
+        Ok(wallet_id_page)
+    }
 
+    fn observed_wallet_activity_page_for_wallet_ids_in_window_with_budget(
+        &self,
+        wallet_ids: &[String],
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        max_tx_per_minute: u32,
+        deadline: Instant,
+    ) -> Result<ObservedWalletActivityPage> {
         if wallet_ids.is_empty() {
             return Ok(ObservedWalletActivityPage::default());
         }
@@ -1571,6 +1679,8 @@ impl SqliteStore {
         let placeholders = std::iter::repeat_n("?", wallet_ids.len())
             .collect::<Vec<_>>()
             .join(", ");
+        let since_raw = since.to_rfc3339();
+        let until_raw = until.to_rfc3339();
 
         let mut summaries: HashMap<String, ObservedWalletActivityRow> = HashMap::new();
         let summary_query = format!(
@@ -1644,15 +1754,9 @@ impl SqliteStore {
             );
         }
 
-        // wallet_activity_days is maintained atomically with observed_swaps inserts, so it can
-        // provide exact day counts without paying COUNT(DISTINCT day) on the raw swap window.
-        // If the auxiliary table looks incomplete for this page, fall back to the exact raw scan.
         let active_day_summaries = self
             .observed_wallet_activity_day_summaries_in_window_with_budget(
-                &wallet_ids,
-                since,
-                until,
-                deadline,
+                wallet_ids, since, until, deadline,
             )?;
         let mut active_day_count_source =
             Some(ObservedWalletActivityDayCountSource::WalletActivityDays);
@@ -1671,10 +1775,7 @@ impl SqliteStore {
         if active_day_summaries.rows.len() != wallet_ids.len() {
             let fallback_active_day_counts = self
                 .observed_wallet_active_day_counts_from_swaps_in_window_with_budget(
-                    &wallet_ids,
-                    since,
-                    until,
-                    deadline,
+                    wallet_ids, since, until, deadline,
                 )?;
             if fallback_active_day_counts.time_budget_exhausted {
                 return Ok(ObservedWalletActivityPage {
@@ -1688,7 +1789,7 @@ impl SqliteStore {
             active_day_count_source =
                 Some(ObservedWalletActivityDayCountSource::ObservedSwapsFallback);
         } else {
-            for wallet_id in &wallet_ids {
+            for wallet_id in wallet_ids {
                 let summary = summaries.get(wallet_id).ok_or_else(|| {
                     anyhow!(
                         "missing observed wallet activity summary for wallet {} while loading exact day counts",
@@ -1727,7 +1828,7 @@ impl SqliteStore {
                 active_day_counts.insert(wallet_id.clone(), active_day_count);
             }
         }
-        for wallet_id in &wallet_ids {
+        for wallet_id in wallet_ids {
             let active_day_count = active_day_counts.get(wallet_id).copied().ok_or_else(|| {
                 anyhow!(
                     "failed loading exact wallet activity day count for wallet {} in observed wallet activity page",
@@ -1793,8 +1894,8 @@ impl SqliteStore {
         }
 
         let rows = wallet_ids
-            .into_iter()
-            .filter_map(|wallet_id| summaries.remove(&wallet_id))
+            .iter()
+            .filter_map(|wallet_id| summaries.remove(wallet_id))
             .collect();
         Ok(ObservedWalletActivityPage {
             rows,
@@ -2276,6 +2377,145 @@ impl SqliteStore {
             insert
                 .execute(params![mint])
                 .with_context(|| format!("failed inserting target buy mint into temporary observed SOL-leg filter table: {mint}"))?;
+        }
+        Ok(())
+    }
+
+    fn ensure_observed_wallet_activity_target_wallet_filter_table(&self) -> Result<()> {
+        self.conn
+            .execute_batch(&format!(
+                "CREATE TEMP TABLE IF NOT EXISTS {OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_TABLE} (
+                    wallet_id TEXT PRIMARY KEY
+                ) WITHOUT ROWID;"
+            ))
+            .context(
+                "failed ensuring temporary observed wallet activity target-wallet filter table exists",
+            )
+    }
+
+    fn ensure_observed_wallet_activity_target_wallet_filter_meta_table(&self) -> Result<()> {
+        self.conn
+            .execute_batch(&format!(
+                "CREATE TEMP TABLE IF NOT EXISTS {OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_META_TABLE} (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    fingerprint TEXT NOT NULL,
+                    wallet_count INTEGER NOT NULL
+                ) WITHOUT ROWID;"
+            ))
+            .context(
+                "failed ensuring temporary observed wallet activity target-wallet filter metadata table exists",
+            )
+    }
+
+    fn canonical_observed_wallet_activity_target_wallet_ids(wallet_ids: &[String]) -> Vec<String> {
+        let mut canonical = wallet_ids.to_vec();
+        canonical.sort();
+        canonical.dedup();
+        canonical
+    }
+
+    fn observed_wallet_activity_target_wallet_filter_fingerprint(wallet_ids: &[String]) -> String {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        wallet_ids.len().hash(&mut hasher);
+        for wallet_id in wallet_ids {
+            wallet_id.hash(&mut hasher);
+        }
+        format!("{:016x}", hasher.finish())
+    }
+
+    fn ensure_loaded_observed_wallet_activity_target_wallet_filter(
+        &self,
+        wallet_ids: &[String],
+    ) -> Result<()> {
+        self.ensure_observed_wallet_activity_target_wallet_filter_table()?;
+        self.ensure_observed_wallet_activity_target_wallet_filter_meta_table()?;
+
+        let canonical_wallet_ids =
+            Self::canonical_observed_wallet_activity_target_wallet_ids(wallet_ids);
+        let fingerprint =
+            Self::observed_wallet_activity_target_wallet_filter_fingerprint(&canonical_wallet_ids);
+        let expected_count = canonical_wallet_ids.len() as i64;
+        let loaded = self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT fingerprint, wallet_count
+                     FROM {OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_META_TABLE}
+                     WHERE id = 1"
+                ),
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .context(
+                "failed reading temporary observed wallet activity target-wallet metadata row",
+            )?;
+        let loaded_count = self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM {OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_TABLE}"
+                ),
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .context("failed counting temporary observed wallet activity target-wallet rows")?;
+        if loaded
+            .as_ref()
+            .is_some_and(|(loaded_fingerprint, loaded_wallet_count)| {
+                loaded_fingerprint == &fingerprint
+                    && *loaded_wallet_count == expected_count
+                    && loaded_count == expected_count
+            })
+        {
+            return Ok(());
+        }
+
+        self.replace_observed_wallet_activity_target_wallet_filter(&canonical_wallet_ids)?;
+        self.conn
+            .execute(
+                &format!(
+                    "INSERT INTO {OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_META_TABLE}(
+                        id,
+                        fingerprint,
+                        wallet_count
+                    ) VALUES (1, ?1, ?2)
+                    ON CONFLICT(id) DO UPDATE SET
+                        fingerprint = excluded.fingerprint,
+                        wallet_count = excluded.wallet_count"
+                ),
+                params![fingerprint, expected_count],
+            )
+            .context(
+                "failed persisting temporary observed wallet activity target-wallet metadata row",
+            )?;
+        Ok(())
+    }
+
+    fn replace_observed_wallet_activity_target_wallet_filter(
+        &self,
+        wallet_ids: &[String],
+    ) -> Result<()> {
+        self.ensure_observed_wallet_activity_target_wallet_filter_table()?;
+        self.conn
+            .execute(
+                &format!("DELETE FROM {OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_TABLE}"),
+                [],
+            )
+            .context("failed clearing temporary observed wallet activity target-wallet table")?;
+        let mut insert = self
+            .conn
+            .prepare_cached(&format!(
+                "INSERT OR IGNORE INTO {OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_TABLE}(wallet_id)
+                 VALUES (?1)"
+            ))
+            .context("failed preparing temporary observed wallet activity target-wallet insert")?;
+        for wallet_id in wallet_ids {
+            insert.execute(params![wallet_id]).with_context(|| {
+                format!(
+                    "failed inserting wallet into temporary observed wallet activity filter table: {wallet_id}"
+                )
+            })?;
         }
         Ok(())
     }
@@ -4194,6 +4434,48 @@ mod tests {
         }
     }
 
+    fn seed_wallet_activity_interrupt_fixture(
+        store: &mut SqliteStore,
+        since: DateTime<Utc>,
+        wallet_count: usize,
+        prefix: &str,
+    ) -> Result<Vec<String>> {
+        let mut swaps = Vec::with_capacity(wallet_count);
+        let mut wallet_ids = Vec::with_capacity(wallet_count);
+        for idx in 0..wallet_count {
+            let wallet_id = format!("{prefix}-wallet-{idx:05}");
+            wallet_ids.push(wallet_id.clone());
+            swaps.push(swap(
+                &format!("{prefix}-sig-{idx:05}"),
+                &wallet_id,
+                since + Duration::seconds((idx % 3_600) as i64),
+                SOL_MINT,
+                &format!("{prefix}-token-{idx:05}"),
+                idx as u64 + 1,
+            ));
+        }
+        store.insert_observed_swaps_batch_with_activity_days(&swaps)?;
+        Ok(wallet_ids)
+    }
+
+    fn spawn_interrupt_loop(
+        interrupt_handle: rusqlite::InterruptHandle,
+        warmup: StdDuration,
+    ) -> (Arc<AtomicBool>, thread::JoinHandle<()>) {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = Arc::clone(&stop);
+        let join = thread::spawn(move || {
+            if warmup > StdDuration::from_millis(0) {
+                thread::sleep(warmup);
+            }
+            while !stop_flag.load(Ordering::Relaxed) {
+                interrupt_handle.interrupt();
+                thread::sleep(StdDuration::from_micros(50));
+            }
+        });
+        (stop, join)
+    }
+
     #[derive(Debug, Clone, Copy)]
     struct CheckpointRecurrenceSummary {
         writes_before_reader: usize,
@@ -5260,6 +5542,341 @@ mod tests {
             "future activity after until on the same day must not inflate fast-path active_day_count"
         );
         assert_eq!(by_wallet["wallet-until-present"].active_day_count, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_wallet_activity_page_for_exact_wallets_filters_and_resumes_in_order_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("wallet-activity-page-exact-wallet-filter.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let since = DateTime::parse_from_rfc3339("2026-04-11T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let until = since + Duration::hours(4);
+        store.insert_observed_swap(&swap(
+            "sig-exact-wallet-a-1",
+            "wallet-exact-a",
+            since + Duration::minutes(10),
+            SOL_MINT,
+            "TokenExactWalletA11111111111111111111111111",
+            1,
+        ))?;
+        store.insert_observed_swap(&swap(
+            "sig-exact-wallet-a-2",
+            "wallet-exact-a",
+            since + Duration::minutes(20),
+            "TokenExactWalletA11111111111111111111111111",
+            SOL_MINT,
+            2,
+        ))?;
+        store.insert_observed_swap(&swap(
+            "sig-exact-wallet-b-1",
+            "wallet-exact-b",
+            since + Duration::minutes(30),
+            SOL_MINT,
+            "TokenExactWalletB11111111111111111111111111",
+            3,
+        ))?;
+        store.insert_observed_swap(&swap(
+            "sig-exact-wallet-irrelevant",
+            "wallet-exact-irrelevant",
+            since + Duration::minutes(40),
+            SOL_MINT,
+            "TokenExactWalletIrrelevant1111111111111111",
+            4,
+        ))?;
+
+        let exact_wallet_ids = vec!["wallet-exact-b".to_string(), "wallet-exact-a".to_string()];
+        let first_page = store
+            .observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
+                &exact_wallet_ids,
+                since,
+                until,
+                None,
+                1,
+                50,
+                Instant::now() + StdDuration::from_secs(5),
+            )?;
+        assert!(!first_page.time_budget_exhausted);
+        assert_eq!(first_page.rows_seen, 2);
+        assert_eq!(first_page.rows.len(), 1);
+        assert_eq!(first_page.rows[0].wallet_id, "wallet-exact-a");
+        assert_eq!(first_page.rows[0].trades, 2);
+
+        let second_page = store
+            .observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
+                &exact_wallet_ids,
+                since,
+                until,
+                Some("wallet-exact-a"),
+                1,
+                50,
+                Instant::now() + StdDuration::from_secs(5),
+            )?;
+        assert!(!second_page.time_budget_exhausted);
+        assert_eq!(second_page.rows_seen, 1);
+        assert_eq!(second_page.rows.len(), 1);
+        assert_eq!(second_page.rows[0].wallet_id, "wallet-exact-b");
+        assert_eq!(second_page.rows[0].trades, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_wallet_activity_target_wallet_filter_reuses_identical_wallet_set_across_pages_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("wallet-activity-exact-wallet-filter-cache-reuse.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let since = DateTime::parse_from_rfc3339("2026-04-11T09:30:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let until = since + Duration::hours(2);
+        store.insert_observed_swap(&swap(
+            "sig-wallet-filter-cache-a",
+            "wallet-filter-cache-a",
+            since + Duration::minutes(5),
+            SOL_MINT,
+            "TokenWalletFilterCacheA11111111111111111111",
+            1,
+        ))?;
+        store.insert_observed_swap(&swap(
+            "sig-wallet-filter-cache-b",
+            "wallet-filter-cache-b",
+            since + Duration::minutes(10),
+            SOL_MINT,
+            "TokenWalletFilterCacheB11111111111111111111",
+            2,
+        ))?;
+
+        let exact_wallet_ids = vec![
+            "wallet-filter-cache-b".to_string(),
+            "wallet-filter-cache-a".to_string(),
+        ];
+        let before_first = store.conn.total_changes();
+        let first_page = store
+            .observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
+                &exact_wallet_ids,
+                since,
+                until,
+                None,
+                1,
+                50,
+                Instant::now() + StdDuration::from_secs(5),
+            )?;
+        let after_first = store.conn.total_changes();
+        let second_page = store
+            .observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
+                &exact_wallet_ids,
+                since,
+                until,
+                Some("wallet-filter-cache-a"),
+                1,
+                50,
+                Instant::now() + StdDuration::from_secs(5),
+            )?;
+        let after_second = store.conn.total_changes();
+
+        assert_eq!(first_page.rows.len(), 1);
+        assert_eq!(second_page.rows.len(), 1);
+        assert!(
+            after_first > before_first,
+            "the first exact-wallet backfill page must populate the temporary wallet filter"
+        );
+        assert_eq!(
+            after_second, after_first,
+            "reusing the same exact candidate-wallet set on the same SQLite connection must not rewrite the temporary wallet filter rows on the next page"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn observed_wallet_activity_target_wallet_filter_reloads_when_wallet_set_changes_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("wallet-activity-exact-wallet-filter-cache-invalidate.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let since = DateTime::parse_from_rfc3339("2026-04-11T09:45:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let until = since + Duration::hours(2);
+        store.insert_observed_swap(&swap(
+            "sig-wallet-filter-invalidate-a",
+            "wallet-filter-invalidate-a",
+            since + Duration::minutes(5),
+            SOL_MINT,
+            "TokenWalletFilterInvalidateA1111111111111111",
+            1,
+        ))?;
+        store.insert_observed_swap(&swap(
+            "sig-wallet-filter-invalidate-b",
+            "wallet-filter-invalidate-b",
+            since + Duration::minutes(10),
+            SOL_MINT,
+            "TokenWalletFilterInvalidateB1111111111111111",
+            2,
+        ))?;
+
+        let first_wallet_ids = vec!["wallet-filter-invalidate-a".to_string()];
+        let second_wallet_ids = vec![
+            "wallet-filter-invalidate-a".to_string(),
+            "wallet-filter-invalidate-b".to_string(),
+        ];
+        let before_first = store.conn.total_changes();
+        store.observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
+            &first_wallet_ids,
+            since,
+            until,
+            None,
+            1,
+            50,
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+        let after_first = store.conn.total_changes();
+        store.observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
+            &second_wallet_ids,
+            since,
+            until,
+            None,
+            2,
+            50,
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+        let after_second = store.conn.total_changes();
+
+        assert!(
+            after_first > before_first,
+            "the first exact wallet-set load must populate the temporary filter"
+        );
+        assert!(
+            after_second > after_first,
+            "changing the exact candidate-wallet set must invalidate and rewrite the temporary wallet filter"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn observed_wallet_activity_page_interrupt_on_wallet_id_query_preserves_time_budget_exhausted_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("wallet-activity-page-wallet-id-interrupt.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let since = DateTime::parse_from_rfc3339("2026-04-11T10:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let until = since + Duration::hours(6);
+        seed_wallet_activity_interrupt_fixture(
+            &mut store,
+            since,
+            25_000,
+            "wallet-activity-wallet-id-interrupt",
+        )?;
+
+        let (stop_interrupts, interrupter) = spawn_interrupt_loop(
+            store.conn.get_interrupt_handle(),
+            StdDuration::from_millis(0),
+        );
+        let page = store.observed_wallet_activity_page_in_window_with_budget(
+            since,
+            until,
+            None,
+            900,
+            50,
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+        stop_interrupts.store(true, Ordering::Relaxed);
+        interrupter.join().expect("interrupt loop thread panicked");
+
+        assert!(
+            page.time_budget_exhausted,
+            "an interrupted wallet-id page query on the broad wallet-activity path must surface as time-budget exhaustion instead of a successful empty page"
+        );
+        assert!(
+            page.rows.is_empty(),
+            "the interrupted broad wallet-id page must not return a misleading successful wallet row set"
+        );
+        assert_eq!(page.rows_seen, 0);
+        assert_eq!(page.active_day_count_source, None);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_wallet_activity_page_for_exact_wallets_interrupt_on_wallet_id_query_preserves_time_budget_exhausted_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("wallet-activity-page-exact-wallet-id-interrupt.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let since = DateTime::parse_from_rfc3339("2026-04-11T10:30:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let until = since + Duration::hours(6);
+        let exact_wallet_ids = seed_wallet_activity_interrupt_fixture(
+            &mut store,
+            since,
+            25_000,
+            "wallet-activity-exact-wallet-id-interrupt",
+        )?;
+
+        let preload = store.observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
+            &exact_wallet_ids,
+            since,
+            until,
+            None,
+            1,
+            50,
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+        assert!(
+            !preload.time_budget_exhausted && preload.rows.len() == 1,
+            "the exact-wallet interrupt repro must preload the candidate-wallet temp filter successfully before targeting the wallet-id page seam"
+        );
+
+        let page = store.observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
+            &exact_wallet_ids,
+            since,
+            until,
+            None,
+            900,
+            50,
+            Instant::now() + StdDuration::from_millis(1),
+        )?;
+
+        assert!(
+            page.time_budget_exhausted,
+            "an interrupted exact-wallet wallet-id page query must remain a time-budget outcome instead of collapsing into an empty successful page"
+        );
+        assert!(
+            page.rows.is_empty(),
+            "the interrupted exact-wallet wallet-id page must not return a misleading successful wallet row set"
+        );
+        assert_eq!(page.rows_seen, 0);
+        assert_eq!(page.active_day_count_source, None);
         Ok(())
     }
 

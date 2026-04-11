@@ -7669,6 +7669,21 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
          `replay_sol_leg_incomplete` checkpoints
      - the repair stays fail-closed unless the journal covers the required
        window and the current runtime cursor lineage
+     - the next accepted narrowing after the exact-target `sol_leg` filter was
+       no longer inside `sol_leg` itself but in the immediate post-`sol_leg`
+       candidate-activity handoff:
+       - once replay already owns exact target-mint membership, broad
+         all-window candidate-wallet activity backfill was still paying for
+         irrelevant swaps in the full observed window before `PublishPending`
+       - replay now pages candidate activity from an exact persisted
+         candidate-wallet set instead of rescanning the broad swap window and
+         filtering wallets in Rust
+       - the exact-wallet temp filter is also reused per SQLite connection
+         rather than rebuilt on every page
+       - the wallet-id page seam now preserves
+         `time_budget_exhausted = true` across interrupts, so deadline
+         exhaustion can no longer masquerade as source exhaustion and falsely
+         clear `replay_candidate_activity_backfill_pending`
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime
        discovery export / top-wallet artifact surface is still fail-closed even
        though `latest.sqlite` itself is now healthy
