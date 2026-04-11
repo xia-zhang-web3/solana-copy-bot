@@ -8359,6 +8359,60 @@ Acceptance update, package-execute-latest handoff surface (`2026-04-11`):
      incident remains open
    - this batch does not authorize or perform production activation
 
+Acceptance update, package-authorize-latest handoff surface (`2026-04-11`):
+
+1. Stage 4 now also has one bounded authorization-side handoff surface from
+   the latest immutable package chain to the already accepted live
+   authorization contract:
+   - `copybot_tiny_live_activation_package_authorize_latest`
+2. The new operator surface is explicit and bounded:
+   - `--plan-latest-authorization --root <path> [--json]`
+   - `--render-latest-authorization-script --root <path> --output <path> [--json]`
+   - `--run-latest-authorization --root <path> --session-dir <path> [--json]`
+   - `--verify-latest-authorization --session-dir <path> [--json]`
+3. The command deliberately reuses accepted truth instead of inventing a new
+   authorization path:
+   - latest immutable chain resolution still comes from persisted package
+     session / status / report artifacts under the requested root
+   - latest chain validity still requires the current top accepted layer
+     `clerestory_certificate`
+   - downstream authorization still runs through the accepted
+     `copybot_tiny_live_activation_package_live_authorization` contract
+   - historical launch lineage is additionally checked through the accepted
+     `copybot_tiny_live_activation_package_launch_packet` contract
+4. The handoff remains fail-closed and planning-safe:
+   - it refuses when no latest chain exists, when the latest chain is invalid,
+     or when the latest chain does not prove the exact nested lineage required
+     by the accepted authorization contract
+   - it never marks authorization or activation as implicitly granted by
+     planning / render alone
+   - run mode still preserves the existing Stage 3 / pre-activation refusal
+     semantics of the downstream authorization contract
+5. Verification is now real on wrapper truth and nested authorization truth:
+   - `--verify-latest-authorization` re-resolves the current latest immutable
+     chain, verifies the accepted nested authorization contract, and compares
+     stored wrapper session / status / report artifacts against that resolved
+     snapshot
+   - fail-closed checks now cover wrapper metadata, nested step-artifact
+     metadata, historical launch lineage, and stored nested
+     live-authorization verdict / reason truth
+   - tampered persisted wrapper or copied nested authorization truth can no
+     longer verify green
+6. Practical meaning:
+   - operators can now move from the latest immutable package chain to the
+     exact accepted live authorization contract without manual session-dir
+     archaeology
+   - this closes one more concrete executor-side operator blind spot while
+     Stage 3 remains non-green
+7. Acceptance stayed on the bounded surface:
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_authorize_latest`
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_authorize_latest`
+   - `git diff --check`
+8. Current production status remains unchanged:
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+   - this batch does not authorize or perform production activation
+
 Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
 
 1. The repo now has one more final immutable archival layer over the verified
