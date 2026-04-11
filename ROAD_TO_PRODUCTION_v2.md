@@ -7729,6 +7729,30 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        - this still does not prove the runtime/export surface green; it only
          removes the next exact oversized persisted checkpoint seam that remained
          after the earlier frozen-checkpoint compaction
+    - the next accepted narrowing after `fe6e036` proved the remaining
+      persisted rebuild-state failure was still inside the same frozen exact-
+      target `Replay -> sol_leg` checkpoint seam, but now in broad
+      `token_quality_cache` ballast rather than all-wallet activity summaries
+      or cumulative token-state wallet-membership:
+      - once `replay_wallet_stats_complete=true`, exact target-mint membership
+        is already frozen, and exact candidate-activity backfill is still
+        pending, resumed partial SOL-leg replay only consumes reusable
+        token-quality truth for the frozen exact target-mint surface
+      - persisted replay checkpoint writes and resume repair now trim
+        `token_quality_cache` down to reusable entries for
+        `discovery_critical_target_buy_mints` only, instead of carrying broad
+        non-target quality-cache rows for all prepass-discovered mints
+      - the deterministic A/B repro now shows the old post-`fe6e036`
+        checkpoint still fails with
+        `failed updating discovery persisted rebuild state` / `too big` under
+        the same SQLite row-length ceiling, while the compacted checkpoint
+        persists successfully and still leaves an honest
+        `replay_sol_leg_incomplete` checkpoint with
+        `replay_candidate_activity_backfill_required = true`
+      - this still does not prove the runtime/export surface green; it only
+        removes the next exact oversized persisted checkpoint seam that
+        remained after the earlier frozen-checkpoint and token-state
+        compaction layers
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 
