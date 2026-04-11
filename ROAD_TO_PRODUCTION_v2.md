@@ -8600,6 +8600,62 @@ Acceptance update, package-decision-packet-latest handoff surface (`2026-04-11`)
      incident remains open
    - this batch does not authorize or perform production activation
 
+Acceptance update, package-handoff-bundle-latest handoff surface (`2026-04-11`):
+
+1. Stage 4 now also has one bounded handoff-bundle-side handoff surface from
+   the latest immutable package chain to the already accepted handoff-bundle
+   contract:
+   - `copybot_tiny_live_activation_package_handoff_bundle_latest`
+2. The new operator surface is explicit and bounded:
+   - `--plan-latest-handoff-bundle --root <path> [--json]`
+   - `--render-latest-handoff-bundle-script --root <path> --output <path> [--json]`
+   - `--run-latest-handoff-bundle --root <path> --session-dir <path> [--json]`
+   - `--verify-latest-handoff-bundle --session-dir <path> [--json]`
+3. The command deliberately reuses accepted truth instead of inventing a new
+   handoff-bundle path:
+   - latest immutable chain resolution still comes from the accepted
+     `copybot_tiny_live_activation_package_decision_packet_latest` handoff
+   - latest chain validity still requires the current top accepted layer
+     `clerestory_certificate`
+   - downstream handoff-bundle execution still runs through the accepted
+     `copybot_tiny_live_activation_package_handoff_bundle` contract with the
+     exact downstream decision-packet session proved by the resolved latest
+     chain
+4. The handoff remains fail-closed and planning-safe:
+   - it refuses when no latest chain exists, when the latest chain is invalid,
+     or when the latest chain does not prove the exact nested
+     latest-decision-packet lineage required by the accepted handoff-bundle
+     contract
+   - it never marks `activation_authorized=true`
+   - run mode still preserves the existing Stage 3 / pre-activation refusal
+     semantics of the downstream handoff-bundle contract
+5. Verification is now real on wrapper truth, copied latest-decision-packet
+   truth, and nested handoff-bundle truth:
+   - `--verify-latest-handoff-bundle` re-resolves the current latest immutable
+     chain, verifies the accepted nested latest-decision-packet and
+     handoff-bundle contracts, and compares stored wrapper session / status /
+     report artifacts against that resolved snapshot
+   - fail-closed checks now cover wrapper metadata, copied
+     latest-decision-packet plan / run truth, copied native handoff-bundle run
+     truth, nested persisted handoff-bundle session/status truth, and accepted
+     nested verify truth
+   - tampered persisted wrapper fields or copied nested artifacts can no longer
+     verify green
+6. Practical meaning:
+   - operators can now move from the latest immutable package chain to the
+     exact accepted handoff-bundle contract without manual session-dir
+     archaeology
+   - this closes the remaining latest-chain handoff-bundle blind spot while
+     Stage 3 remains non-green
+7. Acceptance stayed on the bounded surface:
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_handoff_bundle_latest`
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_handoff_bundle_latest`
+   - `git diff --check`
+8. Current production status remains unchanged:
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+   - this batch does not authorize or perform production activation
+
 Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
 
 1. The repo now has one more final immutable archival layer over the verified
