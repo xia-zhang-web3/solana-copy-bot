@@ -8492,6 +8492,58 @@ Acceptance update, package-launch-packet-latest handoff surface (`2026-04-11`):
      incident remains open
    - this batch does not authorize or perform production activation
 
+Acceptance update, package-turn-green-latest handoff surface (`2026-04-11`):
+
+1. Stage 4 now also has one bounded turn-green-side handoff surface from the
+   latest immutable package chain to the already accepted turn-green contract:
+   - `copybot_tiny_live_activation_package_turn_green_latest`
+2. The new operator surface is explicit and bounded:
+   - `--plan-latest-turn-green --root <path> [--json]`
+   - `--render-latest-turn-green-script --root <path> --output <path> [--json]`
+   - `--run-latest-turn-green --root <path> --session-dir <path> [--json]`
+   - `--verify-latest-turn-green --session-dir <path> [--json]`
+3. The command deliberately reuses accepted truth instead of inventing a new
+   turn-green path:
+   - latest immutable chain resolution still comes from persisted package
+     session / status / report artifacts under the requested root
+   - latest chain validity still requires the current top accepted layer
+     `clerestory_certificate`
+   - latest launch-packet lineage still comes from the accepted
+     `copybot_tiny_live_activation_package_launch_packet_latest` contract
+   - downstream turn-green execution still runs through the accepted
+     `copybot_tiny_live_activation_package_turn_green` contract
+4. The handoff remains fail-closed and planning-safe:
+   - it refuses when no latest chain exists, when the latest chain is invalid,
+     or when the latest chain does not prove the exact nested
+     latest-launch-packet lineage required by the accepted turn-green contract
+   - it never runs the frozen controller by itself
+   - run mode still preserves the existing Stage 3 / pre-activation refusal
+     semantics of the downstream turn-green contract
+5. Verification is now real on wrapper truth, nested launch-packet truth, and
+   nested turn-green truth:
+   - `--verify-latest-turn-green` re-resolves the current latest immutable
+     chain, verifies the accepted nested latest-launch-packet and turn-green
+     contracts, and compares stored wrapper session / status / report artifacts
+     against that resolved snapshot
+   - fail-closed checks now cover wrapper metadata, nested step-artifact
+     metadata, copied nested latest-launch-packet / turn-green report fields,
+     nested persisted truth, and the current live-cutover-controller summary
+   - tampered copied nested reports or wrapper metadata can no longer verify
+     green
+6. Practical meaning:
+   - operators can now move from the latest immutable package chain to the
+     exact accepted turn-green contract without manual session-dir archaeology
+   - this closes the remaining latest-chain turn-green blind spot while Stage 3
+     remains non-green
+7. Acceptance stayed on the bounded surface:
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_turn_green_latest`
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_turn_green_latest`
+   - `git diff --check`
+8. Current production status remains unchanged:
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+   - this batch does not authorize or perform production activation
+
 Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
 
 1. The repo now has one more final immutable archival layer over the verified
