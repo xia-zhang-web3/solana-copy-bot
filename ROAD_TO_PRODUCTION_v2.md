@@ -8257,6 +8257,41 @@ Acceptance update, package-drift-report operator surface (`2026-04-11`):
      incident remains open
    - this batch does not authorize or perform production activation
 
+Acceptance update, package-regression-gate operator surface (`2026-04-11`):
+
+1. Stage 4 now also has one bounded read-only gate-style surface over the
+   latest immutable tiny-live package chain versus the immediately previous
+   comparable top chain under the same root:
+   - `copybot_tiny_live_activation_package_regression_gate`
+2. The new operator surface is explicit and planning-safe:
+   - `--latest-gate --root <path> [--json]`
+   - `--session-gate --root <path> --session-dir <path> [--json]`
+   - `--verify-gate --root <path> [--json]`
+3. The command reads only persisted session / status / report artifacts and
+   does not mutate package state, authorize activation, or override the Stage 3
+   production gate.
+4. `--verify-gate` stays fail-closed on missing or drifted prior truth:
+   - it rejects there being no latest chain
+   - it rejects there being no previous comparable top chain
+   - it rejects either compared chain being incomplete or below the current top
+     accepted layer `clerestory_certificate`
+   - it rejects top-identity drift, lineage drift, and artifact-manifest drift
+     between the subject chain and the immediately previous comparable chain
+5. The operator now gives one bounded regression gate verdict instead of making
+   operators stitch together multiple comparison surfaces by hand:
+   - subject-chain validity
+   - previous-chain availability and validity
+   - explicit top-identity / lineage / manifest drift booleans
+   - one explicit planning-safe top-level gate verdict and reason
+6. Acceptance stayed on the lightweight bounded surface:
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_regression_gate`
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_regression_gate`
+   - `git diff --check`
+7. Current production status remains unchanged:
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+   - this batch does not authorize or perform production activation
+
 Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
 
 1. The repo now has one more final immutable archival layer over the verified
