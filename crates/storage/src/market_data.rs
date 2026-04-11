@@ -13,6 +13,7 @@ use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use serde_json::{json, Value};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::time::{Duration as StdDuration, Instant};
 
 const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
@@ -21,6 +22,8 @@ const OBSERVED_SWAP_CURSOR_PROGRESS_OPS: i32 = 2_000;
 const OBSERVED_SWAP_CURSOR_QUERY_PAGE_LIMIT: usize = 2_048;
 const OBSERVED_SOL_LEG_CURSOR_QUERY_PAGE_LIMIT: usize = 2_048;
 const OBSERVED_SOL_LEG_TARGET_BUY_MINT_TEMP_TABLE: &str = "temp_discovery_replay_target_buy_mints";
+const OBSERVED_SOL_LEG_TARGET_BUY_MINT_TEMP_META_TABLE: &str =
+    "temp_discovery_replay_target_buy_mints_meta";
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ObservedSwapCursorPage {
@@ -2080,7 +2083,7 @@ impl SqliteStore {
             );
         }
 
-        self.replace_observed_sol_leg_target_buy_mint_filter(target_buy_mints)?;
+        self.ensure_loaded_observed_sol_leg_target_buy_mint_filter(target_buy_mints)?;
         let access_path = self.observed_sol_leg_cursor_access_path()?;
         if limit == 0 {
             return Ok(ObservedSolLegCursorPage {
@@ -2163,6 +2166,92 @@ impl SqliteStore {
                 ) WITHOUT ROWID;"
             ))
             .context("failed ensuring temporary observed SOL-leg target-mint filter table exists")
+    }
+
+    fn ensure_observed_sol_leg_target_buy_mint_filter_meta_table(&self) -> Result<()> {
+        self.conn
+            .execute_batch(&format!(
+                "CREATE TEMP TABLE IF NOT EXISTS {OBSERVED_SOL_LEG_TARGET_BUY_MINT_TEMP_META_TABLE} (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    fingerprint TEXT NOT NULL,
+                    mint_count INTEGER NOT NULL
+                ) WITHOUT ROWID;"
+            ))
+            .context(
+                "failed ensuring temporary observed SOL-leg target-mint filter metadata table exists",
+            )
+    }
+
+    fn observed_sol_leg_target_buy_mint_filter_fingerprint(target_buy_mints: &[String]) -> String {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        target_buy_mints.len().hash(&mut hasher);
+        for mint in target_buy_mints {
+            mint.hash(&mut hasher);
+        }
+        format!("{:016x}", hasher.finish())
+    }
+
+    fn ensure_loaded_observed_sol_leg_target_buy_mint_filter(
+        &self,
+        target_buy_mints: &[String],
+    ) -> Result<()> {
+        self.ensure_observed_sol_leg_target_buy_mint_filter_table()?;
+        self.ensure_observed_sol_leg_target_buy_mint_filter_meta_table()?;
+
+        let fingerprint =
+            Self::observed_sol_leg_target_buy_mint_filter_fingerprint(target_buy_mints);
+        let expected_count = target_buy_mints.len() as i64;
+        let loaded = self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT fingerprint, mint_count
+                     FROM {OBSERVED_SOL_LEG_TARGET_BUY_MINT_TEMP_META_TABLE}
+                     WHERE id = 1"
+                ),
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .context("failed reading temporary observed SOL-leg target-mint filter metadata row")?;
+        let loaded_count = self
+            .conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {OBSERVED_SOL_LEG_TARGET_BUY_MINT_TEMP_TABLE}"),
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .context("failed counting temporary observed SOL-leg target-mint filter rows")?;
+        if loaded
+            .as_ref()
+            .is_some_and(|(loaded_fingerprint, loaded_mint_count)| {
+                loaded_fingerprint == &fingerprint
+                    && *loaded_mint_count == expected_count
+                    && loaded_count == expected_count
+            })
+        {
+            return Ok(());
+        }
+
+        self.replace_observed_sol_leg_target_buy_mint_filter(target_buy_mints)?;
+        self.conn
+            .execute(
+                &format!(
+                    "INSERT INTO {OBSERVED_SOL_LEG_TARGET_BUY_MINT_TEMP_META_TABLE}(
+                        id,
+                        fingerprint,
+                        mint_count
+                    ) VALUES (1, ?1, ?2)
+                    ON CONFLICT(id) DO UPDATE SET
+                        fingerprint = excluded.fingerprint,
+                        mint_count = excluded.mint_count"
+                ),
+                params![fingerprint, expected_count],
+            )
+            .context(
+                "failed persisting temporary observed SOL-leg target-mint filter metadata row",
+            )?;
+        Ok(())
     }
 
     fn replace_observed_sol_leg_target_buy_mint_filter(
@@ -5171,6 +5260,192 @@ mod tests {
             "future activity after until on the same day must not inflate fast-path active_day_count"
         );
         assert_eq!(by_wallet["wallet-until-present"].active_day_count, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_sol_leg_target_buy_mint_filter_old_like_reload_rewrites_identical_target_set_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("observed-sol-leg-target-filter-old-like-reload.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-11T08:10:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        store.insert_observed_swap(&swap(
+            "sig-target-filter-old-like",
+            "wallet-target-filter",
+            now,
+            SOL_MINT,
+            "TokenTargetFilterPrimary1111111111111111111",
+            1,
+        ))?;
+
+        let target_buy_mints: Vec<String> = (0..256)
+            .map(|idx| format!("TokenTargetFilterSet{idx:04}11111111111111111111111"))
+            .collect();
+
+        let before_first = store.conn.total_changes();
+        store.replace_observed_sol_leg_target_buy_mint_filter(&target_buy_mints)?;
+        let after_first = store.conn.total_changes();
+        store.replace_observed_sol_leg_target_buy_mint_filter(&target_buy_mints)?;
+        let after_second = store.conn.total_changes();
+
+        assert!(
+            after_first > before_first,
+            "old-like setup must write the temporary exact-target filter rows on first load"
+        );
+        assert!(
+            after_second > after_first,
+            "old-like behavior must rewrite the same exact target set again instead of reusing the already-loaded temporary filter"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn observed_sol_leg_target_buy_mint_filter_reuses_identical_target_set_across_pages_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("observed-sol-leg-target-filter-cache-reuse.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-11T08:15:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        store.insert_observed_swap(&swap(
+            "sig-target-filter-cache-a",
+            "wallet-target-filter",
+            now,
+            SOL_MINT,
+            "TokenTargetFilterPrimary1111111111111111111",
+            1,
+        ))?;
+        store.insert_observed_swap(&swap(
+            "sig-target-filter-cache-b",
+            "wallet-target-filter",
+            now + Duration::seconds(1),
+            "TokenTargetFilterPrimary1111111111111111111",
+            SOL_MINT,
+            2,
+        ))?;
+
+        let mut target_buy_mints: Vec<String> = (0..512)
+            .map(|idx| format!("TokenTargetFilterSet{idx:04}11111111111111111111111"))
+            .collect();
+        target_buy_mints.push("TokenTargetFilterPrimary1111111111111111111".to_string());
+
+        let before_first = store.conn.total_changes();
+        let first_page = store
+            .for_each_observed_sol_leg_swap_in_window_after_cursor_for_target_buy_mints_with_budget(
+                now - Duration::seconds(1),
+                now + Duration::seconds(2),
+                None,
+                &target_buy_mints,
+                1,
+                Instant::now() + StdDuration::from_secs(5),
+                |_swap| Ok(()),
+            )?;
+        let after_first = store.conn.total_changes();
+        let second_page = store
+            .for_each_observed_sol_leg_swap_in_window_after_cursor_for_target_buy_mints_with_budget(
+                now - Duration::seconds(1),
+                now + Duration::seconds(2),
+                Some(&DiscoveryRuntimeCursor {
+                    ts_utc: now,
+                    slot: 1,
+                    signature: "sig-target-filter-cache-a".to_string(),
+                }),
+                &target_buy_mints,
+                1,
+                Instant::now() + StdDuration::from_secs(5),
+                |_swap| Ok(()),
+            )?;
+        let after_second = store.conn.total_changes();
+
+        assert_eq!(first_page.rows_seen, 1);
+        assert_eq!(second_page.rows_seen, 1);
+        assert!(
+            after_first > before_first,
+            "the first exact-target page must populate the temporary filter cache"
+        );
+        assert_eq!(
+            after_second, after_first,
+            "reusing the same exact target set on the same SQLite connection must not rewrite the temporary filter rows on the next replay page"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn observed_sol_leg_target_buy_mint_filter_reloads_when_target_set_changes_stage1() -> Result<()>
+    {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("observed-sol-leg-target-filter-cache-invalidate.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-11T08:20:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        store.insert_observed_swap(&swap(
+            "sig-target-filter-cache-invalidate",
+            "wallet-target-filter",
+            now,
+            SOL_MINT,
+            "TokenTargetFilterReload111111111111111111111",
+            1,
+        ))?;
+
+        let first_target_buy_mints =
+            vec!["TokenTargetFilterReload111111111111111111111".to_string()];
+        let second_target_buy_mints = vec![
+            "TokenTargetFilterReload111111111111111111111".to_string(),
+            "TokenTargetFilterReloadSecond1111111111111111".to_string(),
+        ];
+
+        let before_first = store.conn.total_changes();
+        let _ = store
+            .for_each_observed_sol_leg_swap_in_window_after_cursor_for_target_buy_mints_with_budget(
+                now - Duration::seconds(1),
+                now + Duration::seconds(1),
+                None,
+                &first_target_buy_mints,
+                1,
+                Instant::now() + StdDuration::from_secs(5),
+                |_swap| Ok(()),
+            )?;
+        let after_first = store.conn.total_changes();
+        let _ = store
+            .for_each_observed_sol_leg_swap_in_window_after_cursor_for_target_buy_mints_with_budget(
+                now - Duration::seconds(1),
+                now + Duration::seconds(1),
+                None,
+                &second_target_buy_mints,
+                1,
+                Instant::now() + StdDuration::from_secs(5),
+                |_swap| Ok(()),
+            )?;
+        let after_second = store.conn.total_changes();
+
+        assert!(
+            after_first > before_first,
+            "the first target set load must write the temporary filter rows"
+        );
+        assert!(
+            after_second > after_first,
+            "changing the exact target set must invalidate and reload the temporary filter cache instead of silently reusing stale membership"
+        );
         Ok(())
     }
 }
