@@ -8040,6 +8040,37 @@ Acceptance update, transept-certificate / guidon-seal layer (`2026-04-01`):
      truth remains a separate blocker for actual production activation
    - this batch does not authorize or perform production activation
 
+Acceptance update, package-history operator surface (`2026-04-11`):
+
+1. Stage 4 now also has one bounded read-only package-chain inspection surface
+   over the accepted immutable tiny-live activation package lineage:
+   - `copybot_tiny_live_activation_package_history`
+2. The new operator surface is explicit and planning-safe:
+   - `--history --root <path> [--limit <n>] [--json]`
+   - `--latest --root <path> [--json]`
+   - `--verify-latest --root <path> [--json]`
+3. The command reads only persisted session / status / report artifacts and does
+   not mutate package state, authorize activation, or override the Stage 3
+   production gate.
+4. `--verify-latest` stays fail-closed on the current top accepted layer:
+   - it requires a persisted latest `clerestory_certificate` session
+   - it requires required nested verified package truth to still exist
+   - it reuses the existing `clerestory_certificate` verify surface instead of
+     inventing a parallel trust path
+5. The operator now gives one bounded answer for package-chain status without
+   manual session-dir archaeology:
+   - bounded ordered history
+   - latest package-chain summary
+   - explicit verify-latest verdict for the current top accepted layer
+6. Acceptance stayed on the lightweight bounded surface:
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_history`
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_history`
+   - `git diff --check`
+7. Current production status remains unchanged:
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+   - this batch does not authorize or perform production activation
+
 Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
 
 1. The repo now has one more final immutable archival layer over the verified
