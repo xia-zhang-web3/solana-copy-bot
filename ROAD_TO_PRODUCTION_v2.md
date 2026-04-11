@@ -8870,6 +8870,70 @@ Acceptance update, package-release-capsule-latest handoff surface (`2026-04-12`)
      incident remains open
    - this batch does not authorize or perform production activation
 
+Acceptance update, package-attestation-seal-latest handoff surface (`2026-04-12`):
+
+1. Stage 4 now also has one bounded attestation-seal-side handoff surface
+   from the latest immutable package chain to the already accepted
+   attestation-seal contract:
+   - `copybot_tiny_live_activation_package_attestation_seal_latest`
+2. The new operator surface is explicit and bounded:
+   - `--plan-latest-attestation-seal --root <path> [--json]`
+   - `--render-latest-attestation-seal-script --root <path> --output <path> [--json]`
+   - `--run-latest-attestation-seal --root <path> --session-dir <path> [--json]`
+   - `--verify-latest-attestation-seal --session-dir <path> [--json]`
+3. The command deliberately reuses accepted truth instead of inventing a new
+   attestation-seal path:
+   - latest immutable chain resolution still comes from the accepted
+     `copybot_tiny_live_activation_package_release_capsule_latest` handoff
+   - latest chain validity still requires the current top accepted layer
+     `clerestory_certificate`
+   - downstream attestation-seal execution still runs through the accepted
+     `copybot_tiny_live_activation_package_attestation_seal` contract with the
+     exact latest-release-capsule session and exact downstream
+     decision-packet confirmation anchor proved by the resolved latest chain
+4. The handoff remains fail-closed, archival, and planning-safe:
+   - it refuses when no latest chain exists, when the latest chain is invalid,
+     or when the latest chain does not prove the exact nested
+     latest-release-capsule lineage required by the accepted attestation-seal
+     contract
+   - the downstream `--confirm-decision-packet-session-dir` remains
+     confirmation-only and never replaces latest-release-capsule lineage as
+     the source of truth
+   - it remains read-only / archival exactly like the accepted native
+     attestation-seal contract
+   - it never marks `activation_authorized=true`
+   - run mode still preserves the existing Stage 3 / pre-activation refusal
+     semantics of the downstream attestation-seal contract
+5. Verification is now real on wrapper truth, copied latest-release-capsule
+   truth, copied native attestation-seal truth, and nested accepted verify
+   truth:
+   - `--verify-latest-attestation-seal` re-resolves the current latest
+     immutable chain, verifies the accepted nested latest-release-capsule
+     and attestation-seal contracts, and compares stored wrapper session /
+     status / report artifacts against that resolved snapshot
+   - fail-closed checks now cover wrapper metadata, copied
+     latest-release-capsule plan / run truth, drifted downstream
+     decision-packet confirmation anchor, copied native attestation-seal run
+     truth, nested persisted attestation-seal session/status truth, and
+     accepted nested verify truth
+   - tampered persisted wrapper fields or copied nested artifacts can no
+     longer verify green
+6. Practical meaning:
+   - operators can now move from the latest immutable package chain to the
+     exact accepted attestation-seal contract without manual session-dir
+     archaeology
+   - this closes the remaining latest-chain attestation-seal blind spot while
+     Stage 3 remains non-green
+7. Acceptance stayed on the bounded surface:
+   - `rustfmt crates/app/src/bin/copybot_tiny_live_activation_package_attestation_seal_latest.rs`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_attestation_seal_latest`
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_attestation_seal_latest`
+   - `git diff --check -- crates/app/src/bin/copybot_tiny_live_activation_package_attestation_seal_latest.rs`
+8. Current production status remains unchanged:
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+   - this batch does not authorize or perform production activation
+
 Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
 
 1. The repo now has one more final immutable archival layer over the verified
