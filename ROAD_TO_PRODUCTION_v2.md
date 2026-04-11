@@ -8121,6 +8121,40 @@ Acceptance update, package-lineage operator surface (`2026-04-11`):
      incident remains open
    - this batch does not authorize or perform production activation
 
+Acceptance update, package-manifest operator surface (`2026-04-11`):
+
+1. Stage 4 now also has one bounded read-only artifact-manifest surface over
+   the latest persisted immutable tiny-live package chain:
+   - `copybot_tiny_live_activation_package_manifest`
+2. The new operator surface is explicit and planning-safe:
+   - `--latest-manifest --root <path> [--json]`
+   - `--session-manifest --session-dir <path> [--json]`
+   - `--verify-manifest --root <path> [--json]`
+3. The command reads only persisted session / status / report artifacts and
+   does not mutate package state, authorize activation, or override the Stage 3
+   production gate.
+4. `--verify-manifest` stays fail-closed on incomplete or drifted artifact
+   membership:
+   - it requires the latest chain to reach the current top accepted layer
+     `clerestory_certificate`
+   - it rejects missing required nested report artifacts, duplicated identity
+     drift, and continuity holes in the persisted artifact set
+   - it emits one bounded manifest digest and per-artifact existence /
+     parseability / SHA-256 surface instead of relying on directory archaeology
+5. The operator now gives one bounded answer for exact latest immutable package
+   artifact membership:
+   - latest manifest for the full accepted chain
+   - explicit session-rooted manifest for one persisted package session dir
+   - explicit verify verdict for the latest manifest
+6. Acceptance stayed on the lightweight bounded surface:
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_manifest`
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_manifest`
+   - `git diff --check`
+7. Current production status remains unchanged:
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+   - this batch does not authorize or perform production activation
+
 Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
 
 1. The repo now has one more final immutable archival layer over the verified
