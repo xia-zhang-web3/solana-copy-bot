@@ -8191,6 +8191,38 @@ Acceptance update, package-dossier operator surface (`2026-04-11`):
      incident remains open
    - this batch does not authorize or perform production activation
 
+Acceptance update, package-diff operator surface (`2026-04-11`):
+
+1. Stage 4 now also has one bounded read-only comparison surface over persisted
+   immutable tiny-live package chains:
+   - `copybot_tiny_live_activation_package_diff`
+2. The new operator surface is explicit and planning-safe:
+   - `--latest-vs-session --root <path> --session-dir <path> [--json]`
+   - `--session-vs-session --left-session-dir <path> --right-session-dir <path> [--json]`
+   - `--verify-no-drift --root <path> --session-dir <path> [--json]`
+3. The command reads only persisted session / status / report artifacts and
+   does not mutate package state, authorize activation, or override the Stage 3
+   production gate.
+4. `--verify-no-drift` stays fail-closed on comparison drift:
+   - it rejects either side being incomplete or internally invalid
+   - it requires both compared chains to reach the current top accepted layer
+     `clerestory_certificate`
+   - it rejects top-identity drift, lineage continuity drift, and artifact
+     manifest drift between the two resolved persisted chains
+5. The operator now gives one bounded answer for exact chain-to-chain drift:
+   - latest-versus-session comparison
+   - session-versus-session comparison
+   - explicit no-drift verify verdict for a latest chain against a chosen
+     persisted comparison chain
+6. Acceptance stayed on the lightweight bounded surface:
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_diff`
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_diff`
+   - `git diff --check`
+7. Current production status remains unchanged:
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+   - this batch does not authorize or perform production activation
+
 Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
 
 1. The repo now has one more final immutable archival layer over the verified
