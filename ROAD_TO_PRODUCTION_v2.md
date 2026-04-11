@@ -8544,6 +8544,62 @@ Acceptance update, package-turn-green-latest handoff surface (`2026-04-11`):
      incident remains open
    - this batch does not authorize or perform production activation
 
+Acceptance update, package-decision-packet-latest handoff surface (`2026-04-11`):
+
+1. Stage 4 now also has one bounded decision-packet-side handoff surface from
+   the latest immutable package chain to the already accepted decision-packet
+   contract:
+   - `copybot_tiny_live_activation_package_decision_packet_latest`
+2. The new operator surface is explicit and bounded:
+   - `--plan-latest-decision-packet --root <path> [--json]`
+   - `--render-latest-decision-packet-script --root <path> --output <path> [--json]`
+   - `--run-latest-decision-packet --root <path> --session-dir <path> [--json]`
+   - `--verify-latest-decision-packet --session-dir <path> [--json]`
+3. The command deliberately reuses accepted truth instead of inventing a new
+   decision-packet path:
+   - latest immutable chain resolution still comes from the accepted
+     `copybot_tiny_live_activation_package_execute_latest` handoff
+   - latest chain validity still requires the current top accepted layer
+     `clerestory_certificate`
+   - downstream decision-packet execution still runs through the accepted
+     `copybot_tiny_live_activation_package_decision_packet` contract with the
+     exact historical `execute_frozen` session proved by the resolved latest
+     chain
+4. The handoff remains fail-closed and planning-safe:
+   - it refuses when no latest chain exists, when the latest chain is invalid,
+     or when the latest chain does not prove the exact nested latest-execute /
+     historical execute-frozen lineage required by the accepted
+     decision-packet contract
+   - it never marks `activation_authorized=true`
+   - run mode still preserves the existing Stage 3 / pre-activation refusal
+     semantics of the downstream decision-packet contract
+5. Verification is now real on wrapper truth, copied latest-execute /
+   decision-packet-plan truth, and nested decision-packet truth:
+   - `--verify-latest-decision-packet` re-resolves the current latest immutable
+     chain, verifies the accepted nested decision-packet contract, and compares
+     stored wrapper session / status / report artifacts against that resolved
+     snapshot
+   - fail-closed checks now cover wrapper `reason`, wrapper
+     `current_pre_activation_gate_*`, copied latest-execute plan truth, copied
+     decision-packet plan truth, copied decision-packet run truth, nested
+     persisted session/status truth, and accepted nested verify truth
+   - coordinated tamper of wrapper metadata or copied nested artifacts can no
+     longer verify green
+6. Practical meaning:
+   - operators can now move from the latest immutable package chain to the
+     exact accepted decision-packet contract without manual session-dir
+     archaeology
+   - this closes the remaining latest-chain decision-packet blind spot while
+     Stage 3 remains non-green
+7. Acceptance stayed on the bounded surface:
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_decision_packet_latest`
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_decision_packet_latest`
+   - `git diff --check`
+8. Current production status remains unchanged:
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+   - this batch does not authorize or perform production activation
+
 Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
 
 1. The repo now has one more final immutable archival layer over the verified
