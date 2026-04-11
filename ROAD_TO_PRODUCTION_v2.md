@@ -7675,15 +7675,32 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
        - once replay already owns exact target-mint membership, broad
          all-window candidate-wallet activity backfill was still paying for
          irrelevant swaps in the full observed window before `PublishPending`
-       - replay now pages candidate activity from an exact persisted
-         candidate-wallet set instead of rescanning the broad swap window and
-         filtering wallets in Rust
-       - the exact-wallet temp filter is also reused per SQLite connection
-         rather than rebuilt on every page
-       - the wallet-id page seam now preserves
-         `time_budget_exhausted = true` across interrupts, so deadline
-         exhaustion can no longer masquerade as source exhaustion and falsely
-         clear `replay_candidate_activity_backfill_pending`
+     - replay now pages candidate activity from an exact persisted
+       candidate-wallet set instead of rescanning the broad swap window and
+       filtering wallets in Rust
+     - the exact-wallet temp filter is also reused per SQLite connection
+       rather than rebuilt on every page
+     - the wallet-id page seam now preserves
+       `time_budget_exhausted = true` across interrupts, so deadline
+       exhaustion can no longer masquerade as source exhaustion and falsely
+       clear `replay_candidate_activity_backfill_pending`
+     - the next accepted narrowing after `672ed1a` was no longer inside
+       replay cursor selection but inside persisted checkpoint writes:
+       - once replay already has a frozen non-empty
+         `discovery_critical_target_buy_mints` surface, remains in
+         `Replay -> sol_leg`, and still has exact candidate-activity backfill
+         ahead, checkpoint persistence no longer recomputes broad target-mint
+         membership from full all-wallet activity accumulators
+       - on that narrow frozen-target seam, persisted checkpoint writes now
+         compact only the all-wallet activity-summary ballast in `by_wallet`
+         (`first_seen`, `last_seen`, `trades`, active-day coverage,
+         `tx_per_minute`, `suspicious`) while preserving positions, rug/quality
+         state, and the already-frozen exact target-mint surface
+       - this removes the oversized `state_json` row that could fail live with
+         `failed updating discovery persisted rebuild state` / `string or blob
+         too big`, while still persisting an honest
+         `replay_sol_leg_incomplete` checkpoint and leaving exact
+         candidate-activity backfill to recompute those activity fields later
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime
        discovery export / top-wallet artifact surface is still fail-closed even
        though `latest.sqlite` itself is now healthy

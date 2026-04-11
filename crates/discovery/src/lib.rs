@@ -4016,6 +4016,24 @@ impl DiscoveryService {
         }
     }
 
+    fn state_can_freeze_exact_target_buy_mint_surface_for_partial_sol_leg_checkpoint(
+        state: &PersistedStreamRebuildState,
+    ) -> bool {
+        matches!(state.phase, DiscoveryPersistedRebuildPhase::Replay)
+            && state.payload.replay_wallet_stats_complete
+            && state.payload.replay_candidate_activity_backfill_required
+            && !state.payload.replay_candidate_activity_backfill_pending
+            && !state.payload.discovery_critical_target_buy_mints.is_empty()
+    }
+
+    fn compact_wallet_activity_summary_for_frozen_exact_target_checkpoint(
+        payload: &mut PersistedStreamRebuildPayload,
+    ) {
+        for acc in payload.by_wallet.values_mut() {
+            acc.reset_activity_summary_for_exact_backfill();
+        }
+    }
+
     fn reset_bucket_sensitive_rebuild_state_for_rollover(state: &mut PersistedStreamRebuildState) {
         state.phase = DiscoveryPersistedRebuildPhase::CollectBuyMints;
         state.phase_cursor = None;
@@ -5370,12 +5388,20 @@ impl DiscoveryService {
             DiscoveryPersistedRebuildPhase::Replay | DiscoveryPersistedRebuildPhase::PublishPending
         ) && !state.payload.by_wallet.is_empty()
         {
-            state.payload.discovery_critical_target_buy_mints = self
-                .discovery_critical_target_buy_mints_from_accumulators(
-                    store,
-                    &state.payload.by_wallet,
-                    state.horizon_end,
-                )?;
+            if Self::state_can_freeze_exact_target_buy_mint_surface_for_partial_sol_leg_checkpoint(
+                state,
+            ) {
+                Self::compact_wallet_activity_summary_for_frozen_exact_target_checkpoint(
+                    &mut state.payload,
+                );
+            } else {
+                state.payload.discovery_critical_target_buy_mints = self
+                    .discovery_critical_target_buy_mints_from_accumulators(
+                        store,
+                        &state.payload.by_wallet,
+                        state.horizon_end,
+                    )?;
+            }
         }
         state.updated_at = updated_at;
         let row = Self::persisted_stream_rebuild_row(state, updated_at)?;
@@ -27876,6 +27902,147 @@ mod tests {
             discovery.publish_pending_requested_wallet_ids_from_snapshots(&snapshots),
             legit_wallet_ids,
             "the exact candidate-wallet backfill fix must preserve the real publishable leaders rather than fabricating a new publish set"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn frozen_exact_target_sol_leg_checkpoint_compaction_beats_persisted_state_row_limit_on_post_672ed1a_lineage_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-frozen-exact-target-sol-leg-checkpoint-compaction.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-11T14:39:32Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        config.observed_swaps_retention_days = 14;
+        config.max_window_swaps_in_memory = 64;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 25_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (full_swaps, _legit_wallet_ids, _junk_wallet_ids) =
+            long_horizon_carry_vs_refill_drain_fixture_swaps(&config, now);
+        insert_observed_swaps_and_seed_runtime_cursor(&runtime_store, &full_swaps)?;
+
+        let helper_by_wallet =
+            replay_streaming_wallet_accumulators_from_swaps_for_test(&discovery, &full_swaps, now);
+        let exact_target_buy_mints = discovery
+            .discovery_critical_target_buy_mints_from_accumulators(
+                &runtime_store,
+                &helper_by_wallet,
+                now,
+            )?;
+        assert!(
+            !exact_target_buy_mints.is_empty(),
+            "the post-672ed1a repro must inherit a frozen non-empty exact target-mint surface before testing the persisted checkpoint seam"
+        );
+
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let mut replay_state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        replay_state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        replay_state.horizon_end = now;
+        replay_state.payload.collect_buy_mints_prepass_complete = true;
+        replay_state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+        replay_state.payload.unique_buy_mints =
+            runtime_store.load_observed_buy_mints_in_window(window_start, now)?;
+        replay_state.payload.buy_mint_counts = replay_state
+            .payload
+            .unique_buy_mints
+            .iter()
+            .cloned()
+            .map(|mint| (mint, 1u32))
+            .collect();
+        replay_state.payload.token_quality_cache = fresh_token_quality_cache_for_mints_for_test(
+            &replay_state.payload.unique_buy_mints,
+            now,
+        );
+        replay_state.payload.token_quality_progress.next_mint_index =
+            replay_state.payload.unique_buy_mints.len();
+        replay_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        replay_state.payload.replay_wallet_stats_complete = true;
+        replay_state.payload.replay_wallet_stats_milestone_reached = true;
+        replay_state
+            .payload
+            .replay_candidate_activity_backfill_required = true;
+        replay_state.payload.discovery_critical_target_buy_mints = exact_target_buy_mints.clone();
+        replay_state.payload.by_wallet = helper_by_wallet;
+
+        let old_like_row = DiscoveryService::persisted_stream_rebuild_row(&replay_state, now)?;
+        let mut compacted = replay_state.clone();
+        DiscoveryService::compact_wallet_activity_summary_for_frozen_exact_target_checkpoint(
+            &mut compacted.payload,
+        );
+        let compacted_row = DiscoveryService::persisted_stream_rebuild_row(&compacted, now)?;
+        assert!(
+            compacted_row.state_json.len() < old_like_row.state_json.len(),
+            "once exact target membership is already frozen, the persisted checkpoint should become smaller after dropping the all-wallet activity ballast that sol-leg replay no longer uses"
+        );
+        let row_limit =
+            ((old_like_row.state_json.len() + compacted_row.state_json.len()) / 2) as i32;
+        assert!(
+            compacted_row.state_json.len() < row_limit as usize
+                && old_like_row.state_json.len() > row_limit as usize,
+            "the reduced repro must pick a SQLite row-length ceiling that the old broad checkpoint exceeds but the compacted frozen-target checkpoint still fits"
+        );
+
+        runtime_store.set_sqlite_length_limit_for_test(row_limit);
+
+        let old_error = runtime_store
+            .upsert_discovery_persisted_rebuild_state(&old_like_row)
+            .expect_err("the old post-672ed1a frozen-target checkpoint must fail once the persisted row is too large to store");
+        let old_error_text = format!("{old_error:#}").to_ascii_lowercase();
+        assert!(
+            old_error_text.contains("failed updating discovery persisted rebuild state"),
+            "unexpected error: {old_error:#}"
+        );
+        assert!(
+            old_error_text.contains("too big"),
+            "the exact remaining seam must be the oversized persisted replay row, not some unrelated sqlite path: {old_error:#}"
+        );
+
+        discovery.persist_persisted_stream_rebuild_state(&runtime_store, &mut replay_state, now)?;
+        let persisted_row = runtime_store
+            .load_discovery_persisted_rebuild_state()?
+            .expect("the compacted frozen-target checkpoint must persist under the same SQLite row-length ceiling");
+        let persisted = DiscoveryService::persisted_stream_rebuild_state_from_row(persisted_row)?;
+        assert_eq!(
+            persisted.payload.discovery_critical_target_buy_mints,
+            exact_target_buy_mints,
+            "persisting the frozen checkpoint must preserve the exact target-mint surface instead of recomputing or discarding it"
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &persisted
+            ),
+            "replay_sol_leg_incomplete",
+            "compacting the frozen checkpoint must keep the lineage honestly fail-closed on the real sol-leg blocker instead of faking completion"
+        );
+        assert!(
+            persisted.payload.replay_candidate_activity_backfill_required
+                && !persisted.payload.replay_candidate_activity_backfill_pending,
+            "the compacted checkpoint must remain on the real pre-backfill seam rather than silently skipping ahead"
+        );
+        assert!(
+            persisted.payload.by_wallet.values().all(|acc| {
+                acc.first_seen.is_none()
+                    && acc.last_seen.is_none()
+                    && acc.trades == 0
+                    && acc.exact_active_day_count.is_none()
+                    && acc.active_days.is_empty()
+                    && acc.tx_per_minute.is_empty()
+                    && !acc.suspicious
+            }),
+            "once the exact target surface is frozen, persisted replay checkpoints must stop hauling all-wallet activity ballast that exact candidate backfill will recompute anyway"
         );
         Ok(())
     }

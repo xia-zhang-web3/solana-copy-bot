@@ -1909,6 +1909,17 @@ impl SqliteStore {
         Ok(Self { conn })
     }
 
+    #[doc(hidden)]
+    pub fn set_sqlite_length_limit_for_test(&self, new_val: i32) -> i32 {
+        unsafe {
+            rusqlite::ffi::sqlite3_limit(
+                self.conn.handle(),
+                rusqlite::ffi::SQLITE_LIMIT_LENGTH,
+                new_val,
+            )
+        }
+    }
+
     pub fn snapshot_into_path(&self, destination_path: &Path) -> Result<()> {
         match self
             .snapshot_into_path_with_policy(destination_path, &SqliteSnapshotPolicy::default())?
