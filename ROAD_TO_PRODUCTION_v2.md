@@ -8292,6 +8292,56 @@ Acceptance update, package-regression-gate operator surface (`2026-04-11`):
      incident remains open
    - this batch does not authorize or perform production activation
 
+Acceptance update, package-execute-latest handoff surface (`2026-04-11`):
+
+1. Stage 4 now also has one bounded executor-side handoff surface from the
+   latest immutable package chain to the already accepted frozen execution
+   contract:
+   - `copybot_tiny_live_activation_package_execute_latest`
+2. The new operator surface is explicit and bounded:
+   - `--plan-latest-execute --root <path> [--json]`
+   - `--render-latest-execute-script --root <path> --output <path> [--json]`
+   - `--run-latest-execute --root <path> --session-dir <path> [--json]`
+   - `--verify-latest-execute --session-dir <path> [--json]`
+3. The command deliberately reuses accepted truth instead of inventing a new
+   controller path:
+   - latest immutable chain resolution still comes from persisted package
+     session / status / report artifacts under the requested root
+   - latest chain validity still requires the current top accepted layer
+     `clerestory_certificate`
+   - downstream execution still runs through the accepted
+     `copybot_tiny_live_activation_package_execute_frozen` contract
+4. The handoff remains fail-closed and planning-safe:
+   - it refuses when no latest chain exists, when the latest chain is invalid,
+     or when the latest chain does not prove the exact nested `turn_green` /
+     historical `execute_frozen` lineage required by the frozen contract
+   - it never marks `activation_authorized=true`
+   - run mode still preserves the existing Stage 3 / pre-activation refusal
+     semantics of the downstream frozen executor
+5. Verification is now real on both persisted handoff surfaces:
+   - `--verify-latest-execute` re-resolves the current latest immutable chain
+     and compares the stored session and stored report against that resolved
+     snapshot
+   - fail-closed checks now cover latest-chain linkage, installed-target
+     bindings, reviewed frozen-controller summary, and persisted
+     `clerestory_certificate` identity fields
+   - tampered persisted handoff truth can no longer verify green just because
+     nested step artifacts still exist
+6. Practical meaning:
+   - operators can now move from the latest immutable package chain to the
+     exact accepted frozen execution contract without manual session-dir
+     archaeology
+   - this closes one concrete executor-side operator blind spot while Stage 3
+     remains non-green
+7. Acceptance stayed on the bounded surface:
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_execute_latest`
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_execute_latest`
+   - `git diff --check`
+8. Current production status remains unchanged:
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+   - this batch does not authorize or perform production activation
+
 Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
 
 1. The repo now has one more final immutable archival layer over the verified
