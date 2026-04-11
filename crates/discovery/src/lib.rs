@@ -778,7 +778,9 @@ struct SolLegTrade {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct TokenRollingState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     first_seen: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     wallets_seen: HashSet<String>,
     sol_trades_5m: VecDeque<SolLegTrade>,
     sol_volume_5m: f64,
@@ -4034,6 +4036,20 @@ impl DiscoveryService {
         }
     }
 
+    fn compact_streaming_token_state_for_frozen_exact_target_checkpoint(
+        payload: &mut PersistedStreamRebuildPayload,
+    ) {
+        for state in payload.token_states.values_mut() {
+            state.first_seen = None;
+            state.wallets_seen.clear();
+        }
+        payload.token_states.retain(|_, state| {
+            !state.sol_trades_5m.is_empty()
+                || state.sol_volume_5m > 0.0
+                || !state.sol_traders_5m.is_empty()
+        });
+    }
+
     fn reset_bucket_sensitive_rebuild_state_for_rollover(state: &mut PersistedStreamRebuildState) {
         state.phase = DiscoveryPersistedRebuildPhase::CollectBuyMints;
         state.phase_cursor = None;
@@ -5064,6 +5080,36 @@ impl DiscoveryService {
                 if Self::payload_has_exact_buy_mint_membership(&state.payload) {
                     Self::sync_unique_buy_mints_from_counts(&mut state.payload);
                 }
+                if Self::state_can_freeze_exact_target_buy_mint_surface_for_partial_sol_leg_checkpoint(state) {
+                    let had_streaming_token_state_ballast = state.payload.token_states.values().any(
+                        |token_state| token_state.first_seen.is_some() || !token_state.wallets_seen.is_empty(),
+                    ) || state.payload.token_states.iter().any(|(_, token_state)| {
+                        token_state.sol_trades_5m.is_empty()
+                            && token_state.sol_volume_5m <= 0.0
+                            && token_state.sol_traders_5m.is_empty()
+                    });
+                    if had_streaming_token_state_ballast {
+                        let token_states_before = state.payload.token_states.len();
+                        Self::compact_streaming_token_state_for_frozen_exact_target_checkpoint(
+                            &mut state.payload,
+                        );
+                        info!(
+                            rebuild_window_start = %state.window_start,
+                            rebuild_horizon_end = %state.horizon_end,
+                            rebuild_phase = state.phase.as_str(),
+                            rebuild_replay_subphase =
+                                Self::replay_subphase(
+                                    state.phase,
+                                    state.payload.replay_wallet_stats_complete,
+                                    state.payload.replay_candidate_activity_backfill_pending,
+                                ),
+                            rebuild_token_states_before = token_states_before,
+                            rebuild_token_states_after = state.payload.token_states.len(),
+                            "dropping redundant streaming token-state ballast from a frozen exact-target replay checkpoint before resume because partial SOL-leg replay derives tradability from rolling SOL-leg trades, not cumulative token wallet-membership"
+                        );
+                        changed = true;
+                    }
+                }
                 if state.phase == DiscoveryPersistedRebuildPhase::Replay
                     && state.payload.replay_mode == ReplayMode::LegacyFullWindow
                 {
@@ -5392,6 +5438,9 @@ impl DiscoveryService {
                 state,
             ) {
                 Self::compact_wallet_activity_summary_for_frozen_exact_target_checkpoint(
+                    &mut state.payload,
+                );
+                Self::compact_streaming_token_state_for_frozen_exact_target_checkpoint(
                     &mut state.payload,
                 );
             } else {
@@ -12721,6 +12770,106 @@ mod tests {
             lookahead,
         );
         by_wallet
+    }
+
+    struct ReplayStreamingStateForTest {
+        by_wallet: HashMap<String, WalletAccumulator>,
+        token_states: HashMap<String, TokenRollingState>,
+        token_recent_sol_trades: HashMap<String, VecDeque<SolLegTrade>>,
+        pending_rug_checks: VecDeque<PendingBuyRugCheck>,
+        token_pending_buy_starts: HashMap<String, VecDeque<DateTime<Utc>>>,
+    }
+
+    fn replay_streaming_state_from_swaps_for_test(
+        discovery: &DiscoveryService,
+        swaps: &[SwapEvent],
+        now: DateTime<Utc>,
+    ) -> ReplayStreamingStateForTest {
+        let window_start = now - Duration::days(discovery.config.scoring_window_days.max(1) as i64);
+        let mut unique_buy_mints: Vec<String> = swaps
+            .iter()
+            .filter(|swap| swap.ts_utc >= window_start && swap.ts_utc <= now)
+            .filter(|swap| is_sol_buy(swap))
+            .map(|swap| swap.token_out.clone())
+            .collect();
+        DiscoveryService::canonicalize_unique_buy_mints(&mut unique_buy_mints);
+        let token_quality_cache =
+            fresh_token_quality_cache_for_mints_for_test(&unique_buy_mints, now);
+        let mut by_wallet: HashMap<String, WalletAccumulator> = HashMap::new();
+        let mut token_states = HashMap::new();
+        let mut token_recent_sol_trades = HashMap::new();
+        let mut pending_rug_checks = VecDeque::new();
+        let mut token_pending_buy_starts = HashMap::new();
+        let lookahead = Duration::seconds(discovery.config.rug_lookahead_seconds.max(1) as i64);
+
+        for (idx, swap) in swaps
+            .iter()
+            .filter(|swap| swap.ts_utc >= window_start && swap.ts_utc <= now)
+            .enumerate()
+        {
+            let buy_quality = discovery.update_token_quality_state_streaming(
+                &mut token_states,
+                &mut token_recent_sol_trades,
+                &token_quality_cache,
+                swap,
+            );
+            by_wallet
+                .entry(swap.wallet.clone())
+                .or_default()
+                .observe_swap_streaming(
+                    swap,
+                    discovery.config.max_tx_per_minute,
+                    buy_quality,
+                    false,
+                );
+
+            let Some(token) = sol_leg_token(swap) else {
+                continue;
+            };
+            discovery.finalize_streaming_rug_metrics_up_to(
+                &mut by_wallet,
+                token,
+                &mut token_recent_sol_trades,
+                &mut pending_rug_checks,
+                &mut token_pending_buy_starts,
+                swap.ts_utc,
+                lookahead,
+                now,
+            );
+            if is_sol_buy(swap) {
+                pending_rug_checks.push_back(PendingBuyRugCheck {
+                    token: token.to_string(),
+                    wallet_id: swap.wallet.clone(),
+                    buy_ts: swap.ts_utc,
+                });
+                token_pending_buy_starts
+                    .entry(token.to_string())
+                    .or_default()
+                    .push_back(swap.ts_utc);
+            }
+            if (idx + 1) % STREAMING_RUG_TRADE_SWEEP_INTERVAL_SWAPS == 0 {
+                discovery.evict_idle_streaming_rug_trade_history(
+                    &mut token_recent_sol_trades,
+                    &token_pending_buy_starts,
+                    swap.ts_utc - lookahead,
+                );
+            }
+        }
+        discovery.finalize_all_streaming_rug_metrics(
+            &mut by_wallet,
+            &mut token_recent_sol_trades,
+            &mut pending_rug_checks,
+            &mut token_pending_buy_starts,
+            now,
+            lookahead,
+        );
+        ReplayStreamingStateForTest {
+            by_wallet,
+            token_states,
+            token_recent_sol_trades,
+            pending_rug_checks,
+            token_pending_buy_starts,
+        }
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -28043,6 +28192,223 @@ mod tests {
                     && !acc.suspicious
             }),
             "once the exact target surface is frozen, persisted replay checkpoints must stop hauling all-wallet activity ballast that exact candidate backfill will recompute anyway"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn frozen_exact_target_sol_leg_token_state_compaction_beats_persisted_state_row_limit_on_post_2c4fca3_lineage_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp.path().join("stage1-sol-leg-token-state-compaction.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-11T17:12:56Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        config.observed_swaps_retention_days = 14;
+        config.max_window_swaps_in_memory = 64;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 25_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (full_swaps, _legit_wallet_ids, _junk_wallet_ids) =
+            long_horizon_carry_vs_refill_drain_fixture_swaps(&config, now);
+        insert_observed_swaps_and_seed_runtime_cursor(&runtime_store, &full_swaps)?;
+
+        let helper_by_wallet =
+            replay_streaming_wallet_accumulators_from_swaps_for_test(&discovery, &full_swaps, now);
+        let exact_target_buy_mints = discovery
+            .discovery_critical_target_buy_mints_from_accumulators(
+                &runtime_store,
+                &helper_by_wallet,
+                now,
+            )?;
+        assert!(
+            !exact_target_buy_mints.is_empty(),
+            "the post-2c4fca3 repro must inherit a frozen non-empty exact target-mint surface before testing the remaining persisted checkpoint seam"
+        );
+        let exact_target_buy_mint_set: HashSet<String> =
+            exact_target_buy_mints.iter().cloned().collect();
+        let exact_target_only_swaps = omit_nonfollowed_market_context_swaps_except_tokens(
+            &full_swaps,
+            &exact_target_buy_mint_set,
+        );
+        let partial_len = exact_target_only_swaps.len().saturating_mul(3) / 4;
+        let partial_exact_target_swaps = exact_target_only_swaps[..partial_len.max(1)].to_vec();
+        assert!(
+            partial_exact_target_swaps.len() < exact_target_only_swaps.len(),
+            "the reduced live-like seam must still leave some exact-target SOL-leg source ahead of the stored cursor so the checkpoint remains honestly replay_sol_leg_incomplete"
+        );
+        let streaming_state = replay_streaming_state_from_swaps_for_test(
+            &discovery,
+            &partial_exact_target_swaps,
+            now,
+        );
+        assert!(
+            streaming_state
+                .token_states
+                .values()
+                .any(|state| !state.wallets_seen.is_empty()),
+            "the current remaining seam must actually carry redundant cumulative token wallet-membership before the new compaction can be attributed"
+        );
+        assert!(
+            streaming_state
+                .token_states
+                .values()
+                .any(|state| state.sol_trades_5m.is_empty() && !state.wallets_seen.is_empty()),
+            "the reduced live-like seam must include token states that only carry cumulative wallet-membership ballast and no rolling SOL-leg state"
+        );
+
+        let last_partial_swap = partial_exact_target_swaps
+            .last()
+            .cloned()
+            .context("missing last partial exact-target SOL-leg swap")?;
+        let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = metrics_window_start_for_test(&config, now);
+        let mut replay_state =
+            discovery.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now);
+        replay_state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        replay_state.horizon_end = now;
+        replay_state.phase_cursor = Some(DiscoveryRuntimeCursor {
+            ts_utc: last_partial_swap.ts_utc,
+            slot: last_partial_swap.slot,
+            signature: last_partial_swap.signature.clone(),
+        });
+        replay_state.payload.collect_buy_mints_prepass_complete = true;
+        replay_state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+        replay_state.payload.unique_buy_mints =
+            runtime_store.load_observed_buy_mints_in_window(window_start, now)?;
+        replay_state.payload.buy_mint_counts = replay_state
+            .payload
+            .unique_buy_mints
+            .iter()
+            .cloned()
+            .map(|mint| (mint, 1u32))
+            .collect();
+        replay_state.payload.token_quality_cache = fresh_token_quality_cache_for_mints_for_test(
+            &replay_state.payload.unique_buy_mints,
+            now,
+        );
+        replay_state.payload.token_quality_progress.next_mint_index =
+            replay_state.payload.unique_buy_mints.len();
+        replay_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        replay_state.payload.replay_wallet_stats_complete = true;
+        replay_state.payload.replay_wallet_stats_milestone_reached = true;
+        replay_state
+            .payload
+            .replay_candidate_activity_backfill_required = true;
+        replay_state.payload.discovery_critical_target_buy_mints = exact_target_buy_mints.clone();
+        replay_state.payload.by_wallet = streaming_state.by_wallet;
+        replay_state.payload.token_states = streaming_state.token_states;
+        replay_state.payload.token_recent_sol_trades = streaming_state.token_recent_sol_trades;
+        replay_state.payload.pending_rug_checks = streaming_state.pending_rug_checks;
+        replay_state.payload.token_pending_buy_starts = streaming_state.token_pending_buy_starts;
+        replay_state.replay_rows_processed = partial_exact_target_swaps.len();
+        replay_state.replay_pages_processed = replay_state
+            .replay_rows_processed
+            .div_ceil(config.max_fetch_swaps_per_cycle.max(1));
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_pages_processed =
+            replay_state.replay_pages_processed;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_rows_processed = replay_state.replay_rows_processed;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_elapsed_ms = 2_511_710;
+        replay_state.payload.replay_sol_leg_budget_floor_pages =
+            replay_state.replay_pages_processed.max(1);
+
+        let mut old_like = replay_state.clone();
+        DiscoveryService::compact_wallet_activity_summary_for_frozen_exact_target_checkpoint(
+            &mut old_like.payload,
+        );
+        let old_like_row = DiscoveryService::persisted_stream_rebuild_row(&old_like, now)?;
+        assert!(
+            old_like_row.state_json.contains("\"wallets_seen\""),
+            "the current post-2c4fca3 checkpoint must still serialize redundant token wallet-membership ballast before the new seam fix lands"
+        );
+
+        let mut compacted = replay_state.clone();
+        DiscoveryService::compact_wallet_activity_summary_for_frozen_exact_target_checkpoint(
+            &mut compacted.payload,
+        );
+        DiscoveryService::compact_streaming_token_state_for_frozen_exact_target_checkpoint(
+            &mut compacted.payload,
+        );
+        let compacted_row = DiscoveryService::persisted_stream_rebuild_row(&compacted, now)?;
+        assert!(
+            compacted_row.state_json.len() < old_like_row.state_json.len(),
+            "once exact target membership is already frozen, the persisted checkpoint should become smaller after dropping redundant streaming token-state ballast that partial SOL-leg replay does not read back"
+        );
+        assert!(
+            !compacted_row.state_json.contains("\"wallets_seen\""),
+            "the new compaction must stop serializing cumulative token wallet-membership into a frozen replay checkpoint"
+        );
+        let row_limit =
+            ((old_like_row.state_json.len() + compacted_row.state_json.len()) / 2) as i32;
+        assert!(
+            compacted_row.state_json.len() < row_limit as usize
+                && old_like_row.state_json.len() > row_limit as usize,
+            "the reduced repro must pick a SQLite row-length ceiling that the current post-2c4fca3 checkpoint exceeds but the compacted checkpoint still fits"
+        );
+
+        runtime_store.set_sqlite_length_limit_for_test(row_limit);
+
+        let old_error = runtime_store
+            .upsert_discovery_persisted_rebuild_state(&old_like_row)
+            .expect_err("the current post-2c4fca3 frozen-target checkpoint must still fail once redundant token-state ballast pushes the persisted row above SQLite's row-length ceiling");
+        let old_error_text = format!("{old_error:#}").to_ascii_lowercase();
+        assert!(
+            old_error_text.contains("failed updating discovery persisted rebuild state"),
+            "unexpected error: {old_error:#}"
+        );
+        assert!(
+            old_error_text.contains("too big"),
+            "the exact remaining seam must still be the oversized persisted replay row, not some unrelated sqlite path: {old_error:#}"
+        );
+
+        discovery.persist_persisted_stream_rebuild_state(&runtime_store, &mut replay_state, now)?;
+        let persisted_row = runtime_store
+            .load_discovery_persisted_rebuild_state()?
+            .expect("the compacted frozen-target checkpoint must persist under the same SQLite row-length ceiling");
+        let persisted = DiscoveryService::persisted_stream_rebuild_state_from_row(persisted_row)?;
+        assert_eq!(
+            persisted.payload.discovery_critical_target_buy_mints,
+            exact_target_buy_mints,
+            "persisting the compacted checkpoint must preserve the exact target-mint surface instead of discarding or recomputing it from the dropped token-state ballast"
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &persisted
+            ),
+            "replay_sol_leg_incomplete",
+            "the reduced live-like seam must stay honestly fail-closed on replay_sol_leg_incomplete after the persisted checkpoint write succeeds"
+        );
+        assert!(
+            persisted.payload.replay_candidate_activity_backfill_required
+                && !persisted.payload.replay_candidate_activity_backfill_pending,
+            "the compacted checkpoint must remain on the real pre-backfill seam rather than silently skipping candidate-activity work"
+        );
+        assert!(
+            persisted.payload.token_states.values().all(|state| {
+                state.first_seen.is_none() && state.wallets_seen.is_empty()
+            }),
+            "frozen exact-target replay checkpoints must stop hauling cumulative token wallet-membership that resumed partial SOL-leg replay never reads"
+        );
+        assert!(
+            persisted.payload.token_states.values().all(|state| {
+                !state.sol_trades_5m.is_empty()
+                    || state.sol_volume_5m > 0.0
+                    || !state.sol_traders_5m.is_empty()
+            }),
+            "once the cumulative wallet-membership ballast is dropped, persisted token states should only retain rolling SOL-leg tradability state that resumed replay actually needs"
         );
         Ok(())
     }

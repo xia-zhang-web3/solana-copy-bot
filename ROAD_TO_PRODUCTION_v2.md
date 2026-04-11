@@ -7704,6 +7704,31 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
      - therefore Stage 3 is not yet fully green end-to-end, because the runtime
        discovery export / top-wallet artifact surface is still fail-closed even
        though `latest.sqlite` itself is now healthy
+     - the next accepted narrowing after `2c4fca3` proved the remaining
+       persisted rebuild-state failure was still inside the same frozen exact-
+       target `Replay -> sol_leg` checkpoint seam, but now in redundant
+       streaming token-state ballast rather than all-wallet activity summaries:
+       - once `replay_wallet_stats_complete=true`, exact target-mint membership
+         is already frozen, and exact candidate-activity backfill is still
+         pending, the persisted checkpoint no longer needs cumulative
+         `TokenRollingState.first_seen`, `TokenRollingState.wallets_seen`, or
+         token-state rows that carry no rolling SOL-leg state at all
+       - resumed partial SOL-leg replay derives tradability from rolling
+         `sol_trades_5m` / `sol_volume_5m` / `sol_traders_5m`, not cumulative
+         token wallet-membership ballast
+       - persisted replay checkpoint writes and resume repair now compact that
+         exact token-state ballast on the frozen-target seam, while preserving
+         the already-frozen exact target-mint surface and an honest
+         `replay_sol_leg_incomplete` checkpoint
+       - the deterministic A/B repro now shows the old post-`2c4fca3`
+         checkpoint still fails with
+         `failed updating discovery persisted rebuild state` / `too big` under
+         the same SQLite row-length ceiling, while the compacted checkpoint
+         persists successfully and still leaves
+         `replay_candidate_activity_backfill_required = true`
+       - this still does not prove the runtime/export surface green; it only
+         removes the next exact oversized persisted checkpoint seam that remained
+         after the earlier frozen-checkpoint compaction
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 
