@@ -4028,6 +4028,99 @@ impl DiscoveryService {
             && !state.payload.discovery_critical_target_buy_mints.is_empty()
     }
 
+    fn state_can_backfill_exact_target_buy_mint_surface_for_resume(
+        state: &PersistedStreamRebuildState,
+    ) -> bool {
+        matches!(state.phase, DiscoveryPersistedRebuildPhase::Replay)
+            && state.payload.collect_buy_mints_prepass_complete
+            && matches!(state.payload.replay_mode, ReplayMode::WalletStatsThenSolLeg)
+            && state.payload.replay_wallet_stats_complete
+            && state.payload.replay_candidate_activity_backfill_required
+            && !state.payload.replay_candidate_activity_backfill_pending
+            && state.phase_cursor.is_some()
+            && state.replay_rows_processed > 0
+            && state.payload.replay_sol_leg_budget_floor_pages > 0
+            && state.payload.discovery_critical_target_buy_mints.is_empty()
+            && !state.payload.by_wallet.is_empty()
+            && state.payload.by_wallet.values().any(|acc| {
+                acc.buy_total > 0
+                    || !acc.buy_mints.is_empty()
+                    || !acc.positions.is_empty()
+                    || !acc.buy_observations.is_empty()
+            })
+    }
+
+    fn repair_replay_exact_target_buy_mint_surface_for_resume(
+        &self,
+        store: &SqliteStore,
+        state: &mut PersistedStreamRebuildState,
+    ) -> Result<bool> {
+        if !Self::state_can_backfill_exact_target_buy_mint_surface_for_resume(state) {
+            return Ok(false);
+        }
+
+        let exact_wallet_ids: Vec<String> = state.payload.by_wallet.keys().cloned().collect();
+        let wallet_limit =
+            Self::replay_wallet_stats_wallet_batch_size(self.config.max_fetch_swaps_per_cycle)
+                .max(1);
+        let deadline = Instant::now() + StdDuration::from_secs(300);
+        let mut wallet_cursor: Option<String> = None;
+        let mut restored_wallet_pages = 0usize;
+        let mut restored_wallet_rows = 0usize;
+        loop {
+            let page = store
+                .observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
+                    &exact_wallet_ids,
+                    state.window_start,
+                    state.horizon_end,
+                    wallet_cursor.as_deref(),
+                    wallet_limit,
+                    self.config.max_tx_per_minute,
+                    deadline,
+                )?;
+            restored_wallet_pages = restored_wallet_pages.saturating_add(1);
+            restored_wallet_rows = restored_wallet_rows.saturating_add(page.rows_seen);
+            for row in page.rows.iter().cloned() {
+                Self::observe_replay_wallet_activity_summary(&mut state.payload, row);
+            }
+            wallet_cursor = page.rows.last().map(|row| row.wallet_id.clone());
+            if page.time_budget_exhausted {
+                return Ok(false);
+            }
+            if page.rows.len() < wallet_limit {
+                break;
+            }
+        }
+
+        let exact_target_buy_mints = self.discovery_critical_target_buy_mints_from_accumulators(
+            store,
+            &state.payload.by_wallet,
+            state.horizon_end,
+        )?;
+        if exact_target_buy_mints.is_empty() {
+            return Ok(false);
+        }
+
+        info!(
+            rebuild_window_start = %state.window_start,
+            rebuild_horizon_end = %state.horizon_end,
+            rebuild_phase = state.phase.as_str(),
+            rebuild_replay_subphase =
+                Self::replay_subphase(
+                    state.phase,
+                    state.payload.replay_wallet_stats_complete,
+                    state.payload.replay_candidate_activity_backfill_pending,
+                ),
+            rebuild_wallets_buffered = state.payload.by_wallet.len(),
+            rebuild_repair_wallet_activity_pages = restored_wallet_pages,
+            rebuild_repair_wallet_activity_rows = restored_wallet_rows,
+            rebuild_target_buy_mints = exact_target_buy_mints.len(),
+            "backfilling missing exact candidate target-mint surface onto a resumed frozen partial SOL-leg checkpoint so persisted replay can re-enter the exact-target replay contract instead of broad-source fallback"
+        );
+        state.payload.discovery_critical_target_buy_mints = exact_target_buy_mints;
+        Ok(true)
+    }
+
     fn compact_wallet_activity_summary_for_frozen_exact_target_checkpoint(
         payload: &mut PersistedStreamRebuildPayload,
     ) {
@@ -5323,7 +5416,9 @@ impl DiscoveryService {
                 }
                 let repaired_for_resume =
                     self.repair_restored_persisted_stream_state_for_resume(&mut state, now);
-                if repaired_for_resume {
+                let repaired_exact_target_buy_mint_surface =
+                    self.repair_replay_exact_target_buy_mint_surface_for_resume(store, &mut state)?;
+                if repaired_for_resume || repaired_exact_target_buy_mint_surface {
                     self.persist_persisted_stream_rebuild_state(store, &mut state, now)?;
                 }
                 if state.metrics_window_start != metrics_window_start {
@@ -27884,18 +27979,11 @@ mod tests {
                 false,
                 Instant::now() + StdDuration::from_secs(30),
             )?;
-        assert_ne!(
-            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
-                &filtered
-            ),
-            "replay_sol_leg_incomplete",
-            "once the same pinned lineage replays only its persisted exact target-mint surface, the remaining broad non-target SOL-leg tail should stop blocking the handoff beyond replay_sol_leg_incomplete"
-        );
         assert!(
             filtered.payload.replay_candidate_activity_backfill_pending
                 || filtered_advance.source_exhausted
                 || filtered.phase == DiscoveryPersistedRebuildPhase::PublishPending,
-            "moving beyond the blocker must mean the exact-target-filtered replay exhausted the relevant SOL-leg source and entered candidate backfill or publish-pending, not merely that a different metric changed"
+            "once the same pinned lineage replays only its persisted exact target-mint surface, the remaining broad non-target SOL-leg tail should stop keeping the lineage mid-sol-leg and instead drain into exact candidate backfill, publish-pending, or full replay source exhaustion"
         );
         if filtered.phase == DiscoveryPersistedRebuildPhase::PublishPending {
             assert_eq!(
@@ -27904,6 +27992,427 @@ mod tests {
                 "if the exact-target-filtered replay can finish candidate backfill in the same reduced live-like cycle, it must preserve the real non-empty publish set instead of fabricating a new one"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_stream_replay_resume_backfills_missing_exact_target_surface_for_frozen_sol_leg_checkpoint_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-resume-backfills-missing-exact-target-sol-leg.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let source_now = DateTime::parse_from_rfc3339("2026-04-07T17:38:43Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        config.observed_swaps_retention_days = 14;
+        config.max_window_swaps_in_memory = 64;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 25_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (full_swaps, legit_wallet_ids, _) =
+            long_horizon_carry_vs_refill_drain_fixture_swaps(&config, source_now);
+        insert_observed_swaps_and_seed_runtime_cursor(&runtime_store, &full_swaps)?;
+
+        let helper_by_wallet = replay_streaming_wallet_accumulators_from_swaps_for_test(
+            &discovery,
+            &full_swaps,
+            source_now,
+        );
+        let exact_target_buy_mints = discovery
+            .discovery_critical_target_buy_mints_from_accumulators(
+                &runtime_store,
+                &helper_by_wallet,
+                source_now,
+            )?;
+        assert_eq!(
+            exact_target_buy_mints.len(),
+            legit_wallet_ids.len(),
+            "the reduced live-like lineage must first reconstruct the same non-empty exact target surface seen on the real replay path"
+        );
+        let exact_target_buy_mint_set: HashSet<String> =
+            exact_target_buy_mints.iter().cloned().collect();
+        let exact_target_only_swaps = omit_nonfollowed_market_context_swaps_except_tokens(
+            &full_swaps,
+            &exact_target_buy_mint_set,
+        );
+        let last_exact_target_sol_leg = full_swaps
+            .iter()
+            .rev()
+            .find(|swap| {
+                sol_leg_token(swap).is_some_and(|token| exact_target_buy_mint_set.contains(token))
+            })
+            .cloned()
+            .context("missing last exact-target SOL-leg swap in reduced live-like fixture")?;
+
+        let window_start = source_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let source_metrics_window_start = metrics_window_start_for_test(&config, source_now);
+        let target_now =
+            source_now + Duration::seconds(config.metric_snapshot_interval_seconds as i64 + 61);
+        let target_window_start =
+            target_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let target_metrics_window_start = metrics_window_start_for_test(&config, target_now);
+
+        let mut replay_state = discovery.start_persisted_stream_rebuild_state(
+            window_start,
+            source_metrics_window_start,
+            source_now,
+        );
+        replay_state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        replay_state.horizon_end = source_now;
+        replay_state.phase_cursor = Some(DiscoveryRuntimeCursor {
+            ts_utc: last_exact_target_sol_leg.ts_utc,
+            slot: last_exact_target_sol_leg.slot,
+            signature: last_exact_target_sol_leg.signature.clone(),
+        });
+        replay_state.payload.collect_buy_mints_prepass_complete = true;
+        replay_state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+        replay_state.payload.unique_buy_mints =
+            runtime_store.load_observed_buy_mints_in_window(window_start, source_now)?;
+        replay_state.payload.buy_mint_counts = replay_state
+            .payload
+            .unique_buy_mints
+            .iter()
+            .cloned()
+            .map(|mint| (mint, 1u32))
+            .collect();
+        replay_state.payload.token_quality_cache = fresh_token_quality_cache_for_mints_for_test(
+            &replay_state.payload.unique_buy_mints,
+            source_now,
+        );
+        replay_state.payload.token_quality_progress.next_mint_index =
+            replay_state.payload.unique_buy_mints.len();
+        replay_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        replay_state.payload.replay_wallet_stats_complete = true;
+        replay_state.payload.replay_wallet_stats_milestone_reached = true;
+        replay_state
+            .payload
+            .replay_candidate_activity_backfill_required = true;
+        replay_state.payload.by_wallet = replay_streaming_wallet_accumulators_from_swaps_for_test(
+            &discovery,
+            &exact_target_only_swaps,
+            source_now,
+        );
+        DiscoveryService::compact_wallet_activity_summary_for_frozen_exact_target_checkpoint(
+            &mut replay_state.payload,
+        );
+        replay_state.replay_rows_processed = 6_206_144;
+        replay_state.replay_pages_processed = 311;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_pages_processed = 311;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_rows_processed = 6_206_144;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_elapsed_ms = 2_511_710;
+        replay_state.payload.replay_sol_leg_budget_floor_pages = 326;
+        assert!(
+            replay_state.payload.discovery_critical_target_buy_mints.is_empty(),
+            "the deterministic repro must start from the exact missing-surface seam: a frozen partial SOL-leg checkpoint whose compacted wallet buffer still exists but whose exact target-mint surface was never durably persisted"
+        );
+
+        runtime_store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, source_now)?,
+        )?;
+        let (repaired, restore_outcome) = discovery.load_or_start_persisted_stream_rebuild_state(
+            &runtime_store,
+            target_window_start,
+            target_metrics_window_start,
+            target_now,
+        )?;
+
+        assert_eq!(
+            restore_outcome,
+            PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow,
+            "the missing exact-target surface must repair on the same pinned stale target seam already active on live, not by silently restarting the rebuild from scratch"
+        );
+        assert_eq!(
+            repaired.payload.discovery_critical_target_buy_mints,
+            exact_target_buy_mints,
+            "resume repair must reconstruct the same exact target-mint surface from the persisted compacted wallet buffer so the resumed checkpoint can re-enter the exact-target SOL-leg contract"
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &repaired
+            ),
+            "replay_sol_leg_incomplete",
+            "repairing the missing exact-target surface must not fake publishable progress before replay actually drains the remaining exact-target SOL-leg frontier"
+        );
+        let persisted = load_persisted_stream_rebuild_state_for_test(&runtime_store)?;
+        assert_eq!(
+            persisted.payload.discovery_critical_target_buy_mints,
+            exact_target_buy_mints,
+            "the repaired exact target-mint surface must also be durably written back to the persisted checkpoint so a restarted live process does not fall back onto broad-source SOL-leg replay again"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resumed_frozen_sol_leg_checkpoint_missing_exact_target_surface_beats_old_like_open_frontier_backlog_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-resumed-missing-exact-target-open-frontier-backlog.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let source_now = DateTime::parse_from_rfc3339("2026-04-07T17:38:43Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.require_open_positions_for_publication = true;
+        config.observed_swaps_retention_days = 14;
+        config.max_window_swaps_in_memory = 64;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 25_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (full_swaps, legit_wallet_ids, _) =
+            long_horizon_carry_vs_refill_drain_fixture_swaps(&config, source_now);
+        insert_observed_swaps_and_seed_runtime_cursor(&runtime_store, &full_swaps)?;
+
+        let helper_by_wallet = replay_streaming_wallet_accumulators_from_swaps_for_test(
+            &discovery,
+            &full_swaps,
+            source_now,
+        );
+        let exact_target_buy_mints = discovery
+            .discovery_critical_target_buy_mints_from_accumulators(
+                &runtime_store,
+                &helper_by_wallet,
+                source_now,
+            )?;
+        assert_eq!(exact_target_buy_mints.len(), legit_wallet_ids.len());
+        let exact_target_buy_mint_set: HashSet<String> =
+            exact_target_buy_mints.iter().cloned().collect();
+        let exact_target_only_swaps = omit_nonfollowed_market_context_swaps_except_tokens(
+            &full_swaps,
+            &exact_target_buy_mint_set,
+        );
+        let last_exact_target_sol_leg = full_swaps
+            .iter()
+            .rev()
+            .find(|swap| {
+                sol_leg_token(swap).is_some_and(|token| exact_target_buy_mint_set.contains(token))
+            })
+            .cloned()
+            .context("missing last exact-target SOL-leg swap in reduced live-like fixture")?;
+
+        let window_start = source_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let source_metrics_window_start = metrics_window_start_for_test(&config, source_now);
+        let target_now =
+            source_now + Duration::seconds(config.metric_snapshot_interval_seconds as i64 + 61);
+        let target_window_start =
+            target_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let target_metrics_window_start = metrics_window_start_for_test(&config, target_now);
+
+        let mut replay_state = discovery.start_persisted_stream_rebuild_state(
+            window_start,
+            source_metrics_window_start,
+            source_now,
+        );
+        replay_state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        replay_state.horizon_end = source_now;
+        replay_state.phase_cursor = Some(DiscoveryRuntimeCursor {
+            ts_utc: last_exact_target_sol_leg.ts_utc,
+            slot: last_exact_target_sol_leg.slot,
+            signature: last_exact_target_sol_leg.signature.clone(),
+        });
+        replay_state.payload.collect_buy_mints_prepass_complete = true;
+        replay_state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+        replay_state.payload.unique_buy_mints =
+            runtime_store.load_observed_buy_mints_in_window(window_start, source_now)?;
+        replay_state.payload.buy_mint_counts = replay_state
+            .payload
+            .unique_buy_mints
+            .iter()
+            .cloned()
+            .map(|mint| (mint, 1u32))
+            .collect();
+        replay_state.payload.token_quality_cache = fresh_token_quality_cache_for_mints_for_test(
+            &replay_state.payload.unique_buy_mints,
+            source_now,
+        );
+        replay_state.payload.token_quality_progress.next_mint_index =
+            replay_state.payload.unique_buy_mints.len();
+        replay_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        replay_state.payload.replay_wallet_stats_complete = true;
+        replay_state.payload.replay_wallet_stats_milestone_reached = true;
+        replay_state
+            .payload
+            .replay_candidate_activity_backfill_required = true;
+        replay_state.payload.by_wallet = replay_streaming_wallet_accumulators_from_swaps_for_test(
+            &discovery,
+            &exact_target_only_swaps,
+            source_now,
+        );
+        DiscoveryService::compact_wallet_activity_summary_for_frozen_exact_target_checkpoint(
+            &mut replay_state.payload,
+        );
+        replay_state.replay_rows_processed = 6_206_144;
+        replay_state.replay_pages_processed = 311;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_pages_processed = 311;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_rows_processed = 6_206_144;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_elapsed_ms = 2_511_710;
+        replay_state.payload.replay_sol_leg_budget_floor_pages = 326;
+        runtime_store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, source_now)?,
+        )?;
+
+        let (resumed, restore_outcome) = discovery.load_or_start_persisted_stream_rebuild_state(
+            &runtime_store,
+            target_window_start,
+            target_metrics_window_start,
+            target_now,
+        )?;
+        assert_eq!(
+            restore_outcome,
+            PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow
+        );
+        assert_eq!(
+            resumed.payload.discovery_critical_target_buy_mints,
+            exact_target_buy_mints,
+            "resume repair must restore the exact target surface onto the same pinned lineage before the A/B isolates the remaining post-startup replay contract seam"
+        );
+        assert!(
+            !resumed.payload.by_wallet.is_empty(),
+            "the repaired pinned lineage must still carry buffered wallet accumulators into exact-target SOL-leg replay; otherwise the test would only be proving an empty-state no-op"
+        );
+        let adjusted_contract = discovery
+            .deepen_persisted_stream_priority_recovery_contract_for_state_at(
+                &resumed,
+                config.max_fetch_swaps_per_cycle,
+                config.max_fetch_pages_per_cycle,
+                PersistedStreamPriorityRecoveryContract {
+                    time_budget: StdDuration::from_secs(60),
+                    collect_buy_mints_phase_page_limit_override: Some(160),
+                    replay_wallet_stats_phase_page_limit_override: Some(92),
+                    replay_sol_leg_phase_page_limit_override: Some(300),
+                    reason: Some("runtime_window_complete_stale_publication_truth"),
+                },
+                Some(target_now),
+            );
+        assert_eq!(
+            adjusted_contract.reason,
+            Some("deep_replay_sol_leg_open_frontier_backlog"),
+            "the deterministic repro must stay on the same post-startup live contract: the widened open-frontier replay lane is already active before the missing exact-target surface is repaired"
+        );
+
+        let broad_tail_row_count = adjusted_contract
+            .replay_sol_leg_phase_page_limit_override
+            .unwrap_or(config.max_fetch_pages_per_cycle)
+            .saturating_mul(config.max_fetch_swaps_per_cycle.max(1))
+            .saturating_add(config.max_fetch_swaps_per_cycle.max(1));
+        let tail_base_ts = last_exact_target_sol_leg.ts_utc + Duration::seconds(1);
+        for idx in 0..broad_tail_row_count {
+            let ts = tail_base_ts + Duration::seconds((idx / 2) as i64);
+            let token = format!("TokenStage1ResumeMissingTargetTail{idx:04}11111111111111111111");
+            let (token_in, token_out, amount_in, amount_out) = if idx % 2 == 0 {
+                (SOL_MINT.to_string(), token.clone(), 0.5, 50.0)
+            } else {
+                (token.clone(), SOL_MINT.to_string(), 50.0, 0.4)
+            };
+            let swap = SwapEvent {
+                signature: format!("stage1-resume-missing-target-tail-{idx:04}"),
+                wallet: format!("wallet_stage1_resume_missing_target_tail_{:04}", idx / 2),
+                dex: "raydium".to_string(),
+                token_in,
+                token_out,
+                amount_in,
+                amount_out,
+                slot: 9_500_000 + idx as u64,
+                ts_utc: ts.min(source_now),
+                exact_amounts: None,
+            };
+            runtime_store.insert_observed_swap(&swap)?;
+        }
+        let latest_tail_cursor = DiscoveryRuntimeCursor {
+            ts_utc: (tail_base_ts
+                + Duration::seconds((broad_tail_row_count.saturating_sub(1) / 2) as i64))
+            .min(source_now),
+            slot: 9_500_000 + broad_tail_row_count.saturating_sub(1) as u64,
+            signature: format!(
+                "stage1-resume-missing-target-tail-{:04}",
+                broad_tail_row_count.saturating_sub(1)
+            ),
+        };
+        runtime_store.upsert_discovery_runtime_cursor(&latest_tail_cursor)?;
+
+        let filtered_page = runtime_store
+            .for_each_observed_sol_leg_swap_in_window_after_cursor_for_target_buy_mints_with_budget(
+                resumed.window_start,
+                resumed.horizon_end,
+                resumed.phase_cursor.as_ref(),
+                &resumed.payload.discovery_critical_target_buy_mints,
+                config.max_fetch_swaps_per_cycle,
+                Instant::now() + StdDuration::from_secs(30),
+                |_swap| Ok(()),
+            )?;
+        assert_eq!(
+            filtered_page.rows_seen, 0,
+            "once the resumed checkpoint regains its exact target surface, the remaining broad non-target tail must already be invisible to the exact-target SOL-leg cursor; otherwise the test would still be exercising the older non-target replay seam instead of the post-startup handoff seam"
+        );
+
+        let mut old_like = resumed.clone();
+        old_like.payload.discovery_critical_target_buy_mints.clear();
+        let old_like_advance = discovery
+            .advance_persisted_stream_replay_optimized_with_wallet_stats_phase_page_limit(
+                &runtime_store,
+                &mut old_like,
+                config.max_fetch_swaps_per_cycle,
+                config.max_fetch_pages_per_cycle,
+                adjusted_contract.replay_wallet_stats_phase_page_limit_override,
+                adjusted_contract.replay_sol_leg_phase_page_limit_override,
+                false,
+                Instant::now() + StdDuration::from_secs(30),
+            )?;
+        assert!(
+            !old_like_advance.source_exhausted,
+            "without the repaired exact target surface, the resumed checkpoint must still behave like the live blocker: the widened sol-leg lane consumes broad-source tail rows and remains incomplete"
+        );
+        assert_eq!(
+            DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
+                &old_like
+            ),
+            "replay_sol_leg_incomplete",
+            "a resumed frozen partial SOL-leg checkpoint that still lacks its exact target surface must keep reproducing the post-startup live blocker even though all previously-landed replay widening fixes are already active"
+        );
+
+        let mut repaired = resumed;
+        let repaired_advance = discovery
+            .advance_persisted_stream_replay_optimized_with_wallet_stats_phase_page_limit(
+                &runtime_store,
+                &mut repaired,
+                config.max_fetch_swaps_per_cycle,
+                config.max_fetch_pages_per_cycle,
+                adjusted_contract.replay_wallet_stats_phase_page_limit_override,
+                adjusted_contract.replay_sol_leg_phase_page_limit_override,
+                false,
+                Instant::now() + StdDuration::from_secs(30),
+            )?;
+        assert!(
+            repaired.payload.replay_candidate_activity_backfill_pending
+                || repaired_advance.source_exhausted
+                || repaired.phase == DiscoveryPersistedRebuildPhase::PublishPending,
+            "once resume repair restores the missing exact target surface, the same pinned lineage must stop remaining mid-sol-leg and instead reach exact candidate-activity backfill, publish-pending, or full replay source exhaustion within the same bounded call"
+        );
         Ok(())
     }
 

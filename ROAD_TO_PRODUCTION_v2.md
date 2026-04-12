@@ -7778,6 +7778,41 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
         the service past the first post-`99b3c91` startup abort seam so live
         verification can return to `app runtime loop started` and only then
         re-evaluate the downstream Stage 3 discovery state
+    - the next accepted narrowing after the startup fix proved the remaining
+      live blocker was again inside the resumed frozen partial
+      `Replay -> sol_leg` checkpoint itself, but now specifically in a missing
+      exact target-mint surface on resume:
+      - after live restart the service now reaches `app runtime loop started`,
+        clears the old `observed_swap_writer_pending_requests = 128` plateau,
+        and immediately restabilizes on
+        `deep_replay_sol_leg_open_frontier_backlog` /
+        `replay_sol_leg_incomplete` with
+        `replay_candidate_activity_backfill_required = true`,
+        `replay_pages_processed = 311`, and
+        `replay_rows_processed = 6206144`
+      - the accepted repo-local A/B repro shows the resumed frozen partial
+        SOL-leg checkpoint can carry:
+        `replay_wallet_stats_complete = true`,
+        `replay_candidate_activity_backfill_required = true`,
+        compacted `by_wallet`, carried SOL-leg frontier, and carried
+        `replay_sol_leg_budget_floor_pages`, but an empty
+        `discovery_critical_target_buy_mints`
+      - when that exact state resumes, replay can no longer re-enter the exact
+        target-mint SOL-leg path and instead falls back to the broad-source
+        open-frontier replay contract, keeping candidate backfill from
+        starting and leaving publication truth stale so export remains
+        fail-closed and `latest.json` stays absent
+      - the accepted fix does not widen policy, weaken fail-closed, or patch
+        exporter; it repairs only that exact resumed checkpoint shape by
+        paging exact wallet activity for the carried wallet buffer, restoring
+        activity summary onto `by_wallet`, recomputing
+        `discovery_critical_target_buy_mints`, and persisting the repaired
+        checkpoint before stale-metrics rollover/pin handling continues
+      - the deterministic A/B repro now shows the old-like resumed checkpoint
+        staying on `replay_sol_leg_incomplete` while the repaired checkpoint
+        regains the exact target surface and the same lineage can drain into
+        exact candidate-activity backfill, publish-pending, or full replay
+        source exhaustion instead of broad-source fallback
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 
