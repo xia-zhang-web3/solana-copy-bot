@@ -1686,6 +1686,30 @@ impl DiscoveryService {
             .map(|truth| truth.active_wallets()))
     }
 
+    fn refresh_fail_closed_publication_runtime_surface_for_deferred_runtime_cycle(
+        &self,
+        store: &SqliteStore,
+        publication_state: Option<&DiscoveryPublicationStateRow>,
+        checkpoint_blocker: &'static str,
+    ) -> Result<()> {
+        let Some(publication_state) = publication_state else {
+            return Ok(());
+        };
+        store.set_discovery_publication_state_with_options(
+            &DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::FailClosed,
+                reason: format!("publication_truth_withheld_while_{checkpoint_blocker}"),
+                last_published_at: None,
+                last_published_window_start: None,
+                published_scoring_source: publication_state.published_scoring_source.clone(),
+                published_wallet_ids: None,
+            },
+            false,
+            publication_state.publication_policy_fingerprint.as_deref(),
+        )?;
+        Ok(())
+    }
+
     fn persist_publication_state(
         &self,
         store: &SqliteStore,
@@ -2188,6 +2212,11 @@ impl DiscoveryService {
                     Some(now),
                 );
             let telemetry = self.persisted_stream_progress_telemetry_from_state(&state, now);
+            self.refresh_fail_closed_publication_runtime_surface_for_deferred_runtime_cycle(
+                runtime_store,
+                publication_state.as_ref(),
+                Self::persisted_stream_publishable_checkpoint_blocker(&telemetry),
+            )?;
             return Ok(
                 DiscoveryPublicationTruthRepairTelemetry::deferred_to_runtime_cycle(
                     required_window_start,
@@ -22398,6 +22427,89 @@ mod tests {
     }
 
     #[test]
+    fn persist_publication_state_missing_exact_wallet_ids_carries_forward_stale_complete_row_and_refreshes_updated_at_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-withheld-missing-wallet-ids-carries-forward-stale-complete-row.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let stale_publish_at = DateTime::parse_from_rfc3339("2026-04-06T17:55:23Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let now = DateTime::parse_from_rfc3339("2026-04-12T15:53:32Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let metrics_window_start = metrics_window_start_for_test(&config, stale_publish_at);
+        let stale_published_wallets =
+            seed_published_wallet_metrics_snapshot(&store, metrics_window_start, 7, 7)?;
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            reason: "seed_stale_complete_publication_truth".to_string(),
+            last_published_at: Some(stale_publish_at),
+            last_published_window_start: Some(metrics_window_start),
+            published_scoring_source: Some("raw_window_persisted_stream".to_string()),
+            published_wallet_ids: Some(stale_published_wallets.iter().cloned().collect()),
+        })?;
+        let before = store
+            .discovery_publication_state_read_only()?
+            .expect("publication state should exist before withheld write");
+
+        let empty_wallets: Vec<String> = Vec::new();
+        let outcome = discovery.persist_publication_state(
+            &store,
+            DiscoveryRuntimeMode::Healthy,
+            true,
+            metrics_window_start,
+            Some(&empty_wallets),
+            "raw_window_persisted_stream",
+            "discovery_score_refresh",
+            now,
+        )?;
+        assert_eq!(outcome.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert!(!outcome.published_universe_persisted);
+
+        let after = store
+            .discovery_publication_state_read_only()?
+            .expect("publication state should exist after withheld write");
+        assert_eq!(after.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert_eq!(
+            after.reason,
+            "publication_truth_withheld_missing_exact_published_wallet_ids"
+        );
+        assert!(
+            after.updated_at > before.updated_at,
+            "the live-like fail-closed row must be stale-but-updating rather than completely frozen"
+        );
+        assert_eq!(after.last_published_at, Some(stale_publish_at));
+        assert_eq!(
+            after.last_published_window_start,
+            Some(metrics_window_start)
+        );
+        assert_eq!(
+            after.published_wallet_ids.clone().unwrap_or_default().len(),
+            7,
+            "the live-like published_wallet_count=7 comes from the prior persisted row being carried forward, not from a fresh exact universe write on the fail-closed path"
+        );
+        assert!(after.has_complete_publication_truth());
+        assert!(
+            !after.is_fresh_under_gate(discovery.publication_freshness_gate(), now),
+            "the carried-forward row must still fail the freshness gate at the live timestamp"
+        );
+        assert!(
+            discovery.runtime_publication_truth_resolution(&store, now)?.is_none(),
+            "runtime truth must still stay unavailable even though the carried-forward stale row remains structurally complete"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn run_cycle_partial_replay_downgrades_stale_healthy_publication_row_without_publish_due_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -24618,6 +24730,295 @@ mod tests {
                 .as_ref()
                 .is_some_and(|wallets| !wallets.is_empty()),
             "repaired healthy publish must repopulate the exact published wallet ids"
+        );
+        Ok(())
+    }
+
+    fn seed_stage1_deferred_runtime_publication_refresh_fixture() -> Result<(
+        tempfile::TempDir,
+        SqliteStore,
+        DiscoveryService,
+        DateTime<Utc>,
+        DateTime<Utc>,
+        Vec<String>,
+    )> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-12T21:03:21Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (replay_state, metrics_window_start, _) =
+            seed_stage1_partial_sol_leg_replay_checkpoint_fixture(
+                &runtime_store,
+                &discovery,
+                &config,
+                now,
+                401,
+                3,
+            )?;
+        runtime_store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, now)?,
+        )?;
+        let stale_published_wallets = (0..7usize)
+            .map(|idx| format!("wallet-stale-{idx}"))
+            .collect::<Vec<_>>();
+        let stale_last_published_at =
+            now - discovery.runtime_published_universe_max_age() - Duration::seconds(1);
+        runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "publication_truth_withheld_missing_exact_published_wallet_ids".to_string(),
+            last_published_at: Some(stale_last_published_at),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(stale_published_wallets.clone()),
+        })?;
+        Ok((
+            temp,
+            runtime_store,
+            discovery,
+            now,
+            stale_last_published_at,
+            stale_published_wallets,
+        ))
+    }
+
+    fn old_like_deferred_runtime_publication_refresh_without_surface_write(
+        discovery: &DiscoveryService,
+        runtime_store: &SqliteStore,
+        now: DateTime<Utc>,
+    ) -> Result<DiscoveryPublicationTruthRepairTelemetry> {
+        let gate = discovery.publication_freshness_gate();
+        let required_window_start = now - Duration::days(discovery.runtime_scoring_window_days());
+        let publication_state = runtime_store.discovery_publication_state_read_only()?;
+        let publication_truth_complete_before = publication_state
+            .as_ref()
+            .is_some_and(DiscoveryPublicationStateRow::has_complete_publication_truth);
+        let publication_truth_fresh_before = publication_state
+            .as_ref()
+            .is_some_and(|state| state.is_fresh_under_gate(gate, now));
+        let runtime_window_complete_before = discovery
+            .persisted_observed_swaps_cover_window(runtime_store, required_window_start)?;
+        assert!(runtime_window_complete_before);
+        assert!(!publication_truth_fresh_before);
+        let refresh_budget = StdDuration::from_secs(60);
+        let metrics_window_start = discovery.metrics_window_start(now);
+        let fetch_limit = discovery.config.max_fetch_swaps_per_cycle.max(1);
+        let fetch_page_limit = discovery.config.max_fetch_pages_per_cycle.max(1);
+        let base_recovery_contract = discovery.persisted_stream_priority_recovery_contract(
+            runtime_store,
+            now,
+            fetch_limit,
+            fetch_page_limit,
+            refresh_budget,
+        )?;
+        let (state, _) = discovery.load_or_start_persisted_stream_rebuild_state(
+            runtime_store,
+            required_window_start,
+            metrics_window_start,
+            now,
+        )?;
+        let recovery_contract = discovery
+            .deepen_persisted_stream_priority_recovery_contract_for_state_at(
+                &state,
+                fetch_limit,
+                fetch_page_limit,
+                base_recovery_contract,
+                Some(now),
+            );
+        let telemetry = discovery.persisted_stream_progress_telemetry_from_state(&state, now);
+        Ok(
+            DiscoveryPublicationTruthRepairTelemetry::deferred_to_runtime_cycle(
+                required_window_start,
+                publication_truth_complete_before,
+                publication_truth_fresh_before,
+                runtime_window_complete_before,
+                recovery_contract,
+                &telemetry,
+            ),
+        )
+    }
+
+    #[test]
+    fn repair_runtime_window_complete_deferred_replay_sol_leg_old_like_performs_zero_publication_writes_stage1(
+    ) -> Result<()> {
+        let (_temp, runtime_store, discovery, now, stale_last_published_at, stale_wallet_ids) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let before = runtime_store
+            .discovery_publication_state()?
+            .expect("publication state should exist before the delegated repair");
+
+        let repair = old_like_deferred_runtime_publication_refresh_without_surface_write(
+            &discovery,
+            &runtime_store,
+            now,
+        )?;
+        assert_eq!(
+            repair.state,
+            "deferred_runtime_window_truth_refresh_to_run_cycle"
+        );
+        assert!(repair.publication_truth_refresh_delegated_to_runtime_cycle);
+
+        let after = runtime_store
+            .discovery_publication_state()?
+            .expect("publication state should still exist after the old-like deferred repair");
+        assert_eq!(
+            after.updated_at, before.updated_at,
+            "old/current-like delegated repair performs zero publication writes before the long-running run_cycle begins"
+        );
+        assert_eq!(after.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert_eq!(
+            after.reason,
+            "publication_truth_withheld_missing_exact_published_wallet_ids"
+        );
+        assert_eq!(after.last_published_at, Some(stale_last_published_at));
+        assert_eq!(
+            after.published_wallet_ids.unwrap_or_default(),
+            stale_wallet_ids,
+            "the carried complete publication row should stay untouched under the old zero-write seam"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repair_runtime_window_complete_deferred_replay_sol_leg_refreshes_fail_closed_runtime_surface_before_run_cycle_stage1(
+    ) -> Result<()> {
+        let (_temp, runtime_store, discovery, now, stale_last_published_at, stale_wallet_ids) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let before = runtime_store
+            .discovery_publication_state()?
+            .expect("publication state should exist before repair");
+
+        let repair = discovery
+            .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
+                &runtime_store,
+                None,
+                now,
+                64,
+                Instant::now() + StdDuration::from_secs(60),
+            )?;
+        assert_eq!(
+            repair.state,
+            "deferred_runtime_window_truth_refresh_to_run_cycle"
+        );
+        assert!(repair.publication_truth_refresh_delegated_to_runtime_cycle);
+        assert_eq!(
+            repair.publication_truth_refresh_publishable_checkpoint_blocker,
+            Some("replay_sol_leg_incomplete")
+        );
+
+        let after = runtime_store
+            .discovery_publication_state()?
+            .expect("publication state should exist after deferred repair");
+        assert!(
+            after.updated_at > before.updated_at,
+            "the fixed deferred repair must refresh publication state before the long-running run_cycle starts"
+        );
+        assert_eq!(after.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert_eq!(
+            after.reason,
+            "publication_truth_withheld_while_replay_sol_leg_incomplete"
+        );
+        assert_eq!(
+            after.last_published_at,
+            Some(stale_last_published_at),
+            "the deferred repair must carry forward the old publish timestamp instead of faking freshness"
+        );
+        assert_eq!(
+            after.published_wallet_ids.clone().unwrap_or_default(),
+            stale_wallet_ids,
+            "the deferred repair must preserve the carried exact wallet ids instead of inventing a new publish"
+        );
+        assert!(after.has_complete_publication_truth());
+        assert!(
+            !after.is_fresh_under_gate(discovery.publication_freshness_gate(), now),
+            "refreshing the fail-closed runtime surface must not satisfy the export freshness gate"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repair_runtime_window_complete_deferred_refresh_with_missing_exact_wallet_ids_does_not_fake_complete_publication_truth_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh-missing-wallet-ids.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-12T21:03:21Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (replay_state, metrics_window_start, _) =
+            seed_stage1_partial_sol_leg_replay_checkpoint_fixture(
+                &runtime_store,
+                &discovery,
+                &config,
+                now,
+                401,
+                3,
+            )?;
+        runtime_store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, now)?,
+        )?;
+        let stale_last_published_at =
+            now - discovery.runtime_published_universe_max_age() - Duration::seconds(1);
+        runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "publication_truth_withheld_missing_exact_published_wallet_ids".to_string(),
+            last_published_at: Some(stale_last_published_at),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        let repair = discovery
+            .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
+                &runtime_store,
+                None,
+                now,
+                64,
+                Instant::now() + StdDuration::from_secs(60),
+            )?;
+        assert_eq!(
+            repair.state,
+            "deferred_runtime_window_truth_refresh_to_run_cycle"
+        );
+        let after = runtime_store
+            .discovery_publication_state()?
+            .expect("publication state should exist after deferred repair");
+        assert_eq!(after.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert_eq!(
+            after.reason,
+            "publication_truth_withheld_while_replay_sol_leg_incomplete"
+        );
+        assert_eq!(after.last_published_at, Some(stale_last_published_at));
+        assert!(
+            !after.has_complete_publication_truth(),
+            "the deferred repair must not fake complete publication truth when exact published wallet ids are still missing"
+        );
+        assert!(
+            !after.is_fresh_under_gate(discovery.publication_freshness_gate(), now),
+            "an honest fail-closed deferred refresh must still fail the freshness gate"
         );
         Ok(())
     }

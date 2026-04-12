@@ -7866,6 +7866,37 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
         `irrelevant_not_followed` contribution to the old `128 / 0 / 0`
         plateau; it does not by itself claim the stale publication/export seam
         is resolved
+    - live rollout on `0efb4df61fd7d260fa36ebbc352e2f8f189c899d` validated that
+      bounded app-side fix:
+      - `solana-copy-bot.service` restarted cleanly at
+        `2026-04-12 21:02:56 UTC`
+      - the old post-restart app seam no longer reproduced:
+        `PLATEAU_COUNT=0` and
+        `IRRELEVANT_NOT_FOLLOWED_COUNT=0`
+      - but the next blocker immediately narrowed to the publication path:
+        `PUBLICATION_WRITE_COUNT=0`
+      - export still failed fail-closed on the same stale carried row and
+        `latest.json` stayed absent, so the remaining seam was no longer queue
+        admission but missing post-restart publication-state writes
+    - the next accepted Stage 3 fix is narrowly scoped to that zero-write
+      publication seam:
+      - when the pre-`run_cycle()` repair helper sees a complete runtime
+        window but must delegate the real refresh to the persisted replay path,
+        the old behavior returned
+        `deferred_runtime_window_truth_refresh_to_run_cycle` without any
+        publication-state write
+      - the accepted fix now writes one honest fail-closed runtime surface
+        update before returning from that deferred path
+      - it carries forward the old `last_published_at`,
+        `last_published_window_start`, and `published_wallet_ids`, while
+        updating `updated_at` and stamping the current blocker reason such as
+        `publication_truth_withheld_while_replay_sol_leg_incomplete`
+      - it does not fake freshness, does not fake a healthy publish, and does
+        not weaken exporter freshness gating
+      - expected live effect is bounded: after restart there should now be a
+        `publication_state_write_kind` line and a newer fail-closed
+        `updated_at`, even if export still remains red until a real fresh
+        publish happens
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 
