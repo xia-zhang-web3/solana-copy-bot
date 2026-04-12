@@ -79,6 +79,8 @@ pub struct SqliteStore {
     conn: Connection,
 }
 
+pub const SQLITE_DEFAULT_WAL_AUTOCHECKPOINT_PAGES: i64 = 1_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqliteSnapshotRetryReason {
     Busy,
@@ -1576,6 +1578,19 @@ struct LiveOpenPositionRow {
 }
 
 impl SqliteStore {
+    pub fn wal_autocheckpoint_pages(&self) -> Result<i64> {
+        self.conn
+            .query_row("PRAGMA wal_autocheckpoint", [], |row| row.get(0))
+            .context("failed to read sqlite wal_autocheckpoint")
+    }
+
+    pub fn set_wal_autocheckpoint_pages(&self, pages: i64) -> Result<()> {
+        self.conn
+            .pragma_update(None, "wal_autocheckpoint", pages)
+            .with_context(|| format!("failed to set sqlite wal_autocheckpoint={} pages", pages))?;
+        Ok(())
+    }
+
     fn load_live_open_positions(
         conn: &Connection,
         token: &str,

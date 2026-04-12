@@ -7753,6 +7753,31 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
         removes the next exact oversized persisted checkpoint seam that
         remained after the earlier frozen-checkpoint and token-state
         compaction layers
+    - the next accepted narrowing after `99b3c91` proved the first live
+      blocker had shifted earlier than discovery itself and into startup:
+      - after explicit restart on the new binary, the service no longer first
+        reached the old discovery-cycle seam; it instead repeatedly aborted at
+        `startup_sqlite_heartbeat` after the startup path had already
+        completed SQLite open, WAL mode, and migrations
+      - startup explicitly deferred the heavyweight WAL checkpoint off the
+        critical path, but the same SQLite connection still retained implicit
+        `wal_autocheckpoint`, so the first startup-critical heartbeat write
+        could still inherit enough checkpoint work from a large live WAL
+        backlog to exceed the 30s startup watchdog
+      - the accepted fix does not raise the timeout, suppress the abort, or
+        skip the heartbeat; it temporarily sets `wal_autocheckpoint = 0`
+        around the exact startup-critical SQLite write window
+        (`startup_sqlite_heartbeat` plus optional
+        `startup_alert_delivery_cursor`) and restores the previous value
+        before the runtime loop starts
+      - the deterministic startup-only A/B repro now shows the old-like first
+        startup heartbeat write timing out on a large WAL backlog while the
+        deferred-autocheckpoint path completes under the same timeout budget
+        and preserves store writability after restoring the prior setting
+      - this does not prove the later discovery/export path green; it restores
+        the service past the first post-`99b3c91` startup abort seam so live
+        verification can return to `app runtime loop started` and only then
+        re-evaluate the downstream Stage 3 discovery state
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 

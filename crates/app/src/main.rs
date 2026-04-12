@@ -15,7 +15,7 @@ use copybot_storage::{
     sqlite_contention_snapshot, DiscoveryAggregateWriteConfig, DiscoveryRuntimeMode, Lamports,
     SignedLamports, SqliteContentionSnapshot, SqliteStartupPolicy, SqliteStore, StartupStepOutcome,
     StartupStepProgress, StartupStepProgressReporter, StartupStepRuntimePolicy,
-    StartupStepTimeoutBehavior,
+    StartupStepTimeoutBehavior, SQLITE_DEFAULT_WAL_AUTOCHECKPOINT_PAGES,
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet, VecDeque};
@@ -304,6 +304,38 @@ fn perform_startup_wal_checkpoint(
     StartupWalCheckpointOutcome::Deferred
 }
 
+fn defer_implicit_startup_sqlite_wal_autocheckpoint(
+    store: SqliteStore,
+) -> Result<(SqliteStore, i64)> {
+    let restore_pages = store
+        .wal_autocheckpoint_pages()
+        .context("failed to inspect sqlite wal_autocheckpoint before startup-critical writes")?;
+    store.set_wal_autocheckpoint_pages(0).context(
+        "failed to defer implicit sqlite wal autocheckpoint for startup-critical writes",
+    )?;
+    Ok((store, restore_pages))
+}
+
+fn restore_implicit_startup_sqlite_wal_autocheckpoint(
+    store: SqliteStore,
+    restore_pages: i64,
+) -> Result<SqliteStore> {
+    let restore_pages = if restore_pages < 0 {
+        SQLITE_DEFAULT_WAL_AUTOCHECKPOINT_PAGES
+    } else {
+        restore_pages
+    };
+    store
+        .set_wal_autocheckpoint_pages(restore_pages)
+        .with_context(|| {
+            format!(
+                "failed to restore sqlite wal_autocheckpoint={} after startup-critical writes",
+                restore_pages
+            )
+        })?;
+    Ok(store)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli_config = parse_config_arg();
@@ -389,6 +421,12 @@ async fn main() -> Result<()> {
         }
     }
 
+    let (store, startup_wal_autocheckpoint_restore_pages) = run_observed_startup_step(
+        "startup_sqlite_wal_autocheckpoint_defer",
+        startup_step_policy(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
+        Some(&startup_reporter),
+        move || defer_implicit_startup_sqlite_wal_autocheckpoint(store),
+    )?;
     let mut store = run_observed_startup_step(
         "startup_sqlite_heartbeat",
         startup_step_policy(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
@@ -433,6 +471,17 @@ async fn main() -> Result<()> {
             "alert_dispatcher_disabled",
         );
     }
+    store = run_observed_startup_step(
+        "startup_sqlite_wal_autocheckpoint_restore",
+        startup_step_policy(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
+        Some(&startup_reporter),
+        move || {
+            restore_implicit_startup_sqlite_wal_autocheckpoint(
+                store,
+                startup_wal_autocheckpoint_restore_pages,
+            )
+        },
+    )?;
 
     let (ingestion, discovery, shadow, execution_runtime) = run_inline_startup_step(
         &startup_reporter,
@@ -5358,6 +5407,7 @@ mod app_tests {
         DiscoveryTrustedSelectionStateUpdate, TrustedSelectionState, TrustedSnapshotSourceKind,
         WalletMetricRow,
     };
+    use rusqlite::{params, Connection};
     use std::collections::BTreeMap;
     use std::io::Write;
     use std::path::{Path, PathBuf};
@@ -5378,6 +5428,74 @@ mod app_tests {
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
         store.run_migrations(&migration_dir)?;
         Ok((store, db_path))
+    }
+
+    fn seed_startup_heartbeat_wal_backlog(store: &SqliteStore, rows: usize) -> Result<()> {
+        store.set_wal_autocheckpoint_pages(0).context(
+            "failed to defer wal_autocheckpoint while seeding startup heartbeat backlog",
+        )?;
+        let details_payload = "startup-heartbeat-wal-ballast".repeat(128);
+        for idx in 0..rows {
+            store
+                .insert_risk_event(
+                    &format!("startup-heartbeat-seed-{idx:05}"),
+                    "warn",
+                    Utc::now() + chrono::Duration::milliseconds(idx as i64),
+                    Some(&details_payload),
+                )
+                .with_context(|| format!("failed seeding startup heartbeat ballast row {idx}"))?;
+        }
+        Ok(())
+    }
+
+    fn open_slow_startup_heartbeat_test_connection(
+        db_path: &Path,
+        wal_autocheckpoint_pages: i64,
+    ) -> Result<Connection> {
+        let conn = Connection::open(db_path).with_context(|| {
+            format!(
+                "failed opening startup heartbeat test db {}",
+                db_path.display()
+            )
+        })?;
+        conn.busy_timeout(StdDuration::from_secs(5))
+            .context("failed to set startup heartbeat test busy timeout")?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .context("failed to force WAL mode for startup heartbeat test connection")?;
+        conn.pragma_update(None, "wal_autocheckpoint", wal_autocheckpoint_pages)
+            .with_context(|| {
+                format!(
+                    "failed to set startup heartbeat test wal_autocheckpoint={wal_autocheckpoint_pages}"
+                )
+            })?;
+        conn.progress_handler(
+            25,
+            Some(|| {
+                std::thread::sleep(StdDuration::from_millis(1));
+                false
+            }),
+        );
+        Ok(conn)
+    }
+
+    fn run_startup_heartbeat_insert_step(
+        conn: Connection,
+        reporter: Option<&StartupStepProgressReporter>,
+        timeout: StdDuration,
+    ) -> Result<()> {
+        run_observed_startup_step(
+            "test_startup_sqlite_heartbeat",
+            StartupStepRuntimePolicy::new(StdDuration::from_millis(5), Some(timeout)),
+            reporter,
+            move || {
+                conn.execute(
+                    "INSERT INTO system_heartbeat(component, ts, status) VALUES (?1, datetime('now'), ?2)",
+                    params!["copybot-app", "startup"],
+                )
+                .context("failed to write startup heartbeat via raw sqlite connection")?;
+                Ok(())
+            },
+        )
     }
 
     fn write_temp_secret_file(name: &str, content: &str) -> Result<PathBuf> {
@@ -14245,6 +14363,113 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
             }),
             "deferred checkpoint must emit an explicit skipped outcome with reason"
         );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_sqlite_heartbeat_old_like_implicit_wal_autocheckpoint_times_out_on_large_wal_stage1(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("startup-heartbeat-autocheckpoint-timeout")?;
+        seed_startup_heartbeat_wal_backlog(&store, 8_192)?;
+
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reporter_events = events.clone();
+        let reporter: StartupStepProgressReporter = std::sync::Arc::new(move |event| {
+            reporter_events
+                .lock()
+                .expect("startup reporter mutex poisoned")
+                .push(event);
+        });
+
+        let conn = open_slow_startup_heartbeat_test_connection(&db_path, 1)?;
+        let error = run_startup_heartbeat_insert_step(
+            conn,
+            Some(&reporter),
+            StdDuration::from_millis(40),
+        )
+        .expect_err(
+            "old-like startup heartbeat should time out once the first startup write inherits aggressive implicit wal checkpoint work on a large wal backlog",
+        );
+        assert!(
+            error
+                .downcast_ref::<copybot_storage::StartupStepTimeout>()
+                .is_some(),
+            "unexpected error: {error:#}"
+        );
+        std::thread::sleep(StdDuration::from_millis(150));
+
+        let recorded = events.lock().expect("startup reporter mutex poisoned");
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == "test_startup_sqlite_heartbeat"
+                    && event.outcome == StartupStepOutcome::Waiting
+            }),
+            "the reduced startup repro must emit waiting progress before timing out"
+        );
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == "test_startup_sqlite_heartbeat"
+                    && event.outcome == StartupStepOutcome::TimedOut
+            }),
+            "the reduced startup repro must emit an explicit timed_out outcome"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_sqlite_heartbeat_deferred_implicit_wal_autocheckpoint_completes_on_same_large_wal_stage1(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("startup-heartbeat-autocheckpoint-deferred")?;
+        seed_startup_heartbeat_wal_backlog(&store, 8_192)?;
+
+        let conn = open_slow_startup_heartbeat_test_connection(&db_path, 1)?;
+        conn.pragma_update(None, "wal_autocheckpoint", 0_i64)
+            .context(
+            "failed to defer implicit wal_autocheckpoint on the startup heartbeat test connection",
+        )?;
+        run_startup_heartbeat_insert_step(conn, None, StdDuration::from_millis(40))
+            .context("deferred implicit wal_autocheckpoint should let the same startup heartbeat write complete under the same timeout budget")?;
+
+        let verify = Connection::open(&db_path)
+            .with_context(|| format!("failed opening verify db {}", db_path.display()))?;
+        let heartbeat_rows: i64 = verify.query_row(
+            "SELECT COUNT(*) FROM system_heartbeat WHERE component = ?1 AND status = ?2",
+            params!["copybot-app", "startup"],
+            |row| row.get(0),
+        )?;
+        assert!(
+            heartbeat_rows >= 1,
+            "the deferred startup heartbeat path must still durably record the startup heartbeat instead of suppressing it"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_sqlite_wal_autocheckpoint_defer_and_restore_preserve_store_writability_stage1(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("startup-heartbeat-autocheckpoint-helper")?;
+        let original_pages = store.wal_autocheckpoint_pages()?;
+        let (store, restore_pages) = defer_implicit_startup_sqlite_wal_autocheckpoint(store)?;
+        assert_eq!(
+            store.wal_autocheckpoint_pages()?,
+            0,
+            "startup helper must explicitly defer implicit wal checkpoint work before startup-critical sqlite writes"
+        );
+        let store = restore_implicit_startup_sqlite_wal_autocheckpoint(store, restore_pages)?;
+        assert_eq!(
+            store.wal_autocheckpoint_pages()?,
+            original_pages,
+            "startup helper must restore the prior implicit wal checkpoint contract before the runtime loop begins"
+        );
+        store
+            .record_heartbeat("copybot-app", "startup-helper-restored")
+            .context("store should remain writable after defer/restore")?;
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
