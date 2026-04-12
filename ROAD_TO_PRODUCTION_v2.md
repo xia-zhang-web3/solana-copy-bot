@@ -7849,6 +7849,23 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
       - its purpose is to make the next live restart self-identifying so the
         remaining production seam can be narrowed from operator logs instead of
         guesswork
+    - the next accepted Stage 3 fix is narrowly scoped to the exact
+      app-side plateau class that the new diagnostics proved on live:
+      - on `bbc38c66c69801fec0296b797ff694b15b1230e7`, the repeated
+        `128 / 0 / 0` saturation warnings were emitted from
+        `observed_swap_irrelevant_branch="irrelevant_not_followed"`
+        with `discovery_critical_irrelevant_persistence=false`,
+        `followed_wallet_count=0`, `open_shadow_lot_count=0`, and
+        `discovery_critical_target_buy_mints_count=0`
+      - the accepted fix drops only that exact non-critical
+        `IrrelevantNotFollowed` no-ownership class before
+        `persist_irrelevant_observed_swap(...)` / `try_enqueue()` is reached
+      - it does not widen queue limits, change discovery-critical reserved
+        persistence, or alter exporter/publication fail-closed semantics
+      - expected live effect is bounded: remove the proven app-side
+        `irrelevant_not_followed` contribution to the old `128 / 0 / 0`
+        plateau; it does not by itself claim the stale publication/export seam
+        is resolved
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 

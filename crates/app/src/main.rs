@@ -1368,6 +1368,18 @@ fn zero_universe_empty_target_noncritical_irrelevant_context(
         )
 }
 
+fn should_preemptively_drop_noncritical_irrelevant_not_followed_without_ownership_surface(
+    discovery_critical: bool,
+    follow_snapshot: &FollowSnapshot,
+    open_shadow_lots: &HashSet<(String, String)>,
+    discovery_critical_target_buy_mints: &HashSet<String>,
+) -> bool {
+    !discovery_critical
+        && follow_snapshot.active.is_empty()
+        && open_shadow_lots.is_empty()
+        && discovery_critical_target_buy_mints.is_empty()
+}
+
 fn should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
     discovery_critical: bool,
     follow_snapshot: &FollowSnapshot,
@@ -4814,6 +4826,29 @@ async fn run_app_loop(
                                 shadow_strategy_fail_closed,
                                 &discovery_critical_target_buy_mints,
                             );
+                        if should_preemptively_drop_noncritical_irrelevant_not_followed_without_ownership_surface(
+                            discovery_critical_irrelevant_persistence,
+                            &follow_snapshot,
+                            &open_shadow_lots,
+                            &discovery_critical_target_buy_mints,
+                        ) {
+                            forget_recent_swap_signature(
+                                &mut recent_swap_signatures,
+                                &mut recent_swap_signature_order,
+                                &swap.signature,
+                            );
+                            app_consumer_loop_telemetry
+                                .note_processing_started_at(swap_processing_started_at);
+                            debug!(
+                                signature = %swap.signature,
+                                followed_wallet_count = follow_snapshot.active.len(),
+                                open_shadow_lot_count = open_shadow_lots.len(),
+                                discovery_critical_target_buy_mints_count =
+                                    discovery_critical_target_buy_mints.len(),
+                                "dropping non-critical irrelevant_not_followed observed swap because the runtime has no followed wallets, no open shadow lots, and no discovery-critical target mints"
+                            );
+                            continue;
+                        }
                         if should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
                             discovery_critical_irrelevant_persistence,
                             &follow_snapshot,
@@ -6065,6 +6100,23 @@ mod app_tests {
     }
 
     #[derive(Debug, Clone, Copy)]
+    struct IrrelevantNotFollowedNoOwnershipSurfaceSummary {
+        writer_pending_requests_peak: usize,
+        first_backpressure_pending_requests: usize,
+        aggregate_queue_depth_at_peak: usize,
+        journal_queue_depth_at_peak: usize,
+        dropped_swaps: usize,
+        accepted_swaps: usize,
+        completed_waves: usize,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum IrrelevantObservedSwapScenarioBranch {
+        NotFollowed,
+        Unclassified,
+    }
+
+    #[derive(Debug, Clone, Copy)]
     struct ZeroUniverseNoncriticalIrrelevantZeroOutputPressureSummary {
         baseline_rows_persisted: usize,
         first_backpressure_pending_requests: usize,
@@ -6586,6 +6638,180 @@ mod app_tests {
             upstream_queue_depth_after_loop: upstream.len(),
             accepted_noncritical_irrelevant_swaps,
             dropped_noncritical_irrelevant_swaps,
+            completed_waves,
+        })
+    }
+
+    fn irrelevant_observed_swap_for_scenario_branch(
+        branch: IrrelevantObservedSwapScenarioBranch,
+        signature: &str,
+        idx: usize,
+        base_ts: DateTime<Utc>,
+    ) -> SwapEvent {
+        let mut swap = irrelevant_backpressure_swap(signature, idx, base_ts);
+        if matches!(branch, IrrelevantObservedSwapScenarioBranch::Unclassified) {
+            swap.token_in = format!("token-unclassified-in-{idx:05}");
+            swap.token_out = format!("token-unclassified-out-{idx:05}");
+        }
+        swap
+    }
+
+    fn run_irrelevant_observed_swap_no_ownership_surface_saturation_scenario(
+        branch: IrrelevantObservedSwapScenarioBranch,
+        enable_production_not_followed_drop: bool,
+    ) -> Result<IrrelevantNotFollowedNoOwnershipSurfaceSummary> {
+        let (_store, db_path) = make_test_store("irrelevant-not-followed-no-ownership-saturation")?;
+        seed_runtime_raw_insert_backpressure(&db_path)?;
+        let runtime_store = SqliteStore::open(Path::new(&db_path))?;
+        runtime_store.checkpoint_wal_truncate()?;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let writer = ObservedSwapWriter::start_for_test(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            false,
+            DiscoveryAggregateWriteConfig::default(),
+        )?;
+        runtime_store.checkpoint_wal_truncate()?;
+
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-12T17:44:57Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let follow_snapshot = FollowSnapshot::default();
+        let open_shadow_lots = HashSet::new();
+        let discovery_critical_target_buy_mints = HashSet::new();
+        let mut recent_signatures = HashSet::new();
+        let mut recent_signature_order = VecDeque::new();
+        let mut writer_pending_requests_peak = 0usize;
+        let mut aggregate_queue_depth_at_peak = 0usize;
+        let mut journal_queue_depth_at_peak = 0usize;
+        let mut first_backpressure_pending_requests = 0usize;
+        let mut dropped_swaps = 0usize;
+        let mut accepted_swaps = 0usize;
+        let mut completed_waves = 0usize;
+
+        for idx in 0..(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE * 4) {
+            let swap = irrelevant_observed_swap_for_scenario_branch(
+                branch,
+                &format!("sig-not-followed-no-ownership-{idx:04}"),
+                idx,
+                scenario_now,
+            );
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            let discovery_critical = false;
+            let relevance = classify_observed_swap_shadow_relevance(
+                &swap,
+                &follow_snapshot,
+                &ShadowScheduler::new(),
+                &open_shadow_lots,
+            );
+            match branch {
+                IrrelevantObservedSwapScenarioBranch::NotFollowed => {
+                    assert!(
+                        matches!(
+                            relevance,
+                            ObservedSwapShadowRelevance::IrrelevantNotFollowed(_)
+                        ),
+                        "the reduced scenario must stay on the exact proven live irrelevant_not_followed class"
+                    );
+                }
+                IrrelevantObservedSwapScenarioBranch::Unclassified => {
+                    assert_eq!(
+                        relevance,
+                        ObservedSwapShadowRelevance::IrrelevantUnclassified,
+                        "the unchanged contrast scenario must remain on the unclassified branch"
+                    );
+                }
+            }
+
+            if enable_production_not_followed_drop
+                && matches!(relevance, ObservedSwapShadowRelevance::IrrelevantNotFollowed(_))
+                && should_preemptively_drop_noncritical_irrelevant_not_followed_without_ownership_surface(
+                    discovery_critical,
+                    &follow_snapshot,
+                    &open_shadow_lots,
+                    &discovery_critical_target_buy_mints,
+                )
+            {
+                dropped_swaps = dropped_swaps.saturating_add(1);
+                forget_recent_swap_signature(
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap.signature,
+                );
+                continue;
+            }
+
+            let outcome = runtime.block_on(async {
+                persist_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    discovery_critical,
+                )
+                .await
+            })?;
+            let snapshot = writer.snapshot();
+            writer_pending_requests_peak =
+                writer_pending_requests_peak.max(snapshot.pending_requests);
+            aggregate_queue_depth_at_peak =
+                aggregate_queue_depth_at_peak.max(snapshot.aggregate_queue_depth_batches);
+            journal_queue_depth_at_peak =
+                journal_queue_depth_at_peak.max(snapshot.journal_queue_depth_batches);
+            match outcome {
+                IrrelevantObservedSwapEnqueueOutcome::Enqueued => {
+                    accepted_swaps = accepted_swaps.saturating_add(1);
+                }
+                IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure => {
+                    dropped_swaps = dropped_swaps.saturating_add(1);
+                    if first_backpressure_pending_requests == 0 {
+                        first_backpressure_pending_requests = snapshot.pending_requests;
+                    }
+                    forget_recent_swap_signature(
+                        &mut recent_signatures,
+                        &mut recent_signature_order,
+                        &swap.signature,
+                    );
+                    completed_waves = completed_waves.saturating_add(1);
+                    let drain_started = StdInstant::now();
+                    while writer.snapshot().pending_requests > 0 {
+                        if drain_started.elapsed() > StdDuration::from_secs(10) {
+                            anyhow::bail!(
+                                "writer failed to drain a bounded irrelevant_not_followed no-ownership wave"
+                            );
+                        }
+                        std::thread::sleep(StdDuration::from_millis(20));
+                    }
+                    if completed_waves >= 4 {
+                        break;
+                    }
+                }
+            }
+        }
+
+        writer.shutdown()?;
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+
+        Ok(IrrelevantNotFollowedNoOwnershipSurfaceSummary {
+            writer_pending_requests_peak,
+            first_backpressure_pending_requests,
+            aggregate_queue_depth_at_peak,
+            journal_queue_depth_at_peak,
+            dropped_swaps,
+            accepted_swaps,
             completed_waves,
         })
     }
@@ -17627,6 +17853,220 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
             "once the runtime has followed wallets, diagnostics must stop reporting the exact zero-universe empty-target context"
         );
         assert_eq!(followed.followed_wallet_count, 1);
+    }
+
+    #[test]
+    fn irrelevant_not_followed_without_ownership_surface_drops_before_writer_enqueue_stage1(
+    ) -> Result<()> {
+        let summary = run_irrelevant_observed_swap_no_ownership_surface_saturation_scenario(
+            IrrelevantObservedSwapScenarioBranch::NotFollowed,
+            true,
+        )?;
+        assert_eq!(
+            summary.first_backpressure_pending_requests, 0,
+            "the exact proven live branch should no longer hit writer backpressure once it is dropped before enqueue"
+        );
+        assert_eq!(
+            summary.writer_pending_requests_peak, 0,
+            "dropping the exact irrelevant_not_followed no-ownership class before enqueue should keep the non-critical writer budget empty"
+        );
+        assert_eq!(summary.aggregate_queue_depth_at_peak, 0);
+        assert_eq!(summary.journal_queue_depth_at_peak, 0);
+        assert_eq!(summary.accepted_swaps, 0);
+        assert!(
+            summary.dropped_swaps > 0,
+            "the reduced live class should now be handled entirely by the bounded early drop path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn irrelevant_not_followed_without_ownership_surface_eliminates_repeated_live_128_plateau_pattern_stage1(
+    ) -> Result<()> {
+        let old = run_irrelevant_observed_swap_no_ownership_surface_saturation_scenario(
+            IrrelevantObservedSwapScenarioBranch::NotFollowed,
+            false,
+        )?;
+        let new = run_irrelevant_observed_swap_no_ownership_surface_saturation_scenario(
+            IrrelevantObservedSwapScenarioBranch::NotFollowed,
+            true,
+        )?;
+        assert_eq!(
+            old.first_backpressure_pending_requests,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "old/current-like behavior should reproduce the same live 128 plateau from the exact irrelevant_not_followed no-ownership class"
+        );
+        assert_eq!(old.aggregate_queue_depth_at_peak, 0);
+        assert!(
+            old.completed_waves > 0,
+            "old/current-like behavior should recreate repeated plateau waves under the same reduced live class"
+        );
+        assert_eq!(new.first_backpressure_pending_requests, 0);
+        assert_eq!(new.completed_waves, 0);
+        assert!(
+            old.writer_pending_requests_peak > new.writer_pending_requests_peak,
+            "the bounded admission fix must materially change the proven live plateau seam itself"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn irrelevant_unclassified_without_ownership_surface_behavior_is_unchanged_stage1() -> Result<()>
+    {
+        let old = run_irrelevant_observed_swap_no_ownership_surface_saturation_scenario(
+            IrrelevantObservedSwapScenarioBranch::Unclassified,
+            false,
+        )?;
+        let new = run_irrelevant_observed_swap_no_ownership_surface_saturation_scenario(
+            IrrelevantObservedSwapScenarioBranch::Unclassified,
+            true,
+        )?;
+        assert_eq!(
+            old.first_backpressure_pending_requests,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "the unchanged unclassified branch should still reproduce the old plateau under the same reduced no-ownership state"
+        );
+        assert_eq!(
+            new.first_backpressure_pending_requests, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "enabling the new drop contract must not intercept the unclassified branch"
+        );
+        assert_eq!(old.aggregate_queue_depth_at_peak, 0);
+        assert_eq!(new.aggregate_queue_depth_at_peak, 0);
+        assert!(old.completed_waves > 0);
+        assert!(new.completed_waves > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn irrelevant_not_followed_without_ownership_surface_does_not_drop_when_target_buy_mints_exist_stage1(
+    ) -> Result<()> {
+        let (_store, db_path) =
+            make_test_store("irrelevant-not-followed-target-surface-preserved")?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            let writer = ObservedSwapWriter::start_for_test(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+                TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+                false,
+                DiscoveryAggregateWriteConfig::default(),
+            )?;
+            let swap = test_swap("sig-not-followed-target-surface");
+            let follow_snapshot = FollowSnapshot::default();
+            let open_shadow_lots = HashSet::new();
+            let discovery_critical_target_buy_mints = HashSet::from([swap.token_out.clone()]);
+            let relevance = classify_observed_swap_shadow_relevance(
+                &swap,
+                &follow_snapshot,
+                &ShadowScheduler::new(),
+                &open_shadow_lots,
+            );
+            assert!(
+                matches!(relevance, ObservedSwapShadowRelevance::IrrelevantNotFollowed(_)),
+                "the regression must stay on the real irrelevant_not_followed branch"
+            );
+            let discovery_critical = irrelevant_observed_swap_requires_discovery_critical_persistence(
+                &swap,
+                &follow_snapshot,
+                &open_shadow_lots,
+                true,
+                &discovery_critical_target_buy_mints,
+            );
+            assert!(discovery_critical);
+            assert!(
+                !should_preemptively_drop_noncritical_irrelevant_not_followed_without_ownership_surface(
+                    discovery_critical,
+                    &follow_snapshot,
+                    &open_shadow_lots,
+                    &discovery_critical_target_buy_mints,
+                ),
+                "the new drop contract must disengage once target-buy-mint ownership exists"
+            );
+            let mut recent_signatures = HashSet::new();
+            let mut recent_signature_order = VecDeque::new();
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            assert_eq!(
+                persist_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    discovery_critical,
+                )
+                .await?,
+                IrrelevantObservedSwapEnqueueOutcome::Enqueued,
+                "target-buy-mint ownership must preserve the previous reserved-path persistence behavior"
+            );
+            writer.shutdown()?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_shadow_relevance_keeps_followed_buy_relevant_stage1() {
+        let swap = test_swap("sig-followed-buy-stage1");
+        let mut follow_snapshot = FollowSnapshot::default();
+        follow_snapshot.active.insert(swap.wallet.clone());
+        assert!(
+            matches!(
+                classify_observed_swap_shadow_relevance(
+                    &swap,
+                    &follow_snapshot,
+                    &ShadowScheduler::new(),
+                    &HashSet::new(),
+                ),
+                ObservedSwapShadowRelevance::Relevant(ShadowSwapSide::Buy)
+            ),
+            "followed wallets stay on the relevant branch, so the new irrelevant_not_followed drop path is unreachable"
+        );
+    }
+
+    #[test]
+    fn observed_swap_shadow_relevance_keeps_sell_with_open_lot_relevant_stage1() {
+        let mut swap = test_swap("sig-sell-open-lot-stage1");
+        swap.token_in = "token-a".to_string();
+        swap.token_out = "So11111111111111111111111111111111111111112".to_string();
+        let sell_key = shadow_task_key_for_swap(&swap, ShadowSwapSide::Sell);
+        let open_shadow_lots = HashSet::from([(sell_key.wallet.clone(), sell_key.token.clone())]);
+        assert!(
+            matches!(
+                classify_observed_swap_shadow_relevance(
+                    &swap,
+                    &FollowSnapshot::default(),
+                    &ShadowScheduler::new(),
+                    &open_shadow_lots,
+                ),
+                ObservedSwapShadowRelevance::Relevant(ShadowSwapSide::Sell)
+            ),
+            "open shadow lots keep the swap on the relevant branch, so the new irrelevant_not_followed drop path is unreachable"
+        );
+    }
+
+    #[test]
+    fn irrelevant_not_followed_without_ownership_surface_does_not_drop_discovery_critical_reserved_path_stage1(
+    ) {
+        assert!(
+            !should_preemptively_drop_noncritical_irrelevant_not_followed_without_ownership_surface(
+                true,
+                &FollowSnapshot::default(),
+                &HashSet::new(),
+                &HashSet::new(),
+            ),
+            "the bounded live-seam drop must never intercept the discovery-critical reserved irrelevant path"
+        );
     }
 
     #[test]
