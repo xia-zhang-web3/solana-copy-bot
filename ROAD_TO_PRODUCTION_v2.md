@@ -9355,6 +9355,74 @@ Acceptance update, package-closure-certificate-latest handoff surface (`2026-04-
      incident remains open
    - this batch does not authorize or perform production activation
 
+Acceptance update, package-finality-receipt-latest handoff surface (`2026-04-12`):
+
+1. Stage 4 now also has one bounded finality-receipt-side handoff surface from
+   the latest immutable package chain to the already accepted finality-receipt
+   contract:
+   - `copybot_tiny_live_activation_package_finality_receipt_latest`
+2. The new operator surface is explicit and bounded:
+   - `--plan-latest-finality-receipt --root <path> [--json]`
+   - `--render-latest-finality-receipt-script --root <path> --output <path> [--json]`
+   - `--run-latest-finality-receipt --root <path> --session-dir <path> [--json]`
+   - `--verify-latest-finality-receipt --session-dir <path> [--json]`
+3. The command deliberately reuses accepted truth instead of inventing a new
+   finality-receipt path:
+   - latest immutable chain resolution still comes from the accepted
+     `copybot_tiny_live_activation_package_closure_certificate_latest` handoff
+   - latest chain validity still requires the current top accepted layer
+     `clerestory_certificate`
+   - downstream finality-receipt execution still runs through the accepted
+     `copybot_tiny_live_activation_package_finality_receipt` contract with the
+     exact latest-closure-certificate session and exact downstream
+     decision-packet confirmation anchor proved by the resolved latest chain
+4. The handoff remains fail-closed, archival, and planning-safe:
+   - it refuses when no latest chain exists, when the latest chain is invalid,
+     or when the latest chain does not prove the exact nested
+     latest-closure-certificate lineage required by the accepted
+     finality-receipt contract
+   - the downstream `--confirm-decision-packet-session-dir` remains
+     confirmation-only and never replaces latest-closure-certificate lineage as
+     the source of truth
+   - it remains read-only / archival exactly like the accepted native
+     finality-receipt contract
+   - it never marks `activation_authorized=true`
+   - run mode still preserves the existing Stage 3 / pre-activation refusal
+     semantics of the downstream finality-receipt contract
+5. Verification is now real on wrapper truth, copied latest-closure-certificate
+   truth, copied native finality-receipt truth, and nested accepted verify
+   truth:
+   - `--verify-latest-finality-receipt` re-resolves the current latest
+     immutable chain, verifies the accepted nested latest-closure-certificate
+     and finality-receipt contracts, and compares stored wrapper session /
+     status / report artifacts against that resolved snapshot
+   - fail-closed checks cover wrapper metadata, copied latest-closure-certificate
+     plan / run truth, drifted downstream decision-packet confirmation anchor,
+     copied native finality-receipt run truth, nested persisted
+     finality-receipt session/status truth, accepted nested verify truth, and
+     copied native registry-entry / notarization-receipt /
+     filing-certificate / archive-receipt / closure-certificate /
+     finality-receipt metadata and native path fields that would otherwise
+     allow false green or false red
+   - tampered persisted wrapper fields or copied nested artifacts can no longer
+     verify green, and real accepted native `finality_receipt_session_path` /
+     `finality_receipt_status_path` fields no longer false-red under verify
+6. Practical meaning:
+   - operators can now move from the latest immutable package chain to the
+     exact accepted finality-receipt contract without manual session-dir
+     archaeology
+   - this closes the remaining latest-chain finality-receipt blind spot while
+     Stage 3 remains non-green
+7. Acceptance stayed on the bounded surface:
+   - `rustfmt crates/app/src/bin/copybot_tiny_live_activation_package_finality_receipt_latest.rs`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_finality_receipt_latest`
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_finality_receipt_latest`
+   - `git diff --check -- crates/app/src/bin/copybot_tiny_live_activation_package_finality_receipt_latest.rs`
+8. Current production status remains unchanged:
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+   - this batch does not authorize or perform production activation
+
 Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
 
 1. The repo now has one more final immutable archival layer over the verified
