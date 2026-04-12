@@ -1034,6 +1034,120 @@ enum IrrelevantObservedSwapEnqueueOutcome {
     PendingWriterBackpressure,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IrrelevantObservedSwapBackpressureSourceBranch {
+    Unclassified,
+    NotFollowed,
+}
+
+impl IrrelevantObservedSwapBackpressureSourceBranch {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unclassified => "irrelevant_unclassified",
+            Self::NotFollowed => "irrelevant_not_followed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IrrelevantObservedSwapBackpressureDiagnostics {
+    irrelevant_branch: &'static str,
+    discovery_critical_irrelevant_persistence: bool,
+    zero_universe_empty_target_noncritical_context: bool,
+    followed_wallet_count: usize,
+    open_shadow_lot_count: usize,
+    discovery_critical_target_buy_mints_count: usize,
+    pending_irrelevant_swap_queue_depth: usize,
+    writer_pending_requests: usize,
+    writer_aggregate_queue_depth_batches: usize,
+    yellowstone_output_queue_depth: u64,
+}
+
+fn snapshot_irrelevant_observed_swap_backpressure_diagnostics(
+    branch: IrrelevantObservedSwapBackpressureSourceBranch,
+    discovery_critical_irrelevant_persistence: bool,
+    follow_snapshot: &FollowSnapshot,
+    open_shadow_lots: &HashSet<(String, String)>,
+    shadow_strategy_fail_closed: bool,
+    discovery_critical_target_buy_mints: &HashSet<String>,
+    pending_irrelevant_swaps: &VecDeque<PendingIrrelevantObservedSwap>,
+    observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
+    ingestion_snapshot: Option<IngestionRuntimeSnapshot>,
+) -> IrrelevantObservedSwapBackpressureDiagnostics {
+    IrrelevantObservedSwapBackpressureDiagnostics {
+        irrelevant_branch: branch.as_str(),
+        discovery_critical_irrelevant_persistence,
+        zero_universe_empty_target_noncritical_context:
+            zero_universe_empty_target_noncritical_irrelevant_context(
+                discovery_critical_irrelevant_persistence,
+                follow_snapshot,
+                open_shadow_lots,
+                shadow_strategy_fail_closed,
+                discovery_critical_target_buy_mints,
+            ),
+        followed_wallet_count: follow_snapshot.active.len(),
+        open_shadow_lot_count: open_shadow_lots.len(),
+        discovery_critical_target_buy_mints_count: discovery_critical_target_buy_mints.len(),
+        pending_irrelevant_swap_queue_depth: pending_irrelevant_swaps.len(),
+        writer_pending_requests: observed_swap_writer_snapshot.pending_requests,
+        writer_aggregate_queue_depth_batches: observed_swap_writer_snapshot
+            .aggregate_queue_depth_batches,
+        yellowstone_output_queue_depth: ingestion_snapshot
+            .map(|snapshot| snapshot.yellowstone_output_queue_depth)
+            .unwrap_or(0),
+    }
+}
+
+fn warn_irrelevant_observed_swap_writer_backpressure(
+    swap: &SwapEvent,
+    branch: IrrelevantObservedSwapBackpressureSourceBranch,
+    discovery_critical_irrelevant_persistence: bool,
+    follow_snapshot: &FollowSnapshot,
+    open_shadow_lots: &HashSet<(String, String)>,
+    shadow_strategy_fail_closed: bool,
+    discovery_critical_target_buy_mints: &HashSet<String>,
+    pending_irrelevant_swaps: &VecDeque<PendingIrrelevantObservedSwap>,
+    observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
+    ingestion_snapshot: Option<IngestionRuntimeSnapshot>,
+) {
+    let diagnostics = snapshot_irrelevant_observed_swap_backpressure_diagnostics(
+        branch,
+        discovery_critical_irrelevant_persistence,
+        follow_snapshot,
+        open_shadow_lots,
+        shadow_strategy_fail_closed,
+        discovery_critical_target_buy_mints,
+        pending_irrelevant_swaps,
+        observed_swap_writer_snapshot,
+        ingestion_snapshot,
+    );
+    warn!(
+        signature = %swap.signature,
+        observed_swap_irrelevant_branch = diagnostics.irrelevant_branch,
+        discovery_critical_irrelevant_persistence =
+            diagnostics.discovery_critical_irrelevant_persistence,
+        zero_universe_empty_target_noncritical_context =
+            diagnostics.zero_universe_empty_target_noncritical_context,
+        followed_wallet_count = diagnostics.followed_wallet_count,
+        open_shadow_lot_count = diagnostics.open_shadow_lot_count,
+        discovery_critical_target_buy_mints_count =
+            diagnostics.discovery_critical_target_buy_mints_count,
+        pending_irrelevant_swap_queue_depth =
+            diagnostics.pending_irrelevant_swap_queue_depth,
+        observed_swap_writer_pending_requests = diagnostics.writer_pending_requests,
+        observed_swap_writer_aggregate_queue_depth_batches =
+            diagnostics.writer_aggregate_queue_depth_batches,
+        yellowstone_output_queue_depth = diagnostics.yellowstone_output_queue_depth,
+        yellowstone_output_queue_capacity = ingestion_snapshot
+            .map(|snapshot| snapshot.yellowstone_output_queue_capacity)
+            .unwrap_or(0),
+        yellowstone_output_queue_fill_ratio = ingestion_snapshot
+            .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio)
+            .unwrap_or(0.0),
+        "observed swap writer queue is saturated; deferring irrelevant observed swap persistence without restarting runtime"
+    );
+}
+
 #[derive(Debug, Clone)]
 struct PendingIrrelevantObservedSwap {
     swap: SwapEvent,
@@ -4547,22 +4661,17 @@ async fn run_app_loop(
                             }
                             Ok(IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure) => {
                                 let writer_snapshot = observed_swap_writer.snapshot();
-                                warn!(
-                                    signature = %swap.signature,
-                                    observed_swap_writer_pending_requests =
-                                        writer_snapshot.pending_requests,
-                                    observed_swap_writer_aggregate_queue_depth_batches =
-                                        writer_snapshot.aggregate_queue_depth_batches,
-                                    yellowstone_output_queue_depth = ingestion_snapshot
-                                        .map(|snapshot| snapshot.yellowstone_output_queue_depth)
-                                        .unwrap_or(0),
-                                    yellowstone_output_queue_capacity = ingestion_snapshot
-                                        .map(|snapshot| snapshot.yellowstone_output_queue_capacity)
-                                        .unwrap_or(0),
-                                    yellowstone_output_queue_fill_ratio = ingestion_snapshot
-                                        .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio)
-                                        .unwrap_or(0.0),
-                                    "observed swap writer queue is saturated; deferring irrelevant observed swap persistence without restarting runtime"
+                                warn_irrelevant_observed_swap_writer_backpressure(
+                                    &swap,
+                                    IrrelevantObservedSwapBackpressureSourceBranch::Unclassified,
+                                    discovery_critical_irrelevant_persistence,
+                                    &follow_snapshot,
+                                    &open_shadow_lots,
+                                    shadow_strategy_fail_closed,
+                                    &discovery_critical_target_buy_mints,
+                                    &pending_irrelevant_swaps,
+                                    &writer_snapshot,
+                                    ingestion_snapshot,
                                 );
                                 let discovery_critical_irrelevant_persistence =
                                     refresh_discovery_critical_irrelevant_persistence_for_backpressure(
@@ -4770,22 +4879,17 @@ async fn run_app_loop(
                             }
                             Ok(IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure) => {
                                 let writer_snapshot = observed_swap_writer.snapshot();
-                                warn!(
-                                    signature = %swap.signature,
-                                    observed_swap_writer_pending_requests =
-                                        writer_snapshot.pending_requests,
-                                    observed_swap_writer_aggregate_queue_depth_batches =
-                                        writer_snapshot.aggregate_queue_depth_batches,
-                                    yellowstone_output_queue_depth = ingestion_snapshot
-                                        .map(|snapshot| snapshot.yellowstone_output_queue_depth)
-                                        .unwrap_or(0),
-                                    yellowstone_output_queue_capacity = ingestion_snapshot
-                                        .map(|snapshot| snapshot.yellowstone_output_queue_capacity)
-                                        .unwrap_or(0),
-                                    yellowstone_output_queue_fill_ratio = ingestion_snapshot
-                                        .map(|snapshot| snapshot.yellowstone_output_queue_fill_ratio)
-                                        .unwrap_or(0.0),
-                                    "observed swap writer queue is saturated; deferring irrelevant observed swap persistence without restarting runtime"
+                                warn_irrelevant_observed_swap_writer_backpressure(
+                                    &swap,
+                                    IrrelevantObservedSwapBackpressureSourceBranch::NotFollowed,
+                                    discovery_critical_irrelevant_persistence,
+                                    &follow_snapshot,
+                                    &open_shadow_lots,
+                                    shadow_strategy_fail_closed,
+                                    &discovery_critical_target_buy_mints,
+                                    &pending_irrelevant_swaps,
+                                    &writer_snapshot,
+                                    ingestion_snapshot,
                                 );
                                 let discovery_critical_irrelevant_persistence =
                                     refresh_discovery_critical_irrelevant_persistence_for_backpressure(
@@ -5403,7 +5507,7 @@ mod app_tests {
     use super::*;
     use copybot_storage::{
         DiscoveryPersistedRebuildPhase, DiscoveryPersistedRebuildStateRow,
-        DiscoveryPublicationStateUpdate, DiscoveryRuntimeMode,
+        DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
         DiscoveryTrustedSelectionStateUpdate, TrustedSelectionState, TrustedSnapshotSourceKind,
         WalletMetricRow,
     };
@@ -17210,6 +17314,491 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
             "the exact discovery-critical recovery path must not be blocked by the earlier empty-target refill gate"
         );
         let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn enqueue_irrelevant_observed_swap_noncritical_hits_live_128_plateau_stage1() -> Result<()> {
+        let (_store, db_path) = make_test_store("irrelevant-noncritical-live-128-plateau")?;
+        let blocker_conn = rusqlite::Connection::open(&db_path)?;
+        blocker_conn.busy_timeout(StdDuration::from_millis(1))?;
+        blocker_conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let writer = ObservedSwapWriter::start_for_test(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            false,
+            DiscoveryAggregateWriteConfig::default(),
+        )?;
+        let mut recent_signatures = HashSet::new();
+        let mut recent_signature_order = VecDeque::new();
+
+        for idx in 0..TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE {
+            let swap = irrelevant_backpressure_swap(
+                &format!("sig-live-128-noncritical-{idx:03}"),
+                idx,
+                Utc::now(),
+            );
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            let outcome = runtime.block_on(async {
+                enqueue_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    false,
+                )
+                .await
+            })?;
+            assert_eq!(outcome, IrrelevantObservedSwapEnqueueOutcome::Enqueued);
+        }
+
+        let plateau_swap = irrelevant_backpressure_swap(
+            "sig-live-128-noncritical-backpressure",
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            Utc::now(),
+        );
+        assert!(note_recent_swap_signature(
+            &mut recent_signatures,
+            &mut recent_signature_order,
+            &plateau_swap.signature,
+        ));
+        let plateau_outcome = runtime.block_on(async {
+            enqueue_irrelevant_observed_swap(
+                &writer,
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &plateau_swap,
+                false,
+            )
+            .await
+        })?;
+        assert_eq!(
+            plateau_outcome,
+            IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure
+        );
+        let snapshot = writer.snapshot();
+        assert_eq!(
+            snapshot.pending_requests, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "the exact live 128 plateau is the non-critical irrelevant try_enqueue soft limit"
+        );
+        assert_eq!(snapshot.aggregate_queue_depth_batches, 0);
+
+        blocker_conn.execute_batch("COMMIT")?;
+        let drain_started = StdInstant::now();
+        while writer.snapshot().pending_requests > 0 {
+            if drain_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!("writer failed to drain after non-critical live-128 plateau test");
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+        writer.shutdown()?;
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+        Ok(())
+    }
+
+    #[test]
+    fn enqueue_irrelevant_observed_swap_discovery_critical_reserved_branch_exceeds_live_128_plateau_stage1(
+    ) -> Result<()> {
+        let (_store, db_path) = make_test_store("irrelevant-discovery-critical-exceeds-live-128")?;
+        let blocker_conn = rusqlite::Connection::open(&db_path)?;
+        blocker_conn.busy_timeout(StdDuration::from_millis(1))?;
+        blocker_conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let writer = ObservedSwapWriter::start_for_test(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            false,
+            DiscoveryAggregateWriteConfig::default(),
+        )?;
+        let mut recent_signatures = HashSet::new();
+        let mut recent_signature_order = VecDeque::new();
+
+        for idx in 0..=TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE {
+            let swap = irrelevant_backpressure_swap(
+                &format!("sig-live-128-critical-{idx:03}"),
+                idx,
+                Utc::now(),
+            );
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            let outcome = runtime.block_on(async {
+                enqueue_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    true,
+                )
+                .await
+            })?;
+            assert_eq!(
+                outcome,
+                IrrelevantObservedSwapEnqueueOutcome::Enqueued,
+                "discovery-critical irrelevant swaps bypass the 128 soft limit and should still enqueue beyond it"
+            );
+        }
+
+        let snapshot = writer.snapshot();
+        assert!(
+            snapshot.pending_requests > TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "the discovery-critical reserved branch cannot be the exact live 128 plateau because it keeps enqueueing past 128"
+        );
+        assert_eq!(snapshot.aggregate_queue_depth_batches, 0);
+
+        blocker_conn.execute_batch("COMMIT")?;
+        let drain_started = StdInstant::now();
+        while writer.snapshot().pending_requests > 0 {
+            if drain_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!(
+                    "writer failed to drain after discovery-critical reserved-branch contrast test"
+                );
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+        writer.shutdown()?;
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+        Ok(())
+    }
+
+    #[test]
+    fn irrelevant_observed_swap_backpressure_diagnostics_distinguish_noncritical_vs_discovery_critical_branch_stage1(
+    ) {
+        let follow_snapshot = FollowSnapshot::default();
+        let open_shadow_lots = HashSet::new();
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.pending_requests = TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE;
+        let mut ingestion_snapshot = maintenance_test_ingestion_snapshot(0.0);
+        ingestion_snapshot.yellowstone_output_queue_depth = 0;
+        let started_at = StdInstant::now();
+        let pending_irrelevant_swaps = VecDeque::from([PendingIrrelevantObservedSwap {
+            swap: test_swap("sig-backpressure-diag-pending"),
+            discovery_critical: false,
+            processing_started_at: started_at,
+            backpressure_started_at: started_at,
+            last_backpressure_log_at: None,
+        }]);
+
+        let noncritical = snapshot_irrelevant_observed_swap_backpressure_diagnostics(
+            IrrelevantObservedSwapBackpressureSourceBranch::Unclassified,
+            false,
+            &follow_snapshot,
+            &open_shadow_lots,
+            true,
+            &HashSet::new(),
+            &pending_irrelevant_swaps,
+            &writer_snapshot,
+            Some(ingestion_snapshot),
+        );
+        assert_eq!(noncritical.irrelevant_branch, "irrelevant_unclassified");
+        assert!(
+            !noncritical.discovery_critical_irrelevant_persistence,
+            "non-critical plateau diagnostics must surface the exact try_enqueue branch that matches the live 128 plateau"
+        );
+
+        let critical_target_buy_mints = HashSet::from(["token-target".to_string()]);
+        let critical = snapshot_irrelevant_observed_swap_backpressure_diagnostics(
+            IrrelevantObservedSwapBackpressureSourceBranch::NotFollowed,
+            true,
+            &follow_snapshot,
+            &open_shadow_lots,
+            true,
+            &critical_target_buy_mints,
+            &pending_irrelevant_swaps,
+            &writer_snapshot,
+            Some(ingestion_snapshot),
+        );
+        assert_eq!(critical.irrelevant_branch, "irrelevant_not_followed");
+        assert!(
+            critical.discovery_critical_irrelevant_persistence,
+            "discovery-critical diagnostics must surface the reserved enqueue branch so operator logs can prove whether live plateau traffic belongs to it"
+        );
+        assert_eq!(
+            critical.writer_pending_requests, noncritical.writer_pending_requests,
+            "branch diagnostics should classify the same queue state differently without mutating writer state"
+        );
+        assert_eq!(
+            critical.writer_aggregate_queue_depth_batches,
+            noncritical.writer_aggregate_queue_depth_batches
+        );
+        assert_eq!(
+            critical.yellowstone_output_queue_depth,
+            noncritical.yellowstone_output_queue_depth
+        );
+    }
+
+    #[test]
+    fn irrelevant_observed_swap_backpressure_diagnostics_surface_zero_universe_empty_target_context_stage1(
+    ) {
+        let follow_snapshot = FollowSnapshot::default();
+        let open_shadow_lots = HashSet::new();
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.pending_requests = TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE;
+        let mut ingestion_snapshot = maintenance_test_ingestion_snapshot(0.0);
+        ingestion_snapshot.yellowstone_output_queue_depth = 0;
+        let started_at = StdInstant::now();
+        let pending_irrelevant_swaps = VecDeque::from([
+            PendingIrrelevantObservedSwap {
+                swap: test_swap("sig-backpressure-empty-target-1"),
+                discovery_critical: false,
+                processing_started_at: started_at,
+                backpressure_started_at: started_at,
+                last_backpressure_log_at: None,
+            },
+            PendingIrrelevantObservedSwap {
+                swap: test_swap("sig-backpressure-empty-target-2"),
+                discovery_critical: false,
+                processing_started_at: started_at,
+                backpressure_started_at: started_at,
+                last_backpressure_log_at: None,
+            },
+        ]);
+
+        let zero_universe = snapshot_irrelevant_observed_swap_backpressure_diagnostics(
+            IrrelevantObservedSwapBackpressureSourceBranch::Unclassified,
+            false,
+            &follow_snapshot,
+            &open_shadow_lots,
+            true,
+            &HashSet::new(),
+            &pending_irrelevant_swaps,
+            &writer_snapshot,
+            Some(ingestion_snapshot),
+        );
+        assert!(
+            zero_universe.zero_universe_empty_target_noncritical_context,
+            "operator diagnostics must explicitly surface the exact zero-universe empty-target non-critical context instead of requiring log archaeology to infer it"
+        );
+        assert_eq!(zero_universe.followed_wallet_count, 0);
+        assert_eq!(zero_universe.open_shadow_lot_count, 0);
+        assert_eq!(zero_universe.discovery_critical_target_buy_mints_count, 0);
+        assert_eq!(zero_universe.pending_irrelevant_swap_queue_depth, 2);
+        assert_eq!(
+            zero_universe.writer_pending_requests,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE
+        );
+        assert_eq!(zero_universe.writer_aggregate_queue_depth_batches, 0);
+        assert_eq!(zero_universe.yellowstone_output_queue_depth, 0);
+
+        let mut followed_snapshot = FollowSnapshot::default();
+        followed_snapshot
+            .active
+            .insert("wallet-followed".to_string());
+        let followed = snapshot_irrelevant_observed_swap_backpressure_diagnostics(
+            IrrelevantObservedSwapBackpressureSourceBranch::Unclassified,
+            false,
+            &followed_snapshot,
+            &open_shadow_lots,
+            true,
+            &HashSet::new(),
+            &pending_irrelevant_swaps,
+            &writer_snapshot,
+            Some(ingestion_snapshot),
+        );
+        assert!(
+            !followed.zero_universe_empty_target_noncritical_context,
+            "once the runtime has followed wallets, diagnostics must stop reporting the exact zero-universe empty-target context"
+        );
+        assert_eq!(followed.followed_wallet_count, 1);
+    }
+
+    #[test]
+    fn live_like_writer_plateau_and_stale_export_truth_can_coexist_without_output_pressure_stage1(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("live-like-writer-plateau-and-stale-export-truth")?;
+        let stale_publish_at = DateTime::parse_from_rfc3339("2026-04-06T17:55:23Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let export_now = DateTime::parse_from_rfc3339("2026-04-12T15:53:32Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let mut config = copybot_config::DiscoveryConfig::default();
+        config.scoring_window_days = 7;
+        config.metric_snapshot_interval_seconds = 60;
+        config.refresh_seconds = 600;
+        config.follow_top_n = 1;
+        config.min_score = 0.1;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+
+        let interval_seconds = config.metric_snapshot_interval_seconds.max(1) as i64;
+        let bucketed_ts =
+            stale_publish_at.timestamp().div_euclid(interval_seconds) * interval_seconds;
+        let bucketed_now =
+            DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(stale_publish_at);
+        let metrics_window_start =
+            bucketed_now - chrono::Duration::days(config.scoring_window_days.max(1) as i64);
+        let published_wallet_ids = (0..7usize)
+            .map(|idx| format!("wallet_stale_published_{idx:02}"))
+            .collect::<Vec<_>>();
+        for (idx, wallet_id) in published_wallet_ids.iter().enumerate() {
+            let ts = stale_publish_at - chrono::Duration::minutes(idx as i64 + 1);
+            store.upsert_wallet(wallet_id, ts, ts, "candidate")?;
+            store.insert_wallet_metric(&WalletMetricRow {
+                wallet_id: wallet_id.clone(),
+                window_start: metrics_window_start,
+                pnl: 1.0,
+                win_rate: 1.0,
+                trades: 4,
+                closed_trades: 4,
+                hold_median_seconds: 60,
+                score: 1.0,
+                buy_total: 4,
+                tradable_ratio: 1.0,
+                rug_ratio: 0.0,
+            })?;
+        }
+        store.upsert_discovery_runtime_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: export_now - chrono::Duration::seconds(1),
+            slot: 42,
+            signature: "sig-runtime-export-live-like".to_string(),
+        })?;
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "publication_truth_withheld_missing_exact_published_wallet_ids".to_string(),
+            last_published_at: Some(stale_publish_at),
+            last_published_window_start: Some(metrics_window_start),
+            published_scoring_source: Some("raw_window_persisted_stream".to_string()),
+            published_wallet_ids: Some(published_wallet_ids.clone()),
+        })?;
+
+        let export_error = store
+            .export_discovery_runtime_artifact(export_now, discovery.publication_freshness_gate())
+            .expect_err("stale fail-closed publication truth must still refuse export");
+        let export_error_text = format!("{export_error:#}");
+        assert!(export_error_text.contains("requires fresh publication truth under export gate"));
+        assert!(export_error_text.contains("runtime_mode=fail_closed"));
+        assert!(export_error_text.contains("fresh_under_export_gate=false"));
+        assert!(export_error_text.contains("published_wallet_count=7"));
+
+        let blocker_conn = rusqlite::Connection::open(&db_path)?;
+        blocker_conn.busy_timeout(StdDuration::from_millis(1))?;
+        blocker_conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let writer = ObservedSwapWriter::start_for_test(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            false,
+            DiscoveryAggregateWriteConfig::default(),
+        )?;
+        let mut recent_signatures = HashSet::new();
+        let mut recent_signature_order = VecDeque::new();
+        for idx in 0..TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE {
+            let swap = irrelevant_backpressure_swap(
+                &format!("sig-live-combined-{idx:03}"),
+                idx,
+                export_now,
+            );
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            let outcome = runtime.block_on(async {
+                enqueue_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    false,
+                )
+                .await
+            })?;
+            assert_eq!(outcome, IrrelevantObservedSwapEnqueueOutcome::Enqueued);
+        }
+        let plateau_swap = irrelevant_backpressure_swap(
+            "sig-live-combined-backpressure",
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            export_now,
+        );
+        assert!(note_recent_swap_signature(
+            &mut recent_signatures,
+            &mut recent_signature_order,
+            &plateau_swap.signature,
+        ));
+        let plateau_outcome = runtime.block_on(async {
+            enqueue_irrelevant_observed_swap(
+                &writer,
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &plateau_swap,
+                false,
+            )
+            .await
+        })?;
+        assert_eq!(
+            plateau_outcome,
+            IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure
+        );
+        let plateau_snapshot = writer.snapshot();
+        assert_eq!(
+            plateau_snapshot.pending_requests,
+            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE
+        );
+        assert_eq!(plateau_snapshot.aggregate_queue_depth_batches, 0);
+
+        let publication_state_after = store
+            .discovery_publication_state_read_only()?
+            .expect("publication state should remain readable");
+        assert_eq!(
+            publication_state_after.last_published_at,
+            Some(stale_publish_at)
+        );
+        assert_eq!(
+            publication_state_after
+                .published_wallet_ids
+                .as_ref()
+                .map(Vec::len)
+                .unwrap_or(0),
+            7
+        );
+
+        blocker_conn.execute_batch("COMMIT")?;
+        let drain_started = StdInstant::now();
+        while writer.snapshot().pending_requests > 0 {
+            if drain_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!("writer failed to drain after combined plateau/export repro");
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+        writer.shutdown()?;
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
         Ok(())
     }
 

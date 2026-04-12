@@ -7813,6 +7813,42 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
         regains the exact target surface and the same lineage can drain into
         exact candidate-activity backfill, publish-pending, or full replay
         source exhaustion instead of broad-source fallback
+    - live rollout on `ce01f74b82be435215fca9e2a921d30204d8232a` disproved that
+      resumed-target-surface repair as the current first production answer:
+      - after explicit restart onto the new binary, startup still completed
+        cleanly and `app runtime loop started`
+      - but the process restabilized immediately on the surviving plateau:
+        `observed_swap_writer_pending_requests = 128`,
+        `observed_swap_writer_aggregate_queue_depth_batches = 0`,
+        `yellowstone_output_queue_depth = 0`
+      - the separate export service still failed fail-closed on stale
+        publication truth with
+        `reason=publication_truth_withheld_missing_exact_published_wallet_ids`,
+        `complete=true`, `fresh_under_export_gate=false`,
+        `last_published_at=2026-04-06T17:55:23.235675833+00:00`, and
+        `published_wallet_count=7`, while `latest.json` remained absent
+    - the next accepted narrowing after that failed live rollout is
+      diagnostics-only, not a fix:
+      - app-side irrelevant observed-swap writer backpressure warnings now log
+        the exact branch/context needed to distinguish live `128 / 0 / 0`
+        plateau ownership:
+        `observed_swap_irrelevant_branch`,
+        `discovery_critical_irrelevant_persistence`,
+        `zero_universe_empty_target_noncritical_context`,
+        followed/open-lot/target-mint counts, pending irrelevant backlog
+        depth, and writer queue counters
+      - publication-state writes now log before/after carry-forward metadata so
+        operators can distinguish fresh publish, stale carried-forward truth,
+        and runtime-only refresh without changing fail-closed behavior:
+        previous/new `last_published_at`, previous/new wallet-id counts,
+        `publication_published_universe_persisted`,
+        `publication_stale_fields_carried_forward`, and resulting
+        `publication_updated_at`
+      - this batch is intentionally non-behavioral; it does not change queue
+        limits, publish rules, exporter gating, or Stage 3 policy semantics
+      - its purpose is to make the next live restart self-identifying so the
+        remaining production seam can be narrowed from operator logs instead of
+        guesswork
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 

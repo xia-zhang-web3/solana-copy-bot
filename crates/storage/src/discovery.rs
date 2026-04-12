@@ -16,6 +16,7 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
+use tracing::info;
 
 pub(crate) fn canonical_wallet_metrics_window_start(window_start: DateTime<Utc>) -> String {
     window_start.to_rfc3339()
@@ -260,6 +261,84 @@ fn runtime_artifact_export_truth_detail(
             missing_fields.join(",")
         }
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DiscoveryPublicationStateWriteDiagnostics {
+    pub write_kind: &'static str,
+    pub previous_last_published_at: Option<DateTime<Utc>>,
+    pub new_last_published_at: Option<DateTime<Utc>>,
+    pub previous_published_wallet_count: usize,
+    pub new_published_wallet_count: usize,
+    pub published_universe_persisted: bool,
+    pub runtime_mode: DiscoveryRuntimeMode,
+    pub reason: String,
+    pub stale_fields_carried_forward: bool,
+    pub stale_last_published_at_carried_forward: bool,
+    pub stale_published_wallet_ids_carried_forward: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+fn snapshot_discovery_publication_state_write_diagnostics(
+    previous: Option<&DiscoveryPublicationStateRow>,
+    new_state: &DiscoveryPublicationStateRow,
+    update: &DiscoveryPublicationStateUpdate,
+    clear_published_truth: bool,
+) -> DiscoveryPublicationStateWriteDiagnostics {
+    let previous_last_published_at = previous.and_then(|state| state.last_published_at);
+    let previous_published_wallet_ids =
+        previous.and_then(|state| state.published_wallet_ids.clone());
+    let previous_published_wallet_count = previous_published_wallet_ids
+        .as_ref()
+        .map(Vec::len)
+        .unwrap_or(0);
+    let new_published_wallet_count = new_state
+        .published_wallet_ids
+        .as_ref()
+        .map(Vec::len)
+        .unwrap_or(0);
+    let stale_last_published_at_carried_forward = !clear_published_truth
+        && update.last_published_at.is_none()
+        && previous_last_published_at.is_some()
+        && new_state.last_published_at == previous_last_published_at;
+    let stale_published_wallet_ids_carried_forward = !clear_published_truth
+        && update.published_wallet_ids.is_none()
+        && previous_published_wallet_ids.is_some()
+        && new_state.published_wallet_ids == previous_published_wallet_ids;
+    let stale_fields_carried_forward =
+        stale_last_published_at_carried_forward || stale_published_wallet_ids_carried_forward;
+    let published_universe_persisted = !clear_published_truth
+        && new_state.runtime_mode == DiscoveryRuntimeMode::Healthy
+        && update.runtime_mode == DiscoveryRuntimeMode::Healthy
+        && update.last_published_at.is_some()
+        && update.last_published_window_start.is_some()
+        && update
+            .published_wallet_ids
+            .as_ref()
+            .is_some_and(|wallet_ids| !canonicalize_wallet_ids(wallet_ids).is_empty());
+    let write_kind = if clear_published_truth {
+        "clear_published_truth"
+    } else if published_universe_persisted {
+        "fresh_publish"
+    } else if stale_fields_carried_forward {
+        "carried_forward_stale_truth"
+    } else {
+        "runtime_only_refresh"
+    };
+    DiscoveryPublicationStateWriteDiagnostics {
+        write_kind,
+        previous_last_published_at,
+        new_last_published_at: new_state.last_published_at,
+        previous_published_wallet_count,
+        new_published_wallet_count,
+        published_universe_persisted,
+        runtime_mode: new_state.runtime_mode,
+        reason: new_state.reason.clone(),
+        stale_fields_carried_forward,
+        stale_last_published_at_carried_forward,
+        stale_published_wallet_ids_carried_forward,
+        updated_at: new_state.updated_at,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -813,6 +892,7 @@ impl SqliteStore {
         policy_fingerprint: Option<&str>,
     ) -> Result<()> {
         self.ensure_discovery_strategy_state_table()?;
+        let previous_state = self.discovery_publication_state_query()?;
         let published_wallet_ids_json = update
             .published_wallet_ids
             .as_deref()
@@ -884,6 +964,33 @@ impl SqliteStore {
             )
         })
         .context("failed updating discovery publication state")?;
+        let new_state = self
+            .discovery_publication_state_query()?
+            .context("expected discovery publication state row after write")?;
+        let diagnostics = snapshot_discovery_publication_state_write_diagnostics(
+            previous_state.as_ref(),
+            &new_state,
+            update,
+            clear_published_truth,
+        );
+        info!(
+            publication_state_write_kind = diagnostics.write_kind,
+            publication_previous_last_published_at = ?diagnostics.previous_last_published_at,
+            publication_new_last_published_at = ?diagnostics.new_last_published_at,
+            publication_previous_wallet_id_count = diagnostics.previous_published_wallet_count,
+            publication_new_wallet_id_count = diagnostics.new_published_wallet_count,
+            publication_published_universe_persisted = diagnostics.published_universe_persisted,
+            publication_runtime_mode = diagnostics.runtime_mode.as_str(),
+            publication_reason = diagnostics.reason.as_str(),
+            publication_stale_fields_carried_forward =
+                diagnostics.stale_fields_carried_forward,
+            publication_stale_last_published_at_carried_forward =
+                diagnostics.stale_last_published_at_carried_forward,
+            publication_stale_published_wallet_ids_carried_forward =
+                diagnostics.stale_published_wallet_ids_carried_forward,
+            publication_updated_at = %diagnostics.updated_at,
+            "discovery publication state write completed"
+        );
         Ok(())
     }
 
@@ -3152,6 +3259,174 @@ impl SqliteStore {
                 )
                 .context("failed adding discovery_strategy_state.publication_policy_fingerprint")?;
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Context;
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    fn make_publication_state_test_store(name: &str) -> Result<SqliteStore> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join(format!("{name}.db"));
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+        std::mem::forget(temp);
+        Ok(store)
+    }
+
+    #[test]
+    fn publication_state_write_diagnostics_distinguish_fresh_publish_vs_carried_forward_stale_row_stage1(
+    ) -> Result<()> {
+        let store = make_publication_state_test_store(
+            "publication-state-write-diagnostics-distinguish-fresh-vs-carried",
+        )?;
+        let fresh_publish_at = DateTime::parse_from_rfc3339("2026-04-12T15:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let fresh_window_start = DateTime::parse_from_rfc3339("2026-04-12T14:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let fresh_update = DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            reason: "fresh_publish".to_string(),
+            last_published_at: Some(fresh_publish_at),
+            last_published_window_start: Some(fresh_window_start),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(vec!["wallet-a".to_string(), "wallet-b".to_string()]),
+        };
+        let previous = store.discovery_publication_state_read_only()?;
+        store.set_discovery_publication_state_with_options(
+            &fresh_update,
+            false,
+            Some("policy-a"),
+        )?;
+        let fresh_row = store
+            .discovery_publication_state_read_only()?
+            .expect("fresh publication row should exist");
+        let fresh_diagnostics = snapshot_discovery_publication_state_write_diagnostics(
+            previous.as_ref(),
+            &fresh_row,
+            &fresh_update,
+            false,
+        );
+        assert_eq!(fresh_diagnostics.write_kind, "fresh_publish");
+        assert!(fresh_diagnostics.published_universe_persisted);
+        assert_eq!(fresh_diagnostics.previous_published_wallet_count, 0);
+        assert_eq!(fresh_diagnostics.new_published_wallet_count, 2);
+        assert!(!fresh_diagnostics.stale_fields_carried_forward);
+        assert_eq!(
+            fresh_diagnostics.new_last_published_at,
+            Some(fresh_publish_at)
+        );
+
+        let carried_update = DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "publication_truth_withheld_missing_exact_published_wallet_ids".to_string(),
+            last_published_at: None,
+            last_published_window_start: None,
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: None,
+        };
+        let previous = Some(fresh_row.clone());
+        store.set_discovery_publication_state_with_options(&carried_update, false, None)?;
+        let carried_row = store
+            .discovery_publication_state_read_only()?
+            .expect("carried publication row should exist");
+        let carried_diagnostics = snapshot_discovery_publication_state_write_diagnostics(
+            previous.as_ref(),
+            &carried_row,
+            &carried_update,
+            false,
+        );
+        assert_eq!(
+            carried_diagnostics.write_kind,
+            "carried_forward_stale_truth"
+        );
+        assert!(!carried_diagnostics.published_universe_persisted);
+        assert!(carried_diagnostics.stale_fields_carried_forward);
+        assert!(carried_diagnostics.stale_last_published_at_carried_forward);
+        assert!(carried_diagnostics.stale_published_wallet_ids_carried_forward);
+        assert_eq!(
+            carried_diagnostics.previous_published_wallet_count,
+            carried_diagnostics.new_published_wallet_count
+        );
+        assert_eq!(
+            carried_diagnostics.new_last_published_at,
+            Some(fresh_publish_at)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn publication_state_write_diagnostics_preserve_fail_closed_semantics_while_surfacing_carry_forward_metadata_stage1(
+    ) -> Result<()> {
+        let store = make_publication_state_test_store(
+            "publication-state-write-diagnostics-preserve-fail-closed",
+        )?;
+        let stale_publish_at = DateTime::parse_from_rfc3339("2026-04-06T17:55:23Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let stale_window_start = DateTime::parse_from_rfc3339("2026-04-06T17:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            reason: "seed_stale_complete_row".to_string(),
+            last_published_at: Some(stale_publish_at),
+            last_published_window_start: Some(stale_window_start),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some((0..7usize).map(|idx| format!("wallet-{idx}")).collect()),
+        })?;
+        let before = store
+            .discovery_publication_state_read_only()?
+            .expect("seeded publication row should exist");
+
+        let withheld_update = DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "publication_truth_withheld_missing_exact_published_wallet_ids".to_string(),
+            last_published_at: None,
+            last_published_window_start: None,
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: None,
+        };
+        store.set_discovery_publication_state_with_options(&withheld_update, false, None)?;
+        let after = store
+            .discovery_publication_state_read_only()?
+            .expect("withheld publication row should exist");
+        let diagnostics = snapshot_discovery_publication_state_write_diagnostics(
+            Some(&before),
+            &after,
+            &withheld_update,
+            false,
+        );
+
+        assert_eq!(after.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert_eq!(
+            after.reason,
+            "publication_truth_withheld_missing_exact_published_wallet_ids"
+        );
+        assert_eq!(after.last_published_at, Some(stale_publish_at));
+        assert_eq!(after.last_published_window_start, Some(stale_window_start));
+        assert_eq!(after.published_wallet_ids.as_ref().map(Vec::len), Some(7));
+        assert!(
+            after.updated_at > before.updated_at,
+            "withheld fail-closed writes must still refresh updated_at so operators can distinguish stale-but-updating rows from frozen rows"
+        );
+        assert_eq!(diagnostics.write_kind, "carried_forward_stale_truth");
+        assert!(!diagnostics.published_universe_persisted);
+        assert!(diagnostics.stale_fields_carried_forward);
+        assert_eq!(diagnostics.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert_eq!(
+            diagnostics.reason,
+            "publication_truth_withheld_missing_exact_published_wallet_ids"
+        );
+        assert_eq!(diagnostics.new_published_wallet_count, 7);
         Ok(())
     }
 }
