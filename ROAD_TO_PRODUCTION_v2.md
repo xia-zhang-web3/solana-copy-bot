@@ -10147,6 +10147,78 @@ Acceptance update, package-keystone-receipt-latest handoff surface (`2026-04-13`
      incident remains open
    - this batch does not authorize or perform production activation
 
+Acceptance update, package-cornerstone-certificate-latest handoff surface (`2026-04-13`):
+
+1. Stage 4 now also has one bounded cornerstone-certificate-side handoff
+   surface from the latest immutable package chain to the already accepted
+   cornerstone-certificate contract:
+   - `copybot_tiny_live_activation_package_cornerstone_certificate_latest`
+2. The new operator surface is explicit and bounded:
+   - `--plan-latest-cornerstone-certificate --root <path> [--json]`
+   - `--render-latest-cornerstone-certificate-script --root <path> --output <path> [--json]`
+   - `--run-latest-cornerstone-certificate --root <path> --session-dir <path> [--json]`
+   - `--verify-latest-cornerstone-certificate --session-dir <path> [--json]`
+3. The command deliberately reuses accepted truth instead of inventing a new
+   cornerstone-certificate path:
+   - latest immutable chain resolution still comes from the accepted
+     `copybot_tiny_live_activation_package_keystone_receipt_latest` handoff
+   - latest chain validity still requires the current top accepted layer
+     `clerestory_certificate`
+   - downstream cornerstone-certificate execution still runs through the
+     accepted `copybot_tiny_live_activation_package_cornerstone_certificate`
+     contract with the exact latest-keystone-receipt session and exact
+     downstream decision-packet confirmation anchor proved by the resolved
+     latest chain
+4. The handoff remains fail-closed, archival, and planning-safe:
+   - it refuses when no latest chain exists, when the latest chain is invalid,
+     or when the latest chain does not prove the exact nested
+     latest-keystone-receipt lineage required by the accepted
+     cornerstone-certificate contract
+   - the downstream `--confirm-decision-packet-session-dir` remains
+     confirmation-only and never replaces latest-keystone-receipt lineage as
+     the source of truth
+   - it remains read-only / archival exactly like the accepted native
+     cornerstone-certificate contract
+   - it never marks `activation_authorized=true`
+   - run mode still preserves the existing Stage 3 / pre-activation refusal
+     semantics of the downstream cornerstone-certificate contract
+5. Verification is now real on wrapper truth, copied latest-keystone-receipt
+   truth, copied native cornerstone-certificate truth, and nested accepted
+   verify truth:
+   - `--verify-latest-cornerstone-certificate` re-resolves the current latest
+     immutable chain, verifies the accepted nested latest-keystone-receipt and
+     cornerstone-certificate contracts, and compares stored wrapper session /
+     status / report artifacts against that resolved snapshot
+   - fail-closed checks cover wrapper metadata, copied
+     latest-keystone-receipt plan / run truth, drifted downstream
+     decision-packet confirmation anchor, copied native cornerstone-certificate
+     run truth, nested persisted cornerstone-certificate session/status truth,
+     accepted nested verify truth, and copied native culmination-receipt /
+     summit-certificate / pinnacle-receipt / keystone-receipt /
+     cornerstone-certificate identity metadata and real native cornerstone
+     path fields
+   - the accepted review closed the remaining stale scaffold seams before
+     acceptance: wrapper-owned downstream artifacts now use the real
+     `cornerstone_certificate_step` key and
+     `...cornerstone_certificate.report.json` filename, and operator-facing
+     mismatch text on the copied native run path now consistently identifies
+     the downstream cornerstone layer as cornerstone rather than keystone
+6. Practical meaning:
+   - operators can now move from the latest immutable package chain to the
+     exact accepted cornerstone-certificate contract without manual
+     session-dir archaeology
+   - this closes the remaining latest-chain cornerstone-certificate blind spot
+     while Stage 3 remains non-green
+7. Acceptance stayed on the bounded surface:
+   - `rustfmt crates/app/src/bin/copybot_tiny_live_activation_package_cornerstone_certificate_latest.rs`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_cornerstone_certificate_latest`
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_cornerstone_certificate_latest`
+   - `git diff --check --no-index -- /dev/null crates/app/src/bin/copybot_tiny_live_activation_package_cornerstone_certificate_latest.rs`
+8. Current production status remains unchanged:
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+   - this batch does not authorize or perform production activation
+
 Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
 
 1. The repo now has one more final immutable archival layer over the verified
