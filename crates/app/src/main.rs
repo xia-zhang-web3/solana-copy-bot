@@ -3789,6 +3789,13 @@ async fn run_app_loop(
                 discovery_handle = None;
                 match discovery_result.expect("guard ensures discovery task exists") {
                     Ok(Ok(discovery_output)) => {
+                        info!(
+                            discovery_task_join_result = "success",
+                            discovery_runtime_mode = discovery_output.runtime_mode.as_str(),
+                            discovery_scoring_source = discovery_output.scoring_source,
+                            discovery_published = discovery_output.published,
+                            "discovery task joined successfully"
+                        );
                         let active_follow_wallets_before_clear = follow_snapshot.active.len();
                         let fail_closed_runtime_surface =
                             apply_fail_closed_runtime_follow_surface_if_needed(
@@ -3945,6 +3952,11 @@ async fn run_app_loop(
                     }
                     Ok(Err(error)) => {
                         discovery_catch_up_pending = false;
+                        warn!(
+                            discovery_task_join_result = "task_error",
+                            error = %error,
+                            "discovery task joined with task error"
+                        );
                         if discovery_task_error_requires_restart(&error) {
                             return Err(error)
                                 .context("discovery cycle failed with fatal sqlite I/O");
@@ -3953,19 +3965,24 @@ async fn run_app_loop(
                     }
                     Err(error) => {
                         discovery_catch_up_pending = false;
-                        warn!(error = %error, "discovery task join failed");
+                        warn!(
+                            discovery_task_join_result = "join_error",
+                            error = %error,
+                            "discovery task join failed"
+                        );
                     }
                 }
             }
             _ = async {}, if discovery_catch_up_pending && discovery_handle.is_none() => {
                 discovery_catch_up_pending = false;
-                discovery_handle = Some(tokio::task::spawn_blocking(spawn_discovery_task(
+                discovery_handle = Some(spawn_logged_discovery_task(
                     sqlite_path.clone(),
                     recent_raw_journal_config.path.clone(),
                     recent_raw_journal_config.replay_batch_size,
                     discovery.clone(),
                     Utc::now(),
-                )));
+                    "catch_up_retrigger",
+                ));
             }
             shadow_result = shadow_scheduler.shadow_workers.join_next(), if !shadow_scheduler.shadow_workers.is_empty() => {
                 match shadow_result {
@@ -5221,13 +5238,14 @@ async fn run_app_loop(
                     continue;
                 }
                 discovery_catch_up_pending = false;
-                discovery_handle = Some(tokio::task::spawn_blocking(spawn_discovery_task(
+                discovery_handle = Some(spawn_logged_discovery_task(
                     sqlite_path.clone(),
                     recent_raw_journal_config.path.clone(),
                     recent_raw_journal_config.replay_batch_size,
                     discovery.clone(),
                     Utc::now(),
-                )));
+                    "scheduled_tick",
+                ));
             }
             _ = shadow_interval.tick() => {
                 if shadow_strategy_fail_closed {
@@ -5517,6 +5535,58 @@ fn should_schedule_discovery_catch_up(
         ingestion_runtime_snapshot,
     )
     .is_none()
+}
+
+fn spawn_logged_discovery_task(
+    sqlite_path: String,
+    recent_raw_journal_path: String,
+    recent_raw_replay_batch_size: usize,
+    discovery: DiscoveryService,
+    now: DateTime<Utc>,
+    trigger: &'static str,
+) -> JoinHandle<Result<DiscoveryTaskOutput>> {
+    info!(
+        discovery_task_trigger = trigger,
+        discovery_task_cycle_ts = %now,
+        "discovery task scheduled"
+    );
+    tokio::task::spawn_blocking(move || {
+        info!(
+            discovery_task_trigger = trigger,
+            discovery_task_cycle_ts = %now,
+            "discovery task started"
+        );
+        let result = spawn_discovery_task(
+            sqlite_path,
+            recent_raw_journal_path,
+            recent_raw_replay_batch_size,
+            discovery,
+            now,
+        )();
+        match &result {
+            Ok(output) => {
+                info!(
+                    discovery_task_trigger = trigger,
+                    discovery_task_cycle_ts = %now,
+                    discovery_task_result = "success",
+                    discovery_runtime_mode = output.runtime_mode.as_str(),
+                    discovery_scoring_source = output.scoring_source,
+                    discovery_published = output.published,
+                    "discovery task completed"
+                );
+            }
+            Err(error) => {
+                warn!(
+                    discovery_task_trigger = trigger,
+                    discovery_task_cycle_ts = %now,
+                    discovery_task_result = "error",
+                    error = %error,
+                    "discovery task completed with error"
+                );
+            }
+        }
+        result
+    })
 }
 
 struct DiscoveryTaskOutput {

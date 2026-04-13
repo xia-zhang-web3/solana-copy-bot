@@ -513,8 +513,11 @@ pub struct DiscoveryPublicationTruthRepairTelemetry {
     pub required_window_start: DateTime<Utc>,
     pub journal_covered_since: Option<DateTime<Utc>>,
     pub journal_covers_runtime_cursor: bool,
+    pub publication_state_exists_before: bool,
     pub publication_truth_complete_before: bool,
     pub publication_truth_fresh_before: bool,
+    pub runtime_cursor_exists_before: bool,
+    pub journal_store_exists: bool,
     pub runtime_window_complete_before: bool,
     pub runtime_window_complete_after: bool,
     pub runtime_window_first_cursor: Option<DiscoveryRuntimeCursor>,
@@ -543,6 +546,10 @@ pub struct DiscoveryPublicationTruthRepairTelemetry {
     pub publication_truth_refresh_cycle_rows_processed: usize,
     pub publication_truth_refresh_cycle_pages_processed: usize,
     pub publication_truth_refresh_budget_exhausted_reason: Option<&'static str>,
+    pub publication_truth_refresh_helper_write_attempted: bool,
+    pub publication_truth_refresh_helper_write_succeeded: bool,
+    pub publication_truth_refresh_helper_write_resulting_reason: Option<String>,
+    pub publication_truth_refresh_helper_write_resulting_updated_at: Option<DateTime<Utc>>,
 }
 
 impl DiscoveryPublicationTruthRepairTelemetry {
@@ -562,8 +569,11 @@ impl DiscoveryPublicationTruthRepairTelemetry {
             required_window_start,
             journal_covered_since,
             journal_covers_runtime_cursor,
+            publication_state_exists_before: false,
             publication_truth_complete_before,
             publication_truth_fresh_before,
+            runtime_cursor_exists_before: false,
+            journal_store_exists: false,
             runtime_window_complete_before,
             runtime_window_complete_after: runtime_window_complete_before,
             runtime_window_first_cursor: None,
@@ -592,6 +602,10 @@ impl DiscoveryPublicationTruthRepairTelemetry {
             publication_truth_refresh_cycle_rows_processed: 0,
             publication_truth_refresh_cycle_pages_processed: 0,
             publication_truth_refresh_budget_exhausted_reason: None,
+            publication_truth_refresh_helper_write_attempted: false,
+            publication_truth_refresh_helper_write_succeeded: false,
+            publication_truth_refresh_helper_write_resulting_reason: None,
+            publication_truth_refresh_helper_write_resulting_updated_at: None,
         }
     }
 
@@ -612,8 +626,11 @@ impl DiscoveryPublicationTruthRepairTelemetry {
             required_window_start,
             journal_covered_since: None,
             journal_covers_runtime_cursor: false,
+            publication_state_exists_before: false,
             publication_truth_complete_before,
             publication_truth_fresh_before,
+            runtime_cursor_exists_before: false,
+            journal_store_exists: false,
             runtime_window_complete_before,
             runtime_window_complete_after: runtime_window_complete_before,
             runtime_window_first_cursor: None,
@@ -655,7 +672,37 @@ impl DiscoveryPublicationTruthRepairTelemetry {
             publication_truth_refresh_cycle_rows_processed: 0,
             publication_truth_refresh_cycle_pages_processed: 0,
             publication_truth_refresh_budget_exhausted_reason: None,
+            publication_truth_refresh_helper_write_attempted: false,
+            publication_truth_refresh_helper_write_succeeded: false,
+            publication_truth_refresh_helper_write_resulting_reason: None,
+            publication_truth_refresh_helper_write_resulting_updated_at: None,
         }
+    }
+
+    fn with_entry_context(
+        mut self,
+        publication_state_exists_before: bool,
+        runtime_cursor_exists_before: bool,
+        journal_store_exists: bool,
+    ) -> Self {
+        self.publication_state_exists_before = publication_state_exists_before;
+        self.runtime_cursor_exists_before = runtime_cursor_exists_before;
+        self.journal_store_exists = journal_store_exists;
+        self
+    }
+
+    fn with_helper_write_result(
+        mut self,
+        attempted: bool,
+        succeeded: bool,
+        resulting_reason: Option<String>,
+        resulting_updated_at: Option<DateTime<Utc>>,
+    ) -> Self {
+        self.publication_truth_refresh_helper_write_attempted = attempted;
+        self.publication_truth_refresh_helper_write_succeeded = succeeded;
+        self.publication_truth_refresh_helper_write_resulting_reason = resulting_reason;
+        self.publication_truth_refresh_helper_write_resulting_updated_at = resulting_updated_at;
+        self
     }
 }
 
@@ -1104,10 +1151,25 @@ struct PersistedStreamPriorityRecoveryContract {
     reason: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PublicationStatePersistOutcome {
     runtime_mode: DiscoveryRuntimeMode,
     published_universe_persisted: bool,
+    write_attempted: bool,
+    healthy_publish_refused: bool,
+    carry_forward_happened: bool,
+    effective_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RunCyclePublicationBoundaryDiagnostics {
+    prepared_cycle_state: &'static str,
+    publish_due: bool,
+    persisted_rebuild_checkpoint_exists: bool,
+    replay_incomplete: bool,
+    persisted_rebuild_phase: Option<&'static str>,
+    publishable_checkpoint_blocker: Option<&'static str>,
+    persist_publication_state_called: bool,
 }
 
 fn should_request_persisted_stream_catch_up(telemetry: &PersistedStreamProgressTelemetry) -> bool {
@@ -1686,6 +1748,85 @@ impl DiscoveryService {
             .map(|truth| truth.active_wallets()))
     }
 
+    fn log_publication_truth_repair_helper_return(
+        telemetry: &DiscoveryPublicationTruthRepairTelemetry,
+    ) {
+        info!(
+            repair_state = telemetry.state,
+            repair_reason = telemetry.reason.as_deref().unwrap_or("none"),
+            publication_truth_refresh_delegated_to_runtime_cycle =
+                telemetry.publication_truth_refresh_delegated_to_runtime_cycle,
+            publication_truth_refresh_publishable_checkpoint_blocker =
+                telemetry.publication_truth_refresh_publishable_checkpoint_blocker,
+            publication_state_exists_before = telemetry.publication_state_exists_before,
+            publication_truth_complete_before = telemetry.publication_truth_complete_before,
+            publication_truth_fresh_before = telemetry.publication_truth_fresh_before,
+            runtime_cursor_exists_before = telemetry.runtime_cursor_exists_before,
+            journal_store_exists = telemetry.journal_store_exists,
+            runtime_window_complete_before = telemetry.runtime_window_complete_before,
+            runtime_window_complete_after = telemetry.runtime_window_complete_after,
+            publication_state_write_attempted_from_helper =
+                telemetry.publication_truth_refresh_helper_write_attempted,
+            publication_state_write_succeeded_from_helper =
+                telemetry.publication_truth_refresh_helper_write_succeeded,
+            publication_state_write_resulting_reason = ?telemetry
+                .publication_truth_refresh_helper_write_resulting_reason,
+            publication_state_write_resulting_updated_at = ?telemetry
+                .publication_truth_refresh_helper_write_resulting_updated_at
+                .map(|ts| ts.to_rfc3339()),
+            "discovery publication truth repair helper returned"
+        );
+    }
+
+    fn snapshot_run_cycle_publication_boundary_diagnostics(
+        &self,
+        store: &SqliteStore,
+        prepared_cycle_state: &'static str,
+        publish_due: bool,
+        persist_publication_state_called: bool,
+    ) -> Result<RunCyclePublicationBoundaryDiagnostics> {
+        let persisted_rebuild_state = store
+            .load_discovery_persisted_rebuild_state()?
+            .map(Self::persisted_stream_rebuild_state_from_row)
+            .transpose()?;
+        let persisted_rebuild_checkpoint_exists = persisted_rebuild_state.is_some();
+        let replay_incomplete = persisted_rebuild_state
+            .as_ref()
+            .is_some_and(|state| state.phase != DiscoveryPersistedRebuildPhase::PublishPending);
+        let persisted_rebuild_phase = persisted_rebuild_state
+            .as_ref()
+            .map(|state| state.phase.as_str());
+        let publishable_checkpoint_blocker = persisted_rebuild_state
+            .as_ref()
+            .map(Self::persisted_stream_publishable_checkpoint_blocker_from_state);
+        Ok(RunCyclePublicationBoundaryDiagnostics {
+            prepared_cycle_state,
+            publish_due,
+            persisted_rebuild_checkpoint_exists,
+            replay_incomplete,
+            persisted_rebuild_phase,
+            publishable_checkpoint_blocker,
+            persist_publication_state_called,
+        })
+    }
+
+    fn log_run_cycle_publication_boundary(diagnostics: &RunCyclePublicationBoundaryDiagnostics) {
+        info!(
+            run_cycle_publication_boundary_reached = true,
+            run_cycle_publication_prepared_cycle_state = diagnostics.prepared_cycle_state,
+            run_cycle_publication_publish_due = diagnostics.publish_due,
+            run_cycle_publication_persisted_rebuild_checkpoint_exists =
+                diagnostics.persisted_rebuild_checkpoint_exists,
+            run_cycle_publication_replay_incomplete = diagnostics.replay_incomplete,
+            run_cycle_publication_persisted_rebuild_phase = diagnostics.persisted_rebuild_phase,
+            run_cycle_publication_publishable_checkpoint_blocker =
+                diagnostics.publishable_checkpoint_blocker,
+            run_cycle_publication_persist_publication_state_called =
+                diagnostics.persist_publication_state_called,
+            "discovery run_cycle publication boundary"
+        );
+    }
+
     fn refresh_fail_closed_publication_runtime_surface_for_deferred_runtime_cycle(
         &self,
         store: &SqliteStore,
@@ -1721,9 +1862,12 @@ impl DiscoveryService {
         reason: &str,
         now: DateTime<Utc>,
     ) -> Result<PublicationStatePersistOutcome> {
+        let existing_publication_state = store.discovery_publication_state_read_only()?;
+        let mut write_attempted = false;
+        let mut healthy_publish_refused = false;
+        let mut carry_forward_happened = false;
         if !publish_due {
             if runtime_mode != DiscoveryRuntimeMode::Healthy {
-                let existing_publication_state = store.discovery_publication_state_read_only()?;
                 if let Some(existing_publication_state) = existing_publication_state.as_ref() {
                     if existing_publication_state.runtime_mode == DiscoveryRuntimeMode::Healthy {
                         warn!(
@@ -1736,6 +1880,13 @@ impl DiscoveryService {
                         publication_scoring_source = scoring_source,
                         "downgrading a stale healthy publication row during a non-publish-due discovery cycle so incomplete replay recovery cannot keep surfacing healthy publication state without a fresh exact universe flush"
                     );
+                        write_attempted = true;
+                        carry_forward_happened =
+                            existing_publication_state.last_published_at.is_some()
+                                || existing_publication_state
+                                    .published_wallet_ids
+                                    .as_ref()
+                                    .is_some_and(|wallets| !wallets.is_empty());
                         store.set_discovery_publication_state_with_options(
                             &DiscoveryPublicationStateUpdate {
                                 runtime_mode,
@@ -1751,10 +1902,26 @@ impl DiscoveryService {
                     }
                 }
             }
-            return Ok(PublicationStatePersistOutcome {
+            let outcome = PublicationStatePersistOutcome {
                 runtime_mode,
                 published_universe_persisted: false,
-            });
+                write_attempted,
+                healthy_publish_refused: false,
+                carry_forward_happened,
+                effective_reason: reason.to_string(),
+            };
+            info!(
+                publication_persist_publish_due = publish_due,
+                publication_persist_write_attempted = outcome.write_attempted,
+                publication_persist_runtime_mode = outcome.runtime_mode.as_str(),
+                publication_persist_published_universe_persisted =
+                    outcome.published_universe_persisted,
+                publication_persist_reason = outcome.effective_reason.as_str(),
+                publication_persist_healthy_publish_refused = outcome.healthy_publish_refused,
+                publication_persist_carry_forward_happened = outcome.carry_forward_happened,
+                "discovery publication persist returned"
+            );
+            return Ok(outcome);
         }
         let mut effective_runtime_mode = runtime_mode;
         let mut effective_reason = reason.to_string();
@@ -1778,6 +1945,7 @@ impl DiscoveryService {
                     rebuild_publishable_checkpoint_blocker = checkpoint_blocker,
                     "refusing to persist healthy publication state while an incomplete persisted discovery rebuild checkpoint still exists"
                 );
+                healthy_publish_refused = true;
                 effective_runtime_mode = DiscoveryRuntimeMode::FailClosed;
                 effective_reason = format!("publication_truth_withheld_while_{checkpoint_blocker}");
             } else if requested_published_wallet_count == 0 {
@@ -1788,16 +1956,26 @@ impl DiscoveryService {
                     publication_requested_wallet_count = requested_published_wallet_count,
                     "refusing to persist healthy publication state without an exact non-empty published wallet universe"
                 );
+                healthy_publish_refused = true;
                 effective_runtime_mode = DiscoveryRuntimeMode::FailClosed;
                 effective_reason =
                     "publication_truth_withheld_missing_exact_published_wallet_ids".to_string();
             }
         }
         let published_universe = effective_runtime_mode == DiscoveryRuntimeMode::Healthy;
+        write_attempted = true;
+        carry_forward_happened = !published_universe
+            && existing_publication_state.as_ref().is_some_and(|state| {
+                state.last_published_at.is_some()
+                    || state
+                        .published_wallet_ids
+                        .as_ref()
+                        .is_some_and(|wallets| !wallets.is_empty())
+            });
         store.set_discovery_publication_state_with_options(
             &DiscoveryPublicationStateUpdate {
                 runtime_mode: effective_runtime_mode,
-                reason: effective_reason,
+                reason: effective_reason.clone(),
                 last_published_at: published_universe.then_some(now),
                 last_published_window_start: published_universe.then_some(published_window_start),
                 published_scoring_source: Some(scoring_source.to_string()),
@@ -1812,10 +1990,25 @@ impl DiscoveryService {
                 .then(|| self.publication_selection_policy_fingerprint())
                 .as_deref(),
         )?;
-        Ok(PublicationStatePersistOutcome {
+        let outcome = PublicationStatePersistOutcome {
             runtime_mode: effective_runtime_mode,
             published_universe_persisted: published_universe,
-        })
+            write_attempted,
+            healthy_publish_refused,
+            carry_forward_happened,
+            effective_reason,
+        };
+        info!(
+            publication_persist_publish_due = publish_due,
+            publication_persist_write_attempted = outcome.write_attempted,
+            publication_persist_runtime_mode = outcome.runtime_mode.as_str(),
+            publication_persist_published_universe_persisted = outcome.published_universe_persisted,
+            publication_persist_reason = outcome.effective_reason.as_str(),
+            publication_persist_healthy_publish_refused = outcome.healthy_publish_refused,
+            publication_persist_carry_forward_happened = outcome.carry_forward_happened,
+            "discovery publication persist returned"
+        );
+        Ok(outcome)
     }
 
     fn in_band_wallet_freshness_shadow_evidence_lookback_seconds(&self) -> u64 {
@@ -2152,16 +2345,38 @@ impl DiscoveryService {
         let gate = self.publication_freshness_gate();
         let required_window_start = now - Duration::days(self.runtime_scoring_window_days());
         let publication_state = runtime_store.discovery_publication_state_read_only()?;
+        let publication_state_exists_before = publication_state.is_some();
         let publication_truth_complete_before = publication_state
             .as_ref()
             .is_some_and(DiscoveryPublicationStateRow::has_complete_publication_truth);
         let publication_truth_fresh_before = publication_state
             .as_ref()
             .is_some_and(|state| state.is_fresh_under_gate(gate, now));
+        let runtime_cursor_before = runtime_store.load_discovery_runtime_cursor()?;
+        let runtime_cursor_exists_before = runtime_cursor_before.is_some();
+        let journal_store_exists = journal_store.is_some();
         let runtime_window_complete_before =
             self.persisted_observed_swaps_cover_window(runtime_store, required_window_start)?;
+        info!(
+            publication_state_exists_before,
+            publication_truth_complete_before,
+            publication_truth_fresh_before,
+            runtime_window_complete_before,
+            runtime_cursor_exists_before,
+            journal_store_exists,
+            "discovery publication truth repair helper entered"
+        );
+        let log_and_return = |telemetry: DiscoveryPublicationTruthRepairTelemetry| {
+            let telemetry = telemetry.with_entry_context(
+                publication_state_exists_before,
+                runtime_cursor_exists_before,
+                journal_store_exists,
+            );
+            Self::log_publication_truth_repair_helper_return(&telemetry);
+            Ok(telemetry)
+        };
         if publication_truth_fresh_before {
-            return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
+            return log_and_return(DiscoveryPublicationTruthRepairTelemetry::skipped(
                 "skipped_fresh_publication_truth",
                 "publication_truth_already_fresh_under_gate",
                 required_window_start,
@@ -2175,7 +2390,7 @@ impl DiscoveryService {
         if runtime_window_complete_before {
             let refresh_budget = deadline.saturating_duration_since(Instant::now());
             if refresh_budget.is_zero() {
-                return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
+                return log_and_return(DiscoveryPublicationTruthRepairTelemetry::skipped(
                     "skipped_runtime_window_truth_refresh_budget_exhausted",
                     "runtime_window_complete_but_publication_truth_refresh_budget_exhausted",
                     required_window_start,
@@ -2212,25 +2427,77 @@ impl DiscoveryService {
                     Some(now),
                 );
             let telemetry = self.persisted_stream_progress_telemetry_from_state(&state, now);
-            self.refresh_fail_closed_publication_runtime_surface_for_deferred_runtime_cycle(
+            let checkpoint_blocker =
+                Self::persisted_stream_publishable_checkpoint_blocker(&telemetry);
+            let helper_write_attempted = publication_state_exists_before;
+            info!(
+                publication_state_write_attempted_from_helper = helper_write_attempted,
+                publication_state_exists_before,
+                publication_truth_refresh_publishable_checkpoint_blocker = checkpoint_blocker,
+                "discovery publication truth repair deferred branch write attempt"
+            );
+            match self.refresh_fail_closed_publication_runtime_surface_for_deferred_runtime_cycle(
                 runtime_store,
                 publication_state.as_ref(),
-                Self::persisted_stream_publishable_checkpoint_blocker(&telemetry),
-            )?;
-            return Ok(
-                DiscoveryPublicationTruthRepairTelemetry::deferred_to_runtime_cycle(
-                    required_window_start,
-                    publication_truth_complete_before,
-                    publication_truth_fresh_before,
-                    runtime_window_complete_before,
-                    recovery_contract,
-                    &telemetry,
-                ),
-            );
+                checkpoint_blocker,
+            ) {
+                Ok(()) => {
+                    let publication_state_after =
+                        runtime_store.discovery_publication_state_read_only()?;
+                    let resulting_reason = publication_state_after
+                        .as_ref()
+                        .map(|state| state.reason.clone());
+                    let resulting_updated_at = publication_state_after
+                        .as_ref()
+                        .map(|state| state.updated_at);
+                    info!(
+                        publication_state_write_attempted_from_helper =
+                            helper_write_attempted,
+                        publication_state_exists_before,
+                        publication_truth_refresh_publishable_checkpoint_blocker =
+                            checkpoint_blocker,
+                        publication_state_write_succeeded_from_helper =
+                            helper_write_attempted,
+                        publication_state_write_resulting_reason = ?resulting_reason,
+                        publication_state_write_resulting_updated_at = ?resulting_updated_at
+                            .map(|ts| ts.to_rfc3339()),
+                        "discovery publication truth repair deferred branch write attempt completed"
+                    );
+                    return log_and_return(
+                        DiscoveryPublicationTruthRepairTelemetry::deferred_to_runtime_cycle(
+                            required_window_start,
+                            publication_truth_complete_before,
+                            publication_truth_fresh_before,
+                            runtime_window_complete_before,
+                            recovery_contract,
+                            &telemetry,
+                        )
+                        .with_helper_write_result(
+                            helper_write_attempted,
+                            helper_write_attempted,
+                            resulting_reason,
+                            resulting_updated_at,
+                        ),
+                    );
+                }
+                Err(error) => {
+                    warn!(
+                        publication_state_write_attempted_from_helper =
+                            helper_write_attempted,
+                        publication_state_exists_before,
+                        publication_truth_refresh_publishable_checkpoint_blocker =
+                            checkpoint_blocker,
+                        publication_state_write_succeeded_from_helper = false,
+                        error = %error,
+                        "discovery publication truth repair deferred branch write attempt failed"
+                    );
+                    return Err(error);
+                }
+            }
         }
 
-        let Some(runtime_cursor) = runtime_store.load_discovery_runtime_cursor()? else {
-            return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
+        let Some(runtime_cursor) = runtime_cursor_before else {
+            return log_and_return(DiscoveryPublicationTruthRepairTelemetry::skipped(
                 "skipped_missing_runtime_cursor",
                 "discovery_runtime_cursor_missing",
                 required_window_start,
@@ -2243,7 +2510,7 @@ impl DiscoveryService {
         };
 
         let Some(journal_store) = journal_store else {
-            return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
+            return log_and_return(DiscoveryPublicationTruthRepairTelemetry::skipped(
                 "skipped_journal_unavailable",
                 "recent_raw_journal_unavailable",
                 required_window_start,
@@ -2257,7 +2524,7 @@ impl DiscoveryService {
 
         let journal_state = journal_store.recent_raw_journal_state_read_only()?;
         if journal_state.row_count == 0 {
-            return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
+            return log_and_return(DiscoveryPublicationTruthRepairTelemetry::skipped(
                 "skipped_journal_unavailable",
                 "recent_raw_journal_unavailable",
                 required_window_start,
@@ -2272,7 +2539,7 @@ impl DiscoveryService {
             .covered_since
             .is_some_and(|covered_since| covered_since <= required_window_start)
         {
-            return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
+            return log_and_return(DiscoveryPublicationTruthRepairTelemetry::skipped(
                 "skipped_journal_window_unavailable",
                 "recent_raw_journal_does_not_cover_required_window_start",
                 required_window_start,
@@ -2290,7 +2557,7 @@ impl DiscoveryService {
                 Self::runtime_cursor_cmp(cursor, &runtime_cursor) != Ordering::Less
             });
         if !journal_covers_runtime_cursor {
-            return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
+            return log_and_return(DiscoveryPublicationTruthRepairTelemetry::skipped(
                 "skipped_journal_cursor_lineage_mismatch",
                 "recent_raw_journal_does_not_cover_runtime_cursor",
                 required_window_start,
@@ -2312,7 +2579,7 @@ impl DiscoveryService {
             .clone()
             .unwrap_or_else(|| runtime_cursor.clone());
         if Self::runtime_cursor_cmp(&replay_until_cursor, &runtime_cursor) == Ordering::Greater {
-            return Ok(DiscoveryPublicationTruthRepairTelemetry::skipped(
+            return log_and_return(DiscoveryPublicationTruthRepairTelemetry::skipped(
                 "skipped_runtime_window_cursor_invalid",
                 "runtime_window_floor_exceeds_runtime_cursor",
                 required_window_start,
@@ -2371,7 +2638,7 @@ impl DiscoveryService {
 
         let runtime_window_complete_after =
             self.persisted_observed_swaps_cover_window(runtime_store, required_window_start)?;
-        Ok(DiscoveryPublicationTruthRepairTelemetry {
+        log_and_return(DiscoveryPublicationTruthRepairTelemetry {
             state: if runtime_window_complete_after {
                 "replayed_recent_raw_journal_head_gap"
             } else {
@@ -2381,8 +2648,11 @@ impl DiscoveryService {
             required_window_start,
             journal_covered_since: journal_state.covered_since,
             journal_covers_runtime_cursor,
+            publication_state_exists_before,
             publication_truth_complete_before,
             publication_truth_fresh_before,
+            runtime_cursor_exists_before,
+            journal_store_exists,
             runtime_window_complete_before,
             runtime_window_complete_after,
             runtime_window_first_cursor,
@@ -2411,6 +2681,10 @@ impl DiscoveryService {
             publication_truth_refresh_cycle_rows_processed: 0,
             publication_truth_refresh_cycle_pages_processed: 0,
             publication_truth_refresh_budget_exhausted_reason: None,
+            publication_truth_refresh_helper_write_attempted: false,
+            publication_truth_refresh_helper_write_succeeded: false,
+            publication_truth_refresh_helper_write_resulting_reason: None,
+            publication_truth_refresh_helper_write_resulting_updated_at: None,
         })
     }
 
@@ -9348,6 +9622,13 @@ impl DiscoveryService {
                 active_wallets,
                 scoring_source,
             } => {
+                let diagnostics = self.snapshot_run_cycle_publication_boundary_diagnostics(
+                    store,
+                    "degraded",
+                    publish_due,
+                    true,
+                )?;
+                Self::log_run_cycle_publication_boundary(&diagnostics);
                 let summary = self.degraded_summary_from_published_universe(
                     store,
                     window_start,
@@ -9398,6 +9679,13 @@ impl DiscoveryService {
                 active_wallets,
                 scoring_source,
             } => {
+                let diagnostics = self.snapshot_run_cycle_publication_boundary_diagnostics(
+                    store,
+                    "bootstrap_degraded",
+                    false,
+                    false,
+                )?;
+                Self::log_run_cycle_publication_boundary(&diagnostics);
                 let summary = self.bootstrap_degraded_summary_from_published_universe(
                     store,
                     window_start,
@@ -9453,6 +9741,13 @@ impl DiscoveryService {
                 scoring_source,
                 ..
             } => {
+                let diagnostics = self.snapshot_run_cycle_publication_boundary_diagnostics(
+                    store,
+                    "unusable",
+                    publish_due,
+                    true,
+                )?;
+                Self::log_run_cycle_publication_boundary(&diagnostics);
                 let summary = self.fail_close_without_recent_universe(
                     store,
                     window_start,
@@ -9511,6 +9806,13 @@ impl DiscoveryService {
                 summary: previous_summary,
                 current_raw,
             } => {
+                let diagnostics = self.snapshot_run_cycle_publication_boundary_diagnostics(
+                    store,
+                    "cached",
+                    publish_due,
+                    previous_summary.runtime_mode != DiscoveryRuntimeMode::BootstrapDegraded,
+                )?;
+                Self::log_run_cycle_publication_boundary(&diagnostics);
                 let active_follow_wallets = store.list_active_follow_wallets()?.len();
                 let elapsed_ms = cycle_started.elapsed().as_millis() as u64;
                 let mut summary = DiscoverySummary {
@@ -9620,17 +9922,26 @@ impl DiscoveryService {
                 followlist_deactivations_suppressed,
                 metrics_persistence_suppressed,
                 swaps,
-            } => (
-                publish_due,
-                followlist_activations_suppressed,
-                followlist_deactivations_suppressed,
-                metrics_persistence_suppressed,
-                self.build_wallet_snapshots_from_cached(store, &swaps, now)?,
-                swaps.len(),
-                "raw_window",
-                window_start,
-                metrics_window_start,
-            ),
+            } => {
+                let diagnostics = self.snapshot_run_cycle_publication_boundary_diagnostics(
+                    store,
+                    "recompute",
+                    publish_due,
+                    true,
+                )?;
+                Self::log_run_cycle_publication_boundary(&diagnostics);
+                (
+                    publish_due,
+                    followlist_activations_suppressed,
+                    followlist_deactivations_suppressed,
+                    metrics_persistence_suppressed,
+                    self.build_wallet_snapshots_from_cached(store, &swaps, now)?,
+                    swaps.len(),
+                    "raw_window",
+                    window_start,
+                    metrics_window_start,
+                )
+            }
             PreparedCycleState::PersistedRecompute {
                 publish_due,
                 scoring_source,
@@ -9638,6 +9949,13 @@ impl DiscoveryService {
                 empty_window_bootstrap_degraded_scoring_source,
                 empty_window_unusable_scoring_source,
             } => {
+                let diagnostics = self.snapshot_run_cycle_publication_boundary_diagnostics(
+                    store,
+                    "persisted_recompute",
+                    publish_due,
+                    false,
+                )?;
+                Self::log_run_cycle_publication_boundary(&diagnostics);
                 let persisted_checkpoint_present =
                     store.load_discovery_persisted_rebuild_state()?.is_some();
                 let priority_recovery_contract = self.persisted_stream_priority_recovery_contract(
@@ -10158,6 +10476,17 @@ impl DiscoveryService {
         .with_runtime_mode(DiscoveryRuntimeMode::Healthy)
         .with_scoring_source(scoring_source)
         .with_cap_truncation_telemetry(&cap_truncation_telemetry);
+        let diagnostics = self.snapshot_run_cycle_publication_boundary_diagnostics(
+            store,
+            if scoring_source == "raw_window_persisted_stream" {
+                "healthy_recompute_from_persisted_rebuild"
+            } else {
+                "healthy_recompute_from_raw_window"
+            },
+            publish_due,
+            true,
+        )?;
+        Self::log_run_cycle_publication_boundary(&diagnostics);
         let publication_outcome = self.persist_publication_state(
             store,
             DiscoveryRuntimeMode::Healthy,
@@ -22301,7 +22630,22 @@ mod tests {
         })?;
 
         let requested_wallets = vec!["wallet_should_not_publish".to_string()];
-        let _ = discovery.persist_publication_state(
+        let boundary = discovery.snapshot_run_cycle_publication_boundary_diagnostics(
+            &runtime_store,
+            "persisted_recompute",
+            true,
+            false,
+        )?;
+        assert!(boundary.persisted_rebuild_checkpoint_exists);
+        assert!(boundary.replay_incomplete);
+        assert_eq!(boundary.persisted_rebuild_phase, Some("replay"));
+        assert_eq!(
+            boundary.publishable_checkpoint_blocker,
+            Some("replay_sol_leg_incomplete")
+        );
+        assert!(!boundary.persist_publication_state_called);
+
+        let outcome = discovery.persist_publication_state(
             &runtime_store,
             DiscoveryRuntimeMode::Healthy,
             true,
@@ -22311,6 +22655,15 @@ mod tests {
             "discovery_score_refresh",
             now,
         )?;
+        assert_eq!(outcome.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert!(!outcome.published_universe_persisted);
+        assert!(outcome.write_attempted);
+        assert!(outcome.healthy_publish_refused);
+        assert!(outcome.carry_forward_happened);
+        assert_eq!(
+            outcome.effective_reason,
+            "publication_truth_withheld_while_replay_sol_leg_incomplete"
+        );
 
         let publication_state = runtime_store
             .discovery_publication_state()?
@@ -22380,7 +22733,7 @@ mod tests {
         })?;
 
         let empty_wallets: Vec<String> = Vec::new();
-        let _ = discovery.persist_publication_state(
+        let outcome = discovery.persist_publication_state(
             &store,
             DiscoveryRuntimeMode::Healthy,
             true,
@@ -22390,6 +22743,15 @@ mod tests {
             "discovery_score_refresh",
             now,
         )?;
+        assert_eq!(outcome.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert!(!outcome.published_universe_persisted);
+        assert!(outcome.write_attempted);
+        assert!(outcome.healthy_publish_refused);
+        assert!(outcome.carry_forward_happened);
+        assert_eq!(
+            outcome.effective_reason,
+            "publication_truth_withheld_missing_exact_published_wallet_ids"
+        );
 
         let publication_state = store
             .discovery_publication_state()?
@@ -22474,6 +22836,13 @@ mod tests {
         )?;
         assert_eq!(outcome.runtime_mode, DiscoveryRuntimeMode::FailClosed);
         assert!(!outcome.published_universe_persisted);
+        assert!(outcome.write_attempted);
+        assert!(outcome.healthy_publish_refused);
+        assert!(outcome.carry_forward_happened);
+        assert_eq!(
+            outcome.effective_reason,
+            "publication_truth_withheld_missing_exact_published_wallet_ids"
+        );
 
         let after = store
             .discovery_publication_state_read_only()?
@@ -22506,6 +22875,143 @@ mod tests {
             discovery.runtime_publication_truth_resolution(&store, now)?.is_none(),
             "runtime truth must still stay unavailable even though the carried-forward stale row remains structurally complete"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn repair_runtime_window_complete_deferred_branch_reports_helper_entry_and_write_attempt_diagnostics_stage1(
+    ) -> Result<()> {
+        let (_temp, runtime_store, discovery, now, _stale_last_published_at, _stale_wallet_ids) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+
+        let repair = discovery
+            .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
+                &runtime_store,
+                None,
+                now,
+                64,
+                Instant::now() + StdDuration::from_secs(60),
+            )?;
+
+        assert_eq!(
+            repair.state,
+            "deferred_runtime_window_truth_refresh_to_run_cycle"
+        );
+        assert!(repair.publication_state_exists_before);
+        assert!(repair.publication_truth_complete_before);
+        assert!(!repair.publication_truth_fresh_before);
+        assert!(repair.runtime_cursor_exists_before);
+        assert!(!repair.journal_store_exists);
+        assert!(repair.runtime_window_complete_before);
+        assert!(repair.publication_truth_refresh_delegated_to_runtime_cycle);
+        assert!(repair.publication_truth_refresh_helper_write_attempted);
+        assert!(repair.publication_truth_refresh_helper_write_succeeded);
+        assert_eq!(
+            repair
+                .publication_truth_refresh_helper_write_resulting_reason
+                .as_deref(),
+            Some("publication_truth_withheld_while_replay_sol_leg_incomplete")
+        );
+        assert!(repair
+            .publication_truth_refresh_helper_write_resulting_updated_at
+            .is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn repair_runtime_window_complete_without_publication_state_reports_no_helper_write_attempt_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh-without-state.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-12T21:03:21Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let (replay_state, _metrics_window_start, _) =
+            seed_stage1_partial_sol_leg_replay_checkpoint_fixture(
+                &runtime_store,
+                &discovery,
+                &config,
+                now,
+                401,
+                3,
+            )?;
+        runtime_store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, now)?,
+        )?;
+
+        let repair = discovery
+            .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
+                &runtime_store,
+                None,
+                now,
+                64,
+                Instant::now() + StdDuration::from_secs(60),
+            )?;
+
+        assert_eq!(
+            repair.state,
+            "deferred_runtime_window_truth_refresh_to_run_cycle"
+        );
+        assert!(!repair.publication_state_exists_before);
+        assert!(repair.runtime_cursor_exists_before);
+        assert!(repair.runtime_window_complete_before);
+        assert!(!repair.journal_store_exists);
+        assert!(!repair.publication_truth_refresh_helper_write_attempted);
+        assert!(!repair.publication_truth_refresh_helper_write_succeeded);
+        assert!(repair
+            .publication_truth_refresh_helper_write_resulting_reason
+            .is_none());
+        assert!(repair
+            .publication_truth_refresh_helper_write_resulting_updated_at
+            .is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn repair_runtime_window_incomplete_reports_missing_runtime_cursor_diagnostics_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-publication-repair-missing-runtime-cursor-diagnostics.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-13T07:20:24Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let discovery = DiscoveryService::new(stage1_runtime_config(), permissive_shadow_quality());
+
+        let repair = discovery
+            .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
+                &runtime_store,
+                None,
+                now,
+                64,
+                Instant::now() + StdDuration::from_secs(1),
+            )?;
+
+        assert_eq!(repair.state, "skipped_missing_runtime_cursor");
+        assert!(!repair.publication_state_exists_before);
+        assert!(!repair.publication_truth_complete_before);
+        assert!(!repair.publication_truth_fresh_before);
+        assert!(!repair.runtime_cursor_exists_before);
+        assert!(!repair.journal_store_exists);
+        assert!(!repair.runtime_window_complete_before);
+        assert!(!repair.publication_truth_refresh_helper_write_attempted);
         Ok(())
     }
 

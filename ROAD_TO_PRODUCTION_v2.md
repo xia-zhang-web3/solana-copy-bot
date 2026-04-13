@@ -7897,6 +7897,40 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
         `publication_state_write_kind` line and a newer fail-closed
         `updated_at`, even if export still remains red until a real fresh
         publish happens
+    - live rollout on `e23767035c8c0248ed61634f1d91e0fea242b3c4` disproved that
+      deferred fail-closed publication write as the current first live answer:
+      - `solana-copy-bot.service` restarted cleanly at
+        `2026-04-13 07:19:55 UTC`
+      - the old app-side plateau still stayed gone:
+        `PLATEAU_COUNT=0`,
+        `IRRELEVANT_NOT_FOLLOWED_COUNT=0`
+      - but `PUBLICATION_WRITE_COUNT` remained `0`
+      - export still failed immediately on the same stale carried row and
+        `latest.json` stayed absent
+      - practical result: the new helper write path was not the effective
+        current live boundary; the next step had to be proof instrumentation,
+        not another guessed fix
+    - the next accepted Stage 3 batch is instrumentation-only on the exact
+      discovery/publication call chain:
+      - app now logs discovery task schedule/start/completion/join with
+        `discovery_task_trigger`,
+        `discovery_task_result`,
+        `discovery_task_join_result`,
+        `discovery_runtime_mode`,
+        `discovery_scoring_source`, and `discovery_published`
+      - the publication repair helper now logs entry context, exact return
+        path, deferred-branch helper write attempts, and resulting
+        reason/`updated_at`
+      - `run_cycle()` now logs the publication boundary state before relevant
+        persist decisions, including whether a persisted rebuild checkpoint
+        exists, whether replay is incomplete, and whether
+        `persist_publication_state(...)` is actually called
+      - `persist_publication_state(...)` now logs whether it attempted a
+        write, whether healthy publish was refused, whether stale fields were
+        carried forward, and the effective runtime mode/reason
+      - this batch is intentionally non-behavioral; its only purpose is to
+        make the next live restart decisively answer where publication-state
+        motion stops
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 
