@@ -7931,6 +7931,41 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
       - this batch is intentionally non-behavioral; its only purpose is to
         make the next live restart decisively answer where publication-state
         motion stops
+    - the next accepted Stage 3 fix is now narrowly scoped to the exact
+      helper-internal region that the live instrumentation exposed:
+      - on `ab2832fbeb94671c545cb19244d8f20adfbe3fc4`, live proved the
+        post-restart discovery path really entered
+        `repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(...)`
+        with:
+        `publication_state_exists_before=true`,
+        `publication_truth_complete_before=true`,
+        `publication_truth_fresh_before=false`,
+        `runtime_cursor_exists_before=true`,
+        `runtime_window_complete_before=true`, and
+        `journal_store_exists=true`
+      - the accepted root cause is the resumed exact-target-surface repair
+        inside `repair_replay_exact_target_buy_mint_surface_for_resume(...)`:
+        the helper-level path routed through persisted replay-state load and
+        into the exact-wallet activity paging loop with its own effectively
+        unbounded `300s` internal resume-repair deadline
+      - that meant helper control could remain inside exact-target-surface
+        reconstruction for minutes after entry before it ever reached the
+        deferred helper write / helper return / run-cycle publication
+        boundary, which matched the long live gap between helper entry and the
+        first fail-closed carry-forward write
+      - the accepted fix now threads the caller-provided helper deadline into
+        the resumed exact-target-surface repair path, records whether that
+        repair was attempted/completed/time-budget-exhausted plus pages/rows
+        scanned and target buy mints restored, and returns control to the
+        helper when the helper budget is exhausted
+      - it does not fake freshness, does not alter exporter gating, does not
+        change publication semantics, and does not change app-side queue
+        behavior or any Stage 4 surfaces
+      - expected live effect is bounded: the helper should reach the deferred
+        helper write and helper return materially sooner instead of spending
+        roughly one hidden `300s` interval inside resume exact-target-surface
+        reconstruction before surfacing the real
+        `replay_sol_leg_incomplete` blocker
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 

@@ -550,6 +550,23 @@ pub struct DiscoveryPublicationTruthRepairTelemetry {
     pub publication_truth_refresh_helper_write_succeeded: bool,
     pub publication_truth_refresh_helper_write_resulting_reason: Option<String>,
     pub publication_truth_refresh_helper_write_resulting_updated_at: Option<DateTime<Utc>>,
+    pub publication_truth_refresh_resume_exact_target_surface_repair_attempted: bool,
+    pub publication_truth_refresh_resume_exact_target_surface_repair_completed: bool,
+    pub publication_truth_refresh_resume_exact_target_surface_repair_time_budget_exhausted: bool,
+    pub publication_truth_refresh_resume_exact_target_surface_repair_wallet_pages: usize,
+    pub publication_truth_refresh_resume_exact_target_surface_repair_wallet_rows: usize,
+    pub publication_truth_refresh_resume_exact_target_surface_repair_target_buy_mints_restored:
+        usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ResumeExactTargetBuyMintSurfaceRepairDiagnostics {
+    attempted: bool,
+    completed: bool,
+    time_budget_exhausted: bool,
+    wallet_pages: usize,
+    wallet_rows: usize,
+    target_buy_mints_restored: usize,
 }
 
 impl DiscoveryPublicationTruthRepairTelemetry {
@@ -606,6 +623,14 @@ impl DiscoveryPublicationTruthRepairTelemetry {
             publication_truth_refresh_helper_write_succeeded: false,
             publication_truth_refresh_helper_write_resulting_reason: None,
             publication_truth_refresh_helper_write_resulting_updated_at: None,
+            publication_truth_refresh_resume_exact_target_surface_repair_attempted: false,
+            publication_truth_refresh_resume_exact_target_surface_repair_completed: false,
+            publication_truth_refresh_resume_exact_target_surface_repair_time_budget_exhausted:
+                false,
+            publication_truth_refresh_resume_exact_target_surface_repair_wallet_pages: 0,
+            publication_truth_refresh_resume_exact_target_surface_repair_wallet_rows: 0,
+            publication_truth_refresh_resume_exact_target_surface_repair_target_buy_mints_restored:
+                0,
         }
     }
 
@@ -676,6 +701,14 @@ impl DiscoveryPublicationTruthRepairTelemetry {
             publication_truth_refresh_helper_write_succeeded: false,
             publication_truth_refresh_helper_write_resulting_reason: None,
             publication_truth_refresh_helper_write_resulting_updated_at: None,
+            publication_truth_refresh_resume_exact_target_surface_repair_attempted: false,
+            publication_truth_refresh_resume_exact_target_surface_repair_completed: false,
+            publication_truth_refresh_resume_exact_target_surface_repair_time_budget_exhausted:
+                false,
+            publication_truth_refresh_resume_exact_target_surface_repair_wallet_pages: 0,
+            publication_truth_refresh_resume_exact_target_surface_repair_wallet_rows: 0,
+            publication_truth_refresh_resume_exact_target_surface_repair_target_buy_mints_restored:
+                0,
         }
     }
 
@@ -702,6 +735,25 @@ impl DiscoveryPublicationTruthRepairTelemetry {
         self.publication_truth_refresh_helper_write_succeeded = succeeded;
         self.publication_truth_refresh_helper_write_resulting_reason = resulting_reason;
         self.publication_truth_refresh_helper_write_resulting_updated_at = resulting_updated_at;
+        self
+    }
+
+    fn with_resume_exact_target_surface_repair(
+        mut self,
+        diagnostics: &ResumeExactTargetBuyMintSurfaceRepairDiagnostics,
+    ) -> Self {
+        self.publication_truth_refresh_resume_exact_target_surface_repair_attempted =
+            diagnostics.attempted;
+        self.publication_truth_refresh_resume_exact_target_surface_repair_completed =
+            diagnostics.completed;
+        self.publication_truth_refresh_resume_exact_target_surface_repair_time_budget_exhausted =
+            diagnostics.time_budget_exhausted;
+        self.publication_truth_refresh_resume_exact_target_surface_repair_wallet_pages =
+            diagnostics.wallet_pages;
+        self.publication_truth_refresh_resume_exact_target_surface_repair_wallet_rows =
+            diagnostics.wallet_rows;
+        self.publication_truth_refresh_resume_exact_target_surface_repair_target_buy_mints_restored =
+            diagnostics.target_buy_mints_restored;
         self
     }
 }
@@ -1774,6 +1826,20 @@ impl DiscoveryService {
             publication_state_write_resulting_updated_at = ?telemetry
                 .publication_truth_refresh_helper_write_resulting_updated_at
                 .map(|ts| ts.to_rfc3339()),
+            publication_truth_refresh_resume_exact_target_surface_repair_attempted =
+                telemetry.publication_truth_refresh_resume_exact_target_surface_repair_attempted,
+            publication_truth_refresh_resume_exact_target_surface_repair_completed =
+                telemetry.publication_truth_refresh_resume_exact_target_surface_repair_completed,
+            publication_truth_refresh_resume_exact_target_surface_repair_time_budget_exhausted =
+                telemetry
+                    .publication_truth_refresh_resume_exact_target_surface_repair_time_budget_exhausted,
+            publication_truth_refresh_resume_exact_target_surface_repair_wallet_pages =
+                telemetry.publication_truth_refresh_resume_exact_target_surface_repair_wallet_pages,
+            publication_truth_refresh_resume_exact_target_surface_repair_wallet_rows =
+                telemetry.publication_truth_refresh_resume_exact_target_surface_repair_wallet_rows,
+            publication_truth_refresh_resume_exact_target_surface_repair_target_buy_mints_restored =
+                telemetry
+                    .publication_truth_refresh_resume_exact_target_surface_repair_target_buy_mints_restored,
             "discovery publication truth repair helper returned"
         );
     }
@@ -2342,6 +2408,25 @@ impl DiscoveryService {
         replay_batch_size: usize,
         deadline: Instant,
     ) -> Result<DiscoveryPublicationTruthRepairTelemetry> {
+        self.repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed_with_options(
+            runtime_store,
+            journal_store,
+            now,
+            replay_batch_size,
+            deadline,
+            None,
+        )
+    }
+
+    fn repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed_with_options(
+        &self,
+        runtime_store: &SqliteStore,
+        journal_store: Option<&SqliteStore>,
+        now: DateTime<Utc>,
+        replay_batch_size: usize,
+        deadline: Instant,
+        resume_exact_target_surface_repair_deadline_override: Option<Instant>,
+    ) -> Result<DiscoveryPublicationTruthRepairTelemetry> {
         let gate = self.publication_freshness_gate();
         let required_window_start = now - Duration::days(self.runtime_scoring_window_days());
         let publication_state = runtime_store.discovery_publication_state_read_only()?;
@@ -2412,12 +2497,14 @@ impl DiscoveryService {
                 fetch_page_limit,
                 refresh_budget,
             )?;
-            let (state, _) = self.load_or_start_persisted_stream_rebuild_state(
-                runtime_store,
-                required_window_start,
-                metrics_window_start,
-                now,
-            )?;
+            let (state, _, resume_exact_target_surface_repair) = self
+                .load_or_start_persisted_stream_rebuild_state_with_options(
+                    runtime_store,
+                    required_window_start,
+                    metrics_window_start,
+                    now,
+                    Some(resume_exact_target_surface_repair_deadline_override.unwrap_or(deadline)),
+                )?;
             let recovery_contract = self
                 .deepen_persisted_stream_priority_recovery_contract_for_state_at(
                     &state,
@@ -2471,6 +2558,9 @@ impl DiscoveryService {
                             runtime_window_complete_before,
                             recovery_contract,
                             &telemetry,
+                        )
+                        .with_resume_exact_target_surface_repair(
+                            &resume_exact_target_surface_repair,
                         )
                         .with_helper_write_result(
                             helper_write_attempted,
@@ -2685,6 +2775,14 @@ impl DiscoveryService {
             publication_truth_refresh_helper_write_succeeded: false,
             publication_truth_refresh_helper_write_resulting_reason: None,
             publication_truth_refresh_helper_write_resulting_updated_at: None,
+            publication_truth_refresh_resume_exact_target_surface_repair_attempted: false,
+            publication_truth_refresh_resume_exact_target_surface_repair_completed: false,
+            publication_truth_refresh_resume_exact_target_surface_repair_time_budget_exhausted:
+                false,
+            publication_truth_refresh_resume_exact_target_surface_repair_wallet_pages: 0,
+            publication_truth_refresh_resume_exact_target_surface_repair_wallet_rows: 0,
+            publication_truth_refresh_resume_exact_target_surface_repair_target_buy_mints_restored:
+                0,
         })
     }
 
@@ -4357,19 +4455,38 @@ impl DiscoveryService {
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,
-    ) -> Result<bool> {
+        deadline: Instant,
+    ) -> Result<ResumeExactTargetBuyMintSurfaceRepairDiagnostics> {
         if !Self::state_can_backfill_exact_target_buy_mint_surface_for_resume(state) {
-            return Ok(false);
+            return Ok(ResumeExactTargetBuyMintSurfaceRepairDiagnostics::default());
         }
 
         let exact_wallet_ids: Vec<String> = state.payload.by_wallet.keys().cloned().collect();
         let wallet_limit =
             Self::replay_wallet_stats_wallet_batch_size(self.config.max_fetch_swaps_per_cycle)
                 .max(1);
-        let deadline = Instant::now() + StdDuration::from_secs(300);
+        let mut diagnostics = ResumeExactTargetBuyMintSurfaceRepairDiagnostics {
+            attempted: true,
+            ..ResumeExactTargetBuyMintSurfaceRepairDiagnostics::default()
+        };
+        info!(
+            rebuild_window_start = %state.window_start,
+            rebuild_horizon_end = %state.horizon_end,
+            rebuild_phase = state.phase.as_str(),
+            rebuild_replay_subphase =
+                Self::replay_subphase(
+                    state.phase,
+                    state.payload.replay_wallet_stats_complete,
+                    state.payload.replay_candidate_activity_backfill_pending,
+                ),
+            rebuild_wallets_buffered = state.payload.by_wallet.len(),
+            rebuild_target_buy_mints = state.payload.discovery_critical_target_buy_mints.len(),
+            rebuild_resume_exact_target_surface_deadline_remaining_ms =
+                deadline.saturating_duration_since(Instant::now()).as_millis().min(u64::MAX as u128)
+                    as u64,
+            "repairing resumed replay checkpoint exact target-mint surface before helper/run_cycle publication decisions"
+        );
         let mut wallet_cursor: Option<String> = None;
-        let mut restored_wallet_pages = 0usize;
-        let mut restored_wallet_rows = 0usize;
         loop {
             let page = store
                 .observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
@@ -4381,14 +4498,32 @@ impl DiscoveryService {
                     self.config.max_tx_per_minute,
                     deadline,
                 )?;
-            restored_wallet_pages = restored_wallet_pages.saturating_add(1);
-            restored_wallet_rows = restored_wallet_rows.saturating_add(page.rows_seen);
+            diagnostics.wallet_pages = diagnostics.wallet_pages.saturating_add(1);
+            diagnostics.wallet_rows = diagnostics.wallet_rows.saturating_add(page.rows_seen);
             for row in page.rows.iter().cloned() {
                 Self::observe_replay_wallet_activity_summary(&mut state.payload, row);
             }
             wallet_cursor = page.rows.last().map(|row| row.wallet_id.clone());
             if page.time_budget_exhausted {
-                return Ok(false);
+                diagnostics.time_budget_exhausted = true;
+                info!(
+                    rebuild_window_start = %state.window_start,
+                    rebuild_horizon_end = %state.horizon_end,
+                    rebuild_phase = state.phase.as_str(),
+                    rebuild_replay_subphase =
+                        Self::replay_subphase(
+                            state.phase,
+                            state.payload.replay_wallet_stats_complete,
+                            state.payload.replay_candidate_activity_backfill_pending,
+                        ),
+                    rebuild_wallets_buffered = state.payload.by_wallet.len(),
+                    rebuild_resume_exact_target_surface_wallet_pages = diagnostics.wallet_pages,
+                    rebuild_resume_exact_target_surface_wallet_rows = diagnostics.wallet_rows,
+                    rebuild_resume_exact_target_surface_time_budget_exhausted =
+                        diagnostics.time_budget_exhausted,
+                    "bounded helper/resume repair exhausted its deadline before reconstructing the missing exact target-mint surface"
+                );
+                return Ok(diagnostics);
             }
             if page.rows.len() < wallet_limit {
                 break;
@@ -4401,7 +4536,23 @@ impl DiscoveryService {
             state.horizon_end,
         )?;
         if exact_target_buy_mints.is_empty() {
-            return Ok(false);
+            info!(
+                rebuild_window_start = %state.window_start,
+                rebuild_horizon_end = %state.horizon_end,
+                rebuild_phase = state.phase.as_str(),
+                rebuild_replay_subphase =
+                    Self::replay_subphase(
+                        state.phase,
+                        state.payload.replay_wallet_stats_complete,
+                        state.payload.replay_candidate_activity_backfill_pending,
+                    ),
+                rebuild_wallets_buffered = state.payload.by_wallet.len(),
+                rebuild_resume_exact_target_surface_wallet_pages = diagnostics.wallet_pages,
+                rebuild_resume_exact_target_surface_wallet_rows = diagnostics.wallet_rows,
+                rebuild_target_buy_mints = 0usize,
+                "resumed replay exact target-mint surface repair finished without reconstructing any target buy mints"
+            );
+            return Ok(diagnostics);
         }
 
         info!(
@@ -4415,13 +4566,16 @@ impl DiscoveryService {
                     state.payload.replay_candidate_activity_backfill_pending,
                 ),
             rebuild_wallets_buffered = state.payload.by_wallet.len(),
-            rebuild_repair_wallet_activity_pages = restored_wallet_pages,
-            rebuild_repair_wallet_activity_rows = restored_wallet_rows,
+            rebuild_repair_wallet_activity_pages = diagnostics.wallet_pages,
+            rebuild_repair_wallet_activity_rows = diagnostics.wallet_rows,
             rebuild_target_buy_mints = exact_target_buy_mints.len(),
             "backfilling missing exact candidate target-mint surface onto a resumed frozen partial SOL-leg checkpoint so persisted replay can re-enter the exact-target replay contract instead of broad-source fallback"
         );
         state.payload.discovery_critical_target_buy_mints = exact_target_buy_mints;
-        Ok(true)
+        diagnostics.completed = true;
+        diagnostics.target_buy_mints_restored =
+            state.payload.discovery_critical_target_buy_mints.len();
+        Ok(diagnostics)
     }
 
     fn compact_wallet_activity_summary_for_frozen_exact_target_checkpoint(
@@ -5686,10 +5840,33 @@ impl DiscoveryService {
         PersistedStreamRebuildState,
         PersistedStreamRebuildRestoreOutcome,
     )> {
+        let (state, outcome, _) = self.load_or_start_persisted_stream_rebuild_state_with_options(
+            store,
+            window_start,
+            metrics_window_start,
+            now,
+            None,
+        )?;
+        Ok((state, outcome))
+    }
+
+    fn load_or_start_persisted_stream_rebuild_state_with_options(
+        &self,
+        store: &SqliteStore,
+        window_start: DateTime<Utc>,
+        metrics_window_start: DateTime<Utc>,
+        now: DateTime<Utc>,
+        resume_exact_target_surface_repair_deadline: Option<Instant>,
+    ) -> Result<(
+        PersistedStreamRebuildState,
+        PersistedStreamRebuildRestoreOutcome,
+        ResumeExactTargetBuyMintSurfaceRepairDiagnostics,
+    )> {
         let Some(row) = store.load_discovery_persisted_rebuild_state()? else {
             return Ok((
                 self.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now),
                 PersistedStreamRebuildRestoreOutcome::StartedFresh,
+                ResumeExactTargetBuyMintSurfaceRepairDiagnostics::default(),
             ));
         };
         match Self::persisted_stream_rebuild_state_from_row(row) {
@@ -5715,13 +5892,21 @@ impl DiscoveryService {
                             now,
                         ),
                         PersistedStreamRebuildRestoreOutcome::StartedFresh,
+                        ResumeExactTargetBuyMintSurfaceRepairDiagnostics::default(),
                     ));
                 }
                 let repaired_for_resume =
                     self.repair_restored_persisted_stream_state_for_resume(&mut state, now);
-                let repaired_exact_target_buy_mint_surface =
-                    self.repair_replay_exact_target_buy_mint_surface_for_resume(store, &mut state)?;
-                if repaired_for_resume || repaired_exact_target_buy_mint_surface {
+                let exact_target_surface_repair_deadline =
+                    resume_exact_target_surface_repair_deadline
+                        .unwrap_or_else(|| Instant::now() + StdDuration::from_secs(300));
+                let exact_target_surface_repair = self
+                    .repair_replay_exact_target_buy_mint_surface_for_resume(
+                        store,
+                        &mut state,
+                        exact_target_surface_repair_deadline,
+                    )?;
+                if repaired_for_resume || exact_target_surface_repair.completed {
                     self.persist_persisted_stream_rebuild_state(store, &mut state, now)?;
                 }
                 if state.metrics_window_start != metrics_window_start {
@@ -5749,6 +5934,7 @@ impl DiscoveryService {
                         return Ok((
                             state,
                             PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow,
+                            exact_target_surface_repair,
                         ));
                     }
                     if Self::state_can_pin_stale_metrics_window_until_first_publishable_checkpoint(
@@ -5775,6 +5961,7 @@ impl DiscoveryService {
                         return Ok((
                             state,
                             PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow,
+                            exact_target_surface_repair,
                         ));
                     }
                     if matches!(
@@ -5811,6 +5998,7 @@ impl DiscoveryService {
                         return Ok((
                             state,
                             PersistedStreamRebuildRestoreOutcome::CarriedForwardMetricsWindow,
+                            exact_target_surface_repair,
                         ));
                     }
                     if Self::state_can_resume_stale_metrics_window_until_exact_checkpoint(&state) {
@@ -5831,6 +6019,7 @@ impl DiscoveryService {
                         return Ok((
                             state,
                             PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow,
+                            exact_target_surface_repair,
                         ));
                     }
                     warn!(
@@ -5851,9 +6040,14 @@ impl DiscoveryService {
                             now,
                         ),
                         PersistedStreamRebuildRestoreOutcome::StartedFresh,
+                        exact_target_surface_repair,
                     ));
                 }
-                Ok((state, PersistedStreamRebuildRestoreOutcome::ResumedExisting))
+                Ok((
+                    state,
+                    PersistedStreamRebuildRestoreOutcome::ResumedExisting,
+                    exact_target_surface_repair,
+                ))
             }
             Err(error) => {
                 warn!(
@@ -5868,6 +6062,7 @@ impl DiscoveryService {
                         now,
                     ),
                     PersistedStreamRebuildRestoreOutcome::StartedFresh,
+                    ResumeExactTargetBuyMintSurfaceRepairDiagnostics::default(),
                 ))
             }
         }
@@ -25300,6 +25495,101 @@ mod tests {
         ))
     }
 
+    fn seed_stage1_deferred_runtime_publication_refresh_missing_exact_target_surface_fixture(
+    ) -> Result<(
+        tempfile::TempDir,
+        SqliteStore,
+        SqliteStore,
+        DiscoveryService,
+        DateTime<Utc>,
+        DateTime<Utc>,
+        Vec<String>,
+    )> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh-missing-exact-target-surface.db");
+        let journal_db_path = temp.path().join(
+            "stage1-deferred-runtime-publication-refresh-missing-exact-target-surface-journal.db",
+        );
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let mut journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+        journal_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-13T08:33:16Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_fetch_swaps_per_cycle = 100;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 15_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+
+        let (mut replay_state, metrics_window_start) =
+            seed_stage1_dense_partial_sol_leg_replay_checkpoint_fixture(
+                &runtime_store,
+                &discovery,
+                &config,
+                now,
+                1_500,
+                20,
+            )?;
+        replay_state.payload.replay_wallet_stats_complete = true;
+        replay_state.payload.replay_wallet_stats_milestone_reached = true;
+        replay_state
+            .payload
+            .replay_candidate_activity_backfill_required = true;
+        replay_state
+            .payload
+            .replay_candidate_activity_backfill_pending = false;
+        replay_state.payload.replay_sol_leg_budget_floor_pages = replay_state
+            .payload
+            .replay_sol_leg_budget_floor_pages
+            .max(20);
+        DiscoveryService::compact_wallet_activity_summary_for_frozen_exact_target_checkpoint(
+            &mut replay_state.payload,
+        );
+        replay_state
+            .payload
+            .discovery_critical_target_buy_mints
+            .clear();
+        assert!(
+            DiscoveryService::state_can_backfill_exact_target_buy_mint_surface_for_resume(
+                &replay_state
+            ),
+            "the live-like helper repro must start from the exact missing target-surface seam that can spend control in resume repair before the first helper return/write log"
+        );
+        runtime_store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, now)?,
+        )?;
+        let stale_published_wallets = (0..7usize)
+            .map(|idx| format!("wallet-live-like-stale-{idx}"))
+            .collect::<Vec<_>>();
+        let stale_last_published_at =
+            now - discovery.runtime_published_universe_max_age() - Duration::seconds(1);
+        runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "publication_truth_withheld_missing_exact_published_wallet_ids".to_string(),
+            last_published_at: Some(stale_last_published_at),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(stale_published_wallets.clone()),
+        })?;
+
+        Ok((
+            temp,
+            runtime_store,
+            journal_store,
+            discovery,
+            now,
+            stale_last_published_at,
+            stale_published_wallets,
+        ))
+    }
+
     fn old_like_deferred_runtime_publication_refresh_without_surface_write(
         discovery: &DiscoveryService,
         runtime_store: &SqliteStore,
@@ -25354,6 +25644,70 @@ mod tests {
                 &telemetry,
             ),
         )
+    }
+
+    fn old_like_runtime_window_complete_helper_missing_exact_target_surface_without_bounded_resume_deadline(
+        discovery: &DiscoveryService,
+        runtime_store: &SqliteStore,
+        now: DateTime<Utc>,
+    ) -> Result<(
+        DiscoveryPublicationTruthRepairTelemetry,
+        ResumeExactTargetBuyMintSurfaceRepairDiagnostics,
+    )> {
+        let gate = discovery.publication_freshness_gate();
+        let required_window_start = now - Duration::days(discovery.runtime_scoring_window_days());
+        let publication_state = runtime_store.discovery_publication_state_read_only()?;
+        let publication_truth_complete_before = publication_state
+            .as_ref()
+            .is_some_and(DiscoveryPublicationStateRow::has_complete_publication_truth);
+        let publication_truth_fresh_before = publication_state
+            .as_ref()
+            .is_some_and(|state| state.is_fresh_under_gate(gate, now));
+        let runtime_window_complete_before = discovery
+            .persisted_observed_swaps_cover_window(runtime_store, required_window_start)?;
+        assert!(runtime_window_complete_before);
+        assert!(publication_truth_complete_before);
+        assert!(!publication_truth_fresh_before);
+        let refresh_budget = StdDuration::from_secs(60);
+        let metrics_window_start = discovery.metrics_window_start(now);
+        let fetch_limit = discovery.config.max_fetch_swaps_per_cycle.max(1);
+        let fetch_page_limit = discovery.config.max_fetch_pages_per_cycle.max(1);
+        let base_recovery_contract = discovery.persisted_stream_priority_recovery_contract(
+            runtime_store,
+            now,
+            fetch_limit,
+            fetch_page_limit,
+            refresh_budget,
+        )?;
+        let (state, _, resume_exact_target_surface_repair) = discovery
+            .load_or_start_persisted_stream_rebuild_state_with_options(
+                runtime_store,
+                required_window_start,
+                metrics_window_start,
+                now,
+                None,
+            )?;
+        let recovery_contract = discovery
+            .deepen_persisted_stream_priority_recovery_contract_for_state_at(
+                &state,
+                fetch_limit,
+                fetch_page_limit,
+                base_recovery_contract,
+                Some(now),
+            );
+        let telemetry = discovery.persisted_stream_progress_telemetry_from_state(&state, now);
+        Ok((
+            DiscoveryPublicationTruthRepairTelemetry::deferred_to_runtime_cycle(
+                required_window_start,
+                publication_truth_complete_before,
+                publication_truth_fresh_before,
+                runtime_window_complete_before,
+                recovery_contract,
+                &telemetry,
+            )
+            .with_resume_exact_target_surface_repair(&resume_exact_target_surface_repair),
+            resume_exact_target_surface_repair,
+        ))
     }
 
     #[test]
@@ -25525,6 +25879,170 @@ mod tests {
         assert!(
             !after.is_fresh_under_gate(discovery.publication_freshness_gate(), now),
             "an honest fail-closed deferred refresh must still fail the freshness gate"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_window_complete_helper_live_like_missing_exact_target_surface_routes_next_into_resume_repair_stage1(
+    ) -> Result<()> {
+        let (_temp, runtime_store, _journal_store, discovery, now, _, _) =
+            seed_stage1_deferred_runtime_publication_refresh_missing_exact_target_surface_fixture(
+            )?;
+        let required_window_start = now - Duration::days(discovery.runtime_scoring_window_days());
+        let metrics_window_start = discovery.metrics_window_start(now);
+
+        assert!(discovery
+            .persisted_observed_swaps_cover_window(&runtime_store, required_window_start)?);
+        let (state, restore_outcome, resume_exact_target_surface_repair) = discovery
+            .load_or_start_persisted_stream_rebuild_state_with_options(
+                &runtime_store,
+                required_window_start,
+                metrics_window_start,
+                now,
+                Some(Instant::now()),
+            )?;
+
+        assert!(
+            matches!(
+                restore_outcome,
+                PersistedStreamRebuildRestoreOutcome::ResumedExisting
+                    | PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow
+            ),
+            "the live-like helper repro must stay on the existing persisted replay lineage instead of restarting from scratch"
+        );
+        assert!(
+            resume_exact_target_surface_repair.attempted,
+            "once the helper entry shape sees a complete-but-stale publication row, complete runtime window, runtime cursor, and existing replay checkpoint, the next internal region must be the exact target-surface resume repair"
+        );
+        assert!(resume_exact_target_surface_repair.time_budget_exhausted);
+        assert!(!resume_exact_target_surface_repair.completed);
+        assert!(
+            state.payload.discovery_critical_target_buy_mints.is_empty(),
+            "when the helper-level repair deadline is already exhausted, the exact target surface must remain missing so the helper can surface the real replay blocker instead of spending more time inside resume repair"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_window_complete_helper_live_like_missing_exact_target_surface_old_like_resume_repair_ignores_helper_budget_stage1(
+    ) -> Result<()> {
+        let (_temp, runtime_store, _journal_store, discovery, now, _, _) =
+            seed_stage1_deferred_runtime_publication_refresh_missing_exact_target_surface_fixture(
+            )?;
+
+        let (repair, resume_exact_target_surface_repair) =
+            old_like_runtime_window_complete_helper_missing_exact_target_surface_without_bounded_resume_deadline(
+                &discovery,
+                &runtime_store,
+                now,
+            )?;
+
+        assert_eq!(
+            repair.state,
+            "deferred_runtime_window_truth_refresh_to_run_cycle"
+        );
+        assert!(
+            resume_exact_target_surface_repair.attempted,
+            "old/current-like helper behavior must spend control inside the exact target-surface resume repair before it can ever reach the deferred return path"
+        );
+        assert!(
+            resume_exact_target_surface_repair.completed,
+            "without the helper deadline threaded into resume repair, the old/current-like path ignores the bounded helper contract and continues reconstructing the exact target surface"
+        );
+        assert!(!resume_exact_target_surface_repair.time_budget_exhausted);
+        assert!(
+            resume_exact_target_surface_repair.target_buy_mints_restored > 0,
+            "the old/current-like path must do real exact-target reconstruction work here; otherwise it would not explain why live stayed inside the helper after entry"
+        );
+        let repaired = load_persisted_stream_rebuild_state_for_test(&runtime_store)?;
+        assert!(
+            !repaired.payload.discovery_critical_target_buy_mints.is_empty(),
+            "the old/current-like path must durably restore exact target mints during resume repair because it is not honoring the helper deadline on this seam"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repair_runtime_window_complete_live_like_missing_exact_target_surface_honors_helper_deadline_and_reaches_deferred_write_stage1(
+    ) -> Result<()> {
+        let (
+            _temp,
+            runtime_store,
+            journal_store,
+            discovery,
+            now,
+            stale_last_published_at,
+            stale_wallet_ids,
+        ) = seed_stage1_deferred_runtime_publication_refresh_missing_exact_target_surface_fixture(
+        )?;
+        let before = runtime_store
+            .discovery_publication_state()?
+            .expect("publication state should exist before helper repair");
+
+        let repair = discovery
+            .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed_with_options(
+                &runtime_store,
+                Some(&journal_store),
+                now,
+                64,
+                Instant::now() + StdDuration::from_secs(60),
+                Some(Instant::now()),
+            )?;
+
+        assert_eq!(
+            repair.state,
+            "deferred_runtime_window_truth_refresh_to_run_cycle"
+        );
+        assert!(repair.publication_truth_refresh_delegated_to_runtime_cycle);
+        assert!(repair.publication_truth_refresh_helper_write_attempted);
+        assert!(repair.publication_truth_refresh_helper_write_succeeded);
+        assert!(
+            repair.publication_truth_refresh_resume_exact_target_surface_repair_attempted,
+            "the live-like helper seam must still prove it entered exact target-surface resume repair before returning"
+        );
+        assert!(
+            repair
+                .publication_truth_refresh_resume_exact_target_surface_repair_time_budget_exhausted,
+            "the fixed helper must now surface this exact internal repair region as bounded by the helper deadline instead of disappearing inside it"
+        );
+        assert!(
+            !repair.publication_truth_refresh_resume_exact_target_surface_repair_completed,
+            "once the helper deadline is honored, the helper should stop spending time reconstructing the exact target surface and proceed to the deferred fail-closed write/return path"
+        );
+        assert_eq!(
+            repair.publication_truth_refresh_publishable_checkpoint_blocker,
+            Some("replay_sol_leg_incomplete")
+        );
+
+        let after = runtime_store
+            .discovery_publication_state()?
+            .expect("publication state should exist after helper repair");
+        assert!(after.updated_at > before.updated_at);
+        assert_eq!(after.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert_eq!(
+            after.reason,
+            "publication_truth_withheld_while_replay_sol_leg_incomplete"
+        );
+        assert_eq!(after.last_published_at, Some(stale_last_published_at));
+        assert_eq!(
+            after.published_wallet_ids.clone().unwrap_or_default(),
+            stale_wallet_ids
+        );
+        assert!(
+            !after.is_fresh_under_gate(discovery.publication_freshness_gate(), now),
+            "respecting the helper deadline must not fake freshness under the export gate"
+        );
+        assert!(
+            discovery
+                .runtime_publication_truth_resolution(&runtime_store, now)?
+                .is_none(),
+            "the bounded helper fix must still leave runtime publication truth unavailable until a real exact publish happens later"
+        );
+        let rebuilt = load_persisted_stream_rebuild_state_for_test(&runtime_store)?;
+        assert!(
+            rebuilt.payload.discovery_critical_target_buy_mints.is_empty(),
+            "the bounded helper fix must not persist a half-reconstructed exact target surface while surfacing the real replay blocker"
         );
         Ok(())
     }
