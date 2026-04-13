@@ -8020,6 +8020,38 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
         helper return and helper-side deferred write should surface earlier on
         restart; export may still remain fail-closed while replay later
         continues to report the real `replay_sol_leg_incomplete` blocker
+    - the next accepted Stage 3 batch adds one bounded read-only operator
+      diagnostic surface for the remaining
+      `publication_truth_withheld_while_replay_sol_leg_incomplete` seam:
+      - `discovery_replay_checkpoint_diagnose`
+      - `--inspect-persisted-rebuild-state --runtime-db <path> --json`
+      - `--explain-publishable-checkpoint-blocker --runtime-db <path> --json`
+      - `--compare-sol-leg-source-vs-checkpoint --runtime-db <path> --recent-raw-db <path> --json`
+      - `--explain-replay-sol-leg-incomplete --runtime-db <path> --recent-raw-db <path> --json`
+    - the diagnostic surface reuses the same persisted-checkpoint and blocker
+      logic as production instead of inventing approximate read-only logic:
+      - persisted rebuild row parsing still comes from the same
+        `persisted_stream_rebuild_state_from_row(...)` path
+      - blocker classification still comes from
+        `persisted_stream_publishable_checkpoint_blocker_from_state(...)`
+      - replay subphase and exact-target-surface readiness still come from the
+        same replay helpers the runtime uses
+      - source-vs-checkpoint comparison still uses the same bounded SOL-leg
+        cursor readers as production
+    - the accepted correction on top of that tool closes the remaining false
+      “drained” diagnostic hole:
+      - if the bounded source scan exhausts its time budget before it proves
+        either remaining source rows or a drained frontier, the tool now emits
+        explicit reason class
+        `source_frontier_unproven_diagnostic_scan_budget_exhausted`
+        instead of guessing one of the drained classes
+    - this batch is intentionally tooling-only:
+      - it does not change replay semantics
+      - it does not change exporter semantics
+      - it does not change fail-closed behavior
+      - its purpose is to let operators answer the remaining
+        `replay_sol_leg_incomplete` question from persisted state plus current
+        source frontier directly instead of continuing journal archaeology
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 

@@ -69,6 +69,8 @@ const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_MAX_OBSERVED_M
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MIN_TIME_BUDGET_MS: u64 = 180_000;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MAX_TIME_BUDGET_MS: u64 = 900_000;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MAX_OBSERVED_MS_PER_PAGE: u64 = 10_000;
+const REPLAY_CHECKPOINT_DIAGNOSE_SOURCE_SCAN_PAGE_LIMIT: usize = 10_000;
+const REPLAY_CHECKPOINT_DIAGNOSE_SOURCE_SCAN_PAGE_DEADLINE_MS: u64 = 30_000;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_NUMERATOR: usize =
     3;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_DENOMINATOR: usize =
@@ -91,6 +93,7 @@ thread_local! {
     static TEST_FORCE_RECONCILE_NEW_TAIL_ZERO_ROW_TIMEOUT: Cell<bool> = const { Cell::new(false) };
     static TEST_FORCE_RECONCILE_EXPIRED_HEAD_EXACT_BATCH_ROW_LIMIT: Cell<usize> = const { Cell::new(0) };
     static TEST_FORCE_RECONCILE_NEW_TAIL_EXACT_BATCH_ROW_LIMIT: Cell<usize> = const { Cell::new(0) };
+    static TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_SOURCE_SCAN_DEADLINE_MS: Cell<u64> = const { Cell::new(u64::MAX) };
 }
 
 #[cfg(test)]
@@ -114,6 +117,20 @@ fn arm_test_force_reconcile_new_tail_zero_row_timeout() {
 #[cfg(test)]
 fn take_test_force_reconcile_new_tail_zero_row_timeout() -> bool {
     TEST_FORCE_RECONCILE_NEW_TAIL_ZERO_ROW_TIMEOUT.with(|flag| flag.replace(false))
+}
+
+#[cfg(test)]
+fn arm_test_force_replay_checkpoint_diagnose_source_scan_deadline_ms(deadline_ms: u64) {
+    TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_SOURCE_SCAN_DEADLINE_MS
+        .with(|value| value.set(deadline_ms));
+}
+
+#[cfg(test)]
+fn take_test_force_replay_checkpoint_diagnose_source_scan_deadline_ms() -> Option<u64> {
+    TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_SOURCE_SCAN_DEADLINE_MS.with(|value| {
+        let deadline_ms = value.replace(u64::MAX);
+        (deadline_ms != u64::MAX).then_some(deadline_ms)
+    })
 }
 
 #[cfg(test)]
@@ -1424,6 +1441,118 @@ struct RunCyclePublicationBoundaryDiagnostics {
     persist_publication_state_called: bool,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PersistedReplayCheckpointInspection {
+    pub persisted_rebuild_checkpoint_exists: bool,
+    pub rebuild_phase: Option<String>,
+    pub rebuild_replay_mode: Option<String>,
+    pub rebuild_replay_subphase: Option<String>,
+    pub publishable_checkpoint_blocker: Option<String>,
+    pub replay_incomplete: bool,
+    pub window_start: Option<DateTime<Utc>>,
+    pub horizon_end: Option<DateTime<Utc>>,
+    pub metrics_window_start: Option<DateTime<Utc>>,
+    pub phase_cursor: Option<DiscoveryRuntimeCursor>,
+    pub replay_wallet_stats_wallet_cursor: Option<String>,
+    pub replay_candidate_activity_backfill_wallet_cursor: Option<String>,
+    pub replay_wallet_stats_complete: Option<bool>,
+    pub replay_candidate_activity_backfill_required: Option<bool>,
+    pub replay_candidate_activity_backfill_pending: Option<bool>,
+    pub replay_sol_leg_reentry_pending: Option<bool>,
+    pub replay_rows_processed: Option<usize>,
+    pub replay_pages_processed: Option<usize>,
+    pub replay_sol_leg_budget_floor_pages: Option<usize>,
+    pub replay_sol_leg_retained_contract_floor_pages: Option<usize>,
+    pub replay_sol_leg_last_partial_cycle_rows_processed: Option<usize>,
+    pub replay_sol_leg_last_partial_cycle_pages_processed: Option<usize>,
+    pub replay_sol_leg_last_partial_cycle_elapsed_ms: Option<u64>,
+    pub unique_buy_mint_count: Option<usize>,
+    pub exact_target_surface_exists: Option<bool>,
+    pub exact_target_surface_usable_for_sol_leg_replay: Option<bool>,
+    pub exact_target_surface_repairable_for_resume: Option<bool>,
+    pub exact_target_buy_mint_count: Option<usize>,
+    pub buffered_wallet_count: Option<usize>,
+    pub publish_pending_requested_wallet_count: Option<usize>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PublishableCheckpointBlockerExplanation {
+    pub persisted_rebuild_checkpoint_exists: bool,
+    pub rebuild_phase: Option<String>,
+    pub rebuild_replay_subphase: Option<String>,
+    pub publishable_checkpoint_blocker: Option<String>,
+    pub replay_incomplete: bool,
+    pub reason_summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ReplaySolLegSourceVsCheckpointDiagnostic {
+    pub persisted_rebuild_checkpoint_exists: bool,
+    pub rebuild_phase: Option<String>,
+    pub rebuild_replay_subphase: Option<String>,
+    pub publishable_checkpoint_blocker: Option<String>,
+    pub replay_incomplete: bool,
+    pub source_comparison_applicable: bool,
+    pub source_window_start: Option<DateTime<Utc>>,
+    pub source_horizon_end: Option<DateTime<Utc>>,
+    pub source_runtime_cursor: Option<DiscoveryRuntimeCursor>,
+    pub source_runtime_cursor_beyond_rebuild_horizon: Option<bool>,
+    pub source_checkpoint_cursor: Option<DiscoveryRuntimeCursor>,
+    pub source_scan_target_buy_mint_filter_active: Option<bool>,
+    pub source_scan_target_buy_mint_count: Option<usize>,
+    pub source_rows_exist_beyond_stored_replay_checkpoint: Option<bool>,
+    pub source_rows_ahead_count: Option<usize>,
+    pub source_rows_ahead_pages_scanned: Option<usize>,
+    pub source_rows_ahead_first_cursor: Option<DiscoveryRuntimeCursor>,
+    pub source_rows_ahead_last_cursor: Option<DiscoveryRuntimeCursor>,
+    pub source_scan_access_path: Option<String>,
+    pub source_scan_time_budget_exhausted: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplaySolLegIncompleteReasonClass {
+    MissingPersistedCheckpoint,
+    PublishableCheckpointClear,
+    PublishableCheckpointNotReplaySolLegIncomplete,
+    ExactTargetSurfaceAbsentRepairableForResume,
+    ExactTargetSurfaceAbsentWithoutRepairPath,
+    SourceFrontierStillAheadExactTargetFiltered,
+    SourceFrontierStillAheadBroadSource,
+    SourceFrontierUnprovenDiagnosticScanBudgetExhausted,
+    SourceFrontierDrainedAwaitingCandidateActivityBackfillTransition,
+    SourceFrontierDrainedButCheckpointStillReplaySolLegIncomplete,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ReplaySolLegIncompleteDiagnostic {
+    pub persisted_rebuild_checkpoint_exists: bool,
+    pub rebuild_phase: Option<String>,
+    pub rebuild_replay_subphase: Option<String>,
+    pub publishable_checkpoint_blocker: Option<String>,
+    pub replay_incomplete: bool,
+    pub replay_sol_leg_incomplete_reason_class: ReplaySolLegIncompleteReasonClass,
+    pub replay_sol_leg_incomplete_explanation: String,
+    pub checkpoint: PersistedReplayCheckpointInspection,
+    pub source_vs_checkpoint: ReplaySolLegSourceVsCheckpointDiagnostic,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ReplaySolLegSourceAheadSummary {
+    runtime_cursor: Option<DiscoveryRuntimeCursor>,
+    runtime_cursor_beyond_rebuild_horizon: bool,
+    target_buy_mint_filter_active: bool,
+    target_buy_mint_count: usize,
+    rows_exist_beyond_checkpoint: bool,
+    rows_ahead_count: usize,
+    pages_scanned: usize,
+    first_cursor: Option<DiscoveryRuntimeCursor>,
+    last_cursor: Option<DiscoveryRuntimeCursor>,
+    access_path: Option<ObservedSolLegCursorAccessPath>,
+    time_budget_exhausted: bool,
+}
+
 fn should_request_persisted_stream_catch_up(telemetry: &PersistedStreamProgressTelemetry) -> bool {
     if telemetry.phase == DiscoveryPersistedRebuildPhase::Replay {
         return telemetry.budget_exhausted_reason.is_some();
@@ -1626,6 +1755,506 @@ impl DiscoveryService {
             "activity_backfill"
         } else {
             "sol_leg"
+        })
+    }
+
+    fn load_persisted_stream_rebuild_state_read_only(
+        store: &SqliteStore,
+    ) -> Result<Option<PersistedStreamRebuildState>> {
+        store
+            .load_discovery_persisted_rebuild_state_read_only()?
+            .map(Self::persisted_stream_rebuild_state_from_row)
+            .transpose()
+    }
+
+    fn state_uses_exact_target_filtered_sol_leg_replay(
+        state: &PersistedStreamRebuildState,
+    ) -> bool {
+        matches!(state.phase, DiscoveryPersistedRebuildPhase::Replay)
+            && Self::replay_subphase(
+                state.phase,
+                state.payload.replay_wallet_stats_complete,
+                state.payload.replay_candidate_activity_backfill_pending,
+            ) == Some("sol_leg")
+            && state.payload.replay_candidate_activity_backfill_required
+            && !state.payload.discovery_critical_target_buy_mints.is_empty()
+    }
+
+    fn inspect_persisted_rebuild_state_from_state(
+        state: &PersistedStreamRebuildState,
+    ) -> PersistedReplayCheckpointInspection {
+        let replay_subphase = Self::replay_subphase(
+            state.phase,
+            state.payload.replay_wallet_stats_complete,
+            state.payload.replay_candidate_activity_backfill_pending,
+        );
+        let publishable_checkpoint_blocker =
+            Self::persisted_stream_publishable_checkpoint_blocker_from_state(state);
+        PersistedReplayCheckpointInspection {
+            persisted_rebuild_checkpoint_exists: true,
+            rebuild_phase: Some(state.phase.as_str().to_string()),
+            rebuild_replay_mode: Some(state.payload.replay_mode.as_str().to_string()),
+            rebuild_replay_subphase: replay_subphase.map(str::to_string),
+            publishable_checkpoint_blocker: Some(publishable_checkpoint_blocker.to_string()),
+            replay_incomplete: state.phase == DiscoveryPersistedRebuildPhase::Replay,
+            window_start: Some(state.window_start),
+            horizon_end: Some(state.horizon_end),
+            metrics_window_start: Some(state.metrics_window_start),
+            phase_cursor: state.phase_cursor.clone(),
+            replay_wallet_stats_wallet_cursor: state
+                .payload
+                .replay_wallet_stats_wallet_cursor
+                .clone(),
+            replay_candidate_activity_backfill_wallet_cursor: state
+                .payload
+                .replay_candidate_activity_backfill_wallet_cursor
+                .clone(),
+            replay_wallet_stats_complete: Some(state.payload.replay_wallet_stats_complete),
+            replay_candidate_activity_backfill_required: Some(
+                state.payload.replay_candidate_activity_backfill_required,
+            ),
+            replay_candidate_activity_backfill_pending: Some(
+                state.payload.replay_candidate_activity_backfill_pending,
+            ),
+            replay_sol_leg_reentry_pending: Some(state.payload.replay_sol_leg_reentry_pending),
+            replay_rows_processed: Some(state.replay_rows_processed),
+            replay_pages_processed: Some(state.replay_pages_processed),
+            replay_sol_leg_budget_floor_pages: Some(
+                state.payload.replay_sol_leg_budget_floor_pages,
+            ),
+            replay_sol_leg_retained_contract_floor_pages: Some(
+                state.payload.replay_sol_leg_retained_contract_floor_pages,
+            ),
+            replay_sol_leg_last_partial_cycle_rows_processed: Some(
+                state
+                    .payload
+                    .replay_sol_leg_last_partial_cycle_rows_processed,
+            ),
+            replay_sol_leg_last_partial_cycle_pages_processed: Some(
+                state
+                    .payload
+                    .replay_sol_leg_last_partial_cycle_pages_processed,
+            ),
+            replay_sol_leg_last_partial_cycle_elapsed_ms: Some(
+                state.payload.replay_sol_leg_last_partial_cycle_elapsed_ms,
+            ),
+            unique_buy_mint_count: Some(state.payload.unique_buy_mints.len()),
+            exact_target_surface_exists: Some(
+                !state.payload.discovery_critical_target_buy_mints.is_empty(),
+            ),
+            exact_target_surface_usable_for_sol_leg_replay: Some(
+                Self::state_uses_exact_target_filtered_sol_leg_replay(state),
+            ),
+            exact_target_surface_repairable_for_resume: Some(
+                Self::state_can_backfill_exact_target_buy_mint_surface_for_resume(state),
+            ),
+            exact_target_buy_mint_count: Some(
+                state.payload.discovery_critical_target_buy_mints.len(),
+            ),
+            buffered_wallet_count: Some(
+                if state.phase == DiscoveryPersistedRebuildPhase::PublishPending {
+                    state.payload.completed_snapshots.len()
+                } else {
+                    state.payload.by_wallet.len()
+                },
+            ),
+            publish_pending_requested_wallet_count: Some(
+                if state.phase == DiscoveryPersistedRebuildPhase::PublishPending {
+                    state
+                        .payload
+                        .publish_pending_requested_wallet_ids
+                        .as_ref()
+                        .map_or(0, Vec::len)
+                } else {
+                    0
+                },
+            ),
+            updated_at: Some(state.updated_at),
+        }
+    }
+
+    pub fn inspect_persisted_rebuild_state_read_only(
+        runtime_store: &SqliteStore,
+    ) -> Result<PersistedReplayCheckpointInspection> {
+        let Some(state) = Self::load_persisted_stream_rebuild_state_read_only(runtime_store)?
+        else {
+            return Ok(PersistedReplayCheckpointInspection {
+                persisted_rebuild_checkpoint_exists: false,
+                rebuild_phase: None,
+                rebuild_replay_mode: None,
+                rebuild_replay_subphase: None,
+                publishable_checkpoint_blocker: None,
+                replay_incomplete: false,
+                window_start: None,
+                horizon_end: None,
+                metrics_window_start: None,
+                phase_cursor: None,
+                replay_wallet_stats_wallet_cursor: None,
+                replay_candidate_activity_backfill_wallet_cursor: None,
+                replay_wallet_stats_complete: None,
+                replay_candidate_activity_backfill_required: None,
+                replay_candidate_activity_backfill_pending: None,
+                replay_sol_leg_reentry_pending: None,
+                replay_rows_processed: None,
+                replay_pages_processed: None,
+                replay_sol_leg_budget_floor_pages: None,
+                replay_sol_leg_retained_contract_floor_pages: None,
+                replay_sol_leg_last_partial_cycle_rows_processed: None,
+                replay_sol_leg_last_partial_cycle_pages_processed: None,
+                replay_sol_leg_last_partial_cycle_elapsed_ms: None,
+                unique_buy_mint_count: None,
+                exact_target_surface_exists: None,
+                exact_target_surface_usable_for_sol_leg_replay: None,
+                exact_target_surface_repairable_for_resume: None,
+                exact_target_buy_mint_count: None,
+                buffered_wallet_count: None,
+                publish_pending_requested_wallet_count: None,
+                updated_at: None,
+            });
+        };
+        Ok(Self::inspect_persisted_rebuild_state_from_state(&state))
+    }
+
+    pub fn explain_publishable_checkpoint_blocker_read_only(
+        runtime_store: &SqliteStore,
+    ) -> Result<PublishableCheckpointBlockerExplanation> {
+        let inspection = Self::inspect_persisted_rebuild_state_read_only(runtime_store)?;
+        let reason_summary = match inspection.publishable_checkpoint_blocker.as_deref() {
+            Some(blocker) => format!(
+                "persisted rebuild checkpoint exists and currently blocks publication on {blocker}"
+            ),
+            None if inspection.persisted_rebuild_checkpoint_exists => {
+                "persisted rebuild checkpoint exists without a publishable checkpoint blocker"
+                    .to_string()
+            }
+            None => "no persisted rebuild checkpoint is stored in the runtime db".to_string(),
+        };
+        Ok(PublishableCheckpointBlockerExplanation {
+            persisted_rebuild_checkpoint_exists: inspection.persisted_rebuild_checkpoint_exists,
+            rebuild_phase: inspection.rebuild_phase,
+            rebuild_replay_subphase: inspection.rebuild_replay_subphase,
+            publishable_checkpoint_blocker: inspection.publishable_checkpoint_blocker,
+            replay_incomplete: inspection.replay_incomplete,
+            reason_summary,
+        })
+    }
+
+    fn scan_replay_sol_leg_source_ahead_from_state(
+        source_store: &SqliteStore,
+        state: &PersistedStreamRebuildState,
+    ) -> Result<ReplaySolLegSourceAheadSummary> {
+        let target_buy_mints = if Self::state_uses_exact_target_filtered_sol_leg_replay(state) {
+            state.payload.discovery_critical_target_buy_mints.clone()
+        } else {
+            Vec::new()
+        };
+        let target_buy_mint_filter_active = !target_buy_mints.is_empty();
+        let page_limit = REPLAY_CHECKPOINT_DIAGNOSE_SOURCE_SCAN_PAGE_LIMIT.max(1);
+        let runtime_cursor = source_store.load_discovery_runtime_cursor()?;
+        let mut cursor = state.phase_cursor.clone();
+        let mut pages_scanned = 0usize;
+        let mut rows_ahead_count = 0usize;
+        let mut first_cursor = None;
+        let mut last_cursor = None;
+        let mut last_access_path: Option<ObservedSolLegCursorAccessPath> = None;
+        let mut time_budget_exhausted = false;
+
+        loop {
+            let deadline = Instant::now()
+                + StdDuration::from_millis(
+                    Self::replay_checkpoint_diagnose_source_scan_deadline_ms(),
+                );
+            let mut page_last_cursor = cursor.clone();
+            let page = if target_buy_mint_filter_active {
+                source_store
+                    .for_each_observed_sol_leg_swap_in_window_after_cursor_for_target_buy_mints_with_budget(
+                        state.window_start,
+                        state.horizon_end,
+                        cursor.as_ref(),
+                        &target_buy_mints,
+                        page_limit,
+                        deadline,
+                        |swap| {
+                            let swap_cursor = DiscoveryRuntimeCursor {
+                                ts_utc: swap.ts_utc,
+                                slot: swap.slot,
+                                signature: swap.signature.clone(),
+                            };
+                            if first_cursor.is_none() {
+                                first_cursor = Some(swap_cursor.clone());
+                            }
+                            last_cursor = Some(swap_cursor.clone());
+                            page_last_cursor = Some(swap_cursor);
+                            rows_ahead_count = rows_ahead_count.saturating_add(1);
+                            Ok(())
+                        },
+                    )?
+            } else {
+                source_store.for_each_observed_sol_leg_swap_in_window_after_cursor_with_budget(
+                    state.window_start,
+                    state.horizon_end,
+                    cursor.as_ref(),
+                    page_limit,
+                    deadline,
+                    |swap| {
+                        let swap_cursor = DiscoveryRuntimeCursor {
+                            ts_utc: swap.ts_utc,
+                            slot: swap.slot,
+                            signature: swap.signature.clone(),
+                        };
+                        if first_cursor.is_none() {
+                            first_cursor = Some(swap_cursor.clone());
+                        }
+                        last_cursor = Some(swap_cursor.clone());
+                        page_last_cursor = Some(swap_cursor);
+                        rows_ahead_count = rows_ahead_count.saturating_add(1);
+                        Ok(())
+                    },
+                )?
+            };
+            last_access_path.replace(page.access_path);
+            pages_scanned = pages_scanned.saturating_add(1);
+            time_budget_exhausted |= page.time_budget_exhausted && page.rows_seen == 0;
+            if page.rows_seen == 0 {
+                break;
+            }
+            cursor = page_last_cursor;
+            if page.rows_seen < page_limit {
+                break;
+            }
+        }
+
+        Ok(ReplaySolLegSourceAheadSummary {
+            runtime_cursor_beyond_rebuild_horizon: runtime_cursor
+                .as_ref()
+                .is_some_and(|cursor| cursor.ts_utc > state.horizon_end),
+            runtime_cursor,
+            target_buy_mint_filter_active,
+            target_buy_mint_count: target_buy_mints.len(),
+            rows_exist_beyond_checkpoint: rows_ahead_count > 0,
+            rows_ahead_count,
+            pages_scanned,
+            first_cursor,
+            last_cursor,
+            access_path: last_access_path,
+            time_budget_exhausted,
+        })
+    }
+
+    fn replay_checkpoint_diagnose_source_scan_deadline_ms() -> u64 {
+        #[cfg(test)]
+        if let Some(deadline_ms) =
+            take_test_force_replay_checkpoint_diagnose_source_scan_deadline_ms()
+        {
+            return deadline_ms;
+        }
+        REPLAY_CHECKPOINT_DIAGNOSE_SOURCE_SCAN_PAGE_DEADLINE_MS
+    }
+
+    pub fn compare_sol_leg_source_vs_checkpoint_read_only(
+        runtime_store: &SqliteStore,
+        source_store: &SqliteStore,
+    ) -> Result<ReplaySolLegSourceVsCheckpointDiagnostic> {
+        let Some(state) = Self::load_persisted_stream_rebuild_state_read_only(runtime_store)?
+        else {
+            return Ok(ReplaySolLegSourceVsCheckpointDiagnostic {
+                persisted_rebuild_checkpoint_exists: false,
+                rebuild_phase: None,
+                rebuild_replay_subphase: None,
+                publishable_checkpoint_blocker: None,
+                replay_incomplete: false,
+                source_comparison_applicable: false,
+                source_window_start: None,
+                source_horizon_end: None,
+                source_runtime_cursor: source_store.load_discovery_runtime_cursor()?,
+                source_runtime_cursor_beyond_rebuild_horizon: None,
+                source_checkpoint_cursor: None,
+                source_scan_target_buy_mint_filter_active: None,
+                source_scan_target_buy_mint_count: None,
+                source_rows_exist_beyond_stored_replay_checkpoint: None,
+                source_rows_ahead_count: None,
+                source_rows_ahead_pages_scanned: None,
+                source_rows_ahead_first_cursor: None,
+                source_rows_ahead_last_cursor: None,
+                source_scan_access_path: None,
+                source_scan_time_budget_exhausted: None,
+            });
+        };
+        let replay_subphase = Self::replay_subphase(
+            state.phase,
+            state.payload.replay_wallet_stats_complete,
+            state.payload.replay_candidate_activity_backfill_pending,
+        );
+        let blocker = Self::persisted_stream_publishable_checkpoint_blocker_from_state(&state);
+        let applicable = state.phase == DiscoveryPersistedRebuildPhase::Replay
+            && replay_subphase == Some("sol_leg");
+        let source_ahead = if applicable {
+            Some(Self::scan_replay_sol_leg_source_ahead_from_state(
+                source_store,
+                &state,
+            )?)
+        } else {
+            None
+        };
+
+        Ok(ReplaySolLegSourceVsCheckpointDiagnostic {
+            persisted_rebuild_checkpoint_exists: true,
+            rebuild_phase: Some(state.phase.as_str().to_string()),
+            rebuild_replay_subphase: replay_subphase.map(str::to_string),
+            publishable_checkpoint_blocker: Some(blocker.to_string()),
+            replay_incomplete: state.phase == DiscoveryPersistedRebuildPhase::Replay,
+            source_comparison_applicable: applicable,
+            source_window_start: Some(state.window_start),
+            source_horizon_end: Some(state.horizon_end),
+            source_runtime_cursor: source_ahead
+                .as_ref()
+                .and_then(|summary| summary.runtime_cursor.clone())
+                .or_else(|| source_store.load_discovery_runtime_cursor().ok().flatten()),
+            source_runtime_cursor_beyond_rebuild_horizon: source_ahead
+                .as_ref()
+                .map(|summary| summary.runtime_cursor_beyond_rebuild_horizon),
+            source_checkpoint_cursor: Some(state.phase_cursor.clone()).flatten(),
+            source_scan_target_buy_mint_filter_active: source_ahead
+                .as_ref()
+                .map(|summary| summary.target_buy_mint_filter_active),
+            source_scan_target_buy_mint_count: source_ahead
+                .as_ref()
+                .map(|summary| summary.target_buy_mint_count),
+            source_rows_exist_beyond_stored_replay_checkpoint: source_ahead
+                .as_ref()
+                .map(|summary| summary.rows_exist_beyond_checkpoint),
+            source_rows_ahead_count: source_ahead
+                .as_ref()
+                .map(|summary| summary.rows_ahead_count),
+            source_rows_ahead_pages_scanned: source_ahead
+                .as_ref()
+                .map(|summary| summary.pages_scanned),
+            source_rows_ahead_first_cursor: source_ahead
+                .as_ref()
+                .and_then(|summary| summary.first_cursor.clone()),
+            source_rows_ahead_last_cursor: source_ahead
+                .as_ref()
+                .and_then(|summary| summary.last_cursor.clone()),
+            source_scan_access_path: source_ahead
+                .as_ref()
+                .and_then(|summary| summary.access_path)
+                .map(|path| path.as_str().to_string()),
+            source_scan_time_budget_exhausted: source_ahead
+                .as_ref()
+                .map(|summary| summary.time_budget_exhausted),
+        })
+    }
+
+    pub fn explain_replay_sol_leg_incomplete_read_only(
+        runtime_store: &SqliteStore,
+        source_store: &SqliteStore,
+    ) -> Result<ReplaySolLegIncompleteDiagnostic> {
+        let checkpoint = Self::inspect_persisted_rebuild_state_read_only(runtime_store)?;
+        let source_vs_checkpoint =
+            Self::compare_sol_leg_source_vs_checkpoint_read_only(runtime_store, source_store)?;
+        let blocker = checkpoint.publishable_checkpoint_blocker.as_deref();
+
+        let (reason_class, explanation) = if !checkpoint.persisted_rebuild_checkpoint_exists {
+            (
+                ReplaySolLegIncompleteReasonClass::MissingPersistedCheckpoint,
+                "no persisted rebuild checkpoint is stored in the runtime db, so replay_sol_leg_incomplete cannot currently be explained from a persisted replay checkpoint".to_string(),
+            )
+        } else if blocker.is_none() {
+            (
+                ReplaySolLegIncompleteReasonClass::PublishableCheckpointClear,
+                "persisted rebuild checkpoint exists without a publishable checkpoint blocker"
+                    .to_string(),
+            )
+        } else if blocker != Some("replay_sol_leg_incomplete") {
+            (
+                ReplaySolLegIncompleteReasonClass::PublishableCheckpointNotReplaySolLegIncomplete,
+                format!(
+                    "persisted rebuild checkpoint is currently blocked on {} instead of replay_sol_leg_incomplete",
+                    blocker.unwrap_or("unknown")
+                ),
+            )
+        } else if checkpoint.exact_target_surface_repairable_for_resume == Some(true) {
+            (
+                ReplaySolLegIncompleteReasonClass::ExactTargetSurfaceAbsentRepairableForResume,
+                "persisted replay checkpoint is still on replay_sol_leg_incomplete because replay candidate activity backfill is required but discovery_critical_target_buy_mints is empty even though the buffered wallet surface is still sufficient to reconstruct it".to_string(),
+            )
+        } else if checkpoint.exact_target_surface_exists == Some(false) {
+            (
+                ReplaySolLegIncompleteReasonClass::ExactTargetSurfaceAbsentWithoutRepairPath,
+                "persisted replay checkpoint is still on replay_sol_leg_incomplete because discovery_critical_target_buy_mints is empty and the current persisted wallet surface no longer satisfies the resume repair contract".to_string(),
+            )
+        } else if source_vs_checkpoint
+            .source_rows_exist_beyond_stored_replay_checkpoint
+            .unwrap_or(false)
+        {
+            let count = source_vs_checkpoint.source_rows_ahead_count.unwrap_or(0);
+            let first = source_vs_checkpoint
+                .source_rows_ahead_first_cursor
+                .as_ref()
+                .map(|cursor| cursor.ts_utc.to_rfc3339())
+                .unwrap_or_else(|| "unknown".to_string());
+            let last = source_vs_checkpoint
+                .source_rows_ahead_last_cursor
+                .as_ref()
+                .map(|cursor| cursor.ts_utc.to_rfc3339())
+                .unwrap_or_else(|| "unknown".to_string());
+            if source_vs_checkpoint
+                .source_scan_target_buy_mint_filter_active
+                .unwrap_or(false)
+            {
+                (
+                    ReplaySolLegIncompleteReasonClass::SourceFrontierStillAheadExactTargetFiltered,
+                    format!(
+                        "persisted replay checkpoint already has an exact target surface, but the source still has {count} exact-target SOL-leg rows beyond the stored replay cursor within the frozen replay horizon (first={first}, last={last})"
+                    ),
+                )
+            } else {
+                (
+                    ReplaySolLegIncompleteReasonClass::SourceFrontierStillAheadBroadSource,
+                    format!(
+                        "persisted replay checkpoint is still replaying against the broad SOL-leg source and the source still has {count} rows beyond the stored replay cursor within the frozen replay horizon (first={first}, last={last})"
+                    ),
+                )
+            }
+        } else if source_vs_checkpoint
+            .source_scan_time_budget_exhausted
+            .unwrap_or(false)
+        {
+            let pages_scanned = source_vs_checkpoint
+                .source_rows_ahead_pages_scanned
+                .unwrap_or(0);
+            let access_path = source_vs_checkpoint
+                .source_scan_access_path
+                .as_deref()
+                .unwrap_or("unknown");
+            (
+                ReplaySolLegIncompleteReasonClass::SourceFrontierUnprovenDiagnosticScanBudgetExhausted,
+                format!(
+                    "the replay-sol-leg diagnostic scan exhausted its time budget before it could prove either remaining source rows or a drained frontier beyond the stored replay cursor (pages_scanned={pages_scanned}, access_path={access_path})"
+                ),
+            )
+        } else if checkpoint.replay_candidate_activity_backfill_required == Some(true) {
+            (
+                ReplaySolLegIncompleteReasonClass::SourceFrontierDrainedAwaitingCandidateActivityBackfillTransition,
+                "persisted replay checkpoint shows no remaining SOL-leg source beyond the stored replay cursor inside the frozen replay horizon, but replay_candidate_activity_backfill_required is still true while the checkpoint has not yet transitioned into candidate activity backfill".to_string(),
+            )
+        } else {
+            (
+                ReplaySolLegIncompleteReasonClass::SourceFrontierDrainedButCheckpointStillReplaySolLegIncomplete,
+                "persisted replay checkpoint still reports replay_sol_leg_incomplete even though the diagnostic source scan found no remaining SOL-leg rows beyond the stored replay cursor and no exact-target-surface repairable gap was detected".to_string(),
+            )
+        };
+
+        Ok(ReplaySolLegIncompleteDiagnostic {
+            persisted_rebuild_checkpoint_exists: checkpoint.persisted_rebuild_checkpoint_exists,
+            rebuild_phase: checkpoint.rebuild_phase.clone(),
+            rebuild_replay_subphase: checkpoint.rebuild_replay_subphase.clone(),
+            publishable_checkpoint_blocker: checkpoint.publishable_checkpoint_blocker.clone(),
+            replay_incomplete: checkpoint.replay_incomplete,
+            replay_sol_leg_incomplete_reason_class: reason_class,
+            replay_sol_leg_incomplete_explanation: explanation,
+            checkpoint,
+            source_vs_checkpoint,
         })
     }
 
@@ -36591,6 +37220,362 @@ mod tests {
                 20.0,
             ))?;
         }
+        Ok(())
+    }
+
+    fn seed_replay_checkpoint_diagnose_exact_target_source_ahead_fixture() -> Result<(
+        tempfile::TempDir,
+        SqliteStore,
+        DiscoveryService,
+        DateTime<Utc>,
+    )> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-diagnose-exact-target-source-ahead.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-13T16:14:39Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let mut config = live_restored_rug_policy_discovery_config_for_tests();
+        config.max_fetch_swaps_per_cycle = 50;
+        config.max_fetch_pages_per_cycle = 5;
+        config.fetch_time_budget_ms = 25_000;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let source_now = DateTime::parse_from_rfc3339("2026-04-07T17:38:43Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let (full_swaps, _legit_wallet_ids, _) =
+            long_horizon_carry_vs_refill_drain_fixture_swaps(&config, source_now);
+        insert_observed_swaps_and_seed_runtime_cursor(&runtime_store, &full_swaps)?;
+        let helper_by_wallet = replay_streaming_wallet_accumulators_from_swaps_for_test(
+            &discovery,
+            &full_swaps,
+            source_now,
+        );
+        let exact_target_buy_mints = discovery
+            .discovery_critical_target_buy_mints_from_accumulators(
+                &runtime_store,
+                &helper_by_wallet,
+                source_now,
+            )?;
+        let exact_target_buy_mint_set: HashSet<String> =
+            exact_target_buy_mints.iter().cloned().collect();
+        let exact_target_only_swaps = omit_nonfollowed_market_context_swaps_except_tokens(
+            &full_swaps,
+            &exact_target_buy_mint_set,
+        );
+        let phase_cursor_swap = exact_target_only_swaps
+            .get(exact_target_only_swaps.len() / 3)
+            .cloned()
+            .context("missing mid exact-target SOL-leg swap for diagnose fixture")?;
+        let window_start = source_now - Duration::days(config.scoring_window_days.max(1) as i64);
+        let source_metrics_window_start = metrics_window_start_for_test(&config, source_now);
+        let mut replay_state = discovery.start_persisted_stream_rebuild_state(
+            window_start,
+            source_metrics_window_start,
+            source_now,
+        );
+        replay_state.phase = DiscoveryPersistedRebuildPhase::Replay;
+        replay_state.horizon_end = source_now;
+        replay_state.phase_cursor = Some(DiscoveryRuntimeCursor {
+            ts_utc: phase_cursor_swap.ts_utc,
+            slot: phase_cursor_swap.slot,
+            signature: phase_cursor_swap.signature.clone(),
+        });
+        replay_state.payload.collect_buy_mints_prepass_complete = true;
+        replay_state.payload.collect_buy_mints_mode = CollectBuyMintsMode::FreshScan;
+        replay_state.payload.unique_buy_mints =
+            runtime_store.load_observed_buy_mints_in_window(window_start, source_now)?;
+        replay_state.payload.buy_mint_counts = replay_state
+            .payload
+            .unique_buy_mints
+            .iter()
+            .cloned()
+            .map(|mint| (mint, 1u32))
+            .collect();
+        replay_state.payload.token_quality_cache = fresh_token_quality_cache_for_mints_for_test(
+            &replay_state.payload.unique_buy_mints,
+            source_now,
+        );
+        replay_state.payload.token_quality_progress.next_mint_index =
+            replay_state.payload.unique_buy_mints.len();
+        replay_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
+        replay_state.payload.replay_wallet_stats_complete = true;
+        replay_state.payload.replay_wallet_stats_milestone_reached = true;
+        replay_state
+            .payload
+            .replay_candidate_activity_backfill_required = true;
+        replay_state.payload.discovery_critical_target_buy_mints = exact_target_buy_mints;
+        replay_state.payload.by_wallet = replay_streaming_wallet_accumulators_from_swaps_for_test(
+            &discovery,
+            &exact_target_only_swaps,
+            source_now,
+        );
+        replay_state.replay_rows_processed = exact_target_only_swaps.len() / 3;
+        replay_state.replay_pages_processed = replay_state
+            .replay_rows_processed
+            .div_ceil(config.max_fetch_swaps_per_cycle.max(1));
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_pages_processed = 12;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_rows_processed = replay_state.replay_rows_processed;
+        replay_state
+            .payload
+            .replay_sol_leg_last_partial_cycle_elapsed_ms = 120_000;
+        replay_state.payload.replay_sol_leg_budget_floor_pages = 12;
+        assert!(
+            !replay_state.payload.discovery_critical_target_buy_mints.is_empty(),
+            "fixture must keep a non-empty exact target surface so the operator diagnostic can distinguish a true exact-target source frontier-ahead reason from the missing-surface seam"
+        );
+        runtime_store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryService::persisted_stream_rebuild_row(&replay_state, source_now)?,
+        )?;
+        Ok((temp, runtime_store, discovery, now))
+    }
+
+    #[test]
+    fn replay_checkpoint_diagnose_inspect_reports_replay_sol_leg_blocker_stage1() -> Result<()> {
+        let (_temp, runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let inspection =
+            DiscoveryService::inspect_persisted_rebuild_state_read_only(&runtime_store)?;
+        assert!(inspection.persisted_rebuild_checkpoint_exists);
+        assert_eq!(inspection.rebuild_phase.as_deref(), Some("replay"));
+        assert_eq!(
+            inspection.rebuild_replay_subphase.as_deref(),
+            Some("sol_leg")
+        );
+        assert_eq!(
+            inspection.publishable_checkpoint_blocker.as_deref(),
+            Some("replay_sol_leg_incomplete")
+        );
+        assert!(inspection.replay_incomplete);
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_diagnose_distinguishes_absent_exact_target_surface_stage1() -> Result<()> {
+        let (
+            _temp,
+            runtime_store,
+            _journal_store,
+            _discovery,
+            _now,
+            _stale_last_published_at,
+            _wallets,
+        ) = seed_stage1_deferred_runtime_publication_refresh_missing_exact_target_surface_fixture(
+        )?;
+        let explanation = DiscoveryService::explain_replay_sol_leg_incomplete_read_only(
+            &runtime_store,
+            &runtime_store,
+        )?;
+        assert_eq!(
+            explanation.replay_sol_leg_incomplete_reason_class,
+            ReplaySolLegIncompleteReasonClass::ExactTargetSurfaceAbsentRepairableForResume
+        );
+        assert_eq!(
+            explanation.checkpoint.exact_target_surface_exists,
+            Some(false)
+        );
+        assert_eq!(
+            explanation
+                .checkpoint
+                .exact_target_surface_repairable_for_resume,
+            Some(true)
+        );
+        assert_eq!(
+            explanation.publishable_checkpoint_blocker.as_deref(),
+            Some("replay_sol_leg_incomplete")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_diagnose_distinguishes_source_frontier_ahead_of_replay_cursor_stage1(
+    ) -> Result<()> {
+        let (_temp, runtime_store, _discovery, _now) =
+            seed_replay_checkpoint_diagnose_exact_target_source_ahead_fixture()?;
+        let comparison = DiscoveryService::compare_sol_leg_source_vs_checkpoint_read_only(
+            &runtime_store,
+            &runtime_store,
+        )?;
+        assert!(comparison.source_comparison_applicable);
+        assert_eq!(
+            comparison.publishable_checkpoint_blocker.as_deref(),
+            Some("replay_sol_leg_incomplete")
+        );
+        assert_eq!(
+            comparison.source_scan_target_buy_mint_filter_active,
+            Some(true)
+        );
+        assert_eq!(
+            comparison.source_rows_exist_beyond_stored_replay_checkpoint,
+            Some(true)
+        );
+        assert!(
+            comparison.source_rows_ahead_count.unwrap_or(0) > 0,
+            "comparison must show real exact-target source work remaining beyond the stored replay cursor"
+        );
+
+        let explanation = DiscoveryService::explain_replay_sol_leg_incomplete_read_only(
+            &runtime_store,
+            &runtime_store,
+        )?;
+        assert_eq!(
+            explanation.replay_sol_leg_incomplete_reason_class,
+            ReplaySolLegIncompleteReasonClass::SourceFrontierStillAheadExactTargetFiltered
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_diagnose_distinguishes_unproven_frontier_when_source_scan_budget_is_exhausted_stage1(
+    ) -> Result<()> {
+        let (_temp, runtime_store, _discovery, _now) =
+            seed_replay_checkpoint_diagnose_exact_target_source_ahead_fixture()?;
+        arm_test_force_replay_checkpoint_diagnose_source_scan_deadline_ms(0);
+        let comparison = DiscoveryService::compare_sol_leg_source_vs_checkpoint_read_only(
+            &runtime_store,
+            &runtime_store,
+        )?;
+        assert!(comparison.source_comparison_applicable);
+        assert_eq!(
+            comparison.source_rows_exist_beyond_stored_replay_checkpoint,
+            Some(false)
+        );
+        assert_eq!(comparison.source_rows_ahead_count, Some(0));
+        assert_eq!(comparison.source_scan_time_budget_exhausted, Some(true));
+
+        arm_test_force_replay_checkpoint_diagnose_source_scan_deadline_ms(0);
+        let explanation = DiscoveryService::explain_replay_sol_leg_incomplete_read_only(
+            &runtime_store,
+            &runtime_store,
+        )?;
+        assert_eq!(
+            explanation.replay_sol_leg_incomplete_reason_class,
+            ReplaySolLegIncompleteReasonClass::SourceFrontierUnprovenDiagnosticScanBudgetExhausted
+        );
+        assert_ne!(
+            explanation.replay_sol_leg_incomplete_reason_class,
+            ReplaySolLegIncompleteReasonClass::SourceFrontierDrainedAwaitingCandidateActivityBackfillTransition
+        );
+        assert_ne!(
+            explanation.replay_sol_leg_incomplete_reason_class,
+            ReplaySolLegIncompleteReasonClass::SourceFrontierDrainedButCheckpointStillReplaySolLegIncomplete
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_diagnose_distinguishes_checkpoint_cleared_stage1() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-diagnose-missing-persisted-rebuild.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let inspection =
+            DiscoveryService::inspect_persisted_rebuild_state_read_only(&runtime_store)?;
+        assert!(!inspection.persisted_rebuild_checkpoint_exists);
+        let explanation = DiscoveryService::explain_replay_sol_leg_incomplete_read_only(
+            &runtime_store,
+            &runtime_store,
+        )?;
+        assert_eq!(
+            explanation.replay_sol_leg_incomplete_reason_class,
+            ReplaySolLegIncompleteReasonClass::MissingPersistedCheckpoint
+        );
+        assert!(!explanation.persisted_rebuild_checkpoint_exists);
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_diagnose_top_level_reason_matches_underlying_source_gap_stage1(
+    ) -> Result<()> {
+        let (_temp, runtime_store, _discovery, _now) =
+            seed_replay_checkpoint_diagnose_exact_target_source_ahead_fixture()?;
+        let checkpoint =
+            DiscoveryService::inspect_persisted_rebuild_state_read_only(&runtime_store)?;
+        let source_vs_checkpoint =
+            DiscoveryService::compare_sol_leg_source_vs_checkpoint_read_only(
+                &runtime_store,
+                &runtime_store,
+            )?;
+        let explanation = DiscoveryService::explain_replay_sol_leg_incomplete_read_only(
+            &runtime_store,
+            &runtime_store,
+        )?;
+        assert_eq!(
+            checkpoint.publishable_checkpoint_blocker,
+            explanation.publishable_checkpoint_blocker
+        );
+        assert_eq!(
+            source_vs_checkpoint.source_rows_ahead_count,
+            explanation.source_vs_checkpoint.source_rows_ahead_count
+        );
+        assert_eq!(
+            explanation.replay_sol_leg_incomplete_reason_class,
+            ReplaySolLegIncompleteReasonClass::SourceFrontierStillAheadExactTargetFiltered
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_diagnose_is_read_only_and_does_not_mutate_state_stage1() -> Result<()> {
+        let (_temp, runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let rebuild_before = runtime_store
+            .load_discovery_persisted_rebuild_state_read_only()?
+            .expect("persisted rebuild row should exist");
+        let publication_before = runtime_store
+            .discovery_publication_state_read_only()?
+            .expect("publication state should exist");
+        let runtime_cursor_before = runtime_store.load_discovery_runtime_cursor()?;
+
+        let _ = DiscoveryService::inspect_persisted_rebuild_state_read_only(&runtime_store)?;
+        let _ = DiscoveryService::explain_publishable_checkpoint_blocker_read_only(&runtime_store)?;
+        let _ = DiscoveryService::compare_sol_leg_source_vs_checkpoint_read_only(
+            &runtime_store,
+            &runtime_store,
+        )?;
+        let _ = DiscoveryService::explain_replay_sol_leg_incomplete_read_only(
+            &runtime_store,
+            &runtime_store,
+        )?;
+
+        let rebuild_after = runtime_store
+            .load_discovery_persisted_rebuild_state_read_only()?
+            .expect("persisted rebuild row should still exist");
+        let publication_after = runtime_store
+            .discovery_publication_state_read_only()?
+            .expect("publication state should still exist");
+        let runtime_cursor_after = runtime_store.load_discovery_runtime_cursor()?;
+
+        assert_eq!(rebuild_after.phase, rebuild_before.phase);
+        assert_eq!(rebuild_after.state_json, rebuild_before.state_json);
+        assert_eq!(rebuild_after.updated_at, rebuild_before.updated_at);
+        assert_eq!(
+            publication_after.runtime_mode,
+            publication_before.runtime_mode
+        );
+        assert_eq!(publication_after.reason, publication_before.reason);
+        assert_eq!(
+            publication_after.last_published_at,
+            publication_before.last_published_at
+        );
+        assert_eq!(
+            publication_after.published_wallet_ids,
+            publication_before.published_wallet_ids
+        );
+        assert_eq!(runtime_cursor_after, runtime_cursor_before);
         Ok(())
     }
 
