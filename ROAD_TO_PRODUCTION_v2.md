@@ -7953,19 +7953,40 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
         deferred helper write / helper return / run-cycle publication
         boundary, which matched the long live gap between helper entry and the
         first fail-closed carry-forward write
-      - the accepted fix now threads the caller-provided helper deadline into
-        the resumed exact-target-surface repair path, records whether that
-        repair was attempted/completed/time-budget-exhausted plus pages/rows
-        scanned and target buy mints restored, and returns control to the
-        helper when the helper budget is exhausted
-      - it does not fake freshness, does not alter exporter gating, does not
-        change publication semantics, and does not change app-side queue
-        behavior or any Stage 4 surfaces
-      - expected live effect is bounded: the helper should reach the deferred
-        helper write and helper return materially sooner instead of spending
-        roughly one hidden `300s` interval inside resume exact-target-surface
-        reconstruction before surfacing the real
-        `replay_sol_leg_incomplete` blocker
+    - the accepted fix now threads the caller-provided helper deadline into
+      the resumed exact-target-surface repair path, records whether that
+      repair was attempted/completed/time-budget-exhausted plus pages/rows
+      scanned and target buy mints restored, and returns control to the
+      helper when the helper budget is exhausted
+    - it does not fake freshness, does not alter exporter gating, does not
+      change publication semantics, and does not change app-side queue
+      behavior or any Stage 4 surfaces
+    - expected live effect is bounded: the helper should reach the deferred
+      helper write and helper return materially sooner instead of spending
+      roughly one hidden `300s` interval inside resume exact-target-surface
+      reconstruction before surfacing the real
+      `replay_sol_leg_incomplete` blocker
+    - the next accepted Stage 3 batch is instrumentation-only on the exact
+      helper-internal candidate regions because the previous narrowing still
+      left too much ambiguity for another safe live fix:
+      - `repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed_with_options(...)`
+        now emits one shared `publication_truth_repair_trace_id`
+      - the same trace id is threaded through:
+        `persisted_stream_priority_recovery_contract(...)`,
+        `load_or_start_persisted_stream_rebuild_state_with_options(...)`,
+        `repair_restored_persisted_stream_state_for_resume(...)`,
+        `repair_replay_exact_target_buy_mint_surface_for_resume(...)`, and the
+        nested wallet-scan / target-mint-rebuild child regions
+      - every candidate region now logs ordered enter/exit events with parent
+        region, elapsed ms, helper deadline remaining ms, rebuild phase /
+        replay subphase, persisted-rebuild restore outcome, and pages / rows /
+        wallets scanned plus time-budget-exhausted where relevant
+      - this batch is intentionally non-behavioral: it does not change
+        publication semantics, exporter gating, fail-closed behavior, app
+        queue behavior, or replay semantics
+      - expected live effect is proof only: one restart should now identify
+        the exact unmatched helper-internal region instead of leaving the
+        incident at “helper entered, then silence”
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 

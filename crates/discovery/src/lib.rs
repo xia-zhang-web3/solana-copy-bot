@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant};
 use tracing::{info, warn};
@@ -79,6 +80,7 @@ const DISCOVERY_PUBLICATION_TRUTH_REPLAY_WALLET_STATS_PUBLISHABLE_HORIZON_PROGRE
 const ACTIONABLE_OPEN_POSITION_HOLD_MULTIPLIER: i64 = 4;
 const ACTIONABLE_OPEN_POSITION_MIN_HOLD_SAMPLES: usize = 3;
 const OBSERVED_SWAP_WINDOW_PAGED_READ_LIMIT: usize = 256;
+static DISCOVERY_PUBLICATION_TRUTH_REPAIR_TRACE_ID: AtomicU64 = AtomicU64::new(1);
 #[cfg(test)]
 const POST_BOOTSTRAP_ROTATION_BLOCKED_REASON: &str =
     "post_bootstrap_rotation_blocked_cap_truncated";
@@ -559,6 +561,68 @@ pub struct DiscoveryPublicationTruthRepairTelemetry {
         usize,
 }
 
+#[derive(Debug, Clone)]
+struct DiscoveryPublicationTruthRepairTraceContext {
+    trace_id: u64,
+    publication_state_exists_before: bool,
+    publication_truth_complete_before: bool,
+    publication_truth_fresh_before: bool,
+    runtime_window_complete_before: bool,
+    runtime_cursor_exists_before: bool,
+    helper_deadline: Instant,
+    collector: Option<DiscoveryPublicationTruthRepairTraceCollector>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DiscoveryPublicationTruthRepairTraceCollector {
+    events: Arc<Mutex<Vec<DiscoveryPublicationTruthRepairRegionTraceEvent>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiscoveryPublicationTruthRepairRegionTraceEvent {
+    trace_id: u64,
+    region: &'static str,
+    parent_region: Option<&'static str>,
+    state: &'static str,
+    elapsed_ms: u64,
+    deadline_remaining_ms: u64,
+    publication_state_exists_before: bool,
+    publication_truth_complete_before: bool,
+    publication_truth_fresh_before: bool,
+    runtime_window_complete_before: bool,
+    runtime_cursor_exists_before: bool,
+    rebuild_phase: Option<&'static str>,
+    rebuild_replay_subphase: Option<&'static str>,
+    persisted_rebuild_restore_outcome: Option<&'static str>,
+    pages_scanned: usize,
+    rows_scanned: usize,
+    wallets_scanned: usize,
+    time_budget_exhausted: Option<bool>,
+    rebuilt_target_mint_count: usize,
+    state_repaired_for_resume: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DiscoveryPublicationTruthRepairRegionTraceProgress {
+    rebuild_phase: Option<&'static str>,
+    rebuild_replay_subphase: Option<&'static str>,
+    persisted_rebuild_restore_outcome: Option<&'static str>,
+    pages_scanned: usize,
+    rows_scanned: usize,
+    wallets_scanned: usize,
+    time_budget_exhausted: Option<bool>,
+    rebuilt_target_mint_count: usize,
+    state_repaired_for_resume: Option<bool>,
+}
+
+struct DiscoveryPublicationTruthRepairRegionScope<'a> {
+    context: Option<&'a DiscoveryPublicationTruthRepairTraceContext>,
+    region: &'static str,
+    parent_region: Option<&'static str>,
+    started_at: Instant,
+    progress: DiscoveryPublicationTruthRepairRegionTraceProgress,
+}
+
 #[derive(Debug, Clone, Default)]
 struct ResumeExactTargetBuyMintSurfaceRepairDiagnostics {
     attempted: bool,
@@ -567,6 +631,142 @@ struct ResumeExactTargetBuyMintSurfaceRepairDiagnostics {
     wallet_pages: usize,
     wallet_rows: usize,
     target_buy_mints_restored: usize,
+}
+
+impl DiscoveryPublicationTruthRepairTraceContext {
+    fn new(
+        publication_state_exists_before: bool,
+        publication_truth_complete_before: bool,
+        publication_truth_fresh_before: bool,
+        runtime_window_complete_before: bool,
+        runtime_cursor_exists_before: bool,
+        helper_deadline: Instant,
+        collector: Option<DiscoveryPublicationTruthRepairTraceCollector>,
+    ) -> Self {
+        Self {
+            trace_id: DISCOVERY_PUBLICATION_TRUTH_REPAIR_TRACE_ID
+                .fetch_add(1, AtomicOrdering::Relaxed),
+            publication_state_exists_before,
+            publication_truth_complete_before,
+            publication_truth_fresh_before,
+            runtime_window_complete_before,
+            runtime_cursor_exists_before,
+            helper_deadline,
+            collector,
+        }
+    }
+}
+
+impl DiscoveryPublicationTruthRepairTraceCollector {
+    fn record(&self, event: DiscoveryPublicationTruthRepairRegionTraceEvent) {
+        self.events
+            .lock()
+            .expect("region trace collector mutex poisoned")
+            .push(event);
+    }
+
+    #[cfg(test)]
+    fn snapshot(&self) -> Vec<DiscoveryPublicationTruthRepairRegionTraceEvent> {
+        self.events
+            .lock()
+            .expect("region trace collector mutex poisoned")
+            .clone()
+    }
+}
+
+impl<'a> DiscoveryPublicationTruthRepairRegionScope<'a> {
+    fn new(
+        context: Option<&'a DiscoveryPublicationTruthRepairTraceContext>,
+        region: &'static str,
+        parent_region: Option<&'static str>,
+    ) -> Self {
+        let scope = Self {
+            context,
+            region,
+            parent_region,
+            started_at: Instant::now(),
+            progress: DiscoveryPublicationTruthRepairRegionTraceProgress::default(),
+        };
+        scope.emit("entered", 0);
+        scope
+    }
+
+    fn progress_mut(&mut self) -> &mut DiscoveryPublicationTruthRepairRegionTraceProgress {
+        &mut self.progress
+    }
+
+    fn emit(&self, state: &'static str, elapsed_ms: u64) {
+        let Some(context) = self.context else {
+            return;
+        };
+        let deadline_remaining_ms = context
+            .helper_deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        let event = DiscoveryPublicationTruthRepairRegionTraceEvent {
+            trace_id: context.trace_id,
+            region: self.region,
+            parent_region: self.parent_region,
+            state,
+            elapsed_ms,
+            deadline_remaining_ms,
+            publication_state_exists_before: context.publication_state_exists_before,
+            publication_truth_complete_before: context.publication_truth_complete_before,
+            publication_truth_fresh_before: context.publication_truth_fresh_before,
+            runtime_window_complete_before: context.runtime_window_complete_before,
+            runtime_cursor_exists_before: context.runtime_cursor_exists_before,
+            rebuild_phase: self.progress.rebuild_phase,
+            rebuild_replay_subphase: self.progress.rebuild_replay_subphase,
+            persisted_rebuild_restore_outcome: self.progress.persisted_rebuild_restore_outcome,
+            pages_scanned: self.progress.pages_scanned,
+            rows_scanned: self.progress.rows_scanned,
+            wallets_scanned: self.progress.wallets_scanned,
+            time_budget_exhausted: self.progress.time_budget_exhausted,
+            rebuilt_target_mint_count: self.progress.rebuilt_target_mint_count,
+            state_repaired_for_resume: self.progress.state_repaired_for_resume,
+        };
+        if let Some(collector) = context.collector.as_ref() {
+            collector.record(event.clone());
+        }
+        info!(
+            publication_truth_repair_trace_id = event.trace_id,
+            publication_truth_repair_region = event.region,
+            publication_truth_repair_region_parent = event.parent_region,
+            publication_truth_repair_region_state = event.state,
+            publication_truth_repair_region_elapsed_ms = event.elapsed_ms,
+            publication_truth_repair_deadline_remaining_ms = event.deadline_remaining_ms,
+            publication_state_exists_before = event.publication_state_exists_before,
+            publication_truth_complete_before = event.publication_truth_complete_before,
+            publication_truth_fresh_before = event.publication_truth_fresh_before,
+            runtime_window_complete_before = event.runtime_window_complete_before,
+            runtime_cursor_exists_before = event.runtime_cursor_exists_before,
+            publication_truth_repair_region_rebuild_phase = event.rebuild_phase,
+            publication_truth_repair_region_rebuild_replay_subphase =
+                event.rebuild_replay_subphase,
+            publication_truth_repair_region_persisted_rebuild_restore_outcome =
+                event.persisted_rebuild_restore_outcome,
+            publication_truth_repair_region_pages_scanned = event.pages_scanned,
+            publication_truth_repair_region_rows_scanned = event.rows_scanned,
+            publication_truth_repair_region_wallets_scanned = event.wallets_scanned,
+            publication_truth_repair_region_time_budget_exhausted =
+                ?event.time_budget_exhausted,
+            publication_truth_repair_region_rebuilt_target_mint_count =
+                event.rebuilt_target_mint_count,
+            publication_truth_repair_region_state_repaired_for_resume =
+                ?event.state_repaired_for_resume,
+            "discovery publication truth repair helper region"
+        );
+    }
+}
+
+impl Drop for DiscoveryPublicationTruthRepairRegionScope<'_> {
+    fn drop(&mut self) {
+        self.emit(
+            "exited",
+            self.started_at.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        );
+    }
 }
 
 impl DiscoveryPublicationTruthRepairTelemetry {
@@ -1293,6 +1493,17 @@ enum PersistedStreamRebuildRestoreOutcome {
     ResumedStaleMetricsWindow,
 }
 
+impl PersistedStreamRebuildRestoreOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::StartedFresh => "started_fresh",
+            Self::ResumedExisting => "resumed_existing",
+            Self::CarriedForwardMetricsWindow => "carried_forward_metrics_window",
+            Self::ResumedStaleMetricsWindow => "resumed_stale_metrics_window",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PersistedStreamPhaseAdvance {
     rows_processed: usize,
@@ -1802,8 +2013,11 @@ impl DiscoveryService {
 
     fn log_publication_truth_repair_helper_return(
         telemetry: &DiscoveryPublicationTruthRepairTelemetry,
+        trace_context: Option<&DiscoveryPublicationTruthRepairTraceContext>,
     ) {
+        let trace_id = trace_context.map(|context| context.trace_id);
         info!(
+            publication_truth_repair_trace_id = ?trace_id,
             repair_state = telemetry.state,
             repair_reason = telemetry.reason.as_deref().unwrap_or("none"),
             publication_truth_refresh_delegated_to_runtime_cycle =
@@ -2415,6 +2629,7 @@ impl DiscoveryService {
             replay_batch_size,
             deadline,
             None,
+            None,
         )
     }
 
@@ -2426,6 +2641,7 @@ impl DiscoveryService {
         replay_batch_size: usize,
         deadline: Instant,
         resume_exact_target_surface_repair_deadline_override: Option<Instant>,
+        trace_collector: Option<DiscoveryPublicationTruthRepairTraceCollector>,
     ) -> Result<DiscoveryPublicationTruthRepairTelemetry> {
         let gate = self.publication_freshness_gate();
         let required_window_start = now - Duration::days(self.runtime_scoring_window_days());
@@ -2442,7 +2658,17 @@ impl DiscoveryService {
         let journal_store_exists = journal_store.is_some();
         let runtime_window_complete_before =
             self.persisted_observed_swaps_cover_window(runtime_store, required_window_start)?;
+        let trace_context = DiscoveryPublicationTruthRepairTraceContext::new(
+            publication_state_exists_before,
+            publication_truth_complete_before,
+            publication_truth_fresh_before,
+            runtime_window_complete_before,
+            runtime_cursor_exists_before,
+            deadline,
+            trace_collector,
+        );
         info!(
+            publication_truth_repair_trace_id = trace_context.trace_id,
             publication_state_exists_before,
             publication_truth_complete_before,
             publication_truth_fresh_before,
@@ -2451,13 +2677,18 @@ impl DiscoveryService {
             journal_store_exists,
             "discovery publication truth repair helper entered"
         );
+        let _helper_region = DiscoveryPublicationTruthRepairRegionScope::new(
+            Some(&trace_context),
+            "repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed_with_options",
+            None,
+        );
         let log_and_return = |telemetry: DiscoveryPublicationTruthRepairTelemetry| {
             let telemetry = telemetry.with_entry_context(
                 publication_state_exists_before,
                 runtime_cursor_exists_before,
                 journal_store_exists,
             );
-            Self::log_publication_truth_repair_helper_return(&telemetry);
+            Self::log_publication_truth_repair_helper_return(&telemetry, Some(&trace_context));
             Ok(telemetry)
         };
         if publication_truth_fresh_before {
@@ -2490,13 +2721,20 @@ impl DiscoveryService {
             let metrics_window_start = self.metrics_window_start(now);
             let fetch_limit = self.config.max_fetch_swaps_per_cycle.max(1);
             let fetch_page_limit = self.config.max_fetch_pages_per_cycle.max(1);
-            let base_recovery_contract = self.persisted_stream_priority_recovery_contract(
-                runtime_store,
-                now,
-                fetch_limit,
-                fetch_page_limit,
-                refresh_budget,
-            )?;
+            let base_recovery_contract = {
+                let _region = DiscoveryPublicationTruthRepairRegionScope::new(
+                    Some(&trace_context),
+                    "persisted_stream_priority_recovery_contract",
+                    Some("repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed_with_options"),
+                );
+                self.persisted_stream_priority_recovery_contract(
+                    runtime_store,
+                    now,
+                    fetch_limit,
+                    fetch_page_limit,
+                    refresh_budget,
+                )?
+            };
             let (state, _, resume_exact_target_surface_repair) = self
                 .load_or_start_persisted_stream_rebuild_state_with_options(
                     runtime_store,
@@ -2504,6 +2742,7 @@ impl DiscoveryService {
                     metrics_window_start,
                     now,
                     Some(resume_exact_target_surface_repair_deadline_override.unwrap_or(deadline)),
+                    Some(&trace_context),
                 )?;
             let recovery_contract = self
                 .deepen_persisted_stream_priority_recovery_contract_for_state_at(
@@ -4456,7 +4695,19 @@ impl DiscoveryService {
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,
         deadline: Instant,
+        helper_trace_context: Option<&DiscoveryPublicationTruthRepairTraceContext>,
     ) -> Result<ResumeExactTargetBuyMintSurfaceRepairDiagnostics> {
+        let mut region = DiscoveryPublicationTruthRepairRegionScope::new(
+            helper_trace_context,
+            "repair_replay_exact_target_buy_mint_surface_for_resume",
+            Some("load_or_start_persisted_stream_rebuild_state_with_options"),
+        );
+        region.progress_mut().rebuild_phase = Some(state.phase.as_str());
+        region.progress_mut().rebuild_replay_subphase = Self::replay_subphase(
+            state.phase,
+            state.payload.replay_wallet_stats_complete,
+            state.payload.replay_candidate_activity_backfill_pending,
+        );
         if !Self::state_can_backfill_exact_target_buy_mint_surface_for_resume(state) {
             return Ok(ResumeExactTargetBuyMintSurfaceRepairDiagnostics::default());
         }
@@ -4469,6 +4720,7 @@ impl DiscoveryService {
             attempted: true,
             ..ResumeExactTargetBuyMintSurfaceRepairDiagnostics::default()
         };
+        region.progress_mut().wallets_scanned = exact_wallet_ids.len();
         info!(
             rebuild_window_start = %state.window_start,
             rebuild_horizon_end = %state.horizon_end,
@@ -4487,55 +4739,100 @@ impl DiscoveryService {
             "repairing resumed replay checkpoint exact target-mint surface before helper/run_cycle publication decisions"
         );
         let mut wallet_cursor: Option<String> = None;
-        loop {
-            let page = store
-                .observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
-                    &exact_wallet_ids,
-                    state.window_start,
-                    state.horizon_end,
-                    wallet_cursor.as_deref(),
-                    wallet_limit,
-                    self.config.max_tx_per_minute,
-                    deadline,
-                )?;
-            diagnostics.wallet_pages = diagnostics.wallet_pages.saturating_add(1);
-            diagnostics.wallet_rows = diagnostics.wallet_rows.saturating_add(page.rows_seen);
-            for row in page.rows.iter().cloned() {
-                Self::observe_replay_wallet_activity_summary(&mut state.payload, row);
+        {
+            let mut scan_region = DiscoveryPublicationTruthRepairRegionScope::new(
+                helper_trace_context,
+                "repair_replay_exact_target_buy_mint_surface_for_resume.wallet_activity_scan",
+                Some("repair_replay_exact_target_buy_mint_surface_for_resume"),
+            );
+            scan_region.progress_mut().rebuild_phase = Some(state.phase.as_str());
+            scan_region.progress_mut().rebuild_replay_subphase = Self::replay_subphase(
+                state.phase,
+                state.payload.replay_wallet_stats_complete,
+                state.payload.replay_candidate_activity_backfill_pending,
+            );
+            scan_region.progress_mut().wallets_scanned = exact_wallet_ids.len();
+            loop {
+                let page = store
+                    .observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
+                        &exact_wallet_ids,
+                        state.window_start,
+                        state.horizon_end,
+                        wallet_cursor.as_deref(),
+                        wallet_limit,
+                        self.config.max_tx_per_minute,
+                        deadline,
+                    )?;
+                diagnostics.wallet_pages = diagnostics.wallet_pages.saturating_add(1);
+                diagnostics.wallet_rows = diagnostics.wallet_rows.saturating_add(page.rows_seen);
+                scan_region.progress_mut().pages_scanned = diagnostics.wallet_pages;
+                scan_region.progress_mut().rows_scanned = diagnostics.wallet_rows;
+                for row in page.rows.iter().cloned() {
+                    Self::observe_replay_wallet_activity_summary(&mut state.payload, row);
+                }
+                wallet_cursor = page.rows.last().map(|row| row.wallet_id.clone());
+                if page.time_budget_exhausted {
+                    diagnostics.time_budget_exhausted = true;
+                    scan_region.progress_mut().time_budget_exhausted = Some(true);
+                    region.progress_mut().pages_scanned = diagnostics.wallet_pages;
+                    region.progress_mut().rows_scanned = diagnostics.wallet_rows;
+                    region.progress_mut().wallets_scanned = exact_wallet_ids.len();
+                    region.progress_mut().time_budget_exhausted = Some(true);
+                    info!(
+                        rebuild_window_start = %state.window_start,
+                        rebuild_horizon_end = %state.horizon_end,
+                        rebuild_phase = state.phase.as_str(),
+                        rebuild_replay_subphase =
+                            Self::replay_subphase(
+                                state.phase,
+                                state.payload.replay_wallet_stats_complete,
+                                state.payload.replay_candidate_activity_backfill_pending,
+                            ),
+                        rebuild_wallets_buffered = state.payload.by_wallet.len(),
+                        rebuild_resume_exact_target_surface_wallet_pages = diagnostics.wallet_pages,
+                        rebuild_resume_exact_target_surface_wallet_rows = diagnostics.wallet_rows,
+                        rebuild_resume_exact_target_surface_time_budget_exhausted =
+                            diagnostics.time_budget_exhausted,
+                        "bounded helper/resume repair exhausted its deadline before reconstructing the missing exact target-mint surface"
+                    );
+                    return Ok(diagnostics);
+                }
+                if page.rows.len() < wallet_limit {
+                    break;
+                }
             }
-            wallet_cursor = page.rows.last().map(|row| row.wallet_id.clone());
-            if page.time_budget_exhausted {
-                diagnostics.time_budget_exhausted = true;
-                info!(
-                    rebuild_window_start = %state.window_start,
-                    rebuild_horizon_end = %state.horizon_end,
-                    rebuild_phase = state.phase.as_str(),
-                    rebuild_replay_subphase =
-                        Self::replay_subphase(
-                            state.phase,
-                            state.payload.replay_wallet_stats_complete,
-                            state.payload.replay_candidate_activity_backfill_pending,
-                        ),
-                    rebuild_wallets_buffered = state.payload.by_wallet.len(),
-                    rebuild_resume_exact_target_surface_wallet_pages = diagnostics.wallet_pages,
-                    rebuild_resume_exact_target_surface_wallet_rows = diagnostics.wallet_rows,
-                    rebuild_resume_exact_target_surface_time_budget_exhausted =
-                        diagnostics.time_budget_exhausted,
-                    "bounded helper/resume repair exhausted its deadline before reconstructing the missing exact target-mint surface"
-                );
-                return Ok(diagnostics);
-            }
-            if page.rows.len() < wallet_limit {
-                break;
-            }
+            scan_region.progress_mut().time_budget_exhausted = Some(false);
         }
 
-        let exact_target_buy_mints = self.discovery_critical_target_buy_mints_from_accumulators(
-            store,
-            &state.payload.by_wallet,
-            state.horizon_end,
-        )?;
+        let exact_target_buy_mints = {
+            let mut rebuild_region = DiscoveryPublicationTruthRepairRegionScope::new(
+                helper_trace_context,
+                "repair_replay_exact_target_buy_mint_surface_for_resume.rebuild_target_buy_mints",
+                Some("repair_replay_exact_target_buy_mint_surface_for_resume"),
+            );
+            rebuild_region.progress_mut().rebuild_phase = Some(state.phase.as_str());
+            rebuild_region.progress_mut().rebuild_replay_subphase = Self::replay_subphase(
+                state.phase,
+                state.payload.replay_wallet_stats_complete,
+                state.payload.replay_candidate_activity_backfill_pending,
+            );
+            rebuild_region.progress_mut().wallets_scanned = exact_wallet_ids.len();
+            rebuild_region.progress_mut().pages_scanned = diagnostics.wallet_pages;
+            rebuild_region.progress_mut().rows_scanned = diagnostics.wallet_rows;
+            let exact_target_buy_mints = self
+                .discovery_critical_target_buy_mints_from_accumulators(
+                    store,
+                    &state.payload.by_wallet,
+                    state.horizon_end,
+                )?;
+            rebuild_region.progress_mut().rebuilt_target_mint_count = exact_target_buy_mints.len();
+            exact_target_buy_mints
+        };
         if exact_target_buy_mints.is_empty() {
+            region.progress_mut().pages_scanned = diagnostics.wallet_pages;
+            region.progress_mut().rows_scanned = diagnostics.wallet_rows;
+            region.progress_mut().wallets_scanned = exact_wallet_ids.len();
+            region.progress_mut().time_budget_exhausted = Some(false);
             info!(
                 rebuild_window_start = %state.window_start,
                 rebuild_horizon_end = %state.horizon_end,
@@ -4575,6 +4872,11 @@ impl DiscoveryService {
         diagnostics.completed = true;
         diagnostics.target_buy_mints_restored =
             state.payload.discovery_critical_target_buy_mints.len();
+        region.progress_mut().pages_scanned = diagnostics.wallet_pages;
+        region.progress_mut().rows_scanned = diagnostics.wallet_rows;
+        region.progress_mut().wallets_scanned = exact_wallet_ids.len();
+        region.progress_mut().time_budget_exhausted = Some(false);
+        region.progress_mut().rebuilt_target_mint_count = diagnostics.target_buy_mints_restored;
         Ok(diagnostics)
     }
 
@@ -5453,7 +5755,19 @@ impl DiscoveryService {
         &self,
         state: &mut PersistedStreamRebuildState,
         now: DateTime<Utc>,
+        helper_trace_context: Option<&DiscoveryPublicationTruthRepairTraceContext>,
     ) -> bool {
+        let mut region = DiscoveryPublicationTruthRepairRegionScope::new(
+            helper_trace_context,
+            "repair_restored_persisted_stream_state_for_resume",
+            Some("load_or_start_persisted_stream_rebuild_state_with_options"),
+        );
+        region.progress_mut().rebuild_phase = Some(state.phase.as_str());
+        region.progress_mut().rebuild_replay_subphase = Self::replay_subphase(
+            state.phase,
+            state.payload.replay_wallet_stats_complete,
+            state.payload.replay_candidate_activity_backfill_pending,
+        );
         let mut changed = false;
         match state.phase {
             DiscoveryPersistedRebuildPhase::CollectBuyMints => {
@@ -5788,6 +6102,13 @@ impl DiscoveryService {
                 changed |= self.repair_replay_sol_leg_budget_hints_for_resume(state);
             }
         }
+        region.progress_mut().rebuild_phase = Some(state.phase.as_str());
+        region.progress_mut().rebuild_replay_subphase = Self::replay_subphase(
+            state.phase,
+            state.payload.replay_wallet_stats_complete,
+            state.payload.replay_candidate_activity_backfill_pending,
+        );
+        region.progress_mut().state_repaired_for_resume = Some(changed);
         changed
     }
 
@@ -5846,6 +6167,7 @@ impl DiscoveryService {
             metrics_window_start,
             now,
             None,
+            None,
         )?;
         Ok((state, outcome))
     }
@@ -5857,12 +6179,20 @@ impl DiscoveryService {
         metrics_window_start: DateTime<Utc>,
         now: DateTime<Utc>,
         resume_exact_target_surface_repair_deadline: Option<Instant>,
+        helper_trace_context: Option<&DiscoveryPublicationTruthRepairTraceContext>,
     ) -> Result<(
         PersistedStreamRebuildState,
         PersistedStreamRebuildRestoreOutcome,
         ResumeExactTargetBuyMintSurfaceRepairDiagnostics,
     )> {
+        let mut region = DiscoveryPublicationTruthRepairRegionScope::new(
+            helper_trace_context,
+            "load_or_start_persisted_stream_rebuild_state_with_options",
+            Some("repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed_with_options"),
+        );
         let Some(row) = store.load_discovery_persisted_rebuild_state()? else {
+            region.progress_mut().persisted_rebuild_restore_outcome =
+                Some(PersistedStreamRebuildRestoreOutcome::StartedFresh.as_str());
             return Ok((
                 self.start_persisted_stream_rebuild_state(window_start, metrics_window_start, now),
                 PersistedStreamRebuildRestoreOutcome::StartedFresh,
@@ -5885,6 +6215,8 @@ impl DiscoveryService {
                         "discarding stale persisted discovery rebuild progress and restarting from a fresh frozen horizon"
                     );
                     store.clear_discovery_persisted_rebuild_state()?;
+                    region.progress_mut().persisted_rebuild_restore_outcome =
+                        Some(PersistedStreamRebuildRestoreOutcome::StartedFresh.as_str());
                     return Ok((
                         self.start_persisted_stream_rebuild_state(
                             window_start,
@@ -5895,8 +6227,11 @@ impl DiscoveryService {
                         ResumeExactTargetBuyMintSurfaceRepairDiagnostics::default(),
                     ));
                 }
-                let repaired_for_resume =
-                    self.repair_restored_persisted_stream_state_for_resume(&mut state, now);
+                let repaired_for_resume = self.repair_restored_persisted_stream_state_for_resume(
+                    &mut state,
+                    now,
+                    helper_trace_context,
+                );
                 let exact_target_surface_repair_deadline =
                     resume_exact_target_surface_repair_deadline
                         .unwrap_or_else(|| Instant::now() + StdDuration::from_secs(300));
@@ -5905,6 +6240,7 @@ impl DiscoveryService {
                         store,
                         &mut state,
                         exact_target_surface_repair_deadline,
+                        helper_trace_context,
                     )?;
                 if repaired_for_resume || exact_target_surface_repair.completed {
                     self.persist_persisted_stream_rebuild_state(store, &mut state, now)?;
@@ -5930,6 +6266,16 @@ impl DiscoveryService {
                             restart_reason =
                                 "metrics_window_start_changed_but_existing_replay_target_still_publishable_under_gate",
                             "resuming stale metrics-window replay/token-quality progress on its frozen target window until the next publishable checkpoint instead of rewinding back into collect_buy_mints"
+                        );
+                        region.progress_mut().persisted_rebuild_restore_outcome = Some(
+                            PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow
+                                .as_str(),
+                        );
+                        region.progress_mut().rebuild_phase = Some(state.phase.as_str());
+                        region.progress_mut().rebuild_replay_subphase = Self::replay_subphase(
+                            state.phase,
+                            state.payload.replay_wallet_stats_complete,
+                            state.payload.replay_candidate_activity_backfill_pending,
                         );
                         return Ok((
                             state,
@@ -5957,6 +6303,16 @@ impl DiscoveryService {
                             restart_reason =
                                 "metrics_window_start_changed_downstream_replay_target_pinned_until_first_publishable_checkpoint",
                             "resuming stale downstream replay/token-quality progress on its frozen target window until the first exact publishable checkpoint instead of rebasing the same carried lineage onto a newer moving target"
+                        );
+                        region.progress_mut().persisted_rebuild_restore_outcome = Some(
+                            PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow
+                                .as_str(),
+                        );
+                        region.progress_mut().rebuild_phase = Some(state.phase.as_str());
+                        region.progress_mut().rebuild_replay_subphase = Self::replay_subphase(
+                            state.phase,
+                            state.payload.replay_wallet_stats_complete,
+                            state.payload.replay_candidate_activity_backfill_pending,
                         );
                         return Ok((
                             state,
@@ -5995,6 +6351,16 @@ impl DiscoveryService {
                         metrics_window_start,
                         now,
                     )? {
+                        region.progress_mut().persisted_rebuild_restore_outcome = Some(
+                            PersistedStreamRebuildRestoreOutcome::CarriedForwardMetricsWindow
+                                .as_str(),
+                        );
+                        region.progress_mut().rebuild_phase = Some(state.phase.as_str());
+                        region.progress_mut().rebuild_replay_subphase = Self::replay_subphase(
+                            state.phase,
+                            state.payload.replay_wallet_stats_complete,
+                            state.payload.replay_candidate_activity_backfill_pending,
+                        );
                         return Ok((
                             state,
                             PersistedStreamRebuildRestoreOutcome::CarriedForwardMetricsWindow,
@@ -6016,6 +6382,16 @@ impl DiscoveryService {
                                 "metrics_window_start_changed_awaiting_exact_carry_forward_checkpoint",
                             "resuming stale in-progress collect_buy_mints reconciliation on its frozen target window until the next exact carry-forward checkpoint is available"
                         );
+                        region.progress_mut().persisted_rebuild_restore_outcome = Some(
+                            PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow
+                                .as_str(),
+                        );
+                        region.progress_mut().rebuild_phase = Some(state.phase.as_str());
+                        region.progress_mut().rebuild_replay_subphase = Self::replay_subphase(
+                            state.phase,
+                            state.payload.replay_wallet_stats_complete,
+                            state.payload.replay_candidate_activity_backfill_pending,
+                        );
                         return Ok((
                             state,
                             PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow,
@@ -6033,6 +6409,8 @@ impl DiscoveryService {
                         "discarding persisted discovery rebuild progress because the metrics bucket moved before exact canonical buy-mint membership state was available"
                     );
                     store.clear_discovery_persisted_rebuild_state()?;
+                    region.progress_mut().persisted_rebuild_restore_outcome =
+                        Some(PersistedStreamRebuildRestoreOutcome::StartedFresh.as_str());
                     return Ok((
                         self.start_persisted_stream_rebuild_state(
                             window_start,
@@ -6043,6 +6421,14 @@ impl DiscoveryService {
                         exact_target_surface_repair,
                     ));
                 }
+                region.progress_mut().persisted_rebuild_restore_outcome =
+                    Some(PersistedStreamRebuildRestoreOutcome::ResumedExisting.as_str());
+                region.progress_mut().rebuild_phase = Some(state.phase.as_str());
+                region.progress_mut().rebuild_replay_subphase = Self::replay_subphase(
+                    state.phase,
+                    state.payload.replay_wallet_stats_complete,
+                    state.payload.replay_candidate_activity_backfill_pending,
+                );
                 Ok((
                     state,
                     PersistedStreamRebuildRestoreOutcome::ResumedExisting,
@@ -6055,6 +6441,8 @@ impl DiscoveryService {
                     "failed restoring persisted discovery rebuild progress; restarting from a fresh frozen horizon"
                 );
                 store.clear_discovery_persisted_rebuild_state()?;
+                region.progress_mut().persisted_rebuild_restore_outcome =
+                    Some(PersistedStreamRebuildRestoreOutcome::StartedFresh.as_str());
                 Ok((
                     self.start_persisted_stream_rebuild_state(
                         window_start,
@@ -24453,8 +24841,8 @@ mod tests {
         state.payload.replay_wallet_stats_milestone_reached = true;
 
         let resume_now = state.horizon_end;
-        let changed =
-            discovery.repair_restored_persisted_stream_state_for_resume(&mut state, resume_now);
+        let changed = discovery
+            .repair_restored_persisted_stream_state_for_resume(&mut state, resume_now, None);
 
         assert!(
             changed,
@@ -25686,6 +26074,7 @@ mod tests {
                 metrics_window_start,
                 now,
                 None,
+                None,
             )?;
         let recovery_contract = discovery
             .deepen_persisted_stream_priority_recovery_contract_for_state_at(
@@ -25708,6 +26097,61 @@ mod tests {
             .with_resume_exact_target_surface_repair(&resume_exact_target_surface_repair),
             resume_exact_target_surface_repair,
         ))
+    }
+
+    fn traced_runtime_publication_truth_repair_helper(
+        discovery: &DiscoveryService,
+        runtime_store: &SqliteStore,
+        journal_store: Option<&SqliteStore>,
+        now: DateTime<Utc>,
+        deadline: Instant,
+        resume_exact_target_surface_repair_deadline_override: Option<Instant>,
+    ) -> Result<(
+        DiscoveryPublicationTruthRepairTelemetry,
+        Vec<DiscoveryPublicationTruthRepairRegionTraceEvent>,
+    )> {
+        let collector = DiscoveryPublicationTruthRepairTraceCollector::default();
+        let telemetry = discovery
+            .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed_with_options(
+                runtime_store,
+                journal_store,
+                now,
+                64,
+                deadline,
+                resume_exact_target_surface_repair_deadline_override,
+                Some(collector.clone()),
+            )?;
+        Ok((telemetry, collector.snapshot()))
+    }
+
+    fn region_event_sequence(
+        events: &[DiscoveryPublicationTruthRepairRegionTraceEvent],
+    ) -> Vec<(&'static str, &'static str)> {
+        events
+            .iter()
+            .map(|event| (event.region, event.state))
+            .collect()
+    }
+
+    fn assert_region_trace_contains_subsequence(
+        events: &[DiscoveryPublicationTruthRepairRegionTraceEvent],
+        expected: &[(&'static str, &'static str)],
+    ) {
+        let mut cursor = 0usize;
+        for expected_event in expected.iter().copied() {
+            while cursor < events.len()
+                && (events[cursor].region, events[cursor].state) != expected_event
+            {
+                cursor = cursor.saturating_add(1);
+            }
+            assert!(
+                cursor < events.len(),
+                "missing expected region event {:?} in {:?}",
+                expected_event,
+                region_event_sequence(events)
+            );
+            cursor = cursor.saturating_add(1);
+        }
     }
 
     #[test]
@@ -25901,6 +26345,7 @@ mod tests {
                 metrics_window_start,
                 now,
                 Some(Instant::now()),
+                None,
             )?;
 
         assert!(
@@ -25988,6 +26433,7 @@ mod tests {
                 64,
                 Instant::now() + StdDuration::from_secs(60),
                 Some(Instant::now()),
+                None,
             )?;
 
         assert_eq!(
@@ -26044,6 +26490,213 @@ mod tests {
             rebuilt.payload.discovery_critical_target_buy_mints.is_empty(),
             "the bounded helper fix must not persist a half-reconstructed exact target surface while surfacing the real replay blocker"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn helper_live_like_missing_exact_target_surface_region_trace_enters_expected_next_regions_stage1(
+    ) -> Result<()> {
+        let (_temp, runtime_store, journal_store, discovery, now, _, _) =
+            seed_stage1_deferred_runtime_publication_refresh_missing_exact_target_surface_fixture(
+            )?;
+
+        let (_repair, events) = traced_runtime_publication_truth_repair_helper(
+            &discovery,
+            &runtime_store,
+            Some(&journal_store),
+            now,
+            Instant::now() + StdDuration::from_secs(60),
+            Some(Instant::now()),
+        )?;
+
+        assert_region_trace_contains_subsequence(
+            &events,
+            &[
+                (
+                    "repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed_with_options",
+                    "entered",
+                ),
+                ("persisted_stream_priority_recovery_contract", "entered"),
+                ("persisted_stream_priority_recovery_contract", "exited"),
+                ("load_or_start_persisted_stream_rebuild_state_with_options", "entered"),
+                ("repair_restored_persisted_stream_state_for_resume", "entered"),
+                ("repair_restored_persisted_stream_state_for_resume", "exited"),
+                (
+                    "repair_replay_exact_target_buy_mint_surface_for_resume",
+                    "entered",
+                ),
+            ],
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn helper_live_like_missing_exact_target_surface_region_trace_preserves_strict_parent_child_order_stage1(
+    ) -> Result<()> {
+        let (_temp, runtime_store, journal_store, discovery, now, _, _) =
+            seed_stage1_deferred_runtime_publication_refresh_missing_exact_target_surface_fixture(
+            )?;
+
+        let (_repair, events) = traced_runtime_publication_truth_repair_helper(
+            &discovery,
+            &runtime_store,
+            Some(&journal_store),
+            now,
+            Instant::now() + StdDuration::from_secs(60),
+            Some(Instant::now()),
+        )?;
+
+        let helper_enter = events
+            .iter()
+            .position(|event| {
+                event.region
+                    == "repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed_with_options"
+                    && event.state == "entered"
+            })
+            .expect("helper region enter should be traced");
+        let load_enter = events
+            .iter()
+            .position(|event| {
+                event.region == "load_or_start_persisted_stream_rebuild_state_with_options"
+                    && event.state == "entered"
+            })
+            .expect("load/start region enter should be traced");
+        let restore_enter = events
+            .iter()
+            .position(|event| {
+                event.region == "repair_restored_persisted_stream_state_for_resume"
+                    && event.state == "entered"
+            })
+            .expect("resume-state repair region enter should be traced");
+        let restore_exit = events
+            .iter()
+            .position(|event| {
+                event.region == "repair_restored_persisted_stream_state_for_resume"
+                    && event.state == "exited"
+            })
+            .expect("resume-state repair region exit should be traced");
+        let exact_surface_enter = events
+            .iter()
+            .position(|event| {
+                event.region == "repair_replay_exact_target_buy_mint_surface_for_resume"
+                    && event.state == "entered"
+            })
+            .expect("exact-target surface region enter should be traced");
+        let load_exit = events
+            .iter()
+            .position(|event| {
+                event.region == "load_or_start_persisted_stream_rebuild_state_with_options"
+                    && event.state == "exited"
+            })
+            .expect("load/start region exit should be traced");
+
+        assert!(helper_enter < load_enter);
+        assert!(load_enter < restore_enter);
+        assert!(restore_enter < restore_exit);
+        assert!(restore_exit < exact_surface_enter);
+        assert!(exact_surface_enter < load_exit);
+        assert_eq!(
+            events[load_enter].parent_region,
+            Some("repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed_with_options")
+        );
+        assert_eq!(
+            events[restore_enter].parent_region,
+            Some("load_or_start_persisted_stream_rebuild_state_with_options")
+        );
+        assert_eq!(
+            events[exact_surface_enter].parent_region,
+            Some("load_or_start_persisted_stream_rebuild_state_with_options")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn helper_live_like_missing_exact_target_surface_region_trace_surfaces_wallet_scan_progress_and_deadline_accounting_stage1(
+    ) -> Result<()> {
+        let (_temp, runtime_store, journal_store, discovery, now, _, _) =
+            seed_stage1_deferred_runtime_publication_refresh_missing_exact_target_surface_fixture(
+            )?;
+
+        let (_repair, events) = traced_runtime_publication_truth_repair_helper(
+            &discovery,
+            &runtime_store,
+            Some(&journal_store),
+            now,
+            Instant::now() + StdDuration::from_secs(60),
+            Some(Instant::now()),
+        )?;
+
+        let wallet_scan_enter = events
+            .iter()
+            .find(|event| {
+                event.region
+                    == "repair_replay_exact_target_buy_mint_surface_for_resume.wallet_activity_scan"
+                    && event.state == "entered"
+            })
+            .expect("wallet scan region enter should be traced");
+        let wallet_scan_exit = events
+            .iter()
+            .find(|event| {
+                event.region
+                    == "repair_replay_exact_target_buy_mint_surface_for_resume.wallet_activity_scan"
+                    && event.state == "exited"
+            })
+            .expect("wallet scan region exit should be traced");
+        let exact_surface_exit = events
+            .iter()
+            .find(|event| {
+                event.region == "repair_replay_exact_target_buy_mint_surface_for_resume"
+                    && event.state == "exited"
+            })
+            .expect("exact-target surface exit should be traced");
+
+        assert!(wallet_scan_exit.pages_scanned > 0);
+        assert_eq!(wallet_scan_exit.time_budget_exhausted, Some(true));
+        assert!(wallet_scan_exit.deadline_remaining_ms <= wallet_scan_enter.deadline_remaining_ms);
+        assert_eq!(exact_surface_exit.time_budget_exhausted, Some(true));
+        assert_eq!(
+            exact_surface_exit.wallets_scanned,
+            wallet_scan_exit.wallets_scanned
+        );
+        assert_eq!(
+            exact_surface_exit.rows_scanned,
+            wallet_scan_exit.rows_scanned
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn helper_region_trace_contrast_without_missing_exact_target_surface_skips_heavy_wallet_scan_stage1(
+    ) -> Result<()> {
+        let (_temp, runtime_store, discovery, now, _stale_last_published_at, _stale_wallet_ids) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+
+        let (_repair, events) = traced_runtime_publication_truth_repair_helper(
+            &discovery,
+            &runtime_store,
+            None,
+            now,
+            Instant::now() + StdDuration::from_secs(60),
+            Some(Instant::now()),
+        )?;
+
+        assert!(
+            !events.iter().any(|event| {
+                event.region
+                    == "repair_replay_exact_target_buy_mint_surface_for_resume.wallet_activity_scan"
+            }),
+            "the contrasting fixture should prove the helper is not always spending time in the exact-target wallet scan region"
+        );
+        let exact_surface_exit = events
+            .iter()
+            .find(|event| {
+                event.region == "repair_replay_exact_target_buy_mint_surface_for_resume"
+                    && event.state == "exited"
+            })
+            .expect("exact-target surface exit should still be traced");
+        assert_eq!(exact_surface_exit.wallets_scanned, 0);
+        assert_eq!(exact_surface_exit.pages_scanned, 0);
+        assert_eq!(exact_surface_exit.time_budget_exhausted, None);
         Ok(())
     }
 
