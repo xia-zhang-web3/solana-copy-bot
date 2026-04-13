@@ -8052,6 +8052,36 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
       - its purpose is to let operators answer the remaining
         `replay_sol_leg_incomplete` question from persisted state plus current
         source frontier directly instead of continuing journal archaeology
+    - the next accepted Stage 3 follow-up makes that operator surface usable on
+      the live runtime DB before any recent-raw comparison:
+      - it adds one cheap runtime-db-only meta mode:
+        `--inspect-persisted-rebuild-row-meta --runtime-db <path> --json`
+      - it makes the existing runtime-db-only modes bounded and stage-aware
+        instead of silently hanging behind external `timeout`:
+        - `--inspect-persisted-rebuild-state`
+        - `--explain-publishable-checkpoint-blocker`
+      - the tool now reports machine-readable runtime-db-only stage output:
+        - `diagnostic_stage`
+        - `diagnostic_budget_exhausted`
+        - `diagnostic_skipped_stages`
+        - `diagnostic_open_db_elapsed_ms`
+        - `diagnostic_load_row_meta_elapsed_ms`
+        - `diagnostic_load_row_elapsed_ms`
+        - `diagnostic_parse_state_elapsed_ms`
+        - `diagnostic_classify_blocker_elapsed_ms`
+        - `diagnostic_total_elapsed_ms`
+        - `persisted_rebuild_row_exists`
+        - `persisted_rebuild_row_phase`
+        - `persisted_rebuild_row_updated_at`
+        - `persisted_rebuild_state_json_bytes`
+      - the read-only diagnostic path now uses read-only store open and
+        read-only cursor/meta helpers end-to-end, so the operator tool no
+        longer reaches for write-capable runtime-db bootstrap on inspection
+      - practical result:
+        the next live run can distinguish exact runtime-db-only failure modes
+        such as row-missing, open-db-too-slow, load-row-too-slow,
+        parse-too-slow, or blocker-classification-too-slow before any
+        recent-raw source frontier scan starts
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 

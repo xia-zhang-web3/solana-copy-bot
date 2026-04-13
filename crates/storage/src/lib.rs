@@ -1565,6 +1565,13 @@ pub struct DiscoveryPersistedRebuildStateRow {
 }
 
 #[derive(Debug, Clone)]
+pub struct DiscoveryPersistedRebuildStateMetaRow {
+    pub phase: DiscoveryPersistedRebuildPhase,
+    pub state_json_bytes: usize,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
 struct LiveOpenPositionRow {
     position_id: String,
     accounting_bucket: String,

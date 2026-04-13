@@ -1,9 +1,10 @@
 use crate::{
     discovery::upsert_wallet_activity_days_on_conn, DiscoveryPersistedRebuildPhase,
-    DiscoveryPersistedRebuildStateRow, DiscoveryRuntimeCursor, ObservedSwapBatchWriteMetrics,
-    ObservedSwapsCoverageSnapshot, RecentRawJournalReplaySummary, RecentRawJournalStateRow,
-    RecentRawJournalWriteSummary, SqliteBatchedDeleteSummary, SqliteStore, TokenMarketStats,
-    TokenQualityCacheRow, TokenQualityRpcRow, WalletActivityDayRow, WalletRecentActivityCountRow,
+    DiscoveryPersistedRebuildStateMetaRow, DiscoveryPersistedRebuildStateRow,
+    DiscoveryRuntimeCursor, ObservedSwapBatchWriteMetrics, ObservedSwapsCoverageSnapshot,
+    RecentRawJournalReplaySummary, RecentRawJournalStateRow, RecentRawJournalWriteSummary,
+    SqliteBatchedDeleteSummary, SqliteStore, TokenMarketStats, TokenQualityCacheRow,
+    TokenQualityRpcRow, WalletActivityDayRow, WalletRecentActivityCountRow,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -3476,6 +3477,19 @@ impl SqliteStore {
 
     pub fn load_discovery_runtime_cursor(&self) -> Result<Option<DiscoveryRuntimeCursor>> {
         self.ensure_discovery_runtime_state_table()?;
+        self.load_discovery_runtime_cursor_query()
+    }
+
+    pub fn load_discovery_runtime_cursor_read_only(
+        &self,
+    ) -> Result<Option<DiscoveryRuntimeCursor>> {
+        if !self.sqlite_table_exists("discovery_runtime_state")? {
+            return Ok(None);
+        }
+        self.load_discovery_runtime_cursor_query()
+    }
+
+    fn load_discovery_runtime_cursor_query(&self) -> Result<Option<DiscoveryRuntimeCursor>> {
         let row: Option<(String, i64, String)> = self
             .conn
             .query_row(
@@ -3537,6 +3551,46 @@ impl SqliteStore {
             return Ok(None);
         }
         self.load_discovery_persisted_rebuild_state_query()
+    }
+
+    pub fn load_discovery_persisted_rebuild_state_meta_read_only(
+        &self,
+    ) -> Result<Option<DiscoveryPersistedRebuildStateMetaRow>> {
+        if !self.sqlite_table_exists("discovery_persisted_rebuild_state")? {
+            return Ok(None);
+        }
+        let raw = self
+            .conn
+            .query_row(
+                "SELECT
+                    phase,
+                    length(CAST(state_json AS BLOB)),
+                    updated_at
+                 FROM discovery_persisted_rebuild_state
+                 WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("failed reading discovery persisted rebuild state metadata")?;
+
+        raw.map(|(phase_raw, state_json_bytes, updated_at_raw)| {
+            Ok(DiscoveryPersistedRebuildStateMetaRow {
+                phase: DiscoveryPersistedRebuildPhase::parse(&phase_raw)?,
+                state_json_bytes: state_json_bytes.max(0) as usize,
+                updated_at: parse_rfc3339_utc(
+                    &updated_at_raw,
+                    "discovery_persisted_rebuild_state.updated_at",
+                )?,
+            })
+        })
+        .transpose()
     }
 
     fn load_discovery_persisted_rebuild_state_query(
