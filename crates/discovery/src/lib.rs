@@ -2630,6 +2630,7 @@ impl DiscoveryService {
             deadline,
             None,
             None,
+            true,
         )
     }
 
@@ -2642,6 +2643,7 @@ impl DiscoveryService {
         deadline: Instant,
         resume_exact_target_surface_repair_deadline_override: Option<Instant>,
         trace_collector: Option<DiscoveryPublicationTruthRepairTraceCollector>,
+        defer_resume_exact_target_surface_repair_to_runtime_cycle: bool,
     ) -> Result<DiscoveryPublicationTruthRepairTelemetry> {
         let gate = self.publication_freshness_gate();
         let required_window_start = now - Duration::days(self.runtime_scoring_window_days());
@@ -2743,6 +2745,7 @@ impl DiscoveryService {
                     now,
                     Some(resume_exact_target_surface_repair_deadline_override.unwrap_or(deadline)),
                     Some(&trace_context),
+                    defer_resume_exact_target_surface_repair_to_runtime_cycle,
                 )?;
             let recovery_contract = self
                 .deepen_persisted_stream_priority_recovery_contract_for_state_at(
@@ -6168,6 +6171,7 @@ impl DiscoveryService {
             now,
             None,
             None,
+            false,
         )?;
         Ok((state, outcome))
     }
@@ -6180,6 +6184,7 @@ impl DiscoveryService {
         now: DateTime<Utc>,
         resume_exact_target_surface_repair_deadline: Option<Instant>,
         helper_trace_context: Option<&DiscoveryPublicationTruthRepairTraceContext>,
+        defer_resume_exact_target_surface_repair_to_runtime_cycle: bool,
     ) -> Result<(
         PersistedStreamRebuildState,
         PersistedStreamRebuildRestoreOutcome,
@@ -6232,16 +6237,20 @@ impl DiscoveryService {
                     now,
                     helper_trace_context,
                 );
-                let exact_target_surface_repair_deadline =
-                    resume_exact_target_surface_repair_deadline
-                        .unwrap_or_else(|| Instant::now() + StdDuration::from_secs(300));
-                let exact_target_surface_repair = self
-                    .repair_replay_exact_target_buy_mint_surface_for_resume(
-                        store,
-                        &mut state,
-                        exact_target_surface_repair_deadline,
-                        helper_trace_context,
-                    )?;
+                let exact_target_surface_repair =
+                    if defer_resume_exact_target_surface_repair_to_runtime_cycle {
+                        ResumeExactTargetBuyMintSurfaceRepairDiagnostics::default()
+                    } else {
+                        let exact_target_surface_repair_deadline =
+                            resume_exact_target_surface_repair_deadline
+                                .unwrap_or_else(|| Instant::now() + StdDuration::from_secs(300));
+                        self.repair_replay_exact_target_buy_mint_surface_for_resume(
+                            store,
+                            &mut state,
+                            exact_target_surface_repair_deadline,
+                            helper_trace_context,
+                        )?
+                    };
                 if repaired_for_resume || exact_target_surface_repair.completed {
                     self.persist_persisted_stream_rebuild_state(store, &mut state, now)?;
                 }
@@ -26075,6 +26084,7 @@ mod tests {
                 now,
                 None,
                 None,
+                false,
             )?;
         let recovery_contract = discovery
             .deepen_persisted_stream_priority_recovery_contract_for_state_at(
@@ -26106,6 +26116,7 @@ mod tests {
         now: DateTime<Utc>,
         deadline: Instant,
         resume_exact_target_surface_repair_deadline_override: Option<Instant>,
+        defer_resume_exact_target_surface_repair_to_runtime_cycle: bool,
     ) -> Result<(
         DiscoveryPublicationTruthRepairTelemetry,
         Vec<DiscoveryPublicationTruthRepairRegionTraceEvent>,
@@ -26120,6 +26131,7 @@ mod tests {
                 deadline,
                 resume_exact_target_surface_repair_deadline_override,
                 Some(collector.clone()),
+                defer_resume_exact_target_surface_repair_to_runtime_cycle,
             )?;
         Ok((telemetry, collector.snapshot()))
     }
@@ -26346,6 +26358,7 @@ mod tests {
                 now,
                 Some(Instant::now()),
                 None,
+                false,
             )?;
 
         assert!(
@@ -26409,7 +26422,7 @@ mod tests {
     }
 
     #[test]
-    fn repair_runtime_window_complete_live_like_missing_exact_target_surface_honors_helper_deadline_and_reaches_deferred_write_stage1(
+    fn repair_runtime_window_complete_live_like_missing_exact_target_surface_defers_wallet_activity_scan_and_reaches_deferred_write_stage1(
     ) -> Result<()> {
         let (
             _temp,
@@ -26434,6 +26447,7 @@ mod tests {
                 Instant::now() + StdDuration::from_secs(60),
                 Some(Instant::now()),
                 None,
+                true,
             )?;
 
         assert_eq!(
@@ -26444,17 +26458,8 @@ mod tests {
         assert!(repair.publication_truth_refresh_helper_write_attempted);
         assert!(repair.publication_truth_refresh_helper_write_succeeded);
         assert!(
-            repair.publication_truth_refresh_resume_exact_target_surface_repair_attempted,
-            "the live-like helper seam must still prove it entered exact target-surface resume repair before returning"
-        );
-        assert!(
-            repair
-                .publication_truth_refresh_resume_exact_target_surface_repair_time_budget_exhausted,
-            "the fixed helper must now surface this exact internal repair region as bounded by the helper deadline instead of disappearing inside it"
-        );
-        assert!(
-            !repair.publication_truth_refresh_resume_exact_target_surface_repair_completed,
-            "once the helper deadline is honored, the helper should stop spending time reconstructing the exact target surface and proceed to the deferred fail-closed write/return path"
+            !repair.publication_truth_refresh_resume_exact_target_surface_repair_attempted,
+            "the fixed helper path must not enter the DB-heavy exact-wallet scan region before surfacing its deferred fail-closed write/return"
         );
         assert_eq!(
             repair.publication_truth_refresh_publishable_checkpoint_blocker,
@@ -26488,7 +26493,7 @@ mod tests {
         let rebuilt = load_persisted_stream_rebuild_state_for_test(&runtime_store)?;
         assert!(
             rebuilt.payload.discovery_critical_target_buy_mints.is_empty(),
-            "the bounded helper fix must not persist a half-reconstructed exact target surface while surfacing the real replay blocker"
+            "deferring helper-side exact-target repair must leave ownership with the later replay path instead of half-repairing it before helper return"
         );
         Ok(())
     }
@@ -26507,6 +26512,7 @@ mod tests {
             now,
             Instant::now() + StdDuration::from_secs(60),
             Some(Instant::now()),
+            true,
         )?;
 
         assert_region_trace_contains_subsequence(
@@ -26521,11 +26527,14 @@ mod tests {
                 ("load_or_start_persisted_stream_rebuild_state_with_options", "entered"),
                 ("repair_restored_persisted_stream_state_for_resume", "entered"),
                 ("repair_restored_persisted_stream_state_for_resume", "exited"),
-                (
-                    "repair_replay_exact_target_buy_mint_surface_for_resume",
-                    "entered",
-                ),
+                ("load_or_start_persisted_stream_rebuild_state_with_options", "exited"),
             ],
+        );
+        assert!(
+            !events.iter().any(|event| {
+                event.region == "repair_replay_exact_target_buy_mint_surface_for_resume"
+            }),
+            "the fixed helper path must not enter exact-target surface repair before surfacing the deferred publication write/return"
         );
         Ok(())
     }
@@ -26544,6 +26553,7 @@ mod tests {
             now,
             Instant::now() + StdDuration::from_secs(60),
             Some(Instant::now()),
+            true,
         )?;
 
         let helper_enter = events
@@ -26575,13 +26585,6 @@ mod tests {
                     && event.state == "exited"
             })
             .expect("resume-state repair region exit should be traced");
-        let exact_surface_enter = events
-            .iter()
-            .position(|event| {
-                event.region == "repair_replay_exact_target_buy_mint_surface_for_resume"
-                    && event.state == "entered"
-            })
-            .expect("exact-target surface region enter should be traced");
         let load_exit = events
             .iter()
             .position(|event| {
@@ -26593,8 +26596,7 @@ mod tests {
         assert!(helper_enter < load_enter);
         assert!(load_enter < restore_enter);
         assert!(restore_enter < restore_exit);
-        assert!(restore_exit < exact_surface_enter);
-        assert!(exact_surface_enter < load_exit);
+        assert!(restore_exit < load_exit);
         assert_eq!(
             events[load_enter].parent_region,
             Some("repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed_with_options")
@@ -26603,27 +26605,30 @@ mod tests {
             events[restore_enter].parent_region,
             Some("load_or_start_persisted_stream_rebuild_state_with_options")
         );
-        assert_eq!(
-            events[exact_surface_enter].parent_region,
-            Some("load_or_start_persisted_stream_rebuild_state_with_options")
+        assert!(
+            !events.iter().any(|event| {
+                event.region == "repair_replay_exact_target_buy_mint_surface_for_resume"
+            }),
+            "the fixed helper path should now exit load/start without descending into the wallet_activity_scan child region"
         );
         Ok(())
     }
 
     #[test]
-    fn helper_live_like_missing_exact_target_surface_region_trace_surfaces_wallet_scan_progress_and_deadline_accounting_stage1(
+    fn old_like_helper_live_like_missing_exact_target_surface_region_trace_surfaces_wallet_scan_progress_and_deadline_accounting_stage1(
     ) -> Result<()> {
         let (_temp, runtime_store, journal_store, discovery, now, _, _) =
             seed_stage1_deferred_runtime_publication_refresh_missing_exact_target_surface_fixture(
             )?;
 
-        let (_repair, events) = traced_runtime_publication_truth_repair_helper(
+        let (repair, events) = traced_runtime_publication_truth_repair_helper(
             &discovery,
             &runtime_store,
             Some(&journal_store),
             now,
             Instant::now() + StdDuration::from_secs(60),
             Some(Instant::now()),
+            false,
         )?;
 
         let wallet_scan_enter = events
@@ -26650,6 +26655,7 @@ mod tests {
             })
             .expect("exact-target surface exit should be traced");
 
+        assert!(repair.publication_truth_refresh_helper_write_attempted);
         assert!(wallet_scan_exit.pages_scanned > 0);
         assert_eq!(wallet_scan_exit.time_budget_exhausted, Some(true));
         assert!(wallet_scan_exit.deadline_remaining_ms <= wallet_scan_enter.deadline_remaining_ms);
@@ -26666,18 +26672,20 @@ mod tests {
     }
 
     #[test]
-    fn helper_region_trace_contrast_without_missing_exact_target_surface_skips_heavy_wallet_scan_stage1(
+    fn helper_live_like_missing_exact_target_surface_fixed_path_skips_wallet_activity_scan_stage1(
     ) -> Result<()> {
-        let (_temp, runtime_store, discovery, now, _stale_last_published_at, _stale_wallet_ids) =
-            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let (_temp, runtime_store, journal_store, discovery, now, _, _) =
+            seed_stage1_deferred_runtime_publication_refresh_missing_exact_target_surface_fixture(
+            )?;
 
-        let (_repair, events) = traced_runtime_publication_truth_repair_helper(
+        let (repair, events) = traced_runtime_publication_truth_repair_helper(
             &discovery,
             &runtime_store,
-            None,
+            Some(&journal_store),
             now,
             Instant::now() + StdDuration::from_secs(60),
             Some(Instant::now()),
+            true,
         )?;
 
         assert!(
@@ -26685,18 +26693,64 @@ mod tests {
                 event.region
                     == "repair_replay_exact_target_buy_mint_surface_for_resume.wallet_activity_scan"
             }),
-            "the contrasting fixture should prove the helper is not always spending time in the exact-target wallet scan region"
+            "the fixed helper path should now skip the exact-wallet scan entirely on the proven live seam"
         );
-        let exact_surface_exit = events
-            .iter()
-            .find(|event| {
-                event.region == "repair_replay_exact_target_buy_mint_surface_for_resume"
-                    && event.state == "exited"
-            })
-            .expect("exact-target surface exit should still be traced");
-        assert_eq!(exact_surface_exit.wallets_scanned, 0);
-        assert_eq!(exact_surface_exit.pages_scanned, 0);
-        assert_eq!(exact_surface_exit.time_budget_exhausted, None);
+        assert!(repair.publication_truth_refresh_helper_write_attempted);
+        assert!(repair.publication_truth_refresh_helper_write_succeeded);
+        assert!(!repair.publication_truth_refresh_resume_exact_target_surface_repair_attempted);
+        Ok(())
+    }
+
+    #[test]
+    fn deferred_helper_exact_target_surface_scan_is_later_owned_by_normal_replay_resume_path_stage1(
+    ) -> Result<()> {
+        let (
+            _temp,
+            runtime_store,
+            journal_store,
+            discovery,
+            now,
+            _stale_last_published_at,
+            _stale_wallet_ids,
+        ) = seed_stage1_deferred_runtime_publication_refresh_missing_exact_target_surface_fixture(
+        )?;
+        let required_window_start = now - Duration::days(discovery.runtime_scoring_window_days());
+        let metrics_window_start = discovery.metrics_window_start(now);
+
+        let repair = discovery
+            .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed_with_options(
+                &runtime_store,
+                Some(&journal_store),
+                now,
+                64,
+                Instant::now() + StdDuration::from_secs(60),
+                Some(Instant::now()),
+                None,
+                true,
+            )?;
+        assert!(repair.publication_truth_refresh_helper_write_attempted);
+        assert!(!repair.publication_truth_refresh_resume_exact_target_surface_repair_attempted);
+        let after_helper = load_persisted_stream_rebuild_state_for_test(&runtime_store)?;
+        assert!(
+            after_helper.payload.discovery_critical_target_buy_mints.is_empty(),
+            "helper deferral must leave exact-target ownership unresolved for the later replay path"
+        );
+
+        let (resumed, restore_outcome) = discovery.load_or_start_persisted_stream_rebuild_state(
+            &runtime_store,
+            required_window_start,
+            metrics_window_start,
+            now,
+        )?;
+        assert!(matches!(
+            restore_outcome,
+            PersistedStreamRebuildRestoreOutcome::ResumedExisting
+                | PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow
+        ));
+        assert!(
+            !resumed.payload.discovery_critical_target_buy_mints.is_empty(),
+            "normal replay resume must still own and complete exact-target surface repair after the helper defers it"
+        );
         Ok(())
     }
 

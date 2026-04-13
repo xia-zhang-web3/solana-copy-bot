@@ -7987,6 +7987,39 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
       - expected live effect is proof only: one restart should now identify
         the exact unmatched helper-internal region instead of leaving the
         incident at “helper entered, then silence”
+    - live on `3ead6becbf8b341983790f7b016bd38f6481f06f` then proved the exact
+      unmatched child region on restart:
+      - helper entry still happened promptly after scheduled discovery start
+      - the traced parent regions
+        `persisted_stream_priority_recovery_contract(...)`,
+        `load_or_start_persisted_stream_rebuild_state_with_options(...)`, and
+        `repair_restored_persisted_stream_state_for_resume(...)` all entered /
+        exited normally
+      - the last unmatched helper-internal child region was
+        `repair_replay_exact_target_buy_mint_surface_for_resume.wallet_activity_scan`
+      - therefore the real restart seam was no longer “somewhere in the
+        helper” or even merely “somewhere in exact-target repair”; it was the
+        helper-owned exact-wallet activity scan itself
+    - the next accepted Stage 3 fix is now the smallest safe fix for that
+      exact child region:
+      - on the pre-`run_cycle()` helper path,
+        `load_or_start_persisted_stream_rebuild_state_with_options(...)` now
+        explicitly defers resumed exact-target-surface repair to the later
+        normal replay/load owner instead of entering
+        `repair_replay_exact_target_buy_mint_surface_for_resume(...)`
+      - that means helper ownership no longer descends into
+        `wallet_activity_scan` before surfacing the honest deferred
+        fail-closed write / return boundary
+      - the normal replay/load path still passes `false` for this deferral
+        flag, so later persisted replay resume still owns and completes the
+        exact-target-surface reconstruction
+      - this fix does not weaken fail-closed behavior, does not weaken export
+        freshness gating, does not fake a fresh publish, and does not touch
+        app / Stage 4 surfaces
+      - expected live effect is narrow and explicit:
+        helper return and helper-side deferred write should surface earlier on
+        restart; export may still remain fail-closed while replay later
+        continues to report the real `replay_sol_leg_incomplete` blocker
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 
