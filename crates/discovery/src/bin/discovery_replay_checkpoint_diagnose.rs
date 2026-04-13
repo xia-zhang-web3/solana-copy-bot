@@ -1,8 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use copybot_discovery::{
     DiscoveryService, PersistedRebuildRowDriverCompareDiagnostic,
-    RawPersistedRebuildRowProbeDiagnostic, ReplayCheckpointRuntimeDbDiagnostic,
-    ReplayCheckpointRuntimeDbOnlyMode,
+    PersistedRebuildRowStepMetaCompareDiagnostic, RawPersistedRebuildRowProbeDiagnostic,
+    ReplayCheckpointRuntimeDbDiagnostic, ReplayCheckpointRuntimeDbOnlyMode,
 };
 use copybot_storage::SqliteStore;
 use serde_json::{Map, Value};
@@ -10,7 +10,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS: u64 = 30_000;
-const USAGE: &str = "usage: discovery_replay_checkpoint_diagnose [--inspect-persisted-rebuild-row-meta-lite | --inspect-persisted-rebuild-row-meta | --inspect-persisted-rebuild-state | --explain-publishable-checkpoint-blocker | --compare-sol-leg-source-vs-checkpoint | --explain-replay-sol-leg-incomplete | --probe-persisted-rebuild-row-raw | --probe-persisted-rebuild-row-driver-compare] --runtime-db <path> [--recent-raw-db <path>] [--budget-ms <ms>] [--json]";
+const USAGE: &str = "usage: discovery_replay_checkpoint_diagnose [--inspect-persisted-rebuild-row-meta-lite | --inspect-persisted-rebuild-row-meta | --inspect-persisted-rebuild-state | --explain-publishable-checkpoint-blocker | --compare-sol-leg-source-vs-checkpoint | --explain-replay-sol-leg-incomplete | --probe-persisted-rebuild-row-raw | --probe-persisted-rebuild-row-driver-compare | --probe-persisted-rebuild-row-step-meta-detail] --runtime-db <path> [--recent-raw-db <path>] [--budget-ms <ms>] [--json]";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -32,6 +32,7 @@ enum Mode {
     ExplainReplaySolLegIncomplete,
     ProbePersistedRebuildRowRaw,
     ProbePersistedRebuildRowDriverCompare,
+    ProbePersistedRebuildRowStepMetaDetail,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +93,11 @@ where
             "--probe-persisted-rebuild-row-driver-compare" => set_mode(
                 &mut mode,
                 Mode::ProbePersistedRebuildRowDriverCompare,
+                arg.as_str(),
+            )?,
+            "--probe-persisted-rebuild-row-step-meta-detail" => set_mode(
+                &mut mode,
+                Mode::ProbePersistedRebuildRowStepMetaDetail,
                 arg.as_str(),
             )?,
             "--runtime-db" => {
@@ -275,6 +281,13 @@ fn render_driver_compare_json(
         .context("failed serializing persisted rebuild row driver compare probe")
 }
 
+fn render_step_meta_compare_json(
+    diagnostic: &PersistedRebuildRowStepMetaCompareDiagnostic,
+) -> Result<Value> {
+    serde_json::to_value(diagnostic)
+        .context("failed serializing persisted rebuild row step-meta compare probe")
+}
+
 fn run(config: Config) -> Result<String> {
     let output = match config.mode {
         Mode::InspectPersistedRebuildRowMetaLite => render_runtime_db_diagnostic_json(
@@ -341,6 +354,12 @@ fn run(config: Config) -> Result<String> {
         )?,
         Mode::ProbePersistedRebuildRowDriverCompare => render_driver_compare_json(
             &DiscoveryService::probe_persisted_rebuild_row_driver_compare_read_only(
+                &config.runtime_db,
+                config.budget_ms,
+            )?,
+        )?,
+        Mode::ProbePersistedRebuildRowStepMetaDetail => render_step_meta_compare_json(
+            &DiscoveryService::probe_persisted_rebuild_row_step_meta_compare_read_only(
                 &config.runtime_db,
                 config.budget_ms,
             )?,
@@ -427,6 +446,18 @@ mod tests {
         ])?
         .expect("config should parse");
         assert_eq!(config.mode, Mode::ProbePersistedRebuildRowDriverCompare);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_args_accepts_step_meta_detail_mode_stage1() -> Result<()> {
+        let config = parse_args_from([
+            "--probe-persisted-rebuild-row-step-meta-detail".to_string(),
+            "--runtime-db".to_string(),
+            "runtime.sqlite".to_string(),
+        ])?
+        .expect("config should parse");
+        assert_eq!(config.mode, Mode::ProbePersistedRebuildRowStepMetaDetail);
         Ok(())
     }
 
@@ -519,6 +550,32 @@ mod tests {
             .is_some_and(|value| value.contains("is missing on the read-only runtime connection")));
         assert!(json["driver_compare_prepare_exists_elapsed_ms"].is_number());
         assert!(json["driver_compare_step_exists_elapsed_ms"].is_number());
+        Ok(())
+    }
+
+    #[test]
+    fn run_step_meta_detail_reports_missing_checkpoint_json_stage1() -> Result<()> {
+        let (_temp, runtime_db) = make_test_store("diagnose-step-meta-detail-runtime.sqlite")?;
+        let store = SqliteStore::open(Path::new(&runtime_db))?;
+        assert!(store.load_discovery_persisted_rebuild_state()?.is_none());
+        drop(store);
+        let output = run(Config {
+            mode: Mode::ProbePersistedRebuildRowStepMetaDetail,
+            runtime_db,
+            recent_raw_db: None,
+            json: true,
+            budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+        })?;
+        let json: serde_json::Value =
+            serde_json::from_str(&output).context("invalid json output")?;
+        assert_eq!(json["step_meta_shared_connection_row_exists"], false);
+        assert_eq!(
+            json["step_meta_compare_reason_class"],
+            "step_meta_row_missing"
+        );
+        assert!(json["step_meta_compare_explanation"]
+            .as_str()
+            .is_some_and(|value| value.contains("is missing on the runtime db")));
         Ok(())
     }
 

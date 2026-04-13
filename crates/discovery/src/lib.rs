@@ -7,6 +7,9 @@ use copybot_storage::{
     DiscoveryPersistedRebuildRowDriverCompareDiagnostic as StorageDriverCompareDiagnostic,
     DiscoveryPersistedRebuildRowDriverCompareOptions as StorageDriverCompareOptions,
     DiscoveryPersistedRebuildRowDriverCompareStage as StorageDriverCompareStage,
+    DiscoveryPersistedRebuildRowStepMetaCompareDiagnostic as StorageStepMetaCompareDiagnostic,
+    DiscoveryPersistedRebuildRowStepMetaCompareOptions as StorageStepMetaCompareOptions,
+    DiscoveryPersistedRebuildRowStepMetaCompareStage as StorageStepMetaCompareStage,
     DiscoveryPersistedRebuildStateMetaLiteRawRow, DiscoveryPersistedRebuildStateRow,
     DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateRow,
     DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
@@ -80,6 +83,7 @@ const REPLAY_CHECKPOINT_DIAGNOSE_SOURCE_SCAN_PAGE_LIMIT: usize = 10_000;
 const REPLAY_CHECKPOINT_DIAGNOSE_SOURCE_SCAN_PAGE_DEADLINE_MS: u64 = 30_000;
 const DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD: u64 = 1_000;
 const DRIVER_COMPARE_FAST_EXISTS_MS_THRESHOLD: u64 = 250;
+const STEP_META_COMPARE_MATERIAL_IMPROVEMENT_MS_THRESHOLD: u64 = 1_000;
 const RAW_PERSISTED_REBUILD_ROW_SLOW_QUERY_MS_THRESHOLD: u64 = 5_000;
 const RAW_PERSISTED_REBUILD_ROW_LARGE_STATE_JSON_BYTES_THRESHOLD: usize = 16 * 1024 * 1024;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_NUMERATOR: usize =
@@ -1848,6 +1852,62 @@ pub struct PersistedRebuildRowDriverCompareDiagnostic {
     pub driver_compare_explanation: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PersistedRebuildRowStepMetaCompareReasonClass {
+    StepMetaUnprovenDueToBudgetExhausted,
+    StepMetaRowMissing,
+    StepMetaSlowOnlyOnSharedConnection,
+    StepMetaSlowOnlyOnFreshConnection,
+    StepMetaSlowOnFreshAndSharedConnection,
+    StepMetaQueryApiShapeSensitive,
+    StepMetaImprovesWithQueryOnly,
+    StepMetaImprovesWithCacheOrMmapTuning,
+    StepMetaNoMaterialDivergenceObserved,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PersistedRebuildRowStepMetaCompareDiagnostic {
+    pub step_meta_compare_stage: StorageStepMetaCompareStage,
+    pub step_meta_compare_budget_exhausted: bool,
+    pub step_meta_compare_skipped_stages: Vec<StorageStepMetaCompareStage>,
+    pub step_meta_compare_total_elapsed_ms: u64,
+    pub step_meta_compare_busy_timeout_ms: Option<u64>,
+    pub step_meta_compare_cache_size: Option<i64>,
+    pub step_meta_compare_mmap_size: Option<i64>,
+    pub step_meta_compare_query_only: Option<bool>,
+    pub step_meta_compare_journal_mode: Option<String>,
+    pub step_meta_compare_locking_mode: Option<String>,
+    pub step_meta_shared_connection_prepare_exists_elapsed_ms: Option<u64>,
+    pub step_meta_shared_connection_step_exists_elapsed_ms: Option<u64>,
+    pub step_meta_shared_connection_prepare_meta_elapsed_ms: Option<u64>,
+    pub step_meta_shared_connection_step_meta_elapsed_ms: Option<u64>,
+    pub step_meta_shared_connection_extract_phase_elapsed_ms: Option<u64>,
+    pub step_meta_shared_connection_extract_updated_at_elapsed_ms: Option<u64>,
+    pub step_meta_shared_connection_row_exists: Option<bool>,
+    pub step_meta_shared_connection_row_phase: Option<String>,
+    pub step_meta_shared_connection_row_updated_at: Option<String>,
+    pub step_meta_shared_connection_reason: String,
+    pub step_meta_fresh_connection_prepare_meta_elapsed_ms: Option<u64>,
+    pub step_meta_fresh_connection_step_meta_elapsed_ms: Option<u64>,
+    pub step_meta_fresh_connection_extract_phase_elapsed_ms: Option<u64>,
+    pub step_meta_fresh_connection_extract_updated_at_elapsed_ms: Option<u64>,
+    pub step_meta_fresh_connection_row_exists: Option<bool>,
+    pub step_meta_fresh_connection_row_phase: Option<String>,
+    pub step_meta_fresh_connection_row_updated_at: Option<String>,
+    pub step_meta_fresh_connection_reason: String,
+    pub step_meta_query_plus_next_variant_elapsed_ms: Option<u64>,
+    pub step_meta_query_row_variant_elapsed_ms: Option<u64>,
+    pub step_meta_query_only_on_elapsed_ms: Option<u64>,
+    pub step_meta_query_only_effective_query_only: Option<bool>,
+    pub step_meta_cache_tuned_elapsed_ms: Option<u64>,
+    pub step_meta_cache_tuned_effective_cache_size: Option<i64>,
+    pub step_meta_mmap_tuned_elapsed_ms: Option<u64>,
+    pub step_meta_mmap_tuned_effective_mmap_size: Option<i64>,
+    pub step_meta_compare_reason_class: PersistedRebuildRowStepMetaCompareReasonClass,
+    pub step_meta_compare_explanation: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedPersistedReplayCheckpointState(PersistedStreamRebuildState);
 
@@ -2394,6 +2454,265 @@ impl DiscoveryService {
             Self::classify_persisted_rebuild_row_driver_compare(&mapped);
         mapped.driver_compare_reason_class = reason_class;
         mapped.driver_compare_explanation = explanation;
+        mapped
+    }
+
+    fn format_step_meta_variant_reason(
+        label: &str,
+        prepare_meta_elapsed_ms: Option<u64>,
+        step_meta_elapsed_ms: Option<u64>,
+        extract_phase_elapsed_ms: Option<u64>,
+        extract_updated_at_elapsed_ms: Option<u64>,
+        row_exists: Option<bool>,
+    ) -> String {
+        format!(
+            "{label} prepare_meta_elapsed_ms={}, step_meta_elapsed_ms={}, extract_phase_elapsed_ms={}, extract_updated_at_elapsed_ms={}, row_exists={}",
+            prepare_meta_elapsed_ms.unwrap_or(0),
+            step_meta_elapsed_ms.unwrap_or(0),
+            extract_phase_elapsed_ms.unwrap_or(0),
+            extract_updated_at_elapsed_ms.unwrap_or(0),
+            row_exists
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )
+    }
+
+    fn step_meta_compare_materially_faster(
+        candidate_elapsed_ms: Option<u64>,
+        baseline_elapsed_ms: Option<u64>,
+    ) -> bool {
+        let Some(candidate_elapsed_ms) = candidate_elapsed_ms else {
+            return false;
+        };
+        let Some(baseline_elapsed_ms) = baseline_elapsed_ms else {
+            return false;
+        };
+        baseline_elapsed_ms
+            >= candidate_elapsed_ms
+                .saturating_add(STEP_META_COMPARE_MATERIAL_IMPROVEMENT_MS_THRESHOLD)
+            && candidate_elapsed_ms.saturating_mul(2) <= baseline_elapsed_ms
+    }
+
+    fn classify_persisted_rebuild_row_step_meta_compare(
+        diagnostic: &PersistedRebuildRowStepMetaCompareDiagnostic,
+    ) -> (PersistedRebuildRowStepMetaCompareReasonClass, String) {
+        if diagnostic.step_meta_compare_budget_exhausted {
+            return (
+                PersistedRebuildRowStepMetaCompareReasonClass::StepMetaUnprovenDueToBudgetExhausted,
+                format!(
+                    "step-meta compare exhausted its diagnostic budget while in stage {} before all in-process variants completed",
+                    serde_json::to_string(&diagnostic.step_meta_compare_stage)
+                        .unwrap_or_else(|_| "\"unknown\"".to_string())
+                        .trim_matches('"')
+                ),
+            );
+        }
+
+        if diagnostic.step_meta_shared_connection_row_exists == Some(false) {
+            return (
+                PersistedRebuildRowStepMetaCompareReasonClass::StepMetaRowMissing,
+                "the shared in-process step-meta compare path proved that discovery_persisted_rebuild_state(id=1) is missing on the runtime db".to_string(),
+            );
+        }
+
+        let shared_step = diagnostic
+            .step_meta_shared_connection_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let fresh_step = diagnostic
+            .step_meta_fresh_connection_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let shared_slow = shared_step > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+        let fresh_slow = fresh_step > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+
+        if shared_slow && !fresh_slow {
+            return (
+                PersistedRebuildRowStepMetaCompareReasonClass::StepMetaSlowOnlyOnSharedConnection,
+                format!(
+                    "the shared sequential in-process path is slow while a fresh read-only connection is not (shared_step_meta_elapsed_ms={}, fresh_step_meta_elapsed_ms={})",
+                    shared_step, fresh_step
+                ),
+            );
+        }
+
+        if Self::step_meta_compare_materially_faster(
+            diagnostic.step_meta_query_row_variant_elapsed_ms,
+            diagnostic.step_meta_query_plus_next_variant_elapsed_ms,
+        ) || Self::step_meta_compare_materially_faster(
+            diagnostic.step_meta_query_plus_next_variant_elapsed_ms,
+            diagnostic.step_meta_query_row_variant_elapsed_ms,
+        ) {
+            return (
+                PersistedRebuildRowStepMetaCompareReasonClass::StepMetaQueryApiShapeSensitive,
+                format!(
+                    "the fresh-connection exact meta query differs materially between query APIs (query_plus_next_variant_elapsed_ms={}, query_row_variant_elapsed_ms={})",
+                    diagnostic
+                        .step_meta_query_plus_next_variant_elapsed_ms
+                        .unwrap_or(0),
+                    diagnostic.step_meta_query_row_variant_elapsed_ms.unwrap_or(0)
+                ),
+            );
+        }
+
+        if Self::step_meta_compare_materially_faster(
+            diagnostic.step_meta_query_only_on_elapsed_ms,
+            diagnostic.step_meta_query_plus_next_variant_elapsed_ms,
+        ) {
+            return (
+                PersistedRebuildRowStepMetaCompareReasonClass::StepMetaImprovesWithQueryOnly,
+                format!(
+                    "the fresh exact meta query improves materially when the probe connection enables query_only=ON (query_plus_next_variant_elapsed_ms={}, query_only_on_elapsed_ms={})",
+                    diagnostic
+                        .step_meta_query_plus_next_variant_elapsed_ms
+                        .unwrap_or(0),
+                    diagnostic.step_meta_query_only_on_elapsed_ms.unwrap_or(0)
+                ),
+            );
+        }
+
+        let best_tuned_elapsed_ms = [
+            diagnostic.step_meta_cache_tuned_elapsed_ms,
+            diagnostic.step_meta_mmap_tuned_elapsed_ms,
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        if Self::step_meta_compare_materially_faster(
+            best_tuned_elapsed_ms,
+            diagnostic.step_meta_query_plus_next_variant_elapsed_ms,
+        ) {
+            return (
+                PersistedRebuildRowStepMetaCompareReasonClass::StepMetaImprovesWithCacheOrMmapTuning,
+                format!(
+                    "the fresh exact meta query improves materially under connection-local cache/mmap tuning (query_plus_next_variant_elapsed_ms={}, cache_tuned_elapsed_ms={}, mmap_tuned_elapsed_ms={})",
+                    diagnostic
+                        .step_meta_query_plus_next_variant_elapsed_ms
+                        .unwrap_or(0),
+                    diagnostic.step_meta_cache_tuned_elapsed_ms.unwrap_or(0),
+                    diagnostic.step_meta_mmap_tuned_elapsed_ms.unwrap_or(0)
+                ),
+            );
+        }
+
+        if !shared_slow && fresh_slow {
+            return (
+                PersistedRebuildRowStepMetaCompareReasonClass::StepMetaSlowOnlyOnFreshConnection,
+                format!(
+                    "the fresh exact meta query path is slow while the shared sequential path is not (shared_step_meta_elapsed_ms={}, fresh_step_meta_elapsed_ms={})",
+                    shared_step, fresh_step
+                ),
+            );
+        }
+
+        if shared_slow && fresh_slow {
+            return (
+                PersistedRebuildRowStepMetaCompareReasonClass::StepMetaSlowOnFreshAndSharedConnection,
+                format!(
+                    "both shared and fresh exact meta query paths are slow before explicit extraction (shared_step_meta_elapsed_ms={}, fresh_step_meta_elapsed_ms={})",
+                    shared_step, fresh_step
+                ),
+            );
+        }
+
+        (
+            PersistedRebuildRowStepMetaCompareReasonClass::StepMetaNoMaterialDivergenceObserved,
+            format!(
+                "no material shared-vs-fresh, query-api, or connection-local pragma divergence was observed (shared_step_meta_elapsed_ms={}, fresh_step_meta_elapsed_ms={}, query_row_variant_elapsed_ms={}, query_only_on_elapsed_ms={}, cache_tuned_elapsed_ms={}, mmap_tuned_elapsed_ms={})",
+                shared_step,
+                fresh_step,
+                diagnostic.step_meta_query_row_variant_elapsed_ms.unwrap_or(0),
+                diagnostic.step_meta_query_only_on_elapsed_ms.unwrap_or(0),
+                diagnostic.step_meta_cache_tuned_elapsed_ms.unwrap_or(0),
+                diagnostic.step_meta_mmap_tuned_elapsed_ms.unwrap_or(0),
+            ),
+        )
+    }
+
+    fn map_storage_step_meta_compare_diagnostic(
+        diagnostic: StorageStepMetaCompareDiagnostic,
+    ) -> PersistedRebuildRowStepMetaCompareDiagnostic {
+        let baseline_connection_facts = diagnostic.baseline_connection_facts.clone();
+        let mut mapped = PersistedRebuildRowStepMetaCompareDiagnostic {
+            step_meta_compare_stage: diagnostic.stage,
+            step_meta_compare_budget_exhausted: diagnostic.budget_exhausted,
+            step_meta_compare_skipped_stages: diagnostic.skipped_stages,
+            step_meta_compare_total_elapsed_ms: diagnostic.total_elapsed_ms,
+            step_meta_compare_busy_timeout_ms: baseline_connection_facts
+                .as_ref()
+                .map(|facts| facts.busy_timeout_ms),
+            step_meta_compare_cache_size: baseline_connection_facts
+                .as_ref()
+                .map(|facts| facts.cache_size),
+            step_meta_compare_mmap_size: baseline_connection_facts
+                .as_ref()
+                .map(|facts| facts.mmap_size),
+            step_meta_compare_query_only: baseline_connection_facts
+                .as_ref()
+                .map(|facts| facts.query_only),
+            step_meta_compare_journal_mode: baseline_connection_facts
+                .as_ref()
+                .map(|facts| facts.journal_mode.clone()),
+            step_meta_compare_locking_mode: baseline_connection_facts
+                .as_ref()
+                .map(|facts| facts.locking_mode.clone()),
+            step_meta_shared_connection_prepare_exists_elapsed_ms: diagnostic
+                .shared_prepare_exists_elapsed_ms,
+            step_meta_shared_connection_step_exists_elapsed_ms: diagnostic
+                .shared_step_exists_elapsed_ms,
+            step_meta_shared_connection_prepare_meta_elapsed_ms: diagnostic
+                .shared_prepare_meta_elapsed_ms,
+            step_meta_shared_connection_step_meta_elapsed_ms: diagnostic
+                .shared_step_meta_elapsed_ms,
+            step_meta_shared_connection_extract_phase_elapsed_ms: diagnostic
+                .shared_extract_phase_elapsed_ms,
+            step_meta_shared_connection_extract_updated_at_elapsed_ms: diagnostic
+                .shared_extract_updated_at_elapsed_ms,
+            step_meta_shared_connection_row_exists: diagnostic.shared_row_exists,
+            step_meta_shared_connection_row_phase: diagnostic.shared_row_phase,
+            step_meta_shared_connection_row_updated_at: diagnostic.shared_row_updated_at,
+            step_meta_shared_connection_reason: Self::format_step_meta_variant_reason(
+                "shared sequential connection",
+                diagnostic.shared_prepare_meta_elapsed_ms,
+                diagnostic.shared_step_meta_elapsed_ms,
+                diagnostic.shared_extract_phase_elapsed_ms,
+                diagnostic.shared_extract_updated_at_elapsed_ms,
+                diagnostic.shared_row_exists,
+            ),
+            step_meta_fresh_connection_prepare_meta_elapsed_ms: diagnostic
+                .fresh_prepare_meta_elapsed_ms,
+            step_meta_fresh_connection_step_meta_elapsed_ms: diagnostic.fresh_step_meta_elapsed_ms,
+            step_meta_fresh_connection_extract_phase_elapsed_ms: diagnostic
+                .fresh_extract_phase_elapsed_ms,
+            step_meta_fresh_connection_extract_updated_at_elapsed_ms: diagnostic
+                .fresh_extract_updated_at_elapsed_ms,
+            step_meta_fresh_connection_row_exists: diagnostic.fresh_row_exists,
+            step_meta_fresh_connection_row_phase: diagnostic.fresh_row_phase,
+            step_meta_fresh_connection_row_updated_at: diagnostic.fresh_row_updated_at,
+            step_meta_fresh_connection_reason: Self::format_step_meta_variant_reason(
+                "fresh read-only connection",
+                diagnostic.fresh_prepare_meta_elapsed_ms,
+                diagnostic.fresh_step_meta_elapsed_ms,
+                diagnostic.fresh_extract_phase_elapsed_ms,
+                diagnostic.fresh_extract_updated_at_elapsed_ms,
+                diagnostic.fresh_row_exists,
+            ),
+            step_meta_query_plus_next_variant_elapsed_ms: diagnostic
+                .query_plus_next_variant_elapsed_ms,
+            step_meta_query_row_variant_elapsed_ms: diagnostic.query_row_variant_elapsed_ms,
+            step_meta_query_only_on_elapsed_ms: diagnostic.query_only_on_elapsed_ms,
+            step_meta_query_only_effective_query_only: diagnostic.query_only_effective_query_only,
+            step_meta_cache_tuned_elapsed_ms: diagnostic.cache_tuned_elapsed_ms,
+            step_meta_cache_tuned_effective_cache_size: diagnostic.cache_tuned_effective_cache_size,
+            step_meta_mmap_tuned_elapsed_ms: diagnostic.mmap_tuned_elapsed_ms,
+            step_meta_mmap_tuned_effective_mmap_size: diagnostic.mmap_tuned_effective_mmap_size,
+            step_meta_compare_reason_class:
+                PersistedRebuildRowStepMetaCompareReasonClass::StepMetaUnprovenDueToBudgetExhausted,
+            step_meta_compare_explanation: "step-meta compare has not been classified yet"
+                .to_string(),
+        };
+        let (reason_class, explanation) =
+            Self::classify_persisted_rebuild_row_step_meta_compare(&mapped);
+        mapped.step_meta_compare_reason_class = reason_class;
+        mapped.step_meta_compare_explanation = explanation;
         mapped
     }
 
@@ -3741,6 +4060,31 @@ impl DiscoveryService {
     ) -> Result<PersistedRebuildRowDriverCompareDiagnostic> {
         Ok(Self::map_storage_driver_compare_diagnostic(
             SqliteStore::probe_discovery_persisted_rebuild_row_driver_compare_read_only(
+                runtime_db_path,
+                &options,
+            )?,
+        ))
+    }
+
+    pub fn probe_persisted_rebuild_row_step_meta_compare_read_only(
+        runtime_db_path: &Path,
+        budget_ms: u64,
+    ) -> Result<PersistedRebuildRowStepMetaCompareDiagnostic> {
+        Self::probe_persisted_rebuild_row_step_meta_compare_read_only_with_options(
+            runtime_db_path,
+            StorageStepMetaCompareOptions {
+                budget_ms,
+                ..StorageStepMetaCompareOptions::default()
+            },
+        )
+    }
+
+    fn probe_persisted_rebuild_row_step_meta_compare_read_only_with_options(
+        runtime_db_path: &Path,
+        options: StorageStepMetaCompareOptions,
+    ) -> Result<PersistedRebuildRowStepMetaCompareDiagnostic> {
+        Ok(Self::map_storage_step_meta_compare_diagnostic(
+            SqliteStore::probe_discovery_persisted_rebuild_row_step_meta_compare_read_only(
                 runtime_db_path,
                 &options,
             )?,
@@ -39635,6 +39979,136 @@ mod tests {
     }
 
     #[test]
+    fn replay_checkpoint_step_meta_compare_distinguishes_shared_vs_fresh_timings_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::probe_persisted_rebuild_row_step_meta_compare_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        assert!(!diagnostic.step_meta_compare_budget_exhausted);
+        assert!(diagnostic
+            .step_meta_shared_connection_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .step_meta_fresh_connection_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .step_meta_query_plus_next_variant_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .step_meta_shared_connection_reason
+            .contains("shared"));
+        assert!(diagnostic
+            .step_meta_fresh_connection_reason
+            .contains("fresh"));
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_step_meta_compare_shared_delay_surfaces_shared_only_reason_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_step_meta_compare_read_only_with_options(
+                Path::new(&runtime_db_path),
+                StorageStepMetaCompareOptions {
+                    budget_ms: 30_000,
+                    test_force_shared_step_meta_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    ..StorageStepMetaCompareOptions::default()
+                },
+            )?;
+        assert_eq!(
+            diagnostic.step_meta_compare_reason_class,
+            PersistedRebuildRowStepMetaCompareReasonClass::StepMetaSlowOnlyOnSharedConnection
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_step_meta_compare_fresh_delay_surfaces_fresh_only_reason_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_step_meta_compare_read_only_with_options(
+                Path::new(&runtime_db_path),
+                StorageStepMetaCompareOptions {
+                    budget_ms: 30_000,
+                    test_force_fresh_connection_query_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    ..StorageStepMetaCompareOptions::default()
+                },
+            )?;
+        assert_eq!(
+            diagnostic.step_meta_compare_reason_class,
+            PersistedRebuildRowStepMetaCompareReasonClass::StepMetaSlowOnlyOnFreshConnection
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_step_meta_compare_surfaces_query_api_variant_fields_stage1() -> Result<()>
+    {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::probe_persisted_rebuild_row_step_meta_compare_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        assert!(diagnostic
+            .step_meta_query_plus_next_variant_elapsed_ms
+            .is_some());
+        assert!(diagnostic.step_meta_query_row_variant_elapsed_ms.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_step_meta_compare_surfaces_connection_local_pragma_variant_fields_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::probe_persisted_rebuild_row_step_meta_compare_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        assert!(diagnostic.step_meta_query_only_on_elapsed_ms.is_some());
+        assert_eq!(
+            diagnostic.step_meta_query_only_effective_query_only,
+            Some(true)
+        );
+        assert!(diagnostic.step_meta_cache_tuned_elapsed_ms.is_some());
+        assert!(diagnostic
+            .step_meta_cache_tuned_effective_cache_size
+            .is_some());
+        assert!(diagnostic.step_meta_mmap_tuned_elapsed_ms.is_some());
+        assert!(diagnostic
+            .step_meta_mmap_tuned_effective_mmap_size
+            .is_some());
+        Ok(())
+    }
+
+    #[test]
     fn replay_checkpoint_raw_probe_meta_plan_budget_exhaustion_keeps_row_existence_unproven_stage1(
     ) -> Result<()> {
         let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
@@ -40234,6 +40708,10 @@ mod tests {
             30_000,
         )?;
         let _ = DiscoveryService::probe_persisted_rebuild_row_driver_compare_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        let _ = DiscoveryService::probe_persisted_rebuild_row_step_meta_compare_read_only(
             Path::new(&runtime_db_path),
             30_000,
         )?;

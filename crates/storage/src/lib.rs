@@ -1602,6 +1602,19 @@ pub enum DiscoveryPersistedRebuildRowDriverCompareStage {
     Complete,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryPersistedRebuildRowStepMetaCompareStage {
+    OpenSharedConnection,
+    SharedConnectionCurrentPath,
+    FreshConnectionQueryPlusNext,
+    FreshConnectionQueryRowVariant,
+    FreshConnectionQueryOnlyVariant,
+    FreshConnectionCacheTunedVariant,
+    FreshConnectionMmapTunedVariant,
+    Complete,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SqliteReadOnlyDriverCompareFacts {
     pub busy_timeout_ms: u64,
@@ -1637,6 +1650,15 @@ pub struct DiscoveryPersistedRebuildRowDriverCompareOptions {
     pub test_require_no_active_statements_before_prepare_size: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct DiscoveryPersistedRebuildRowStepMetaCompareOptions {
+    pub budget_ms: u64,
+    #[doc(hidden)]
+    pub test_force_shared_step_meta_delay_ms: Option<u64>,
+    #[doc(hidden)]
+    pub test_force_fresh_connection_query_delay_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveryPersistedRebuildRowDriverCompareDiagnostic {
     pub stage: DiscoveryPersistedRebuildRowDriverCompareStage,
@@ -1658,6 +1680,39 @@ pub struct DiscoveryPersistedRebuildRowDriverCompareDiagnostic {
     pub row_updated_at: Option<String>,
     pub row_state_json_bytes: Option<usize>,
     pub connection_facts: Option<SqliteReadOnlyDriverCompareFacts>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveryPersistedRebuildRowStepMetaCompareDiagnostic {
+    pub stage: DiscoveryPersistedRebuildRowStepMetaCompareStage,
+    pub budget_exhausted: bool,
+    pub skipped_stages: Vec<DiscoveryPersistedRebuildRowStepMetaCompareStage>,
+    pub total_elapsed_ms: u64,
+    pub baseline_connection_facts: Option<SqliteReadOnlyDriverCompareFacts>,
+    pub shared_prepare_exists_elapsed_ms: Option<u64>,
+    pub shared_step_exists_elapsed_ms: Option<u64>,
+    pub shared_prepare_meta_elapsed_ms: Option<u64>,
+    pub shared_step_meta_elapsed_ms: Option<u64>,
+    pub shared_extract_phase_elapsed_ms: Option<u64>,
+    pub shared_extract_updated_at_elapsed_ms: Option<u64>,
+    pub shared_row_exists: Option<bool>,
+    pub shared_row_phase: Option<String>,
+    pub shared_row_updated_at: Option<String>,
+    pub fresh_prepare_meta_elapsed_ms: Option<u64>,
+    pub fresh_step_meta_elapsed_ms: Option<u64>,
+    pub fresh_extract_phase_elapsed_ms: Option<u64>,
+    pub fresh_extract_updated_at_elapsed_ms: Option<u64>,
+    pub fresh_row_exists: Option<bool>,
+    pub fresh_row_phase: Option<String>,
+    pub fresh_row_updated_at: Option<String>,
+    pub query_plus_next_variant_elapsed_ms: Option<u64>,
+    pub query_row_variant_elapsed_ms: Option<u64>,
+    pub query_only_on_elapsed_ms: Option<u64>,
+    pub query_only_effective_query_only: Option<bool>,
+    pub cache_tuned_elapsed_ms: Option<u64>,
+    pub cache_tuned_effective_cache_size: Option<i64>,
+    pub mmap_tuned_elapsed_ms: Option<u64>,
+    pub mmap_tuned_effective_mmap_size: Option<i64>,
 }
 
 #[derive(Debug, Clone)]

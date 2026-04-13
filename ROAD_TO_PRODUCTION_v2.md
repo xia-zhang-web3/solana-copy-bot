@@ -8167,18 +8167,42 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
         - `driver_compare_query_only`
         - `driver_compare_journal_mode`
         - `driver_compare_locking_mode`
-      - the accepted correction on top of that compare surface closes both
-        remaining reviewer blockers:
-        - driver compare is now truly sequential on one read-only connection,
-          with the earlier exists statement finalized before `PrepareMeta` and
-          the meta statement finalized before `PrepareSize`
-        - missing-row output now emits explicit reason class
-          `driver_row_missing` instead of falling through to the fast-path
-          classifier
+    - the accepted correction on top of that compare surface closes both
+      remaining reviewer blockers:
+      - driver compare is now truly sequential on one read-only connection,
+        with the earlier exists statement finalized before `PrepareMeta` and
+        the meta statement finalized before `PrepareSize`
+      - missing-row output now emits explicit reason class
+        `driver_row_missing` instead of falling through to the fast-path
+        classifier
       - practical result:
         the next live operator run can compare direct `sqlite3` against a clean
         in-process sequential query path, instead of an overlapping statement
         path or an incoherent missing-row classification
+    - the next accepted Stage 3 follow-up adds one tighter proof surface for
+      the exact live `step_meta` divergence:
+      - `--probe-persisted-rebuild-row-step-meta-detail --runtime-db <path> --json`
+      - it breaks the old opaque `step_meta` bucket into explicit branchable
+        in-process variants:
+        - shared sequential connection current path
+        - fresh read-only connection with `query([])+rows.next()`
+        - fresh read-only connection with `query_row(...).optional()`
+        - fresh read-only connection with `query_only=ON`
+        - fresh read-only connection with cache tuning
+        - fresh read-only connection with mmap tuning
+      - it emits exact compare fields for those variants plus explicit reason
+        classes such as:
+        - `step_meta_slow_only_on_shared_connection`
+        - `step_meta_slow_only_on_fresh_connection`
+        - `step_meta_slow_on_fresh_and_shared_connection`
+        - `step_meta_query_api_shape_sensitive`
+        - `step_meta_improves_with_query_only`
+        - `step_meta_improves_with_cache_or_mmap_tuning`
+      - practical result:
+        the next live operator run can answer whether the in-process
+        `step_meta` divergence is shared-connection specific, fresh-connection
+        too, query-API-shape specific, or materially altered by
+        connection-local pragmas
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 

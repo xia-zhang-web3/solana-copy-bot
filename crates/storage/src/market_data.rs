@@ -2,7 +2,10 @@ use crate::{
     discovery::upsert_wallet_activity_days_on_conn, DiscoveryPersistedRebuildPhase,
     DiscoveryPersistedRebuildRowDriverCompareDiagnostic,
     DiscoveryPersistedRebuildRowDriverCompareOptions,
-    DiscoveryPersistedRebuildRowDriverCompareStage, DiscoveryPersistedRebuildStateMetaLiteRawRow,
+    DiscoveryPersistedRebuildRowDriverCompareStage,
+    DiscoveryPersistedRebuildRowStepMetaCompareDiagnostic,
+    DiscoveryPersistedRebuildRowStepMetaCompareOptions,
+    DiscoveryPersistedRebuildRowStepMetaCompareStage, DiscoveryPersistedRebuildStateMetaLiteRawRow,
     DiscoveryPersistedRebuildStateMetaRow, DiscoveryPersistedRebuildStateRow,
     DiscoveryRuntimeCursor, ObservedSwapBatchWriteMetrics, ObservedSwapsCoverageSnapshot,
     RecentRawJournalReplaySummary, RecentRawJournalStateRow, RecentRawJournalWriteSummary,
@@ -4177,6 +4180,637 @@ impl SqliteStore {
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(anyhow!(
                         "persisted rebuild row driver compare worker disconnected before returning a result"
+                    ));
+                }
+            }
+        }
+    }
+
+    pub fn probe_discovery_persisted_rebuild_row_step_meta_compare_read_only(
+        runtime_db_path: &Path,
+        options: &DiscoveryPersistedRebuildRowStepMetaCompareOptions,
+    ) -> Result<DiscoveryPersistedRebuildRowStepMetaCompareDiagnostic> {
+        #[derive(Debug, Clone)]
+        struct ProgressSnapshot {
+            baseline_connection_facts: Option<crate::SqliteReadOnlyDriverCompareFacts>,
+            shared_prepare_exists_elapsed_ms: Option<u64>,
+            shared_step_exists_elapsed_ms: Option<u64>,
+            shared_prepare_meta_elapsed_ms: Option<u64>,
+            shared_step_meta_elapsed_ms: Option<u64>,
+            shared_extract_phase_elapsed_ms: Option<u64>,
+            shared_extract_updated_at_elapsed_ms: Option<u64>,
+            shared_row_exists: Option<bool>,
+            shared_row_phase: Option<String>,
+            shared_row_updated_at: Option<String>,
+            fresh_prepare_meta_elapsed_ms: Option<u64>,
+            fresh_step_meta_elapsed_ms: Option<u64>,
+            fresh_extract_phase_elapsed_ms: Option<u64>,
+            fresh_extract_updated_at_elapsed_ms: Option<u64>,
+            fresh_row_exists: Option<bool>,
+            fresh_row_phase: Option<String>,
+            fresh_row_updated_at: Option<String>,
+            query_plus_next_variant_elapsed_ms: Option<u64>,
+            query_row_variant_elapsed_ms: Option<u64>,
+            query_only_on_elapsed_ms: Option<u64>,
+            query_only_effective_query_only: Option<bool>,
+            cache_tuned_elapsed_ms: Option<u64>,
+            cache_tuned_effective_cache_size: Option<i64>,
+            mmap_tuned_elapsed_ms: Option<u64>,
+            mmap_tuned_effective_mmap_size: Option<i64>,
+        }
+
+        impl ProgressSnapshot {
+            fn new() -> Self {
+                Self {
+                    baseline_connection_facts: None,
+                    shared_prepare_exists_elapsed_ms: None,
+                    shared_step_exists_elapsed_ms: None,
+                    shared_prepare_meta_elapsed_ms: None,
+                    shared_step_meta_elapsed_ms: None,
+                    shared_extract_phase_elapsed_ms: None,
+                    shared_extract_updated_at_elapsed_ms: None,
+                    shared_row_exists: None,
+                    shared_row_phase: None,
+                    shared_row_updated_at: None,
+                    fresh_prepare_meta_elapsed_ms: None,
+                    fresh_step_meta_elapsed_ms: None,
+                    fresh_extract_phase_elapsed_ms: None,
+                    fresh_extract_updated_at_elapsed_ms: None,
+                    fresh_row_exists: None,
+                    fresh_row_phase: None,
+                    fresh_row_updated_at: None,
+                    query_plus_next_variant_elapsed_ms: None,
+                    query_row_variant_elapsed_ms: None,
+                    query_only_on_elapsed_ms: None,
+                    query_only_effective_query_only: None,
+                    cache_tuned_elapsed_ms: None,
+                    cache_tuned_effective_cache_size: None,
+                    mmap_tuned_elapsed_ms: None,
+                    mmap_tuned_effective_mmap_size: None,
+                }
+            }
+        }
+
+        #[derive(Debug)]
+        enum WorkerMessage {
+            Entered(DiscoveryPersistedRebuildRowStepMetaCompareStage),
+            Snapshot(ProgressSnapshot),
+            Finished(Result<(), String>),
+        }
+
+        #[derive(Debug)]
+        struct QueryPlusNextVariantResult {
+            prepare_meta_elapsed_ms: u64,
+            step_meta_elapsed_ms: u64,
+            extract_phase_elapsed_ms: u64,
+            extract_updated_at_elapsed_ms: u64,
+            total_elapsed_ms: u64,
+            row_exists: bool,
+            row_phase: Option<String>,
+            row_updated_at: Option<String>,
+        }
+
+        #[derive(Debug)]
+        struct QueryRowVariantResult {
+            total_elapsed_ms: u64,
+        }
+
+        fn skipped_stages(
+            current_stage: DiscoveryPersistedRebuildRowStepMetaCompareStage,
+            budget_exhausted: bool,
+        ) -> Vec<DiscoveryPersistedRebuildRowStepMetaCompareStage> {
+            if !budget_exhausted {
+                return Vec::new();
+            }
+            let relevant = [
+                DiscoveryPersistedRebuildRowStepMetaCompareStage::OpenSharedConnection,
+                DiscoveryPersistedRebuildRowStepMetaCompareStage::SharedConnectionCurrentPath,
+                DiscoveryPersistedRebuildRowStepMetaCompareStage::FreshConnectionQueryPlusNext,
+                DiscoveryPersistedRebuildRowStepMetaCompareStage::FreshConnectionQueryRowVariant,
+                DiscoveryPersistedRebuildRowStepMetaCompareStage::FreshConnectionQueryOnlyVariant,
+                DiscoveryPersistedRebuildRowStepMetaCompareStage::FreshConnectionCacheTunedVariant,
+                DiscoveryPersistedRebuildRowStepMetaCompareStage::FreshConnectionMmapTunedVariant,
+                DiscoveryPersistedRebuildRowStepMetaCompareStage::Complete,
+            ];
+            let cutoff_index = relevant
+                .iter()
+                .position(|stage| *stage == current_stage)
+                .unwrap_or(relevant.len());
+            relevant
+                .into_iter()
+                .skip(cutoff_index.saturating_add(1))
+                .collect()
+        }
+
+        let started_at = Instant::now();
+        let deadline = started_at + StdDuration::from_millis(options.budget_ms);
+        let mut diagnostic = DiscoveryPersistedRebuildRowStepMetaCompareDiagnostic {
+            stage: DiscoveryPersistedRebuildRowStepMetaCompareStage::OpenSharedConnection,
+            budget_exhausted: false,
+            skipped_stages: Vec::new(),
+            total_elapsed_ms: 0,
+            baseline_connection_facts: None,
+            shared_prepare_exists_elapsed_ms: None,
+            shared_step_exists_elapsed_ms: None,
+            shared_prepare_meta_elapsed_ms: None,
+            shared_step_meta_elapsed_ms: None,
+            shared_extract_phase_elapsed_ms: None,
+            shared_extract_updated_at_elapsed_ms: None,
+            shared_row_exists: None,
+            shared_row_phase: None,
+            shared_row_updated_at: None,
+            fresh_prepare_meta_elapsed_ms: None,
+            fresh_step_meta_elapsed_ms: None,
+            fresh_extract_phase_elapsed_ms: None,
+            fresh_extract_updated_at_elapsed_ms: None,
+            fresh_row_exists: None,
+            fresh_row_phase: None,
+            fresh_row_updated_at: None,
+            query_plus_next_variant_elapsed_ms: None,
+            query_row_variant_elapsed_ms: None,
+            query_only_on_elapsed_ms: None,
+            query_only_effective_query_only: None,
+            cache_tuned_elapsed_ms: None,
+            cache_tuned_effective_cache_size: None,
+            mmap_tuned_elapsed_ms: None,
+            mmap_tuned_effective_mmap_size: None,
+        };
+        let (tx, rx) = mpsc::sync_channel(16);
+        let runtime_db_path = runtime_db_path.to_path_buf();
+        let options = options.clone();
+        std::thread::spawn(move || {
+            let send_finished = |result: Result<(), anyhow::Error>| {
+                let _ = tx.send(WorkerMessage::Finished(
+                    result.map_err(|error| format!("{error:#}")),
+                ));
+            };
+
+            let mut snapshot = ProgressSnapshot::new();
+
+            fn open_probe_store(
+                runtime_db_path: &Path,
+                query_only: Option<bool>,
+                cache_size: Option<i64>,
+                mmap_size: Option<i64>,
+            ) -> Result<(SqliteStore, crate::SqliteReadOnlyDriverCompareFacts)> {
+                let store = SqliteStore::open_read_only(runtime_db_path).with_context(|| {
+                    format!(
+                        "failed opening runtime sqlite db read-only {}",
+                        runtime_db_path.display()
+                    )
+                })?;
+                if let Some(query_only) = query_only {
+                    store
+                        .conn
+                        .pragma_update(None, "query_only", if query_only { 1 } else { 0 })
+                        .context("failed setting sqlite query_only for step-meta compare")?;
+                }
+                if let Some(cache_size) = cache_size {
+                    store
+                        .conn
+                        .pragma_update(None, "cache_size", cache_size)
+                        .context("failed setting sqlite cache_size for step-meta compare")?;
+                }
+                if let Some(mmap_size) = mmap_size {
+                    store
+                        .conn
+                        .pragma_update(None, "mmap_size", mmap_size)
+                        .context("failed setting sqlite mmap_size for step-meta compare")?;
+                }
+                let facts = store.sqlite_read_only_driver_compare_facts()?;
+                Ok((store, facts))
+            }
+
+            fn run_query_plus_next_variant(
+                store: &SqliteStore,
+                force_step_delay_ms: Option<u64>,
+            ) -> Result<QueryPlusNextVariantResult> {
+                let total_started_at = Instant::now();
+                let prepare_meta_started_at = Instant::now();
+                let mut meta_stmt = store
+                    .conn
+                    .prepare(
+                        "SELECT phase, updated_at
+                         FROM discovery_persisted_rebuild_state
+                         WHERE id = 1",
+                    )
+                    .context("failed preparing persisted rebuild row meta query")?;
+                let prepare_meta_elapsed_ms = prepare_meta_started_at
+                    .elapsed()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64;
+
+                let step_meta_started_at = Instant::now();
+                if let Some(delay_ms) = force_step_delay_ms {
+                    std::thread::sleep(StdDuration::from_millis(delay_ms));
+                }
+                let mut meta_rows = meta_stmt
+                    .query([])
+                    .context("failed querying persisted rebuild row meta")?;
+                let meta_row = meta_rows
+                    .next()
+                    .context("failed stepping persisted rebuild row meta")?;
+                let step_meta_elapsed_ms = step_meta_started_at
+                    .elapsed()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64;
+                let Some(meta_row) = meta_row else {
+                    drop(meta_rows);
+                    drop(meta_stmt);
+                    return Ok(QueryPlusNextVariantResult {
+                        prepare_meta_elapsed_ms,
+                        step_meta_elapsed_ms,
+                        extract_phase_elapsed_ms: 0,
+                        extract_updated_at_elapsed_ms: 0,
+                        total_elapsed_ms: total_started_at
+                            .elapsed()
+                            .as_millis()
+                            .min(u64::MAX as u128) as u64,
+                        row_exists: false,
+                        row_phase: None,
+                        row_updated_at: None,
+                    });
+                };
+
+                let extract_phase_started_at = Instant::now();
+                let phase = meta_row
+                    .get::<_, String>(0)
+                    .context("failed extracting persisted rebuild phase")?;
+                let extract_phase_elapsed_ms = extract_phase_started_at
+                    .elapsed()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64;
+
+                let extract_updated_at_started_at = Instant::now();
+                let updated_at = meta_row
+                    .get::<_, String>(1)
+                    .context("failed extracting persisted rebuild updated_at")?;
+                let extract_updated_at_elapsed_ms = extract_updated_at_started_at
+                    .elapsed()
+                    .as_millis()
+                    .min(u64::MAX as u128)
+                    as u64;
+
+                drop(meta_rows);
+                drop(meta_stmt);
+
+                Ok(QueryPlusNextVariantResult {
+                    prepare_meta_elapsed_ms,
+                    step_meta_elapsed_ms,
+                    extract_phase_elapsed_ms,
+                    extract_updated_at_elapsed_ms,
+                    total_elapsed_ms: total_started_at.elapsed().as_millis().min(u64::MAX as u128)
+                        as u64,
+                    row_exists: true,
+                    row_phase: Some(phase),
+                    row_updated_at: Some(updated_at),
+                })
+            }
+
+            fn run_query_row_variant(
+                store: &SqliteStore,
+                force_delay_ms: Option<u64>,
+            ) -> Result<QueryRowVariantResult> {
+                let started_at = Instant::now();
+                if let Some(delay_ms) = force_delay_ms {
+                    std::thread::sleep(StdDuration::from_millis(delay_ms));
+                }
+                let row = store
+                    .conn
+                    .query_row(
+                        "SELECT phase, updated_at
+                         FROM discovery_persisted_rebuild_state
+                         WHERE id = 1",
+                        [],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .optional()
+                    .context("failed executing persisted rebuild row meta query_row variant")?;
+                let _row = row;
+                Ok(QueryRowVariantResult {
+                    total_elapsed_ms: started_at.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                })
+            }
+
+            let _ = tx.send(WorkerMessage::Entered(
+                DiscoveryPersistedRebuildRowStepMetaCompareStage::OpenSharedConnection,
+            ));
+            let (shared_store, shared_facts) =
+                match open_probe_store(&runtime_db_path, None, None, None) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                };
+            snapshot.baseline_connection_facts = Some(shared_facts);
+            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                return;
+            }
+
+            let _ = tx.send(WorkerMessage::Entered(
+                DiscoveryPersistedRebuildRowStepMetaCompareStage::SharedConnectionCurrentPath,
+            ));
+            let prepare_exists_started_at = Instant::now();
+            let mut exists_stmt = match shared_store
+                .conn
+                .prepare("SELECT 1 FROM discovery_persisted_rebuild_state WHERE id = 1")
+                .context("failed preparing persisted rebuild exists probe")
+            {
+                Ok(stmt) => stmt,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.shared_prepare_exists_elapsed_ms = Some(
+                prepare_exists_started_at
+                    .elapsed()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            );
+            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                return;
+            }
+
+            let step_exists_started_at = Instant::now();
+            let exists_row = {
+                let mut exists_rows = match exists_stmt.query([]) {
+                    Ok(rows) => rows,
+                    Err(error) => {
+                        send_finished(
+                            Err(error).context("failed querying persisted rebuild exists probe"),
+                        );
+                        return;
+                    }
+                };
+                match exists_rows.next() {
+                    Ok(value) => value.is_some(),
+                    Err(error) => {
+                        send_finished(
+                            Err(error).context("failed stepping persisted rebuild exists probe"),
+                        );
+                        return;
+                    }
+                }
+            };
+            snapshot.shared_step_exists_elapsed_ms = Some(
+                step_exists_started_at
+                    .elapsed()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            );
+            snapshot.shared_row_exists = Some(exists_row);
+            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                return;
+            }
+            drop(exists_stmt);
+
+            if !exists_row {
+                let _ = tx.send(WorkerMessage::Finished(Ok(())));
+                return;
+            }
+
+            let shared_variant = match run_query_plus_next_variant(
+                &shared_store,
+                options.test_force_shared_step_meta_delay_ms,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.shared_prepare_meta_elapsed_ms = Some(shared_variant.prepare_meta_elapsed_ms);
+            snapshot.shared_step_meta_elapsed_ms = Some(shared_variant.step_meta_elapsed_ms);
+            snapshot.shared_extract_phase_elapsed_ms =
+                Some(shared_variant.extract_phase_elapsed_ms);
+            snapshot.shared_extract_updated_at_elapsed_ms =
+                Some(shared_variant.extract_updated_at_elapsed_ms);
+            snapshot.shared_row_exists = Some(shared_variant.row_exists);
+            snapshot.shared_row_phase = shared_variant.row_phase;
+            snapshot.shared_row_updated_at = shared_variant.row_updated_at;
+            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                return;
+            }
+
+            let _ = tx.send(WorkerMessage::Entered(
+                DiscoveryPersistedRebuildRowStepMetaCompareStage::FreshConnectionQueryPlusNext,
+            ));
+            let (fresh_store, _) = match open_probe_store(&runtime_db_path, None, None, None) {
+                Ok(value) => value,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            let fresh_variant = match run_query_plus_next_variant(
+                &fresh_store,
+                options.test_force_fresh_connection_query_delay_ms,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.fresh_prepare_meta_elapsed_ms = Some(fresh_variant.prepare_meta_elapsed_ms);
+            snapshot.fresh_step_meta_elapsed_ms = Some(fresh_variant.step_meta_elapsed_ms);
+            snapshot.fresh_extract_phase_elapsed_ms = Some(fresh_variant.extract_phase_elapsed_ms);
+            snapshot.fresh_extract_updated_at_elapsed_ms =
+                Some(fresh_variant.extract_updated_at_elapsed_ms);
+            snapshot.fresh_row_exists = Some(fresh_variant.row_exists);
+            snapshot.fresh_row_phase = fresh_variant.row_phase;
+            snapshot.fresh_row_updated_at = fresh_variant.row_updated_at;
+            snapshot.query_plus_next_variant_elapsed_ms = Some(fresh_variant.total_elapsed_ms);
+            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                return;
+            }
+
+            let _ = tx.send(WorkerMessage::Entered(
+                DiscoveryPersistedRebuildRowStepMetaCompareStage::FreshConnectionQueryRowVariant,
+            ));
+            let (query_row_store, _) = match open_probe_store(&runtime_db_path, None, None, None) {
+                Ok(value) => value,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            let query_row_variant = match run_query_row_variant(
+                &query_row_store,
+                options.test_force_fresh_connection_query_delay_ms,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.query_row_variant_elapsed_ms = Some(query_row_variant.total_elapsed_ms);
+            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                return;
+            }
+
+            let _ = tx.send(WorkerMessage::Entered(
+                DiscoveryPersistedRebuildRowStepMetaCompareStage::FreshConnectionQueryOnlyVariant,
+            ));
+            let (query_only_store, query_only_facts) =
+                match open_probe_store(&runtime_db_path, Some(true), None, None) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                };
+            let query_only_variant = match run_query_plus_next_variant(
+                &query_only_store,
+                options.test_force_fresh_connection_query_delay_ms,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.query_only_on_elapsed_ms = Some(query_only_variant.total_elapsed_ms);
+            snapshot.query_only_effective_query_only = Some(query_only_facts.query_only);
+            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                return;
+            }
+
+            let _ = tx.send(WorkerMessage::Entered(
+                DiscoveryPersistedRebuildRowStepMetaCompareStage::FreshConnectionCacheTunedVariant,
+            ));
+            let (cache_tuned_store, cache_tuned_facts) =
+                match open_probe_store(&runtime_db_path, None, Some(-131_072), None) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                };
+            let cache_tuned_variant = match run_query_plus_next_variant(
+                &cache_tuned_store,
+                options.test_force_fresh_connection_query_delay_ms,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.cache_tuned_elapsed_ms = Some(cache_tuned_variant.total_elapsed_ms);
+            snapshot.cache_tuned_effective_cache_size = Some(cache_tuned_facts.cache_size);
+            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                return;
+            }
+
+            let _ = tx.send(WorkerMessage::Entered(
+                DiscoveryPersistedRebuildRowStepMetaCompareStage::FreshConnectionMmapTunedVariant,
+            ));
+            let (mmap_tuned_store, mmap_tuned_facts) =
+                match open_probe_store(&runtime_db_path, None, None, Some(268_435_456)) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                };
+            let mmap_tuned_variant = match run_query_plus_next_variant(
+                &mmap_tuned_store,
+                options.test_force_fresh_connection_query_delay_ms,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.mmap_tuned_elapsed_ms = Some(mmap_tuned_variant.total_elapsed_ms);
+            snapshot.mmap_tuned_effective_mmap_size = Some(mmap_tuned_facts.mmap_size);
+            if tx.send(WorkerMessage::Snapshot(snapshot)).is_err() {
+                return;
+            }
+
+            let _ = tx.send(WorkerMessage::Finished(Ok(())));
+        });
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                diagnostic.budget_exhausted = true;
+                diagnostic.total_elapsed_ms =
+                    started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                diagnostic.skipped_stages = skipped_stages(diagnostic.stage, true);
+                return Ok(diagnostic);
+            }
+
+            match rx.recv_timeout(remaining) {
+                Ok(WorkerMessage::Entered(stage)) => {
+                    diagnostic.stage = stage;
+                }
+                Ok(WorkerMessage::Snapshot(snapshot)) => {
+                    diagnostic.baseline_connection_facts = snapshot.baseline_connection_facts;
+                    diagnostic.shared_prepare_exists_elapsed_ms =
+                        snapshot.shared_prepare_exists_elapsed_ms;
+                    diagnostic.shared_step_exists_elapsed_ms =
+                        snapshot.shared_step_exists_elapsed_ms;
+                    diagnostic.shared_prepare_meta_elapsed_ms =
+                        snapshot.shared_prepare_meta_elapsed_ms;
+                    diagnostic.shared_step_meta_elapsed_ms = snapshot.shared_step_meta_elapsed_ms;
+                    diagnostic.shared_extract_phase_elapsed_ms =
+                        snapshot.shared_extract_phase_elapsed_ms;
+                    diagnostic.shared_extract_updated_at_elapsed_ms =
+                        snapshot.shared_extract_updated_at_elapsed_ms;
+                    diagnostic.shared_row_exists = snapshot.shared_row_exists;
+                    diagnostic.shared_row_phase = snapshot.shared_row_phase;
+                    diagnostic.shared_row_updated_at = snapshot.shared_row_updated_at;
+                    diagnostic.fresh_prepare_meta_elapsed_ms =
+                        snapshot.fresh_prepare_meta_elapsed_ms;
+                    diagnostic.fresh_step_meta_elapsed_ms = snapshot.fresh_step_meta_elapsed_ms;
+                    diagnostic.fresh_extract_phase_elapsed_ms =
+                        snapshot.fresh_extract_phase_elapsed_ms;
+                    diagnostic.fresh_extract_updated_at_elapsed_ms =
+                        snapshot.fresh_extract_updated_at_elapsed_ms;
+                    diagnostic.fresh_row_exists = snapshot.fresh_row_exists;
+                    diagnostic.fresh_row_phase = snapshot.fresh_row_phase;
+                    diagnostic.fresh_row_updated_at = snapshot.fresh_row_updated_at;
+                    diagnostic.query_plus_next_variant_elapsed_ms =
+                        snapshot.query_plus_next_variant_elapsed_ms;
+                    diagnostic.query_row_variant_elapsed_ms = snapshot.query_row_variant_elapsed_ms;
+                    diagnostic.query_only_on_elapsed_ms = snapshot.query_only_on_elapsed_ms;
+                    diagnostic.query_only_effective_query_only =
+                        snapshot.query_only_effective_query_only;
+                    diagnostic.cache_tuned_elapsed_ms = snapshot.cache_tuned_elapsed_ms;
+                    diagnostic.cache_tuned_effective_cache_size =
+                        snapshot.cache_tuned_effective_cache_size;
+                    diagnostic.mmap_tuned_elapsed_ms = snapshot.mmap_tuned_elapsed_ms;
+                    diagnostic.mmap_tuned_effective_mmap_size =
+                        snapshot.mmap_tuned_effective_mmap_size;
+                }
+                Ok(WorkerMessage::Finished(result)) => {
+                    if let Err(error) = result {
+                        return Err(anyhow!(
+                            "persisted rebuild row step-meta compare worker failed: {error}"
+                        ));
+                    }
+                    diagnostic.stage = DiscoveryPersistedRebuildRowStepMetaCompareStage::Complete;
+                    diagnostic.total_elapsed_ms =
+                        started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                    diagnostic.skipped_stages = Vec::new();
+                    return Ok(diagnostic);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    diagnostic.budget_exhausted = true;
+                    diagnostic.total_elapsed_ms =
+                        started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                    diagnostic.skipped_stages = skipped_stages(diagnostic.stage, true);
+                    return Ok(diagnostic);
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(anyhow!(
+                        "persisted rebuild row step-meta compare worker disconnected before returning a result"
                     ));
                 }
             }
