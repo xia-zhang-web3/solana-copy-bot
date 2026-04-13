@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use copybot_discovery::{
-    DiscoveryService, ReplayCheckpointRuntimeDbDiagnostic, ReplayCheckpointRuntimeDbOnlyMode,
+    DiscoveryService, RawPersistedRebuildRowProbeDiagnostic, ReplayCheckpointRuntimeDbDiagnostic,
+    ReplayCheckpointRuntimeDbOnlyMode,
 };
 use copybot_storage::SqliteStore;
 use serde_json::{Map, Value};
@@ -8,7 +9,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS: u64 = 30_000;
-const USAGE: &str = "usage: discovery_replay_checkpoint_diagnose [--inspect-persisted-rebuild-row-meta-lite | --inspect-persisted-rebuild-row-meta | --inspect-persisted-rebuild-state | --explain-publishable-checkpoint-blocker | --compare-sol-leg-source-vs-checkpoint | --explain-replay-sol-leg-incomplete] --runtime-db <path> [--recent-raw-db <path>] [--budget-ms <ms>] [--json]";
+const USAGE: &str = "usage: discovery_replay_checkpoint_diagnose [--inspect-persisted-rebuild-row-meta-lite | --inspect-persisted-rebuild-row-meta | --inspect-persisted-rebuild-state | --explain-publishable-checkpoint-blocker | --compare-sol-leg-source-vs-checkpoint | --explain-replay-sol-leg-incomplete | --probe-persisted-rebuild-row-raw] --runtime-db <path> [--recent-raw-db <path>] [--budget-ms <ms>] [--json]";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -28,6 +29,7 @@ enum Mode {
     ExplainPublishableCheckpointBlocker,
     CompareSolLegSourceVsCheckpoint,
     ExplainReplaySolLegIncomplete,
+    ProbePersistedRebuildRowRaw,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +83,9 @@ where
             )?,
             "--explain-replay-sol-leg-incomplete" => {
                 set_mode(&mut mode, Mode::ExplainReplaySolLegIncomplete, arg.as_str())?
+            }
+            "--probe-persisted-rebuild-row-raw" => {
+                set_mode(&mut mode, Mode::ProbePersistedRebuildRowRaw, arg.as_str())?
             }
             "--runtime-db" => {
                 runtime_db = Some(PathBuf::from(parse_string_arg(
@@ -252,6 +257,10 @@ fn render_runtime_db_diagnostic_json(
     Ok(Value::Object(map))
 }
 
+fn render_raw_probe_json(diagnostic: &RawPersistedRebuildRowProbeDiagnostic) -> Result<Value> {
+    serde_json::to_value(diagnostic).context("failed serializing raw persisted rebuild row probe")
+}
+
 fn run(config: Config) -> Result<String> {
     let output = match config.mode {
         Mode::InspectPersistedRebuildRowMetaLite => render_runtime_db_diagnostic_json(
@@ -310,6 +319,12 @@ fn run(config: Config) -> Result<String> {
                 )?,
             )?
         }
+        Mode::ProbePersistedRebuildRowRaw => render_raw_probe_json(
+            &DiscoveryService::probe_persisted_rebuild_row_raw_read_only(
+                &config.runtime_db,
+                config.budget_ms,
+            )?,
+        )?,
     };
     render_json(&output, config.json)
 }
@@ -372,6 +387,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_accepts_raw_probe_mode_stage1() -> Result<()> {
+        let config = parse_args_from([
+            "--probe-persisted-rebuild-row-raw".to_string(),
+            "--runtime-db".to_string(),
+            "runtime.sqlite".to_string(),
+        ])?
+        .expect("config should parse");
+        assert_eq!(config.mode, Mode::ProbePersistedRebuildRowRaw);
+        Ok(())
+    }
+
+    #[test]
     fn run_replay_row_meta_lite_reports_missing_checkpoint_json_stage1() -> Result<()> {
         let (_temp, runtime_db) = make_test_store("diagnose-meta-runtime.sqlite")?;
         let output = run(Config {
@@ -409,6 +436,31 @@ mod tests {
         assert_eq!(json["diagnostic_budget_exhausted"], false);
         assert_eq!(json["diagnostic_stage"], "complete");
         assert_eq!(json["meta_state_json_bytes_requested"], true);
+        Ok(())
+    }
+
+    #[test]
+    fn run_raw_probe_reports_missing_checkpoint_json_stage1() -> Result<()> {
+        let (_temp, runtime_db) = make_test_store("diagnose-raw-probe-runtime.sqlite")?;
+        let output = run(Config {
+            mode: Mode::ProbePersistedRebuildRowRaw,
+            runtime_db,
+            recent_raw_db: None,
+            json: true,
+            budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+        })?;
+        let json: serde_json::Value =
+            serde_json::from_str(&output).context("invalid json output")?;
+        assert_eq!(json["raw_persisted_rebuild_row_exists"], false);
+        assert_eq!(
+            json["raw_persisted_rebuild_row_reason_class"],
+            "row_missing"
+        );
+        assert!(json["raw_runtime_db_page_size"].is_number());
+        assert!(json["raw_runtime_db_page_count"].is_number());
+        assert!(json["raw_runtime_db_freelist_count"].is_number());
+        assert!(json["raw_runtime_db_journal_mode"].is_string());
+        assert!(json["raw_runtime_db_locking_mode"].is_string());
         Ok(())
     }
 

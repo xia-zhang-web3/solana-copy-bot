@@ -1577,6 +1577,15 @@ pub struct DiscoveryPersistedRebuildStateMetaLiteRawRow {
     pub updated_at_raw: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqliteReadOnlyProbeFacts {
+    pub page_size: usize,
+    pub page_count: usize,
+    pub freelist_count: usize,
+    pub journal_mode: String,
+    pub locking_mode: String,
+}
+
 #[derive(Debug, Clone)]
 struct LiveOpenPositionRow {
     position_id: String,
@@ -2172,6 +2181,36 @@ impl SqliteStore {
     pub fn snapshot_database(source_path: &Path, destination_path: &Path) -> Result<()> {
         let source = Self::open_read_only(source_path)?;
         source.snapshot_into_path(destination_path)
+    }
+
+    pub fn sqlite_read_only_probe_facts(&self) -> Result<SqliteReadOnlyProbeFacts> {
+        let page_size: i64 = self
+            .conn
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .context("failed reading sqlite read-only probe page_size")?;
+        let page_count: i64 = self
+            .conn
+            .query_row("PRAGMA page_count", [], |row| row.get(0))
+            .context("failed reading sqlite read-only probe page_count")?;
+        let freelist_count: i64 = self
+            .conn
+            .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+            .context("failed reading sqlite read-only probe freelist_count")?;
+        let journal_mode: String = self
+            .conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .context("failed reading sqlite read-only probe journal_mode")?;
+        let locking_mode: String = self
+            .conn
+            .query_row("PRAGMA locking_mode", [], |row| row.get(0))
+            .context("failed reading sqlite read-only probe locking_mode")?;
+        Ok(SqliteReadOnlyProbeFacts {
+            page_size: page_size.max(0) as usize,
+            page_count: page_count.max(0) as usize,
+            freelist_count: freelist_count.max(0) as usize,
+            journal_mode,
+            locking_mode,
+        })
     }
 
     pub(crate) fn sqlite_table_exists(&self, table_name: &str) -> Result<bool> {

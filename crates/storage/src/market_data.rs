@@ -3582,6 +3582,26 @@ impl SqliteStore {
         ))
     }
 
+    pub fn explain_discovery_persisted_rebuild_state_meta_query_plan_after_table_exists_read_only(
+        &self,
+    ) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT phase, updated_at
+                 FROM discovery_persisted_rebuild_state
+                 WHERE id = 1",
+            )
+            .context("failed preparing discovery persisted rebuild state meta query plan")?;
+        let plan_rows = stmt
+            .query_map([], |row| row.get::<_, String>(3))
+            .context("failed querying discovery persisted rebuild state meta query plan")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed collecting discovery persisted rebuild state meta query plan")?;
+        Ok(plan_rows)
+    }
+
     pub fn load_discovery_persisted_rebuild_state_meta_lite_raw_read_only(
         &self,
     ) -> Result<Option<DiscoveryPersistedRebuildStateMetaLiteRawRow>> {
@@ -3606,6 +3626,26 @@ impl SqliteStore {
             .optional()
             .context("failed reading discovery persisted rebuild state json byte length")?;
         Ok(state_json_bytes.map(|bytes| bytes.max(0) as usize))
+    }
+
+    pub fn explain_discovery_persisted_rebuild_state_size_query_plan_after_table_exists_read_only(
+        &self,
+    ) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT length(CAST(state_json AS BLOB))
+                 FROM discovery_persisted_rebuild_state
+                 WHERE id = 1",
+            )
+            .context("failed preparing discovery persisted rebuild state size query plan")?;
+        let plan_rows = stmt
+            .query_map([], |row| row.get::<_, String>(3))
+            .context("failed querying discovery persisted rebuild state size query plan")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed collecting discovery persisted rebuild state size query plan")?;
+        Ok(plan_rows)
     }
 
     pub fn load_discovery_persisted_rebuild_state_json_bytes_read_only(

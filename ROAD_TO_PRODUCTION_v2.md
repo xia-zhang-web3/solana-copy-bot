@@ -8099,10 +8099,55 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
         reopen / duplicate `sqlite_table_exists(...)` work
       - timeout paths now preserve row existence as unknown when existence has
         not been proven yet, instead of serializing false “row missing” output
-      - practical result:
+    - practical result:
         the next live operator run can distinguish the first exact meta
         substage on the current runtime DB without hidden reopen work and
         without false `persisted_rebuild_row_exists=false` output
+    - the next accepted Stage 3 follow-up adds one raw persisted-rebuild-row
+      proof surface over the exact live seam itself:
+      - `--probe-persisted-rebuild-row-raw --runtime-db <path> --json`
+      - it probes the exact SQL directly, not through the higher-level
+        replay-checkpoint classifier first:
+        - `EXPLAIN QUERY PLAN SELECT phase, updated_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+        - `SELECT phase, updated_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+        - `EXPLAIN QUERY PLAN SELECT length(CAST(state_json AS BLOB)) FROM discovery_persisted_rebuild_state WHERE id = 1`
+        - `SELECT length(CAST(state_json AS BLOB)) FROM discovery_persisted_rebuild_state WHERE id = 1`
+      - it reports explicit raw proof fields:
+        - `raw_row_meta_query_plan`
+        - `raw_row_size_query_plan`
+        - `raw_row_meta_query_elapsed_ms`
+        - `raw_row_size_query_elapsed_ms`
+        - `raw_row_phase`
+        - `raw_row_updated_at`
+        - `raw_row_state_json_bytes`
+        - `raw_runtime_db_page_size`
+        - `raw_runtime_db_page_count`
+        - `raw_runtime_db_freelist_count`
+        - `raw_runtime_db_journal_mode`
+        - `raw_runtime_db_locking_mode`
+        - `raw_persisted_rebuild_row_reason_class`
+        - `raw_persisted_rebuild_row_explanation`
+      - the accepted correction on top of that raw probe keeps
+        `raw_persisted_rebuild_row_exists` unknown on all pre-query timeout
+        paths instead of regressing to a false “row missing” signal after
+        `CheckTableExists`
+      - current live proof on `52.28.0.218` after rolling out that tooling-only
+        bin is now concrete:
+        - both meta-only modes still stop first in
+          `diagnostic_meta_substage="query_row_meta"`
+        - `EXPLAIN QUERY PLAN` for both exact SQL statements shows
+          `SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+        - raw point lookup timing on the live runtime DB is about `24.67s` for
+          `SELECT phase, updated_at ... WHERE id = 1`
+        - raw size timing is about `24.88s` for
+          `SELECT length(CAST(state_json AS BLOB)) ... WHERE id = 1`
+        - the current persisted rebuild row carries
+          `raw_row_state_json_bytes = 999516220`
+      - practical result:
+        the remaining live blocker is no longer “something inside
+        replay_sol_leg_incomplete”; it is now the exact raw persisted-rebuild
+        row payload path behind a single-row PK lookup on
+        `discovery_persisted_rebuild_state(id=1)`
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 

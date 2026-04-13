@@ -75,6 +75,8 @@ const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MAX_TIME_BUDGET_MS:
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MAX_OBSERVED_MS_PER_PAGE: u64 = 10_000;
 const REPLAY_CHECKPOINT_DIAGNOSE_SOURCE_SCAN_PAGE_LIMIT: usize = 10_000;
 const REPLAY_CHECKPOINT_DIAGNOSE_SOURCE_SCAN_PAGE_DEADLINE_MS: u64 = 30_000;
+const RAW_PERSISTED_REBUILD_ROW_SLOW_QUERY_MS_THRESHOLD: u64 = 5_000;
+const RAW_PERSISTED_REBUILD_ROW_LARGE_STATE_JSON_BYTES_THRESHOLD: usize = 16 * 1024 * 1024;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_NUMERATOR: usize =
     3;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_DENOMINATOR: usize =
@@ -97,6 +99,9 @@ static TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_CHECK_TABLE_EXISTS_DELAY_MS: A
     AtomicU64::new(u64::MAX);
 #[cfg(test)]
 static TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_QUERY_DELAY_MS: AtomicU64 =
+    AtomicU64::new(u64::MAX);
+#[cfg(test)]
+static TEST_FORCE_REPLAY_CHECKPOINT_RAW_PROBE_META_PLAN_DELAY_MS: AtomicU64 =
     AtomicU64::new(u64::MAX);
 #[cfg(test)]
 static TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_PARSE_PHASE_DELAY_MS: AtomicU64 =
@@ -203,6 +208,19 @@ fn arm_test_force_replay_checkpoint_diagnose_meta_query_delay_ms(delay_ms: u64) 
 #[cfg(test)]
 fn take_test_force_replay_checkpoint_diagnose_meta_query_delay_ms() -> Option<u64> {
     let delay_ms = TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_QUERY_DELAY_MS
+        .swap(u64::MAX, AtomicOrdering::SeqCst);
+    (delay_ms != u64::MAX).then_some(delay_ms)
+}
+
+#[cfg(test)]
+fn arm_test_force_replay_checkpoint_raw_probe_meta_plan_delay_ms(delay_ms: u64) {
+    TEST_FORCE_REPLAY_CHECKPOINT_RAW_PROBE_META_PLAN_DELAY_MS
+        .store(delay_ms, AtomicOrdering::SeqCst);
+}
+
+#[cfg(test)]
+fn take_test_force_replay_checkpoint_raw_probe_meta_plan_delay_ms() -> Option<u64> {
+    let delay_ms = TEST_FORCE_REPLAY_CHECKPOINT_RAW_PROBE_META_PLAN_DELAY_MS
         .swap(u64::MAX, AtomicOrdering::SeqCst);
     (delay_ms != u64::MAX).then_some(delay_ms)
 }
@@ -1728,6 +1746,60 @@ pub struct ReplayCheckpointRuntimeDbDiagnostic {
     pub blocker_explanation: Option<PublishableCheckpointBlockerExplanation>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RawPersistedRebuildRowProbeStage {
+    OpenDbReadOnly,
+    CheckTableExists,
+    ExplainMetaQueryPlan,
+    QueryRowMeta,
+    ExplainSizeQueryPlan,
+    QueryRowStateJsonSize,
+    LoadRuntimeDbFacts,
+    Complete,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RawPersistedRebuildRowReasonClass {
+    RowMissing,
+    RowMetaQueryFast,
+    RowMetaQuerySlowWithLargeStateJsonPayload,
+    RowMetaQuerySlowWithoutLargeStateJsonPayload,
+    RowMetaQueryPlanNotRowidLookup,
+    RowMetaQueryUnprovenDueToProbeBudgetExhausted,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RawPersistedRebuildRowProbeDiagnostic {
+    pub raw_probe_stage: RawPersistedRebuildRowProbeStage,
+    pub raw_probe_budget_exhausted: bool,
+    pub raw_probe_skipped_stages: Vec<RawPersistedRebuildRowProbeStage>,
+    pub raw_probe_open_db_elapsed_ms: Option<u64>,
+    pub raw_probe_check_table_exists_elapsed_ms: Option<u64>,
+    pub raw_probe_meta_query_plan_elapsed_ms: Option<u64>,
+    pub raw_probe_meta_query_elapsed_ms: Option<u64>,
+    pub raw_probe_size_query_plan_elapsed_ms: Option<u64>,
+    pub raw_probe_size_query_elapsed_ms: Option<u64>,
+    pub raw_probe_runtime_db_facts_elapsed_ms: Option<u64>,
+    pub raw_probe_total_elapsed_ms: u64,
+    pub raw_persisted_rebuild_row_exists: Option<bool>,
+    pub raw_row_meta_query_plan: Option<Vec<String>>,
+    pub raw_row_size_query_plan: Option<Vec<String>>,
+    pub raw_row_meta_query_elapsed_ms: Option<u64>,
+    pub raw_row_size_query_elapsed_ms: Option<u64>,
+    pub raw_row_phase: Option<String>,
+    pub raw_row_updated_at: Option<String>,
+    pub raw_row_state_json_bytes: Option<usize>,
+    pub raw_runtime_db_page_size: Option<usize>,
+    pub raw_runtime_db_page_count: Option<usize>,
+    pub raw_runtime_db_freelist_count: Option<usize>,
+    pub raw_runtime_db_journal_mode: Option<String>,
+    pub raw_runtime_db_locking_mode: Option<String>,
+    pub raw_persisted_rebuild_row_reason_class: RawPersistedRebuildRowReasonClass,
+    pub raw_persisted_rebuild_row_explanation: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedPersistedReplayCheckpointState(PersistedStreamRebuildState);
 
@@ -2010,6 +2082,113 @@ impl DiscoveryService {
             .with_context(|| {
                 format!("invalid discovery persisted rebuild metadata updated_at: {updated_at_raw}")
             })
+    }
+
+    fn raw_persisted_rebuild_row_plan_uses_rowid_lookup(plan: &[String]) -> bool {
+        plan.iter().any(|detail| {
+            detail.contains("SEARCH discovery_persisted_rebuild_state")
+                && detail.contains("INTEGER PRIMARY KEY")
+                && detail.contains("rowid=?")
+        })
+    }
+
+    fn raw_persisted_rebuild_row_skipped_stages(
+        current_stage: RawPersistedRebuildRowProbeStage,
+        budget_exhausted: bool,
+    ) -> Vec<RawPersistedRebuildRowProbeStage> {
+        if !budget_exhausted {
+            return Vec::new();
+        }
+        let relevant = [
+            RawPersistedRebuildRowProbeStage::OpenDbReadOnly,
+            RawPersistedRebuildRowProbeStage::CheckTableExists,
+            RawPersistedRebuildRowProbeStage::ExplainMetaQueryPlan,
+            RawPersistedRebuildRowProbeStage::QueryRowMeta,
+            RawPersistedRebuildRowProbeStage::ExplainSizeQueryPlan,
+            RawPersistedRebuildRowProbeStage::QueryRowStateJsonSize,
+            RawPersistedRebuildRowProbeStage::LoadRuntimeDbFacts,
+            RawPersistedRebuildRowProbeStage::Complete,
+        ];
+        let cutoff_index = relevant
+            .iter()
+            .position(|stage| *stage == current_stage)
+            .unwrap_or(relevant.len());
+        relevant
+            .into_iter()
+            .skip(cutoff_index.saturating_add(1))
+            .collect()
+    }
+
+    fn classify_raw_persisted_rebuild_row_probe(
+        diagnostic: &RawPersistedRebuildRowProbeDiagnostic,
+    ) -> (RawPersistedRebuildRowReasonClass, String) {
+        if diagnostic.raw_probe_budget_exhausted {
+            return (
+                RawPersistedRebuildRowReasonClass::RowMetaQueryUnprovenDueToProbeBudgetExhausted,
+                format!(
+                    "raw persisted rebuild row probe exhausted its diagnostic budget while in stage {} before it could prove the exact row path completely",
+                    serde_json::to_string(&diagnostic.raw_probe_stage)
+                        .unwrap_or_else(|_| "\"unknown\"".to_string())
+                        .trim_matches('"')
+                ),
+            );
+        }
+
+        if diagnostic.raw_persisted_rebuild_row_exists == Some(false) {
+            return (
+                RawPersistedRebuildRowReasonClass::RowMissing,
+                "discovery_persisted_rebuild_state(id=1) is missing in the runtime db".to_string(),
+            );
+        }
+
+        let meta_plan_uses_rowid = diagnostic
+            .raw_row_meta_query_plan
+            .as_ref()
+            .is_some_and(|plan| Self::raw_persisted_rebuild_row_plan_uses_rowid_lookup(plan));
+        let size_plan_uses_rowid = diagnostic
+            .raw_row_size_query_plan
+            .as_ref()
+            .is_some_and(|plan| Self::raw_persisted_rebuild_row_plan_uses_rowid_lookup(plan));
+        if !meta_plan_uses_rowid || !size_plan_uses_rowid {
+            return (
+                RawPersistedRebuildRowReasonClass::RowMetaQueryPlanNotRowidLookup,
+                format!(
+                    "raw persisted rebuild row probe did not observe a rowid lookup plan for both direct queries (meta_rowid_lookup={}, size_rowid_lookup={})",
+                    meta_plan_uses_rowid,
+                    size_plan_uses_rowid
+                ),
+            );
+        }
+
+        let meta_query_elapsed_ms = diagnostic.raw_row_meta_query_elapsed_ms.unwrap_or(0);
+        let state_json_bytes = diagnostic.raw_row_state_json_bytes.unwrap_or(0);
+        if meta_query_elapsed_ms <= RAW_PERSISTED_REBUILD_ROW_SLOW_QUERY_MS_THRESHOLD {
+            return (
+                RawPersistedRebuildRowReasonClass::RowMetaQueryFast,
+                format!(
+                    "raw persisted rebuild row meta query stayed within the fast threshold (meta_query_elapsed_ms={}, state_json_bytes={})",
+                    meta_query_elapsed_ms, state_json_bytes
+                ),
+            );
+        }
+
+        if state_json_bytes >= RAW_PERSISTED_REBUILD_ROW_LARGE_STATE_JSON_BYTES_THRESHOLD {
+            return (
+                RawPersistedRebuildRowReasonClass::RowMetaQuerySlowWithLargeStateJsonPayload,
+                format!(
+                    "raw persisted rebuild row meta query was slow despite a rowid lookup, and the same row carries a large state_json payload (meta_query_elapsed_ms={}, state_json_bytes={})",
+                    meta_query_elapsed_ms, state_json_bytes
+                ),
+            );
+        }
+
+        (
+            RawPersistedRebuildRowReasonClass::RowMetaQuerySlowWithoutLargeStateJsonPayload,
+            format!(
+                "raw persisted rebuild row meta query was slow despite a rowid lookup, but the measured state_json payload was not large enough to explain that on its own (meta_query_elapsed_ms={}, state_json_bytes={})",
+                meta_query_elapsed_ms, state_json_bytes
+            ),
+        )
     }
 
     fn empty_persisted_rebuild_state_inspection() -> PersistedReplayCheckpointInspection {
@@ -2940,6 +3119,401 @@ impl DiscoveryService {
         diagnostic.diagnostic_total_elapsed_ms =
             started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
         Ok(diagnostic)
+    }
+
+    pub fn probe_persisted_rebuild_row_raw_read_only(
+        runtime_db_path: &Path,
+        budget_ms: u64,
+    ) -> Result<RawPersistedRebuildRowProbeDiagnostic> {
+        #[derive(Debug, Clone)]
+        struct RawProbeSnapshot {
+            raw_persisted_rebuild_row_exists: Option<bool>,
+            raw_row_meta_query_plan: Option<Vec<String>>,
+            raw_row_size_query_plan: Option<Vec<String>>,
+            raw_row_meta_query_elapsed_ms: Option<u64>,
+            raw_row_size_query_elapsed_ms: Option<u64>,
+            raw_row_phase: Option<String>,
+            raw_row_updated_at: Option<String>,
+            raw_row_state_json_bytes: Option<usize>,
+            raw_runtime_db_page_size: Option<usize>,
+            raw_runtime_db_page_count: Option<usize>,
+            raw_runtime_db_freelist_count: Option<usize>,
+            raw_runtime_db_journal_mode: Option<String>,
+            raw_runtime_db_locking_mode: Option<String>,
+            raw_probe_open_db_elapsed_ms: Option<u64>,
+            raw_probe_check_table_exists_elapsed_ms: Option<u64>,
+            raw_probe_meta_query_plan_elapsed_ms: Option<u64>,
+            raw_probe_meta_query_elapsed_ms: Option<u64>,
+            raw_probe_size_query_plan_elapsed_ms: Option<u64>,
+            raw_probe_size_query_elapsed_ms: Option<u64>,
+            raw_probe_runtime_db_facts_elapsed_ms: Option<u64>,
+        }
+
+        impl RawProbeSnapshot {
+            fn new() -> Self {
+                Self {
+                    raw_persisted_rebuild_row_exists: None,
+                    raw_row_meta_query_plan: None,
+                    raw_row_size_query_plan: None,
+                    raw_row_meta_query_elapsed_ms: None,
+                    raw_row_size_query_elapsed_ms: None,
+                    raw_row_phase: None,
+                    raw_row_updated_at: None,
+                    raw_row_state_json_bytes: None,
+                    raw_runtime_db_page_size: None,
+                    raw_runtime_db_page_count: None,
+                    raw_runtime_db_freelist_count: None,
+                    raw_runtime_db_journal_mode: None,
+                    raw_runtime_db_locking_mode: None,
+                    raw_probe_open_db_elapsed_ms: None,
+                    raw_probe_check_table_exists_elapsed_ms: None,
+                    raw_probe_meta_query_plan_elapsed_ms: None,
+                    raw_probe_meta_query_elapsed_ms: None,
+                    raw_probe_size_query_plan_elapsed_ms: None,
+                    raw_probe_size_query_elapsed_ms: None,
+                    raw_probe_runtime_db_facts_elapsed_ms: None,
+                }
+            }
+        }
+
+        #[derive(Debug)]
+        enum RawProbeWorkerMessage {
+            Entered(RawPersistedRebuildRowProbeStage),
+            Snapshot(RawProbeSnapshot),
+            Finished(Result<(), String>),
+        }
+
+        let started_at = Instant::now();
+        let deadline = started_at + StdDuration::from_millis(budget_ms);
+        let mut diagnostic = RawPersistedRebuildRowProbeDiagnostic {
+            raw_probe_stage: RawPersistedRebuildRowProbeStage::OpenDbReadOnly,
+            raw_probe_budget_exhausted: false,
+            raw_probe_skipped_stages: Vec::new(),
+            raw_probe_open_db_elapsed_ms: None,
+            raw_probe_check_table_exists_elapsed_ms: None,
+            raw_probe_meta_query_plan_elapsed_ms: None,
+            raw_probe_meta_query_elapsed_ms: None,
+            raw_probe_size_query_plan_elapsed_ms: None,
+            raw_probe_size_query_elapsed_ms: None,
+            raw_probe_runtime_db_facts_elapsed_ms: None,
+            raw_probe_total_elapsed_ms: 0,
+            raw_persisted_rebuild_row_exists: None,
+            raw_row_meta_query_plan: None,
+            raw_row_size_query_plan: None,
+            raw_row_meta_query_elapsed_ms: None,
+            raw_row_size_query_elapsed_ms: None,
+            raw_row_phase: None,
+            raw_row_updated_at: None,
+            raw_row_state_json_bytes: None,
+            raw_runtime_db_page_size: None,
+            raw_runtime_db_page_count: None,
+            raw_runtime_db_freelist_count: None,
+            raw_runtime_db_journal_mode: None,
+            raw_runtime_db_locking_mode: None,
+            raw_persisted_rebuild_row_reason_class:
+                RawPersistedRebuildRowReasonClass::RowMetaQueryUnprovenDueToProbeBudgetExhausted,
+            raw_persisted_rebuild_row_explanation:
+                "raw persisted rebuild row probe has not completed yet".to_string(),
+        };
+
+        let (tx, rx) = mpsc::sync_channel(16);
+        let runtime_db_path = runtime_db_path.to_path_buf();
+        thread::spawn(move || {
+            let send_finished = |result: Result<(), anyhow::Error>| {
+                let _ = tx.send(RawProbeWorkerMessage::Finished(
+                    result.map_err(|error| format!("{error:#}")),
+                ));
+            };
+
+            let mut snapshot = RawProbeSnapshot::new();
+
+            let _ = tx.send(RawProbeWorkerMessage::Entered(
+                RawPersistedRebuildRowProbeStage::OpenDbReadOnly,
+            ));
+            let open_started_at = Instant::now();
+            let store = match SqliteStore::open_read_only(&runtime_db_path).with_context(|| {
+                format!(
+                    "failed opening runtime sqlite db read-only {}",
+                    runtime_db_path.display()
+                )
+            }) {
+                Ok(store) => store,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.raw_probe_open_db_elapsed_ms =
+                Some(open_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+            if tx
+                .send(RawProbeWorkerMessage::Snapshot(snapshot.clone()))
+                .is_err()
+            {
+                return;
+            }
+
+            let _ = tx.send(RawProbeWorkerMessage::Entered(
+                RawPersistedRebuildRowProbeStage::CheckTableExists,
+            ));
+            let check_started_at = Instant::now();
+            let table_exists = match Self::replay_checkpoint_runtime_db_meta_row_exists(&store) {
+                Ok(value) => value,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.raw_probe_check_table_exists_elapsed_ms =
+                Some(check_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+            if !table_exists {
+                snapshot.raw_persisted_rebuild_row_exists = Some(false);
+            }
+            if tx
+                .send(RawProbeWorkerMessage::Snapshot(snapshot.clone()))
+                .is_err()
+            {
+                return;
+            }
+
+            if table_exists {
+                let _ = tx.send(RawProbeWorkerMessage::Entered(
+                    RawPersistedRebuildRowProbeStage::ExplainMetaQueryPlan,
+                ));
+                let meta_plan_started_at = Instant::now();
+                #[cfg(test)]
+                if let Some(delay_ms) =
+                    take_test_force_replay_checkpoint_raw_probe_meta_plan_delay_ms()
+                {
+                    thread::sleep(StdDuration::from_millis(delay_ms));
+                }
+                let meta_query_plan = match store
+                    .explain_discovery_persisted_rebuild_state_meta_query_plan_after_table_exists_read_only()
+                {
+                    Ok(value) => value,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                };
+                snapshot.raw_probe_meta_query_plan_elapsed_ms = Some(
+                    meta_plan_started_at
+                        .elapsed()
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64,
+                );
+                snapshot.raw_row_meta_query_plan = Some(meta_query_plan);
+                if tx
+                    .send(RawProbeWorkerMessage::Snapshot(snapshot.clone()))
+                    .is_err()
+                {
+                    return;
+                }
+
+                let _ = tx.send(RawProbeWorkerMessage::Entered(
+                    RawPersistedRebuildRowProbeStage::QueryRowMeta,
+                ));
+                let meta_query_started_at = Instant::now();
+                let raw_meta = match Self::replay_checkpoint_runtime_db_meta_query_lite_raw(&store)
+                {
+                    Ok(value) => value,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                };
+                snapshot.raw_probe_meta_query_elapsed_ms = Some(
+                    meta_query_started_at
+                        .elapsed()
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64,
+                );
+                snapshot.raw_row_meta_query_elapsed_ms = snapshot.raw_probe_meta_query_elapsed_ms;
+                if let Some(raw_meta) = raw_meta {
+                    snapshot.raw_persisted_rebuild_row_exists = Some(true);
+                    snapshot.raw_row_phase = Some(raw_meta.phase_raw);
+                    snapshot.raw_row_updated_at = Some(raw_meta.updated_at_raw);
+                } else {
+                    snapshot.raw_persisted_rebuild_row_exists = Some(false);
+                }
+                if tx
+                    .send(RawProbeWorkerMessage::Snapshot(snapshot.clone()))
+                    .is_err()
+                {
+                    return;
+                }
+
+                let _ = tx.send(RawProbeWorkerMessage::Entered(
+                    RawPersistedRebuildRowProbeStage::ExplainSizeQueryPlan,
+                ));
+                let size_plan_started_at = Instant::now();
+                let size_query_plan = match store
+                    .explain_discovery_persisted_rebuild_state_size_query_plan_after_table_exists_read_only()
+                {
+                    Ok(value) => value,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                };
+                snapshot.raw_probe_size_query_plan_elapsed_ms = Some(
+                    size_plan_started_at
+                        .elapsed()
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64,
+                );
+                snapshot.raw_row_size_query_plan = Some(size_query_plan);
+                if tx
+                    .send(RawProbeWorkerMessage::Snapshot(snapshot.clone()))
+                    .is_err()
+                {
+                    return;
+                }
+
+                let _ = tx.send(RawProbeWorkerMessage::Entered(
+                    RawPersistedRebuildRowProbeStage::QueryRowStateJsonSize,
+                ));
+                let size_query_started_at = Instant::now();
+                let state_json_bytes =
+                    match Self::replay_checkpoint_runtime_db_meta_state_json_bytes(&store) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            send_finished(Err(error));
+                            return;
+                        }
+                    };
+                snapshot.raw_probe_size_query_elapsed_ms = Some(
+                    size_query_started_at
+                        .elapsed()
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64,
+                );
+                snapshot.raw_row_size_query_elapsed_ms = snapshot.raw_probe_size_query_elapsed_ms;
+                snapshot.raw_row_state_json_bytes = state_json_bytes;
+                if tx
+                    .send(RawProbeWorkerMessage::Snapshot(snapshot.clone()))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+
+            let _ = tx.send(RawProbeWorkerMessage::Entered(
+                RawPersistedRebuildRowProbeStage::LoadRuntimeDbFacts,
+            ));
+            let facts_started_at = Instant::now();
+            let facts = match store.sqlite_read_only_probe_facts() {
+                Ok(value) => value,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.raw_probe_runtime_db_facts_elapsed_ms =
+                Some(facts_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+            snapshot.raw_runtime_db_page_size = Some(facts.page_size);
+            snapshot.raw_runtime_db_page_count = Some(facts.page_count);
+            snapshot.raw_runtime_db_freelist_count = Some(facts.freelist_count);
+            snapshot.raw_runtime_db_journal_mode = Some(facts.journal_mode);
+            snapshot.raw_runtime_db_locking_mode = Some(facts.locking_mode);
+            if tx.send(RawProbeWorkerMessage::Snapshot(snapshot)).is_err() {
+                return;
+            }
+
+            let _ = tx.send(RawProbeWorkerMessage::Finished(Ok(())));
+        });
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                diagnostic.raw_probe_budget_exhausted = true;
+                diagnostic.raw_probe_total_elapsed_ms =
+                    started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                diagnostic.raw_probe_skipped_stages =
+                    Self::raw_persisted_rebuild_row_skipped_stages(
+                        diagnostic.raw_probe_stage,
+                        true,
+                    );
+                let (reason_class, explanation) =
+                    Self::classify_raw_persisted_rebuild_row_probe(&diagnostic);
+                diagnostic.raw_persisted_rebuild_row_reason_class = reason_class;
+                diagnostic.raw_persisted_rebuild_row_explanation = explanation;
+                return Ok(diagnostic);
+            }
+
+            match rx.recv_timeout(remaining) {
+                Ok(RawProbeWorkerMessage::Entered(stage)) => {
+                    diagnostic.raw_probe_stage = stage;
+                }
+                Ok(RawProbeWorkerMessage::Snapshot(snapshot)) => {
+                    diagnostic.raw_persisted_rebuild_row_exists =
+                        snapshot.raw_persisted_rebuild_row_exists;
+                    diagnostic.raw_row_meta_query_plan = snapshot.raw_row_meta_query_plan;
+                    diagnostic.raw_row_size_query_plan = snapshot.raw_row_size_query_plan;
+                    diagnostic.raw_row_meta_query_elapsed_ms =
+                        snapshot.raw_row_meta_query_elapsed_ms;
+                    diagnostic.raw_row_size_query_elapsed_ms =
+                        snapshot.raw_row_size_query_elapsed_ms;
+                    diagnostic.raw_row_phase = snapshot.raw_row_phase;
+                    diagnostic.raw_row_updated_at = snapshot.raw_row_updated_at;
+                    diagnostic.raw_row_state_json_bytes = snapshot.raw_row_state_json_bytes;
+                    diagnostic.raw_runtime_db_page_size = snapshot.raw_runtime_db_page_size;
+                    diagnostic.raw_runtime_db_page_count = snapshot.raw_runtime_db_page_count;
+                    diagnostic.raw_runtime_db_freelist_count =
+                        snapshot.raw_runtime_db_freelist_count;
+                    diagnostic.raw_runtime_db_journal_mode = snapshot.raw_runtime_db_journal_mode;
+                    diagnostic.raw_runtime_db_locking_mode = snapshot.raw_runtime_db_locking_mode;
+                    diagnostic.raw_probe_open_db_elapsed_ms = snapshot.raw_probe_open_db_elapsed_ms;
+                    diagnostic.raw_probe_check_table_exists_elapsed_ms =
+                        snapshot.raw_probe_check_table_exists_elapsed_ms;
+                    diagnostic.raw_probe_meta_query_plan_elapsed_ms =
+                        snapshot.raw_probe_meta_query_plan_elapsed_ms;
+                    diagnostic.raw_probe_meta_query_elapsed_ms =
+                        snapshot.raw_probe_meta_query_elapsed_ms;
+                    diagnostic.raw_probe_size_query_plan_elapsed_ms =
+                        snapshot.raw_probe_size_query_plan_elapsed_ms;
+                    diagnostic.raw_probe_size_query_elapsed_ms =
+                        snapshot.raw_probe_size_query_elapsed_ms;
+                    diagnostic.raw_probe_runtime_db_facts_elapsed_ms =
+                        snapshot.raw_probe_runtime_db_facts_elapsed_ms;
+                }
+                Ok(RawProbeWorkerMessage::Finished(result)) => {
+                    if let Err(error) = result {
+                        return Err(anyhow!(
+                            "raw persisted rebuild row probe worker failed: {error}"
+                        ));
+                    }
+                    diagnostic.raw_probe_stage = RawPersistedRebuildRowProbeStage::Complete;
+                    diagnostic.raw_probe_total_elapsed_ms =
+                        started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                    diagnostic.raw_probe_skipped_stages = Vec::new();
+                    let (reason_class, explanation) =
+                        Self::classify_raw_persisted_rebuild_row_probe(&diagnostic);
+                    diagnostic.raw_persisted_rebuild_row_reason_class = reason_class;
+                    diagnostic.raw_persisted_rebuild_row_explanation = explanation;
+                    return Ok(diagnostic);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    diagnostic.raw_probe_budget_exhausted = true;
+                    diagnostic.raw_probe_total_elapsed_ms =
+                        started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                    diagnostic.raw_probe_skipped_stages =
+                        Self::raw_persisted_rebuild_row_skipped_stages(
+                            diagnostic.raw_probe_stage,
+                            true,
+                        );
+                    let (reason_class, explanation) =
+                        Self::classify_raw_persisted_rebuild_row_probe(&diagnostic);
+                    diagnostic.raw_persisted_rebuild_row_reason_class = reason_class;
+                    diagnostic.raw_persisted_rebuild_row_explanation = explanation;
+                    return Ok(diagnostic);
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(anyhow!(
+                        "raw persisted rebuild row probe worker disconnected before returning a result"
+                    ));
+                }
+            }
+        }
     }
 
     fn scan_replay_sol_leg_source_ahead_from_state(
@@ -38454,6 +39028,210 @@ mod tests {
     }
 
     #[test]
+    fn replay_checkpoint_raw_probe_emits_exact_rowid_query_plans_stage1() -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::probe_persisted_rebuild_row_raw_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        let expected_plan =
+            "SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)";
+        assert_eq!(diagnostic.raw_persisted_rebuild_row_exists, Some(true));
+        assert!(diagnostic
+            .raw_row_meta_query_plan
+            .as_ref()
+            .is_some_and(|plan| plan.iter().any(|detail| detail.contains(expected_plan))));
+        assert!(diagnostic
+            .raw_row_size_query_plan
+            .as_ref()
+            .is_some_and(|plan| plan.iter().any(|detail| detail.contains(expected_plan))));
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_raw_probe_surfaces_separate_meta_and_size_timings_stage1() -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::probe_persisted_rebuild_row_raw_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        assert_eq!(
+            diagnostic.raw_probe_stage,
+            RawPersistedRebuildRowProbeStage::Complete
+        );
+        assert!(!diagnostic.raw_probe_budget_exhausted);
+        assert!(diagnostic.raw_probe_meta_query_plan_elapsed_ms.is_some());
+        assert!(diagnostic.raw_probe_meta_query_elapsed_ms.is_some());
+        assert!(diagnostic.raw_probe_size_query_plan_elapsed_ms.is_some());
+        assert!(diagnostic.raw_probe_size_query_elapsed_ms.is_some());
+        assert!(diagnostic.raw_probe_runtime_db_facts_elapsed_ms.is_some());
+        assert_eq!(
+            diagnostic.raw_row_meta_query_elapsed_ms,
+            diagnostic.raw_probe_meta_query_elapsed_ms
+        );
+        assert_eq!(
+            diagnostic.raw_row_size_query_elapsed_ms,
+            diagnostic.raw_probe_size_query_elapsed_ms
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_raw_probe_distinguishes_missing_row_vs_present_row_stage1() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp.path().join("stage1-raw-probe-missing.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+
+        let missing = DiscoveryService::probe_persisted_rebuild_row_raw_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        assert_eq!(missing.raw_persisted_rebuild_row_exists, Some(false));
+        assert_eq!(
+            missing.raw_persisted_rebuild_row_reason_class,
+            RawPersistedRebuildRowReasonClass::RowMissing
+        );
+
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let present = DiscoveryService::probe_persisted_rebuild_row_raw_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        assert_eq!(present.raw_persisted_rebuild_row_exists, Some(true));
+        assert_ne!(
+            present.raw_persisted_rebuild_row_reason_class,
+            RawPersistedRebuildRowReasonClass::RowMissing
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_raw_probe_emits_large_state_json_size_when_present_stage1() -> Result<()> {
+        let (temp, runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let mut row = runtime_store
+            .load_discovery_persisted_rebuild_state_read_only()?
+            .expect("persisted rebuild row should exist");
+        let target_bytes = RAW_PERSISTED_REBUILD_ROW_LARGE_STATE_JSON_BYTES_THRESHOLD + 1_024;
+        row.state_json = format!("\"{}\"", "x".repeat(target_bytes.saturating_sub(2)));
+        runtime_store.upsert_discovery_persisted_rebuild_state(&row)?;
+
+        let diagnostic = DiscoveryService::probe_persisted_rebuild_row_raw_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        assert_eq!(diagnostic.raw_persisted_rebuild_row_exists, Some(true));
+        assert_eq!(diagnostic.raw_row_state_json_bytes, Some(target_bytes));
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_raw_probe_reason_classifies_slow_large_payload_stage1() -> Result<()> {
+        let (temp, runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let mut row = runtime_store
+            .load_discovery_persisted_rebuild_state_read_only()?
+            .expect("persisted rebuild row should exist");
+        let target_bytes = RAW_PERSISTED_REBUILD_ROW_LARGE_STATE_JSON_BYTES_THRESHOLD + 1_024;
+        row.state_json = format!("\"{}\"", "x".repeat(target_bytes.saturating_sub(2)));
+        runtime_store.upsert_discovery_persisted_rebuild_state(&row)?;
+
+        arm_test_force_replay_checkpoint_diagnose_meta_query_delay_ms(
+            RAW_PERSISTED_REBUILD_ROW_SLOW_QUERY_MS_THRESHOLD + 50,
+        );
+        let diagnostic = DiscoveryService::probe_persisted_rebuild_row_raw_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        assert_eq!(
+            diagnostic.raw_persisted_rebuild_row_reason_class,
+            RawPersistedRebuildRowReasonClass::RowMetaQuerySlowWithLargeStateJsonPayload
+        );
+        assert!(diagnostic
+            .raw_persisted_rebuild_row_explanation
+            .contains("large state_json payload"));
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_raw_probe_meta_plan_budget_exhaustion_keeps_row_existence_unproven_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        arm_test_force_replay_checkpoint_raw_probe_meta_plan_delay_ms(1_500);
+        let diagnostic = DiscoveryService::probe_persisted_rebuild_row_raw_read_only(
+            Path::new(&runtime_db_path),
+            500,
+        )?;
+        assert!(diagnostic.raw_probe_budget_exhausted);
+        assert_eq!(
+            diagnostic.raw_probe_stage,
+            RawPersistedRebuildRowProbeStage::ExplainMetaQueryPlan
+        );
+        assert_eq!(
+            diagnostic.raw_probe_check_table_exists_elapsed_ms.is_some(),
+            true
+        );
+        assert_eq!(diagnostic.raw_persisted_rebuild_row_exists, None);
+        assert_eq!(
+            diagnostic.raw_persisted_rebuild_row_reason_class,
+            RawPersistedRebuildRowReasonClass::RowMetaQueryUnprovenDueToProbeBudgetExhausted
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_raw_probe_query_budget_exhaustion_keeps_row_existence_unproven_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        arm_test_force_replay_checkpoint_diagnose_meta_query_delay_ms(1_500);
+        let diagnostic = DiscoveryService::probe_persisted_rebuild_row_raw_read_only(
+            Path::new(&runtime_db_path),
+            500,
+        )?;
+        assert!(diagnostic.raw_probe_budget_exhausted);
+        assert_eq!(
+            diagnostic.raw_probe_stage,
+            RawPersistedRebuildRowProbeStage::QueryRowMeta
+        );
+        assert!(diagnostic.raw_probe_check_table_exists_elapsed_ms.is_some());
+        assert!(diagnostic.raw_probe_meta_query_plan_elapsed_ms.is_some());
+        assert_eq!(diagnostic.raw_persisted_rebuild_row_exists, None);
+        assert_eq!(
+            diagnostic.raw_persisted_rebuild_row_reason_class,
+            RawPersistedRebuildRowReasonClass::RowMetaQueryUnprovenDueToProbeBudgetExhausted
+        );
+        Ok(())
+    }
+
+    #[test]
     fn replay_checkpoint_runtime_db_inspect_reports_stage_timings_stage1() -> Result<()> {
         let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
             seed_stage1_deferred_runtime_publication_refresh_fixture()?;
@@ -38988,6 +39766,10 @@ mod tests {
         let _ = DiscoveryService::diagnose_runtime_db_replay_checkpoint_read_only(
             Path::new(&runtime_db_path),
             ReplayCheckpointRuntimeDbOnlyMode::Inspect,
+            30_000,
+        )?;
+        let _ = DiscoveryService::probe_persisted_rebuild_row_raw_read_only(
+            Path::new(&runtime_db_path),
             30_000,
         )?;
 
