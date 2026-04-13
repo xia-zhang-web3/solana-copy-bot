@@ -7,6 +7,9 @@ use copybot_storage::{
     DiscoveryPersistedRebuildRowDriverCompareDiagnostic as StorageDriverCompareDiagnostic,
     DiscoveryPersistedRebuildRowDriverCompareOptions as StorageDriverCompareOptions,
     DiscoveryPersistedRebuildRowDriverCompareStage as StorageDriverCompareStage,
+    DiscoveryPersistedRebuildRowSharedPathDiffDiagnostic as StorageSharedPathDiffDiagnostic,
+    DiscoveryPersistedRebuildRowSharedPathDiffOptions as StorageSharedPathDiffOptions,
+    DiscoveryPersistedRebuildRowSharedPathDiffStage as StorageSharedPathDiffStage,
     DiscoveryPersistedRebuildRowSharedSequenceCompareDiagnostic as StorageSharedSequenceCompareDiagnostic,
     DiscoveryPersistedRebuildRowSharedSequenceCompareOptions as StorageSharedSequenceCompareOptions,
     DiscoveryPersistedRebuildRowSharedSequenceCompareStage as StorageSharedSequenceCompareStage,
@@ -1882,6 +1885,24 @@ pub enum PersistedRebuildRowSharedSequenceCompareReasonClass {
     SharedSequenceNoMaterialSequenceEffectObserved,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PersistedRebuildRowSharedPathDiffStage {
+    StepMetaDetailSharedPath,
+    SharedSequenceBaselinePath,
+    Complete,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PersistedRebuildRowSharedPathDiffReasonClass {
+    SharedPathDiffUnprovenDueToBudgetExhausted,
+    SharedPathDiffRowMissing,
+    SharedPathDiffConnectionFactsLoadPrecedesOldPathOnly,
+    SharedPathDiffMeasurementBucketsNotEquivalent,
+    SharedPathDiffNoMaterialImplementationDifferenceObserved,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PersistedRebuildRowStepMetaCompareDiagnostic {
     pub step_meta_compare_stage: StorageStepMetaCompareStage,
@@ -1959,6 +1980,38 @@ pub struct PersistedRebuildRowSharedSequenceCompareDiagnostic {
     pub shared_sequence_compare_explanation: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PersistedRebuildRowSharedPathDiffDiagnostic {
+    pub shared_path_diff_stage: PersistedRebuildRowSharedPathDiffStage,
+    pub shared_path_diff_budget_exhausted: bool,
+    pub shared_path_diff_total_elapsed_ms: u64,
+    pub shared_path_diff_step_meta_detail_prepare_exists_elapsed_ms: Option<u64>,
+    pub shared_path_diff_step_meta_detail_step_exists_elapsed_ms: Option<u64>,
+    pub shared_path_diff_step_meta_detail_prepare_meta_elapsed_ms: Option<u64>,
+    pub shared_path_diff_step_meta_detail_step_meta_elapsed_ms: Option<u64>,
+    pub shared_path_diff_step_meta_detail_extract_phase_elapsed_ms: Option<u64>,
+    pub shared_path_diff_step_meta_detail_extract_updated_at_elapsed_ms: Option<u64>,
+    pub shared_path_diff_step_meta_detail_row_exists: Option<bool>,
+    pub shared_path_diff_shared_sequence_prepare_exists_elapsed_ms: Option<u64>,
+    pub shared_path_diff_shared_sequence_step_exists_elapsed_ms: Option<u64>,
+    pub shared_path_diff_shared_sequence_step_meta_elapsed_ms: Option<u64>,
+    pub shared_path_diff_shared_sequence_row_exists: Option<bool>,
+    pub shared_path_diff_step_meta_detail_loads_connection_facts_before_meta_query: bool,
+    pub shared_path_diff_shared_sequence_loads_connection_facts_before_meta_query: bool,
+    pub shared_path_diff_step_meta_detail_uses_query_plus_next: bool,
+    pub shared_path_diff_shared_sequence_uses_query_plus_next: bool,
+    pub shared_path_diff_step_meta_detail_finalizes_exists_before_prepare_meta: bool,
+    pub shared_path_diff_shared_sequence_finalizes_exists_before_prepare_meta: bool,
+    pub shared_path_diff_step_meta_detail_extracts_phase_and_updated_at_after_step: bool,
+    pub shared_path_diff_shared_sequence_extracts_phase_and_updated_at_after_step: bool,
+    pub shared_path_diff_step_meta_detail_measures_prepare_meta_separately: bool,
+    pub shared_path_diff_shared_sequence_measures_prepare_meta_separately: bool,
+    pub shared_path_diff_step_meta_detail_measures_extract_separately: bool,
+    pub shared_path_diff_shared_sequence_measures_extract_separately: bool,
+    pub shared_path_diff_reason_class: PersistedRebuildRowSharedPathDiffReasonClass,
+    pub shared_path_diff_explanation: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedPersistedReplayCheckpointState(PersistedStreamRebuildState);
 
@@ -1981,6 +2034,13 @@ struct ReplaySolLegSourceAheadSummary {
     last_cursor: Option<DiscoveryRuntimeCursor>,
     access_path: Option<ObservedSolLegCursorAccessPath>,
     time_budget_exhausted: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SharedPathDiffProbeOptions {
+    budget_ms: u64,
+    test_force_step_meta_detail_shared_step_meta_delay_ms: Option<u64>,
+    test_force_shared_sequence_baseline_step_meta_delay_ms: Option<u64>,
 }
 
 fn should_request_persisted_stream_catch_up(telemetry: &PersistedStreamProgressTelemetry) -> bool {
@@ -2835,6 +2895,160 @@ impl DiscoveryService {
         )
     }
 
+    fn classify_persisted_rebuild_row_shared_path_diff(
+        diagnostic: &PersistedRebuildRowSharedPathDiffDiagnostic,
+    ) -> (PersistedRebuildRowSharedPathDiffReasonClass, String) {
+        if diagnostic.shared_path_diff_budget_exhausted {
+            return (
+                PersistedRebuildRowSharedPathDiffReasonClass::SharedPathDiffUnprovenDueToBudgetExhausted,
+                format!(
+                    "shared-path diff exhausted its diagnostic budget while in stage {} before both actual shared-path probes completed",
+                    serde_json::to_string(&diagnostic.shared_path_diff_stage)
+                        .unwrap_or_else(|_| "\"unknown\"".to_string())
+                        .trim_matches('"')
+                ),
+            );
+        }
+
+        if diagnostic.shared_path_diff_step_meta_detail_row_exists == Some(false) {
+            return (
+                PersistedRebuildRowSharedPathDiffReasonClass::SharedPathDiffRowMissing,
+                "the compared shared paths proved that discovery_persisted_rebuild_state(id=1) is missing on the runtime db".to_string(),
+            );
+        }
+
+        if diagnostic.shared_path_diff_step_meta_detail_loads_connection_facts_before_meta_query
+            != diagnostic.shared_path_diff_shared_sequence_loads_connection_facts_before_meta_query
+        {
+            return (
+                PersistedRebuildRowSharedPathDiffReasonClass::SharedPathDiffConnectionFactsLoadPrecedesOldPathOnly,
+                format!(
+                    "the old step-meta-detail shared path loads connection facts before the shared meta query while the shared-sequence baseline does not (old_loads_connection_facts_before_meta_query={}, shared_sequence_loads_connection_facts_before_meta_query={})",
+                    diagnostic
+                        .shared_path_diff_step_meta_detail_loads_connection_facts_before_meta_query,
+                    diagnostic
+                        .shared_path_diff_shared_sequence_loads_connection_facts_before_meta_query
+                ),
+            );
+        }
+
+        if diagnostic.shared_path_diff_step_meta_detail_uses_query_plus_next
+            != diagnostic.shared_path_diff_shared_sequence_uses_query_plus_next
+            || diagnostic.shared_path_diff_step_meta_detail_finalizes_exists_before_prepare_meta
+                != diagnostic.shared_path_diff_shared_sequence_finalizes_exists_before_prepare_meta
+        {
+            return (
+                PersistedRebuildRowSharedPathDiffReasonClass::SharedPathDiffMeasurementBucketsNotEquivalent,
+                format!(
+                    "the isolated shared paths are not implementation-equivalent for the compared shared step: old_path(loads_connection_facts_before_meta_query={}, uses_query_plus_next={}, finalizes_exists_before_prepare_meta={}) vs shared_sequence(loads_connection_facts_before_meta_query={}, uses_query_plus_next={}, finalizes_exists_before_prepare_meta={})",
+                    diagnostic
+                        .shared_path_diff_step_meta_detail_loads_connection_facts_before_meta_query,
+                    diagnostic.shared_path_diff_step_meta_detail_uses_query_plus_next,
+                    diagnostic
+                        .shared_path_diff_step_meta_detail_finalizes_exists_before_prepare_meta,
+                    diagnostic
+                        .shared_path_diff_shared_sequence_loads_connection_facts_before_meta_query,
+                    diagnostic.shared_path_diff_shared_sequence_uses_query_plus_next,
+                    diagnostic.shared_path_diff_shared_sequence_finalizes_exists_before_prepare_meta
+                ),
+            );
+        }
+
+        let measurement_shape_diff =
+            diagnostic.shared_path_diff_step_meta_detail_extracts_phase_and_updated_at_after_step
+                != diagnostic
+                    .shared_path_diff_shared_sequence_extracts_phase_and_updated_at_after_step
+                || diagnostic.shared_path_diff_step_meta_detail_measures_prepare_meta_separately
+                    != diagnostic.shared_path_diff_shared_sequence_measures_prepare_meta_separately
+                || diagnostic.shared_path_diff_step_meta_detail_measures_extract_separately
+                    != diagnostic.shared_path_diff_shared_sequence_measures_extract_separately;
+
+        if measurement_shape_diff {
+            return (
+                PersistedRebuildRowSharedPathDiffReasonClass::SharedPathDiffNoMaterialImplementationDifferenceObserved,
+                format!(
+                    "the isolated shared paths exercise the same shared read-only connection sequence for the compared seam (load_connection_facts_before_meta_query={}, uses_query_plus_next={}, finalizes_exists_before_prepare_meta={}); the remaining difference is only reporting shape, where step-meta-detail additionally exposes prepare/extract timings after the shared step while shared-sequence baseline does not (old_prepare_exists_elapsed_ms={}, old_step_exists_elapsed_ms={}, old_prepare_meta_elapsed_ms={}, old_step_meta_elapsed_ms={}, old_extract_phase_elapsed_ms={}, old_extract_updated_at_elapsed_ms={}, shared_sequence_prepare_exists_elapsed_ms={}, shared_sequence_step_exists_elapsed_ms={}, shared_sequence_step_meta_elapsed_ms={})",
+                    diagnostic
+                        .shared_path_diff_step_meta_detail_loads_connection_facts_before_meta_query,
+                    diagnostic.shared_path_diff_step_meta_detail_uses_query_plus_next,
+                    diagnostic
+                        .shared_path_diff_step_meta_detail_finalizes_exists_before_prepare_meta,
+                    diagnostic
+                        .shared_path_diff_step_meta_detail_prepare_exists_elapsed_ms
+                        .unwrap_or(0),
+                    diagnostic
+                        .shared_path_diff_step_meta_detail_step_exists_elapsed_ms
+                        .unwrap_or(0),
+                    diagnostic
+                        .shared_path_diff_step_meta_detail_prepare_meta_elapsed_ms
+                        .unwrap_or(0),
+                    diagnostic
+                        .shared_path_diff_step_meta_detail_step_meta_elapsed_ms
+                        .unwrap_or(0),
+                    diagnostic
+                        .shared_path_diff_step_meta_detail_extract_phase_elapsed_ms
+                        .unwrap_or(0),
+                    diagnostic
+                        .shared_path_diff_step_meta_detail_extract_updated_at_elapsed_ms
+                        .unwrap_or(0),
+                    diagnostic
+                        .shared_path_diff_shared_sequence_prepare_exists_elapsed_ms
+                        .unwrap_or(0),
+                    diagnostic
+                        .shared_path_diff_shared_sequence_step_exists_elapsed_ms
+                        .unwrap_or(0),
+                    diagnostic
+                        .shared_path_diff_shared_sequence_step_meta_elapsed_ms
+                        .unwrap_or(0),
+                ),
+            );
+        }
+
+        (
+            PersistedRebuildRowSharedPathDiffReasonClass::SharedPathDiffNoMaterialImplementationDifferenceObserved,
+            format!(
+                "no material implementation difference was observed between the isolated old step-meta-detail shared path and the isolated shared-sequence baseline shared path (old_prepare_exists_elapsed_ms={}, old_step_exists_elapsed_ms={}, old_prepare_meta_elapsed_ms={}, old_step_meta_elapsed_ms={}, shared_sequence_prepare_exists_elapsed_ms={}, shared_sequence_step_exists_elapsed_ms={}, shared_sequence_step_meta_elapsed_ms={})",
+                diagnostic
+                    .shared_path_diff_step_meta_detail_prepare_exists_elapsed_ms
+                    .unwrap_or(0),
+                diagnostic
+                    .shared_path_diff_step_meta_detail_step_exists_elapsed_ms
+                    .unwrap_or(0),
+                diagnostic
+                    .shared_path_diff_step_meta_detail_prepare_meta_elapsed_ms
+                    .unwrap_or(0),
+                diagnostic
+                    .shared_path_diff_step_meta_detail_step_meta_elapsed_ms
+                    .unwrap_or(0),
+                diagnostic
+                    .shared_path_diff_shared_sequence_prepare_exists_elapsed_ms
+                    .unwrap_or(0),
+                diagnostic
+                    .shared_path_diff_shared_sequence_step_exists_elapsed_ms
+                    .unwrap_or(0),
+                diagnostic
+                    .shared_path_diff_shared_sequence_step_meta_elapsed_ms
+                    .unwrap_or(0),
+            ),
+        )
+    }
+
+    fn map_storage_shared_path_diff_stage(
+        stage: StorageSharedPathDiffStage,
+    ) -> PersistedRebuildRowSharedPathDiffStage {
+        match stage {
+            StorageSharedPathDiffStage::StepMetaDetailSharedPath => {
+                PersistedRebuildRowSharedPathDiffStage::StepMetaDetailSharedPath
+            }
+            StorageSharedPathDiffStage::SharedSequenceBaselinePath => {
+                PersistedRebuildRowSharedPathDiffStage::SharedSequenceBaselinePath
+            }
+            StorageSharedPathDiffStage::Complete => {
+                PersistedRebuildRowSharedPathDiffStage::Complete
+            }
+        }
+    }
+
     fn map_storage_step_meta_compare_diagnostic(
         diagnostic: StorageStepMetaCompareDiagnostic,
     ) -> PersistedRebuildRowStepMetaCompareDiagnostic {
@@ -2994,6 +3208,69 @@ impl DiscoveryService {
             Self::classify_persisted_rebuild_row_shared_sequence_compare(&mapped);
         mapped.shared_sequence_compare_reason_class = reason_class;
         mapped.shared_sequence_compare_explanation = explanation;
+        mapped
+    }
+
+    fn map_storage_shared_path_diff_diagnostic(
+        diagnostic: StorageSharedPathDiffDiagnostic,
+    ) -> PersistedRebuildRowSharedPathDiffDiagnostic {
+        let mut mapped = PersistedRebuildRowSharedPathDiffDiagnostic {
+            shared_path_diff_stage: Self::map_storage_shared_path_diff_stage(diagnostic.stage),
+            shared_path_diff_budget_exhausted: diagnostic.budget_exhausted,
+            shared_path_diff_total_elapsed_ms: diagnostic.total_elapsed_ms,
+            shared_path_diff_step_meta_detail_prepare_exists_elapsed_ms: diagnostic
+                .step_meta_detail_prepare_exists_elapsed_ms,
+            shared_path_diff_step_meta_detail_step_exists_elapsed_ms: diagnostic
+                .step_meta_detail_step_exists_elapsed_ms,
+            shared_path_diff_step_meta_detail_prepare_meta_elapsed_ms: diagnostic
+                .step_meta_detail_prepare_meta_elapsed_ms,
+            shared_path_diff_step_meta_detail_step_meta_elapsed_ms: diagnostic
+                .step_meta_detail_step_meta_elapsed_ms,
+            shared_path_diff_step_meta_detail_extract_phase_elapsed_ms: diagnostic
+                .step_meta_detail_extract_phase_elapsed_ms,
+            shared_path_diff_step_meta_detail_extract_updated_at_elapsed_ms: diagnostic
+                .step_meta_detail_extract_updated_at_elapsed_ms,
+            shared_path_diff_step_meta_detail_row_exists: diagnostic.step_meta_detail_row_exists,
+            shared_path_diff_shared_sequence_prepare_exists_elapsed_ms: diagnostic
+                .shared_sequence_prepare_exists_elapsed_ms,
+            shared_path_diff_shared_sequence_step_exists_elapsed_ms: diagnostic
+                .shared_sequence_step_exists_elapsed_ms,
+            shared_path_diff_shared_sequence_step_meta_elapsed_ms: diagnostic
+                .shared_sequence_step_meta_elapsed_ms,
+            shared_path_diff_shared_sequence_row_exists: diagnostic.shared_sequence_row_exists,
+            shared_path_diff_step_meta_detail_loads_connection_facts_before_meta_query: diagnostic
+                .step_meta_detail_loads_connection_facts_before_meta_query,
+            shared_path_diff_shared_sequence_loads_connection_facts_before_meta_query: diagnostic
+                .shared_sequence_loads_connection_facts_before_meta_query,
+            shared_path_diff_step_meta_detail_uses_query_plus_next: diagnostic
+                .step_meta_detail_uses_query_plus_next,
+            shared_path_diff_shared_sequence_uses_query_plus_next: diagnostic
+                .shared_sequence_uses_query_plus_next,
+            shared_path_diff_step_meta_detail_finalizes_exists_before_prepare_meta: diagnostic
+                .step_meta_detail_finalizes_exists_before_prepare_meta,
+            shared_path_diff_shared_sequence_finalizes_exists_before_prepare_meta: diagnostic
+                .shared_sequence_finalizes_exists_before_prepare_meta,
+            shared_path_diff_step_meta_detail_extracts_phase_and_updated_at_after_step: diagnostic
+                .step_meta_detail_extracts_phase_and_updated_at_after_step,
+            shared_path_diff_shared_sequence_extracts_phase_and_updated_at_after_step: diagnostic
+                .shared_sequence_extracts_phase_and_updated_at_after_step,
+            shared_path_diff_step_meta_detail_measures_prepare_meta_separately: diagnostic
+                .step_meta_detail_measures_prepare_meta_separately,
+            shared_path_diff_shared_sequence_measures_prepare_meta_separately: diagnostic
+                .shared_sequence_measures_prepare_meta_separately,
+            shared_path_diff_step_meta_detail_measures_extract_separately: diagnostic
+                .step_meta_detail_measures_extract_separately,
+            shared_path_diff_shared_sequence_measures_extract_separately: diagnostic
+                .shared_sequence_measures_extract_separately,
+            shared_path_diff_reason_class:
+                PersistedRebuildRowSharedPathDiffReasonClass::SharedPathDiffUnprovenDueToBudgetExhausted,
+            shared_path_diff_explanation: "shared-path diff has not been classified yet"
+                .to_string(),
+        };
+        let (reason_class, explanation) =
+            Self::classify_persisted_rebuild_row_shared_path_diff(&mapped);
+        mapped.shared_path_diff_reason_class = reason_class;
+        mapped.shared_path_diff_explanation = explanation;
         mapped
     }
 
@@ -4393,6 +4670,37 @@ impl DiscoveryService {
             SqliteStore::probe_discovery_persisted_rebuild_row_shared_sequence_compare_read_only(
                 runtime_db_path,
                 &options,
+            )?,
+        ))
+    }
+
+    pub fn probe_persisted_rebuild_row_shared_path_diff_read_only(
+        runtime_db_path: &Path,
+        budget_ms: u64,
+    ) -> Result<PersistedRebuildRowSharedPathDiffDiagnostic> {
+        Self::probe_persisted_rebuild_row_shared_path_diff_read_only_with_options(
+            runtime_db_path,
+            SharedPathDiffProbeOptions {
+                budget_ms,
+                ..SharedPathDiffProbeOptions::default()
+            },
+        )
+    }
+
+    fn probe_persisted_rebuild_row_shared_path_diff_read_only_with_options(
+        runtime_db_path: &Path,
+        options: SharedPathDiffProbeOptions,
+    ) -> Result<PersistedRebuildRowSharedPathDiffDiagnostic> {
+        Ok(Self::map_storage_shared_path_diff_diagnostic(
+            SqliteStore::probe_discovery_persisted_rebuild_row_shared_path_diff_read_only(
+                runtime_db_path,
+                &StorageSharedPathDiffOptions {
+                    budget_ms: options.budget_ms,
+                    test_force_step_meta_detail_shared_step_meta_delay_ms: options
+                        .test_force_step_meta_detail_shared_step_meta_delay_ms,
+                    test_force_shared_sequence_baseline_step_meta_delay_ms: options
+                        .test_force_shared_sequence_baseline_step_meta_delay_ms,
+                },
             )?,
         ))
     }
@@ -40560,6 +40868,173 @@ mod tests {
     }
 
     #[test]
+    fn replay_checkpoint_shared_path_diff_emits_old_and_new_shared_timings_stage1() -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::probe_persisted_rebuild_row_shared_path_diff_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        assert!(!diagnostic.shared_path_diff_budget_exhausted);
+        assert!(diagnostic
+            .shared_path_diff_step_meta_detail_prepare_exists_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .shared_path_diff_step_meta_detail_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .shared_path_diff_shared_sequence_prepare_exists_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .shared_path_diff_shared_sequence_step_meta_elapsed_ms
+            .is_some());
+        assert_eq!(
+            diagnostic.shared_path_diff_reason_class,
+            PersistedRebuildRowSharedPathDiffReasonClass::SharedPathDiffNoMaterialImplementationDifferenceObserved
+        );
+        assert!(diagnostic
+            .shared_path_diff_explanation
+            .contains("same shared read-only connection sequence"));
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_shared_path_diff_old_shared_delay_is_reported_only_on_old_side_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_shared_path_diff_read_only_with_options(
+                Path::new(&runtime_db_path),
+                SharedPathDiffProbeOptions {
+                    budget_ms: 30_000,
+                    test_force_step_meta_detail_shared_step_meta_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    ..SharedPathDiffProbeOptions::default()
+                },
+            )?;
+        assert!(
+            diagnostic
+                .shared_path_diff_step_meta_detail_step_meta_elapsed_ms
+                .unwrap_or(0)
+                > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD
+        );
+        assert!(
+            diagnostic
+                .shared_path_diff_shared_sequence_step_meta_elapsed_ms
+                .unwrap_or(0)
+                < DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_shared_path_diff_new_shared_delay_is_reported_only_on_new_side_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_shared_path_diff_read_only_with_options(
+                Path::new(&runtime_db_path),
+                SharedPathDiffProbeOptions {
+                    budget_ms: 30_000,
+                    test_force_shared_sequence_baseline_step_meta_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    ..SharedPathDiffProbeOptions::default()
+                },
+            )?;
+        assert!(
+            diagnostic
+                .shared_path_diff_step_meta_detail_step_meta_elapsed_ms
+                .unwrap_or(0)
+                < DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD
+        );
+        assert!(
+            diagnostic
+                .shared_path_diff_shared_sequence_step_meta_elapsed_ms
+                .unwrap_or(0)
+                > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_shared_path_diff_surfaces_connection_facts_load_flags_stage1() -> Result<()>
+    {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::probe_persisted_rebuild_row_shared_path_diff_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        assert!(
+            diagnostic.shared_path_diff_step_meta_detail_loads_connection_facts_before_meta_query
+        );
+        assert!(
+            diagnostic.shared_path_diff_shared_sequence_loads_connection_facts_before_meta_query
+        );
+        assert!(diagnostic.shared_path_diff_step_meta_detail_uses_query_plus_next);
+        assert!(diagnostic.shared_path_diff_shared_sequence_uses_query_plus_next);
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_shared_path_diff_isolated_from_unrelated_later_variants_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+
+        let full_step = DiscoveryService::probe_persisted_rebuild_row_step_meta_compare_read_only_with_options(
+            Path::new(&runtime_db_path),
+            StorageStepMetaCompareOptions {
+                budget_ms: 500,
+                test_force_fresh_connection_query_delay_ms: Some(1_500),
+                ..StorageStepMetaCompareOptions::default()
+            },
+        )?;
+        assert!(full_step.step_meta_compare_budget_exhausted);
+
+        let full_shared_sequence =
+            DiscoveryService::probe_persisted_rebuild_row_shared_sequence_compare_read_only_with_options(
+                Path::new(&runtime_db_path),
+                StorageSharedSequenceCompareOptions {
+                    budget_ms: 500,
+                    test_force_shared_no_exists_step_meta_delay_ms: Some(1_500),
+                    ..StorageSharedSequenceCompareOptions::default()
+                },
+            )?;
+        assert!(full_shared_sequence.shared_sequence_compare_budget_exhausted);
+
+        let diff = DiscoveryService::probe_persisted_rebuild_row_shared_path_diff_read_only(
+            Path::new(&runtime_db_path),
+            500,
+        )?;
+        assert!(!diff.shared_path_diff_budget_exhausted);
+        assert_eq!(
+            diff.shared_path_diff_reason_class,
+            PersistedRebuildRowSharedPathDiffReasonClass::SharedPathDiffNoMaterialImplementationDifferenceObserved
+        );
+        Ok(())
+    }
+
+    #[test]
     fn replay_checkpoint_raw_probe_meta_plan_budget_exhaustion_keeps_row_existence_unproven_stage1(
     ) -> Result<()> {
         let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
@@ -41167,6 +41642,10 @@ mod tests {
             30_000,
         )?;
         let _ = DiscoveryService::probe_persisted_rebuild_row_shared_sequence_compare_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        let _ = DiscoveryService::probe_persisted_rebuild_row_shared_path_diff_read_only(
             Path::new(&runtime_db_path),
             30_000,
         )?;

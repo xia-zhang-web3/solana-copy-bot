@@ -8222,6 +8222,26 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
       - practical result:
         the next live operator run can stop at the exact shared-connection
         sequence seam instead of the broader “shared connection slow” bucket
+    - the next accepted Stage 3 follow-up adds one exact diff surface between
+      the previously accepted shared probes:
+      - `--probe-persisted-rebuild-row-shared-path-diff --runtime-db <path> --json`
+      - it compares only the isolated shared path used by
+        `step-meta-detail` against the isolated baseline shared path used by
+        `shared-sequence-detail`
+      - it no longer depends on unrelated later variants inside the full old or
+        new probes
+      - it keeps the batch read-only and exposes whether the old/new disagreement
+        came from:
+        - a real shared-path implementation difference
+        - or only from reporting-shape differences around the same shared seam
+      - it emits explicit reason classes such as:
+        - `shared_path_diff_connection_facts_load_precedes_old_path_only`
+        - `shared_path_diff_measurement_buckets_not_equivalent`
+        - `shared_path_diff_no_material_implementation_difference_observed`
+      - practical result:
+        the next live operator run can tell whether the old `step_meta_detail`
+        vs new `shared_sequence_detail` disagreement was inside the isolated
+        shared path at all, or only outside that seam
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 

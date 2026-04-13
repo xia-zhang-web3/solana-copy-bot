@@ -1627,6 +1627,14 @@ pub enum DiscoveryPersistedRebuildRowSharedSequenceCompareStage {
     Complete,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryPersistedRebuildRowSharedPathDiffStage {
+    StepMetaDetailSharedPath,
+    SharedSequenceBaselinePath,
+    Complete,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SqliteReadOnlyDriverCompareFacts {
     pub busy_timeout_ms: u64,
@@ -1686,6 +1694,15 @@ pub struct DiscoveryPersistedRebuildRowSharedSequenceCompareOptions {
     pub test_force_fresh_connection_step_meta_delay_ms: Option<u64>,
     #[doc(hidden)]
     pub test_disable_explicit_reset_variant: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DiscoveryPersistedRebuildRowSharedPathDiffOptions {
+    pub budget_ms: u64,
+    #[doc(hidden)]
+    pub test_force_step_meta_detail_shared_step_meta_delay_ms: Option<u64>,
+    #[doc(hidden)]
+    pub test_force_shared_sequence_baseline_step_meta_delay_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1770,6 +1787,36 @@ pub struct DiscoveryPersistedRebuildRowSharedSequenceCompareDiagnostic {
     pub after_explicit_reset_row_exists: Option<bool>,
     pub fresh_connection_step_meta_elapsed_ms: Option<u64>,
     pub fresh_connection_row_exists: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveryPersistedRebuildRowSharedPathDiffDiagnostic {
+    pub stage: DiscoveryPersistedRebuildRowSharedPathDiffStage,
+    pub budget_exhausted: bool,
+    pub total_elapsed_ms: u64,
+    pub step_meta_detail_prepare_exists_elapsed_ms: Option<u64>,
+    pub step_meta_detail_step_exists_elapsed_ms: Option<u64>,
+    pub step_meta_detail_prepare_meta_elapsed_ms: Option<u64>,
+    pub step_meta_detail_step_meta_elapsed_ms: Option<u64>,
+    pub step_meta_detail_extract_phase_elapsed_ms: Option<u64>,
+    pub step_meta_detail_extract_updated_at_elapsed_ms: Option<u64>,
+    pub step_meta_detail_row_exists: Option<bool>,
+    pub shared_sequence_prepare_exists_elapsed_ms: Option<u64>,
+    pub shared_sequence_step_exists_elapsed_ms: Option<u64>,
+    pub shared_sequence_step_meta_elapsed_ms: Option<u64>,
+    pub shared_sequence_row_exists: Option<bool>,
+    pub step_meta_detail_loads_connection_facts_before_meta_query: bool,
+    pub shared_sequence_loads_connection_facts_before_meta_query: bool,
+    pub step_meta_detail_uses_query_plus_next: bool,
+    pub shared_sequence_uses_query_plus_next: bool,
+    pub step_meta_detail_finalizes_exists_before_prepare_meta: bool,
+    pub shared_sequence_finalizes_exists_before_prepare_meta: bool,
+    pub step_meta_detail_extracts_phase_and_updated_at_after_step: bool,
+    pub shared_sequence_extracts_phase_and_updated_at_after_step: bool,
+    pub step_meta_detail_measures_prepare_meta_separately: bool,
+    pub shared_sequence_measures_prepare_meta_separately: bool,
+    pub step_meta_detail_measures_extract_separately: bool,
+    pub shared_sequence_measures_extract_separately: bool,
 }
 
 #[derive(Debug, Clone)]
