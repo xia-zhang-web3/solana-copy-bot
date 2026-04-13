@@ -10322,6 +10322,76 @@ Acceptance update, package-foundation-receipt-latest handoff surface (`2026-04-1
      incident remains open
    - this batch does not authorize or perform production activation
 
+Acceptance update, package-bedrock-certificate-latest handoff surface (`2026-04-13`):
+
+1. Stage 4 now also has one bounded bedrock-certificate-side handoff surface
+   from the latest immutable package chain to the already accepted
+   bedrock-certificate contract:
+   - `copybot_tiny_live_activation_package_bedrock_certificate_latest`
+2. The new operator surface is explicit and bounded:
+   - `--plan-latest-bedrock-certificate --root <path> [--json]`
+   - `--render-latest-bedrock-certificate-script --root <path> --output <path> [--json]`
+   - `--run-latest-bedrock-certificate --root <path> --session-dir <path> [--json]`
+   - `--verify-latest-bedrock-certificate --session-dir <path> [--json]`
+3. The command deliberately reuses accepted truth instead of inventing a new
+   bedrock-certificate path:
+   - latest immutable chain resolution still comes from the accepted
+     `copybot_tiny_live_activation_package_foundation_receipt_latest`
+     handoff
+   - latest chain validity still requires the current top accepted layer
+     `clerestory_certificate`
+   - downstream bedrock-certificate execution still runs through the accepted
+     `copybot_tiny_live_activation_package_bedrock_certificate` contract with
+     the exact latest-foundation-receipt session and exact downstream
+     decision-packet confirmation anchor proved by the resolved latest chain
+4. The handoff remains fail-closed, archival, and planning-safe:
+   - it refuses when no latest chain exists, when the latest chain is invalid,
+     or when the latest chain does not prove the exact nested
+     latest-foundation-receipt lineage required by the accepted
+     bedrock-certificate contract
+   - the downstream `--confirm-decision-packet-session-dir` remains
+     confirmation-only and never replaces latest-foundation-receipt lineage as
+     the source of truth
+   - it remains read-only / archival exactly like the accepted native
+     bedrock-certificate contract
+   - it never marks `activation_authorized=true`
+   - run mode still preserves the existing Stage 3 / pre-activation refusal
+     semantics of the downstream bedrock-certificate contract
+5. Verification is now real on wrapper truth, copied latest-foundation-receipt
+   truth, copied native bedrock-certificate truth, and nested accepted verify
+   truth:
+   - `--verify-latest-bedrock-certificate` re-resolves the current latest
+     immutable chain, verifies the accepted nested
+     latest-foundation-receipt and bedrock-certificate contracts, and compares
+     stored wrapper session / status / report artifacts against that resolved
+     snapshot
+   - fail-closed checks cover wrapper metadata, copied
+     latest-foundation-receipt plan / run truth, drifted downstream
+     decision-packet confirmation anchor, copied native bedrock-certificate run
+     truth, nested persisted bedrock-certificate session/status truth, accepted
+     nested verify truth, and copied native keystone-receipt /
+     foundation-receipt / bedrock-certificate identity metadata and real native
+     bedrock path fields
+   - the accepted review confirmed the remaining production contract seams:
+     nested latest-wrapper refusal strings correctly identify
+     `latest-foundation-receipt`, and fallback command summaries consistently
+     use bedrock-owned placeholders instead of stale upstream wording
+6. Practical meaning:
+   - operators can now move from the latest immutable package chain to the
+     exact accepted bedrock-certificate contract without manual session-dir
+     archaeology
+   - this closes the remaining latest-chain bedrock-certificate blind spot
+     while Stage 3 remains non-green
+7. Acceptance stayed on the bounded surface:
+   - `rustfmt crates/app/src/bin/copybot_tiny_live_activation_package_bedrock_certificate_latest.rs`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_bedrock_certificate_latest`
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_bedrock_certificate_latest`
+   - `git diff --check --no-index -- /dev/null crates/app/src/bin/copybot_tiny_live_activation_package_bedrock_certificate_latest.rs`
+8. Current production status remains unchanged:
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+   - this batch does not authorize or perform production activation
+
 Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
 
 1. The repo now has one more final immutable archival layer over the verified
