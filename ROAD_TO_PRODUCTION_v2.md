@@ -8264,6 +8264,30 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
         shared slowdown still reproduces under the current full
         `step-meta-detail` mode, or whether that old spike no longer belongs to
         the current shared section at all
+    - the next accepted Stage 3 follow-up adds one exact full-orchestration
+      proof surface over that same current full mode:
+      - `--probe-persisted-rebuild-row-step-meta-full-orchestration-diff --runtime-db <path> --json`
+      - it compares, in one bounded read-only run:
+        - the isolated shared helper
+        - the current full `step-meta-detail` mode as-is
+        - the current full mode truncated immediately after the shared section
+        - the current full mode with progress snapshots suppressed while still
+          continuing past the shared section
+      - it keeps the batch read-only and exposes whether the remaining live
+        slowdown is introduced:
+        - before later variants
+        - only when the full mode continues past the shared section
+        - only when full progress snapshots are emitted
+        - or not reproducible anymore under the current implementation
+      - it emits explicit reason classes such as:
+        - `step_meta_full_orchestration_diff_slow_before_later_variants`
+        - `step_meta_full_orchestration_diff_slow_only_when_full_mode_continues_past_shared_section`
+        - `step_meta_full_orchestration_diff_slow_only_with_full_progress_emission`
+        - `step_meta_full_orchestration_diff_no_current_orchestration_difference_observed`
+      - practical result:
+        the next live operator run can stop inferring from the current full
+        mode and say directly which full-mode-only orchestration seam is still
+        introducing the slowdown outside the isolated shared helper
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 

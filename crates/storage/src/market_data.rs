@@ -4320,7 +4320,7 @@ impl SqliteStore {
         enum WorkerMessage {
             Entered(DiscoveryPersistedRebuildRowStepMetaCompareStage),
             Snapshot(ProgressSnapshot),
-            Finished(Result<(), String>),
+            Finished(Result<ProgressSnapshot, String>),
         }
 
         fn skipped_stages(
@@ -4357,6 +4357,7 @@ impl SqliteStore {
             budget_exhausted: false,
             skipped_stages: Vec::new(),
             total_elapsed_ms: 0,
+            progress_snapshots_emitted: false,
             baseline_connection_facts: None,
             shared_prepare_exists_elapsed_ms: None,
             shared_step_exists_elapsed_ms: None,
@@ -4387,10 +4388,16 @@ impl SqliteStore {
         let runtime_db_path = runtime_db_path.to_path_buf();
         let options = options.clone();
         std::thread::spawn(move || {
-            let send_finished = |result: Result<(), anyhow::Error>| {
+            let send_finished = |result: Result<ProgressSnapshot, anyhow::Error>| {
                 let _ = tx.send(WorkerMessage::Finished(
                     result.map_err(|error| format!("{error:#}")),
                 ));
+            };
+            let send_snapshot = |snapshot: &ProgressSnapshot| {
+                if options.test_disable_progress_snapshots {
+                    return true;
+                }
+                tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_ok()
             };
 
             let mut snapshot = ProgressSnapshot::new();
@@ -4430,12 +4437,16 @@ impl SqliteStore {
                 snapshot.shared_row_phase = shared_variant.query_result.row_phase;
                 snapshot.shared_row_updated_at = shared_variant.query_result.row_updated_at;
             }
-            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+            if !send_snapshot(&snapshot) {
+                return;
+            }
+            if options.test_truncate_after_shared_section {
+                let _ = tx.send(WorkerMessage::Finished(Ok(snapshot)));
                 return;
             }
 
             if !shared_row_exists {
-                let _ = tx.send(WorkerMessage::Finished(Ok(())));
+                let _ = tx.send(WorkerMessage::Finished(Ok(snapshot)));
                 return;
             }
 
@@ -4470,7 +4481,7 @@ impl SqliteStore {
             snapshot.fresh_row_phase = fresh_variant.row_phase;
             snapshot.fresh_row_updated_at = fresh_variant.row_updated_at;
             snapshot.query_plus_next_variant_elapsed_ms = Some(fresh_variant.total_elapsed_ms);
-            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+            if !send_snapshot(&snapshot) {
                 return;
             }
 
@@ -4497,7 +4508,7 @@ impl SqliteStore {
                 }
             };
             snapshot.query_row_variant_elapsed_ms = Some(query_row_variant.total_elapsed_ms);
-            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+            if !send_snapshot(&snapshot) {
                 return;
             }
 
@@ -4528,7 +4539,7 @@ impl SqliteStore {
             };
             snapshot.query_only_on_elapsed_ms = Some(query_only_variant.total_elapsed_ms);
             snapshot.query_only_effective_query_only = Some(query_only_facts.query_only);
-            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+            if !send_snapshot(&snapshot) {
                 return;
             }
 
@@ -4559,7 +4570,7 @@ impl SqliteStore {
             };
             snapshot.cache_tuned_elapsed_ms = Some(cache_tuned_variant.total_elapsed_ms);
             snapshot.cache_tuned_effective_cache_size = Some(cache_tuned_facts.cache_size);
-            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+            if !send_snapshot(&snapshot) {
                 return;
             }
 
@@ -4590,12 +4601,51 @@ impl SqliteStore {
             };
             snapshot.mmap_tuned_elapsed_ms = Some(mmap_tuned_variant.total_elapsed_ms);
             snapshot.mmap_tuned_effective_mmap_size = Some(mmap_tuned_facts.mmap_size);
-            if tx.send(WorkerMessage::Snapshot(snapshot)).is_err() {
+            if !send_snapshot(&snapshot) {
                 return;
             }
 
-            let _ = tx.send(WorkerMessage::Finished(Ok(())));
+            let _ = tx.send(WorkerMessage::Finished(Ok(snapshot)));
         });
+
+        let apply_snapshot = |diagnostic: &mut DiscoveryPersistedRebuildRowStepMetaCompareDiagnostic,
+                              snapshot: ProgressSnapshot| {
+            diagnostic.baseline_connection_facts = snapshot.baseline_connection_facts;
+            diagnostic.shared_prepare_exists_elapsed_ms =
+                snapshot.shared_prepare_exists_elapsed_ms;
+            diagnostic.shared_step_exists_elapsed_ms = snapshot.shared_step_exists_elapsed_ms;
+            diagnostic.shared_prepare_meta_elapsed_ms =
+                snapshot.shared_prepare_meta_elapsed_ms;
+            diagnostic.shared_step_meta_elapsed_ms = snapshot.shared_step_meta_elapsed_ms;
+            diagnostic.shared_extract_phase_elapsed_ms =
+                snapshot.shared_extract_phase_elapsed_ms;
+            diagnostic.shared_extract_updated_at_elapsed_ms =
+                snapshot.shared_extract_updated_at_elapsed_ms;
+            diagnostic.shared_row_exists = snapshot.shared_row_exists;
+            diagnostic.shared_row_phase = snapshot.shared_row_phase;
+            diagnostic.shared_row_updated_at = snapshot.shared_row_updated_at;
+            diagnostic.fresh_prepare_meta_elapsed_ms = snapshot.fresh_prepare_meta_elapsed_ms;
+            diagnostic.fresh_step_meta_elapsed_ms = snapshot.fresh_step_meta_elapsed_ms;
+            diagnostic.fresh_extract_phase_elapsed_ms =
+                snapshot.fresh_extract_phase_elapsed_ms;
+            diagnostic.fresh_extract_updated_at_elapsed_ms =
+                snapshot.fresh_extract_updated_at_elapsed_ms;
+            diagnostic.fresh_row_exists = snapshot.fresh_row_exists;
+            diagnostic.fresh_row_phase = snapshot.fresh_row_phase;
+            diagnostic.fresh_row_updated_at = snapshot.fresh_row_updated_at;
+            diagnostic.query_plus_next_variant_elapsed_ms =
+                snapshot.query_plus_next_variant_elapsed_ms;
+            diagnostic.query_row_variant_elapsed_ms = snapshot.query_row_variant_elapsed_ms;
+            diagnostic.query_only_on_elapsed_ms = snapshot.query_only_on_elapsed_ms;
+            diagnostic.query_only_effective_query_only =
+                snapshot.query_only_effective_query_only;
+            diagnostic.cache_tuned_elapsed_ms = snapshot.cache_tuned_elapsed_ms;
+            diagnostic.cache_tuned_effective_cache_size =
+                snapshot.cache_tuned_effective_cache_size;
+            diagnostic.mmap_tuned_elapsed_ms = snapshot.mmap_tuned_elapsed_ms;
+            diagnostic.mmap_tuned_effective_mmap_size =
+                snapshot.mmap_tuned_effective_mmap_size;
+        };
 
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -4612,50 +4662,19 @@ impl SqliteStore {
                     diagnostic.stage = stage;
                 }
                 Ok(WorkerMessage::Snapshot(snapshot)) => {
-                    diagnostic.baseline_connection_facts = snapshot.baseline_connection_facts;
-                    diagnostic.shared_prepare_exists_elapsed_ms =
-                        snapshot.shared_prepare_exists_elapsed_ms;
-                    diagnostic.shared_step_exists_elapsed_ms =
-                        snapshot.shared_step_exists_elapsed_ms;
-                    diagnostic.shared_prepare_meta_elapsed_ms =
-                        snapshot.shared_prepare_meta_elapsed_ms;
-                    diagnostic.shared_step_meta_elapsed_ms = snapshot.shared_step_meta_elapsed_ms;
-                    diagnostic.shared_extract_phase_elapsed_ms =
-                        snapshot.shared_extract_phase_elapsed_ms;
-                    diagnostic.shared_extract_updated_at_elapsed_ms =
-                        snapshot.shared_extract_updated_at_elapsed_ms;
-                    diagnostic.shared_row_exists = snapshot.shared_row_exists;
-                    diagnostic.shared_row_phase = snapshot.shared_row_phase;
-                    diagnostic.shared_row_updated_at = snapshot.shared_row_updated_at;
-                    diagnostic.fresh_prepare_meta_elapsed_ms =
-                        snapshot.fresh_prepare_meta_elapsed_ms;
-                    diagnostic.fresh_step_meta_elapsed_ms = snapshot.fresh_step_meta_elapsed_ms;
-                    diagnostic.fresh_extract_phase_elapsed_ms =
-                        snapshot.fresh_extract_phase_elapsed_ms;
-                    diagnostic.fresh_extract_updated_at_elapsed_ms =
-                        snapshot.fresh_extract_updated_at_elapsed_ms;
-                    diagnostic.fresh_row_exists = snapshot.fresh_row_exists;
-                    diagnostic.fresh_row_phase = snapshot.fresh_row_phase;
-                    diagnostic.fresh_row_updated_at = snapshot.fresh_row_updated_at;
-                    diagnostic.query_plus_next_variant_elapsed_ms =
-                        snapshot.query_plus_next_variant_elapsed_ms;
-                    diagnostic.query_row_variant_elapsed_ms = snapshot.query_row_variant_elapsed_ms;
-                    diagnostic.query_only_on_elapsed_ms = snapshot.query_only_on_elapsed_ms;
-                    diagnostic.query_only_effective_query_only =
-                        snapshot.query_only_effective_query_only;
-                    diagnostic.cache_tuned_elapsed_ms = snapshot.cache_tuned_elapsed_ms;
-                    diagnostic.cache_tuned_effective_cache_size =
-                        snapshot.cache_tuned_effective_cache_size;
-                    diagnostic.mmap_tuned_elapsed_ms = snapshot.mmap_tuned_elapsed_ms;
-                    diagnostic.mmap_tuned_effective_mmap_size =
-                        snapshot.mmap_tuned_effective_mmap_size;
+                    diagnostic.progress_snapshots_emitted = true;
+                    apply_snapshot(&mut diagnostic, snapshot);
                 }
                 Ok(WorkerMessage::Finished(result)) => {
-                    if let Err(error) = result {
-                        return Err(anyhow!(
-                            "persisted rebuild row step-meta compare worker failed: {error}"
-                        ));
-                    }
+                    let snapshot = match result {
+                        Ok(snapshot) => snapshot,
+                        Err(error) => {
+                            return Err(anyhow!(
+                                "persisted rebuild row step-meta compare worker failed: {error}"
+                            ));
+                        }
+                    };
+                    apply_snapshot(&mut diagnostic, snapshot);
                     diagnostic.stage = DiscoveryPersistedRebuildRowStepMetaCompareStage::Complete;
                     diagnostic.total_elapsed_ms =
                         started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;

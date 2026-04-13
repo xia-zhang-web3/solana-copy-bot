@@ -1925,6 +1925,28 @@ pub enum PersistedRebuildRowStepMetaFullContextDiffReasonClass {
     StepMetaFullContextDiffFullAndIsolatedNowMatchNoRepro,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PersistedRebuildRowStepMetaFullOrchestrationDiffStage {
+    IsolatedSharedHelper,
+    FullCurrentStepMetaDetailMode,
+    FullTruncatedAfterShared,
+    FullNoSnapshotMode,
+    Complete,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PersistedRebuildRowStepMetaFullOrchestrationDiffReasonClass {
+    StepMetaFullOrchestrationDiffUnprovenDueToBudgetExhausted,
+    StepMetaFullOrchestrationDiffRowMissing,
+    StepMetaFullOrchestrationDiffSlowBeforeLaterVariants,
+    StepMetaFullOrchestrationDiffSlowOnlyWhenFullModeContinuesPastSharedSection,
+    StepMetaFullOrchestrationDiffSlowOnlyWithFullProgressEmission,
+    StepMetaFullOrchestrationDiffTruncatedAfterSharedOnlySlow,
+    StepMetaFullOrchestrationDiffNoCurrentOrchestrationDifferenceObserved,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PersistedRebuildRowStepMetaCompareDiagnostic {
     pub step_meta_compare_stage: StorageStepMetaCompareStage,
@@ -2062,6 +2084,48 @@ pub struct PersistedRebuildRowStepMetaFullContextDiffDiagnostic {
     pub step_meta_full_context_diff_explanation: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PersistedRebuildRowStepMetaFullOrchestrationDiffDiagnostic {
+    pub step_meta_full_orchestration_diff_stage:
+        PersistedRebuildRowStepMetaFullOrchestrationDiffStage,
+    pub step_meta_full_orchestration_diff_budget_exhausted: bool,
+    pub step_meta_full_orchestration_diff_total_elapsed_ms: u64,
+    pub step_meta_full_orchestration_diff_isolated_shared_step_meta_elapsed_ms: Option<u64>,
+    pub step_meta_full_orchestration_diff_isolated_shared_row_exists: Option<bool>,
+    pub step_meta_full_orchestration_diff_full_current_prepare_exists_elapsed_ms: Option<u64>,
+    pub step_meta_full_orchestration_diff_full_current_step_exists_elapsed_ms: Option<u64>,
+    pub step_meta_full_orchestration_diff_full_current_prepare_meta_elapsed_ms: Option<u64>,
+    pub step_meta_full_orchestration_diff_full_current_step_meta_elapsed_ms: Option<u64>,
+    pub step_meta_full_orchestration_diff_full_current_extract_phase_elapsed_ms: Option<u64>,
+    pub step_meta_full_orchestration_diff_full_current_extract_updated_at_elapsed_ms:
+        Option<u64>,
+    pub step_meta_full_orchestration_diff_full_current_row_exists: Option<bool>,
+    pub step_meta_full_orchestration_diff_full_current_ran_later_variants: bool,
+    pub step_meta_full_orchestration_diff_full_current_emitted_progress_snapshots: bool,
+    pub step_meta_full_orchestration_diff_full_truncated_after_shared_prepare_exists_elapsed_ms:
+        Option<u64>,
+    pub step_meta_full_orchestration_diff_full_truncated_after_shared_step_exists_elapsed_ms:
+        Option<u64>,
+    pub step_meta_full_orchestration_diff_full_truncated_after_shared_prepare_meta_elapsed_ms:
+        Option<u64>,
+    pub step_meta_full_orchestration_diff_full_truncated_after_shared_step_meta_elapsed_ms:
+        Option<u64>,
+    pub step_meta_full_orchestration_diff_full_truncated_after_shared_extract_phase_elapsed_ms:
+        Option<u64>,
+    pub step_meta_full_orchestration_diff_full_truncated_after_shared_extract_updated_at_elapsed_ms:
+        Option<u64>,
+    pub step_meta_full_orchestration_diff_full_truncated_after_shared_row_exists:
+        Option<bool>,
+    pub step_meta_full_orchestration_diff_full_truncated_ran_later_variants: bool,
+    pub step_meta_full_orchestration_diff_full_no_snapshot_step_meta_elapsed_ms: Option<u64>,
+    pub step_meta_full_orchestration_diff_full_no_snapshot_row_exists: Option<bool>,
+    pub step_meta_full_orchestration_diff_full_no_snapshot_ran_later_variants: bool,
+    pub step_meta_full_orchestration_diff_full_no_snapshot_emitted_progress_snapshots: bool,
+    pub step_meta_full_orchestration_diff_reason_class:
+        PersistedRebuildRowStepMetaFullOrchestrationDiffReasonClass,
+    pub step_meta_full_orchestration_diff_explanation: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedPersistedReplayCheckpointState(PersistedStreamRebuildState);
 
@@ -2098,6 +2162,15 @@ struct StepMetaFullContextDiffProbeOptions {
     budget_ms: u64,
     test_force_full_mode_shared_step_meta_delay_ms: Option<u64>,
     test_force_isolated_shared_step_meta_delay_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct StepMetaFullOrchestrationDiffProbeOptions {
+    budget_ms: u64,
+    test_force_full_current_shared_step_meta_delay_ms: Option<u64>,
+    test_force_full_truncated_shared_step_meta_delay_ms: Option<u64>,
+    test_force_isolated_shared_step_meta_delay_ms: Option<u64>,
+    test_force_full_no_snapshot_shared_step_meta_delay_ms: Option<u64>,
 }
 
 fn should_request_persisted_stream_catch_up(telemetry: &PersistedStreamProgressTelemetry) -> bool {
@@ -3100,11 +3173,18 @@ impl DiscoveryService {
             || diagnostic.step_meta_query_only_on_elapsed_ms.is_some()
             || diagnostic.step_meta_cache_tuned_elapsed_ms.is_some()
             || diagnostic.step_meta_mmap_tuned_elapsed_ms.is_some()
-            || !matches!(
-                diagnostic.step_meta_compare_stage,
-                StorageStepMetaCompareStage::OpenSharedConnection
-                    | StorageStepMetaCompareStage::SharedConnectionCurrentPath
-            )
+    }
+
+    fn storage_step_meta_compare_ran_later_variants(
+        diagnostic: &StorageStepMetaCompareDiagnostic,
+    ) -> bool {
+        diagnostic.fresh_prepare_meta_elapsed_ms.is_some()
+            || diagnostic.fresh_step_meta_elapsed_ms.is_some()
+            || diagnostic.query_plus_next_variant_elapsed_ms.is_some()
+            || diagnostic.query_row_variant_elapsed_ms.is_some()
+            || diagnostic.query_only_on_elapsed_ms.is_some()
+            || diagnostic.cache_tuned_elapsed_ms.is_some()
+            || diagnostic.mmap_tuned_elapsed_ms.is_some()
     }
 
     fn classify_persisted_rebuild_row_step_meta_full_context_diff(
@@ -3203,6 +3283,136 @@ impl DiscoveryService {
                     .step_meta_full_context_diff_full_mode_ran_later_variants_after_shared_path,
                 diagnostic
                     .step_meta_full_context_diff_isolated_side_ran_only_shared_helper
+            ),
+        )
+    }
+
+    fn classify_persisted_rebuild_row_step_meta_full_orchestration_diff(
+        diagnostic: &PersistedRebuildRowStepMetaFullOrchestrationDiffDiagnostic,
+    ) -> (
+        PersistedRebuildRowStepMetaFullOrchestrationDiffReasonClass,
+        String,
+    ) {
+        if diagnostic.step_meta_full_orchestration_diff_budget_exhausted {
+            return (
+                PersistedRebuildRowStepMetaFullOrchestrationDiffReasonClass::StepMetaFullOrchestrationDiffUnprovenDueToBudgetExhausted,
+                format!(
+                    "step-meta full-orchestration diff exhausted its diagnostic budget while in stage {} before all compared branches completed",
+                    serde_json::to_string(
+                        &diagnostic.step_meta_full_orchestration_diff_stage
+                    )
+                    .unwrap_or_else(|_| "\"unknown\"".to_string())
+                    .trim_matches('"')
+                ),
+            );
+        }
+
+        if diagnostic.step_meta_full_orchestration_diff_full_current_row_exists == Some(false)
+            || diagnostic.step_meta_full_orchestration_diff_full_truncated_after_shared_row_exists
+                == Some(false)
+            || diagnostic.step_meta_full_orchestration_diff_full_no_snapshot_row_exists
+                == Some(false)
+            || diagnostic.step_meta_full_orchestration_diff_isolated_shared_row_exists
+                == Some(false)
+        {
+            return (
+                PersistedRebuildRowStepMetaFullOrchestrationDiffReasonClass::StepMetaFullOrchestrationDiffRowMissing,
+                "the compared current full step-meta-detail orchestration branches proved that discovery_persisted_rebuild_state(id=1) is missing on the runtime db".to_string(),
+            );
+        }
+
+        let isolated_step = diagnostic
+            .step_meta_full_orchestration_diff_isolated_shared_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let full_current_step = diagnostic
+            .step_meta_full_orchestration_diff_full_current_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let truncated_step = diagnostic
+            .step_meta_full_orchestration_diff_full_truncated_after_shared_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let no_snapshot_step = diagnostic
+            .step_meta_full_orchestration_diff_full_no_snapshot_step_meta_elapsed_ms
+            .unwrap_or(0);
+
+        let isolated_slow = isolated_step > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+        let full_current_slow = full_current_step > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+        let truncated_slow = truncated_step > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+        let no_snapshot_slow = no_snapshot_step > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+
+        if !full_current_slow
+            && truncated_slow
+            && !no_snapshot_slow
+            && !isolated_slow
+        {
+            return (
+                PersistedRebuildRowStepMetaFullOrchestrationDiffReasonClass::StepMetaFullOrchestrationDiffTruncatedAfterSharedOnlySlow,
+                format!(
+                    "only the truncated-after-shared full-mode branch is slow while the isolated helper, the current full mode, and the no-snapshot branch stay fast (isolated_shared_step_meta_elapsed_ms={}, full_current_step_meta_elapsed_ms={}, full_truncated_after_shared_step_meta_elapsed_ms={}, full_no_snapshot_step_meta_elapsed_ms={})",
+                    isolated_step, full_current_step, truncated_step, no_snapshot_step
+                ),
+            );
+        }
+
+        if (full_current_slow || truncated_slow) && !no_snapshot_slow && !isolated_slow {
+            return (
+                PersistedRebuildRowStepMetaFullOrchestrationDiffReasonClass::StepMetaFullOrchestrationDiffSlowOnlyWithFullProgressEmission,
+                format!(
+                    "the shared step-meta slowdown only appears on branches that emit full progress snapshots, while the no-snapshot branch and isolated helper stay fast (isolated_shared_step_meta_elapsed_ms={}, full_current_step_meta_elapsed_ms={}, full_truncated_after_shared_step_meta_elapsed_ms={}, full_no_snapshot_step_meta_elapsed_ms={}, full_current_emitted_progress_snapshots={}, full_no_snapshot_emitted_progress_snapshots={})",
+                    isolated_step,
+                    full_current_step,
+                    truncated_step,
+                    no_snapshot_step,
+                    diagnostic
+                        .step_meta_full_orchestration_diff_full_current_emitted_progress_snapshots,
+                    diagnostic
+                        .step_meta_full_orchestration_diff_full_no_snapshot_emitted_progress_snapshots
+                ),
+            );
+        }
+
+        if full_current_slow && !truncated_slow && no_snapshot_slow && !isolated_slow {
+            return (
+                PersistedRebuildRowStepMetaFullOrchestrationDiffReasonClass::StepMetaFullOrchestrationDiffSlowOnlyWhenFullModeContinuesPastSharedSection,
+                format!(
+                    "the shared step-meta slowdown only appears on full-mode branches that continue past the shared section, while the truncated-after-shared branch and isolated helper stay fast (isolated_shared_step_meta_elapsed_ms={}, full_current_step_meta_elapsed_ms={}, full_truncated_after_shared_step_meta_elapsed_ms={}, full_no_snapshot_step_meta_elapsed_ms={}, full_current_ran_later_variants={}, full_truncated_ran_later_variants={}, full_no_snapshot_ran_later_variants={})",
+                    isolated_step,
+                    full_current_step,
+                    truncated_step,
+                    no_snapshot_step,
+                    diagnostic
+                        .step_meta_full_orchestration_diff_full_current_ran_later_variants,
+                    diagnostic
+                        .step_meta_full_orchestration_diff_full_truncated_ran_later_variants,
+                    diagnostic
+                        .step_meta_full_orchestration_diff_full_no_snapshot_ran_later_variants
+                ),
+            );
+        }
+
+        if full_current_slow && truncated_slow && no_snapshot_slow && !isolated_slow {
+            return (
+                PersistedRebuildRowStepMetaFullOrchestrationDiffReasonClass::StepMetaFullOrchestrationDiffSlowBeforeLaterVariants,
+                format!(
+                    "the shared step-meta slowdown is already present before later variants, because the current full mode, the truncated-after-shared branch, and the no-snapshot branch are all slow while the isolated helper stays fast (isolated_shared_step_meta_elapsed_ms={}, full_current_step_meta_elapsed_ms={}, full_truncated_after_shared_step_meta_elapsed_ms={}, full_no_snapshot_step_meta_elapsed_ms={})",
+                    isolated_step, full_current_step, truncated_step, no_snapshot_step
+                ),
+            );
+        }
+
+        (
+            PersistedRebuildRowStepMetaFullOrchestrationDiffReasonClass::StepMetaFullOrchestrationDiffNoCurrentOrchestrationDifferenceObserved,
+            format!(
+                "no current full-mode-only orchestration difference was observed around the shared step-meta seam (isolated_shared_step_meta_elapsed_ms={}, full_current_step_meta_elapsed_ms={}, full_truncated_after_shared_step_meta_elapsed_ms={}, full_no_snapshot_step_meta_elapsed_ms={}, full_current_ran_later_variants={}, full_truncated_ran_later_variants={}, full_current_emitted_progress_snapshots={}, full_no_snapshot_emitted_progress_snapshots={})",
+                isolated_step,
+                full_current_step,
+                truncated_step,
+                no_snapshot_step,
+                diagnostic.step_meta_full_orchestration_diff_full_current_ran_later_variants,
+                diagnostic.step_meta_full_orchestration_diff_full_truncated_ran_later_variants,
+                diagnostic
+                    .step_meta_full_orchestration_diff_full_current_emitted_progress_snapshots,
+                diagnostic
+                    .step_meta_full_orchestration_diff_full_no_snapshot_emitted_progress_snapshots
             ),
         )
     }
@@ -5025,6 +5235,177 @@ impl DiscoveryService {
             Self::classify_persisted_rebuild_row_step_meta_full_context_diff(&mapped);
         mapped.step_meta_full_context_diff_reason_class = reason_class;
         mapped.step_meta_full_context_diff_explanation = explanation;
+        Ok(mapped)
+    }
+
+    pub fn probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only(
+        runtime_db_path: &Path,
+        budget_ms: u64,
+    ) -> Result<PersistedRebuildRowStepMetaFullOrchestrationDiffDiagnostic> {
+        Self::probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only_with_options(
+            runtime_db_path,
+            StepMetaFullOrchestrationDiffProbeOptions {
+                budget_ms,
+                ..StepMetaFullOrchestrationDiffProbeOptions::default()
+            },
+        )
+    }
+
+    fn probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only_with_options(
+        runtime_db_path: &Path,
+        options: StepMetaFullOrchestrationDiffProbeOptions,
+    ) -> Result<PersistedRebuildRowStepMetaFullOrchestrationDiffDiagnostic> {
+        let started_at = Instant::now();
+        let deadline = started_at + StdDuration::from_millis(options.budget_ms);
+
+        let remaining_for_isolated = deadline.saturating_duration_since(Instant::now());
+        let isolated = if remaining_for_isolated.is_zero() {
+            StorageStepMetaIsolatedSharedDiagnostic {
+                stage: copybot_storage::DiscoveryPersistedRebuildRowStepMetaIsolatedSharedStage::SharedPath,
+                budget_exhausted: true,
+                total_elapsed_ms: 0,
+                prepare_exists_elapsed_ms: None,
+                step_exists_elapsed_ms: None,
+                prepare_meta_elapsed_ms: None,
+                step_meta_elapsed_ms: None,
+                extract_phase_elapsed_ms: None,
+                extract_updated_at_elapsed_ms: None,
+                row_exists: None,
+                row_phase: None,
+                row_updated_at: None,
+                loads_connection_facts_before_meta_query: true,
+                uses_query_plus_next: true,
+                finalizes_exists_before_prepare_meta: true,
+                extracts_phase_and_updated_at_after_step: true,
+                measures_prepare_meta_separately: true,
+                measures_extract_separately: true,
+            }
+        } else {
+            SqliteStore::probe_discovery_persisted_rebuild_row_step_meta_isolated_shared_read_only(
+                runtime_db_path,
+                &StorageStepMetaIsolatedSharedOptions {
+                    budget_ms: remaining_for_isolated.as_millis().min(u64::MAX as u128) as u64,
+                    test_force_shared_step_meta_delay_ms: options
+                        .test_force_isolated_shared_step_meta_delay_ms,
+                },
+            )?
+        };
+
+        let remaining_for_full_current = deadline.saturating_duration_since(Instant::now());
+        let full_current = SqliteStore::probe_discovery_persisted_rebuild_row_step_meta_compare_read_only(
+            runtime_db_path,
+            &StorageStepMetaCompareOptions {
+                budget_ms: remaining_for_full_current
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+                test_force_shared_step_meta_delay_ms: options
+                    .test_force_full_current_shared_step_meta_delay_ms,
+                ..StorageStepMetaCompareOptions::default()
+            },
+        )?;
+
+        let remaining_for_truncated = deadline.saturating_duration_since(Instant::now());
+        let full_truncated = SqliteStore::probe_discovery_persisted_rebuild_row_step_meta_compare_read_only(
+            runtime_db_path,
+            &StorageStepMetaCompareOptions {
+                budget_ms: remaining_for_truncated
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+                test_force_shared_step_meta_delay_ms: options
+                    .test_force_full_truncated_shared_step_meta_delay_ms,
+                test_truncate_after_shared_section: true,
+                ..StorageStepMetaCompareOptions::default()
+            },
+        )?;
+
+        let remaining_for_no_snapshot = deadline.saturating_duration_since(Instant::now());
+        let full_no_snapshot = SqliteStore::probe_discovery_persisted_rebuild_row_step_meta_compare_read_only(
+            runtime_db_path,
+            &StorageStepMetaCompareOptions {
+                budget_ms: remaining_for_no_snapshot
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+                test_force_shared_step_meta_delay_ms: options
+                    .test_force_full_no_snapshot_shared_step_meta_delay_ms,
+                test_disable_progress_snapshots: true,
+                ..StorageStepMetaCompareOptions::default()
+            },
+        )?;
+
+        let mut mapped = PersistedRebuildRowStepMetaFullOrchestrationDiffDiagnostic {
+            step_meta_full_orchestration_diff_stage: if isolated.budget_exhausted {
+                PersistedRebuildRowStepMetaFullOrchestrationDiffStage::IsolatedSharedHelper
+            } else if full_current.budget_exhausted {
+                PersistedRebuildRowStepMetaFullOrchestrationDiffStage::FullCurrentStepMetaDetailMode
+            } else if full_truncated.budget_exhausted {
+                PersistedRebuildRowStepMetaFullOrchestrationDiffStage::FullTruncatedAfterShared
+            } else if full_no_snapshot.budget_exhausted {
+                PersistedRebuildRowStepMetaFullOrchestrationDiffStage::FullNoSnapshotMode
+            } else {
+                PersistedRebuildRowStepMetaFullOrchestrationDiffStage::Complete
+            },
+            step_meta_full_orchestration_diff_budget_exhausted: isolated.budget_exhausted
+                || full_current.budget_exhausted
+                || full_truncated.budget_exhausted
+                || full_no_snapshot.budget_exhausted,
+            step_meta_full_orchestration_diff_total_elapsed_ms: started_at
+                .elapsed()
+                .as_millis()
+                .min(u64::MAX as u128) as u64,
+            step_meta_full_orchestration_diff_isolated_shared_step_meta_elapsed_ms: isolated
+                .step_meta_elapsed_ms,
+            step_meta_full_orchestration_diff_isolated_shared_row_exists: isolated.row_exists,
+            step_meta_full_orchestration_diff_full_current_prepare_exists_elapsed_ms: full_current
+                .shared_prepare_exists_elapsed_ms,
+            step_meta_full_orchestration_diff_full_current_step_exists_elapsed_ms: full_current
+                .shared_step_exists_elapsed_ms,
+            step_meta_full_orchestration_diff_full_current_prepare_meta_elapsed_ms: full_current
+                .shared_prepare_meta_elapsed_ms,
+            step_meta_full_orchestration_diff_full_current_step_meta_elapsed_ms: full_current
+                .shared_step_meta_elapsed_ms,
+            step_meta_full_orchestration_diff_full_current_extract_phase_elapsed_ms: full_current
+                .shared_extract_phase_elapsed_ms,
+            step_meta_full_orchestration_diff_full_current_extract_updated_at_elapsed_ms:
+                full_current.shared_extract_updated_at_elapsed_ms,
+            step_meta_full_orchestration_diff_full_current_row_exists: full_current
+                .shared_row_exists,
+            step_meta_full_orchestration_diff_full_current_ran_later_variants:
+                Self::storage_step_meta_compare_ran_later_variants(&full_current),
+            step_meta_full_orchestration_diff_full_current_emitted_progress_snapshots:
+                full_current.progress_snapshots_emitted,
+            step_meta_full_orchestration_diff_full_truncated_after_shared_prepare_exists_elapsed_ms:
+                full_truncated.shared_prepare_exists_elapsed_ms,
+            step_meta_full_orchestration_diff_full_truncated_after_shared_step_exists_elapsed_ms:
+                full_truncated.shared_step_exists_elapsed_ms,
+            step_meta_full_orchestration_diff_full_truncated_after_shared_prepare_meta_elapsed_ms:
+                full_truncated.shared_prepare_meta_elapsed_ms,
+            step_meta_full_orchestration_diff_full_truncated_after_shared_step_meta_elapsed_ms:
+                full_truncated.shared_step_meta_elapsed_ms,
+            step_meta_full_orchestration_diff_full_truncated_after_shared_extract_phase_elapsed_ms:
+                full_truncated.shared_extract_phase_elapsed_ms,
+            step_meta_full_orchestration_diff_full_truncated_after_shared_extract_updated_at_elapsed_ms:
+                full_truncated.shared_extract_updated_at_elapsed_ms,
+            step_meta_full_orchestration_diff_full_truncated_after_shared_row_exists:
+                full_truncated.shared_row_exists,
+            step_meta_full_orchestration_diff_full_truncated_ran_later_variants:
+                Self::storage_step_meta_compare_ran_later_variants(&full_truncated),
+            step_meta_full_orchestration_diff_full_no_snapshot_step_meta_elapsed_ms:
+                full_no_snapshot.shared_step_meta_elapsed_ms,
+            step_meta_full_orchestration_diff_full_no_snapshot_row_exists:
+                full_no_snapshot.shared_row_exists,
+            step_meta_full_orchestration_diff_full_no_snapshot_ran_later_variants:
+                Self::storage_step_meta_compare_ran_later_variants(&full_no_snapshot),
+            step_meta_full_orchestration_diff_full_no_snapshot_emitted_progress_snapshots:
+                full_no_snapshot.progress_snapshots_emitted,
+            step_meta_full_orchestration_diff_reason_class:
+                PersistedRebuildRowStepMetaFullOrchestrationDiffReasonClass::StepMetaFullOrchestrationDiffUnprovenDueToBudgetExhausted,
+            step_meta_full_orchestration_diff_explanation:
+                "step-meta full-orchestration diff has not been classified yet".to_string(),
+        };
+        let (reason_class, explanation) =
+            Self::classify_persisted_rebuild_row_step_meta_full_orchestration_diff(&mapped);
+        mapped.step_meta_full_orchestration_diff_reason_class = reason_class;
+        mapped.step_meta_full_orchestration_diff_explanation = explanation;
         Ok(mapped)
     }
 
@@ -41466,6 +41847,137 @@ mod tests {
     }
 
     #[test]
+    fn replay_checkpoint_step_meta_full_orchestration_diff_emits_isolated_full_and_truncated_timings_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::
+            probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only(
+                Path::new(&runtime_db_path),
+                30_000,
+            )?;
+        assert!(!diagnostic.step_meta_full_orchestration_diff_budget_exhausted);
+        assert!(diagnostic
+            .step_meta_full_orchestration_diff_isolated_shared_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .step_meta_full_orchestration_diff_full_current_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .step_meta_full_orchestration_diff_full_truncated_after_shared_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .step_meta_full_orchestration_diff_full_no_snapshot_step_meta_elapsed_ms
+            .is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_step_meta_full_orchestration_diff_normal_run_reports_coherent_reason_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::
+            probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only(
+                Path::new(&runtime_db_path),
+                30_000,
+            )?;
+        assert_eq!(
+            diagnostic.step_meta_full_orchestration_diff_reason_class,
+            PersistedRebuildRowStepMetaFullOrchestrationDiffReasonClass::StepMetaFullOrchestrationDiffNoCurrentOrchestrationDifferenceObserved
+        );
+        assert!(diagnostic
+            .step_meta_full_orchestration_diff_explanation
+            .contains("no current full-mode-only orchestration difference"));
+        assert!(diagnostic
+            .step_meta_full_orchestration_diff_full_current_ran_later_variants);
+        assert!(!diagnostic
+            .step_meta_full_orchestration_diff_full_truncated_ran_later_variants);
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_step_meta_full_orchestration_diff_full_only_delay_surfaces_full_only_divergence_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::
+            probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only_with_options(
+                Path::new(&runtime_db_path),
+                StepMetaFullOrchestrationDiffProbeOptions {
+                    budget_ms: 30_000,
+                    test_force_full_current_shared_step_meta_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    ..StepMetaFullOrchestrationDiffProbeOptions::default()
+                },
+            )?;
+        assert_eq!(
+            diagnostic.step_meta_full_orchestration_diff_reason_class,
+            PersistedRebuildRowStepMetaFullOrchestrationDiffReasonClass::StepMetaFullOrchestrationDiffSlowOnlyWithFullProgressEmission
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_step_meta_full_orchestration_diff_truncated_only_delay_is_surfaced_distinctly_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::
+            probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only_with_options(
+                Path::new(&runtime_db_path),
+                StepMetaFullOrchestrationDiffProbeOptions {
+                    budget_ms: 30_000,
+                    test_force_full_truncated_shared_step_meta_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    ..StepMetaFullOrchestrationDiffProbeOptions::default()
+                },
+            )?;
+        assert_eq!(
+            diagnostic.step_meta_full_orchestration_diff_reason_class,
+            PersistedRebuildRowStepMetaFullOrchestrationDiffReasonClass::StepMetaFullOrchestrationDiffTruncatedAfterSharedOnlySlow
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_step_meta_full_orchestration_diff_surfaces_no_snapshot_branch_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::
+            probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only(
+                Path::new(&runtime_db_path),
+                30_000,
+            )?;
+        assert!(diagnostic
+            .step_meta_full_orchestration_diff_full_no_snapshot_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .step_meta_full_orchestration_diff_full_no_snapshot_ran_later_variants);
+        assert!(!diagnostic
+            .step_meta_full_orchestration_diff_full_no_snapshot_emitted_progress_snapshots);
+        Ok(())
+    }
+
+    #[test]
     fn replay_checkpoint_raw_probe_meta_plan_budget_exhaustion_keeps_row_existence_unproven_stage1(
     ) -> Result<()> {
         let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
@@ -42084,6 +42596,11 @@ mod tests {
             Path::new(&runtime_db_path),
             30_000,
         )?;
+        let _ =
+            DiscoveryService::probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only(
+                Path::new(&runtime_db_path),
+                30_000,
+            )?;
 
         let rebuild_after = runtime_store
             .load_discovery_persisted_rebuild_state_read_only()?

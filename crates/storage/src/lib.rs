@@ -1684,6 +1684,10 @@ pub struct DiscoveryPersistedRebuildRowStepMetaCompareOptions {
     pub test_force_shared_step_meta_delay_ms: Option<u64>,
     #[doc(hidden)]
     pub test_force_fresh_connection_query_delay_ms: Option<u64>,
+    #[doc(hidden)]
+    pub test_truncate_after_shared_section: bool,
+    #[doc(hidden)]
+    pub test_disable_progress_snapshots: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1748,6 +1752,7 @@ pub struct DiscoveryPersistedRebuildRowStepMetaCompareDiagnostic {
     pub budget_exhausted: bool,
     pub skipped_stages: Vec<DiscoveryPersistedRebuildRowStepMetaCompareStage>,
     pub total_elapsed_ms: u64,
+    pub progress_snapshots_emitted: bool,
     pub baseline_connection_facts: Option<SqliteReadOnlyDriverCompareFacts>,
     pub shared_prepare_exists_elapsed_ms: Option<u64>,
     pub shared_step_exists_elapsed_ms: Option<u64>,
