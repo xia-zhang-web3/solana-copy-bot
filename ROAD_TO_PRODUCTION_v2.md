@@ -8242,6 +8242,28 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
         the next live operator run can tell whether the old `step_meta_detail`
         vs new `shared_sequence_detail` disagreement was inside the isolated
         shared path at all, or only outside that seam
+    - the next accepted Stage 3 follow-up adds one exact current-full-vs-isolated
+      diff surface over the same shared section:
+      - `--probe-persisted-rebuild-row-step-meta-full-context-diff --runtime-db <path> --json`
+      - it compares:
+        - the current full `step-meta-detail` shared section under the current
+          implementation
+        - the isolated old shared helper used by the accepted shared-path-diff
+          surface
+      - it keeps the batch read-only and makes one current operator question
+        explicit:
+        - whether the current full `step-meta-detail` mode still reproduces the
+          old slow shared result at all
+      - it emits explicit reason classes such as:
+        - `step_meta_full_context_diff_full_mode_still_slow_while_isolated_fast`
+        - `step_meta_full_context_diff_isolated_still_slow_while_full_fast`
+        - `step_meta_full_context_diff_full_and_isolated_both_slow`
+        - `step_meta_full_context_diff_full_and_isolated_now_match_no_repro`
+      - practical result:
+        the next live operator run can say directly whether the old `65368ms`
+        shared slowdown still reproduces under the current full
+        `step-meta-detail` mode, or whether that old spike no longer belongs to
+        the current shared section at all
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 

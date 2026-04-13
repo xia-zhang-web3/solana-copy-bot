@@ -1635,6 +1635,13 @@ pub enum DiscoveryPersistedRebuildRowSharedPathDiffStage {
     Complete,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryPersistedRebuildRowStepMetaIsolatedSharedStage {
+    SharedPath,
+    Complete,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SqliteReadOnlyDriverCompareFacts {
     pub busy_timeout_ms: u64,
@@ -1703,6 +1710,13 @@ pub struct DiscoveryPersistedRebuildRowSharedPathDiffOptions {
     pub test_force_step_meta_detail_shared_step_meta_delay_ms: Option<u64>,
     #[doc(hidden)]
     pub test_force_shared_sequence_baseline_step_meta_delay_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DiscoveryPersistedRebuildRowStepMetaIsolatedSharedOptions {
+    pub budget_ms: u64,
+    #[doc(hidden)]
+    pub test_force_shared_step_meta_delay_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1817,6 +1831,28 @@ pub struct DiscoveryPersistedRebuildRowSharedPathDiffDiagnostic {
     pub shared_sequence_measures_prepare_meta_separately: bool,
     pub step_meta_detail_measures_extract_separately: bool,
     pub shared_sequence_measures_extract_separately: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveryPersistedRebuildRowStepMetaIsolatedSharedDiagnostic {
+    pub stage: DiscoveryPersistedRebuildRowStepMetaIsolatedSharedStage,
+    pub budget_exhausted: bool,
+    pub total_elapsed_ms: u64,
+    pub prepare_exists_elapsed_ms: Option<u64>,
+    pub step_exists_elapsed_ms: Option<u64>,
+    pub prepare_meta_elapsed_ms: Option<u64>,
+    pub step_meta_elapsed_ms: Option<u64>,
+    pub extract_phase_elapsed_ms: Option<u64>,
+    pub extract_updated_at_elapsed_ms: Option<u64>,
+    pub row_exists: Option<bool>,
+    pub row_phase: Option<String>,
+    pub row_updated_at: Option<String>,
+    pub loads_connection_facts_before_meta_query: bool,
+    pub uses_query_plus_next: bool,
+    pub finalizes_exists_before_prepare_meta: bool,
+    pub extracts_phase_and_updated_at_after_step: bool,
+    pub measures_prepare_meta_separately: bool,
+    pub measures_extract_separately: bool,
 }
 
 #[derive(Debug, Clone)]

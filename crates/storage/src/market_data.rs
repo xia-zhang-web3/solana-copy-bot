@@ -3,6 +3,9 @@ use crate::{
     DiscoveryPersistedRebuildRowDriverCompareDiagnostic,
     DiscoveryPersistedRebuildRowDriverCompareOptions,
     DiscoveryPersistedRebuildRowDriverCompareStage,
+    DiscoveryPersistedRebuildRowStepMetaIsolatedSharedDiagnostic,
+    DiscoveryPersistedRebuildRowStepMetaIsolatedSharedOptions,
+    DiscoveryPersistedRebuildRowStepMetaIsolatedSharedStage,
     DiscoveryPersistedRebuildRowSharedPathDiffDiagnostic,
     DiscoveryPersistedRebuildRowSharedPathDiffOptions,
     DiscoveryPersistedRebuildRowSharedPathDiffStage,
@@ -4922,6 +4925,107 @@ impl SqliteStore {
             measures_prepare_meta_separately: true,
             measures_extract_separately: true,
         })
+    }
+
+    pub fn probe_discovery_persisted_rebuild_row_step_meta_isolated_shared_read_only(
+        runtime_db_path: &Path,
+        options: &DiscoveryPersistedRebuildRowStepMetaIsolatedSharedOptions,
+    ) -> Result<DiscoveryPersistedRebuildRowStepMetaIsolatedSharedDiagnostic> {
+        #[derive(Debug)]
+        enum WorkerMessage {
+            Finished(Result<PersistedRebuildRowStepMetaSharedPathResult, String>),
+        }
+
+        let started_at = Instant::now();
+        let deadline = started_at + StdDuration::from_millis(options.budget_ms);
+        let mut diagnostic = DiscoveryPersistedRebuildRowStepMetaIsolatedSharedDiagnostic {
+            stage: DiscoveryPersistedRebuildRowStepMetaIsolatedSharedStage::SharedPath,
+            budget_exhausted: false,
+            total_elapsed_ms: 0,
+            prepare_exists_elapsed_ms: None,
+            step_exists_elapsed_ms: None,
+            prepare_meta_elapsed_ms: None,
+            step_meta_elapsed_ms: None,
+            extract_phase_elapsed_ms: None,
+            extract_updated_at_elapsed_ms: None,
+            row_exists: None,
+            row_phase: None,
+            row_updated_at: None,
+            loads_connection_facts_before_meta_query: false,
+            uses_query_plus_next: false,
+            finalizes_exists_before_prepare_meta: false,
+            extracts_phase_and_updated_at_after_step: false,
+            measures_prepare_meta_separately: false,
+            measures_extract_separately: false,
+        };
+        let (tx, rx) = mpsc::sync_channel(1);
+        let runtime_db_path = runtime_db_path.to_path_buf();
+        let options = options.clone();
+        std::thread::spawn(move || {
+            let result = Self::run_isolated_step_meta_detail_shared_path(
+                &runtime_db_path,
+                options.test_force_shared_step_meta_delay_ms,
+            )
+            .map_err(|error| format!("{error:#}"));
+            let _ = tx.send(WorkerMessage::Finished(result));
+        });
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            diagnostic.budget_exhausted = true;
+            diagnostic.total_elapsed_ms =
+                started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+            return Ok(diagnostic);
+        }
+
+        match rx.recv_timeout(remaining) {
+            Ok(WorkerMessage::Finished(result)) => {
+                let result = result.map_err(|error| {
+                    anyhow!("persisted rebuild row isolated shared helper worker failed: {error}")
+                })?;
+                diagnostic.stage = DiscoveryPersistedRebuildRowStepMetaIsolatedSharedStage::Complete;
+                diagnostic.total_elapsed_ms =
+                    started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                diagnostic.prepare_exists_elapsed_ms =
+                    Some(result.exists_probe.prepare_exists_elapsed_ms);
+                diagnostic.step_exists_elapsed_ms =
+                    Some(result.exists_probe.step_exists_elapsed_ms);
+                diagnostic.row_exists = Some(result.query_result.row_exists);
+                diagnostic.loads_connection_facts_before_meta_query =
+                    result.loads_connection_facts_before_meta_query;
+                diagnostic.uses_query_plus_next = result.uses_query_plus_next;
+                diagnostic.finalizes_exists_before_prepare_meta =
+                    result.finalizes_exists_before_prepare_meta;
+                diagnostic.extracts_phase_and_updated_at_after_step =
+                    result.extracts_phase_and_updated_at_after_step;
+                diagnostic.measures_prepare_meta_separately =
+                    result.measures_prepare_meta_separately;
+                diagnostic.measures_extract_separately =
+                    result.measures_extract_separately;
+                if result.query_result.row_exists {
+                    diagnostic.prepare_meta_elapsed_ms =
+                        Some(result.query_result.prepare_meta_elapsed_ms);
+                    diagnostic.step_meta_elapsed_ms =
+                        Some(result.query_result.step_meta_elapsed_ms);
+                    diagnostic.extract_phase_elapsed_ms =
+                        Some(result.query_result.extract_phase_elapsed_ms);
+                    diagnostic.extract_updated_at_elapsed_ms =
+                        Some(result.query_result.extract_updated_at_elapsed_ms);
+                    diagnostic.row_phase = result.query_result.row_phase;
+                    diagnostic.row_updated_at = result.query_result.row_updated_at;
+                }
+                Ok(diagnostic)
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                diagnostic.budget_exhausted = true;
+                diagnostic.total_elapsed_ms =
+                    started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                Ok(diagnostic)
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(anyhow!(
+                "persisted rebuild row isolated shared helper worker disconnected before returning a result"
+            )),
+        }
     }
 
     fn run_isolated_shared_sequence_baseline_path(

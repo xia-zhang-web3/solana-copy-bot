@@ -7,6 +7,8 @@ use copybot_storage::{
     DiscoveryPersistedRebuildRowDriverCompareDiagnostic as StorageDriverCompareDiagnostic,
     DiscoveryPersistedRebuildRowDriverCompareOptions as StorageDriverCompareOptions,
     DiscoveryPersistedRebuildRowDriverCompareStage as StorageDriverCompareStage,
+    DiscoveryPersistedRebuildRowStepMetaIsolatedSharedDiagnostic as StorageStepMetaIsolatedSharedDiagnostic,
+    DiscoveryPersistedRebuildRowStepMetaIsolatedSharedOptions as StorageStepMetaIsolatedSharedOptions,
     DiscoveryPersistedRebuildRowSharedPathDiffDiagnostic as StorageSharedPathDiffDiagnostic,
     DiscoveryPersistedRebuildRowSharedPathDiffOptions as StorageSharedPathDiffOptions,
     DiscoveryPersistedRebuildRowSharedPathDiffStage as StorageSharedPathDiffStage,
@@ -1903,6 +1905,26 @@ pub enum PersistedRebuildRowSharedPathDiffReasonClass {
     SharedPathDiffNoMaterialImplementationDifferenceObserved,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PersistedRebuildRowStepMetaFullContextDiffStage {
+    FullStepMetaDetailMode,
+    IsolatedSharedHelper,
+    Complete,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PersistedRebuildRowStepMetaFullContextDiffReasonClass {
+    StepMetaFullContextDiffUnprovenDueToBudgetExhausted,
+    StepMetaFullContextDiffRowMissing,
+    StepMetaFullContextDiffMeasurementContractDiff,
+    StepMetaFullContextDiffFullModeStillSlowWhileIsolatedFast,
+    StepMetaFullContextDiffIsolatedStillSlowWhileFullFast,
+    StepMetaFullContextDiffFullAndIsolatedBothSlow,
+    StepMetaFullContextDiffFullAndIsolatedNowMatchNoRepro,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PersistedRebuildRowStepMetaCompareDiagnostic {
     pub step_meta_compare_stage: StorageStepMetaCompareStage,
@@ -2012,6 +2034,34 @@ pub struct PersistedRebuildRowSharedPathDiffDiagnostic {
     pub shared_path_diff_explanation: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PersistedRebuildRowStepMetaFullContextDiffDiagnostic {
+    pub step_meta_full_context_diff_stage: PersistedRebuildRowStepMetaFullContextDiffStage,
+    pub step_meta_full_context_diff_budget_exhausted: bool,
+    pub step_meta_full_context_diff_total_elapsed_ms: u64,
+    pub step_meta_full_context_diff_full_prepare_exists_elapsed_ms: Option<u64>,
+    pub step_meta_full_context_diff_full_step_exists_elapsed_ms: Option<u64>,
+    pub step_meta_full_context_diff_full_prepare_meta_elapsed_ms: Option<u64>,
+    pub step_meta_full_context_diff_full_step_meta_elapsed_ms: Option<u64>,
+    pub step_meta_full_context_diff_full_extract_phase_elapsed_ms: Option<u64>,
+    pub step_meta_full_context_diff_full_extract_updated_at_elapsed_ms: Option<u64>,
+    pub step_meta_full_context_diff_full_row_exists: Option<bool>,
+    pub step_meta_full_context_diff_isolated_prepare_exists_elapsed_ms: Option<u64>,
+    pub step_meta_full_context_diff_isolated_step_exists_elapsed_ms: Option<u64>,
+    pub step_meta_full_context_diff_isolated_prepare_meta_elapsed_ms: Option<u64>,
+    pub step_meta_full_context_diff_isolated_step_meta_elapsed_ms: Option<u64>,
+    pub step_meta_full_context_diff_isolated_extract_phase_elapsed_ms: Option<u64>,
+    pub step_meta_full_context_diff_isolated_extract_updated_at_elapsed_ms: Option<u64>,
+    pub step_meta_full_context_diff_isolated_row_exists: Option<bool>,
+    pub step_meta_full_context_diff_full_mode_ran_later_variants_after_shared_path: bool,
+    pub step_meta_full_context_diff_isolated_side_ran_only_shared_helper: bool,
+    pub step_meta_full_context_diff_both_sides_use_same_shared_helper_function: bool,
+    pub step_meta_full_context_diff_both_sides_measure_same_bucket_boundaries: bool,
+    pub step_meta_full_context_diff_reason_class:
+        PersistedRebuildRowStepMetaFullContextDiffReasonClass,
+    pub step_meta_full_context_diff_explanation: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedPersistedReplayCheckpointState(PersistedStreamRebuildState);
 
@@ -2041,6 +2091,13 @@ struct SharedPathDiffProbeOptions {
     budget_ms: u64,
     test_force_step_meta_detail_shared_step_meta_delay_ms: Option<u64>,
     test_force_shared_sequence_baseline_step_meta_delay_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct StepMetaFullContextDiffProbeOptions {
+    budget_ms: u64,
+    test_force_full_mode_shared_step_meta_delay_ms: Option<u64>,
+    test_force_isolated_shared_step_meta_delay_ms: Option<u64>,
 }
 
 fn should_request_persisted_stream_catch_up(telemetry: &PersistedStreamProgressTelemetry) -> bool {
@@ -3029,6 +3086,123 @@ impl DiscoveryService {
                 diagnostic
                     .shared_path_diff_shared_sequence_step_meta_elapsed_ms
                     .unwrap_or(0),
+            ),
+        )
+    }
+
+    fn step_meta_full_mode_ran_later_variants(
+        diagnostic: &PersistedRebuildRowStepMetaCompareDiagnostic,
+    ) -> bool {
+        diagnostic.step_meta_fresh_connection_prepare_meta_elapsed_ms.is_some()
+            || diagnostic.step_meta_fresh_connection_step_meta_elapsed_ms.is_some()
+            || diagnostic.step_meta_query_plus_next_variant_elapsed_ms.is_some()
+            || diagnostic.step_meta_query_row_variant_elapsed_ms.is_some()
+            || diagnostic.step_meta_query_only_on_elapsed_ms.is_some()
+            || diagnostic.step_meta_cache_tuned_elapsed_ms.is_some()
+            || diagnostic.step_meta_mmap_tuned_elapsed_ms.is_some()
+            || !matches!(
+                diagnostic.step_meta_compare_stage,
+                StorageStepMetaCompareStage::OpenSharedConnection
+                    | StorageStepMetaCompareStage::SharedConnectionCurrentPath
+            )
+    }
+
+    fn classify_persisted_rebuild_row_step_meta_full_context_diff(
+        diagnostic: &PersistedRebuildRowStepMetaFullContextDiffDiagnostic,
+    ) -> (
+        PersistedRebuildRowStepMetaFullContextDiffReasonClass,
+        String,
+    ) {
+        if diagnostic.step_meta_full_context_diff_budget_exhausted {
+            return (
+                PersistedRebuildRowStepMetaFullContextDiffReasonClass::StepMetaFullContextDiffUnprovenDueToBudgetExhausted,
+                format!(
+                    "step-meta full-context diff exhausted its diagnostic budget while in stage {} before both compared sides completed",
+                    serde_json::to_string(&diagnostic.step_meta_full_context_diff_stage)
+                        .unwrap_or_else(|_| "\"unknown\"".to_string())
+                        .trim_matches('"')
+                ),
+            );
+        }
+
+        if diagnostic.step_meta_full_context_diff_full_row_exists == Some(false)
+            || diagnostic.step_meta_full_context_diff_isolated_row_exists == Some(false)
+        {
+            return (
+                PersistedRebuildRowStepMetaFullContextDiffReasonClass::StepMetaFullContextDiffRowMissing,
+                "the compared current full step-meta-detail shared section and isolated shared helper proved that discovery_persisted_rebuild_state(id=1) is missing on the runtime db".to_string(),
+            );
+        }
+
+        if !diagnostic
+            .step_meta_full_context_diff_both_sides_use_same_shared_helper_function
+            || !diagnostic
+                .step_meta_full_context_diff_both_sides_measure_same_bucket_boundaries
+        {
+            return (
+                PersistedRebuildRowStepMetaFullContextDiffReasonClass::StepMetaFullContextDiffMeasurementContractDiff,
+                format!(
+                    "the current full step-meta-detail side and the isolated shared helper do not expose the same compared shared-path contract (both_use_same_shared_helper_function={}, both_measure_same_bucket_boundaries={})",
+                    diagnostic
+                        .step_meta_full_context_diff_both_sides_use_same_shared_helper_function,
+                    diagnostic
+                        .step_meta_full_context_diff_both_sides_measure_same_bucket_boundaries
+                ),
+            );
+        }
+
+        let full_step = diagnostic
+            .step_meta_full_context_diff_full_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let isolated_step = diagnostic
+            .step_meta_full_context_diff_isolated_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let full_slow = full_step > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+        let isolated_slow = isolated_step > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+
+        if full_slow && !isolated_slow {
+            return (
+                PersistedRebuildRowStepMetaFullContextDiffReasonClass::StepMetaFullContextDiffFullModeStillSlowWhileIsolatedFast,
+                format!(
+                    "the current full step-meta-detail mode still reports a slow shared step-meta bucket while the isolated shared helper stays fast (full_step_meta_elapsed_ms={}, isolated_step_meta_elapsed_ms={}, full_mode_ran_later_variants_after_shared_path={})",
+                    full_step,
+                    isolated_step,
+                    diagnostic
+                        .step_meta_full_context_diff_full_mode_ran_later_variants_after_shared_path
+                ),
+            );
+        }
+
+        if !full_slow && isolated_slow {
+            return (
+                PersistedRebuildRowStepMetaFullContextDiffReasonClass::StepMetaFullContextDiffIsolatedStillSlowWhileFullFast,
+                format!(
+                    "the isolated shared helper is slow while the current full step-meta-detail shared section stays fast (full_step_meta_elapsed_ms={}, isolated_step_meta_elapsed_ms={})",
+                    full_step, isolated_step
+                ),
+            );
+        }
+
+        if full_slow && isolated_slow {
+            return (
+                PersistedRebuildRowStepMetaFullContextDiffReasonClass::StepMetaFullContextDiffFullAndIsolatedBothSlow,
+                format!(
+                    "both the current full step-meta-detail shared section and the isolated shared helper are slow on the compared shared bucket (full_step_meta_elapsed_ms={}, isolated_step_meta_elapsed_ms={})",
+                    full_step, isolated_step
+                ),
+            );
+        }
+
+        (
+            PersistedRebuildRowStepMetaFullContextDiffReasonClass::StepMetaFullContextDiffFullAndIsolatedNowMatchNoRepro,
+            format!(
+                "the current full step-meta-detail shared section does not reproduce the earlier slow shared result: its shared timings now match the isolated shared helper within the same fast range (full_step_meta_elapsed_ms={}, isolated_step_meta_elapsed_ms={}, full_mode_ran_later_variants_after_shared_path={}, isolated_side_ran_only_shared_helper={})",
+                full_step,
+                isolated_step,
+                diagnostic
+                    .step_meta_full_context_diff_full_mode_ran_later_variants_after_shared_path,
+                diagnostic
+                    .step_meta_full_context_diff_isolated_side_ran_only_shared_helper
             ),
         )
     }
@@ -4703,6 +4877,155 @@ impl DiscoveryService {
                 },
             )?,
         ))
+    }
+
+    pub fn probe_persisted_rebuild_row_step_meta_full_context_diff_read_only(
+        runtime_db_path: &Path,
+        budget_ms: u64,
+    ) -> Result<PersistedRebuildRowStepMetaFullContextDiffDiagnostic> {
+        Self::probe_persisted_rebuild_row_step_meta_full_context_diff_read_only_with_options(
+            runtime_db_path,
+            StepMetaFullContextDiffProbeOptions {
+                budget_ms,
+                ..StepMetaFullContextDiffProbeOptions::default()
+            },
+        )
+    }
+
+    fn probe_persisted_rebuild_row_step_meta_full_context_diff_read_only_with_options(
+        runtime_db_path: &Path,
+        options: StepMetaFullContextDiffProbeOptions,
+    ) -> Result<PersistedRebuildRowStepMetaFullContextDiffDiagnostic> {
+        let started_at = Instant::now();
+        let deadline = started_at + StdDuration::from_millis(options.budget_ms);
+
+        let remaining_for_full = deadline.saturating_duration_since(Instant::now());
+        let full = Self::probe_persisted_rebuild_row_step_meta_compare_read_only_with_options(
+            runtime_db_path,
+            StorageStepMetaCompareOptions {
+                budget_ms: remaining_for_full.as_millis().min(u64::MAX as u128) as u64,
+                test_force_shared_step_meta_delay_ms: options
+                    .test_force_full_mode_shared_step_meta_delay_ms,
+                ..StorageStepMetaCompareOptions::default()
+            },
+        )?;
+
+        let remaining_for_isolated = deadline.saturating_duration_since(Instant::now());
+        let isolated = if remaining_for_isolated.is_zero() {
+            StorageStepMetaIsolatedSharedDiagnostic {
+                stage: copybot_storage::DiscoveryPersistedRebuildRowStepMetaIsolatedSharedStage::SharedPath,
+                budget_exhausted: true,
+                total_elapsed_ms: 0,
+                prepare_exists_elapsed_ms: None,
+                step_exists_elapsed_ms: None,
+                prepare_meta_elapsed_ms: None,
+                step_meta_elapsed_ms: None,
+                extract_phase_elapsed_ms: None,
+                extract_updated_at_elapsed_ms: None,
+                row_exists: None,
+                row_phase: None,
+                row_updated_at: None,
+                loads_connection_facts_before_meta_query: true,
+                uses_query_plus_next: true,
+                finalizes_exists_before_prepare_meta: true,
+                extracts_phase_and_updated_at_after_step: true,
+                measures_prepare_meta_separately: true,
+                measures_extract_separately: true,
+            }
+        } else {
+            SqliteStore::probe_discovery_persisted_rebuild_row_step_meta_isolated_shared_read_only(
+                runtime_db_path,
+                &StorageStepMetaIsolatedSharedOptions {
+                    budget_ms: remaining_for_isolated.as_millis().min(u64::MAX as u128) as u64,
+                    test_force_shared_step_meta_delay_ms: options
+                        .test_force_isolated_shared_step_meta_delay_ms,
+                },
+            )?
+        };
+
+        let mut mapped = PersistedRebuildRowStepMetaFullContextDiffDiagnostic {
+            step_meta_full_context_diff_stage: if isolated.budget_exhausted {
+                PersistedRebuildRowStepMetaFullContextDiffStage::IsolatedSharedHelper
+            } else if full.step_meta_compare_budget_exhausted
+                && !Self::step_meta_full_mode_ran_later_variants(&full)
+            {
+                PersistedRebuildRowStepMetaFullContextDiffStage::FullStepMetaDetailMode
+            } else {
+                PersistedRebuildRowStepMetaFullContextDiffStage::Complete
+            },
+            step_meta_full_context_diff_budget_exhausted: (full.step_meta_compare_budget_exhausted
+                && full.step_meta_shared_connection_step_meta_elapsed_ms.is_none())
+                || isolated.budget_exhausted,
+            step_meta_full_context_diff_total_elapsed_ms: started_at
+                .elapsed()
+                .as_millis()
+                .min(u64::MAX as u128) as u64,
+            step_meta_full_context_diff_full_prepare_exists_elapsed_ms: full
+                .step_meta_shared_connection_prepare_exists_elapsed_ms,
+            step_meta_full_context_diff_full_step_exists_elapsed_ms: full
+                .step_meta_shared_connection_step_exists_elapsed_ms,
+            step_meta_full_context_diff_full_prepare_meta_elapsed_ms: full
+                .step_meta_shared_connection_prepare_meta_elapsed_ms,
+            step_meta_full_context_diff_full_step_meta_elapsed_ms: full
+                .step_meta_shared_connection_step_meta_elapsed_ms,
+            step_meta_full_context_diff_full_extract_phase_elapsed_ms: full
+                .step_meta_shared_connection_extract_phase_elapsed_ms,
+            step_meta_full_context_diff_full_extract_updated_at_elapsed_ms: full
+                .step_meta_shared_connection_extract_updated_at_elapsed_ms,
+            step_meta_full_context_diff_full_row_exists: full.step_meta_shared_connection_row_exists,
+            step_meta_full_context_diff_isolated_prepare_exists_elapsed_ms: isolated
+                .prepare_exists_elapsed_ms,
+            step_meta_full_context_diff_isolated_step_exists_elapsed_ms: isolated
+                .step_exists_elapsed_ms,
+            step_meta_full_context_diff_isolated_prepare_meta_elapsed_ms: isolated
+                .prepare_meta_elapsed_ms,
+            step_meta_full_context_diff_isolated_step_meta_elapsed_ms: isolated.step_meta_elapsed_ms,
+            step_meta_full_context_diff_isolated_extract_phase_elapsed_ms: isolated
+                .extract_phase_elapsed_ms,
+            step_meta_full_context_diff_isolated_extract_updated_at_elapsed_ms: isolated
+                .extract_updated_at_elapsed_ms,
+            step_meta_full_context_diff_isolated_row_exists: isolated.row_exists,
+            step_meta_full_context_diff_full_mode_ran_later_variants_after_shared_path:
+                Self::step_meta_full_mode_ran_later_variants(&full),
+            step_meta_full_context_diff_isolated_side_ran_only_shared_helper: true,
+            step_meta_full_context_diff_both_sides_use_same_shared_helper_function: true,
+            step_meta_full_context_diff_both_sides_measure_same_bucket_boundaries:
+                isolated.loads_connection_facts_before_meta_query
+                    && isolated.uses_query_plus_next
+                    && isolated.finalizes_exists_before_prepare_meta
+                    && isolated.extracts_phase_and_updated_at_after_step
+                    && isolated.measures_prepare_meta_separately
+                    && isolated.measures_extract_separately,
+            step_meta_full_context_diff_reason_class:
+                PersistedRebuildRowStepMetaFullContextDiffReasonClass::StepMetaFullContextDiffUnprovenDueToBudgetExhausted,
+            step_meta_full_context_diff_explanation:
+                "step-meta full-context diff has not been classified yet".to_string(),
+        };
+        let same_bucket_boundaries = mapped
+            .step_meta_full_context_diff_full_prepare_meta_elapsed_ms
+            .is_some()
+            == mapped
+                .step_meta_full_context_diff_isolated_prepare_meta_elapsed_ms
+                .is_some()
+            && mapped
+                .step_meta_full_context_diff_full_extract_phase_elapsed_ms
+                .is_some()
+                == mapped
+                    .step_meta_full_context_diff_isolated_extract_phase_elapsed_ms
+                    .is_some()
+            && mapped
+                .step_meta_full_context_diff_full_extract_updated_at_elapsed_ms
+                .is_some()
+                == mapped
+                    .step_meta_full_context_diff_isolated_extract_updated_at_elapsed_ms
+                    .is_some();
+        mapped.step_meta_full_context_diff_both_sides_measure_same_bucket_boundaries &=
+            same_bucket_boundaries;
+        let (reason_class, explanation) =
+            Self::classify_persisted_rebuild_row_step_meta_full_context_diff(&mapped);
+        mapped.step_meta_full_context_diff_reason_class = reason_class;
+        mapped.step_meta_full_context_diff_explanation = explanation;
+        Ok(mapped)
     }
 
     fn scan_replay_sol_leg_source_ahead_from_state(
@@ -41035,6 +41358,114 @@ mod tests {
     }
 
     #[test]
+    fn replay_checkpoint_step_meta_full_context_diff_emits_full_and_isolated_timings_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_step_meta_full_context_diff_read_only(
+                Path::new(&runtime_db_path),
+                30_000,
+            )?;
+        assert!(!diagnostic.step_meta_full_context_diff_budget_exhausted);
+        assert!(diagnostic
+            .step_meta_full_context_diff_full_prepare_exists_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .step_meta_full_context_diff_full_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .step_meta_full_context_diff_isolated_prepare_exists_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .step_meta_full_context_diff_isolated_step_meta_elapsed_ms
+            .is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_step_meta_full_context_diff_normal_run_reports_no_current_repro_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_step_meta_full_context_diff_read_only(
+                Path::new(&runtime_db_path),
+                30_000,
+            )?;
+        assert_eq!(
+            diagnostic.step_meta_full_context_diff_reason_class,
+            PersistedRebuildRowStepMetaFullContextDiffReasonClass::StepMetaFullContextDiffFullAndIsolatedNowMatchNoRepro
+        );
+        assert!(diagnostic
+            .step_meta_full_context_diff_explanation
+            .contains("does not reproduce the earlier slow shared result"));
+        assert!(diagnostic
+            .step_meta_full_context_diff_full_mode_ran_later_variants_after_shared_path);
+        assert!(diagnostic
+            .step_meta_full_context_diff_isolated_side_ran_only_shared_helper);
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_step_meta_full_context_diff_full_only_delay_surfaces_full_divergence_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::
+            probe_persisted_rebuild_row_step_meta_full_context_diff_read_only_with_options(
+                Path::new(&runtime_db_path),
+                StepMetaFullContextDiffProbeOptions {
+                    budget_ms: 30_000,
+                    test_force_full_mode_shared_step_meta_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    ..StepMetaFullContextDiffProbeOptions::default()
+                },
+            )?;
+        assert_eq!(
+            diagnostic.step_meta_full_context_diff_reason_class,
+            PersistedRebuildRowStepMetaFullContextDiffReasonClass::StepMetaFullContextDiffFullModeStillSlowWhileIsolatedFast
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_step_meta_full_context_diff_isolated_only_delay_surfaces_isolated_divergence_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::
+            probe_persisted_rebuild_row_step_meta_full_context_diff_read_only_with_options(
+                Path::new(&runtime_db_path),
+                StepMetaFullContextDiffProbeOptions {
+                    budget_ms: 30_000,
+                    test_force_isolated_shared_step_meta_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    ..StepMetaFullContextDiffProbeOptions::default()
+                },
+            )?;
+        assert_eq!(
+            diagnostic.step_meta_full_context_diff_reason_class,
+            PersistedRebuildRowStepMetaFullContextDiffReasonClass::StepMetaFullContextDiffIsolatedStillSlowWhileFullFast
+        );
+        Ok(())
+    }
+
+    #[test]
     fn replay_checkpoint_raw_probe_meta_plan_budget_exhaustion_keeps_row_existence_unproven_stage1(
     ) -> Result<()> {
         let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
@@ -41646,6 +42077,10 @@ mod tests {
             30_000,
         )?;
         let _ = DiscoveryService::probe_persisted_rebuild_row_shared_path_diff_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        let _ = DiscoveryService::probe_persisted_rebuild_row_step_meta_full_context_diff_read_only(
             Path::new(&runtime_db_path),
             30_000,
         )?;

@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use copybot_discovery::{
     DiscoveryService, PersistedRebuildRowDriverCompareDiagnostic,
+    PersistedRebuildRowStepMetaFullContextDiffDiagnostic,
     PersistedRebuildRowSharedPathDiffDiagnostic,
     PersistedRebuildRowSharedSequenceCompareDiagnostic,
     PersistedRebuildRowStepMetaCompareDiagnostic, RawPersistedRebuildRowProbeDiagnostic,
@@ -12,7 +13,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS: u64 = 30_000;
-const USAGE: &str = "usage: discovery_replay_checkpoint_diagnose [--inspect-persisted-rebuild-row-meta-lite | --inspect-persisted-rebuild-row-meta | --inspect-persisted-rebuild-state | --explain-publishable-checkpoint-blocker | --compare-sol-leg-source-vs-checkpoint | --explain-replay-sol-leg-incomplete | --probe-persisted-rebuild-row-raw | --probe-persisted-rebuild-row-driver-compare | --probe-persisted-rebuild-row-step-meta-detail | --probe-persisted-rebuild-row-shared-sequence-detail | --probe-persisted-rebuild-row-shared-path-diff] --runtime-db <path> [--recent-raw-db <path>] [--budget-ms <ms>] [--json]";
+const USAGE: &str = "usage: discovery_replay_checkpoint_diagnose [--inspect-persisted-rebuild-row-meta-lite | --inspect-persisted-rebuild-row-meta | --inspect-persisted-rebuild-state | --explain-publishable-checkpoint-blocker | --compare-sol-leg-source-vs-checkpoint | --explain-replay-sol-leg-incomplete | --probe-persisted-rebuild-row-raw | --probe-persisted-rebuild-row-driver-compare | --probe-persisted-rebuild-row-step-meta-detail | --probe-persisted-rebuild-row-shared-sequence-detail | --probe-persisted-rebuild-row-shared-path-diff | --probe-persisted-rebuild-row-step-meta-full-context-diff] --runtime-db <path> [--recent-raw-db <path>] [--budget-ms <ms>] [--json]";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -37,6 +38,7 @@ enum Mode {
     ProbePersistedRebuildRowStepMetaDetail,
     ProbePersistedRebuildRowSharedSequenceDetail,
     ProbePersistedRebuildRowSharedPathDiff,
+    ProbePersistedRebuildRowStepMetaFullContextDiff,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +114,11 @@ where
             "--probe-persisted-rebuild-row-shared-path-diff" => set_mode(
                 &mut mode,
                 Mode::ProbePersistedRebuildRowSharedPathDiff,
+                arg.as_str(),
+            )?,
+            "--probe-persisted-rebuild-row-step-meta-full-context-diff" => set_mode(
+                &mut mode,
+                Mode::ProbePersistedRebuildRowStepMetaFullContextDiff,
                 arg.as_str(),
             )?,
             "--runtime-db" => {
@@ -316,6 +323,13 @@ fn render_shared_path_diff_json(
         .context("failed serializing persisted rebuild row shared-path diff probe")
 }
 
+fn render_step_meta_full_context_diff_json(
+    diagnostic: &PersistedRebuildRowStepMetaFullContextDiffDiagnostic,
+) -> Result<Value> {
+    serde_json::to_value(diagnostic)
+        .context("failed serializing persisted rebuild row step-meta full-context diff probe")
+}
+
 fn run(config: Config) -> Result<String> {
     let output = match config.mode {
         Mode::InspectPersistedRebuildRowMetaLite => render_runtime_db_diagnostic_json(
@@ -404,6 +418,14 @@ fn run(config: Config) -> Result<String> {
                 config.budget_ms,
             )?,
         )?,
+        Mode::ProbePersistedRebuildRowStepMetaFullContextDiff => {
+            render_step_meta_full_context_diff_json(
+                &DiscoveryService::probe_persisted_rebuild_row_step_meta_full_context_diff_read_only(
+                    &config.runtime_db,
+                    config.budget_ms,
+                )?,
+            )?
+        }
     };
     render_json(&output, config.json)
 }
@@ -525,6 +547,21 @@ mod tests {
         ])?
         .expect("config should parse");
         assert_eq!(config.mode, Mode::ProbePersistedRebuildRowSharedPathDiff);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_args_accepts_step_meta_full_context_diff_mode_stage1() -> Result<()> {
+        let config = parse_args_from([
+            "--probe-persisted-rebuild-row-step-meta-full-context-diff".to_string(),
+            "--runtime-db".to_string(),
+            "runtime.sqlite".to_string(),
+        ])?
+        .expect("config should parse");
+        assert_eq!(
+            config.mode,
+            Mode::ProbePersistedRebuildRowStepMetaFullContextDiff
+        );
         Ok(())
     }
 
@@ -706,6 +743,32 @@ mod tests {
             json["shared_path_diff_shared_sequence_loads_connection_facts_before_meta_query"],
             true
         );
+        Ok(())
+    }
+
+    #[test]
+    fn run_step_meta_full_context_diff_reports_missing_checkpoint_json_stage1() -> Result<()> {
+        let (_temp, runtime_db) =
+            make_test_store("diagnose-step-meta-full-context-diff-runtime.sqlite")?;
+        let store = SqliteStore::open(Path::new(&runtime_db))?;
+        assert!(store.load_discovery_persisted_rebuild_state()?.is_none());
+        drop(store);
+        let output = run(Config {
+            mode: Mode::ProbePersistedRebuildRowStepMetaFullContextDiff,
+            runtime_db,
+            recent_raw_db: None,
+            json: true,
+            budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+        })?;
+        let json: serde_json::Value =
+            serde_json::from_str(&output).context("invalid json output")?;
+        assert_eq!(
+            json["step_meta_full_context_diff_reason_class"],
+            "step_meta_full_context_diff_row_missing"
+        );
+        assert!(json["step_meta_full_context_diff_explanation"]
+            .as_str()
+            .is_some_and(|value| value.contains("is missing on the runtime db")));
         Ok(())
     }
 
