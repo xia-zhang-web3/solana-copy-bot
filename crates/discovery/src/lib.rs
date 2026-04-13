@@ -4,6 +4,9 @@ use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
 use copybot_storage::{
     is_fatal_sqlite_anyhow_error, DiscoveryPersistedRebuildPhase,
+    DiscoveryPersistedRebuildRowDriverCompareDiagnostic as StorageDriverCompareDiagnostic,
+    DiscoveryPersistedRebuildRowDriverCompareOptions as StorageDriverCompareOptions,
+    DiscoveryPersistedRebuildRowDriverCompareStage as StorageDriverCompareStage,
     DiscoveryPersistedRebuildStateMetaLiteRawRow, DiscoveryPersistedRebuildStateRow,
     DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateRow,
     DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
@@ -75,6 +78,8 @@ const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MAX_TIME_BUDGET_MS:
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_SOL_LEG_MAX_OBSERVED_MS_PER_PAGE: u64 = 10_000;
 const REPLAY_CHECKPOINT_DIAGNOSE_SOURCE_SCAN_PAGE_LIMIT: usize = 10_000;
 const REPLAY_CHECKPOINT_DIAGNOSE_SOURCE_SCAN_PAGE_DEADLINE_MS: u64 = 30_000;
+const DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD: u64 = 1_000;
+const DRIVER_COMPARE_FAST_EXISTS_MS_THRESHOLD: u64 = 250;
 const RAW_PERSISTED_REBUILD_ROW_SLOW_QUERY_MS_THRESHOLD: u64 = 5_000;
 const RAW_PERSISTED_REBUILD_ROW_LARGE_STATE_JSON_BYTES_THRESHOLD: usize = 16 * 1024 * 1024;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_NUMERATOR: usize =
@@ -1800,6 +1805,49 @@ pub struct RawPersistedRebuildRowProbeDiagnostic {
     pub raw_persisted_rebuild_row_explanation: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PersistedRebuildRowDriverCompareReasonClass {
+    DriverCompareUnprovenDueToBudgetExhausted,
+    DriverRowMissing,
+    DriverMetaQueryFast,
+    DriverMetaQueryPrepareSlow,
+    DriverMetaQueryStepSlow,
+    DriverMetaQueryExtractSlow,
+    DriverMetaQuerySlowButExistsProbeFast,
+    DriverSizeQueryDominatesDueToLargePayload,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PersistedRebuildRowDriverCompareDiagnostic {
+    pub driver_compare_stage: StorageDriverCompareStage,
+    pub driver_compare_budget_exhausted: bool,
+    pub driver_compare_skipped_stages: Vec<StorageDriverCompareStage>,
+    pub driver_compare_open_db_elapsed_ms: Option<u64>,
+    pub driver_compare_load_connection_facts_elapsed_ms: Option<u64>,
+    pub driver_compare_prepare_exists_elapsed_ms: Option<u64>,
+    pub driver_compare_step_exists_elapsed_ms: Option<u64>,
+    pub driver_compare_prepare_meta_elapsed_ms: Option<u64>,
+    pub driver_compare_step_meta_elapsed_ms: Option<u64>,
+    pub driver_compare_extract_phase_elapsed_ms: Option<u64>,
+    pub driver_compare_extract_updated_at_elapsed_ms: Option<u64>,
+    pub driver_compare_prepare_size_elapsed_ms: Option<u64>,
+    pub driver_compare_step_size_elapsed_ms: Option<u64>,
+    pub driver_compare_total_elapsed_ms: u64,
+    pub driver_compare_busy_timeout_ms: Option<u64>,
+    pub driver_compare_cache_size: Option<i64>,
+    pub driver_compare_mmap_size: Option<i64>,
+    pub driver_compare_query_only: Option<bool>,
+    pub driver_compare_journal_mode: Option<String>,
+    pub driver_compare_locking_mode: Option<String>,
+    pub driver_compare_row_exists: Option<bool>,
+    pub driver_compare_row_phase: Option<String>,
+    pub driver_compare_row_updated_at: Option<String>,
+    pub driver_compare_row_state_json_bytes: Option<usize>,
+    pub driver_compare_reason_class: PersistedRebuildRowDriverCompareReasonClass,
+    pub driver_compare_explanation: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedPersistedReplayCheckpointState(PersistedStreamRebuildState);
 
@@ -2189,6 +2237,164 @@ impl DiscoveryService {
                 meta_query_elapsed_ms, state_json_bytes
             ),
         )
+    }
+
+    fn classify_persisted_rebuild_row_driver_compare(
+        diagnostic: &PersistedRebuildRowDriverCompareDiagnostic,
+    ) -> (PersistedRebuildRowDriverCompareReasonClass, String) {
+        if diagnostic.driver_compare_budget_exhausted {
+            return (
+                PersistedRebuildRowDriverCompareReasonClass::DriverCompareUnprovenDueToBudgetExhausted,
+                format!(
+                    "driver compare exhausted its diagnostic budget while in stage {} before the full in-process query path completed",
+                    serde_json::to_string(&diagnostic.driver_compare_stage)
+                        .unwrap_or_else(|_| "\"unknown\"".to_string())
+                        .trim_matches('"')
+                ),
+            );
+        }
+
+        if diagnostic.driver_compare_row_exists == Some(false) {
+            return (
+                PersistedRebuildRowDriverCompareReasonClass::DriverRowMissing,
+                "the in-process driver compare completed and proved that discovery_persisted_rebuild_state(id=1) is missing on the read-only runtime connection".to_string(),
+            );
+        }
+
+        let step_exists = diagnostic
+            .driver_compare_step_exists_elapsed_ms
+            .unwrap_or(0);
+        let prepare_meta = diagnostic
+            .driver_compare_prepare_meta_elapsed_ms
+            .unwrap_or(0);
+        let step_meta = diagnostic.driver_compare_step_meta_elapsed_ms.unwrap_or(0);
+        let extract_meta = diagnostic
+            .driver_compare_extract_phase_elapsed_ms
+            .unwrap_or(0)
+            .saturating_add(
+                diagnostic
+                    .driver_compare_extract_updated_at_elapsed_ms
+                    .unwrap_or(0),
+            );
+        let step_size = diagnostic.driver_compare_step_size_elapsed_ms.unwrap_or(0);
+        let state_json_bytes = diagnostic.driver_compare_row_state_json_bytes.unwrap_or(0);
+
+        if step_size > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD
+            && step_size > step_meta
+            && state_json_bytes >= RAW_PERSISTED_REBUILD_ROW_LARGE_STATE_JSON_BYTES_THRESHOLD
+        {
+            return (
+                PersistedRebuildRowDriverCompareReasonClass::DriverSizeQueryDominatesDueToLargePayload,
+                format!(
+                    "the in-process exact row path is dominated by the size query on the large state_json payload (step_size_elapsed_ms={}, state_json_bytes={}, step_meta_elapsed_ms={})",
+                    step_size, state_json_bytes, step_meta
+                ),
+            );
+        }
+
+        if prepare_meta > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD
+            && prepare_meta >= step_meta
+            && prepare_meta >= extract_meta
+        {
+            return (
+                PersistedRebuildRowDriverCompareReasonClass::DriverMetaQueryPrepareSlow,
+                format!(
+                    "the in-process exact row path is slow while preparing the meta query (prepare_meta_elapsed_ms={})",
+                    prepare_meta
+                ),
+            );
+        }
+
+        if step_meta > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD
+            && step_exists <= DRIVER_COMPARE_FAST_EXISTS_MS_THRESHOLD
+        {
+            return (
+                PersistedRebuildRowDriverCompareReasonClass::DriverMetaQuerySlowButExistsProbeFast,
+                format!(
+                    "the lightweight exists probe is fast, but stepping the exact meta query is slow on the same in-process read-only connection (step_exists_elapsed_ms={}, step_meta_elapsed_ms={})",
+                    step_exists, step_meta
+                ),
+            );
+        }
+
+        if step_meta > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD && step_meta >= extract_meta {
+            return (
+                PersistedRebuildRowDriverCompareReasonClass::DriverMetaQueryStepSlow,
+                format!(
+                    "the in-process exact row path is slow while stepping/fetching the meta query (step_meta_elapsed_ms={})",
+                    step_meta
+                ),
+            );
+        }
+
+        if extract_meta > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD {
+            return (
+                PersistedRebuildRowDriverCompareReasonClass::DriverMetaQueryExtractSlow,
+                format!(
+                    "the in-process exact row path is slow while extracting meta query columns after step/fetch (extract_phase_elapsed_ms={}, extract_updated_at_elapsed_ms={})",
+                    diagnostic.driver_compare_extract_phase_elapsed_ms.unwrap_or(0),
+                    diagnostic
+                        .driver_compare_extract_updated_at_elapsed_ms
+                        .unwrap_or(0)
+                ),
+            );
+        }
+
+        (
+            PersistedRebuildRowDriverCompareReasonClass::DriverMetaQueryFast,
+            format!(
+                "the in-process exact row path completed without any single prepare/step/extract stage exceeding the slow threshold (prepare_meta_elapsed_ms={}, step_meta_elapsed_ms={}, extract_total_elapsed_ms={})",
+                prepare_meta, step_meta, extract_meta
+            ),
+        )
+    }
+
+    fn map_storage_driver_compare_diagnostic(
+        diagnostic: StorageDriverCompareDiagnostic,
+    ) -> PersistedRebuildRowDriverCompareDiagnostic {
+        let connection_facts = diagnostic.connection_facts.clone();
+        let mut mapped = PersistedRebuildRowDriverCompareDiagnostic {
+            driver_compare_stage: diagnostic.stage,
+            driver_compare_budget_exhausted: diagnostic.budget_exhausted,
+            driver_compare_skipped_stages: diagnostic.skipped_stages,
+            driver_compare_open_db_elapsed_ms: diagnostic.open_db_elapsed_ms,
+            driver_compare_load_connection_facts_elapsed_ms: diagnostic
+                .load_connection_facts_elapsed_ms,
+            driver_compare_prepare_exists_elapsed_ms: diagnostic.prepare_exists_elapsed_ms,
+            driver_compare_step_exists_elapsed_ms: diagnostic.step_exists_elapsed_ms,
+            driver_compare_prepare_meta_elapsed_ms: diagnostic.prepare_meta_elapsed_ms,
+            driver_compare_step_meta_elapsed_ms: diagnostic.step_meta_elapsed_ms,
+            driver_compare_extract_phase_elapsed_ms: diagnostic.extract_phase_elapsed_ms,
+            driver_compare_extract_updated_at_elapsed_ms: diagnostic
+                .extract_updated_at_elapsed_ms,
+            driver_compare_prepare_size_elapsed_ms: diagnostic.prepare_size_elapsed_ms,
+            driver_compare_step_size_elapsed_ms: diagnostic.step_size_elapsed_ms,
+            driver_compare_total_elapsed_ms: diagnostic.total_elapsed_ms,
+            driver_compare_busy_timeout_ms: connection_facts
+                .as_ref()
+                .map(|facts| facts.busy_timeout_ms),
+            driver_compare_cache_size: connection_facts.as_ref().map(|facts| facts.cache_size),
+            driver_compare_mmap_size: connection_facts.as_ref().map(|facts| facts.mmap_size),
+            driver_compare_query_only: connection_facts.as_ref().map(|facts| facts.query_only),
+            driver_compare_journal_mode: connection_facts
+                .as_ref()
+                .map(|facts| facts.journal_mode.clone()),
+            driver_compare_locking_mode: connection_facts
+                .as_ref()
+                .map(|facts| facts.locking_mode.clone()),
+            driver_compare_row_exists: diagnostic.row_exists,
+            driver_compare_row_phase: diagnostic.row_phase,
+            driver_compare_row_updated_at: diagnostic.row_updated_at,
+            driver_compare_row_state_json_bytes: diagnostic.row_state_json_bytes,
+            driver_compare_reason_class:
+                PersistedRebuildRowDriverCompareReasonClass::DriverCompareUnprovenDueToBudgetExhausted,
+            driver_compare_explanation: "driver compare has not been classified yet".to_string(),
+        };
+        let (reason_class, explanation) =
+            Self::classify_persisted_rebuild_row_driver_compare(&mapped);
+        mapped.driver_compare_reason_class = reason_class;
+        mapped.driver_compare_explanation = explanation;
+        mapped
     }
 
     fn empty_persisted_rebuild_state_inspection() -> PersistedReplayCheckpointInspection {
@@ -3514,6 +3720,31 @@ impl DiscoveryService {
                 }
             }
         }
+    }
+
+    pub fn probe_persisted_rebuild_row_driver_compare_read_only(
+        runtime_db_path: &Path,
+        budget_ms: u64,
+    ) -> Result<PersistedRebuildRowDriverCompareDiagnostic> {
+        Self::probe_persisted_rebuild_row_driver_compare_read_only_with_options(
+            runtime_db_path,
+            StorageDriverCompareOptions {
+                budget_ms,
+                ..StorageDriverCompareOptions::default()
+            },
+        )
+    }
+
+    fn probe_persisted_rebuild_row_driver_compare_read_only_with_options(
+        runtime_db_path: &Path,
+        options: StorageDriverCompareOptions,
+    ) -> Result<PersistedRebuildRowDriverCompareDiagnostic> {
+        Ok(Self::map_storage_driver_compare_diagnostic(
+            SqliteStore::probe_discovery_persisted_rebuild_row_driver_compare_read_only(
+                runtime_db_path,
+                &options,
+            )?,
+        ))
     }
 
     fn scan_replay_sol_leg_source_ahead_from_state(
@@ -39174,6 +39405,236 @@ mod tests {
     }
 
     #[test]
+    fn replay_checkpoint_driver_compare_emits_separate_prepare_step_extract_timings_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::probe_persisted_rebuild_row_driver_compare_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        assert_eq!(
+            diagnostic.driver_compare_stage,
+            StorageDriverCompareStage::Complete
+        );
+        assert!(!diagnostic.driver_compare_budget_exhausted);
+        assert!(diagnostic
+            .driver_compare_prepare_exists_elapsed_ms
+            .is_some());
+        assert!(diagnostic.driver_compare_step_exists_elapsed_ms.is_some());
+        assert!(diagnostic.driver_compare_prepare_meta_elapsed_ms.is_some());
+        assert!(diagnostic.driver_compare_step_meta_elapsed_ms.is_some());
+        assert!(diagnostic.driver_compare_extract_phase_elapsed_ms.is_some());
+        assert!(diagnostic
+            .driver_compare_extract_updated_at_elapsed_ms
+            .is_some());
+        assert!(diagnostic.driver_compare_prepare_size_elapsed_ms.is_some());
+        assert!(diagnostic.driver_compare_step_size_elapsed_ms.is_some());
+        assert!(diagnostic.driver_compare_busy_timeout_ms.is_some());
+        assert!(diagnostic.driver_compare_cache_size.is_some());
+        assert!(diagnostic.driver_compare_mmap_size.is_some());
+        assert!(diagnostic.driver_compare_query_only.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_driver_compare_represents_fast_exists_and_slower_size_query_stage1(
+    ) -> Result<()> {
+        let (temp, runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let mut row = runtime_store
+            .load_discovery_persisted_rebuild_state_read_only()?
+            .expect("persisted rebuild row should exist");
+        let target_bytes = RAW_PERSISTED_REBUILD_ROW_LARGE_STATE_JSON_BYTES_THRESHOLD + 1_024;
+        row.state_json = format!("\"{}\"", "x".repeat(target_bytes.saturating_sub(2)));
+        runtime_store.upsert_discovery_persisted_rebuild_state(&row)?;
+
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_driver_compare_read_only_with_options(
+                Path::new(&runtime_db_path),
+                StorageDriverCompareOptions {
+                    budget_ms: 30_000,
+                    test_force_step_size_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    ..StorageDriverCompareOptions::default()
+                },
+            )?;
+        assert_eq!(
+            diagnostic.driver_compare_reason_class,
+            PersistedRebuildRowDriverCompareReasonClass::DriverSizeQueryDominatesDueToLargePayload
+        );
+        assert!(
+            diagnostic
+                .driver_compare_step_exists_elapsed_ms
+                .unwrap_or(u64::MAX)
+                < diagnostic.driver_compare_step_size_elapsed_ms.unwrap_or(0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_driver_compare_prepare_delay_surfaces_prepare_slowness_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_driver_compare_read_only_with_options(
+                Path::new(&runtime_db_path),
+                StorageDriverCompareOptions {
+                    budget_ms: 30_000,
+                    test_force_prepare_meta_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    ..StorageDriverCompareOptions::default()
+                },
+            )?;
+        assert_eq!(
+            diagnostic.driver_compare_reason_class,
+            PersistedRebuildRowDriverCompareReasonClass::DriverMetaQueryPrepareSlow
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_driver_compare_finalizes_exists_probe_before_prepare_meta_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_driver_compare_read_only_with_options(
+                Path::new(&runtime_db_path),
+                StorageDriverCompareOptions {
+                    budget_ms: 30_000,
+                    test_require_no_active_statements_before_prepare_meta: true,
+                    ..StorageDriverCompareOptions::default()
+                },
+            )?;
+        assert_eq!(
+            diagnostic.driver_compare_stage,
+            StorageDriverCompareStage::Complete
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_driver_compare_step_delay_surfaces_step_slowness_stage1() -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_driver_compare_read_only_with_options(
+                Path::new(&runtime_db_path),
+                StorageDriverCompareOptions {
+                    budget_ms: 30_000,
+                    test_force_step_meta_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    ..StorageDriverCompareOptions::default()
+                },
+            )?;
+        assert_eq!(
+            diagnostic.driver_compare_reason_class,
+            PersistedRebuildRowDriverCompareReasonClass::DriverMetaQuerySlowButExistsProbeFast
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_driver_compare_finalizes_meta_statement_before_prepare_size_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_driver_compare_read_only_with_options(
+                Path::new(&runtime_db_path),
+                StorageDriverCompareOptions {
+                    budget_ms: 30_000,
+                    test_require_no_active_statements_before_prepare_size: true,
+                    ..StorageDriverCompareOptions::default()
+                },
+            )?;
+        assert_eq!(
+            diagnostic.driver_compare_stage,
+            StorageDriverCompareStage::Complete
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_driver_compare_extract_delay_surfaces_extract_slowness_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_driver_compare_read_only_with_options(
+                Path::new(&runtime_db_path),
+                StorageDriverCompareOptions {
+                    budget_ms: 30_000,
+                    test_force_extract_phase_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    ..StorageDriverCompareOptions::default()
+                },
+            )?;
+        assert_eq!(
+            diagnostic.driver_compare_reason_class,
+            PersistedRebuildRowDriverCompareReasonClass::DriverMetaQueryExtractSlow
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_driver_compare_missing_row_reports_coherent_reason_stage1() -> Result<()> {
+        let temp = tempfile::tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp.path().join("stage1-driver-compare-row-missing.db");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        runtime_store.run_migrations(&migration_dir)?;
+        assert!(runtime_store
+            .load_discovery_persisted_rebuild_state()?
+            .is_none());
+        assert!(runtime_store
+            .load_discovery_persisted_rebuild_state_read_only()?
+            .is_none());
+        drop(runtime_store);
+
+        let diagnostic = DiscoveryService::probe_persisted_rebuild_row_driver_compare_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        assert_eq!(diagnostic.driver_compare_row_exists, Some(false));
+        assert_eq!(
+            diagnostic.driver_compare_reason_class,
+            PersistedRebuildRowDriverCompareReasonClass::DriverRowMissing
+        );
+        assert!(diagnostic
+            .driver_compare_explanation
+            .contains("is missing on the read-only runtime connection"));
+        Ok(())
+    }
+
+    #[test]
     fn replay_checkpoint_raw_probe_meta_plan_budget_exhaustion_keeps_row_existence_unproven_stage1(
     ) -> Result<()> {
         let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
@@ -39769,6 +40230,10 @@ mod tests {
             30_000,
         )?;
         let _ = DiscoveryService::probe_persisted_rebuild_row_raw_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        let _ = DiscoveryService::probe_persisted_rebuild_row_driver_compare_read_only(
             Path::new(&runtime_db_path),
             30_000,
         )?;

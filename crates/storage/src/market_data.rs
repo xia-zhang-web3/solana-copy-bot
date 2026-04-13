@@ -1,10 +1,13 @@
 use crate::{
     discovery::upsert_wallet_activity_days_on_conn, DiscoveryPersistedRebuildPhase,
-    DiscoveryPersistedRebuildStateMetaLiteRawRow, DiscoveryPersistedRebuildStateMetaRow,
-    DiscoveryPersistedRebuildStateRow, DiscoveryRuntimeCursor, ObservedSwapBatchWriteMetrics,
-    ObservedSwapsCoverageSnapshot, RecentRawJournalReplaySummary, RecentRawJournalStateRow,
-    RecentRawJournalWriteSummary, SqliteBatchedDeleteSummary, SqliteStore, TokenMarketStats,
-    TokenQualityCacheRow, TokenQualityRpcRow, WalletActivityDayRow, WalletRecentActivityCountRow,
+    DiscoveryPersistedRebuildRowDriverCompareDiagnostic,
+    DiscoveryPersistedRebuildRowDriverCompareOptions,
+    DiscoveryPersistedRebuildRowDriverCompareStage, DiscoveryPersistedRebuildStateMetaLiteRawRow,
+    DiscoveryPersistedRebuildStateMetaRow, DiscoveryPersistedRebuildStateRow,
+    DiscoveryRuntimeCursor, ObservedSwapBatchWriteMetrics, ObservedSwapsCoverageSnapshot,
+    RecentRawJournalReplaySummary, RecentRawJournalStateRow, RecentRawJournalWriteSummary,
+    SqliteBatchedDeleteSummary, SqliteStore, TokenMarketStats, TokenQualityCacheRow,
+    TokenQualityRpcRow, WalletActivityDayRow, WalletRecentActivityCountRow,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -15,6 +18,8 @@ use serde_json::{json, Value};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::path::Path;
+use std::sync::mpsc;
 use std::time::{Duration as StdDuration, Instant};
 
 const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
@@ -3646,6 +3651,536 @@ impl SqliteStore {
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("failed collecting discovery persisted rebuild state size query plan")?;
         Ok(plan_rows)
+    }
+
+    pub fn probe_discovery_persisted_rebuild_row_driver_compare_read_only(
+        runtime_db_path: &Path,
+        options: &DiscoveryPersistedRebuildRowDriverCompareOptions,
+    ) -> Result<DiscoveryPersistedRebuildRowDriverCompareDiagnostic> {
+        #[derive(Debug, Clone)]
+        struct ProgressSnapshot {
+            open_db_elapsed_ms: Option<u64>,
+            load_connection_facts_elapsed_ms: Option<u64>,
+            prepare_exists_elapsed_ms: Option<u64>,
+            step_exists_elapsed_ms: Option<u64>,
+            prepare_meta_elapsed_ms: Option<u64>,
+            step_meta_elapsed_ms: Option<u64>,
+            extract_phase_elapsed_ms: Option<u64>,
+            extract_updated_at_elapsed_ms: Option<u64>,
+            prepare_size_elapsed_ms: Option<u64>,
+            step_size_elapsed_ms: Option<u64>,
+            row_exists: Option<bool>,
+            row_phase: Option<String>,
+            row_updated_at: Option<String>,
+            row_state_json_bytes: Option<usize>,
+            connection_facts: Option<crate::SqliteReadOnlyDriverCompareFacts>,
+        }
+
+        impl ProgressSnapshot {
+            fn new() -> Self {
+                Self {
+                    open_db_elapsed_ms: None,
+                    load_connection_facts_elapsed_ms: None,
+                    prepare_exists_elapsed_ms: None,
+                    step_exists_elapsed_ms: None,
+                    prepare_meta_elapsed_ms: None,
+                    step_meta_elapsed_ms: None,
+                    extract_phase_elapsed_ms: None,
+                    extract_updated_at_elapsed_ms: None,
+                    prepare_size_elapsed_ms: None,
+                    step_size_elapsed_ms: None,
+                    row_exists: None,
+                    row_phase: None,
+                    row_updated_at: None,
+                    row_state_json_bytes: None,
+                    connection_facts: None,
+                }
+            }
+        }
+
+        #[derive(Debug)]
+        enum WorkerMessage {
+            Entered(DiscoveryPersistedRebuildRowDriverCompareStage),
+            Snapshot(ProgressSnapshot),
+            Finished(Result<(), String>),
+        }
+
+        fn skipped_stages(
+            current_stage: DiscoveryPersistedRebuildRowDriverCompareStage,
+            budget_exhausted: bool,
+        ) -> Vec<DiscoveryPersistedRebuildRowDriverCompareStage> {
+            if !budget_exhausted {
+                return Vec::new();
+            }
+            let relevant = [
+                DiscoveryPersistedRebuildRowDriverCompareStage::OpenDbReadOnly,
+                DiscoveryPersistedRebuildRowDriverCompareStage::LoadConnectionFacts,
+                DiscoveryPersistedRebuildRowDriverCompareStage::PrepareExists,
+                DiscoveryPersistedRebuildRowDriverCompareStage::StepExists,
+                DiscoveryPersistedRebuildRowDriverCompareStage::PrepareMeta,
+                DiscoveryPersistedRebuildRowDriverCompareStage::StepMeta,
+                DiscoveryPersistedRebuildRowDriverCompareStage::ExtractPhase,
+                DiscoveryPersistedRebuildRowDriverCompareStage::ExtractUpdatedAt,
+                DiscoveryPersistedRebuildRowDriverCompareStage::PrepareSize,
+                DiscoveryPersistedRebuildRowDriverCompareStage::StepSize,
+                DiscoveryPersistedRebuildRowDriverCompareStage::Complete,
+            ];
+            let cutoff_index = relevant
+                .iter()
+                .position(|stage| *stage == current_stage)
+                .unwrap_or(relevant.len());
+            relevant
+                .into_iter()
+                .skip(cutoff_index.saturating_add(1))
+                .collect()
+        }
+
+        let started_at = Instant::now();
+        let deadline = started_at + StdDuration::from_millis(options.budget_ms);
+        let mut diagnostic = DiscoveryPersistedRebuildRowDriverCompareDiagnostic {
+            stage: DiscoveryPersistedRebuildRowDriverCompareStage::OpenDbReadOnly,
+            budget_exhausted: false,
+            skipped_stages: Vec::new(),
+            open_db_elapsed_ms: None,
+            load_connection_facts_elapsed_ms: None,
+            prepare_exists_elapsed_ms: None,
+            step_exists_elapsed_ms: None,
+            prepare_meta_elapsed_ms: None,
+            step_meta_elapsed_ms: None,
+            extract_phase_elapsed_ms: None,
+            extract_updated_at_elapsed_ms: None,
+            prepare_size_elapsed_ms: None,
+            step_size_elapsed_ms: None,
+            total_elapsed_ms: 0,
+            row_exists: None,
+            row_phase: None,
+            row_updated_at: None,
+            row_state_json_bytes: None,
+            connection_facts: None,
+        };
+        let (tx, rx) = mpsc::sync_channel(16);
+        let runtime_db_path = runtime_db_path.to_path_buf();
+        let options = options.clone();
+        std::thread::spawn(move || {
+            let send_finished = |result: Result<(), anyhow::Error>| {
+                let _ = tx.send(WorkerMessage::Finished(
+                    result.map_err(|error| format!("{error:#}")),
+                ));
+            };
+            let mut snapshot = ProgressSnapshot::new();
+
+            let _ = tx.send(WorkerMessage::Entered(
+                DiscoveryPersistedRebuildRowDriverCompareStage::OpenDbReadOnly,
+            ));
+            let open_started_at = Instant::now();
+            let store = match SqliteStore::open_read_only(&runtime_db_path).with_context(|| {
+                format!(
+                    "failed opening runtime sqlite db read-only {}",
+                    runtime_db_path.display()
+                )
+            }) {
+                Ok(store) => store,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.open_db_elapsed_ms =
+                Some(open_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                return;
+            }
+
+            let _ = tx.send(WorkerMessage::Entered(
+                DiscoveryPersistedRebuildRowDriverCompareStage::LoadConnectionFacts,
+            ));
+            let facts_started_at = Instant::now();
+            let facts = match store.sqlite_read_only_driver_compare_facts() {
+                Ok(value) => value,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.load_connection_facts_elapsed_ms =
+                Some(facts_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+            snapshot.connection_facts = Some(facts);
+            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                return;
+            }
+
+            let _ = tx.send(WorkerMessage::Entered(
+                DiscoveryPersistedRebuildRowDriverCompareStage::PrepareExists,
+            ));
+            let prepare_exists_started_at = Instant::now();
+            if let Some(delay_ms) = options.test_force_prepare_exists_delay_ms {
+                std::thread::sleep(StdDuration::from_millis(delay_ms));
+            }
+            let mut exists_stmt = match store
+                .conn
+                .prepare("SELECT 1 FROM discovery_persisted_rebuild_state WHERE id = 1")
+                .context("failed preparing persisted rebuild exists probe")
+            {
+                Ok(stmt) => stmt,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.prepare_exists_elapsed_ms = Some(
+                prepare_exists_started_at
+                    .elapsed()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            );
+            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                return;
+            }
+
+            let _ = tx.send(WorkerMessage::Entered(
+                DiscoveryPersistedRebuildRowDriverCompareStage::StepExists,
+            ));
+            let step_exists_started_at = Instant::now();
+            if let Some(delay_ms) = options.test_force_step_exists_delay_ms {
+                std::thread::sleep(StdDuration::from_millis(delay_ms));
+            }
+            let exists_row = {
+                let mut exists_rows = match exists_stmt.query([]) {
+                    Ok(rows) => rows,
+                    Err(error) => {
+                        send_finished(
+                            Err(error).context("failed querying persisted rebuild exists probe"),
+                        );
+                        return;
+                    }
+                };
+                match exists_rows.next() {
+                    Ok(value) => value.is_some(),
+                    Err(error) => {
+                        send_finished(
+                            Err(error).context("failed stepping persisted rebuild exists probe"),
+                        );
+                        return;
+                    }
+                }
+            };
+            snapshot.step_exists_elapsed_ms = Some(
+                step_exists_started_at
+                    .elapsed()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            );
+            snapshot.row_exists = Some(exists_row);
+            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                return;
+            }
+            drop(exists_stmt);
+
+            if !exists_row {
+                let _ = tx.send(WorkerMessage::Finished(Ok(())));
+                return;
+            }
+
+            if options.test_require_no_active_statements_before_prepare_meta {
+                let active_statement_count = store.sqlite_active_statement_count_for_debug();
+                if active_statement_count != 0 {
+                    send_finished(Err(anyhow!(
+                        "expected no active statements before prepare_meta, found {active_statement_count}"
+                    )));
+                    return;
+                }
+            }
+
+            let _ = tx.send(WorkerMessage::Entered(
+                DiscoveryPersistedRebuildRowDriverCompareStage::PrepareMeta,
+            ));
+            let prepare_meta_started_at = Instant::now();
+            if let Some(delay_ms) = options.test_force_prepare_meta_delay_ms {
+                std::thread::sleep(StdDuration::from_millis(delay_ms));
+            }
+            let mut meta_stmt = match store
+                .conn
+                .prepare(
+                    "SELECT phase, updated_at
+                     FROM discovery_persisted_rebuild_state
+                     WHERE id = 1",
+                )
+                .context("failed preparing persisted rebuild row meta query")
+            {
+                Ok(stmt) => stmt,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.prepare_meta_elapsed_ms = Some(
+                prepare_meta_started_at
+                    .elapsed()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            );
+            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                return;
+            }
+
+            {
+                let _ = tx.send(WorkerMessage::Entered(
+                    DiscoveryPersistedRebuildRowDriverCompareStage::StepMeta,
+                ));
+                let step_meta_started_at = Instant::now();
+                if let Some(delay_ms) = options.test_force_step_meta_delay_ms {
+                    std::thread::sleep(StdDuration::from_millis(delay_ms));
+                }
+                let mut meta_rows = match meta_stmt
+                    .query([])
+                    .context("failed querying persisted rebuild row meta")
+                {
+                    Ok(rows) => rows,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                };
+                let meta_row = match meta_rows
+                    .next()
+                    .context("failed stepping persisted rebuild row meta")
+                {
+                    Ok(row) => row,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                };
+                snapshot.step_meta_elapsed_ms = Some(
+                    step_meta_started_at
+                        .elapsed()
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64,
+                );
+                snapshot.row_exists = Some(meta_row.is_some());
+                if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                    return;
+                }
+                let Some(meta_row) = meta_row else {
+                    drop(meta_rows);
+                    drop(meta_stmt);
+                    let _ = tx.send(WorkerMessage::Finished(Ok(())));
+                    return;
+                };
+
+                let _ = tx.send(WorkerMessage::Entered(
+                    DiscoveryPersistedRebuildRowDriverCompareStage::ExtractPhase,
+                ));
+                let extract_phase_started_at = Instant::now();
+                if let Some(delay_ms) = options.test_force_extract_phase_delay_ms {
+                    std::thread::sleep(StdDuration::from_millis(delay_ms));
+                }
+                let phase = match meta_row
+                    .get::<_, String>(0)
+                    .context("failed extracting persisted rebuild phase")
+                {
+                    Ok(value) => value,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                };
+                snapshot.extract_phase_elapsed_ms = Some(
+                    extract_phase_started_at
+                        .elapsed()
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64,
+                );
+                snapshot.row_phase = Some(phase);
+                if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                    return;
+                }
+
+                let _ = tx.send(WorkerMessage::Entered(
+                    DiscoveryPersistedRebuildRowDriverCompareStage::ExtractUpdatedAt,
+                ));
+                let extract_updated_at_started_at = Instant::now();
+                if let Some(delay_ms) = options.test_force_extract_updated_at_delay_ms {
+                    std::thread::sleep(StdDuration::from_millis(delay_ms));
+                }
+                let updated_at = match meta_row
+                    .get::<_, String>(1)
+                    .context("failed extracting persisted rebuild updated_at")
+                {
+                    Ok(value) => value,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                };
+                snapshot.extract_updated_at_elapsed_ms = Some(
+                    extract_updated_at_started_at
+                        .elapsed()
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64,
+                );
+                snapshot.row_updated_at = Some(updated_at);
+                if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                    return;
+                }
+            }
+            drop(meta_stmt);
+
+            if options.test_require_no_active_statements_before_prepare_size {
+                let active_statement_count = store.sqlite_active_statement_count_for_debug();
+                if active_statement_count != 0 {
+                    send_finished(Err(anyhow!(
+                        "expected no active statements before prepare_size, found {active_statement_count}"
+                    )));
+                    return;
+                }
+            }
+
+            let _ = tx.send(WorkerMessage::Entered(
+                DiscoveryPersistedRebuildRowDriverCompareStage::PrepareSize,
+            ));
+            let prepare_size_started_at = Instant::now();
+            if let Some(delay_ms) = options.test_force_prepare_size_delay_ms {
+                std::thread::sleep(StdDuration::from_millis(delay_ms));
+            }
+            let mut size_stmt = match store
+                .conn
+                .prepare(
+                    "SELECT length(CAST(state_json AS BLOB))
+                     FROM discovery_persisted_rebuild_state
+                     WHERE id = 1",
+                )
+                .context("failed preparing persisted rebuild row size query")
+            {
+                Ok(stmt) => stmt,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.prepare_size_elapsed_ms = Some(
+                prepare_size_started_at
+                    .elapsed()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            );
+            if tx.send(WorkerMessage::Snapshot(snapshot.clone())).is_err() {
+                return;
+            }
+
+            let _ = tx.send(WorkerMessage::Entered(
+                DiscoveryPersistedRebuildRowDriverCompareStage::StepSize,
+            ));
+            let step_size_started_at = Instant::now();
+            if let Some(delay_ms) = options.test_force_step_size_delay_ms {
+                std::thread::sleep(StdDuration::from_millis(delay_ms));
+            }
+            let mut size_rows = match size_stmt
+                .query([])
+                .context("failed querying persisted rebuild row size")
+            {
+                Ok(rows) => rows,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            let size_row = match size_rows
+                .next()
+                .context("failed stepping persisted rebuild row size")
+            {
+                Ok(row) => row,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            let state_json_bytes = match size_row {
+                Some(row) => match row
+                    .get::<_, i64>(0)
+                    .context("failed extracting persisted rebuild row size")
+                {
+                    Ok(value) => value.max(0) as usize,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                },
+                None => 0,
+            };
+            snapshot.step_size_elapsed_ms = Some(
+                step_size_started_at
+                    .elapsed()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            );
+            snapshot.row_state_json_bytes = Some(state_json_bytes);
+            if tx.send(WorkerMessage::Snapshot(snapshot)).is_err() {
+                return;
+            }
+
+            let _ = tx.send(WorkerMessage::Finished(Ok(())));
+        });
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                diagnostic.budget_exhausted = true;
+                diagnostic.total_elapsed_ms =
+                    started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                diagnostic.skipped_stages = skipped_stages(diagnostic.stage, true);
+                return Ok(diagnostic);
+            }
+
+            match rx.recv_timeout(remaining) {
+                Ok(WorkerMessage::Entered(stage)) => {
+                    diagnostic.stage = stage;
+                }
+                Ok(WorkerMessage::Snapshot(snapshot)) => {
+                    diagnostic.open_db_elapsed_ms = snapshot.open_db_elapsed_ms;
+                    diagnostic.load_connection_facts_elapsed_ms =
+                        snapshot.load_connection_facts_elapsed_ms;
+                    diagnostic.prepare_exists_elapsed_ms = snapshot.prepare_exists_elapsed_ms;
+                    diagnostic.step_exists_elapsed_ms = snapshot.step_exists_elapsed_ms;
+                    diagnostic.prepare_meta_elapsed_ms = snapshot.prepare_meta_elapsed_ms;
+                    diagnostic.step_meta_elapsed_ms = snapshot.step_meta_elapsed_ms;
+                    diagnostic.extract_phase_elapsed_ms = snapshot.extract_phase_elapsed_ms;
+                    diagnostic.extract_updated_at_elapsed_ms =
+                        snapshot.extract_updated_at_elapsed_ms;
+                    diagnostic.prepare_size_elapsed_ms = snapshot.prepare_size_elapsed_ms;
+                    diagnostic.step_size_elapsed_ms = snapshot.step_size_elapsed_ms;
+                    diagnostic.row_exists = snapshot.row_exists;
+                    diagnostic.row_phase = snapshot.row_phase;
+                    diagnostic.row_updated_at = snapshot.row_updated_at;
+                    diagnostic.row_state_json_bytes = snapshot.row_state_json_bytes;
+                    diagnostic.connection_facts = snapshot.connection_facts;
+                }
+                Ok(WorkerMessage::Finished(result)) => {
+                    if let Err(error) = result {
+                        return Err(anyhow!(
+                            "persisted rebuild row driver compare worker failed: {error}"
+                        ));
+                    }
+                    diagnostic.stage = DiscoveryPersistedRebuildRowDriverCompareStage::Complete;
+                    diagnostic.total_elapsed_ms =
+                        started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                    diagnostic.skipped_stages = Vec::new();
+                    return Ok(diagnostic);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    diagnostic.budget_exhausted = true;
+                    diagnostic.total_elapsed_ms =
+                        started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                    diagnostic.skipped_stages = skipped_stages(diagnostic.stage, true);
+                    return Ok(diagnostic);
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(anyhow!(
+                        "persisted rebuild row driver compare worker disconnected before returning a result"
+                    ));
+                }
+            }
+        }
     }
 
     pub fn load_discovery_persisted_rebuild_state_json_bytes_read_only(

@@ -8148,6 +8148,37 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
         replay_sol_leg_incomplete”; it is now the exact raw persisted-rebuild
         row payload path behind a single-row PK lookup on
         `discovery_persisted_rebuild_state(id=1)`
+    - the next accepted Stage 3 follow-up adds one exact in-process driver
+      compare surface over that same row path:
+      - `--probe-persisted-rebuild-row-driver-compare --runtime-db <path> --json`
+      - it keeps one read-only connection and reports separate timings for:
+        - open db
+        - load connection facts
+        - prepare / step `SELECT 1 ...`
+        - prepare / step `SELECT phase, updated_at ...`
+        - extract `phase`
+        - extract `updated_at`
+        - prepare / step `SELECT length(CAST(state_json AS BLOB)) ...`
+      - it also exposes the in-process connection facts that can explain
+        driver-path divergence:
+        - `driver_compare_busy_timeout_ms`
+        - `driver_compare_cache_size`
+        - `driver_compare_mmap_size`
+        - `driver_compare_query_only`
+        - `driver_compare_journal_mode`
+        - `driver_compare_locking_mode`
+      - the accepted correction on top of that compare surface closes both
+        remaining reviewer blockers:
+        - driver compare is now truly sequential on one read-only connection,
+          with the earlier exists statement finalized before `PrepareMeta` and
+          the meta statement finalized before `PrepareSize`
+        - missing-row output now emits explicit reason class
+          `driver_row_missing` instead of falling through to the fast-path
+          classifier
+      - practical result:
+        the next live operator run can compare direct `sqlite3` against a clean
+        in-process sequential query path, instead of an overlapping statement
+        path or an incoherent missing-row classification
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 

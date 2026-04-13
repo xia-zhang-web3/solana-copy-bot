@@ -1586,6 +1586,80 @@ pub struct SqliteReadOnlyProbeFacts {
     pub locking_mode: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryPersistedRebuildRowDriverCompareStage {
+    OpenDbReadOnly,
+    LoadConnectionFacts,
+    PrepareExists,
+    StepExists,
+    PrepareMeta,
+    StepMeta,
+    ExtractPhase,
+    ExtractUpdatedAt,
+    PrepareSize,
+    StepSize,
+    Complete,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SqliteReadOnlyDriverCompareFacts {
+    pub busy_timeout_ms: u64,
+    pub cache_size: i64,
+    pub mmap_size: i64,
+    pub query_only: bool,
+    pub journal_mode: String,
+    pub locking_mode: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DiscoveryPersistedRebuildRowDriverCompareOptions {
+    pub budget_ms: u64,
+    #[doc(hidden)]
+    pub test_force_prepare_exists_delay_ms: Option<u64>,
+    #[doc(hidden)]
+    pub test_force_step_exists_delay_ms: Option<u64>,
+    #[doc(hidden)]
+    pub test_force_prepare_meta_delay_ms: Option<u64>,
+    #[doc(hidden)]
+    pub test_force_step_meta_delay_ms: Option<u64>,
+    #[doc(hidden)]
+    pub test_force_extract_phase_delay_ms: Option<u64>,
+    #[doc(hidden)]
+    pub test_force_extract_updated_at_delay_ms: Option<u64>,
+    #[doc(hidden)]
+    pub test_force_prepare_size_delay_ms: Option<u64>,
+    #[doc(hidden)]
+    pub test_force_step_size_delay_ms: Option<u64>,
+    #[doc(hidden)]
+    pub test_require_no_active_statements_before_prepare_meta: bool,
+    #[doc(hidden)]
+    pub test_require_no_active_statements_before_prepare_size: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveryPersistedRebuildRowDriverCompareDiagnostic {
+    pub stage: DiscoveryPersistedRebuildRowDriverCompareStage,
+    pub budget_exhausted: bool,
+    pub skipped_stages: Vec<DiscoveryPersistedRebuildRowDriverCompareStage>,
+    pub open_db_elapsed_ms: Option<u64>,
+    pub load_connection_facts_elapsed_ms: Option<u64>,
+    pub prepare_exists_elapsed_ms: Option<u64>,
+    pub step_exists_elapsed_ms: Option<u64>,
+    pub prepare_meta_elapsed_ms: Option<u64>,
+    pub step_meta_elapsed_ms: Option<u64>,
+    pub extract_phase_elapsed_ms: Option<u64>,
+    pub extract_updated_at_elapsed_ms: Option<u64>,
+    pub prepare_size_elapsed_ms: Option<u64>,
+    pub step_size_elapsed_ms: Option<u64>,
+    pub total_elapsed_ms: u64,
+    pub row_exists: Option<bool>,
+    pub row_phase: Option<String>,
+    pub row_updated_at: Option<String>,
+    pub row_state_json_bytes: Option<usize>,
+    pub connection_facts: Option<SqliteReadOnlyDriverCompareFacts>,
+}
+
 #[derive(Debug, Clone)]
 struct LiveOpenPositionRow {
     position_id: String,
@@ -2211,6 +2285,55 @@ impl SqliteStore {
             journal_mode,
             locking_mode,
         })
+    }
+
+    pub fn sqlite_read_only_driver_compare_facts(
+        &self,
+    ) -> Result<SqliteReadOnlyDriverCompareFacts> {
+        let busy_timeout_ms: i64 = self
+            .conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .context("failed reading sqlite driver-compare busy_timeout")?;
+        let cache_size: i64 = self
+            .conn
+            .query_row("PRAGMA cache_size", [], |row| row.get(0))
+            .context("failed reading sqlite driver-compare cache_size")?;
+        let mmap_size: i64 = self
+            .conn
+            .query_row("PRAGMA mmap_size", [], |row| row.get(0))
+            .context("failed reading sqlite driver-compare mmap_size")?;
+        let query_only: i64 = self
+            .conn
+            .query_row("PRAGMA query_only", [], |row| row.get(0))
+            .context("failed reading sqlite driver-compare query_only")?;
+        let journal_mode: String = self
+            .conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .context("failed reading sqlite driver-compare journal_mode")?;
+        let locking_mode: String = self
+            .conn
+            .query_row("PRAGMA locking_mode", [], |row| row.get(0))
+            .context("failed reading sqlite driver-compare locking_mode")?;
+        Ok(SqliteReadOnlyDriverCompareFacts {
+            busy_timeout_ms: busy_timeout_ms.max(0) as u64,
+            cache_size,
+            mmap_size,
+            query_only: query_only != 0,
+            journal_mode,
+            locking_mode,
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn sqlite_active_statement_count_for_debug(&self) -> usize {
+        let mut count = 0usize;
+        let mut stmt =
+            unsafe { rusqlite::ffi::sqlite3_next_stmt(self.conn.handle(), std::ptr::null_mut()) };
+        while !stmt.is_null() {
+            count = count.saturating_add(1);
+            stmt = unsafe { rusqlite::ffi::sqlite3_next_stmt(self.conn.handle(), stmt) };
+        }
+        count
     }
 
     pub(crate) fn sqlite_table_exists(&self, table_name: &str) -> Result<bool> {
