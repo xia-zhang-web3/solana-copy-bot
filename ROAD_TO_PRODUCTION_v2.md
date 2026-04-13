@@ -8203,6 +8203,25 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
         `step_meta` divergence is shared-connection specific, fresh-connection
         too, query-API-shape specific, or materially altered by
         connection-local pragmas
+    - the next accepted Stage 3 follow-up narrows that shared-connection proof
+      one level deeper with an explicit shared-sequence surface:
+      - `--probe-persisted-rebuild-row-shared-sequence-detail --runtime-db <path> --json`
+      - it keeps the batch read-only and distinguishes whether the shared-path
+        slowdown appears:
+        - only after `prepare exists -> step exists`
+        - already after `prepare exists` without stepping it
+        - even without any exists-prefix on that connection lifecycle
+        - or whether an explicit connection-local cleanup boundary
+          (`PRAGMA shrink_memory`) materially clears the slowdown
+      - it emits explicit shared-sequence reason classes such as:
+        - `shared_sequence_slow_only_after_exists_step`
+        - `shared_sequence_slow_after_prepare_exists_only`
+        - `shared_sequence_slow_even_without_exists_probe`
+        - `shared_sequence_reset_clears_slowdown`
+        - `shared_sequence_reset_does_not_clear_slowdown`
+      - practical result:
+        the next live operator run can stop at the exact shared-connection
+        sequence seam instead of the broader “shared connection slow” bucket
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 

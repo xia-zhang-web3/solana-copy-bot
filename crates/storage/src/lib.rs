@@ -1615,6 +1615,18 @@ pub enum DiscoveryPersistedRebuildRowStepMetaCompareStage {
     Complete,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryPersistedRebuildRowSharedSequenceCompareStage {
+    OpenBaselineSharedConnection,
+    BaselineWithExistsProbe,
+    SharedConnectionNoExistsPrefix,
+    SharedConnectionPrepareExistsOnlyPrefix,
+    SharedConnectionAfterExplicitReset,
+    FreshConnectionMetaOnly,
+    Complete,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SqliteReadOnlyDriverCompareFacts {
     pub busy_timeout_ms: u64,
@@ -1657,6 +1669,23 @@ pub struct DiscoveryPersistedRebuildRowStepMetaCompareOptions {
     pub test_force_shared_step_meta_delay_ms: Option<u64>,
     #[doc(hidden)]
     pub test_force_fresh_connection_query_delay_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DiscoveryPersistedRebuildRowSharedSequenceCompareOptions {
+    pub budget_ms: u64,
+    #[doc(hidden)]
+    pub test_force_baseline_with_exists_step_meta_delay_ms: Option<u64>,
+    #[doc(hidden)]
+    pub test_force_shared_no_exists_step_meta_delay_ms: Option<u64>,
+    #[doc(hidden)]
+    pub test_force_prepare_exists_only_step_meta_delay_ms: Option<u64>,
+    #[doc(hidden)]
+    pub test_force_after_explicit_reset_step_meta_delay_ms: Option<u64>,
+    #[doc(hidden)]
+    pub test_force_fresh_connection_step_meta_delay_ms: Option<u64>,
+    #[doc(hidden)]
+    pub test_disable_explicit_reset_variant: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1713,6 +1742,34 @@ pub struct DiscoveryPersistedRebuildRowStepMetaCompareDiagnostic {
     pub cache_tuned_effective_cache_size: Option<i64>,
     pub mmap_tuned_elapsed_ms: Option<u64>,
     pub mmap_tuned_effective_mmap_size: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveryPersistedRebuildRowSharedSequenceCompareDiagnostic {
+    pub stage: DiscoveryPersistedRebuildRowSharedSequenceCompareStage,
+    pub budget_exhausted: bool,
+    pub skipped_stages: Vec<DiscoveryPersistedRebuildRowSharedSequenceCompareStage>,
+    pub total_elapsed_ms: u64,
+    pub baseline_connection_facts: Option<SqliteReadOnlyDriverCompareFacts>,
+    pub baseline_with_exists_prepare_exists_elapsed_ms: Option<u64>,
+    pub baseline_with_exists_step_exists_elapsed_ms: Option<u64>,
+    pub baseline_with_exists_step_meta_elapsed_ms: Option<u64>,
+    pub baseline_with_exists_row_exists: Option<bool>,
+    pub shared_connection_no_exists_step_meta_elapsed_ms: Option<u64>,
+    pub shared_connection_no_exists_row_exists: Option<bool>,
+    pub prepare_exists_only_supported: bool,
+    pub prepare_exists_only_prepare_exists_elapsed_ms: Option<u64>,
+    pub prepare_exists_only_step_meta_elapsed_ms: Option<u64>,
+    pub prepare_exists_only_row_exists: Option<bool>,
+    pub explicit_reset_supported: bool,
+    pub explicit_reset_kind: Option<String>,
+    pub after_explicit_reset_prepare_exists_elapsed_ms: Option<u64>,
+    pub after_explicit_reset_step_exists_elapsed_ms: Option<u64>,
+    pub after_explicit_reset_reset_elapsed_ms: Option<u64>,
+    pub after_explicit_reset_step_meta_elapsed_ms: Option<u64>,
+    pub after_explicit_reset_row_exists: Option<bool>,
+    pub fresh_connection_step_meta_elapsed_ms: Option<u64>,
+    pub fresh_connection_row_exists: Option<bool>,
 }
 
 #[derive(Debug, Clone)]

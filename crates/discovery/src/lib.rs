@@ -7,6 +7,9 @@ use copybot_storage::{
     DiscoveryPersistedRebuildRowDriverCompareDiagnostic as StorageDriverCompareDiagnostic,
     DiscoveryPersistedRebuildRowDriverCompareOptions as StorageDriverCompareOptions,
     DiscoveryPersistedRebuildRowDriverCompareStage as StorageDriverCompareStage,
+    DiscoveryPersistedRebuildRowSharedSequenceCompareDiagnostic as StorageSharedSequenceCompareDiagnostic,
+    DiscoveryPersistedRebuildRowSharedSequenceCompareOptions as StorageSharedSequenceCompareOptions,
+    DiscoveryPersistedRebuildRowSharedSequenceCompareStage as StorageSharedSequenceCompareStage,
     DiscoveryPersistedRebuildRowStepMetaCompareDiagnostic as StorageStepMetaCompareDiagnostic,
     DiscoveryPersistedRebuildRowStepMetaCompareOptions as StorageStepMetaCompareOptions,
     DiscoveryPersistedRebuildRowStepMetaCompareStage as StorageStepMetaCompareStage,
@@ -1866,6 +1869,19 @@ pub enum PersistedRebuildRowStepMetaCompareReasonClass {
     StepMetaNoMaterialDivergenceObserved,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PersistedRebuildRowSharedSequenceCompareReasonClass {
+    SharedSequenceUnprovenDueToBudgetExhausted,
+    SharedSequenceRowMissing,
+    SharedSequenceSlowOnlyAfterExistsStep,
+    SharedSequenceSlowAfterPrepareExistsOnly,
+    SharedSequenceSlowEvenWithoutExistsProbe,
+    SharedSequenceResetClearsSlowdown,
+    SharedSequenceResetDoesNotClearSlowdown,
+    SharedSequenceNoMaterialSequenceEffectObserved,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PersistedRebuildRowStepMetaCompareDiagnostic {
     pub step_meta_compare_stage: StorageStepMetaCompareStage,
@@ -1906,6 +1922,41 @@ pub struct PersistedRebuildRowStepMetaCompareDiagnostic {
     pub step_meta_mmap_tuned_effective_mmap_size: Option<i64>,
     pub step_meta_compare_reason_class: PersistedRebuildRowStepMetaCompareReasonClass,
     pub step_meta_compare_explanation: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PersistedRebuildRowSharedSequenceCompareDiagnostic {
+    pub shared_sequence_compare_stage: StorageSharedSequenceCompareStage,
+    pub shared_sequence_compare_budget_exhausted: bool,
+    pub shared_sequence_compare_skipped_stages: Vec<StorageSharedSequenceCompareStage>,
+    pub shared_sequence_compare_total_elapsed_ms: u64,
+    pub shared_sequence_compare_busy_timeout_ms: Option<u64>,
+    pub shared_sequence_compare_cache_size: Option<i64>,
+    pub shared_sequence_compare_mmap_size: Option<i64>,
+    pub shared_sequence_compare_query_only: Option<bool>,
+    pub shared_sequence_compare_journal_mode: Option<String>,
+    pub shared_sequence_compare_locking_mode: Option<String>,
+    pub shared_sequence_baseline_with_exists_prepare_exists_elapsed_ms: Option<u64>,
+    pub shared_sequence_baseline_with_exists_step_exists_elapsed_ms: Option<u64>,
+    pub shared_sequence_baseline_with_exists_step_meta_elapsed_ms: Option<u64>,
+    pub shared_sequence_baseline_with_exists_row_exists: Option<bool>,
+    pub shared_sequence_same_connection_no_exists_step_meta_elapsed_ms: Option<u64>,
+    pub shared_sequence_same_connection_no_exists_row_exists: Option<bool>,
+    pub shared_sequence_prepare_exists_only_supported: bool,
+    pub shared_sequence_prepare_exists_only_prepare_exists_elapsed_ms: Option<u64>,
+    pub shared_sequence_prepare_exists_only_step_meta_elapsed_ms: Option<u64>,
+    pub shared_sequence_prepare_exists_only_row_exists: Option<bool>,
+    pub shared_sequence_after_explicit_reset_supported: bool,
+    pub shared_sequence_after_explicit_reset_kind: Option<String>,
+    pub shared_sequence_after_explicit_reset_prepare_exists_elapsed_ms: Option<u64>,
+    pub shared_sequence_after_explicit_reset_step_exists_elapsed_ms: Option<u64>,
+    pub shared_sequence_after_explicit_reset_reset_elapsed_ms: Option<u64>,
+    pub shared_sequence_after_explicit_reset_step_meta_elapsed_ms: Option<u64>,
+    pub shared_sequence_after_explicit_reset_row_exists: Option<bool>,
+    pub shared_sequence_fresh_connection_step_meta_elapsed_ms: Option<u64>,
+    pub shared_sequence_fresh_connection_row_exists: Option<bool>,
+    pub shared_sequence_compare_reason_class: PersistedRebuildRowSharedSequenceCompareReasonClass,
+    pub shared_sequence_compare_explanation: String,
 }
 
 #[derive(Debug, Clone)]
@@ -2627,6 +2678,163 @@ impl DiscoveryService {
         )
     }
 
+    fn classify_persisted_rebuild_row_shared_sequence_compare(
+        diagnostic: &PersistedRebuildRowSharedSequenceCompareDiagnostic,
+    ) -> (PersistedRebuildRowSharedSequenceCompareReasonClass, String) {
+        if diagnostic.shared_sequence_compare_budget_exhausted {
+            return (
+                PersistedRebuildRowSharedSequenceCompareReasonClass::SharedSequenceUnprovenDueToBudgetExhausted,
+                format!(
+                    "shared-sequence compare exhausted its diagnostic budget while in stage {} before all shared-connection sequence variants completed",
+                    serde_json::to_string(&diagnostic.shared_sequence_compare_stage)
+                        .unwrap_or_else(|_| "\"unknown\"".to_string())
+                        .trim_matches('"')
+                ),
+            );
+        }
+
+        if diagnostic.shared_sequence_baseline_with_exists_row_exists == Some(false) {
+            return (
+                PersistedRebuildRowSharedSequenceCompareReasonClass::SharedSequenceRowMissing,
+                "the shared-sequence compare path proved that discovery_persisted_rebuild_state(id=1) is missing on the runtime db".to_string(),
+            );
+        }
+
+        let baseline = diagnostic
+            .shared_sequence_baseline_with_exists_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let no_exists = diagnostic
+            .shared_sequence_same_connection_no_exists_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let prepare_only = diagnostic
+            .shared_sequence_prepare_exists_only_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let after_reset = diagnostic.shared_sequence_after_explicit_reset_step_meta_elapsed_ms;
+        let fresh = diagnostic
+            .shared_sequence_fresh_connection_step_meta_elapsed_ms
+            .unwrap_or(0);
+
+        let baseline_slow = baseline > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+        let no_exists_slow = no_exists > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+        let prepare_only_slow = diagnostic.shared_sequence_prepare_exists_only_supported
+            && prepare_only > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+        let reset_materially_faster =
+            Self::step_meta_compare_materially_faster(after_reset, Some(baseline));
+        let reset_slow = after_reset
+            .is_some_and(|elapsed_ms| elapsed_ms > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD);
+
+        if prepare_only_slow && !no_exists_slow && !baseline_slow {
+            return (
+                PersistedRebuildRowSharedSequenceCompareReasonClass::SharedSequenceSlowAfterPrepareExistsOnly,
+                format!(
+                    "a shared read-only connection stays fast without the exists prefix and also stays fast on the full exists-step baseline, but preparing the earlier exists statement alone is enough to make the later meta step slow (baseline_with_exists_step_meta_elapsed_ms={}, shared_no_exists_step_meta_elapsed_ms={}, prepare_exists_only_step_meta_elapsed_ms={}, fresh_connection_step_meta_elapsed_ms={})",
+                    baseline, no_exists, prepare_only, fresh
+                ),
+            );
+        }
+
+        if baseline_slow && !no_exists_slow {
+            if diagnostic.shared_sequence_after_explicit_reset_supported {
+                if reset_materially_faster {
+                    return (
+                        PersistedRebuildRowSharedSequenceCompareReasonClass::SharedSequenceResetClearsSlowdown,
+                        format!(
+                            "the shared sequence is only slow after the exists-step prefix, and the explicit {} cleanup boundary restores a fast meta step (baseline_with_exists_step_meta_elapsed_ms={}, shared_no_exists_step_meta_elapsed_ms={}, prepare_exists_only_step_meta_elapsed_ms={}, after_explicit_reset_step_meta_elapsed_ms={}, fresh_connection_step_meta_elapsed_ms={})",
+                            diagnostic
+                                .shared_sequence_after_explicit_reset_kind
+                                .clone()
+                                .unwrap_or_else(|| "reset".to_string()),
+                            baseline,
+                            no_exists,
+                            prepare_only,
+                            after_reset.unwrap_or(0),
+                            fresh
+                        ),
+                    );
+                }
+                if reset_slow {
+                    return (
+                        PersistedRebuildRowSharedSequenceCompareReasonClass::SharedSequenceResetDoesNotClearSlowdown,
+                        format!(
+                            "the shared sequence is slow after the exists-step prefix and remains slow even after the explicit {} cleanup boundary (baseline_with_exists_step_meta_elapsed_ms={}, shared_no_exists_step_meta_elapsed_ms={}, prepare_exists_only_step_meta_elapsed_ms={}, after_explicit_reset_step_meta_elapsed_ms={}, fresh_connection_step_meta_elapsed_ms={})",
+                            diagnostic
+                                .shared_sequence_after_explicit_reset_kind
+                                .clone()
+                                .unwrap_or_else(|| "reset".to_string()),
+                            baseline,
+                            no_exists,
+                            prepare_only,
+                            after_reset.unwrap_or(0),
+                            fresh
+                        ),
+                    );
+                }
+            }
+
+            if prepare_only_slow {
+                return (
+                    PersistedRebuildRowSharedSequenceCompareReasonClass::SharedSequenceSlowAfterPrepareExistsOnly,
+                    format!(
+                        "a shared read-only connection stays fast without the exists prefix, but preparing the earlier exists statement is already enough to make the later meta step slow (baseline_with_exists_step_meta_elapsed_ms={}, shared_no_exists_step_meta_elapsed_ms={}, prepare_exists_only_step_meta_elapsed_ms={}, fresh_connection_step_meta_elapsed_ms={})",
+                        baseline, no_exists, prepare_only, fresh
+                    ),
+                );
+            }
+
+            return (
+                PersistedRebuildRowSharedSequenceCompareReasonClass::SharedSequenceSlowOnlyAfterExistsStep,
+                format!(
+                    "the shared read-only connection stays fast without the exists prefix, and also stays fast after prepare-exists-only, but becomes slow after the earlier exists statement is actually stepped (baseline_with_exists_step_meta_elapsed_ms={}, shared_no_exists_step_meta_elapsed_ms={}, prepare_exists_only_step_meta_elapsed_ms={}, fresh_connection_step_meta_elapsed_ms={})",
+                    baseline, no_exists, prepare_only, fresh
+                ),
+            );
+        }
+
+        if no_exists_slow {
+            if diagnostic.shared_sequence_after_explicit_reset_supported && reset_materially_faster
+            {
+                return (
+                    PersistedRebuildRowSharedSequenceCompareReasonClass::SharedSequenceResetClearsSlowdown,
+                    format!(
+                        "the shared meta step is slow even without the exists prefix, but the explicit {} cleanup boundary materially improves it (baseline_with_exists_step_meta_elapsed_ms={}, shared_no_exists_step_meta_elapsed_ms={}, after_explicit_reset_step_meta_elapsed_ms={}, fresh_connection_step_meta_elapsed_ms={})",
+                        diagnostic
+                            .shared_sequence_after_explicit_reset_kind
+                            .clone()
+                            .unwrap_or_else(|| "reset".to_string()),
+                        baseline,
+                        no_exists,
+                        after_reset.unwrap_or(0),
+                        fresh
+                    ),
+                );
+            }
+
+            return (
+                PersistedRebuildRowSharedSequenceCompareReasonClass::SharedSequenceSlowEvenWithoutExistsProbe,
+                format!(
+                    "the shared sequential meta step is slow even without any prior exists probe prefix on that connection lifecycle (baseline_with_exists_step_meta_elapsed_ms={}, shared_no_exists_step_meta_elapsed_ms={}, prepare_exists_only_step_meta_elapsed_ms={}, after_explicit_reset_step_meta_elapsed_ms={}, fresh_connection_step_meta_elapsed_ms={})",
+                    baseline,
+                    no_exists,
+                    prepare_only,
+                    after_reset.unwrap_or(0),
+                    fresh
+                ),
+            );
+        }
+
+        (
+            PersistedRebuildRowSharedSequenceCompareReasonClass::SharedSequenceNoMaterialSequenceEffectObserved,
+            format!(
+                "no material shared-connection sequence effect was observed across the exists-step, no-exists, prepare-exists-only, explicit-reset, and fresh-connection variants (baseline_with_exists_step_meta_elapsed_ms={}, shared_no_exists_step_meta_elapsed_ms={}, prepare_exists_only_step_meta_elapsed_ms={}, after_explicit_reset_step_meta_elapsed_ms={}, fresh_connection_step_meta_elapsed_ms={})",
+                baseline,
+                no_exists,
+                prepare_only,
+                after_reset.unwrap_or(0),
+                fresh
+            ),
+        )
+    }
+
     fn map_storage_step_meta_compare_diagnostic(
         diagnostic: StorageStepMetaCompareDiagnostic,
     ) -> PersistedRebuildRowStepMetaCompareDiagnostic {
@@ -2713,6 +2921,79 @@ impl DiscoveryService {
             Self::classify_persisted_rebuild_row_step_meta_compare(&mapped);
         mapped.step_meta_compare_reason_class = reason_class;
         mapped.step_meta_compare_explanation = explanation;
+        mapped
+    }
+
+    fn map_storage_shared_sequence_compare_diagnostic(
+        diagnostic: StorageSharedSequenceCompareDiagnostic,
+    ) -> PersistedRebuildRowSharedSequenceCompareDiagnostic {
+        let baseline_connection_facts = diagnostic.baseline_connection_facts.clone();
+        let mut mapped = PersistedRebuildRowSharedSequenceCompareDiagnostic {
+            shared_sequence_compare_stage: diagnostic.stage,
+            shared_sequence_compare_budget_exhausted: diagnostic.budget_exhausted,
+            shared_sequence_compare_skipped_stages: diagnostic.skipped_stages,
+            shared_sequence_compare_total_elapsed_ms: diagnostic.total_elapsed_ms,
+            shared_sequence_compare_busy_timeout_ms: baseline_connection_facts
+                .as_ref()
+                .map(|facts| facts.busy_timeout_ms),
+            shared_sequence_compare_cache_size: baseline_connection_facts
+                .as_ref()
+                .map(|facts| facts.cache_size),
+            shared_sequence_compare_mmap_size: baseline_connection_facts
+                .as_ref()
+                .map(|facts| facts.mmap_size),
+            shared_sequence_compare_query_only: baseline_connection_facts
+                .as_ref()
+                .map(|facts| facts.query_only),
+            shared_sequence_compare_journal_mode: baseline_connection_facts
+                .as_ref()
+                .map(|facts| facts.journal_mode.clone()),
+            shared_sequence_compare_locking_mode: baseline_connection_facts
+                .as_ref()
+                .map(|facts| facts.locking_mode.clone()),
+            shared_sequence_baseline_with_exists_prepare_exists_elapsed_ms: diagnostic
+                .baseline_with_exists_prepare_exists_elapsed_ms,
+            shared_sequence_baseline_with_exists_step_exists_elapsed_ms: diagnostic
+                .baseline_with_exists_step_exists_elapsed_ms,
+            shared_sequence_baseline_with_exists_step_meta_elapsed_ms: diagnostic
+                .baseline_with_exists_step_meta_elapsed_ms,
+            shared_sequence_baseline_with_exists_row_exists: diagnostic
+                .baseline_with_exists_row_exists,
+            shared_sequence_same_connection_no_exists_step_meta_elapsed_ms: diagnostic
+                .shared_connection_no_exists_step_meta_elapsed_ms,
+            shared_sequence_same_connection_no_exists_row_exists: diagnostic
+                .shared_connection_no_exists_row_exists,
+            shared_sequence_prepare_exists_only_supported: diagnostic
+                .prepare_exists_only_supported,
+            shared_sequence_prepare_exists_only_prepare_exists_elapsed_ms: diagnostic
+                .prepare_exists_only_prepare_exists_elapsed_ms,
+            shared_sequence_prepare_exists_only_step_meta_elapsed_ms: diagnostic
+                .prepare_exists_only_step_meta_elapsed_ms,
+            shared_sequence_prepare_exists_only_row_exists: diagnostic.prepare_exists_only_row_exists,
+            shared_sequence_after_explicit_reset_supported: diagnostic.explicit_reset_supported,
+            shared_sequence_after_explicit_reset_kind: diagnostic.explicit_reset_kind,
+            shared_sequence_after_explicit_reset_prepare_exists_elapsed_ms: diagnostic
+                .after_explicit_reset_prepare_exists_elapsed_ms,
+            shared_sequence_after_explicit_reset_step_exists_elapsed_ms: diagnostic
+                .after_explicit_reset_step_exists_elapsed_ms,
+            shared_sequence_after_explicit_reset_reset_elapsed_ms: diagnostic
+                .after_explicit_reset_reset_elapsed_ms,
+            shared_sequence_after_explicit_reset_step_meta_elapsed_ms: diagnostic
+                .after_explicit_reset_step_meta_elapsed_ms,
+            shared_sequence_after_explicit_reset_row_exists: diagnostic
+                .after_explicit_reset_row_exists,
+            shared_sequence_fresh_connection_step_meta_elapsed_ms: diagnostic
+                .fresh_connection_step_meta_elapsed_ms,
+            shared_sequence_fresh_connection_row_exists: diagnostic.fresh_connection_row_exists,
+            shared_sequence_compare_reason_class:
+                PersistedRebuildRowSharedSequenceCompareReasonClass::SharedSequenceUnprovenDueToBudgetExhausted,
+            shared_sequence_compare_explanation:
+                "shared-sequence compare has not been classified yet".to_string(),
+        };
+        let (reason_class, explanation) =
+            Self::classify_persisted_rebuild_row_shared_sequence_compare(&mapped);
+        mapped.shared_sequence_compare_reason_class = reason_class;
+        mapped.shared_sequence_compare_explanation = explanation;
         mapped
     }
 
@@ -4085,6 +4366,31 @@ impl DiscoveryService {
     ) -> Result<PersistedRebuildRowStepMetaCompareDiagnostic> {
         Ok(Self::map_storage_step_meta_compare_diagnostic(
             SqliteStore::probe_discovery_persisted_rebuild_row_step_meta_compare_read_only(
+                runtime_db_path,
+                &options,
+            )?,
+        ))
+    }
+
+    pub fn probe_persisted_rebuild_row_shared_sequence_compare_read_only(
+        runtime_db_path: &Path,
+        budget_ms: u64,
+    ) -> Result<PersistedRebuildRowSharedSequenceCompareDiagnostic> {
+        Self::probe_persisted_rebuild_row_shared_sequence_compare_read_only_with_options(
+            runtime_db_path,
+            StorageSharedSequenceCompareOptions {
+                budget_ms,
+                ..StorageSharedSequenceCompareOptions::default()
+            },
+        )
+    }
+
+    fn probe_persisted_rebuild_row_shared_sequence_compare_read_only_with_options(
+        runtime_db_path: &Path,
+        options: StorageSharedSequenceCompareOptions,
+    ) -> Result<PersistedRebuildRowSharedSequenceCompareDiagnostic> {
+        Ok(Self::map_storage_shared_sequence_compare_diagnostic(
+            SqliteStore::probe_discovery_persisted_rebuild_row_shared_sequence_compare_read_only(
                 runtime_db_path,
                 &options,
             )?,
@@ -40109,6 +40415,151 @@ mod tests {
     }
 
     #[test]
+    fn replay_checkpoint_shared_sequence_compare_distinguishes_with_exists_vs_without_exists_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_shared_sequence_compare_read_only(
+                Path::new(&runtime_db_path),
+                30_000,
+            )?;
+        assert!(!diagnostic.shared_sequence_compare_budget_exhausted);
+        assert!(diagnostic
+            .shared_sequence_baseline_with_exists_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .shared_sequence_same_connection_no_exists_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic.shared_sequence_prepare_exists_only_supported);
+        assert!(diagnostic
+            .shared_sequence_prepare_exists_only_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic.shared_sequence_after_explicit_reset_supported);
+        assert!(diagnostic
+            .shared_sequence_after_explicit_reset_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .shared_sequence_fresh_connection_step_meta_elapsed_ms
+            .is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_shared_sequence_compare_with_exists_only_delay_surfaces_exists_step_reason_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::probe_persisted_rebuild_row_shared_sequence_compare_read_only_with_options(
+            Path::new(&runtime_db_path),
+            StorageSharedSequenceCompareOptions {
+                budget_ms: 30_000,
+                test_force_baseline_with_exists_step_meta_delay_ms: Some(
+                    DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                ),
+                test_disable_explicit_reset_variant: true,
+                ..StorageSharedSequenceCompareOptions::default()
+            },
+        )?;
+        assert_eq!(
+            diagnostic.shared_sequence_compare_reason_class,
+            PersistedRebuildRowSharedSequenceCompareReasonClass::SharedSequenceSlowOnlyAfterExistsStep
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_shared_sequence_compare_all_shared_delays_surface_shared_even_without_exists_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let delay_ms = DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50;
+        let diagnostic = DiscoveryService::probe_persisted_rebuild_row_shared_sequence_compare_read_only_with_options(
+            Path::new(&runtime_db_path),
+            StorageSharedSequenceCompareOptions {
+                budget_ms: 30_000,
+                test_force_baseline_with_exists_step_meta_delay_ms: Some(delay_ms),
+                test_force_shared_no_exists_step_meta_delay_ms: Some(delay_ms),
+                test_force_prepare_exists_only_step_meta_delay_ms: Some(delay_ms),
+                test_force_after_explicit_reset_step_meta_delay_ms: Some(delay_ms),
+                ..StorageSharedSequenceCompareOptions::default()
+            },
+        )?;
+        assert_eq!(
+            diagnostic.shared_sequence_compare_reason_class,
+            PersistedRebuildRowSharedSequenceCompareReasonClass::SharedSequenceSlowEvenWithoutExistsProbe
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_shared_sequence_compare_prepare_exists_only_delay_surfaces_prepare_only_reason_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::
+            probe_persisted_rebuild_row_shared_sequence_compare_read_only_with_options(
+                Path::new(&runtime_db_path),
+                StorageSharedSequenceCompareOptions {
+                    budget_ms: 30_000,
+                    test_force_prepare_exists_only_step_meta_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    test_disable_explicit_reset_variant: true,
+                    ..StorageSharedSequenceCompareOptions::default()
+                },
+            )?;
+        assert_eq!(
+            diagnostic.shared_sequence_compare_reason_class,
+            PersistedRebuildRowSharedSequenceCompareReasonClass::SharedSequenceSlowAfterPrepareExistsOnly
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_shared_sequence_compare_reset_branch_is_surfaced_stage1() -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::probe_persisted_rebuild_row_shared_sequence_compare_read_only_with_options(
+            Path::new(&runtime_db_path),
+            StorageSharedSequenceCompareOptions {
+                budget_ms: 30_000,
+                test_force_baseline_with_exists_step_meta_delay_ms: Some(
+                    DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                ),
+                ..StorageSharedSequenceCompareOptions::default()
+            },
+        )?;
+        assert!(diagnostic.shared_sequence_after_explicit_reset_supported);
+        assert_eq!(
+            diagnostic
+                .shared_sequence_after_explicit_reset_kind
+                .as_deref(),
+            Some("pragma_shrink_memory")
+        );
+        assert_eq!(
+            diagnostic.shared_sequence_compare_reason_class,
+            PersistedRebuildRowSharedSequenceCompareReasonClass::SharedSequenceResetClearsSlowdown
+        );
+        Ok(())
+    }
+
+    #[test]
     fn replay_checkpoint_raw_probe_meta_plan_budget_exhaustion_keeps_row_existence_unproven_stage1(
     ) -> Result<()> {
         let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
@@ -40712,6 +41163,10 @@ mod tests {
             30_000,
         )?;
         let _ = DiscoveryService::probe_persisted_rebuild_row_step_meta_compare_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        let _ = DiscoveryService::probe_persisted_rebuild_row_shared_sequence_compare_read_only(
             Path::new(&runtime_db_path),
             30_000,
         )?;

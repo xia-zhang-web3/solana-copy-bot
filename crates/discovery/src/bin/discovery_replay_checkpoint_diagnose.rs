@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use copybot_discovery::{
     DiscoveryService, PersistedRebuildRowDriverCompareDiagnostic,
+    PersistedRebuildRowSharedSequenceCompareDiagnostic,
     PersistedRebuildRowStepMetaCompareDiagnostic, RawPersistedRebuildRowProbeDiagnostic,
     ReplayCheckpointRuntimeDbDiagnostic, ReplayCheckpointRuntimeDbOnlyMode,
 };
@@ -10,7 +11,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS: u64 = 30_000;
-const USAGE: &str = "usage: discovery_replay_checkpoint_diagnose [--inspect-persisted-rebuild-row-meta-lite | --inspect-persisted-rebuild-row-meta | --inspect-persisted-rebuild-state | --explain-publishable-checkpoint-blocker | --compare-sol-leg-source-vs-checkpoint | --explain-replay-sol-leg-incomplete | --probe-persisted-rebuild-row-raw | --probe-persisted-rebuild-row-driver-compare | --probe-persisted-rebuild-row-step-meta-detail] --runtime-db <path> [--recent-raw-db <path>] [--budget-ms <ms>] [--json]";
+const USAGE: &str = "usage: discovery_replay_checkpoint_diagnose [--inspect-persisted-rebuild-row-meta-lite | --inspect-persisted-rebuild-row-meta | --inspect-persisted-rebuild-state | --explain-publishable-checkpoint-blocker | --compare-sol-leg-source-vs-checkpoint | --explain-replay-sol-leg-incomplete | --probe-persisted-rebuild-row-raw | --probe-persisted-rebuild-row-driver-compare | --probe-persisted-rebuild-row-step-meta-detail | --probe-persisted-rebuild-row-shared-sequence-detail] --runtime-db <path> [--recent-raw-db <path>] [--budget-ms <ms>] [--json]";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -33,6 +34,7 @@ enum Mode {
     ProbePersistedRebuildRowRaw,
     ProbePersistedRebuildRowDriverCompare,
     ProbePersistedRebuildRowStepMetaDetail,
+    ProbePersistedRebuildRowSharedSequenceDetail,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +100,11 @@ where
             "--probe-persisted-rebuild-row-step-meta-detail" => set_mode(
                 &mut mode,
                 Mode::ProbePersistedRebuildRowStepMetaDetail,
+                arg.as_str(),
+            )?,
+            "--probe-persisted-rebuild-row-shared-sequence-detail" => set_mode(
+                &mut mode,
+                Mode::ProbePersistedRebuildRowSharedSequenceDetail,
                 arg.as_str(),
             )?,
             "--runtime-db" => {
@@ -288,6 +295,13 @@ fn render_step_meta_compare_json(
         .context("failed serializing persisted rebuild row step-meta compare probe")
 }
 
+fn render_shared_sequence_compare_json(
+    diagnostic: &PersistedRebuildRowSharedSequenceCompareDiagnostic,
+) -> Result<Value> {
+    serde_json::to_value(diagnostic)
+        .context("failed serializing persisted rebuild row shared-sequence compare probe")
+}
+
 fn run(config: Config) -> Result<String> {
     let output = match config.mode {
         Mode::InspectPersistedRebuildRowMetaLite => render_runtime_db_diagnostic_json(
@@ -360,6 +374,12 @@ fn run(config: Config) -> Result<String> {
         )?,
         Mode::ProbePersistedRebuildRowStepMetaDetail => render_step_meta_compare_json(
             &DiscoveryService::probe_persisted_rebuild_row_step_meta_compare_read_only(
+                &config.runtime_db,
+                config.budget_ms,
+            )?,
+        )?,
+        Mode::ProbePersistedRebuildRowSharedSequenceDetail => render_shared_sequence_compare_json(
+            &DiscoveryService::probe_persisted_rebuild_row_shared_sequence_compare_read_only(
                 &config.runtime_db,
                 config.budget_ms,
             )?,
@@ -458,6 +478,21 @@ mod tests {
         ])?
         .expect("config should parse");
         assert_eq!(config.mode, Mode::ProbePersistedRebuildRowStepMetaDetail);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_args_accepts_shared_sequence_detail_mode_stage1() -> Result<()> {
+        let config = parse_args_from([
+            "--probe-persisted-rebuild-row-shared-sequence-detail".to_string(),
+            "--runtime-db".to_string(),
+            "runtime.sqlite".to_string(),
+        ])?
+        .expect("config should parse");
+        assert_eq!(
+            config.mode,
+            Mode::ProbePersistedRebuildRowSharedSequenceDetail
+        );
         Ok(())
     }
 
@@ -574,6 +609,36 @@ mod tests {
             "step_meta_row_missing"
         );
         assert!(json["step_meta_compare_explanation"]
+            .as_str()
+            .is_some_and(|value| value.contains("is missing on the runtime db")));
+        Ok(())
+    }
+
+    #[test]
+    fn run_shared_sequence_detail_reports_missing_checkpoint_json_stage1() -> Result<()> {
+        let (_temp, runtime_db) =
+            make_test_store("diagnose-shared-sequence-detail-runtime.sqlite")?;
+        let store = SqliteStore::open(Path::new(&runtime_db))?;
+        assert!(store.load_discovery_persisted_rebuild_state()?.is_none());
+        drop(store);
+        let output = run(Config {
+            mode: Mode::ProbePersistedRebuildRowSharedSequenceDetail,
+            runtime_db,
+            recent_raw_db: None,
+            json: true,
+            budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+        })?;
+        let json: serde_json::Value =
+            serde_json::from_str(&output).context("invalid json output")?;
+        assert_eq!(
+            json["shared_sequence_baseline_with_exists_row_exists"],
+            false
+        );
+        assert_eq!(
+            json["shared_sequence_compare_reason_class"],
+            "shared_sequence_row_missing"
+        );
+        assert!(json["shared_sequence_compare_explanation"]
             .as_str()
             .is_some_and(|value| value.contains("is missing on the runtime db")));
         Ok(())
