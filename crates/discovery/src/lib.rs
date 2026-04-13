@@ -4,9 +4,10 @@ use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
 use copybot_storage::{
     is_fatal_sqlite_anyhow_error, DiscoveryPersistedRebuildPhase,
-    DiscoveryPersistedRebuildStateRow, DiscoveryPublicationFreshnessGate,
-    DiscoveryPublicationStateRow, DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor,
-    DiscoveryRuntimeMode, DiscoveryTrustedSelectionStateUpdate, ObservedSolLegCursorAccessPath,
+    DiscoveryPersistedRebuildStateMetaLiteRawRow, DiscoveryPersistedRebuildStateRow,
+    DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateRow,
+    DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
+    DiscoveryTrustedSelectionStateUpdate, ObservedSolLegCursorAccessPath,
     ObservedWalletActivityDayCountSource, ObservedWalletActivityRow,
     PersistedWalletMetricSnapshotRow, SqliteStore, StartupTrustedSelectionGateStatus,
     TrustedSelectionState, TrustedSnapshotSourceKind, TrustedWalletMetricsSnapshotRow,
@@ -92,6 +93,21 @@ static TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_PARSE_DELAY_MS: AtomicU64 = AtomicU
 static TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_CLASSIFY_DELAY_MS: AtomicU64 =
     AtomicU64::new(u64::MAX);
 #[cfg(test)]
+static TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_CHECK_TABLE_EXISTS_DELAY_MS: AtomicU64 =
+    AtomicU64::new(u64::MAX);
+#[cfg(test)]
+static TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_QUERY_DELAY_MS: AtomicU64 =
+    AtomicU64::new(u64::MAX);
+#[cfg(test)]
+static TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_PARSE_PHASE_DELAY_MS: AtomicU64 =
+    AtomicU64::new(u64::MAX);
+#[cfg(test)]
+static TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_PARSE_UPDATED_AT_DELAY_MS: AtomicU64 =
+    AtomicU64::new(u64::MAX);
+#[cfg(test)]
+static TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_SIZE_EVAL_DELAY_MS: AtomicU64 =
+    AtomicU64::new(u64::MAX);
+#[cfg(test)]
 const POST_BOOTSTRAP_ROTATION_BLOCKED_REASON: &str =
     "post_bootstrap_rotation_blocked_cap_truncated";
 
@@ -161,6 +177,71 @@ fn arm_test_force_replay_checkpoint_diagnose_classify_delay_ms(delay_ms: u64) {
 #[cfg(test)]
 fn take_test_force_replay_checkpoint_diagnose_classify_delay_ms() -> Option<u64> {
     let delay_ms = TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_CLASSIFY_DELAY_MS
+        .swap(u64::MAX, AtomicOrdering::SeqCst);
+    (delay_ms != u64::MAX).then_some(delay_ms)
+}
+
+#[cfg(test)]
+fn arm_test_force_replay_checkpoint_diagnose_meta_check_table_exists_delay_ms(delay_ms: u64) {
+    TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_CHECK_TABLE_EXISTS_DELAY_MS
+        .store(delay_ms, AtomicOrdering::SeqCst);
+}
+
+#[cfg(test)]
+fn take_test_force_replay_checkpoint_diagnose_meta_check_table_exists_delay_ms() -> Option<u64> {
+    let delay_ms = TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_CHECK_TABLE_EXISTS_DELAY_MS
+        .swap(u64::MAX, AtomicOrdering::SeqCst);
+    (delay_ms != u64::MAX).then_some(delay_ms)
+}
+
+#[cfg(test)]
+fn arm_test_force_replay_checkpoint_diagnose_meta_query_delay_ms(delay_ms: u64) {
+    TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_QUERY_DELAY_MS
+        .store(delay_ms, AtomicOrdering::SeqCst);
+}
+
+#[cfg(test)]
+fn take_test_force_replay_checkpoint_diagnose_meta_query_delay_ms() -> Option<u64> {
+    let delay_ms = TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_QUERY_DELAY_MS
+        .swap(u64::MAX, AtomicOrdering::SeqCst);
+    (delay_ms != u64::MAX).then_some(delay_ms)
+}
+
+#[cfg(test)]
+fn arm_test_force_replay_checkpoint_diagnose_meta_parse_phase_delay_ms(delay_ms: u64) {
+    TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_PARSE_PHASE_DELAY_MS
+        .store(delay_ms, AtomicOrdering::SeqCst);
+}
+
+#[cfg(test)]
+fn take_test_force_replay_checkpoint_diagnose_meta_parse_phase_delay_ms() -> Option<u64> {
+    let delay_ms = TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_PARSE_PHASE_DELAY_MS
+        .swap(u64::MAX, AtomicOrdering::SeqCst);
+    (delay_ms != u64::MAX).then_some(delay_ms)
+}
+
+#[cfg(test)]
+fn arm_test_force_replay_checkpoint_diagnose_meta_parse_updated_at_delay_ms(delay_ms: u64) {
+    TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_PARSE_UPDATED_AT_DELAY_MS
+        .store(delay_ms, AtomicOrdering::SeqCst);
+}
+
+#[cfg(test)]
+fn take_test_force_replay_checkpoint_diagnose_meta_parse_updated_at_delay_ms() -> Option<u64> {
+    let delay_ms = TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_PARSE_UPDATED_AT_DELAY_MS
+        .swap(u64::MAX, AtomicOrdering::SeqCst);
+    (delay_ms != u64::MAX).then_some(delay_ms)
+}
+
+#[cfg(test)]
+fn arm_test_force_replay_checkpoint_diagnose_meta_size_eval_delay_ms(delay_ms: u64) {
+    TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_SIZE_EVAL_DELAY_MS
+        .store(delay_ms, AtomicOrdering::SeqCst);
+}
+
+#[cfg(test)]
+fn take_test_force_replay_checkpoint_diagnose_meta_size_eval_delay_ms() -> Option<u64> {
+    let delay_ms = TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_META_SIZE_EVAL_DELAY_MS
         .swap(u64::MAX, AtomicOrdering::SeqCst);
     (delay_ms != u64::MAX).then_some(delay_ms)
 }
@@ -1572,10 +1653,22 @@ pub struct ReplaySolLegIncompleteDiagnostic {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PersistedReplayCheckpointRowMeta {
-    pub persisted_rebuild_row_exists: bool,
+    pub persisted_rebuild_row_exists: Option<bool>,
     pub persisted_rebuild_row_phase: Option<String>,
     pub persisted_rebuild_row_updated_at: Option<DateTime<Utc>>,
     pub persisted_rebuild_state_json_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayCheckpointRuntimeDbMetaDiagnosticSubstage {
+    OpenDbForMetaReadOnly,
+    CheckTableExists,
+    QueryRowMeta,
+    ParsePhase,
+    ParseUpdatedAt,
+    EvaluateStateJsonBytes,
+    Complete,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -1605,6 +1698,7 @@ impl ReplayCheckpointRuntimeDbDiagnosticStage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplayCheckpointRuntimeDbOnlyMode {
     RowMeta,
+    RowMetaLite,
     Inspect,
     ExplainPublishableCheckpointBlocker,
 }
@@ -1612,6 +1706,7 @@ pub enum ReplayCheckpointRuntimeDbOnlyMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplayCheckpointRuntimeDbDiagnostic {
     pub diagnostic_stage: ReplayCheckpointRuntimeDbDiagnosticStage,
+    pub diagnostic_meta_substage: Option<ReplayCheckpointRuntimeDbMetaDiagnosticSubstage>,
     pub diagnostic_budget_exhausted: bool,
     pub diagnostic_skipped_stages: Vec<ReplayCheckpointRuntimeDbDiagnosticStage>,
     pub diagnostic_open_db_elapsed_ms: Option<u64>,
@@ -1620,6 +1715,14 @@ pub struct ReplayCheckpointRuntimeDbDiagnostic {
     pub diagnostic_parse_state_elapsed_ms: Option<u64>,
     pub diagnostic_classify_blocker_elapsed_ms: Option<u64>,
     pub diagnostic_total_elapsed_ms: u64,
+    pub meta_state_json_bytes_requested: bool,
+    pub meta_open_db_elapsed_ms: Option<u64>,
+    pub meta_check_table_exists_elapsed_ms: Option<u64>,
+    pub meta_query_elapsed_ms: Option<u64>,
+    pub meta_parse_phase_elapsed_ms: Option<u64>,
+    pub meta_parse_updated_at_elapsed_ms: Option<u64>,
+    pub meta_state_json_bytes_eval_elapsed_ms: Option<u64>,
+    pub meta_total_elapsed_ms: Option<u64>,
     pub row_meta: PersistedReplayCheckpointRowMeta,
     pub inspection: Option<PersistedReplayCheckpointInspection>,
     pub blocker_explanation: Option<PublishableCheckpointBlockerExplanation>,
@@ -1863,13 +1966,50 @@ impl DiscoveryService {
             .transpose()
     }
 
-    fn empty_persisted_rebuild_row_meta() -> PersistedReplayCheckpointRowMeta {
+    fn unknown_persisted_rebuild_row_meta() -> PersistedReplayCheckpointRowMeta {
         PersistedReplayCheckpointRowMeta {
-            persisted_rebuild_row_exists: false,
+            persisted_rebuild_row_exists: None,
             persisted_rebuild_row_phase: None,
             persisted_rebuild_row_updated_at: None,
             persisted_rebuild_state_json_bytes: None,
         }
+    }
+
+    fn missing_persisted_rebuild_row_meta() -> PersistedReplayCheckpointRowMeta {
+        PersistedReplayCheckpointRowMeta {
+            persisted_rebuild_row_exists: Some(false),
+            persisted_rebuild_row_phase: None,
+            persisted_rebuild_row_updated_at: None,
+            persisted_rebuild_state_json_bytes: None,
+        }
+    }
+
+    fn parse_persisted_rebuild_row_meta_phase_read_only(
+        phase_raw: &str,
+    ) -> Result<DiscoveryPersistedRebuildPhase> {
+        #[cfg(test)]
+        if let Some(delay_ms) =
+            take_test_force_replay_checkpoint_diagnose_meta_parse_phase_delay_ms()
+        {
+            thread::sleep(StdDuration::from_millis(delay_ms));
+        }
+        DiscoveryPersistedRebuildPhase::parse(phase_raw)
+    }
+
+    fn parse_persisted_rebuild_row_meta_updated_at_read_only(
+        updated_at_raw: &str,
+    ) -> Result<DateTime<Utc>> {
+        #[cfg(test)]
+        if let Some(delay_ms) =
+            take_test_force_replay_checkpoint_diagnose_meta_parse_updated_at_delay_ms()
+        {
+            thread::sleep(StdDuration::from_millis(delay_ms));
+        }
+        DateTime::parse_from_rfc3339(updated_at_raw)
+            .map(|dt| dt.with_timezone(&Utc))
+            .with_context(|| {
+                format!("invalid discovery persisted rebuild metadata updated_at: {updated_at_raw}")
+            })
     }
 
     fn empty_persisted_rebuild_state_inspection() -> PersistedReplayCheckpointInspection {
@@ -2037,19 +2177,37 @@ impl DiscoveryService {
         }
     }
 
+    pub fn inspect_persisted_rebuild_row_meta_lite_read_only(
+        runtime_store: &SqliteStore,
+    ) -> Result<PersistedReplayCheckpointRowMeta> {
+        let Some(raw) =
+            runtime_store.load_discovery_persisted_rebuild_state_meta_lite_raw_read_only()?
+        else {
+            return Ok(Self::missing_persisted_rebuild_row_meta());
+        };
+        Ok(PersistedReplayCheckpointRowMeta {
+            persisted_rebuild_row_exists: Some(true),
+            persisted_rebuild_row_phase: Some(
+                Self::parse_persisted_rebuild_row_meta_phase_read_only(&raw.phase_raw)?
+                    .as_str()
+                    .to_string(),
+            ),
+            persisted_rebuild_row_updated_at: Some(
+                Self::parse_persisted_rebuild_row_meta_updated_at_read_only(&raw.updated_at_raw)?,
+            ),
+            persisted_rebuild_state_json_bytes: None,
+        })
+    }
+
     pub fn inspect_persisted_rebuild_row_meta_read_only(
         runtime_store: &SqliteStore,
     ) -> Result<PersistedReplayCheckpointRowMeta> {
-        let Some(meta) = runtime_store.load_discovery_persisted_rebuild_state_meta_read_only()?
-        else {
-            return Ok(Self::empty_persisted_rebuild_row_meta());
-        };
-        Ok(PersistedReplayCheckpointRowMeta {
-            persisted_rebuild_row_exists: true,
-            persisted_rebuild_row_phase: Some(meta.phase.as_str().to_string()),
-            persisted_rebuild_row_updated_at: Some(meta.updated_at),
-            persisted_rebuild_state_json_bytes: Some(meta.state_json_bytes),
-        })
+        let mut meta = Self::inspect_persisted_rebuild_row_meta_lite_read_only(runtime_store)?;
+        if meta.persisted_rebuild_row_exists == Some(true) {
+            meta.persisted_rebuild_state_json_bytes =
+                runtime_store.load_discovery_persisted_rebuild_state_json_bytes_read_only()?;
+        }
+        Ok(meta)
     }
 
     pub fn parse_persisted_rebuild_state_row_read_only(
@@ -2139,24 +2297,38 @@ impl DiscoveryService {
     }
 
     fn replay_checkpoint_runtime_db_diagnostic_relevant_stages(
-        _mode: ReplayCheckpointRuntimeDbOnlyMode,
+        mode: ReplayCheckpointRuntimeDbOnlyMode,
     ) -> Vec<ReplayCheckpointRuntimeDbDiagnosticStage> {
-        vec![
+        let mut stages = vec![
             ReplayCheckpointRuntimeDbDiagnosticStage::OpenDbReadOnly,
             ReplayCheckpointRuntimeDbDiagnosticStage::LoadPersistedRebuildRowMeta,
-            ReplayCheckpointRuntimeDbDiagnosticStage::LoadPersistedRebuildRow,
-            ReplayCheckpointRuntimeDbDiagnosticStage::ParsePersistedRebuildState,
-            ReplayCheckpointRuntimeDbDiagnosticStage::ClassifyPublishableCheckpointBlocker,
-        ]
+        ];
+        if !matches!(
+            mode,
+            ReplayCheckpointRuntimeDbOnlyMode::RowMeta
+                | ReplayCheckpointRuntimeDbOnlyMode::RowMetaLite
+        ) {
+            stages.extend([
+                ReplayCheckpointRuntimeDbDiagnosticStage::LoadPersistedRebuildRow,
+                ReplayCheckpointRuntimeDbDiagnosticStage::ParsePersistedRebuildState,
+                ReplayCheckpointRuntimeDbDiagnosticStage::ClassifyPublishableCheckpointBlocker,
+            ]);
+        }
+        stages
     }
 
     fn replay_checkpoint_runtime_db_diagnostic_skipped_stages(
         mode: ReplayCheckpointRuntimeDbOnlyMode,
-        row_exists: bool,
+        row_exists: Option<bool>,
         exhausted_stage: Option<ReplayCheckpointRuntimeDbDiagnosticStage>,
     ) -> Vec<ReplayCheckpointRuntimeDbDiagnosticStage> {
         let relevant = Self::replay_checkpoint_runtime_db_diagnostic_relevant_stages(mode);
-        let cutoff = if !row_exists && mode != ReplayCheckpointRuntimeDbOnlyMode::RowMeta {
+        let cutoff = if row_exists == Some(false)
+            && !matches!(
+                mode,
+                ReplayCheckpointRuntimeDbOnlyMode::RowMeta
+                    | ReplayCheckpointRuntimeDbOnlyMode::RowMetaLite
+            ) {
             Some(ReplayCheckpointRuntimeDbDiagnosticStage::LoadPersistedRebuildRowMeta)
         } else {
             exhausted_stage
@@ -2174,6 +2346,348 @@ impl DiscoveryService {
             .collect()
     }
 
+    fn replay_checkpoint_runtime_db_meta_row_exists(store: &SqliteStore) -> Result<bool> {
+        #[cfg(test)]
+        if let Some(delay_ms) =
+            take_test_force_replay_checkpoint_diagnose_meta_check_table_exists_delay_ms()
+        {
+            thread::sleep(StdDuration::from_millis(delay_ms));
+        }
+        store.discovery_persisted_rebuild_state_table_exists_read_only()
+    }
+
+    fn replay_checkpoint_runtime_db_meta_query_lite_raw(
+        store: &SqliteStore,
+    ) -> Result<Option<DiscoveryPersistedRebuildStateMetaLiteRawRow>> {
+        #[cfg(test)]
+        if let Some(delay_ms) = take_test_force_replay_checkpoint_diagnose_meta_query_delay_ms() {
+            thread::sleep(StdDuration::from_millis(delay_ms));
+        }
+        store.load_discovery_persisted_rebuild_state_meta_lite_raw_after_table_exists_read_only()
+    }
+
+    fn replay_checkpoint_runtime_db_meta_state_json_bytes(
+        store: &SqliteStore,
+    ) -> Result<Option<usize>> {
+        #[cfg(test)]
+        if let Some(delay_ms) = take_test_force_replay_checkpoint_diagnose_meta_size_eval_delay_ms()
+        {
+            thread::sleep(StdDuration::from_millis(delay_ms));
+        }
+        store.load_discovery_persisted_rebuild_state_json_bytes_after_table_exists_read_only()
+    }
+
+    fn diagnose_runtime_db_replay_checkpoint_row_meta_read_only(
+        runtime_db_path: &Path,
+        deadline: Instant,
+        include_state_json_bytes: bool,
+    ) -> Result<ReplayCheckpointRuntimeDbDiagnostic> {
+        #[derive(Debug, Clone)]
+        struct ReplayCheckpointRuntimeDbMetaProgressSnapshot {
+            row_meta: PersistedReplayCheckpointRowMeta,
+            meta_open_db_elapsed_ms: Option<u64>,
+            meta_check_table_exists_elapsed_ms: Option<u64>,
+            meta_query_elapsed_ms: Option<u64>,
+            meta_parse_phase_elapsed_ms: Option<u64>,
+            meta_parse_updated_at_elapsed_ms: Option<u64>,
+            meta_state_json_bytes_eval_elapsed_ms: Option<u64>,
+        }
+
+        impl ReplayCheckpointRuntimeDbMetaProgressSnapshot {
+            fn new() -> Self {
+                Self {
+                    row_meta: DiscoveryService::unknown_persisted_rebuild_row_meta(),
+                    meta_open_db_elapsed_ms: None,
+                    meta_check_table_exists_elapsed_ms: None,
+                    meta_query_elapsed_ms: None,
+                    meta_parse_phase_elapsed_ms: None,
+                    meta_parse_updated_at_elapsed_ms: None,
+                    meta_state_json_bytes_eval_elapsed_ms: None,
+                }
+            }
+        }
+
+        #[derive(Debug)]
+        enum ReplayCheckpointRuntimeDbMetaWorkerMessage {
+            Entered(ReplayCheckpointRuntimeDbMetaDiagnosticSubstage),
+            Snapshot(ReplayCheckpointRuntimeDbMetaProgressSnapshot),
+            Finished(Result<(), String>),
+        }
+
+        let meta_started_at = Instant::now();
+        let mut diagnostic = ReplayCheckpointRuntimeDbDiagnostic {
+            diagnostic_stage: ReplayCheckpointRuntimeDbDiagnosticStage::LoadPersistedRebuildRowMeta,
+            diagnostic_meta_substage: Some(
+                ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::OpenDbForMetaReadOnly,
+            ),
+            diagnostic_budget_exhausted: false,
+            diagnostic_skipped_stages: Vec::new(),
+            diagnostic_open_db_elapsed_ms: None,
+            diagnostic_load_row_meta_elapsed_ms: None,
+            diagnostic_load_row_elapsed_ms: None,
+            diagnostic_parse_state_elapsed_ms: None,
+            diagnostic_classify_blocker_elapsed_ms: None,
+            diagnostic_total_elapsed_ms: 0,
+            meta_state_json_bytes_requested: include_state_json_bytes,
+            meta_open_db_elapsed_ms: None,
+            meta_check_table_exists_elapsed_ms: None,
+            meta_query_elapsed_ms: None,
+            meta_parse_phase_elapsed_ms: None,
+            meta_parse_updated_at_elapsed_ms: None,
+            meta_state_json_bytes_eval_elapsed_ms: None,
+            meta_total_elapsed_ms: None,
+            row_meta: Self::unknown_persisted_rebuild_row_meta(),
+            inspection: None,
+            blocker_explanation: None,
+        };
+        let (tx, rx) = mpsc::sync_channel(16);
+        let runtime_db_path = runtime_db_path.to_path_buf();
+        thread::spawn(move || {
+            let send_finished = |result: Result<(), anyhow::Error>| {
+                let _ = tx.send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Finished(
+                    result.map_err(|error| format!("{error:#}")),
+                ));
+            };
+            let mut snapshot = ReplayCheckpointRuntimeDbMetaProgressSnapshot::new();
+
+            let _ = tx.send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Entered(
+                ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::OpenDbForMetaReadOnly,
+            ));
+            let open_started_at = Instant::now();
+            let store = match SqliteStore::open_read_only(&runtime_db_path).with_context(|| {
+                format!(
+                    "failed opening runtime sqlite db read-only {}",
+                    runtime_db_path.display()
+                )
+            }) {
+                Ok(store) => store,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.meta_open_db_elapsed_ms =
+                Some(open_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+            if tx
+                .send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Snapshot(
+                    snapshot.clone(),
+                ))
+                .is_err()
+            {
+                return;
+            }
+
+            let _ = tx.send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Entered(
+                ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::CheckTableExists,
+            ));
+            let check_started_at = Instant::now();
+            let table_exists = match Self::replay_checkpoint_runtime_db_meta_row_exists(&store) {
+                Ok(value) => value,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.meta_check_table_exists_elapsed_ms =
+                Some(check_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+            if !table_exists {
+                snapshot.row_meta = Self::missing_persisted_rebuild_row_meta();
+                let _ = tx.send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Snapshot(
+                    snapshot,
+                ));
+                let _ = tx.send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Finished(Ok(())));
+                return;
+            }
+            if tx
+                .send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Snapshot(
+                    snapshot.clone(),
+                ))
+                .is_err()
+            {
+                return;
+            }
+
+            let _ = tx.send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Entered(
+                ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::QueryRowMeta,
+            ));
+            let query_started_at = Instant::now();
+            let raw_meta = match Self::replay_checkpoint_runtime_db_meta_query_lite_raw(&store) {
+                Ok(value) => value,
+                Err(error) => {
+                    send_finished(Err(error));
+                    return;
+                }
+            };
+            snapshot.meta_query_elapsed_ms =
+                Some(query_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+            let raw_meta = if let Some(raw_meta) = raw_meta {
+                snapshot.row_meta.persisted_rebuild_row_exists = Some(true);
+                if tx
+                    .send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Snapshot(
+                        snapshot.clone(),
+                    ))
+                    .is_err()
+                {
+                    return;
+                }
+                raw_meta
+            } else {
+                snapshot.row_meta = Self::missing_persisted_rebuild_row_meta();
+                let _ = tx.send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Snapshot(
+                    snapshot,
+                ));
+                let _ = tx.send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Finished(Ok(())));
+                return;
+            };
+
+            let _ = tx.send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Entered(
+                ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::ParsePhase,
+            ));
+            let parse_phase_started_at = Instant::now();
+            let parsed_phase =
+                match Self::parse_persisted_rebuild_row_meta_phase_read_only(&raw_meta.phase_raw) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                };
+            snapshot.meta_parse_phase_elapsed_ms = Some(
+                parse_phase_started_at
+                    .elapsed()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            );
+            snapshot.row_meta.persisted_rebuild_row_phase = Some(parsed_phase.as_str().to_string());
+            if tx
+                .send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Snapshot(
+                    snapshot.clone(),
+                ))
+                .is_err()
+            {
+                return;
+            }
+
+            let _ = tx.send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Entered(
+                ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::ParseUpdatedAt,
+            ));
+            let parse_updated_at_started_at = Instant::now();
+            let parsed_updated_at =
+                match Self::parse_persisted_rebuild_row_meta_updated_at_read_only(
+                    &raw_meta.updated_at_raw,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                };
+            snapshot.meta_parse_updated_at_elapsed_ms = Some(
+                parse_updated_at_started_at
+                    .elapsed()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            );
+            snapshot.row_meta.persisted_rebuild_row_updated_at = Some(parsed_updated_at);
+            if tx
+                .send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Snapshot(
+                    snapshot.clone(),
+                ))
+                .is_err()
+            {
+                return;
+            }
+
+            if include_state_json_bytes {
+                let _ = tx.send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Entered(
+                    ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::EvaluateStateJsonBytes,
+                ));
+                let size_started_at = Instant::now();
+                let state_json_bytes =
+                    match Self::replay_checkpoint_runtime_db_meta_state_json_bytes(&store) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            send_finished(Err(error));
+                            return;
+                        }
+                    };
+                snapshot.meta_state_json_bytes_eval_elapsed_ms =
+                    Some(size_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+                snapshot.row_meta.persisted_rebuild_state_json_bytes = state_json_bytes;
+                if tx
+                    .send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Snapshot(
+                        snapshot.clone(),
+                    ))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+
+            let _ = tx.send(ReplayCheckpointRuntimeDbMetaWorkerMessage::Finished(Ok(())));
+        });
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                diagnostic.diagnostic_budget_exhausted = true;
+                diagnostic.meta_total_elapsed_ms =
+                    Some(meta_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+                diagnostic.diagnostic_total_elapsed_ms = diagnostic.meta_total_elapsed_ms.unwrap();
+                return Ok(diagnostic);
+            }
+
+            match rx.recv_timeout(remaining) {
+                Ok(ReplayCheckpointRuntimeDbMetaWorkerMessage::Entered(substage)) => {
+                    diagnostic.diagnostic_meta_substage = Some(substage);
+                }
+                Ok(ReplayCheckpointRuntimeDbMetaWorkerMessage::Snapshot(snapshot)) => {
+                    diagnostic.row_meta = snapshot.row_meta;
+                    diagnostic.meta_open_db_elapsed_ms = snapshot.meta_open_db_elapsed_ms;
+                    diagnostic.meta_check_table_exists_elapsed_ms =
+                        snapshot.meta_check_table_exists_elapsed_ms;
+                    diagnostic.meta_query_elapsed_ms = snapshot.meta_query_elapsed_ms;
+                    diagnostic.meta_parse_phase_elapsed_ms = snapshot.meta_parse_phase_elapsed_ms;
+                    diagnostic.meta_parse_updated_at_elapsed_ms =
+                        snapshot.meta_parse_updated_at_elapsed_ms;
+                    diagnostic.meta_state_json_bytes_eval_elapsed_ms =
+                        snapshot.meta_state_json_bytes_eval_elapsed_ms;
+                }
+                Ok(ReplayCheckpointRuntimeDbMetaWorkerMessage::Finished(result)) => {
+                    if let Err(error) = result {
+                        return Err(anyhow!(
+                            "runtime-db-only replay checkpoint diagnostic meta worker failed: {error}"
+                        ));
+                    }
+                    diagnostic.diagnostic_meta_substage =
+                        Some(ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::Complete);
+                    diagnostic.meta_total_elapsed_ms =
+                        Some(meta_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+                    diagnostic.diagnostic_load_row_meta_elapsed_ms =
+                        diagnostic.meta_total_elapsed_ms;
+                    diagnostic.diagnostic_total_elapsed_ms =
+                        diagnostic.meta_total_elapsed_ms.unwrap();
+                    diagnostic.diagnostic_stage =
+                        ReplayCheckpointRuntimeDbDiagnosticStage::Complete;
+                    return Ok(diagnostic);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    diagnostic.diagnostic_budget_exhausted = true;
+                    diagnostic.meta_total_elapsed_ms =
+                        Some(meta_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+                    diagnostic.diagnostic_total_elapsed_ms =
+                        diagnostic.meta_total_elapsed_ms.unwrap();
+                    return Ok(diagnostic);
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(anyhow!(
+                        "runtime-db-only replay checkpoint diagnostic meta worker disconnected before returning a result"
+                    ));
+                }
+            }
+        }
+    }
+
     pub fn diagnose_runtime_db_replay_checkpoint_read_only(
         runtime_db_path: &Path,
         mode: ReplayCheckpointRuntimeDbOnlyMode,
@@ -2183,6 +2697,7 @@ impl DiscoveryService {
         let deadline = started_at + StdDuration::from_millis(budget_ms);
         let mut diagnostic = ReplayCheckpointRuntimeDbDiagnostic {
             diagnostic_stage: ReplayCheckpointRuntimeDbDiagnosticStage::OpenDbReadOnly,
+            diagnostic_meta_substage: None,
             diagnostic_budget_exhausted: false,
             diagnostic_skipped_stages: Vec::new(),
             diagnostic_open_db_elapsed_ms: None,
@@ -2191,7 +2706,18 @@ impl DiscoveryService {
             diagnostic_parse_state_elapsed_ms: None,
             diagnostic_classify_blocker_elapsed_ms: None,
             diagnostic_total_elapsed_ms: 0,
-            row_meta: Self::empty_persisted_rebuild_row_meta(),
+            meta_state_json_bytes_requested: matches!(
+                mode,
+                ReplayCheckpointRuntimeDbOnlyMode::RowMeta
+            ),
+            meta_open_db_elapsed_ms: None,
+            meta_check_table_exists_elapsed_ms: None,
+            meta_query_elapsed_ms: None,
+            meta_parse_phase_elapsed_ms: None,
+            meta_parse_updated_at_elapsed_ms: None,
+            meta_state_json_bytes_eval_elapsed_ms: None,
+            meta_total_elapsed_ms: None,
+            row_meta: Self::unknown_persisted_rebuild_row_meta(),
             inspection: None,
             blocker_explanation: None,
         };
@@ -2222,61 +2748,63 @@ impl DiscoveryService {
             diagnostic.diagnostic_skipped_stages =
                 Self::replay_checkpoint_runtime_db_diagnostic_skipped_stages(
                     mode,
-                    false,
+                    None,
                     Some(ReplayCheckpointRuntimeDbDiagnosticStage::OpenDbReadOnly),
                 );
             return Ok(diagnostic);
         };
         diagnostic.diagnostic_open_db_elapsed_ms = Some(open_elapsed_ms);
 
-        let Some((row_meta, row_meta_elapsed_ms)) =
-            Self::replay_checkpoint_runtime_db_diagnostic_stage_timeout(
-                ReplayCheckpointRuntimeDbDiagnosticStage::LoadPersistedRebuildRowMeta,
-                deadline,
-                {
-                    let runtime_db_path = runtime_db_path.clone();
-                    move || {
-                        let store =
-                            SqliteStore::open_read_only(&runtime_db_path).with_context(|| {
-                                format!(
-                                    "failed opening runtime sqlite db read-only {}",
-                                    runtime_db_path.display()
-                                )
-                            })?;
-                        DiscoveryService::inspect_persisted_rebuild_row_meta_read_only(&store)
-                    }
-                },
-            )?
-        else {
-            diagnostic.diagnostic_budget_exhausted = true;
-            diagnostic.diagnostic_stage =
-                ReplayCheckpointRuntimeDbDiagnosticStage::LoadPersistedRebuildRowMeta;
+        let meta_diagnostic = Self::diagnose_runtime_db_replay_checkpoint_row_meta_read_only(
+            &runtime_db_path,
+            deadline,
+            matches!(mode, ReplayCheckpointRuntimeDbOnlyMode::RowMeta),
+        )?;
+        diagnostic.diagnostic_stage = meta_diagnostic.diagnostic_stage;
+        diagnostic.diagnostic_meta_substage = meta_diagnostic.diagnostic_meta_substage;
+        diagnostic.diagnostic_budget_exhausted = meta_diagnostic.diagnostic_budget_exhausted;
+        diagnostic.diagnostic_load_row_meta_elapsed_ms =
+            meta_diagnostic.diagnostic_load_row_meta_elapsed_ms;
+        diagnostic.meta_state_json_bytes_requested =
+            meta_diagnostic.meta_state_json_bytes_requested;
+        diagnostic.meta_open_db_elapsed_ms = meta_diagnostic.meta_open_db_elapsed_ms;
+        diagnostic.meta_check_table_exists_elapsed_ms =
+            meta_diagnostic.meta_check_table_exists_elapsed_ms;
+        diagnostic.meta_query_elapsed_ms = meta_diagnostic.meta_query_elapsed_ms;
+        diagnostic.meta_parse_phase_elapsed_ms = meta_diagnostic.meta_parse_phase_elapsed_ms;
+        diagnostic.meta_parse_updated_at_elapsed_ms =
+            meta_diagnostic.meta_parse_updated_at_elapsed_ms;
+        diagnostic.meta_state_json_bytes_eval_elapsed_ms =
+            meta_diagnostic.meta_state_json_bytes_eval_elapsed_ms;
+        diagnostic.meta_total_elapsed_ms = meta_diagnostic.meta_total_elapsed_ms;
+        diagnostic.row_meta = meta_diagnostic.row_meta.clone();
+
+        if diagnostic.diagnostic_budget_exhausted {
             diagnostic.diagnostic_total_elapsed_ms =
                 started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
             diagnostic.diagnostic_skipped_stages =
                 Self::replay_checkpoint_runtime_db_diagnostic_skipped_stages(
                     mode,
-                    false,
+                    diagnostic.row_meta.persisted_rebuild_row_exists,
                     Some(ReplayCheckpointRuntimeDbDiagnosticStage::LoadPersistedRebuildRowMeta),
                 );
             return Ok(diagnostic);
-        };
-        diagnostic.diagnostic_load_row_meta_elapsed_ms = Some(row_meta_elapsed_ms);
-        diagnostic.row_meta = row_meta.clone();
+        }
 
-        if mode == ReplayCheckpointRuntimeDbOnlyMode::RowMeta {
+        if matches!(
+            mode,
+            ReplayCheckpointRuntimeDbOnlyMode::RowMeta
+                | ReplayCheckpointRuntimeDbOnlyMode::RowMetaLite
+        ) {
             diagnostic.diagnostic_stage = ReplayCheckpointRuntimeDbDiagnosticStage::Complete;
             diagnostic.diagnostic_total_elapsed_ms =
                 started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
-            diagnostic.diagnostic_skipped_stages = vec![
-                ReplayCheckpointRuntimeDbDiagnosticStage::LoadPersistedRebuildRow,
-                ReplayCheckpointRuntimeDbDiagnosticStage::ParsePersistedRebuildState,
-                ReplayCheckpointRuntimeDbDiagnosticStage::ClassifyPublishableCheckpointBlocker,
-            ];
+            diagnostic.diagnostic_skipped_stages =
+                Self::replay_checkpoint_runtime_db_diagnostic_skipped_stages(mode, None, None);
             return Ok(diagnostic);
         }
 
-        if !row_meta.persisted_rebuild_row_exists {
+        if diagnostic.row_meta.persisted_rebuild_row_exists == Some(false) {
             let inspection = Self::empty_persisted_rebuild_state_inspection();
             if mode == ReplayCheckpointRuntimeDbOnlyMode::Inspect {
                 diagnostic.inspection = Some(inspection);
@@ -2288,7 +2816,11 @@ impl DiscoveryService {
             diagnostic.diagnostic_total_elapsed_ms =
                 started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
             diagnostic.diagnostic_skipped_stages =
-                Self::replay_checkpoint_runtime_db_diagnostic_skipped_stages(mode, false, None);
+                Self::replay_checkpoint_runtime_db_diagnostic_skipped_stages(
+                    mode,
+                    Some(false),
+                    None,
+                );
             return Ok(diagnostic);
         }
 
@@ -2323,7 +2855,7 @@ impl DiscoveryService {
             diagnostic.diagnostic_skipped_stages =
                 Self::replay_checkpoint_runtime_db_diagnostic_skipped_stages(
                     mode,
-                    true,
+                    Some(true),
                     Some(ReplayCheckpointRuntimeDbDiagnosticStage::LoadPersistedRebuildRow),
                 );
             return Ok(diagnostic);
@@ -2345,7 +2877,7 @@ impl DiscoveryService {
             diagnostic.diagnostic_skipped_stages =
                 Self::replay_checkpoint_runtime_db_diagnostic_skipped_stages(
                     mode,
-                    true,
+                    Some(true),
                     Some(ReplayCheckpointRuntimeDbDiagnosticStage::ParsePersistedRebuildState),
                 );
             return Ok(diagnostic);
@@ -2370,7 +2902,8 @@ impl DiscoveryService {
                                 ),
                             )
                         }
-                        ReplayCheckpointRuntimeDbOnlyMode::RowMeta => {
+                        ReplayCheckpointRuntimeDbOnlyMode::RowMeta
+                        | ReplayCheckpointRuntimeDbOnlyMode::RowMetaLite => {
                             unreachable!("handled above")
                         }
                     })
@@ -2385,7 +2918,7 @@ impl DiscoveryService {
             diagnostic.diagnostic_skipped_stages =
                 Self::replay_checkpoint_runtime_db_diagnostic_skipped_stages(
                     mode,
-                    true,
+                    Some(true),
                     Some(
                         ReplayCheckpointRuntimeDbDiagnosticStage::ClassifyPublishableCheckpointBlocker,
                     ),
@@ -37846,7 +38379,7 @@ mod tests {
             .load_discovery_persisted_rebuild_state_read_only()?
             .expect("persisted rebuild row should exist");
         let meta = DiscoveryService::inspect_persisted_rebuild_row_meta_read_only(&runtime_store)?;
-        assert!(meta.persisted_rebuild_row_exists);
+        assert_eq!(meta.persisted_rebuild_row_exists, Some(true));
         assert_eq!(meta.persisted_rebuild_row_phase.as_deref(), Some("replay"));
         assert_eq!(
             meta.persisted_rebuild_state_json_bytes,
@@ -37863,14 +38396,60 @@ mod tests {
             ReplayCheckpointRuntimeDbDiagnosticStage::Complete
         );
         assert!(!diagnostic.diagnostic_budget_exhausted);
-        assert!(diagnostic.row_meta.persisted_rebuild_row_exists);
+        assert_eq!(diagnostic.row_meta.persisted_rebuild_row_exists, Some(true));
         assert_eq!(
             diagnostic.row_meta.persisted_rebuild_state_json_bytes,
             Some(stored_row.state_json.len())
         );
         assert!(diagnostic.diagnostic_open_db_elapsed_ms.is_some());
         assert!(diagnostic.diagnostic_load_row_meta_elapsed_ms.is_some());
+        assert!(diagnostic.meta_open_db_elapsed_ms.is_some());
+        assert_eq!(
+            diagnostic.diagnostic_meta_substage,
+            Some(ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::Complete)
+        );
+        assert!(diagnostic.meta_check_table_exists_elapsed_ms.is_some());
+        assert!(diagnostic.meta_query_elapsed_ms.is_some());
+        assert!(diagnostic.meta_parse_phase_elapsed_ms.is_some());
+        assert!(diagnostic.meta_parse_updated_at_elapsed_ms.is_some());
+        assert!(diagnostic.meta_state_json_bytes_eval_elapsed_ms.is_some());
+        assert!(diagnostic.meta_total_elapsed_ms.is_some());
         assert_eq!(diagnostic.diagnostic_load_row_elapsed_ms, None);
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_runtime_db_row_meta_lite_reports_separate_substage_timings_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::diagnose_runtime_db_replay_checkpoint_read_only(
+            Path::new(&runtime_db_path),
+            ReplayCheckpointRuntimeDbOnlyMode::RowMetaLite,
+            30_000,
+        )?;
+        assert_eq!(
+            diagnostic.diagnostic_stage,
+            ReplayCheckpointRuntimeDbDiagnosticStage::Complete
+        );
+        assert_eq!(
+            diagnostic.diagnostic_meta_substage,
+            Some(ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::Complete)
+        );
+        assert!(!diagnostic.diagnostic_budget_exhausted);
+        assert_eq!(diagnostic.row_meta.persisted_rebuild_row_exists, Some(true));
+        assert!(!diagnostic.meta_state_json_bytes_requested);
+        assert!(diagnostic.meta_open_db_elapsed_ms.is_some());
+        assert!(diagnostic.meta_check_table_exists_elapsed_ms.is_some());
+        assert!(diagnostic.meta_query_elapsed_ms.is_some());
+        assert!(diagnostic.meta_parse_phase_elapsed_ms.is_some());
+        assert!(diagnostic.meta_parse_updated_at_elapsed_ms.is_some());
+        assert_eq!(diagnostic.meta_state_json_bytes_eval_elapsed_ms, None);
+        assert!(diagnostic.meta_total_elapsed_ms.is_some());
+        assert_eq!(diagnostic.row_meta.persisted_rebuild_state_json_bytes, None);
         Ok(())
     }
 
@@ -37926,12 +38505,237 @@ mod tests {
             diagnostic.diagnostic_stage,
             ReplayCheckpointRuntimeDbDiagnosticStage::ParsePersistedRebuildState
         );
-        assert!(diagnostic.row_meta.persisted_rebuild_row_exists);
+        assert_eq!(diagnostic.row_meta.persisted_rebuild_row_exists, Some(true));
         assert!(diagnostic.diagnostic_load_row_elapsed_ms.is_some());
         assert_eq!(diagnostic.diagnostic_parse_state_elapsed_ms, None);
         assert!(diagnostic.diagnostic_skipped_stages.contains(
             &ReplayCheckpointRuntimeDbDiagnosticStage::ClassifyPublishableCheckpointBlocker
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_runtime_db_meta_table_exists_budget_exhaustion_reports_exact_substage_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        arm_test_force_replay_checkpoint_diagnose_meta_check_table_exists_delay_ms(1_500);
+        let diagnostic = DiscoveryService::diagnose_runtime_db_replay_checkpoint_read_only(
+            Path::new(&runtime_db_path),
+            ReplayCheckpointRuntimeDbOnlyMode::RowMetaLite,
+            500,
+        )?;
+        assert!(diagnostic.diagnostic_budget_exhausted);
+        assert_eq!(
+            diagnostic.diagnostic_stage,
+            ReplayCheckpointRuntimeDbDiagnosticStage::LoadPersistedRebuildRowMeta
+        );
+        assert_eq!(
+            diagnostic.diagnostic_meta_substage,
+            Some(ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::CheckTableExists)
+        );
+        assert!(diagnostic.meta_open_db_elapsed_ms.is_some());
+        assert_eq!(diagnostic.meta_check_table_exists_elapsed_ms, None);
+        assert_eq!(diagnostic.meta_query_elapsed_ms, None);
+        assert_eq!(diagnostic.row_meta.persisted_rebuild_row_exists, None);
+        assert!(diagnostic.diagnostic_skipped_stages.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_runtime_db_meta_query_does_not_repeat_table_exists_after_outer_check_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        arm_test_force_replay_checkpoint_diagnose_meta_check_table_exists_delay_ms(900);
+        let diagnostic = DiscoveryService::diagnose_runtime_db_replay_checkpoint_read_only(
+            Path::new(&runtime_db_path),
+            ReplayCheckpointRuntimeDbOnlyMode::RowMetaLite,
+            1_300,
+        )?;
+        assert!(!diagnostic.diagnostic_budget_exhausted);
+        assert_eq!(
+            diagnostic.diagnostic_meta_substage,
+            Some(ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::Complete)
+        );
+        assert_eq!(diagnostic.row_meta.persisted_rebuild_row_exists, Some(true));
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_runtime_db_meta_query_budget_exhaustion_reports_exact_substage_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        arm_test_force_replay_checkpoint_diagnose_meta_query_delay_ms(1_500);
+        let diagnostic = DiscoveryService::diagnose_runtime_db_replay_checkpoint_read_only(
+            Path::new(&runtime_db_path),
+            ReplayCheckpointRuntimeDbOnlyMode::RowMetaLite,
+            500,
+        )?;
+        assert!(diagnostic.diagnostic_budget_exhausted);
+        assert_eq!(
+            diagnostic.diagnostic_stage,
+            ReplayCheckpointRuntimeDbDiagnosticStage::LoadPersistedRebuildRowMeta
+        );
+        assert_eq!(
+            diagnostic.diagnostic_meta_substage,
+            Some(ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::QueryRowMeta)
+        );
+        assert!(diagnostic.meta_open_db_elapsed_ms.is_some());
+        assert!(diagnostic.meta_check_table_exists_elapsed_ms.is_some());
+        assert_eq!(diagnostic.meta_query_elapsed_ms, None);
+        assert_eq!(diagnostic.meta_parse_phase_elapsed_ms, None);
+        assert_eq!(diagnostic.row_meta.persisted_rebuild_row_exists, None);
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_runtime_db_meta_parse_phase_budget_exhaustion_reports_exact_substage_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        arm_test_force_replay_checkpoint_diagnose_meta_parse_phase_delay_ms(1_500);
+        let diagnostic = DiscoveryService::diagnose_runtime_db_replay_checkpoint_read_only(
+            Path::new(&runtime_db_path),
+            ReplayCheckpointRuntimeDbOnlyMode::RowMetaLite,
+            500,
+        )?;
+        assert!(diagnostic.diagnostic_budget_exhausted);
+        assert_eq!(
+            diagnostic.diagnostic_stage,
+            ReplayCheckpointRuntimeDbDiagnosticStage::LoadPersistedRebuildRowMeta
+        );
+        assert_eq!(
+            diagnostic.diagnostic_meta_substage,
+            Some(ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::ParsePhase)
+        );
+        assert!(diagnostic.meta_open_db_elapsed_ms.is_some());
+        assert!(diagnostic.meta_check_table_exists_elapsed_ms.is_some());
+        assert!(diagnostic.meta_query_elapsed_ms.is_some());
+        assert_eq!(diagnostic.meta_parse_phase_elapsed_ms, None);
+        assert_eq!(diagnostic.meta_parse_updated_at_elapsed_ms, None);
+        assert_eq!(diagnostic.row_meta.persisted_rebuild_row_exists, Some(true));
+        assert_eq!(diagnostic.row_meta.persisted_rebuild_row_phase, None);
+        assert_eq!(diagnostic.row_meta.persisted_rebuild_row_updated_at, None);
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_runtime_db_meta_parse_updated_at_budget_exhaustion_reports_exact_substage_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        arm_test_force_replay_checkpoint_diagnose_meta_parse_updated_at_delay_ms(1_500);
+        let diagnostic = DiscoveryService::diagnose_runtime_db_replay_checkpoint_read_only(
+            Path::new(&runtime_db_path),
+            ReplayCheckpointRuntimeDbOnlyMode::RowMetaLite,
+            500,
+        )?;
+        assert!(diagnostic.diagnostic_budget_exhausted);
+        assert_eq!(
+            diagnostic.diagnostic_stage,
+            ReplayCheckpointRuntimeDbDiagnosticStage::LoadPersistedRebuildRowMeta
+        );
+        assert_eq!(
+            diagnostic.diagnostic_meta_substage,
+            Some(ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::ParseUpdatedAt)
+        );
+        assert!(diagnostic.meta_open_db_elapsed_ms.is_some());
+        assert!(diagnostic.meta_check_table_exists_elapsed_ms.is_some());
+        assert!(diagnostic.meta_query_elapsed_ms.is_some());
+        assert!(diagnostic.meta_parse_phase_elapsed_ms.is_some());
+        assert_eq!(diagnostic.meta_parse_updated_at_elapsed_ms, None);
+        assert_eq!(diagnostic.row_meta.persisted_rebuild_row_exists, Some(true));
+        assert_eq!(
+            diagnostic.row_meta.persisted_rebuild_row_phase.as_deref(),
+            Some("replay")
+        );
+        assert_eq!(diagnostic.row_meta.persisted_rebuild_row_updated_at, None);
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_runtime_db_meta_size_eval_does_not_repeat_table_exists_after_outer_check_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        arm_test_force_replay_checkpoint_diagnose_meta_check_table_exists_delay_ms(900);
+        let diagnostic = DiscoveryService::diagnose_runtime_db_replay_checkpoint_read_only(
+            Path::new(&runtime_db_path),
+            ReplayCheckpointRuntimeDbOnlyMode::RowMeta,
+            1_300,
+        )?;
+        assert!(!diagnostic.diagnostic_budget_exhausted);
+        assert_eq!(
+            diagnostic.diagnostic_meta_substage,
+            Some(ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::Complete)
+        );
+        assert_eq!(diagnostic.row_meta.persisted_rebuild_row_exists, Some(true));
+        assert!(diagnostic
+            .row_meta
+            .persisted_rebuild_state_json_bytes
+            .is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_runtime_db_meta_size_eval_budget_exhaustion_reports_exact_substage_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        arm_test_force_replay_checkpoint_diagnose_meta_size_eval_delay_ms(1_500);
+        let diagnostic = DiscoveryService::diagnose_runtime_db_replay_checkpoint_read_only(
+            Path::new(&runtime_db_path),
+            ReplayCheckpointRuntimeDbOnlyMode::RowMeta,
+            500,
+        )?;
+        assert!(diagnostic.diagnostic_budget_exhausted);
+        assert_eq!(
+            diagnostic.diagnostic_stage,
+            ReplayCheckpointRuntimeDbDiagnosticStage::LoadPersistedRebuildRowMeta
+        );
+        assert_eq!(
+            diagnostic.diagnostic_meta_substage,
+            Some(ReplayCheckpointRuntimeDbMetaDiagnosticSubstage::EvaluateStateJsonBytes)
+        );
+        assert!(diagnostic.meta_open_db_elapsed_ms.is_some());
+        assert!(diagnostic.meta_check_table_exists_elapsed_ms.is_some());
+        assert!(diagnostic.meta_query_elapsed_ms.is_some());
+        assert!(diagnostic.meta_parse_phase_elapsed_ms.is_some());
+        assert!(diagnostic.meta_parse_updated_at_elapsed_ms.is_some());
+        assert_eq!(diagnostic.meta_state_json_bytes_eval_elapsed_ms, None);
+        assert_eq!(diagnostic.row_meta.persisted_rebuild_row_exists, Some(true));
+        assert_eq!(
+            diagnostic.row_meta.persisted_rebuild_row_phase.as_deref(),
+            Some("replay")
+        );
+        assert!(diagnostic
+            .row_meta
+            .persisted_rebuild_row_updated_at
+            .is_some());
+        assert_eq!(diagnostic.row_meta.persisted_rebuild_state_json_bytes, None);
         Ok(())
     }
 

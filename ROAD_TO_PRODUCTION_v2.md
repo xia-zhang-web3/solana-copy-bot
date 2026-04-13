@@ -8082,6 +8082,27 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
         such as row-missing, open-db-too-slow, load-row-too-slow,
         parse-too-slow, or blocker-classification-too-slow before any
         recent-raw source frontier scan starts
+    - the next accepted correction makes the runtime-db-only meta surface
+      actually exact instead of only looking exact:
+      - it adds one lighter explicit mode:
+        `--inspect-persisted-rebuild-row-meta-lite --runtime-db <path> --json`
+      - the meta path now reports exact meta substages instead of one mixed
+        `load_persisted_rebuild_row_meta` bucket:
+        - `open_db_for_meta_read_only`
+        - `check_table_exists`
+        - `query_row_meta`
+        - `parse_phase`
+        - `parse_updated_at`
+        - `evaluate_state_json_bytes`
+      - the meta worker now keeps one read-only store for those substages, so
+        `query_row_meta` and `evaluate_state_json_bytes` no longer hide extra
+        reopen / duplicate `sqlite_table_exists(...)` work
+      - timeout paths now preserve row existence as unknown when existence has
+        not been proven yet, instead of serializing false “row missing” output
+      - practical result:
+        the next live operator run can distinguish the first exact meta
+        substage on the current runtime DB without hidden reopen work and
+        without false `persisted_rebuild_row_exists=false` output
 
 Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
 

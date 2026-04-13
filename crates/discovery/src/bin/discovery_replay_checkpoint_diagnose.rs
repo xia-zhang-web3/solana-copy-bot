@@ -8,7 +8,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS: u64 = 30_000;
-const USAGE: &str = "usage: discovery_replay_checkpoint_diagnose [--inspect-persisted-rebuild-row-meta | --inspect-persisted-rebuild-state | --explain-publishable-checkpoint-blocker | --compare-sol-leg-source-vs-checkpoint | --explain-replay-sol-leg-incomplete] --runtime-db <path> [--recent-raw-db <path>] [--budget-ms <ms>] [--json]";
+const USAGE: &str = "usage: discovery_replay_checkpoint_diagnose [--inspect-persisted-rebuild-row-meta-lite | --inspect-persisted-rebuild-row-meta | --inspect-persisted-rebuild-state | --explain-publishable-checkpoint-blocker | --compare-sol-leg-source-vs-checkpoint | --explain-replay-sol-leg-incomplete] --runtime-db <path> [--recent-raw-db <path>] [--budget-ms <ms>] [--json]";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -22,6 +22,7 @@ fn main() -> Result<()> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
+    InspectPersistedRebuildRowMetaLite,
     InspectPersistedRebuildRowMeta,
     InspectPersistedRebuildState,
     ExplainPublishableCheckpointBlocker,
@@ -55,6 +56,11 @@ where
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--inspect-persisted-rebuild-row-meta-lite" => set_mode(
+                &mut mode,
+                Mode::InspectPersistedRebuildRowMetaLite,
+                arg.as_str(),
+            )?,
             "--inspect-persisted-rebuild-row-meta" => set_mode(
                 &mut mode,
                 Mode::InspectPersistedRebuildRowMeta,
@@ -173,6 +179,10 @@ fn render_runtime_db_diagnostic_json(
         Value::Bool(diagnostic.diagnostic_budget_exhausted),
     );
     map.insert(
+        "diagnostic_meta_substage".to_string(),
+        serde_json::to_value(diagnostic.diagnostic_meta_substage)?,
+    );
+    map.insert(
         "diagnostic_skipped_stages".to_string(),
         serde_json::to_value(&diagnostic.diagnostic_skipped_stages)?,
     );
@@ -200,6 +210,38 @@ fn render_runtime_db_diagnostic_json(
         "diagnostic_total_elapsed_ms".to_string(),
         Value::Number(diagnostic.diagnostic_total_elapsed_ms.into()),
     );
+    map.insert(
+        "meta_state_json_bytes_requested".to_string(),
+        Value::Bool(diagnostic.meta_state_json_bytes_requested),
+    );
+    map.insert(
+        "meta_open_db_elapsed_ms".to_string(),
+        serde_json::to_value(diagnostic.meta_open_db_elapsed_ms)?,
+    );
+    map.insert(
+        "meta_check_table_exists_elapsed_ms".to_string(),
+        serde_json::to_value(diagnostic.meta_check_table_exists_elapsed_ms)?,
+    );
+    map.insert(
+        "meta_query_elapsed_ms".to_string(),
+        serde_json::to_value(diagnostic.meta_query_elapsed_ms)?,
+    );
+    map.insert(
+        "meta_parse_phase_elapsed_ms".to_string(),
+        serde_json::to_value(diagnostic.meta_parse_phase_elapsed_ms)?,
+    );
+    map.insert(
+        "meta_parse_updated_at_elapsed_ms".to_string(),
+        serde_json::to_value(diagnostic.meta_parse_updated_at_elapsed_ms)?,
+    );
+    map.insert(
+        "meta_state_json_bytes_eval_elapsed_ms".to_string(),
+        serde_json::to_value(diagnostic.meta_state_json_bytes_eval_elapsed_ms)?,
+    );
+    map.insert(
+        "meta_total_elapsed_ms".to_string(),
+        serde_json::to_value(diagnostic.meta_total_elapsed_ms)?,
+    );
     flatten_json_value(&mut map, serde_json::to_value(&diagnostic.row_meta)?)?;
     if let Some(inspection) = &diagnostic.inspection {
         flatten_json_value(&mut map, serde_json::to_value(inspection)?)?;
@@ -212,6 +254,13 @@ fn render_runtime_db_diagnostic_json(
 
 fn run(config: Config) -> Result<String> {
     let output = match config.mode {
+        Mode::InspectPersistedRebuildRowMetaLite => render_runtime_db_diagnostic_json(
+            &DiscoveryService::diagnose_runtime_db_replay_checkpoint_read_only(
+                &config.runtime_db,
+                ReplayCheckpointRuntimeDbOnlyMode::RowMetaLite,
+                config.budget_ms,
+            )?,
+        )?,
         Mode::InspectPersistedRebuildRowMeta => render_runtime_db_diagnostic_json(
             &DiscoveryService::diagnose_runtime_db_replay_checkpoint_read_only(
                 &config.runtime_db,
@@ -295,8 +344,8 @@ mod tests {
     #[test]
     fn parse_args_rejects_multiple_mode_flags_stage1() -> Result<()> {
         let error = parse_args_from([
+            "--inspect-persisted-rebuild-row-meta-lite".to_string(),
             "--inspect-persisted-rebuild-row-meta".to_string(),
-            "--inspect-persisted-rebuild-state".to_string(),
             "--runtime-db".to_string(),
             "runtime.sqlite".to_string(),
         ])
@@ -310,7 +359,7 @@ mod tests {
     #[test]
     fn parse_args_accepts_budget_ms_stage1() -> Result<()> {
         let config = parse_args_from([
-            "--inspect-persisted-rebuild-row-meta".to_string(),
+            "--inspect-persisted-rebuild-row-meta-lite".to_string(),
             "--runtime-db".to_string(),
             "runtime.sqlite".to_string(),
             "--budget-ms".to_string(),
@@ -318,12 +367,35 @@ mod tests {
         ])?
         .expect("config should parse");
         assert_eq!(config.budget_ms, 123);
+        assert_eq!(config.mode, Mode::InspectPersistedRebuildRowMetaLite);
+        Ok(())
+    }
+
+    #[test]
+    fn run_replay_row_meta_lite_reports_missing_checkpoint_json_stage1() -> Result<()> {
+        let (_temp, runtime_db) = make_test_store("diagnose-meta-runtime.sqlite")?;
+        let output = run(Config {
+            mode: Mode::InspectPersistedRebuildRowMetaLite,
+            runtime_db,
+            recent_raw_db: None,
+            json: true,
+            budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+        })?;
+        let json: serde_json::Value =
+            serde_json::from_str(&output).context("invalid json output")?;
+        assert_eq!(json["persisted_rebuild_row_exists"], false);
+        assert_eq!(json["diagnostic_budget_exhausted"], false);
+        assert_eq!(json["diagnostic_stage"], "complete");
+        assert_eq!(json["meta_state_json_bytes_requested"], false);
+        assert!(json["meta_check_table_exists_elapsed_ms"].is_number());
+        assert!(json["meta_total_elapsed_ms"].is_number());
+        assert!(json["persisted_rebuild_state_json_bytes"].is_null());
         Ok(())
     }
 
     #[test]
     fn run_replay_row_meta_reports_missing_checkpoint_json_stage1() -> Result<()> {
-        let (_temp, runtime_db) = make_test_store("diagnose-meta-runtime.sqlite")?;
+        let (_temp, runtime_db) = make_test_store("diagnose-meta-with-size-runtime.sqlite")?;
         let output = run(Config {
             mode: Mode::InspectPersistedRebuildRowMeta,
             runtime_db,
@@ -336,6 +408,7 @@ mod tests {
         assert_eq!(json["persisted_rebuild_row_exists"], false);
         assert_eq!(json["diagnostic_budget_exhausted"], false);
         assert_eq!(json["diagnostic_stage"], "complete");
+        assert_eq!(json["meta_state_json_bytes_requested"], true);
         Ok(())
     }
 
