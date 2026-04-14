@@ -8442,6 +8442,49 @@ Acceptance update, recent_raw promotion blocker proof surface (`2026-04-14`):
    - it does not itself promote staged recent_raw state
    - it does not itself unblock Stage 3
 
+Acceptance update, recent_raw catch-up status proof surface (`2026-04-14`):
+
+1. Stage 3 now has one bounded read-only operator surface for the current
+   recent_raw catch-up status:
+   - `discovery_runtime_export --explain-recent-raw-catch-up-status --state-root <path> --json`
+2. The accepted surface stays on the primary path and reuses the same current
+   read-only evidence model:
+   - promoted latest manifest
+   - staged manifest
+   - current source recent_raw journal state
+   - runtime DB / WAL metadata
+3. The accepted machine-readable contract is explicit:
+   - it emits source-vs-staged and source-vs-promoted lag
+   - it emits whether staged is ahead of promoted on current on-disk evidence
+   - it emits whether staged last-batch completion is newer than promoted
+   - it classifies current status as:
+     `recent_raw_catch_up_progressing_but_not_caught_up`,
+     `recent_raw_catch_up_stalled`,
+     `recent_raw_catch_up_losing_to_source`,
+     `recent_raw_catch_up_caught_up`, or
+     `recent_raw_catch_up_unproven_due_to_missing_evidence`
+4. Practical meaning:
+   - one operator run can now prove whether the current accumulation path is
+     catching up, stalled, already caught up, or structurally losing ground
+     under current observed state
+   - this turns the primary recent_raw recovery question into one bounded proof
+     command instead of another synthetic timing investigation
+5. Acceptance stayed proof-only:
+   - no snapshot behavior changed
+   - no promotion behavior changed
+   - no replay/export/fail-closed semantics changed
+6. Acceptance stayed on the bounded discovery/runtime-export surface:
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+7. Current production status remains unchanged until a live operator run is
+   taken:
+   - this batch adds proof tooling only
+   - it does not itself accelerate catch-up
+   - it does not itself unblock Stage 3
+   - the next operator step is to run the new catch-up command on the real host
+
 Acceptance update, shared-ordering diff contract downgrade (`2026-04-14`):
 
 1. Stage 3 now has one more bounded read-only diagnostic surface for the

@@ -2340,6 +2340,55 @@ pub struct RecentRawPromotionBlockerDiagnostic {
     pub recent_raw_stage3_current_fresh_healthy_evidence_possible: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawCatchUpReasonClass {
+    RecentRawCatchUpProgressingButNotCaughtUp,
+    RecentRawCatchUpStalled,
+    RecentRawCatchUpLosingToSource,
+    RecentRawCatchUpCaughtUp,
+    RecentRawCatchUpUnprovenDueToMissingEvidence,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentRawCatchUpDiagnostic {
+    pub recent_raw_snapshot_dir: String,
+    pub recent_raw_catch_up_status_observed: bool,
+    pub recent_raw_catch_up_reason_class: RecentRawCatchUpReasonClass,
+    pub recent_raw_catch_up_explanation: String,
+    pub recent_raw_promoted_exists: bool,
+    pub recent_raw_promoted_created_at: Option<DateTime<Utc>>,
+    pub recent_raw_promoted_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_promoted_row_count: Option<usize>,
+    pub recent_raw_promoted_last_batch_completed_at: Option<DateTime<Utc>>,
+    pub recent_raw_staged_exists: bool,
+    pub recent_raw_staged_created_at: Option<DateTime<Utc>>,
+    pub recent_raw_staged_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_staged_row_count: Option<usize>,
+    pub recent_raw_staged_last_batch_completed_at: Option<DateTime<Utc>>,
+    pub recent_raw_staged_advancing: Option<bool>,
+    pub recent_raw_staged_ahead_of_promoted: Option<bool>,
+    pub recent_raw_staged_last_batch_completed_at_newer_than_promoted: Option<bool>,
+    pub recent_raw_source_state_available: bool,
+    pub recent_raw_source_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_source_row_count: Option<usize>,
+    pub recent_raw_source_last_batch_completed_at: Option<DateTime<Utc>>,
+    pub recent_raw_runtime_db_path: Option<String>,
+    pub recent_raw_runtime_db_size_bytes: Option<u64>,
+    pub recent_raw_runtime_db_mtime: Option<String>,
+    pub recent_raw_runtime_db_wal_present: bool,
+    pub recent_raw_runtime_db_wal_size_bytes: Option<u64>,
+    pub recent_raw_source_vs_staged_row_lag: Option<u64>,
+    pub recent_raw_source_vs_promoted_row_lag: Option<u64>,
+    pub recent_raw_source_vs_staged_time_lag_seconds: Option<u64>,
+    pub recent_raw_source_vs_promoted_time_lag_seconds: Option<u64>,
+    pub recent_raw_staged_vs_promoted_row_delta: Option<i64>,
+    pub recent_raw_staged_vs_promoted_time_delta_seconds: Option<i64>,
+    pub recent_raw_catch_up_progressing: bool,
+    pub recent_raw_catch_up_losing_to_source: bool,
+    pub recent_raw_catch_up_indeterminate: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct RecentRawPromotionSnapshotManifest {
     created_at: DateTime<Utc>,
@@ -2359,6 +2408,32 @@ struct RecentRawSurfaceRead {
     metadata_present: bool,
     manifest: Option<RecentRawPromotionSnapshotManifest>,
     manifest_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecentRawManifestProgressRelation {
+    CandidateAhead,
+    ReferenceAhead,
+    Equivalent,
+}
+
+#[derive(Debug, Clone)]
+struct RecentRawDiagnosticState {
+    snapshot_dir: PathBuf,
+    promoted: RecentRawSurfaceRead,
+    staged: RecentRawSurfaceRead,
+    promoted_exists: bool,
+    staged_exists: bool,
+    runtime_db_path: Option<String>,
+    runtime_db_size_bytes: Option<u64>,
+    runtime_db_mtime: Option<String>,
+    runtime_db_wal_present: bool,
+    runtime_db_wal_size_bytes: Option<u64>,
+    source_state: Option<RecentRawJournalStateRow>,
+    source_state_available: bool,
+    source_outruns_promoted: Option<bool>,
+    source_outruns_staged: Option<bool>,
+    staged_vs_promoted_relation: Option<RecentRawManifestProgressRelation>,
 }
 
 #[derive(Debug, Clone)]
@@ -2867,16 +2942,26 @@ impl DiscoveryService {
         false
     }
 
-    fn recent_raw_manifest_newer_than_promoted(
-        staged: &RecentRawPromotionSnapshotManifest,
-        promoted: &RecentRawPromotionSnapshotManifest,
-    ) -> Option<bool> {
-        if staged.source_db_path != promoted.source_db_path {
+    fn recent_raw_manifest_progress_relation(
+        candidate: &RecentRawPromotionSnapshotManifest,
+        reference: &RecentRawPromotionSnapshotManifest,
+    ) -> Option<RecentRawManifestProgressRelation> {
+        if candidate.source_db_path != reference.source_db_path {
             return None;
         }
-        let staged_outruns_promoted = Self::recent_raw_manifest_outruns_reference(staged, promoted);
-        let promoted_outruns_staged = Self::recent_raw_manifest_outruns_reference(promoted, staged);
-        Some(staged_outruns_promoted && !promoted_outruns_staged)
+        let candidate_outruns_reference =
+            Self::recent_raw_manifest_outruns_reference(candidate, reference);
+        let reference_outruns_candidate =
+            Self::recent_raw_manifest_outruns_reference(reference, candidate);
+        Some(
+            if candidate_outruns_reference && !reference_outruns_candidate {
+                RecentRawManifestProgressRelation::CandidateAhead
+            } else if reference_outruns_candidate && !candidate_outruns_reference {
+                RecentRawManifestProgressRelation::ReferenceAhead
+            } else {
+                RecentRawManifestProgressRelation::Equivalent
+            },
+        )
     }
 
     fn recent_raw_runtime_db_file_metadata(
@@ -3022,6 +3107,144 @@ impl DiscoveryService {
         })
     }
 
+    fn load_recent_raw_diagnostic_state_read_only(state_root: &Path) -> RecentRawDiagnosticState {
+        let snapshot_dir = Self::recent_raw_snapshot_dir_for_state_root(state_root);
+        let promoted_snapshot_path = runtime_restore_ops::journal_snapshot_latest_path(&snapshot_dir);
+        let promoted_metadata_path =
+            runtime_restore_ops::journal_snapshot_latest_metadata_path(&snapshot_dir);
+        let staged_snapshot_path = Self::recent_raw_staged_snapshot_path(&snapshot_dir);
+        let staged_metadata_path = Self::recent_raw_staged_metadata_path(&snapshot_dir);
+
+        let promoted = Self::read_recent_raw_surface_manifest(
+            &promoted_snapshot_path,
+            &promoted_metadata_path,
+        );
+        let staged =
+            Self::read_recent_raw_surface_manifest(&staged_snapshot_path, &staged_metadata_path);
+        let promoted_exists = promoted.manifest.is_some();
+        let staged_exists = staged.manifest.is_some();
+
+        let preferred_source_path = staged
+            .manifest
+            .as_ref()
+            .map(|manifest| PathBuf::from(&manifest.source_db_path))
+            .or_else(|| {
+                promoted
+                    .manifest
+                    .as_ref()
+                    .map(|manifest| PathBuf::from(&manifest.source_db_path))
+            });
+
+        let (
+            runtime_db_path,
+            runtime_db_size_bytes,
+            runtime_db_mtime,
+            runtime_db_wal_present,
+            runtime_db_wal_size_bytes,
+        ) = if let Some(path) = preferred_source_path.as_ref() {
+            let (size_bytes, mtime, wal_present, wal_size_bytes) =
+                Self::recent_raw_runtime_db_file_metadata(path);
+            (
+                Some(path.display().to_string()),
+                size_bytes,
+                mtime,
+                wal_present,
+                wal_size_bytes,
+            )
+        } else {
+            (None, None, None, false, None)
+        };
+
+        let source_state = preferred_source_path
+            .as_ref()
+            .and_then(|path| Self::load_recent_raw_source_state_read_only(path).ok());
+        let source_state_available = source_state.is_some();
+        let source_outruns_promoted = source_state.as_ref().and_then(|source_state| {
+            promoted
+                .manifest
+                .as_ref()
+                .map(|manifest| Self::recent_raw_source_outruns_manifest(source_state, manifest))
+        });
+        let source_outruns_staged = source_state.as_ref().and_then(|source_state| {
+            staged
+                .manifest
+                .as_ref()
+                .map(|manifest| Self::recent_raw_source_outruns_manifest(source_state, manifest))
+        });
+        let staged_vs_promoted_relation =
+            match (staged.manifest.as_ref(), promoted.manifest.as_ref()) {
+                (Some(staged_manifest), Some(promoted_manifest)) => {
+                    Self::recent_raw_manifest_progress_relation(staged_manifest, promoted_manifest)
+                }
+                _ => None,
+            };
+
+        RecentRawDiagnosticState {
+            snapshot_dir,
+            promoted,
+            staged,
+            promoted_exists,
+            staged_exists,
+            runtime_db_path,
+            runtime_db_size_bytes,
+            runtime_db_mtime,
+            runtime_db_wal_present,
+            runtime_db_wal_size_bytes,
+            source_state,
+            source_state_available,
+            source_outruns_promoted,
+            source_outruns_staged,
+            staged_vs_promoted_relation,
+        }
+    }
+
+    fn recent_raw_nonnegative_row_lag(
+        source_row_count: Option<usize>,
+        reference_row_count: Option<usize>,
+    ) -> Option<u64> {
+        Some(source_row_count?.saturating_sub(reference_row_count?) as u64)
+    }
+
+    fn recent_raw_nonnegative_cursor_time_lag_seconds(
+        source_cursor: Option<&DiscoveryRuntimeCursor>,
+        reference_cursor: Option<&DiscoveryRuntimeCursor>,
+    ) -> Option<u64> {
+        let seconds = source_cursor?
+            .ts_utc
+            .signed_duration_since(reference_cursor?.ts_utc)
+            .num_seconds();
+        Some(seconds.max(0) as u64)
+    }
+
+    fn recent_raw_signed_row_delta(
+        candidate_row_count: Option<usize>,
+        reference_row_count: Option<usize>,
+    ) -> Option<i64> {
+        let candidate = i128::try_from(candidate_row_count?).ok()?;
+        let reference = i128::try_from(reference_row_count?).ok()?;
+        let delta = candidate - reference;
+        Some(delta.clamp(i64::MIN as i128, i64::MAX as i128) as i64)
+    }
+
+    fn recent_raw_signed_cursor_time_delta_seconds(
+        candidate_cursor: Option<&DiscoveryRuntimeCursor>,
+        reference_cursor: Option<&DiscoveryRuntimeCursor>,
+    ) -> Option<i64> {
+        Some(
+            candidate_cursor?
+                .ts_utc
+                .signed_duration_since(reference_cursor?.ts_utc)
+                .num_seconds(),
+        )
+    }
+
+    fn recent_raw_optional_ts_newer_than(
+        candidate: Option<&DateTime<Utc>>,
+        reference: Option<&DateTime<Utc>>,
+    ) -> Option<bool> {
+        Some(candidate? > reference?)
+    }
+
     fn classify_recent_raw_promotion_blocker(
         promoted: &RecentRawSurfaceRead,
         staged: &RecentRawSurfaceRead,
@@ -3146,168 +3369,353 @@ impl DiscoveryService {
         )
     }
 
+    fn classify_recent_raw_catch_up_status(
+        state: &RecentRawDiagnosticState,
+    ) -> (
+        RecentRawCatchUpReasonClass,
+        bool,
+        bool,
+        bool,
+        bool,
+        String,
+    ) {
+        if state.promoted.manifest_error.is_some() || state.staged.manifest_error.is_some() {
+            return (
+                RecentRawCatchUpReasonClass::RecentRawCatchUpUnprovenDueToMissingEvidence,
+                false,
+                false,
+                false,
+                true,
+                format!(
+                    "recent_raw catch-up status is unproven because one or more snapshot surfaces are partial or invalid (promoted_error={}, staged_error={})",
+                    state.promoted.manifest_error.as_deref().unwrap_or("null"),
+                    state.staged.manifest_error.as_deref().unwrap_or("null")
+                ),
+            );
+        }
+
+        if !state.source_state_available {
+            return (
+                RecentRawCatchUpReasonClass::RecentRawCatchUpUnprovenDueToMissingEvidence,
+                false,
+                false,
+                false,
+                true,
+                "recent_raw catch-up status is unproven because the current source recent_raw journal state could not be proven read-only from the runtime db".to_string(),
+            );
+        }
+
+        if state.staged_exists {
+            match state.source_outruns_staged {
+                Some(false) => {
+                    return (
+                        RecentRawCatchUpReasonClass::RecentRawCatchUpCaughtUp,
+                        true,
+                        false,
+                        false,
+                        false,
+                        "recent_raw staged surface currently covers the same source journal frontier, so accumulation is caught up under current on-disk evidence".to_string(),
+                    )
+                }
+                Some(true) => match state.staged_vs_promoted_relation {
+                    Some(RecentRawManifestProgressRelation::CandidateAhead) => {
+                        return (
+                            RecentRawCatchUpReasonClass::RecentRawCatchUpProgressingButNotCaughtUp,
+                            true,
+                            true,
+                            false,
+                            false,
+                            "recent_raw staged surface is ahead of the promoted latest surface but still behind the current source journal frontier, so catch-up is progressing but not yet caught up".to_string(),
+                        )
+                    }
+                    Some(RecentRawManifestProgressRelation::Equivalent) => {
+                        return (
+                            RecentRawCatchUpReasonClass::RecentRawCatchUpStalled,
+                            true,
+                            false,
+                            false,
+                            false,
+                            "recent_raw staged surface is not ahead of the promoted latest surface while the source journal is still ahead of both, so current catch-up evidence is stalled".to_string(),
+                        )
+                    }
+                    Some(RecentRawManifestProgressRelation::ReferenceAhead) => {
+                        return (
+                            RecentRawCatchUpReasonClass::RecentRawCatchUpLosingToSource,
+                            true,
+                            false,
+                            true,
+                            false,
+                            "recent_raw staged surface is still behind the already promoted latest surface while the source journal is ahead of both, so the current accumulation path is losing ground under observed state".to_string(),
+                        )
+                    }
+                    None => {
+                        return (
+                            RecentRawCatchUpReasonClass::RecentRawCatchUpUnprovenDueToMissingEvidence,
+                            false,
+                            false,
+                            false,
+                            true,
+                            "recent_raw staged surface is behind the current source journal frontier, but its progression relative to the promoted latest surface could not be proven from current artifacts".to_string(),
+                        )
+                    }
+                },
+                None => {}
+            }
+        } else if state.source_outruns_promoted == Some(false) {
+            return (
+                RecentRawCatchUpReasonClass::RecentRawCatchUpCaughtUp,
+                true,
+                false,
+                false,
+                false,
+                "recent_raw promoted latest surface already matches the current source journal frontier, so no staged catch-up is required on this run".to_string(),
+            );
+        } else if state.source_outruns_promoted == Some(true) {
+            return (
+                RecentRawCatchUpReasonClass::RecentRawCatchUpStalled,
+                true,
+                false,
+                false,
+                false,
+                "recent_raw promoted latest surface is behind the current source journal frontier and no staged surface is available to show forward accumulation, so catch-up is currently stalled".to_string(),
+            );
+        }
+
+        (
+            RecentRawCatchUpReasonClass::RecentRawCatchUpUnprovenDueToMissingEvidence,
+            false,
+            false,
+            false,
+            true,
+            "recent_raw catch-up status could not be proven from the currently available promoted, staged, and source artifacts".to_string(),
+        )
+    }
+
     pub fn explain_recent_raw_promotion_blocker_read_only(
         state_root: &Path,
     ) -> Result<RecentRawPromotionBlockerDiagnostic> {
-        let snapshot_dir = Self::recent_raw_snapshot_dir_for_state_root(state_root);
-        let promoted_snapshot_path = runtime_restore_ops::journal_snapshot_latest_path(&snapshot_dir);
-        let promoted_metadata_path =
-            runtime_restore_ops::journal_snapshot_latest_metadata_path(&snapshot_dir);
-        let staged_snapshot_path = Self::recent_raw_staged_snapshot_path(&snapshot_dir);
-        let staged_metadata_path = Self::recent_raw_staged_metadata_path(&snapshot_dir);
-
-        let promoted = Self::read_recent_raw_surface_manifest(
-            &promoted_snapshot_path,
-            &promoted_metadata_path,
-        );
-        let staged =
-            Self::read_recent_raw_surface_manifest(&staged_snapshot_path, &staged_metadata_path);
-        let promoted_exists = promoted.manifest.is_some();
-        let staged_exists = staged.manifest.is_some();
-
-        let preferred_source_path = staged
-            .manifest
-            .as_ref()
-            .map(|manifest| PathBuf::from(&manifest.source_db_path))
-            .or_else(|| {
-                promoted
-                    .manifest
-                    .as_ref()
-                    .map(|manifest| PathBuf::from(&manifest.source_db_path))
-            });
-
-        let (
-            runtime_db_path,
-            runtime_db_size_bytes,
-            runtime_db_mtime,
-            runtime_db_wal_present,
-            runtime_db_wal_size_bytes,
-        ) = if let Some(path) = preferred_source_path.as_ref() {
-            let (size_bytes, mtime, wal_present, wal_size_bytes) =
-                Self::recent_raw_runtime_db_file_metadata(path);
-            (
-                Some(path.display().to_string()),
-                size_bytes,
-                mtime,
-                wal_present,
-                wal_size_bytes,
-            )
-        } else {
-            (None, None, None, false, None)
-        };
-
-        let source_state = if let Some(path) = preferred_source_path.as_ref() {
-            Self::load_recent_raw_source_state_read_only(path).ok()
-        } else {
-            None
-        };
-        let source_state_available = source_state.is_some();
-        let source_outruns_promoted = source_state.as_ref().and_then(|source_state| {
-            promoted
-                .manifest
-                .as_ref()
-                .map(|manifest| Self::recent_raw_source_outruns_manifest(source_state, manifest))
-        });
-        let source_outruns_staged = source_state.as_ref().and_then(|source_state| {
-            staged
-                .manifest
-                .as_ref()
-                .map(|manifest| Self::recent_raw_source_outruns_manifest(source_state, manifest))
-        });
-        let staged_newer_than_promoted = match (staged.manifest.as_ref(), promoted.manifest.as_ref())
-        {
-            (Some(staged_manifest), Some(promoted_manifest)) => {
-                Self::recent_raw_manifest_newer_than_promoted(staged_manifest, promoted_manifest)
-            }
-            _ => None,
+        let state = Self::load_recent_raw_diagnostic_state_read_only(state_root);
+        let staged_newer_than_promoted = match state.staged_vs_promoted_relation {
+            Some(RecentRawManifestProgressRelation::CandidateAhead) => Some(true),
+            Some(
+                RecentRawManifestProgressRelation::ReferenceAhead
+                | RecentRawManifestProgressRelation::Equivalent,
+            ) => Some(false),
+            None => None,
         };
 
         let (reason_class, blocker_observed, ready_now, explanation) =
             Self::classify_recent_raw_promotion_blocker(
-                &promoted,
-                &staged,
-                promoted_exists,
-                staged_exists,
-                source_state_available,
-                source_outruns_promoted,
-                source_outruns_staged,
+                &state.promoted,
+                &state.staged,
+                state.promoted_exists,
+                state.staged_exists,
+                state.source_state_available,
+                state.source_outruns_promoted,
+                state.source_outruns_staged,
                 staged_newer_than_promoted,
             );
 
-        let promoted_current = promoted_exists && source_outruns_promoted == Some(false);
+        let promoted_current =
+            state.promoted_exists && state.source_outruns_promoted == Some(false);
         Ok(RecentRawPromotionBlockerDiagnostic {
-            recent_raw_snapshot_dir: snapshot_dir.display().to_string(),
+            recent_raw_snapshot_dir: state.snapshot_dir.display().to_string(),
             recent_raw_promotion_blocker_observed: blocker_observed,
             recent_raw_promotion_ready_now: ready_now,
             recent_raw_promotion_reason_class: reason_class,
             recent_raw_promotion_explanation: explanation,
-            recent_raw_promoted_exists: promoted_exists,
-            recent_raw_promoted_snapshot_present: promoted.snapshot_present,
-            recent_raw_promoted_metadata_present: promoted.metadata_present,
-            recent_raw_promoted_created_at: promoted
+            recent_raw_promoted_exists: state.promoted_exists,
+            recent_raw_promoted_snapshot_present: state.promoted.snapshot_present,
+            recent_raw_promoted_metadata_present: state.promoted.metadata_present,
+            recent_raw_promoted_created_at: state
+                .promoted
                 .manifest
                 .as_ref()
                 .map(|manifest| manifest.created_at.clone()),
-            recent_raw_promoted_covered_since: promoted
+            recent_raw_promoted_covered_since: state
+                .promoted
                 .manifest
                 .as_ref()
                 .and_then(|manifest| manifest.covered_since.clone()),
-            recent_raw_promoted_covered_through: promoted
+            recent_raw_promoted_covered_through: state
+                .promoted
                 .manifest
                 .as_ref()
                 .and_then(|manifest| manifest.covered_through_cursor.clone()),
-            recent_raw_promoted_row_count: promoted
+            recent_raw_promoted_row_count: state
+                .promoted
                 .manifest
                 .as_ref()
                 .map(|manifest| manifest.row_count),
-            recent_raw_promoted_last_batch_completed_at: promoted
+            recent_raw_promoted_last_batch_completed_at: state
+                .promoted
                 .manifest
                 .as_ref()
                 .and_then(|manifest| manifest.last_batch_completed_at.clone()),
-            recent_raw_staged_exists: staged_exists,
-            recent_raw_staged_snapshot_present: staged.snapshot_present,
-            recent_raw_staged_metadata_present: staged.metadata_present,
-            recent_raw_staged_created_at: staged
+            recent_raw_staged_exists: state.staged_exists,
+            recent_raw_staged_snapshot_present: state.staged.snapshot_present,
+            recent_raw_staged_metadata_present: state.staged.metadata_present,
+            recent_raw_staged_created_at: state
+                .staged
                 .manifest
                 .as_ref()
                 .map(|manifest| manifest.created_at.clone()),
-            recent_raw_staged_covered_since: staged
+            recent_raw_staged_covered_since: state
+                .staged
                 .manifest
                 .as_ref()
                 .and_then(|manifest| manifest.covered_since.clone()),
-            recent_raw_staged_covered_through: staged
+            recent_raw_staged_covered_through: state
+                .staged
                 .manifest
                 .as_ref()
                 .and_then(|manifest| manifest.covered_through_cursor.clone()),
-            recent_raw_staged_row_count: staged
+            recent_raw_staged_row_count: state
+                .staged
                 .manifest
                 .as_ref()
                 .map(|manifest| manifest.row_count),
-            recent_raw_staged_last_batch_completed_at: staged
+            recent_raw_staged_last_batch_completed_at: state
+                .staged
                 .manifest
                 .as_ref()
                 .and_then(|manifest| manifest.last_batch_completed_at.clone()),
             recent_raw_staged_newer_than_promoted: staged_newer_than_promoted,
-            recent_raw_runtime_db_path: runtime_db_path,
-            recent_raw_runtime_db_size_bytes: runtime_db_size_bytes,
-            recent_raw_runtime_db_mtime: runtime_db_mtime,
-            recent_raw_runtime_db_wal_present: runtime_db_wal_present,
-            recent_raw_runtime_db_wal_size_bytes: runtime_db_wal_size_bytes,
-            recent_raw_source_state_available: source_state_available,
-            recent_raw_source_row_count: source_state.as_ref().map(|state| state.row_count),
-            recent_raw_source_covered_since: source_state
+            recent_raw_runtime_db_path: state.runtime_db_path,
+            recent_raw_runtime_db_size_bytes: state.runtime_db_size_bytes,
+            recent_raw_runtime_db_mtime: state.runtime_db_mtime,
+            recent_raw_runtime_db_wal_present: state.runtime_db_wal_present,
+            recent_raw_runtime_db_wal_size_bytes: state.runtime_db_wal_size_bytes,
+            recent_raw_source_state_available: state.source_state_available,
+            recent_raw_source_row_count: state.source_state.as_ref().map(|state| state.row_count),
+            recent_raw_source_covered_since: state
+                .source_state
                 .as_ref()
                 .and_then(|state| state.covered_since.clone()),
-            recent_raw_source_covered_through: source_state
+            recent_raw_source_covered_through: state
+                .source_state
                 .as_ref()
                 .and_then(|state| state.covered_through_cursor.clone()),
-            recent_raw_source_last_batch_completed_at: source_state
+            recent_raw_source_last_batch_completed_at: state
+                .source_state
                 .as_ref()
                 .and_then(|state| state.last_batch_completed_at.clone()),
-            recent_raw_source_outruns_staged: source_outruns_staged,
-            recent_raw_source_outruns_promoted: source_outruns_promoted,
+            recent_raw_source_outruns_staged: state.source_outruns_staged,
+            recent_raw_source_outruns_promoted: state.source_outruns_promoted,
             recent_raw_stage3_truth_blocked_by_promotion: !promoted_current,
             recent_raw_stage3_current_fresh_healthy_evidence_possible: promoted_current,
+        })
+    }
+
+    pub fn explain_recent_raw_catch_up_status_read_only(
+        state_root: &Path,
+    ) -> Result<RecentRawCatchUpDiagnostic> {
+        let state = Self::load_recent_raw_diagnostic_state_read_only(state_root);
+        let promoted_manifest = state.promoted.manifest.as_ref();
+        let staged_manifest = state.staged.manifest.as_ref();
+        let source_state = state.source_state.as_ref();
+        let staged_ahead_of_promoted = match state.staged_vs_promoted_relation {
+            Some(RecentRawManifestProgressRelation::CandidateAhead) => Some(true),
+            Some(
+                RecentRawManifestProgressRelation::ReferenceAhead
+                | RecentRawManifestProgressRelation::Equivalent,
+            ) => Some(false),
+            None => None,
+        };
+        let staged_advancing = match state.staged_vs_promoted_relation {
+            Some(RecentRawManifestProgressRelation::CandidateAhead) => Some(true),
+            Some(
+                RecentRawManifestProgressRelation::ReferenceAhead
+                | RecentRawManifestProgressRelation::Equivalent,
+            ) => Some(false),
+            None => None,
+        };
+        let staged_last_batch_completed_at_newer_than_promoted = Self::recent_raw_optional_ts_newer_than(
+            staged_manifest.and_then(|manifest| manifest.last_batch_completed_at.as_ref()),
+            promoted_manifest.and_then(|manifest| manifest.last_batch_completed_at.as_ref()),
+        );
+
+        let source_vs_staged_row_lag = Self::recent_raw_nonnegative_row_lag(
+            source_state.map(|state| state.row_count),
+            staged_manifest.map(|manifest| manifest.row_count),
+        );
+        let source_vs_promoted_row_lag = Self::recent_raw_nonnegative_row_lag(
+            source_state.map(|state| state.row_count),
+            promoted_manifest.map(|manifest| manifest.row_count),
+        );
+        let source_vs_staged_time_lag_seconds = Self::recent_raw_nonnegative_cursor_time_lag_seconds(
+            source_state.and_then(|state| state.covered_through_cursor.as_ref()),
+            staged_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
+        );
+        let source_vs_promoted_time_lag_seconds =
+            Self::recent_raw_nonnegative_cursor_time_lag_seconds(
+                source_state.and_then(|state| state.covered_through_cursor.as_ref()),
+                promoted_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
+            );
+        let staged_vs_promoted_row_delta = Self::recent_raw_signed_row_delta(
+            staged_manifest.map(|manifest| manifest.row_count),
+            promoted_manifest.map(|manifest| manifest.row_count),
+        );
+        let staged_vs_promoted_time_delta_seconds =
+            Self::recent_raw_signed_cursor_time_delta_seconds(
+                staged_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
+                promoted_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
+            );
+
+        let (
+            reason_class,
+            observed,
+            progressing,
+            losing_to_source,
+            indeterminate,
+            explanation,
+        ) = Self::classify_recent_raw_catch_up_status(&state);
+
+        Ok(RecentRawCatchUpDiagnostic {
+            recent_raw_snapshot_dir: state.snapshot_dir.display().to_string(),
+            recent_raw_catch_up_status_observed: observed,
+            recent_raw_catch_up_reason_class: reason_class,
+            recent_raw_catch_up_explanation: explanation,
+            recent_raw_promoted_exists: state.promoted_exists,
+            recent_raw_promoted_created_at: promoted_manifest
+                .map(|manifest| manifest.created_at.clone()),
+            recent_raw_promoted_covered_through: promoted_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.clone()),
+            recent_raw_promoted_row_count: promoted_manifest.map(|manifest| manifest.row_count),
+            recent_raw_promoted_last_batch_completed_at: promoted_manifest
+                .and_then(|manifest| manifest.last_batch_completed_at.clone()),
+            recent_raw_staged_exists: state.staged_exists,
+            recent_raw_staged_created_at: staged_manifest.map(|manifest| manifest.created_at.clone()),
+            recent_raw_staged_covered_through: staged_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.clone()),
+            recent_raw_staged_row_count: staged_manifest.map(|manifest| manifest.row_count),
+            recent_raw_staged_last_batch_completed_at: staged_manifest
+                .and_then(|manifest| manifest.last_batch_completed_at.clone()),
+            recent_raw_staged_advancing: staged_advancing,
+            recent_raw_staged_ahead_of_promoted: staged_ahead_of_promoted,
+            recent_raw_staged_last_batch_completed_at_newer_than_promoted:
+                staged_last_batch_completed_at_newer_than_promoted,
+            recent_raw_source_state_available: state.source_state_available,
+            recent_raw_source_covered_through: source_state
+                .and_then(|state| state.covered_through_cursor.clone()),
+            recent_raw_source_row_count: source_state.map(|state| state.row_count),
+            recent_raw_source_last_batch_completed_at: source_state
+                .and_then(|state| state.last_batch_completed_at.clone()),
+            recent_raw_runtime_db_path: state.runtime_db_path,
+            recent_raw_runtime_db_size_bytes: state.runtime_db_size_bytes,
+            recent_raw_runtime_db_mtime: state.runtime_db_mtime,
+            recent_raw_runtime_db_wal_present: state.runtime_db_wal_present,
+            recent_raw_runtime_db_wal_size_bytes: state.runtime_db_wal_size_bytes,
+            recent_raw_source_vs_staged_row_lag: source_vs_staged_row_lag,
+            recent_raw_source_vs_promoted_row_lag: source_vs_promoted_row_lag,
+            recent_raw_source_vs_staged_time_lag_seconds: source_vs_staged_time_lag_seconds,
+            recent_raw_source_vs_promoted_time_lag_seconds: source_vs_promoted_time_lag_seconds,
+            recent_raw_staged_vs_promoted_row_delta: staged_vs_promoted_row_delta,
+            recent_raw_staged_vs_promoted_time_delta_seconds:
+                staged_vs_promoted_time_delta_seconds,
+            recent_raw_catch_up_progressing: progressing,
+            recent_raw_catch_up_losing_to_source: losing_to_source,
+            recent_raw_catch_up_indeterminate: indeterminate,
         })
     }
 
@@ -44957,6 +45365,233 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn recent_raw_catch_up_progressing_but_not_caught_up_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-catch-up-progressing",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_catch_up_status_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_catch_up_reason_class,
+            RecentRawCatchUpReasonClass::RecentRawCatchUpProgressingButNotCaughtUp
+        );
+        assert!(diagnostic.recent_raw_catch_up_status_observed);
+        assert!(diagnostic.recent_raw_catch_up_progressing);
+        assert_eq!(diagnostic.recent_raw_staged_ahead_of_promoted, Some(true));
+        assert_eq!(diagnostic.recent_raw_source_vs_staged_row_lag, Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_catch_up_stalled_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-catch-up-stalled",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_catch_up_status_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_catch_up_reason_class,
+            RecentRawCatchUpReasonClass::RecentRawCatchUpStalled
+        );
+        assert!(diagnostic.recent_raw_catch_up_status_observed);
+        assert_eq!(diagnostic.recent_raw_staged_advancing, Some(false));
+        assert!(!diagnostic.recent_raw_catch_up_progressing);
+        assert!(!diagnostic.recent_raw_catch_up_losing_to_source);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_catch_up_losing_to_source_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-catch-up-losing",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_catch_up_status_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_catch_up_reason_class,
+            RecentRawCatchUpReasonClass::RecentRawCatchUpLosingToSource
+        );
+        assert!(diagnostic.recent_raw_catch_up_losing_to_source);
+        assert_eq!(diagnostic.recent_raw_staged_ahead_of_promoted, Some(false));
+        assert_eq!(diagnostic.recent_raw_staged_vs_promoted_row_delta, Some(-1));
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_catch_up_caught_up_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-catch-up-caught-up",
+            SourceStateSeed::StagedCurrent,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_catch_up_status_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_catch_up_reason_class,
+            RecentRawCatchUpReasonClass::RecentRawCatchUpCaughtUp
+        );
+        assert!(diagnostic.recent_raw_catch_up_status_observed);
+        assert_eq!(diagnostic.recent_raw_source_vs_staged_row_lag, Some(0));
+        assert!(!diagnostic.recent_raw_catch_up_progressing);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_catch_up_unproven_due_to_missing_evidence_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-catch-up-unproven",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_catch_up_status_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_catch_up_reason_class,
+            RecentRawCatchUpReasonClass::RecentRawCatchUpUnprovenDueToMissingEvidence
+        );
+        assert!(!diagnostic.recent_raw_catch_up_status_observed);
+        assert!(diagnostic.recent_raw_catch_up_indeterminate);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_catch_up_includes_lag_and_progress_fields_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-catch-up-facts",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_catch_up_status_read_only(&fixture.state_root)?;
+
+        assert_eq!(diagnostic.recent_raw_promoted_exists, true);
+        assert_eq!(diagnostic.recent_raw_staged_exists, true);
+        assert!(diagnostic.recent_raw_runtime_db_path.is_some());
+        assert_eq!(diagnostic.recent_raw_source_vs_staged_row_lag, Some(1));
+        assert_eq!(diagnostic.recent_raw_source_vs_promoted_row_lag, Some(2));
+        assert_eq!(diagnostic.recent_raw_staged_advancing, Some(true));
+        assert_eq!(diagnostic.recent_raw_staged_last_batch_completed_at_newer_than_promoted, Some(true));
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_catch_up_explain_remains_read_only_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-catch-up-read-only",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        let before = fixture.capture_bytes()?;
+
+        let _ = DiscoveryService::explain_recent_raw_catch_up_status_read_only(&fixture.state_root)?;
+
+        let after = fixture.capture_bytes()?;
+        assert_eq!(before, after);
+        Ok(())
+    }
+
     struct RecentRawPromotionFixture {
         _temp: tempfile::TempDir,
         state_root: PathBuf,
@@ -44967,6 +45602,8 @@ mod tests {
     #[derive(Debug, Clone, Copy)]
     enum SourceStateSeed {
         StagedCurrent,
+        SourceAheadOfStaged,
+        Missing,
     }
 
     impl RecentRawPromotionFixture {
@@ -45117,6 +45754,41 @@ mod tests {
                     parse_ts("2026-04-14T08:06:00Z")?,
                 )?;
             }
+            SourceStateSeed::SourceAheadOfStaged => {
+                store.insert_recent_raw_journal_batch(
+                    &[
+                        swap(
+                            "wallet-raw",
+                            "sig-promoted",
+                            parse_ts("2026-04-14T07:55:00Z")?,
+                            SOL_MINT,
+                            "TokenRaw111111111111111111111111111111111",
+                            1.0,
+                            10.0,
+                        ),
+                        swap(
+                            "wallet-raw",
+                            "sig-staged",
+                            parse_ts("2026-04-14T07:56:00Z")?,
+                            SOL_MINT,
+                            "TokenRaw111111111111111111111111111111111",
+                            1.0,
+                            11.0,
+                        ),
+                        swap(
+                            "wallet-raw",
+                            "sig-source",
+                            parse_ts("2026-04-14T07:57:00Z")?,
+                            SOL_MINT,
+                            "TokenRaw111111111111111111111111111111111",
+                            1.0,
+                            12.0,
+                        ),
+                    ],
+                    parse_ts("2026-04-14T08:07:00Z")?,
+                )?;
+            }
+            SourceStateSeed::Missing => {}
         }
         Ok(())
     }

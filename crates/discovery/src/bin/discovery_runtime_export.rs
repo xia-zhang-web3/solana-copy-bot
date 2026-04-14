@@ -6,7 +6,9 @@ use copybot_discovery::runtime_restore_ops::{
     resolve_db_path, resolve_relative_to_config, write_json_atomic, ARTIFACT_ARCHIVE_PREFIX,
     ARTIFACT_ARCHIVE_SUFFIX,
 };
-use copybot_discovery::{DiscoveryService, RecentRawPromotionBlockerDiagnostic};
+use copybot_discovery::{
+    DiscoveryService, RecentRawCatchUpDiagnostic, RecentRawPromotionBlockerDiagnostic,
+};
 use copybot_storage::{DiscoveryRuntimeArtifact, SqliteStore};
 use serde::Serialize;
 use std::env;
@@ -14,7 +16,8 @@ use std::path::{Path, PathBuf};
 
 const USAGE: &str = "usage:
   discovery_runtime_export --config <path> [--db-path <path>] (--output <path> | --scheduled) [--force] [--json] [--now <rfc3339>]
-  discovery_runtime_export --explain-recent-raw-promotion-blocker --state-root <path> [--json]";
+  discovery_runtime_export --explain-recent-raw-promotion-blocker --state-root <path> [--json]
+  discovery_runtime_export --explain-recent-raw-catch-up-status --state-root <path> [--json]";
 
 fn main() -> Result<()> {
     let Some(command) = parse_args()? else {
@@ -43,9 +46,16 @@ struct ExplainRecentRawPromotionBlockerConfig {
 }
 
 #[derive(Debug, Clone)]
+struct ExplainRecentRawCatchUpStatusConfig {
+    state_root: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 enum Command {
     Export(Config),
     ExplainRecentRawPromotionBlocker(ExplainRecentRawPromotionBlockerConfig),
+    ExplainRecentRawCatchUpStatus(ExplainRecentRawCatchUpStatusConfig),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,6 +94,7 @@ where
 {
     let mut args = args.into_iter();
     let mut explain_recent_raw_promotion_blocker = false;
+    let mut explain_recent_raw_catch_up_status = false;
     let mut config_path: Option<PathBuf> = None;
     let mut state_root: Option<PathBuf> = None;
     let mut db_path: Option<PathBuf> = None;
@@ -97,6 +108,9 @@ where
         match arg.as_str() {
             "--explain-recent-raw-promotion-blocker" => {
                 explain_recent_raw_promotion_blocker = true;
+            }
+            "--explain-recent-raw-catch-up-status" => {
+                explain_recent_raw_catch_up_status = true;
             }
             "--config" => {
                 config_path = Some(PathBuf::from(parse_string_arg("--config", args.next())?))
@@ -119,6 +133,12 @@ where
         }
     }
 
+    if explain_recent_raw_promotion_blocker && explain_recent_raw_catch_up_status {
+        bail!(
+            "--explain-recent-raw-promotion-blocker and --explain-recent-raw-catch-up-status are mutually exclusive"
+        );
+    }
+
     if explain_recent_raw_promotion_blocker {
         if config_path.is_some()
             || db_path.is_some()
@@ -139,8 +159,28 @@ where
         )));
     }
 
+    if explain_recent_raw_catch_up_status {
+        if config_path.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+        {
+            bail!("--explain-recent-raw-catch-up-status only accepts --state-root and optional --json");
+        }
+        return Ok(Some(Command::ExplainRecentRawCatchUpStatus(
+            ExplainRecentRawCatchUpStatusConfig {
+                state_root: state_root.ok_or_else(|| anyhow!("missing required --state-root"))?,
+                json,
+            },
+        )));
+    }
+
     if state_root.is_some() {
-        bail!("--state-root requires --explain-recent-raw-promotion-blocker");
+        bail!(
+            "--state-root requires --explain-recent-raw-promotion-blocker or --explain-recent-raw-catch-up-status"
+        );
     }
     if scheduled == output_path.is_some() {
         bail!("exactly one of --output or --scheduled must be provided");
@@ -184,6 +224,16 @@ fn run_command(command: Command) -> Result<String> {
                     .context("failed serializing recent_raw promotion blocker json")
             } else {
                 Ok(render_recent_raw_promotion_blocker_human(&diagnostic))
+            }
+        }
+        Command::ExplainRecentRawCatchUpStatus(config) => {
+            let diagnostic =
+                DiscoveryService::explain_recent_raw_catch_up_status_read_only(&config.state_root)?;
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic)
+                    .context("failed serializing recent_raw catch-up status json")
+            } else {
+                Ok(render_recent_raw_catch_up_status_human(&diagnostic))
             }
         }
     }
@@ -494,11 +544,70 @@ fn render_recent_raw_promotion_blocker_human(
     .join("\n")
 }
 
+fn render_recent_raw_catch_up_status_human(diagnostic: &RecentRawCatchUpDiagnostic) -> String {
+    [
+        "event=discovery_recent_raw_catch_up_status".to_string(),
+        format!("snapshot_dir={}", diagnostic.recent_raw_snapshot_dir),
+        format!(
+            "catch_up_status_observed={}",
+            diagnostic.recent_raw_catch_up_status_observed
+        ),
+        format!(
+            "reason_class={}",
+            serde_json::to_string(&diagnostic.recent_raw_catch_up_reason_class)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "source_vs_staged_row_lag={}",
+            diagnostic
+                .recent_raw_source_vs_staged_row_lag
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "source_vs_promoted_row_lag={}",
+            diagnostic
+                .recent_raw_source_vs_promoted_row_lag
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "staged_advancing={}",
+            diagnostic
+                .recent_raw_staged_advancing
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "staged_ahead_of_promoted={}",
+            diagnostic
+                .recent_raw_staged_ahead_of_promoted
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "catch_up_progressing={}",
+            diagnostic.recent_raw_catch_up_progressing
+        ),
+        format!(
+            "catch_up_losing_to_source={}",
+            diagnostic.recent_raw_catch_up_losing_to_source
+        ),
+        format!(
+            "catch_up_indeterminate={}",
+            diagnostic.recent_raw_catch_up_indeterminate
+        ),
+        format!("explanation={}", diagnostic.recent_raw_catch_up_explanation),
+    ]
+    .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         load_json, parse_args_from, run, run_command, write_json_atomic, Command, Config,
-        ExplainRecentRawPromotionBlockerConfig,
+        ExplainRecentRawCatchUpStatusConfig, ExplainRecentRawPromotionBlockerConfig,
     };
     use anyhow::{Context, Result};
     use chrono::{DateTime, Duration, Utc};
@@ -551,6 +660,23 @@ mod tests {
         .expect("command should be present");
         let Command::ExplainRecentRawPromotionBlocker(parsed) = parsed else {
             panic!("expected explain command");
+        };
+        assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_recent_raw_catch_up_status_mode() {
+        let parsed = parse_args_from(vec![
+            "--explain-recent-raw-catch-up-status".to_string(),
+            "--state-root".to_string(),
+            "/tmp/state".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ExplainRecentRawCatchUpStatus(parsed) = parsed else {
+            panic!("expected catch-up command");
         };
         assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
         assert!(parsed.json);
@@ -624,6 +750,78 @@ mod tests {
         );
         assert_eq!(parsed["recent_raw_promoted_exists"], true);
         assert_eq!(parsed["recent_raw_staged_exists"], true);
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_recent_raw_catch_up_status_renders_json() -> Result<()> {
+        let fixture = make_fixture("runtime-export-recent-raw-catch-up-status")?;
+        let state_root = fixture
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("state");
+        let recent_raw_dir = state_root.join("discovery_restore/recent_raw");
+        fs::create_dir_all(&recent_raw_dir)?;
+        seed_recent_raw_source_state(&fixture.store, &fixture.db_path, &recent_raw_dir)?;
+        let promoted_path = recent_raw_dir.join("latest.sqlite");
+        let promoted_metadata_path = recent_raw_dir.join("latest.json");
+        let staged_path = recent_raw_dir.join(".discovery_recent_raw_staged.sqlite.archive-staged");
+        let staged_metadata_path =
+            recent_raw_dir.join(".discovery_recent_raw_staged.sqlite.archive-staged.json");
+        fs::write(&promoted_path, b"promoted")?;
+        fs::write(&staged_path, b"staged")?;
+        write_json_atomic(
+            &promoted_metadata_path,
+            &serde_json::json!({
+                "created_at": "2026-04-14T08:00:00Z",
+                "source_db_path": fixture.db_path.display().to_string(),
+                "snapshot_path": promoted_path.display().to_string(),
+                "row_count": 1,
+                "covered_since": "2026-04-14T07:55:00Z",
+                "covered_through_cursor": {
+                    "ts_utc": "2026-04-14T07:55:00Z",
+                    "slot": parse_ts("2026-04-14T07:55:00Z")?.timestamp() as u64,
+                    "signature": "sig-promoted"
+                },
+                "last_batch_completed_at": "2026-04-14T08:00:00Z",
+                "updated_at": "2026-04-14T08:00:00Z",
+                "snapshot_bytes": 8
+            }),
+        )?;
+        write_json_atomic(
+            &staged_metadata_path,
+            &serde_json::json!({
+                "created_at": "2026-04-14T08:05:00Z",
+                "source_db_path": fixture.db_path.display().to_string(),
+                "snapshot_path": staged_path.display().to_string(),
+                "row_count": 2,
+                "covered_since": "2026-04-14T07:55:00Z",
+                "covered_through_cursor": {
+                    "ts_utc": "2026-04-14T07:56:00Z",
+                    "slot": parse_ts("2026-04-14T07:56:00Z")?.timestamp() as u64,
+                    "signature": "sig-staged"
+                },
+                "last_batch_completed_at": "2026-04-14T08:05:00Z",
+                "updated_at": "2026-04-14T08:05:00Z",
+                "snapshot_bytes": 6
+            }),
+        )?;
+
+        let output = run_command(Command::ExplainRecentRawCatchUpStatus(
+            ExplainRecentRawCatchUpStatusConfig {
+                state_root,
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(
+            parsed["recent_raw_catch_up_reason_class"],
+            "recent_raw_catch_up_caught_up"
+        );
+        assert_eq!(parsed["recent_raw_promoted_exists"], true);
+        assert_eq!(parsed["recent_raw_staged_exists"], true);
+        assert_eq!(parsed["recent_raw_catch_up_progressing"], false);
         Ok(())
     }
 
