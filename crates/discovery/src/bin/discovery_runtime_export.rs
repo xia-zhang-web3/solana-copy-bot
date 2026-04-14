@@ -9,7 +9,7 @@ use copybot_discovery::runtime_restore_ops::{
 use copybot_discovery::{
     DiscoveryService, RecentRawCatchUpDiagnostic, RecentRawPromotionBlockerDiagnostic,
     RecentRawStagedBirthDiagnostic, RecentRawStagedLineageDiagnostic,
-    RecentRawStagedRegressionDiagnostic,
+    RecentRawStagedRegressionDiagnostic, RecentRawStagedWindowSeedingDiagnostic,
 };
 use copybot_storage::{DiscoveryRuntimeArtifact, SqliteStore};
 use serde::Serialize;
@@ -22,6 +22,7 @@ const USAGE: &str = "usage:
   discovery_runtime_export --explain-recent-raw-catch-up-status --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]
+  discovery_runtime_export --explain-recent-raw-staged-window-seeding --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-birth --state-root <path> [--json]";
 
 fn main() -> Result<()> {
@@ -75,6 +76,12 @@ struct ExplainRecentRawStagedBirthConfig {
 }
 
 #[derive(Debug, Clone)]
+struct ExplainRecentRawStagedWindowSeedingConfig {
+    state_root: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 enum Command {
     Export(Config),
     ExplainRecentRawPromotionBlocker(ExplainRecentRawPromotionBlockerConfig),
@@ -82,6 +89,7 @@ enum Command {
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
     ExplainRecentRawStagedBirth(ExplainRecentRawStagedBirthConfig),
+    ExplainRecentRawStagedWindowSeeding(ExplainRecentRawStagedWindowSeedingConfig),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -124,6 +132,7 @@ where
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
+    let mut explain_recent_raw_staged_window_seeding = false;
     let mut config_path: Option<PathBuf> = None;
     let mut state_root: Option<PathBuf> = None;
     let mut db_path: Option<PathBuf> = None;
@@ -150,6 +159,9 @@ where
             "--explain-recent-raw-staged-birth" => {
                 explain_recent_raw_staged_birth = true;
             }
+            "--explain-recent-raw-staged-window-seeding" => {
+                explain_recent_raw_staged_window_seeding = true;
+            }
             "--config" => {
                 config_path = Some(PathBuf::from(parse_string_arg("--config", args.next())?))
             }
@@ -175,10 +187,11 @@ where
         + usize::from(explain_recent_raw_catch_up_status)
         + usize::from(explain_recent_raw_staged_lineage)
         + usize::from(explain_recent_raw_staged_regression)
-        + usize::from(explain_recent_raw_staged_birth);
+        + usize::from(explain_recent_raw_staged_birth)
+        + usize::from(explain_recent_raw_staged_window_seeding);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, and --explain-recent-raw-staged-birth are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
 
@@ -274,9 +287,27 @@ where
         )));
     }
 
+    if explain_recent_raw_staged_window_seeding {
+        if config_path.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+        {
+            bail!("--explain-recent-raw-staged-window-seeding only accepts --state-root and optional --json");
+        }
+        return Ok(Some(Command::ExplainRecentRawStagedWindowSeeding(
+            ExplainRecentRawStagedWindowSeedingConfig {
+                state_root: state_root.ok_or_else(|| anyhow!("missing required --state-root"))?,
+                json,
+            },
+        )));
+    }
+
     if state_root.is_some() {
         bail!(
-            "--state-root requires --explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, or --explain-recent-raw-staged-birth"
+            "--state-root requires --explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, or --explain-recent-raw-staged-birth"
         );
     }
     if scheduled == output_path.is_some() {
@@ -361,6 +392,17 @@ fn run_command(command: Command) -> Result<String> {
                     .context("failed serializing recent_raw staged birth json")
             } else {
                 Ok(render_recent_raw_staged_birth_human(&diagnostic))
+            }
+        }
+        Command::ExplainRecentRawStagedWindowSeeding(config) => {
+            let diagnostic = DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(
+                &config.state_root,
+            )?;
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic)
+                    .context("failed serializing recent_raw staged window seeding json")
+            } else {
+                Ok(render_recent_raw_staged_window_seeding_human(&diagnostic))
             }
         }
     }
@@ -972,13 +1014,112 @@ fn render_recent_raw_staged_birth_human(diagnostic: &RecentRawStagedBirthDiagnos
     .join("\n")
 }
 
+fn render_recent_raw_staged_window_seeding_human(
+    diagnostic: &RecentRawStagedWindowSeedingDiagnostic,
+) -> String {
+    [
+        "event=discovery_recent_raw_staged_window_seeding".to_string(),
+        format!("snapshot_dir={}", diagnostic.recent_raw_snapshot_dir),
+        format!(
+            "staged_window_seeding_observed={}",
+            diagnostic.recent_raw_staged_window_seeding_observed
+        ),
+        format!(
+            "reason_class={}",
+            serde_json::to_string(&diagnostic.recent_raw_staged_window_seeding_reason_class)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "staged_start_matches_promoted_start={}",
+            diagnostic
+                .recent_raw_staged_start_matches_promoted_start
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "staged_start_matches_source_start={}",
+            diagnostic
+                .recent_raw_staged_start_matches_source_start
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "staged_start_matches_current_window_cutoff={}",
+            diagnostic
+                .recent_raw_staged_start_matches_current_window_cutoff
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "historical_seeding_basis_proven_from_current_artifacts={}",
+            diagnostic
+                .recent_raw_staged_window_historical_seeding_basis_proven_from_current_artifacts
+        ),
+        format!(
+            "staged_start_matches_neither_promoted_nor_source={}",
+            diagnostic
+                .recent_raw_staged_start_matches_neither_promoted_nor_source
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "staged_start_current_evidence_basis={}",
+            serde_json::to_string(&diagnostic.recent_raw_staged_start_current_evidence_basis)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "promoted_can_seed_staged_progress_under_current_code={}",
+            diagnostic
+                .recent_raw_promoted_can_seed_staged_progress_under_current_code
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "promoted_seed_blocked_by_source_contract_mismatch={}",
+            diagnostic
+                .recent_raw_promoted_seed_blocked_by_source_contract_mismatch
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "promoted_supersedes_staged_progress={}",
+            diagnostic
+                .recent_raw_promoted_supersedes_staged_progress
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "staged_manifest_matches_sqlite_content={}",
+            diagnostic
+                .recent_raw_staged_manifest_matches_sqlite_content
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "staged_manifest_sqlite_match_unproven={}",
+            diagnostic.recent_raw_staged_manifest_sqlite_match_unproven
+        ),
+        format!(
+            "current_evidence_explanation={}",
+            diagnostic.recent_raw_staged_start_current_evidence_explanation
+        ),
+        format!(
+            "explanation={}",
+            diagnostic.recent_raw_staged_window_seeding_explanation
+        ),
+    ]
+    .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         load_json, parse_args_from, run, run_command, write_json_atomic, Command, Config,
         ExplainRecentRawCatchUpStatusConfig, ExplainRecentRawPromotionBlockerConfig,
         ExplainRecentRawStagedBirthConfig, ExplainRecentRawStagedLineageConfig,
-        ExplainRecentRawStagedRegressionConfig,
+        ExplainRecentRawStagedRegressionConfig, ExplainRecentRawStagedWindowSeedingConfig,
     };
     use anyhow::{Context, Result};
     use chrono::{DateTime, Duration, Utc};
@@ -1099,6 +1240,23 @@ mod tests {
         .expect("command should be present");
         let Command::ExplainRecentRawStagedBirth(parsed) = parsed else {
             panic!("expected staged birth command");
+        };
+        assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_recent_raw_staged_window_seeding_mode() {
+        let parsed = parse_args_from(vec![
+            "--explain-recent-raw-staged-window-seeding".to_string(),
+            "--state-root".to_string(),
+            "/tmp/state".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ExplainRecentRawStagedWindowSeeding(parsed) = parsed else {
+            panic!("expected staged window seeding command");
         };
         assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
         assert!(parsed.json);
@@ -1508,6 +1666,118 @@ mod tests {
         assert_eq!(
             parsed["recent_raw_staged_birth_covered_through_relation_to_promoted"],
             "behind"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_recent_raw_staged_window_seeding_renders_json() -> Result<()> {
+        let fixture = make_fixture("runtime-export-recent-raw-staged-window-seeding")?;
+        let state_root = fixture
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("state");
+        let recent_raw_dir = state_root.join("discovery_restore/recent_raw");
+        fs::create_dir_all(&recent_raw_dir)?;
+        fixture.store.insert_recent_raw_journal_batch(
+            &[
+                recent_raw_swap(
+                    "raw-wallet",
+                    "sig-source-early",
+                    parse_ts("2026-04-14T07:54:00Z")?,
+                ),
+                recent_raw_swap(
+                    "raw-wallet",
+                    "sig-source-late",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                ),
+            ],
+            parse_ts("2026-04-14T08:06:00Z")?,
+        )?;
+        let latest_path = recent_raw_dir.join("latest.sqlite");
+        let latest_metadata_path = recent_raw_dir.join("latest.json");
+        let staged_path = recent_raw_dir.join(".discovery_recent_raw_staged.sqlite.archive-staged");
+        let staged_metadata_path =
+            recent_raw_dir.join(".discovery_recent_raw_staged.sqlite.archive-staged.json");
+
+        let promoted_manifest = serde_json::json!({
+            "created_at": "2026-04-14T08:00:00Z",
+            "source_db_path": fixture.db_path.display().to_string(),
+            "snapshot_path": latest_path.display().to_string(),
+            "row_count": 1,
+            "covered_since": "2026-04-14T07:55:00Z",
+            "covered_through_cursor": {
+                "ts_utc": "2026-04-14T07:56:00Z",
+                "slot": parse_ts("2026-04-14T07:56:00Z")?.timestamp() as u64,
+                "signature": "sig-promoted"
+            },
+            "last_batch_completed_at": "2026-04-14T08:00:00Z",
+            "updated_at": "2026-04-14T08:00:00Z",
+            "snapshot_bytes": 8u64
+        });
+        fs::write(&latest_path, b"snapshot")
+            .with_context(|| format!("failed writing {}", latest_path.display()))?;
+        write_json_atomic(&latest_metadata_path, &promoted_manifest)?;
+        write_recent_raw_snapshot_sqlite_content(
+            &staged_path,
+            &[recent_raw_swap(
+                "raw-wallet",
+                "sig-staged",
+                parse_ts("2026-04-14T07:55:00Z")?,
+            )],
+            parse_ts("2026-04-14T08:03:00Z")?,
+        )?;
+        let staged_bytes = fs::metadata(&staged_path)
+            .with_context(|| format!("failed stat {}", staged_path.display()))?
+            .len();
+        let staged_manifest = serde_json::json!({
+            "created_at": "2026-04-14T08:03:00Z",
+            "source_db_path": fixture.db_path.display().to_string(),
+            "snapshot_path": staged_path.display().to_string(),
+            "row_count": 1,
+            "covered_since": "2026-04-14T07:55:00Z",
+            "covered_through_cursor": {
+                "ts_utc": "2026-04-14T07:55:00Z",
+                "slot": parse_ts("2026-04-14T07:55:00Z")?.timestamp() as u64,
+                "signature": "sig-staged"
+            },
+            "last_batch_completed_at": "2026-04-14T08:03:00Z",
+            "updated_at": "2026-04-14T08:03:00Z",
+            "snapshot_bytes": staged_bytes
+        });
+        write_json_atomic(&staged_metadata_path, &staged_manifest)?;
+
+        let rendered = run_command(Command::ExplainRecentRawStagedWindowSeeding(
+            ExplainRecentRawStagedWindowSeedingConfig {
+                state_root: state_root.clone(),
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["recent_raw_staged_window_seeding_reason_class"],
+            "recent_raw_staged_window_current_start_matches_promoted_start"
+        );
+        assert_eq!(
+            parsed["recent_raw_staged_start_matches_promoted_start"],
+            true
+        );
+        assert_eq!(
+            parsed["recent_raw_staged_start_current_evidence_basis"],
+            "matches_promoted_start"
+        );
+        assert_eq!(
+            parsed["recent_raw_staged_window_historical_seeding_basis_proven_from_current_artifacts"],
+            false
+        );
+        assert_eq!(
+            parsed["recent_raw_promoted_can_seed_staged_progress_under_current_code"],
+            true
+        );
+        assert_eq!(
+            parsed["recent_raw_staged_manifest_matches_sqlite_content"],
+            true
         );
         Ok(())
     }

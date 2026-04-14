@@ -11698,3 +11698,35 @@ Acceptance update, Stage 3 staged current-artifact proof surface (`2026-04-14`):
      regression incident
    - it does not change snapshot behavior, promotion behavior, replay/export
      semantics, or production authorization
+
+Acceptance update, Stage 3 staged window current-evidence surface (`2026-04-14`):
+
+1. The repo now has one more bounded read-only operator command on the primary
+   runtime-export path:
+   - `discovery_runtime_export --explain-recent-raw-staged-window-seeding --state-root <path> --json`
+2. The contract is intentionally current-evidence only:
+   - it proves whether the current staged `covered_since` matches promoted
+     latest, the current source start, both, or neither
+   - it proves current manifest/sqlite agreement when read-only sqlite
+     inspection succeeds
+   - it does not claim those current relations prove the historical seeding
+     input used when the staged artifact was formed
+3. The surface now emits an explicit proof boundary:
+   - `recent_raw_staged_window_historical_seeding_basis_proven_from_current_artifacts=false`
+   - explanations now say `current evidence` rather than claiming
+     `seeded_from_*` history
+4. The current evidence can now distinguish:
+   - current staged start matches promoted start
+   - current staged start matches current source start
+   - current staged start matches both promoted and source
+   - current staged start matches neither promoted nor current source
+   - unproven current-evidence inspection
+5. Acceptance stayed on the bounded proof-only surface:
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_staged_window_seeding`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+6. Current production implication:
+   - this batch narrows the same-source staged regression incident to a
+     current staged-start relation problem
+   - it still does not change snapshot behavior, promotion behavior,
+     replay/export semantics, or production authorization

@@ -2542,6 +2542,55 @@ pub struct RecentRawStagedBirthDiagnostic {
     pub recent_raw_staged_birth_sqlite_inspection_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawStagedWindowSeedingReasonClass {
+    RecentRawStagedWindowCurrentStartMatchesPromotedStart,
+    RecentRawStagedWindowCurrentStartMatchesSourceStart,
+    RecentRawStagedWindowCurrentStartMatchesBothPromotedAndSourceStart,
+    RecentRawStagedWindowCurrentStartMatchesNeitherPromotedNorSource,
+    RecentRawStagedWindowCurrentEvidenceUnprovenDueToMissingEvidence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawStagedWindowSeedingBasis {
+    MatchesPromotedStart,
+    MatchesCurrentSourceStart,
+    MatchesBothPromotedAndCurrentSourceStart,
+    MatchesNeitherPromotedNorCurrentSourceStart,
+    Unproven,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentRawStagedWindowSeedingDiagnostic {
+    pub recent_raw_snapshot_dir: String,
+    pub recent_raw_staged_window_seeding_observed: bool,
+    pub recent_raw_staged_window_seeding_reason_class: RecentRawStagedWindowSeedingReasonClass,
+    pub recent_raw_staged_window_seeding_explanation: String,
+    pub recent_raw_staged_window_historical_seeding_basis_proven_from_current_artifacts: bool,
+    pub recent_raw_promoted_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_staged_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_source_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_promoted_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_staged_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_source_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_staged_start_matches_promoted_start: Option<bool>,
+    pub recent_raw_staged_start_matches_source_start: Option<bool>,
+    pub recent_raw_staged_start_matches_current_window_cutoff: Option<bool>,
+    pub recent_raw_staged_start_matches_neither_promoted_nor_source: Option<bool>,
+    pub recent_raw_staged_start_current_evidence_basis: RecentRawStagedWindowSeedingBasis,
+    pub recent_raw_staged_start_current_evidence_explanation: String,
+    pub recent_raw_staged_same_source_db_as_promoted: Option<bool>,
+    pub recent_raw_staged_created_after_promoted: Option<bool>,
+    pub recent_raw_staged_created_at_matches_promoted_created_at: Option<bool>,
+    pub recent_raw_promoted_can_seed_staged_progress_under_current_code: Option<bool>,
+    pub recent_raw_promoted_seed_blocked_by_source_contract_mismatch: Option<bool>,
+    pub recent_raw_promoted_supersedes_staged_progress: Option<bool>,
+    pub recent_raw_staged_manifest_matches_sqlite_content: Option<bool>,
+    pub recent_raw_staged_manifest_sqlite_match_unproven: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct RecentRawPromotionSnapshotManifest {
     created_at: DateTime<Utc>,
@@ -4405,6 +4454,391 @@ impl DiscoveryService {
             true,
             "recent_raw staged manifest and current staged sqlite content agree on covered_since, covered_through, and row_count, but the selected staged artifact is currently behind promoted latest on the same source_db_path. Current artifacts do not prove whether that behind frontier was already present at creation time.".to_string(),
         )
+    }
+
+    fn recent_raw_source_contract_no_longer_matches_manifest(
+        source_state: &RecentRawJournalStateRow,
+        manifest: &RecentRawPromotionSnapshotManifest,
+    ) -> bool {
+        if source_state.row_count < manifest.row_count {
+            return true;
+        }
+        if let (Some(source_since), Some(manifest_since)) =
+            (source_state.covered_since, manifest.covered_since)
+        {
+            if source_since > manifest_since {
+                return true;
+            }
+        }
+        if let (Some(source_cursor), Some(manifest_cursor)) = (
+            source_state.covered_through_cursor.as_ref(),
+            manifest.covered_through_cursor.as_ref(),
+        ) {
+            return Self::runtime_cursor_cmp(source_cursor, manifest_cursor) == Ordering::Less;
+        }
+        false
+    }
+
+    fn recent_raw_published_latest_supersedes_staged_progress(
+        latest_manifest: &RecentRawPromotionSnapshotManifest,
+        staged_manifest: &RecentRawPromotionSnapshotManifest,
+    ) -> bool {
+        latest_manifest.source_db_path == staged_manifest.source_db_path
+            && Self::recent_raw_manifest_outruns_reference(latest_manifest, staged_manifest)
+    }
+
+    fn recent_raw_latest_surface_can_seed_staged_progress(
+        source_db_path: &Path,
+        source_state: &RecentRawJournalStateRow,
+        latest_manifest: &RecentRawPromotionSnapshotManifest,
+        staged_manifest: Option<&RecentRawPromotionSnapshotManifest>,
+    ) -> bool {
+        latest_manifest.source_db_path == source_db_path.display().to_string()
+            && latest_manifest.row_count > 0
+            && !Self::recent_raw_source_contract_no_longer_matches_manifest(
+                source_state,
+                latest_manifest,
+            )
+            && staged_manifest.map_or(true, |staged_manifest| {
+                Self::recent_raw_published_latest_supersedes_staged_progress(
+                    latest_manifest,
+                    staged_manifest,
+                )
+            })
+    }
+
+    fn classify_recent_raw_staged_window_seeding(
+        state: &RecentRawDiagnosticState,
+        same_source_db_as_promoted: Option<bool>,
+        staged_start_matches_promoted_start: Option<bool>,
+        staged_start_matches_current_window_cutoff: Option<bool>,
+        staged_start_matches_neither_promoted_nor_source: Option<bool>,
+        staged_manifest_matches_sqlite_content: Option<bool>,
+        sqlite_inspection_error: Option<&str>,
+    ) -> (
+        RecentRawStagedWindowSeedingReasonClass,
+        bool,
+        RecentRawStagedWindowSeedingBasis,
+        String,
+        String,
+    ) {
+        if state.promoted.manifest_error.is_some() || state.staged.manifest_error.is_some() {
+            let explanation = format!(
+                "recent_raw staged window current evidence is unproven because one or more snapshot surfaces are partial or invalid (promoted_error={}, staged_error={})",
+                state.promoted.manifest_error.as_deref().unwrap_or("null"),
+                state.staged.manifest_error.as_deref().unwrap_or("null"),
+            );
+            return (
+                RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentEvidenceUnprovenDueToMissingEvidence,
+                false,
+                RecentRawStagedWindowSeedingBasis::Unproven,
+                explanation.clone(),
+                explanation,
+            );
+        }
+
+        if !state.promoted_exists || !state.staged_exists || !state.source_state_available {
+            let explanation = format!(
+                "recent_raw staged window current evidence is unproven because promoted_exists={}, staged_exists={}, and source_state_available={}",
+                state.promoted_exists, state.staged_exists, state.source_state_available
+            );
+            return (
+                RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentEvidenceUnprovenDueToMissingEvidence,
+                false,
+                RecentRawStagedWindowSeedingBasis::Unproven,
+                explanation.clone(),
+                explanation,
+            );
+        }
+
+        match same_source_db_as_promoted {
+            Some(false) => {
+                let explanation = "recent_raw staged window current evidence is unproven on this run because staged and promoted do not point at the same source_db_path".to_string();
+                return (
+                    RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentEvidenceUnprovenDueToMissingEvidence,
+                    false,
+                    RecentRawStagedWindowSeedingBasis::Unproven,
+                    explanation.clone(),
+                    explanation,
+                );
+            }
+            None => {
+                let explanation = "recent_raw staged window current evidence is unproven because the staged/promoted source_db_path values could not both be proven from current manifests".to_string();
+                return (
+                    RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentEvidenceUnprovenDueToMissingEvidence,
+                    false,
+                    RecentRawStagedWindowSeedingBasis::Unproven,
+                    explanation.clone(),
+                    explanation,
+                );
+            }
+            Some(true) => {}
+        }
+
+        if staged_manifest_matches_sqlite_content == Some(false) {
+            let explanation = "recent_raw staged window current evidence is unproven because the selected staged manifest and the current staged sqlite content disagree on covered_since, covered_through, or row_count".to_string();
+            return (
+                RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentEvidenceUnprovenDueToMissingEvidence,
+                false,
+                RecentRawStagedWindowSeedingBasis::Unproven,
+                explanation.clone(),
+                explanation,
+            );
+        }
+
+        if staged_manifest_matches_sqlite_content.is_none() {
+            let explanation = format!(
+                "recent_raw staged window current evidence is unproven because the selected staged sqlite content could not be proven read-only from {}{}",
+                state.staged_snapshot_path.display(),
+                sqlite_inspection_error
+                    .map(|error| format!(" ({error})"))
+                    .unwrap_or_default()
+            );
+            return (
+                RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentEvidenceUnprovenDueToMissingEvidence,
+                false,
+                RecentRawStagedWindowSeedingBasis::Unproven,
+                explanation.clone(),
+                explanation,
+            );
+        }
+
+        if staged_start_matches_promoted_start == Some(true)
+            && staged_start_matches_current_window_cutoff == Some(true)
+        {
+            let explanation = "current artifacts show that recent_raw staged covered_since matches both promoted latest and the current source covered_since on the same source_db_path. That proves only a current frontier equality across both surfaces, not the historical seeding input used when the staged artifact was formed.".to_string();
+            let basis_explanation = "current artifacts prove only that staged covered_since equals both promoted latest and the current source covered_since".to_string();
+            return (
+                RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentStartMatchesBothPromotedAndSourceStart,
+                true,
+                RecentRawStagedWindowSeedingBasis::MatchesBothPromotedAndCurrentSourceStart,
+                explanation,
+                basis_explanation,
+            );
+        }
+
+        if staged_start_matches_promoted_start == Some(true) {
+            let explanation = "current artifacts show that recent_raw staged covered_since matches promoted latest while differing from the current source covered_since on the same source_db_path. That proves a current match to promoted latest, not the historical seeding input used when the staged artifact was formed.".to_string();
+            let basis_explanation = "current artifacts prove only that staged covered_since equals promoted latest and differs from the current source covered_since".to_string();
+            return (
+                RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentStartMatchesPromotedStart,
+                true,
+                RecentRawStagedWindowSeedingBasis::MatchesPromotedStart,
+                explanation,
+                basis_explanation,
+            );
+        }
+
+        if staged_start_matches_current_window_cutoff == Some(true) {
+            let explanation = "current artifacts show that recent_raw staged covered_since matches the current source covered_since while differing from promoted latest on the same source_db_path. That proves a current match to the current source start, not the historical seeding input used when the staged artifact was formed.".to_string();
+            let basis_explanation = "current artifacts prove only that staged covered_since equals the current source covered_since and differs from promoted latest".to_string();
+            return (
+                RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentStartMatchesSourceStart,
+                true,
+                RecentRawStagedWindowSeedingBasis::MatchesCurrentSourceStart,
+                explanation,
+                basis_explanation,
+            );
+        }
+
+        if staged_start_matches_neither_promoted_nor_source == Some(true) {
+            let explanation = "current artifacts show that recent_raw staged covered_since matches neither promoted latest nor the current source covered_since on the same source_db_path. That proves only that the current staged start differs from both currently observable start frontiers; it does not prove a historical internal checkpoint or any other historical seeding input.".to_string();
+            let basis_explanation = "current artifacts prove only that staged covered_since differs from both promoted latest and the current source covered_since".to_string();
+            return (
+                RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentStartMatchesNeitherPromotedNorSource,
+                true,
+                RecentRawStagedWindowSeedingBasis::MatchesNeitherPromotedNorCurrentSourceStart,
+                explanation,
+                basis_explanation,
+            );
+        }
+
+        let explanation = format!(
+            "recent_raw staged window current evidence remains unproven from current artifacts: start_matches_promoted={}, start_matches_current_source={}, start_matches_neither_promoted_nor_source={}",
+            staged_start_matches_promoted_start
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            staged_start_matches_current_window_cutoff
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            staged_start_matches_neither_promoted_nor_source
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+        );
+        let basis_explanation =
+            "current artifacts do not prove one complete staged-start relation without inference"
+                .to_string();
+        (
+            RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentEvidenceUnprovenDueToMissingEvidence,
+            false,
+            RecentRawStagedWindowSeedingBasis::Unproven,
+            explanation,
+            basis_explanation,
+        )
+    }
+
+    pub fn explain_recent_raw_staged_window_seeding_read_only(
+        state_root: &Path,
+    ) -> Result<RecentRawStagedWindowSeedingDiagnostic> {
+        let state = Self::load_recent_raw_diagnostic_state_read_only(state_root);
+        let promoted_manifest = state.promoted.manifest.as_ref();
+        let staged_manifest = state.staged.manifest.as_ref();
+        let source_state = state.source_state.as_ref();
+
+        let same_source_db_as_promoted = match (staged_manifest, promoted_manifest) {
+            (Some(staged_manifest), Some(promoted_manifest)) => {
+                Some(staged_manifest.source_db_path == promoted_manifest.source_db_path)
+            }
+            _ => None,
+        };
+        let staged_created_after_promoted = match (staged_manifest, promoted_manifest) {
+            (Some(staged_manifest), Some(promoted_manifest)) => {
+                Some(staged_manifest.created_at > promoted_manifest.created_at)
+            }
+            _ => None,
+        };
+        let staged_created_at_matches_promoted_created_at = match (staged_manifest, promoted_manifest) {
+            (Some(staged_manifest), Some(promoted_manifest)) => {
+                Some(staged_manifest.created_at == promoted_manifest.created_at)
+            }
+            _ => None,
+        };
+        let staged_start_matches_promoted_start = match same_source_db_as_promoted {
+            Some(true) => match (
+                staged_manifest.and_then(|manifest| manifest.covered_since),
+                promoted_manifest.and_then(|manifest| manifest.covered_since),
+            ) {
+                (Some(staged_since), Some(promoted_since)) => Some(staged_since == promoted_since),
+                _ => None,
+            },
+            Some(false) | None => None,
+        };
+        let staged_start_matches_source_start = match (
+            staged_manifest.and_then(|manifest| manifest.covered_since),
+            source_state.and_then(|state| state.covered_since),
+        ) {
+            (Some(staged_since), Some(source_since)) => Some(staged_since == source_since),
+            _ => None,
+        };
+        let staged_start_matches_current_window_cutoff = staged_start_matches_source_start;
+
+        let promoted_seed_blocked_by_source_contract_mismatch = match (source_state, promoted_manifest) {
+            (Some(source_state), Some(promoted_manifest)) => Some(
+                Self::recent_raw_source_contract_no_longer_matches_manifest(
+                    source_state,
+                    promoted_manifest,
+                ),
+            ),
+            _ => None,
+        };
+        let promoted_supersedes_staged_progress = match (promoted_manifest, staged_manifest) {
+            (Some(promoted_manifest), Some(staged_manifest)) => Some(
+                Self::recent_raw_published_latest_supersedes_staged_progress(
+                    promoted_manifest,
+                    staged_manifest,
+                ),
+            ),
+            _ => None,
+        };
+        let promoted_can_seed_staged_progress_under_current_code = match (
+            state.runtime_db_path.as_ref(),
+            source_state,
+            promoted_manifest,
+        ) {
+            (Some(runtime_db_path), Some(source_state), Some(promoted_manifest)) => Some(
+                Self::recent_raw_latest_surface_can_seed_staged_progress(
+                    Path::new(runtime_db_path),
+                    source_state,
+                    promoted_manifest,
+                    staged_manifest,
+                ),
+            ),
+            _ => None,
+        };
+
+        let sqlite_content =
+            Self::read_recent_raw_snapshot_sqlite_content_read_only(&state.staged_snapshot_path);
+        let sqlite_state = sqlite_content.state.as_ref();
+        let staged_manifest_matches_sqlite_content = match (staged_manifest, sqlite_state) {
+            (Some(manifest), Some(sqlite_state)) => Some(
+                manifest.row_count == sqlite_state.row_count
+                    && manifest.covered_since == sqlite_state.covered_since
+                    && Self::recent_raw_optional_cursor_equal(
+                        manifest.covered_through_cursor.as_ref(),
+                        sqlite_state.covered_through_cursor.as_ref(),
+                    ),
+            ),
+            _ => None,
+        };
+        let staged_manifest_sqlite_match_unproven = staged_manifest_matches_sqlite_content.is_none();
+
+        let staged_start_matches_neither_promoted_nor_source = match (
+            same_source_db_as_promoted,
+            staged_start_matches_promoted_start,
+            staged_start_matches_current_window_cutoff,
+        ) {
+            (Some(true), Some(false), Some(false)) => Some(true),
+            (Some(true), Some(true), _) | (Some(true), _, Some(true)) => Some(false),
+            _ => None,
+        };
+
+        let (
+            reason_class,
+            observed,
+            current_evidence_basis,
+            explanation,
+            current_evidence_explanation,
+        ) = Self::classify_recent_raw_staged_window_seeding(
+            &state,
+            same_source_db_as_promoted,
+            staged_start_matches_promoted_start,
+            staged_start_matches_current_window_cutoff,
+            staged_start_matches_neither_promoted_nor_source,
+            staged_manifest_matches_sqlite_content,
+            sqlite_content.error.as_deref(),
+        );
+
+        Ok(RecentRawStagedWindowSeedingDiagnostic {
+            recent_raw_snapshot_dir: state.snapshot_dir.display().to_string(),
+            recent_raw_staged_window_seeding_observed: observed,
+            recent_raw_staged_window_seeding_reason_class: reason_class,
+            recent_raw_staged_window_seeding_explanation: explanation,
+            recent_raw_staged_window_historical_seeding_basis_proven_from_current_artifacts: false,
+            recent_raw_promoted_covered_since: promoted_manifest
+                .and_then(|manifest| manifest.covered_since),
+            recent_raw_staged_covered_since: staged_manifest
+                .and_then(|manifest| manifest.covered_since),
+            recent_raw_source_covered_since: source_state.and_then(|state| state.covered_since),
+            recent_raw_promoted_covered_through: promoted_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.clone()),
+            recent_raw_staged_covered_through: staged_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.clone()),
+            recent_raw_source_covered_through: source_state
+                .and_then(|state| state.covered_through_cursor.clone()),
+            recent_raw_staged_start_matches_promoted_start: staged_start_matches_promoted_start,
+            recent_raw_staged_start_matches_source_start: staged_start_matches_source_start,
+            recent_raw_staged_start_matches_current_window_cutoff:
+                staged_start_matches_current_window_cutoff,
+            recent_raw_staged_start_matches_neither_promoted_nor_source:
+                staged_start_matches_neither_promoted_nor_source,
+            recent_raw_staged_start_current_evidence_basis: current_evidence_basis,
+            recent_raw_staged_start_current_evidence_explanation:
+                current_evidence_explanation,
+            recent_raw_staged_same_source_db_as_promoted: same_source_db_as_promoted,
+            recent_raw_staged_created_after_promoted: staged_created_after_promoted,
+            recent_raw_staged_created_at_matches_promoted_created_at:
+                staged_created_at_matches_promoted_created_at,
+            recent_raw_promoted_can_seed_staged_progress_under_current_code:
+                promoted_can_seed_staged_progress_under_current_code,
+            recent_raw_promoted_seed_blocked_by_source_contract_mismatch:
+                promoted_seed_blocked_by_source_contract_mismatch,
+            recent_raw_promoted_supersedes_staged_progress:
+                promoted_supersedes_staged_progress,
+            recent_raw_staged_manifest_matches_sqlite_content:
+                staged_manifest_matches_sqlite_content,
+            recent_raw_staged_manifest_sqlite_match_unproven:
+                staged_manifest_sqlite_match_unproven,
+        })
     }
 
     pub fn explain_recent_raw_staged_lineage_read_only(
@@ -47697,6 +48131,477 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn recent_raw_staged_window_seeding_current_start_matches_promoted_start_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-window-seeding-promoted-start",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-early",
+                    parse_ts("2026-04-14T07:54:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    9.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-late",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:06:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            1,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_selected_staged_surface_sqlite_with_source_path_and_created_at(
+            &fixture.runtime_db_path,
+            &[swap(
+                "wallet-raw",
+                "sig-staged",
+                parse_ts("2026-04-14T07:55:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                10.0,
+            )],
+            parse_ts("2026-04-14T08:01:00Z")?,
+            parse_ts("2026-04-14T08:02:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(&fixture.state_root)?;
+        assert_eq!(
+            diagnostic.recent_raw_staged_window_seeding_reason_class,
+            RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentStartMatchesPromotedStart
+        );
+        assert!(diagnostic.recent_raw_staged_window_seeding_observed);
+        assert!(
+            !diagnostic
+                .recent_raw_staged_window_historical_seeding_basis_proven_from_current_artifacts
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_current_evidence_basis,
+            RecentRawStagedWindowSeedingBasis::MatchesPromotedStart
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_matches_promoted_start,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_matches_current_window_cutoff,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_matches_neither_promoted_nor_source,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_promoted_can_seed_staged_progress_under_current_code,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_manifest_matches_sqlite_content,
+            Some(true)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_window_seeding_current_start_matches_source_start_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-window-seeding-later-cutoff",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    12.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:07:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            1,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_selected_staged_surface_sqlite_with_source_path_and_created_at(
+            &fixture.runtime_db_path,
+            &[swap(
+                "wallet-raw",
+                "sig-staged",
+                parse_ts("2026-04-14T07:56:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                10.0,
+            )],
+            parse_ts("2026-04-14T08:01:00Z")?,
+            parse_ts("2026-04-14T08:03:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(&fixture.state_root)?;
+        assert_eq!(
+            diagnostic.recent_raw_staged_window_seeding_reason_class,
+            RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentStartMatchesSourceStart
+        );
+        assert!(diagnostic.recent_raw_staged_window_seeding_observed);
+        assert!(
+            !diagnostic
+                .recent_raw_staged_window_historical_seeding_basis_proven_from_current_artifacts
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_current_evidence_basis,
+            RecentRawStagedWindowSeedingBasis::MatchesCurrentSourceStart
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_matches_promoted_start,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_matches_current_window_cutoff,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_matches_neither_promoted_nor_source,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_promoted_can_seed_staged_progress_under_current_code,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_promoted_seed_blocked_by_source_contract_mismatch,
+            Some(true)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_window_seeding_current_start_matches_neither_promoted_nor_source_stage1(
+    ) -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-window-seeding-internal-checkpoint",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:54:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    9.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-z-source-c",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    12.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:07:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_selected_staged_surface_sqlite_with_source_path_and_created_at(
+            &fixture.runtime_db_path,
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-staged-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-staged-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:02:00Z")?,
+            parse_ts("2026-04-14T08:03:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(&fixture.state_root)?;
+        assert_eq!(
+            diagnostic.recent_raw_staged_window_seeding_reason_class,
+            RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentStartMatchesNeitherPromotedNorSource
+        );
+        assert!(diagnostic.recent_raw_staged_window_seeding_observed);
+        assert!(
+            !diagnostic
+                .recent_raw_staged_window_historical_seeding_basis_proven_from_current_artifacts
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_current_evidence_basis,
+            RecentRawStagedWindowSeedingBasis::MatchesNeitherPromotedNorCurrentSourceStart
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_matches_promoted_start,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_matches_current_window_cutoff,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_matches_neither_promoted_nor_source,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_promoted_can_seed_staged_progress_under_current_code,
+            Some(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_window_seeding_unproven_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-window-seeding-unproven",
+            SourceStateSeed::StagedCurrent,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            1,
+            parse_ts("2026-04-14T07:55:30Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:03:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(&fixture.state_root)?;
+        assert_eq!(
+            diagnostic.recent_raw_staged_window_seeding_reason_class,
+            RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentEvidenceUnprovenDueToMissingEvidence
+        );
+        assert!(!diagnostic.recent_raw_staged_window_seeding_observed);
+        assert!(
+            !diagnostic
+                .recent_raw_staged_window_historical_seeding_basis_proven_from_current_artifacts
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_current_evidence_basis,
+            RecentRawStagedWindowSeedingBasis::Unproven
+        );
+        assert!(diagnostic.recent_raw_staged_manifest_sqlite_match_unproven);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_window_seeding_includes_explicit_basis_fields_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-window-seeding-fields",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:07:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            1,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_selected_staged_surface_sqlite_with_source_path_and_created_at(
+            &fixture.runtime_db_path,
+            &[swap(
+                "wallet-raw",
+                "sig-staged",
+                parse_ts("2026-04-14T07:56:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                10.0,
+            )],
+            parse_ts("2026-04-14T08:01:00Z")?,
+            parse_ts("2026-04-14T08:03:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(&fixture.state_root)?;
+        assert!(diagnostic.recent_raw_promoted_covered_since.is_some());
+        assert!(diagnostic.recent_raw_staged_covered_since.is_some());
+        assert!(diagnostic.recent_raw_source_covered_since.is_some());
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_matches_promoted_start,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_matches_source_start,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_matches_current_window_cutoff,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_start_matches_neither_promoted_nor_source,
+            Some(false)
+        );
+        assert!(
+            !diagnostic
+                .recent_raw_staged_window_historical_seeding_basis_proven_from_current_artifacts
+        );
+        assert!(
+            !diagnostic
+                .recent_raw_staged_start_current_evidence_explanation
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_window_seeding_explain_remains_read_only_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-window-seeding-read-only",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:07:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            1,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_selected_staged_surface_sqlite_with_source_path_and_created_at(
+            &fixture.runtime_db_path,
+            &[swap(
+                "wallet-raw",
+                "sig-staged",
+                parse_ts("2026-04-14T07:56:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                10.0,
+            )],
+            parse_ts("2026-04-14T08:01:00Z")?,
+            parse_ts("2026-04-14T08:03:00Z")?,
+        )?;
+
+        let before = fixture.capture_bytes()?;
+        let _ =
+            DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(&fixture.state_root)?;
+        let after = fixture.capture_bytes()?;
+        assert_eq!(before, after);
+        Ok(())
+    }
+
     struct RecentRawPromotionFixture {
         _temp: tempfile::TempDir,
         state_root: PathBuf,
@@ -47893,6 +48798,73 @@ mod tests {
             let store = SqliteStore::open(&snapshot_path)
                 .with_context(|| format!("failed opening {}", snapshot_path.display()))?;
             store.insert_recent_raw_journal_batch(swaps, completed_at)?;
+            Ok(())
+        }
+
+        fn rewrite_source_state(
+            &self,
+            swaps: &[SwapEvent],
+            completed_at: DateTime<Utc>,
+        ) -> Result<()> {
+            for path in [
+                self.runtime_db_path.clone(),
+                PathBuf::from(format!("{}-wal", self.runtime_db_path.display())),
+                PathBuf::from(format!("{}-shm", self.runtime_db_path.display())),
+            ] {
+                if path.exists() {
+                    fs::remove_file(&path)
+                        .with_context(|| format!("failed removing {}", path.display()))?;
+                }
+            }
+            let store = SqliteStore::open(&self.runtime_db_path)?;
+            store.insert_recent_raw_journal_batch(swaps, completed_at)?;
+            Ok(())
+        }
+
+        fn write_selected_staged_surface_sqlite_with_source_path_and_created_at(
+            &self,
+            source_db_path: &Path,
+            swaps: &[SwapEvent],
+            completed_at: DateTime<Utc>,
+            created_at: DateTime<Utc>,
+        ) -> Result<()> {
+            let snapshot_path = self
+                .recent_raw_dir
+                .join(RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME);
+            let metadata_path = self
+                .recent_raw_dir
+                .join(RECENT_RAW_STAGED_METADATA_FILE_NAME);
+            for path in [
+                snapshot_path.clone(),
+                metadata_path.clone(),
+                PathBuf::from(format!("{}-wal", snapshot_path.display())),
+                PathBuf::from(format!("{}-shm", snapshot_path.display())),
+            ] {
+                if path.exists() {
+                    fs::remove_file(&path)
+                        .with_context(|| format!("failed removing {}", path.display()))?;
+                }
+            }
+
+            let store = SqliteStore::open(&snapshot_path)?;
+            store.insert_recent_raw_journal_batch(swaps, completed_at)?;
+            let state = store.recent_raw_journal_state_cached()?;
+            let snapshot_bytes = fs::metadata(&snapshot_path)
+                .with_context(|| format!("failed stat {}", snapshot_path.display()))?
+                .len();
+            let manifest = RecentRawPromotionSnapshotManifest {
+                created_at,
+                source_db_path: source_db_path.display().to_string(),
+                snapshot_path: snapshot_path.display().to_string(),
+                row_count: state.row_count,
+                covered_since: state.covered_since,
+                covered_through_cursor: state.covered_through_cursor,
+                last_batch_completed_at: state.last_batch_completed_at,
+                updated_at: state.updated_at,
+                snapshot_bytes,
+            };
+            runtime_restore_ops::write_json_atomic(&metadata_path, &manifest)
+                .with_context(|| format!("failed writing {}", metadata_path.display()))?;
             Ok(())
         }
 
