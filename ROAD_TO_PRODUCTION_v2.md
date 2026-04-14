@@ -11730,3 +11730,37 @@ Acceptance update, Stage 3 staged window current-evidence surface (`2026-04-14`)
      current staged-start relation problem
    - it still does not change snapshot behavior, promotion behavior,
      replay/export semantics, or production authorization
+
+Acceptance update, Stage 3 source-window contract current-evidence surface (`2026-04-14`):
+
+1. The repo now has one more bounded read-only operator command on the primary
+   runtime-export path:
+   - `discovery_runtime_export --explain-recent-raw-source-window-contract --state-root <path> --json`
+2. The contract is intentionally current-evidence only:
+   - it proves current source `covered_since` and `covered_through` from the
+     promoted `source_db_path`
+   - it compares cached `recent_raw_journal_state` with a direct read-only scan
+     of current `observed_swaps`
+   - it does not claim historical source-window provenance beyond what current
+     artifacts and prune facts support
+3. The current evidence can now distinguish:
+   - current source start matches promoted start
+   - current source window currently excludes older rows
+   - promoted latest still reflects an older still-promoted window while the
+     current source window has moved later
+   - unproven current-evidence inspection
+4. The surface emits explicit current-contract fields such as:
+   - `recent_raw_source_scanned_covered_since`
+   - `recent_raw_source_cached_state_matches_scanned_rows`
+   - `recent_raw_source_last_pruned_rows`
+   - `recent_raw_source_last_pruned_at`
+   - `recent_raw_source_prune_activity_recorded`
+5. Acceptance stayed on the bounded proof-only surface:
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_source_window_contract`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+6. Current production implication:
+   - this batch narrows the same-source staged regression incident to the
+     current source-side bounded window contract on the shared source path
+   - it still does not change snapshot behavior, promotion behavior,
+     replay/export semantics, or production authorization

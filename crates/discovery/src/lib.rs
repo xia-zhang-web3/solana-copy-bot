@@ -22,7 +22,7 @@ use copybot_storage::{
     DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateRow,
     DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
     DiscoveryTrustedSelectionStateUpdate, ObservedSolLegCursorAccessPath,
-    ObservedWalletActivityDayCountSource, ObservedWalletActivityRow,
+    ObservedSwapsCoverageSnapshot, ObservedWalletActivityDayCountSource, ObservedWalletActivityRow,
     PersistedWalletMetricSnapshotRow, RecentRawJournalStateRow, SqliteStore,
     StartupTrustedSelectionGateStatus, TrustedSelectionState, TrustedSnapshotSourceKind,
     TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite, WalletMetricRow,
@@ -2591,6 +2591,51 @@ pub struct RecentRawStagedWindowSeedingDiagnostic {
     pub recent_raw_staged_manifest_sqlite_match_unproven: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawSourceWindowContractReasonClass {
+    RecentRawSourceWindowCurrentStartMatchesPromotedStart,
+    RecentRawSourceWindowCurrentContractExcludesOlderRows,
+    RecentRawSourceWindowPromotedSurfaceReflectsOlderWindow,
+    RecentRawSourceWindowCurrentAndPromotedContractRelationUnproven,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawSourceWindowContractBasis {
+    MatchesPromotedStart,
+    CurrentSourceObservedSwapsWindowExcludesOlderRows,
+    PromotedStillReflectsOlderWindowWhileCurrentSourceStartsLater,
+    Unproven,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentRawSourceWindowContractDiagnostic {
+    pub recent_raw_snapshot_dir: String,
+    pub recent_raw_source_window_contract_observed: bool,
+    pub recent_raw_source_window_contract_reason_class: RecentRawSourceWindowContractReasonClass,
+    pub recent_raw_source_window_contract_explanation: String,
+    pub recent_raw_promoted_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_source_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_source_scanned_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_promoted_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_source_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_source_scanned_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_source_start_later_than_promoted: Option<bool>,
+    pub recent_raw_source_contract_currently_excludes_older_rows: Option<bool>,
+    pub recent_raw_source_window_matches_current_bounded_contract: Option<bool>,
+    pub recent_raw_promoted_reflects_older_still_promoted_window: Option<bool>,
+    pub recent_raw_source_window_contract_basis: RecentRawSourceWindowContractBasis,
+    pub recent_raw_source_window_contract_basis_explanation: String,
+    pub recent_raw_source_same_source_db_as_promoted: Option<bool>,
+    pub recent_raw_source_cached_state_matches_scanned_rows: Option<bool>,
+    pub recent_raw_source_row_count: Option<usize>,
+    pub recent_raw_source_scanned_row_count: Option<usize>,
+    pub recent_raw_source_last_pruned_rows: Option<usize>,
+    pub recent_raw_source_last_pruned_at: Option<DateTime<Utc>>,
+    pub recent_raw_source_prune_activity_recorded: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct RecentRawPromotionSnapshotManifest {
     created_at: DateTime<Utc>,
@@ -3452,6 +3497,28 @@ impl DiscoveryService {
                 "recent_raw_journal_state.updated_at",
             )?,
         })
+    }
+
+    fn load_recent_raw_source_observed_swaps_coverage_read_only(
+        runtime_db_path: &Path,
+    ) -> Result<ObservedSwapsCoverageSnapshot> {
+        let store = SqliteStore::open_read_only(runtime_db_path)
+            .with_context(|| format!("failed opening {}", runtime_db_path.display()))?;
+        store
+            .observed_swaps_coverage_snapshot()
+            .with_context(|| format!("failed reading observed_swaps coverage from {}", runtime_db_path.display()))
+    }
+
+    fn recent_raw_source_state_matches_observed_swaps_coverage(
+        source_state: &RecentRawJournalStateRow,
+        source_scanned_coverage: &ObservedSwapsCoverageSnapshot,
+    ) -> bool {
+        source_state.covered_since == source_scanned_coverage.covered_since
+            && source_state.row_count == source_scanned_coverage.row_count
+            && Self::recent_raw_optional_cursor_equal(
+                source_state.covered_through_cursor.as_ref(),
+                source_scanned_coverage.covered_through_cursor.as_ref(),
+            )
     }
 
     fn load_recent_raw_diagnostic_state_read_only(state_root: &Path) -> RecentRawDiagnosticState {
@@ -4677,6 +4744,176 @@ impl DiscoveryService {
         )
     }
 
+    fn classify_recent_raw_source_window_contract(
+        promoted_exists: bool,
+        promoted_manifest_error: Option<&str>,
+        current_source_state_available: bool,
+        same_source_db_as_promoted: Option<bool>,
+        source_window_matches_current_bounded_contract: Option<bool>,
+        source_start_matches_promoted_start: Option<bool>,
+        source_start_later_than_promoted: Option<bool>,
+        source_contract_currently_excludes_older_rows: Option<bool>,
+        promoted_reflects_older_still_promoted_window: Option<bool>,
+        source_prune_activity_recorded: Option<bool>,
+        source_scan_error: Option<&str>,
+    ) -> (
+        RecentRawSourceWindowContractReasonClass,
+        bool,
+        RecentRawSourceWindowContractBasis,
+        String,
+        String,
+    ) {
+        if promoted_manifest_error.is_some() {
+            let explanation = format!(
+                "recent_raw source window contract evidence is unproven because the promoted latest surface is partial or invalid (promoted_error={})",
+                promoted_manifest_error.unwrap_or("null"),
+            );
+            return (
+                RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentAndPromotedContractRelationUnproven,
+                false,
+                RecentRawSourceWindowContractBasis::Unproven,
+                explanation.clone(),
+                explanation,
+            );
+        }
+
+        if !promoted_exists || !current_source_state_available {
+            let explanation = format!(
+                "recent_raw source window contract evidence is unproven because promoted_exists={} and source_state_available={}",
+                promoted_exists, current_source_state_available
+            );
+            return (
+                RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentAndPromotedContractRelationUnproven,
+                false,
+                RecentRawSourceWindowContractBasis::Unproven,
+                explanation.clone(),
+                explanation,
+            );
+        }
+
+        match same_source_db_as_promoted {
+            Some(false) => {
+                let explanation = "recent_raw source window contract evidence is unproven because the current runtime db path does not match promoted latest source_db_path".to_string();
+                return (
+                    RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentAndPromotedContractRelationUnproven,
+                    false,
+                    RecentRawSourceWindowContractBasis::Unproven,
+                    explanation.clone(),
+                    explanation,
+                );
+            }
+            None => {
+                let explanation = "recent_raw source window contract evidence is unproven because the current runtime db path and promoted source_db_path could not both be proven".to_string();
+                return (
+                    RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentAndPromotedContractRelationUnproven,
+                    false,
+                    RecentRawSourceWindowContractBasis::Unproven,
+                    explanation.clone(),
+                    explanation,
+                );
+            }
+            Some(true) => {}
+        }
+
+        match source_window_matches_current_bounded_contract {
+            Some(false) => {
+                let explanation = "recent_raw source window contract evidence is unproven because the cached recent_raw_journal_state does not match the current observed_swaps coverage snapshot".to_string();
+                return (
+                    RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentAndPromotedContractRelationUnproven,
+                    false,
+                    RecentRawSourceWindowContractBasis::Unproven,
+                    explanation.clone(),
+                    explanation,
+                );
+            }
+            None => {
+                let explanation = format!(
+                    "recent_raw source window contract evidence is unproven because the current observed_swaps coverage snapshot could not be proven read-only{}",
+                    source_scan_error
+                        .map(|error| format!(" ({error})"))
+                        .unwrap_or_default()
+                );
+                return (
+                    RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentAndPromotedContractRelationUnproven,
+                    false,
+                    RecentRawSourceWindowContractBasis::Unproven,
+                    explanation.clone(),
+                    explanation,
+                );
+            }
+            Some(true) => {}
+        }
+
+        if source_start_matches_promoted_start == Some(true) {
+            let explanation = "current artifacts show that the cached recent_raw_journal_state matches the direct observed_swaps coverage snapshot and that both start at the same covered_since as promoted latest on the same source path. This proves the current source bounded window still starts where promoted latest starts.".to_string();
+            let basis_explanation = "the current source bounded window is proven from the direct observed_swaps coverage snapshot, and its current covered_since matches promoted latest".to_string();
+            return (
+                RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentStartMatchesPromotedStart,
+                true,
+                RecentRawSourceWindowContractBasis::MatchesPromotedStart,
+                explanation,
+                basis_explanation,
+            );
+        }
+
+        if source_start_later_than_promoted == Some(true)
+            && source_contract_currently_excludes_older_rows == Some(true)
+            && source_prune_activity_recorded == Some(true)
+        {
+            let explanation = "current artifacts show that the cached recent_raw_journal_state matches the direct observed_swaps coverage snapshot, that current source covered_since is later than promoted latest on the same source path, and that the source journal records prune activity. This proves the current source-side bounded window has already excluded older rows that promoted latest still reflects.".to_string();
+            let basis_explanation = "the current source bounded window is proven from direct observed_swaps coverage plus recorded prune activity, and its oldest retained row now starts later than promoted latest".to_string();
+            return (
+                RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentContractExcludesOlderRows,
+                true,
+                RecentRawSourceWindowContractBasis::CurrentSourceObservedSwapsWindowExcludesOlderRows,
+                explanation,
+                basis_explanation,
+            );
+        }
+
+        if source_start_later_than_promoted == Some(true)
+            && source_contract_currently_excludes_older_rows == Some(true)
+            && promoted_reflects_older_still_promoted_window == Some(true)
+        {
+            let explanation = "current artifacts show that the cached recent_raw_journal_state matches the direct observed_swaps coverage snapshot and that the current source covered_since starts later than promoted latest on the same source path. This proves promoted latest still reflects an older still-promoted window while the current source window has already advanced to a later start.".to_string();
+            let basis_explanation = "the current source bounded window is proven from direct observed_swaps coverage, and promoted latest still exposes an older covered_since on that same source path".to_string();
+            return (
+                RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowPromotedSurfaceReflectsOlderWindow,
+                true,
+                RecentRawSourceWindowContractBasis::PromotedStillReflectsOlderWindowWhileCurrentSourceStartsLater,
+                explanation,
+                basis_explanation,
+            );
+        }
+
+        let explanation = format!(
+            "recent_raw source window contract evidence remains unproven from current artifacts: source_start_matches_promoted={}, source_start_later_than_promoted={}, source_contract_currently_excludes_older_rows={}, promoted_reflects_older_still_promoted_window={}, source_prune_activity_recorded={}",
+            source_start_matches_promoted_start
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            source_start_later_than_promoted
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            source_contract_currently_excludes_older_rows
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            promoted_reflects_older_still_promoted_window
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            source_prune_activity_recorded
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+        );
+        let basis_explanation = "current artifacts do not reduce the current source window / promoted latest relation to one exact proven contract seam without inference".to_string();
+        (
+            RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentAndPromotedContractRelationUnproven,
+            false,
+            RecentRawSourceWindowContractBasis::Unproven,
+            explanation,
+            basis_explanation,
+        )
+    }
+
     pub fn explain_recent_raw_staged_window_seeding_read_only(
         state_root: &Path,
     ) -> Result<RecentRawStagedWindowSeedingDiagnostic> {
@@ -4838,6 +5075,163 @@ impl DiscoveryService {
                 staged_manifest_matches_sqlite_content,
             recent_raw_staged_manifest_sqlite_match_unproven:
                 staged_manifest_sqlite_match_unproven,
+        })
+    }
+
+    pub fn explain_recent_raw_source_window_contract_read_only(
+        state_root: &Path,
+    ) -> Result<RecentRawSourceWindowContractDiagnostic> {
+        let state = Self::load_recent_raw_diagnostic_state_read_only(state_root);
+        let promoted_manifest = state.promoted.manifest.as_ref();
+        let source_runtime_db_path = promoted_manifest
+            .map(|manifest| PathBuf::from(&manifest.source_db_path));
+        let (source_state, current_source_state_available) = match source_runtime_db_path.as_ref() {
+            Some(source_runtime_db_path) => match Self::load_recent_raw_source_state_read_only(
+                source_runtime_db_path,
+            ) {
+                Ok(source_state) => (Some(source_state), true),
+                Err(_) => (None, false),
+            },
+            None => (None, false),
+        };
+        let source_state = source_state.as_ref();
+        let same_source_db_as_promoted = match (source_runtime_db_path.as_ref(), promoted_manifest) {
+            (Some(source_runtime_db_path), Some(promoted_manifest)) => {
+                Some(source_runtime_db_path.display().to_string() == promoted_manifest.source_db_path)
+            }
+            _ => None,
+        };
+
+        let (source_scanned_coverage, source_scan_error) = match source_runtime_db_path.as_ref() {
+            Some(source_runtime_db_path) => match Self::load_recent_raw_source_observed_swaps_coverage_read_only(
+                source_runtime_db_path,
+            ) {
+                Ok(coverage) => (Some(coverage), None),
+                Err(error) => (
+                    None,
+                    Some(format!(
+                        "failed reading current source observed_swaps coverage {}: {error:#}",
+                        source_runtime_db_path.display()
+                    )),
+                ),
+            },
+            None => (None, None),
+        };
+
+        let source_cached_state_matches_scanned_rows =
+            match (source_state, source_scanned_coverage.as_ref()) {
+                (Some(source_state), Some(source_scanned_coverage)) => Some(
+                    Self::recent_raw_source_state_matches_observed_swaps_coverage(
+                        source_state,
+                        source_scanned_coverage,
+                    ),
+                ),
+                _ => None,
+            };
+        let source_window_matches_current_bounded_contract =
+            source_cached_state_matches_scanned_rows;
+        let source_start_matches_promoted_start = match same_source_db_as_promoted {
+            Some(true) => match (
+                source_state.and_then(|state| state.covered_since),
+                promoted_manifest.and_then(|manifest| manifest.covered_since),
+            ) {
+                (Some(source_since), Some(promoted_since)) => Some(source_since == promoted_since),
+                _ => None,
+            },
+            Some(false) | None => None,
+        };
+        let source_start_later_than_promoted = match same_source_db_as_promoted {
+            Some(true) => match (
+                source_state.and_then(|state| state.covered_since),
+                promoted_manifest.and_then(|manifest| manifest.covered_since),
+            ) {
+                (Some(source_since), Some(promoted_since)) => Some(source_since > promoted_since),
+                _ => None,
+            },
+            Some(false) | None => None,
+        };
+        let source_contract_currently_excludes_older_rows = match (
+            source_window_matches_current_bounded_contract,
+            source_scanned_coverage.as_ref(),
+            same_source_db_as_promoted,
+            promoted_manifest,
+        ) {
+            (Some(true), Some(source_scanned_coverage), Some(true), Some(promoted_manifest)) => {
+                match (source_scanned_coverage.covered_since, promoted_manifest.covered_since) {
+                    (Some(source_since), Some(promoted_since)) => Some(source_since > promoted_since),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let promoted_reflects_older_still_promoted_window = match (
+            same_source_db_as_promoted,
+            source_start_later_than_promoted,
+        ) {
+            (Some(true), Some(value)) => Some(value),
+            _ => None,
+        };
+        let source_prune_activity_recorded = source_state.map(|state| {
+            state.last_pruned_rows > 0 && state.last_pruned_at.is_some()
+        });
+
+        let (
+            reason_class,
+            observed,
+            basis,
+            explanation,
+            basis_explanation,
+        ) = Self::classify_recent_raw_source_window_contract(
+            state.promoted_exists,
+            state.promoted.manifest_error.as_deref(),
+            current_source_state_available,
+            same_source_db_as_promoted,
+            source_window_matches_current_bounded_contract,
+            source_start_matches_promoted_start,
+            source_start_later_than_promoted,
+            source_contract_currently_excludes_older_rows,
+            promoted_reflects_older_still_promoted_window,
+            source_prune_activity_recorded,
+            source_scan_error.as_deref(),
+        );
+
+        Ok(RecentRawSourceWindowContractDiagnostic {
+            recent_raw_snapshot_dir: state.snapshot_dir.display().to_string(),
+            recent_raw_source_window_contract_observed: observed,
+            recent_raw_source_window_contract_reason_class: reason_class,
+            recent_raw_source_window_contract_explanation: explanation,
+            recent_raw_promoted_covered_since: promoted_manifest
+                .and_then(|manifest| manifest.covered_since),
+            recent_raw_source_covered_since: source_state.and_then(|state| state.covered_since),
+            recent_raw_source_scanned_covered_since: source_scanned_coverage
+                .as_ref()
+                .and_then(|coverage| coverage.covered_since),
+            recent_raw_promoted_covered_through: promoted_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.clone()),
+            recent_raw_source_covered_through: source_state
+                .and_then(|state| state.covered_through_cursor.clone()),
+            recent_raw_source_scanned_covered_through: source_scanned_coverage
+                .as_ref()
+                .and_then(|coverage| coverage.covered_through_cursor.clone()),
+            recent_raw_source_start_later_than_promoted: source_start_later_than_promoted,
+            recent_raw_source_contract_currently_excludes_older_rows:
+                source_contract_currently_excludes_older_rows,
+            recent_raw_source_window_matches_current_bounded_contract:
+                source_window_matches_current_bounded_contract,
+            recent_raw_promoted_reflects_older_still_promoted_window:
+                promoted_reflects_older_still_promoted_window,
+            recent_raw_source_window_contract_basis: basis,
+            recent_raw_source_window_contract_basis_explanation: basis_explanation,
+            recent_raw_source_same_source_db_as_promoted: same_source_db_as_promoted,
+            recent_raw_source_cached_state_matches_scanned_rows:
+                source_cached_state_matches_scanned_rows,
+            recent_raw_source_row_count: source_state.map(|state| state.row_count),
+            recent_raw_source_scanned_row_count: source_scanned_coverage
+                .as_ref()
+                .map(|coverage| coverage.row_count),
+            recent_raw_source_last_pruned_rows: source_state.map(|state| state.last_pruned_rows),
+            recent_raw_source_last_pruned_at: source_state.and_then(|state| state.last_pruned_at),
+            recent_raw_source_prune_activity_recorded: source_prune_activity_recorded,
         })
     }
 
@@ -48602,6 +48996,386 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn recent_raw_source_window_contract_matches_promoted_start_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-source-window-contract-matches-promoted-start",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:55:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:06:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            1,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_source_window_contract_read_only(&fixture.state_root)?;
+        assert_eq!(
+            diagnostic.recent_raw_source_window_contract_reason_class,
+            RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentStartMatchesPromotedStart
+        );
+        assert!(diagnostic.recent_raw_source_window_contract_observed);
+        assert_eq!(
+            diagnostic.recent_raw_source_start_later_than_promoted,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_window_matches_current_bounded_contract,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_window_contract_basis,
+            RecentRawSourceWindowContractBasis::MatchesPromotedStart
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_source_window_contract_excludes_older_rows_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-source-window-contract-excludes-older-rows",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-old",
+                    parse_ts("2026-04-14T07:54:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    9.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:06:00Z")?,
+        )?;
+        fixture.prune_source_state_before(
+            parse_ts("2026-04-14T07:56:00Z")?,
+            32,
+            parse_ts("2026-04-14T08:07:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:57:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_source_window_contract_read_only(&fixture.state_root)?;
+        assert_eq!(
+            diagnostic.recent_raw_source_window_contract_reason_class,
+            RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentContractExcludesOlderRows
+        );
+        assert!(diagnostic.recent_raw_source_window_contract_observed);
+        assert_eq!(
+            diagnostic.recent_raw_source_start_later_than_promoted,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_contract_currently_excludes_older_rows,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_window_matches_current_bounded_contract,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_prune_activity_recorded,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_window_contract_basis,
+            RecentRawSourceWindowContractBasis::CurrentSourceObservedSwapsWindowExcludesOlderRows
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_source_window_contract_promoted_reflects_older_window_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-source-window-contract-promoted-older-window",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:06:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:57:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_source_window_contract_read_only(&fixture.state_root)?;
+        assert_eq!(
+            diagnostic.recent_raw_source_window_contract_reason_class,
+            RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowPromotedSurfaceReflectsOlderWindow
+        );
+        assert!(diagnostic.recent_raw_source_window_contract_observed);
+        assert_eq!(
+            diagnostic.recent_raw_source_start_later_than_promoted,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_promoted_reflects_older_still_promoted_window,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_window_matches_current_bounded_contract,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_prune_activity_recorded,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_window_contract_basis,
+            RecentRawSourceWindowContractBasis::PromotedStillReflectsOlderWindowWhileCurrentSourceStartsLater
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_source_window_contract_unproven_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-source-window-contract-unproven",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            1,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_source_window_contract_read_only(&fixture.state_root)?;
+        assert_eq!(
+            diagnostic.recent_raw_source_window_contract_reason_class,
+            RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentAndPromotedContractRelationUnproven
+        );
+        assert!(!diagnostic.recent_raw_source_window_contract_observed);
+        assert_eq!(
+            diagnostic.recent_raw_source_window_contract_basis,
+            RecentRawSourceWindowContractBasis::Unproven
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_window_matches_current_bounded_contract,
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_source_window_contract_includes_explicit_fields_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-source-window-contract-fields",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-old",
+                    parse_ts("2026-04-14T07:54:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    9.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:06:00Z")?,
+        )?;
+        fixture.prune_source_state_before(
+            parse_ts("2026-04-14T07:56:00Z")?,
+            32,
+            parse_ts("2026-04-14T08:07:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:57:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_source_window_contract_read_only(&fixture.state_root)?;
+        assert!(diagnostic.recent_raw_promoted_covered_since.is_some());
+        assert!(diagnostic.recent_raw_source_covered_since.is_some());
+        assert!(diagnostic.recent_raw_source_scanned_covered_since.is_some());
+        assert_eq!(
+            diagnostic.recent_raw_source_start_later_than_promoted,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_window_matches_current_bounded_contract,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_cached_state_matches_scanned_rows,
+            Some(true)
+        );
+        assert!(
+            !diagnostic
+                .recent_raw_source_window_contract_basis_explanation
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_source_window_contract_explain_remains_read_only_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-source-window-contract-read-only",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-old",
+                    parse_ts("2026-04-14T07:54:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    9.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:06:00Z")?,
+        )?;
+        fixture.prune_source_state_before(
+            parse_ts("2026-04-14T07:56:00Z")?,
+            32,
+            parse_ts("2026-04-14T08:07:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:57:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+
+        let before = fixture.capture_bytes()?;
+        let _ =
+            DiscoveryService::explain_recent_raw_source_window_contract_read_only(&fixture.state_root)?;
+        let after = fixture.capture_bytes()?;
+        assert_eq!(before, after);
+        Ok(())
+    }
+
     struct RecentRawPromotionFixture {
         _temp: tempfile::TempDir,
         state_root: PathBuf,
@@ -48819,6 +49593,16 @@ mod tests {
             let store = SqliteStore::open(&self.runtime_db_path)?;
             store.insert_recent_raw_journal_batch(swaps, completed_at)?;
             Ok(())
+        }
+
+        fn prune_source_state_before(
+            &self,
+            cutoff: DateTime<Utc>,
+            batch_size: usize,
+            pruned_at: DateTime<Utc>,
+        ) -> Result<usize> {
+            let store = SqliteStore::open(&self.runtime_db_path)?;
+            store.prune_recent_raw_journal_before_batch(cutoff, batch_size, pruned_at)
         }
 
         fn write_selected_staged_surface_sqlite_with_source_path_and_created_at(
