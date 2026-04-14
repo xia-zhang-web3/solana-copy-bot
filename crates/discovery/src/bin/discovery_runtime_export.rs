@@ -8,7 +8,8 @@ use copybot_discovery::runtime_restore_ops::{
 };
 use copybot_discovery::{
     DiscoveryService, RecentRawCatchUpDiagnostic, RecentRawPromotionBlockerDiagnostic,
-    RecentRawStagedLineageDiagnostic, RecentRawStagedRegressionDiagnostic,
+    RecentRawStagedBirthDiagnostic, RecentRawStagedLineageDiagnostic,
+    RecentRawStagedRegressionDiagnostic,
 };
 use copybot_storage::{DiscoveryRuntimeArtifact, SqliteStore};
 use serde::Serialize;
@@ -20,7 +21,8 @@ const USAGE: &str = "usage:
   discovery_runtime_export --explain-recent-raw-promotion-blocker --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-catch-up-status --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
-  discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]";
+  discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]
+  discovery_runtime_export --explain-recent-raw-staged-birth --state-root <path> [--json]";
 
 fn main() -> Result<()> {
     let Some(command) = parse_args()? else {
@@ -67,12 +69,19 @@ struct ExplainRecentRawStagedRegressionConfig {
 }
 
 #[derive(Debug, Clone)]
+struct ExplainRecentRawStagedBirthConfig {
+    state_root: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 enum Command {
     Export(Config),
     ExplainRecentRawPromotionBlocker(ExplainRecentRawPromotionBlockerConfig),
     ExplainRecentRawCatchUpStatus(ExplainRecentRawCatchUpStatusConfig),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
+    ExplainRecentRawStagedBirth(ExplainRecentRawStagedBirthConfig),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,6 +123,7 @@ where
     let mut explain_recent_raw_catch_up_status = false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
+    let mut explain_recent_raw_staged_birth = false;
     let mut config_path: Option<PathBuf> = None;
     let mut state_root: Option<PathBuf> = None;
     let mut db_path: Option<PathBuf> = None;
@@ -136,6 +146,9 @@ where
             }
             "--explain-recent-raw-staged-regression" => {
                 explain_recent_raw_staged_regression = true;
+            }
+            "--explain-recent-raw-staged-birth" => {
+                explain_recent_raw_staged_birth = true;
             }
             "--config" => {
                 config_path = Some(PathBuf::from(parse_string_arg("--config", args.next())?))
@@ -161,10 +174,11 @@ where
     let explain_mode_count = usize::from(explain_recent_raw_promotion_blocker)
         + usize::from(explain_recent_raw_catch_up_status)
         + usize::from(explain_recent_raw_staged_lineage)
-        + usize::from(explain_recent_raw_staged_regression);
+        + usize::from(explain_recent_raw_staged_regression)
+        + usize::from(explain_recent_raw_staged_birth);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-staged-lineage, and --explain-recent-raw-staged-regression are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
 
@@ -242,9 +256,27 @@ where
         )));
     }
 
+    if explain_recent_raw_staged_birth {
+        if config_path.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+        {
+            bail!("--explain-recent-raw-staged-birth only accepts --state-root and optional --json");
+        }
+        return Ok(Some(Command::ExplainRecentRawStagedBirth(
+            ExplainRecentRawStagedBirthConfig {
+                state_root: state_root.ok_or_else(|| anyhow!("missing required --state-root"))?,
+                json,
+            },
+        )));
+    }
+
     if state_root.is_some() {
         bail!(
-            "--state-root requires --explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-staged-lineage, or --explain-recent-raw-staged-regression"
+            "--state-root requires --explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, or --explain-recent-raw-staged-birth"
         );
     }
     if scheduled == output_path.is_some() {
@@ -319,6 +351,16 @@ fn run_command(command: Command) -> Result<String> {
                     .context("failed serializing recent_raw staged regression json")
             } else {
                 Ok(render_recent_raw_staged_regression_human(&diagnostic))
+            }
+        }
+        Command::ExplainRecentRawStagedBirth(config) => {
+            let diagnostic =
+                DiscoveryService::explain_recent_raw_staged_birth_read_only(&config.state_root)?;
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic)
+                    .context("failed serializing recent_raw staged birth json")
+            } else {
+                Ok(render_recent_raw_staged_birth_human(&diagnostic))
             }
         }
     }
@@ -864,12 +906,79 @@ fn render_recent_raw_staged_regression_human(
     .join("\n")
 }
 
+fn render_recent_raw_staged_birth_human(diagnostic: &RecentRawStagedBirthDiagnostic) -> String {
+    [
+        "event=discovery_recent_raw_staged_birth".to_string(),
+        format!("snapshot_dir={}", diagnostic.recent_raw_snapshot_dir),
+        format!(
+            "staged_birth_observed={}",
+            diagnostic.recent_raw_staged_birth_observed
+        ),
+        format!(
+            "staged_birth_proven_from_current_artifacts={}",
+            diagnostic.recent_raw_staged_birth_proven_from_current_artifacts
+        ),
+        format!(
+            "reason_class={}",
+            serde_json::to_string(&diagnostic.recent_raw_staged_birth_reason_class)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "staged_birth_snapshot_path={}",
+            diagnostic.recent_raw_staged_birth_snapshot_path
+        ),
+        format!(
+            "staged_birth_metadata_path={}",
+            diagnostic.recent_raw_staged_birth_metadata_path
+        ),
+        format!(
+            "staged_birth_created_after_promoted={}",
+            diagnostic
+                .recent_raw_staged_birth_created_after_promoted
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "staged_birth_window_later_start_than_promoted={}",
+            diagnostic
+                .recent_raw_staged_birth_window_later_start_than_promoted
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "staged_birth_window_narrower_or_older_than_promoted={}",
+            diagnostic
+                .recent_raw_staged_birth_window_narrower_or_older_than_promoted
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "staged_birth_manifest_matches_sqlite_content={}",
+            diagnostic
+                .recent_raw_staged_birth_manifest_matches_sqlite_content
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "staged_birth_manifest_sqlite_match_unproven={}",
+            diagnostic.recent_raw_staged_birth_manifest_sqlite_match_unproven
+        ),
+        format!(
+            "explanation={}",
+            diagnostic.recent_raw_staged_birth_explanation
+        ),
+    ]
+    .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         load_json, parse_args_from, run, run_command, write_json_atomic, Command, Config,
         ExplainRecentRawCatchUpStatusConfig, ExplainRecentRawPromotionBlockerConfig,
-        ExplainRecentRawStagedLineageConfig, ExplainRecentRawStagedRegressionConfig,
+        ExplainRecentRawStagedBirthConfig, ExplainRecentRawStagedLineageConfig,
+        ExplainRecentRawStagedRegressionConfig,
     };
     use anyhow::{Context, Result};
     use chrono::{DateTime, Duration, Utc};
@@ -973,6 +1082,23 @@ mod tests {
         .expect("command should be present");
         let Command::ExplainRecentRawStagedRegression(parsed) = parsed else {
             panic!("expected staged regression command");
+        };
+        assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_recent_raw_staged_birth_mode() {
+        let parsed = parse_args_from(vec![
+            "--explain-recent-raw-staged-birth".to_string(),
+            "--state-root".to_string(),
+            "/tmp/state".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ExplainRecentRawStagedBirth(parsed) = parsed else {
+            panic!("expected staged birth command");
         };
         assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
         assert!(parsed.json);
@@ -1294,6 +1420,95 @@ mod tests {
         );
         assert_eq!(parsed["recent_raw_staged_candidate_count"], 1);
         assert_eq!(parsed["recent_raw_multiple_staged_candidates_present"], false);
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_recent_raw_staged_birth_renders_json() -> Result<()> {
+        let fixture = make_fixture("runtime-export-recent-raw-staged-birth")?;
+        let state_root = fixture
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("state");
+        let recent_raw_dir = state_root.join("discovery_restore/recent_raw");
+        fs::create_dir_all(&recent_raw_dir)?;
+        seed_recent_raw_source_state(&fixture.store, &fixture.db_path, &recent_raw_dir)?;
+        let promoted_path = recent_raw_dir.join("latest.sqlite");
+        let promoted_metadata_path = recent_raw_dir.join("latest.json");
+        let staged_path = recent_raw_dir.join(".discovery_recent_raw_staged.sqlite.archive-staged");
+        let staged_metadata_path =
+            recent_raw_dir.join(".discovery_recent_raw_staged.sqlite.archive-staged.json");
+        fs::write(&promoted_path, b"promoted")?;
+        write_json_atomic(
+            &promoted_metadata_path,
+            &serde_json::json!({
+                "created_at": "2026-04-14T08:00:00Z",
+                "source_db_path": fixture.db_path.display().to_string(),
+                "snapshot_path": promoted_path.display().to_string(),
+                "row_count": 2,
+                "covered_since": "2026-04-14T07:55:00Z",
+                "covered_through_cursor": {
+                    "ts_utc": "2026-04-14T07:56:00Z",
+                    "slot": parse_ts("2026-04-14T07:56:00Z")?.timestamp() as u64,
+                    "signature": "sig-promoted"
+                },
+                "last_batch_completed_at": "2026-04-14T08:00:00Z",
+                "updated_at": "2026-04-14T08:00:00Z",
+                "snapshot_bytes": 8
+            }),
+        )?;
+        write_recent_raw_snapshot_sqlite_content(
+            &staged_path,
+            &[recent_raw_swap("raw-wallet", "sig-staged", parse_ts("2026-04-14T07:55:00Z")?)],
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        write_json_atomic(
+            &staged_metadata_path,
+            &serde_json::json!({
+                "created_at": "2026-04-14T08:05:00Z",
+                "source_db_path": fixture.db_path.display().to_string(),
+                "snapshot_path": staged_path.display().to_string(),
+                "row_count": 1,
+                "covered_since": "2026-04-14T07:55:00Z",
+                "covered_through_cursor": {
+                    "ts_utc": "2026-04-14T07:55:00Z",
+                    "slot": parse_ts("2026-04-14T07:55:00Z")?.timestamp() as u64,
+                    "signature": "sig-staged"
+                },
+                "last_batch_completed_at": "2026-04-14T08:05:00Z",
+                "updated_at": "2026-04-14T08:05:00Z",
+                "snapshot_bytes": 6
+            }),
+        )?;
+
+        let output = run_command(Command::ExplainRecentRawStagedBirth(
+            ExplainRecentRawStagedBirthConfig {
+                state_root,
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(
+            parsed["recent_raw_staged_birth_reason_class"],
+            "recent_raw_staged_current_artifact_manifest_and_sqlite_content_agree_but_behind"
+        );
+        assert_eq!(
+            parsed["recent_raw_staged_birth_proven_from_current_artifacts"],
+            false
+        );
+        assert_eq!(
+            parsed["recent_raw_staged_birth_manifest_matches_sqlite_content"],
+            true
+        );
+        assert_eq!(
+            parsed["recent_raw_staged_birth_manifest_sqlite_match_unproven"],
+            false
+        );
+        assert_eq!(
+            parsed["recent_raw_staged_birth_covered_through_relation_to_promoted"],
+            "behind"
+        );
         Ok(())
     }
 
@@ -1632,6 +1847,21 @@ mod tests {
         )?;
         std::fs::create_dir_all(recent_raw_dir)
             .with_context(|| format!("failed creating {}", recent_raw_dir.display()))?;
+        Ok(())
+    }
+
+    fn write_recent_raw_snapshot_sqlite_content(
+        snapshot_path: &Path,
+        swaps: &[copybot_core_types::SwapEvent],
+        completed_at: DateTime<Utc>,
+    ) -> Result<()> {
+        if snapshot_path.exists() {
+            fs::remove_file(snapshot_path)
+                .with_context(|| format!("failed removing {}", snapshot_path.display()))?;
+        }
+        let store = SqliteStore::open(snapshot_path)
+            .with_context(|| format!("failed opening {}", snapshot_path.display()))?;
+        store.insert_recent_raw_journal_batch(swaps, completed_at)?;
         Ok(())
     }
 

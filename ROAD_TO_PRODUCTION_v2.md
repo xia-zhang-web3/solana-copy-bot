@@ -11666,3 +11666,35 @@ Acceptance update, plinth-receipt / cachet-seal layer (`2026-03-31`):
    - the real host still remains non-green while Stage 3 / promoted 5-day
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
+
+Acceptance update, Stage 3 staged current-artifact proof surface (`2026-04-14`):
+
+1. The repo now has one more bounded read-only operator command on the primary
+   runtime-export path:
+   - `discovery_runtime_export --explain-recent-raw-staged-birth --state-root <path> --json`
+2. The contract is intentionally downgraded to honest current-artifact
+   evidence:
+   - it proves current selected staged manifest facts
+   - it proves current selected staged sqlite facts when read-only inspection
+     succeeds
+   - it proves current behind-ness or current later-start-window relative to
+     promoted latest on the same source lineage
+   - it does not claim those current facts prove the creation-time frontier
+3. The surface now emits an explicit proof boundary:
+   - `recent_raw_staged_birth_proven_from_current_artifacts=false`
+   - explanations now say `current-artifact evidence` instead of overclaiming
+     `at birth`
+4. The current evidence can now distinguish:
+   - current staged manifest/sqlite agreement but current behind-ness
+   - current later-start-window observation
+   - current manifest/sqlite mismatch
+   - unproven current-artifact inspection
+5. Acceptance stayed on the bounded proof-only surface:
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+6. Current production implication:
+   - this batch improves operator truth around the same-source staged
+     regression incident
+   - it does not change snapshot behavior, promotion behavior, replay/export
+     semantics, or production authorization

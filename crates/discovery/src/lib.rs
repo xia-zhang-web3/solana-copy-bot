@@ -2498,6 +2498,50 @@ pub struct RecentRawStagedRegressionDiagnostic {
     pub recent_raw_selected_staged_covered_since_relation_to_promoted: RecentRawLineageRelation,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawStagedBirthReasonClass {
+    RecentRawStagedCurrentArtifactLaterStartWindowObserved,
+    RecentRawStagedCurrentArtifactManifestAndSqliteContentAgreeButBehind,
+    RecentRawStagedCurrentArtifactManifestSqliteMismatch,
+    RecentRawStagedCurrentArtifactUnprovenDueToMissingEvidence,
+    RecentRawStagedCurrentArtifactNotCurrentlyBehindPromoted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentRawStagedBirthDiagnostic {
+    pub recent_raw_snapshot_dir: String,
+    pub recent_raw_staged_birth_observed: bool,
+    pub recent_raw_staged_birth_proven_from_current_artifacts: bool,
+    pub recent_raw_staged_birth_reason_class: RecentRawStagedBirthReasonClass,
+    pub recent_raw_staged_birth_explanation: String,
+    pub recent_raw_staged_birth_snapshot_path: String,
+    pub recent_raw_staged_birth_metadata_path: String,
+    pub recent_raw_staged_birth_created_at: Option<DateTime<Utc>>,
+    pub recent_raw_staged_birth_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_staged_birth_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_staged_birth_row_count: Option<usize>,
+    pub recent_raw_promoted_created_at: Option<DateTime<Utc>>,
+    pub recent_raw_promoted_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_promoted_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_promoted_row_count: Option<usize>,
+    pub recent_raw_staged_birth_created_after_promoted: Option<bool>,
+    pub recent_raw_staged_birth_covered_since_relation_to_promoted: RecentRawLineageRelation,
+    pub recent_raw_staged_birth_covered_through_relation_to_promoted: RecentRawLineageRelation,
+    pub recent_raw_staged_birth_row_count_relation_to_promoted: RecentRawLineageRelation,
+    pub recent_raw_staged_birth_window_later_start_than_promoted: Option<bool>,
+    pub recent_raw_staged_birth_window_narrower_or_older_than_promoted: Option<bool>,
+    pub recent_raw_staged_birth_same_source_db_as_promoted: Option<bool>,
+    pub recent_raw_staged_birth_source_outruns_both: Option<bool>,
+    pub recent_raw_staged_birth_manifest_matches_sqlite_content: Option<bool>,
+    pub recent_raw_staged_birth_manifest_sqlite_match_unproven: bool,
+    pub recent_raw_staged_birth_sqlite_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_staged_birth_sqlite_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_staged_birth_sqlite_row_count: Option<usize>,
+    pub recent_raw_staged_birth_sqlite_last_batch_completed_at: Option<DateTime<Utc>>,
+    pub recent_raw_staged_birth_sqlite_inspection_error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct RecentRawPromotionSnapshotManifest {
     created_at: DateTime<Utc>,
@@ -2524,6 +2568,12 @@ struct RecentRawStagedCandidateRead {
     snapshot_path: PathBuf,
     metadata_path: PathBuf,
     surface: RecentRawSurfaceRead,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RecentRawSnapshotSqliteContentRead {
+    state: Option<RecentRawJournalStateRow>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3072,6 +3122,29 @@ impl DiscoveryService {
         }
     }
 
+    fn read_recent_raw_snapshot_sqlite_content_read_only(
+        snapshot_path: &Path,
+    ) -> RecentRawSnapshotSqliteContentRead {
+        if !snapshot_path.exists() {
+            return RecentRawSnapshotSqliteContentRead::default();
+        }
+        match SqliteStore::open_read_only(snapshot_path)
+            .and_then(|store| store.recent_raw_journal_state_cached_read_only_required())
+        {
+            Ok(state) => RecentRawSnapshotSqliteContentRead {
+                state: Some(state),
+                error: None,
+            },
+            Err(error) => RecentRawSnapshotSqliteContentRead {
+                state: None,
+                error: Some(format!(
+                    "failed reading staged snapshot sqlite content {}: {error:#}",
+                    snapshot_path.display()
+                )),
+            },
+        }
+    }
+
     fn recent_raw_source_outruns_manifest(
         source_state: &RecentRawJournalStateRow,
         manifest: &RecentRawPromotionSnapshotManifest,
@@ -3141,6 +3214,17 @@ impl DiscoveryService {
                 RecentRawManifestProgressRelation::Equivalent
             },
         )
+    }
+
+    fn recent_raw_optional_cursor_equal(
+        left: Option<&DiscoveryRuntimeCursor>,
+        right: Option<&DiscoveryRuntimeCursor>,
+    ) -> bool {
+        match (left, right) {
+            (Some(left), Some(right)) => Self::runtime_cursor_cmp(left, right) == Ordering::Equal,
+            (None, None) => true,
+            _ => false,
+        }
     }
 
     fn recent_raw_staged_selection_reason(
@@ -4225,6 +4309,104 @@ impl DiscoveryService {
         )
     }
 
+    fn classify_recent_raw_staged_birth(
+        state: &RecentRawDiagnosticState,
+        same_source_db_as_promoted: Option<bool>,
+        created_after_promoted: Option<bool>,
+        covered_since_relation_to_promoted: RecentRawLineageRelation,
+        covered_through_relation_to_promoted: RecentRawLineageRelation,
+        row_count_relation_to_promoted: RecentRawLineageRelation,
+        manifest_matches_sqlite_content: Option<bool>,
+        sqlite_inspection_error: Option<&str>,
+    ) -> (
+        RecentRawStagedBirthReasonClass,
+        bool,
+        String,
+    ) {
+        if state.promoted.manifest_error.is_some() || state.staged.manifest_error.is_some() {
+            return (
+                RecentRawStagedBirthReasonClass::RecentRawStagedCurrentArtifactUnprovenDueToMissingEvidence,
+                false,
+                format!(
+                    "recent_raw staged current-artifact evidence is unproven because one or more snapshot surfaces are partial or invalid (promoted_error={}, staged_error={})",
+                    state.promoted.manifest_error.as_deref().unwrap_or("null"),
+                    state.staged.manifest_error.as_deref().unwrap_or("null"),
+                ),
+            );
+        }
+
+        match same_source_db_as_promoted {
+            Some(false) => {
+                return (
+                    RecentRawStagedBirthReasonClass::RecentRawStagedCurrentArtifactUnprovenDueToMissingEvidence,
+                    false,
+                    "recent_raw staged current-artifact evidence is unproven on this run because staged and promoted do not point at the same source_db_path".to_string(),
+                )
+            }
+            None => {
+                return (
+                    RecentRawStagedBirthReasonClass::RecentRawStagedCurrentArtifactUnprovenDueToMissingEvidence,
+                    false,
+                    "recent_raw staged current-artifact evidence is unproven because the staged/promoted source_db_path values could not both be proven from current manifests".to_string(),
+                )
+            }
+            Some(true) => {}
+        }
+
+        let birth_behind = matches!(covered_since_relation_to_promoted, RecentRawLineageRelation::Behind)
+            || matches!(covered_through_relation_to_promoted, RecentRawLineageRelation::Behind)
+            || matches!(row_count_relation_to_promoted, RecentRawLineageRelation::Behind);
+
+        if manifest_matches_sqlite_content == Some(false) {
+            return (
+                RecentRawStagedBirthReasonClass::RecentRawStagedCurrentArtifactManifestSqliteMismatch,
+                true,
+                "recent_raw staged current-artifact evidence shows the selected staged manifest and the current staged sqlite content disagree on covered_since, covered_through, or row_count. This proves a current artifact mismatch, not a creation-time frontier.".to_string(),
+            );
+        }
+
+        if manifest_matches_sqlite_content.is_none() {
+            return (
+                RecentRawStagedBirthReasonClass::RecentRawStagedCurrentArtifactUnprovenDueToMissingEvidence,
+                false,
+                format!(
+                    "recent_raw staged current-artifact evidence is unproven because the selected staged sqlite content could not be proven read-only from {}{}",
+                    state.staged_snapshot_path.display(),
+                    sqlite_inspection_error
+                        .map(|error| format!(" ({error})"))
+                        .unwrap_or_default()
+                ),
+            );
+        }
+
+        if !birth_behind {
+            return (
+                RecentRawStagedBirthReasonClass::RecentRawStagedCurrentArtifactNotCurrentlyBehindPromoted,
+                true,
+                "recent_raw staged current-artifact facts are internally consistent and the selected staged artifact is not currently behind promoted latest on covered_since, covered_through, or row_count. Current artifacts do not prove what frontier existed at creation time.".to_string(),
+            );
+        }
+
+        if matches!(covered_since_relation_to_promoted, RecentRawLineageRelation::Behind) {
+            return (
+                RecentRawStagedBirthReasonClass::RecentRawStagedCurrentArtifactLaterStartWindowObserved,
+                true,
+                format!(
+                    "recent_raw staged current-artifact evidence shows a later/narrower start window than promoted latest: the selected staged artifact was created {} promoted latest on the same source_db_path, but its current covered_since starts later and it is currently behind promoted on covered_through or row_count. Current artifacts do not prove whether that later-start window was already present at creation time.",
+                    created_after_promoted
+                        .map(|value| if value { "after" } else { "before or at the same time as" })
+                        .unwrap_or("relative to")
+                ),
+            );
+        }
+
+        (
+            RecentRawStagedBirthReasonClass::RecentRawStagedCurrentArtifactManifestAndSqliteContentAgreeButBehind,
+            true,
+            "recent_raw staged manifest and current staged sqlite content agree on covered_since, covered_through, and row_count, but the selected staged artifact is currently behind promoted latest on the same source_db_path. Current artifacts do not prove whether that behind frontier was already present at creation time.".to_string(),
+        )
+    }
+
     pub fn explain_recent_raw_staged_lineage_read_only(
         state_root: &Path,
     ) -> Result<RecentRawStagedLineageDiagnostic> {
@@ -4511,6 +4693,134 @@ impl DiscoveryService {
                 row_count_relation_to_promoted,
             recent_raw_selected_staged_covered_since_relation_to_promoted:
                 covered_since_relation_to_promoted,
+        })
+    }
+
+    pub fn explain_recent_raw_staged_birth_read_only(
+        state_root: &Path,
+    ) -> Result<RecentRawStagedBirthDiagnostic> {
+        let state = Self::load_recent_raw_diagnostic_state_read_only(state_root);
+        let promoted_manifest = state.promoted.manifest.as_ref();
+        let staged_manifest = state.staged.manifest.as_ref();
+        let same_source_db_as_promoted = match (staged_manifest, promoted_manifest) {
+            (Some(staged_manifest), Some(promoted_manifest)) => {
+                Some(staged_manifest.source_db_path == promoted_manifest.source_db_path)
+            }
+            _ => None,
+        };
+        let created_after_promoted = match (staged_manifest, promoted_manifest) {
+            (Some(staged_manifest), Some(promoted_manifest)) => {
+                Some(staged_manifest.created_at > promoted_manifest.created_at)
+            }
+            _ => None,
+        };
+        let covered_since_relation_to_promoted =
+            Self::recent_raw_lineage_relation_from_covered_since(
+                staged_manifest.and_then(|manifest| manifest.covered_since.as_ref()),
+                promoted_manifest.and_then(|manifest| manifest.covered_since.as_ref()),
+                same_source_db_as_promoted,
+            );
+        let covered_through_relation_to_promoted = Self::recent_raw_lineage_relation_from_cursor(
+            staged_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
+            promoted_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
+            same_source_db_as_promoted,
+        );
+        let row_count_relation_to_promoted = Self::recent_raw_lineage_relation_from_optional_row_count(
+            staged_manifest.map(|manifest| manifest.row_count),
+            promoted_manifest.map(|manifest| manifest.row_count),
+            same_source_db_as_promoted,
+        );
+        let window_later_start_than_promoted = match same_source_db_as_promoted {
+            Some(true) => Some(matches!(
+                covered_since_relation_to_promoted,
+                RecentRawLineageRelation::Behind
+            )),
+            Some(false) | None => None,
+        };
+        let window_narrower_or_older_than_promoted = match same_source_db_as_promoted {
+            Some(true) => Some(
+                matches!(covered_since_relation_to_promoted, RecentRawLineageRelation::Behind)
+                    || matches!(
+                        covered_through_relation_to_promoted,
+                        RecentRawLineageRelation::Behind
+                    )
+                    || matches!(row_count_relation_to_promoted, RecentRawLineageRelation::Behind),
+            ),
+            Some(false) | None => None,
+        };
+        let source_outruns_both = match (state.source_outruns_staged, state.source_outruns_promoted) {
+            (Some(staged), Some(promoted)) => Some(staged && promoted),
+            _ => None,
+        };
+
+        let sqlite_content =
+            Self::read_recent_raw_snapshot_sqlite_content_read_only(&state.staged_snapshot_path);
+        let sqlite_state = sqlite_content.state.as_ref();
+        let manifest_matches_sqlite_content = match (staged_manifest, sqlite_state) {
+            (Some(manifest), Some(sqlite_state)) => Some(
+                manifest.row_count == sqlite_state.row_count
+                    && manifest.covered_since == sqlite_state.covered_since
+                    && Self::recent_raw_optional_cursor_equal(
+                        manifest.covered_through_cursor.as_ref(),
+                        sqlite_state.covered_through_cursor.as_ref(),
+                    ),
+            ),
+            _ => None,
+        };
+        let manifest_sqlite_match_unproven = manifest_matches_sqlite_content.is_none();
+        let (reason_class, observed, explanation) = Self::classify_recent_raw_staged_birth(
+            &state,
+            same_source_db_as_promoted,
+            created_after_promoted,
+            covered_since_relation_to_promoted,
+            covered_through_relation_to_promoted,
+            row_count_relation_to_promoted,
+            manifest_matches_sqlite_content,
+            sqlite_content.error.as_deref(),
+        );
+
+        Ok(RecentRawStagedBirthDiagnostic {
+            recent_raw_snapshot_dir: state.snapshot_dir.display().to_string(),
+            recent_raw_staged_birth_observed: observed,
+            recent_raw_staged_birth_proven_from_current_artifacts: false,
+            recent_raw_staged_birth_reason_class: reason_class,
+            recent_raw_staged_birth_explanation: explanation,
+            recent_raw_staged_birth_snapshot_path: state.staged_snapshot_path.display().to_string(),
+            recent_raw_staged_birth_metadata_path: state.staged_metadata_path.display().to_string(),
+            recent_raw_staged_birth_created_at: staged_manifest.map(|manifest| manifest.created_at),
+            recent_raw_staged_birth_covered_since: staged_manifest.and_then(|manifest| manifest.covered_since),
+            recent_raw_staged_birth_covered_through: staged_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.clone()),
+            recent_raw_staged_birth_row_count: staged_manifest.map(|manifest| manifest.row_count),
+            recent_raw_promoted_created_at: promoted_manifest.map(|manifest| manifest.created_at),
+            recent_raw_promoted_covered_since: promoted_manifest.and_then(|manifest| manifest.covered_since),
+            recent_raw_promoted_covered_through: promoted_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.clone()),
+            recent_raw_promoted_row_count: promoted_manifest.map(|manifest| manifest.row_count),
+            recent_raw_staged_birth_created_after_promoted: created_after_promoted,
+            recent_raw_staged_birth_covered_since_relation_to_promoted:
+                covered_since_relation_to_promoted,
+            recent_raw_staged_birth_covered_through_relation_to_promoted:
+                covered_through_relation_to_promoted,
+            recent_raw_staged_birth_row_count_relation_to_promoted: row_count_relation_to_promoted,
+            recent_raw_staged_birth_window_later_start_than_promoted:
+                window_later_start_than_promoted,
+            recent_raw_staged_birth_window_narrower_or_older_than_promoted:
+                window_narrower_or_older_than_promoted,
+            recent_raw_staged_birth_same_source_db_as_promoted: same_source_db_as_promoted,
+            recent_raw_staged_birth_source_outruns_both: source_outruns_both,
+            recent_raw_staged_birth_manifest_matches_sqlite_content:
+                manifest_matches_sqlite_content,
+            recent_raw_staged_birth_manifest_sqlite_match_unproven:
+                manifest_sqlite_match_unproven,
+            recent_raw_staged_birth_sqlite_covered_since:
+                sqlite_state.and_then(|state| state.covered_since),
+            recent_raw_staged_birth_sqlite_covered_through:
+                sqlite_state.and_then(|state| state.covered_through_cursor.clone()),
+            recent_raw_staged_birth_sqlite_row_count: sqlite_state.map(|state| state.row_count),
+            recent_raw_staged_birth_sqlite_last_batch_completed_at:
+                sqlite_state.and_then(|state| state.last_batch_completed_at),
+            recent_raw_staged_birth_sqlite_inspection_error: sqlite_content.error,
         })
     }
 
@@ -47089,6 +47399,304 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn recent_raw_staged_birth_current_artifact_agree_but_behind_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-birth-agree-behind",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        fixture.write_selected_staged_snapshot_sqlite_content(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-staged",
+                    parse_ts("2026-04-14T07:55:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_birth_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_birth_reason_class,
+            RecentRawStagedBirthReasonClass::RecentRawStagedCurrentArtifactManifestAndSqliteContentAgreeButBehind
+        );
+        assert!(!diagnostic.recent_raw_staged_birth_proven_from_current_artifacts);
+        assert_eq!(
+            diagnostic.recent_raw_staged_birth_manifest_matches_sqlite_content,
+            Some(true)
+        );
+        assert!(!diagnostic.recent_raw_staged_birth_manifest_sqlite_match_unproven);
+        assert_eq!(
+            diagnostic.recent_raw_staged_birth_covered_through_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_birth_current_artifact_later_start_window_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-birth-reseeded-window",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:57:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface_with_source_path_and_covered_since(
+            &fixture.runtime_db_path,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            1,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        fixture.write_selected_staged_snapshot_sqlite_content(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-staged",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_birth_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_birth_reason_class,
+            RecentRawStagedBirthReasonClass::RecentRawStagedCurrentArtifactLaterStartWindowObserved
+        );
+        assert!(!diagnostic.recent_raw_staged_birth_proven_from_current_artifacts);
+        assert_eq!(
+            diagnostic.recent_raw_staged_birth_window_later_start_than_promoted,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_birth_manifest_matches_sqlite_content,
+            Some(true)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_birth_manifest_sqlite_mismatch_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-birth-manifest-sqlite-mismatch",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-staged-manifest",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        fixture.write_selected_staged_snapshot_sqlite_content(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-staged-a",
+                    parse_ts("2026-04-14T07:55:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-staged-b",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_birth_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_birth_reason_class,
+            RecentRawStagedBirthReasonClass::RecentRawStagedCurrentArtifactManifestSqliteMismatch
+        );
+        assert!(!diagnostic.recent_raw_staged_birth_proven_from_current_artifacts);
+        assert_eq!(
+            diagnostic.recent_raw_staged_birth_manifest_matches_sqlite_content,
+            Some(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_birth_unproven_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-birth-unproven",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_birth_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_birth_reason_class,
+            RecentRawStagedBirthReasonClass::RecentRawStagedCurrentArtifactUnprovenDueToMissingEvidence
+        );
+        assert!(!diagnostic.recent_raw_staged_birth_observed);
+        assert!(!diagnostic.recent_raw_staged_birth_proven_from_current_artifacts);
+        assert!(diagnostic.recent_raw_staged_birth_manifest_sqlite_match_unproven);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_birth_includes_birth_identity_fields_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-birth-fields",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        fixture.write_selected_staged_snapshot_sqlite_content(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-staged",
+                    parse_ts("2026-04-14T07:55:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_birth_read_only(&fixture.state_root)?;
+
+        assert!(diagnostic
+            .recent_raw_staged_birth_snapshot_path
+            .ends_with(".discovery_recent_raw_staged.sqlite.archive-staged"));
+        assert!(diagnostic
+            .recent_raw_staged_birth_metadata_path
+            .ends_with(".discovery_recent_raw_staged.sqlite.archive-staged.json"));
+        assert_eq!(
+            diagnostic.recent_raw_staged_birth_same_source_db_as_promoted,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_birth_sqlite_row_count,
+            Some(1)
+        );
+        assert!(!diagnostic.recent_raw_staged_birth_proven_from_current_artifacts);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_birth_explain_remains_read_only_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-birth-read-only",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        fixture.write_selected_staged_snapshot_sqlite_content(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-staged",
+                    parse_ts("2026-04-14T07:55:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        let before = fixture.capture_bytes()?;
+
+        let _ = DiscoveryService::explain_recent_raw_staged_birth_read_only(&fixture.state_root)?;
+
+        let after = fixture.capture_bytes()?;
+        assert_eq!(before, after);
+        Ok(())
+    }
+
     struct RecentRawPromotionFixture {
         _temp: tempfile::TempDir,
         state_root: PathBuf,
@@ -47267,6 +47875,24 @@ mod tests {
             runtime_restore_ops::write_json_atomic(&metadata_path, &manifest).with_context(
                 || format!("failed writing staged metadata {}", metadata_path.display()),
             )?;
+            Ok(())
+        }
+
+        fn write_selected_staged_snapshot_sqlite_content(
+            &self,
+            swaps: &[SwapEvent],
+            completed_at: DateTime<Utc>,
+        ) -> Result<()> {
+            let snapshot_path = self
+                .recent_raw_dir
+                .join(RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME);
+            if snapshot_path.exists() {
+                fs::remove_file(&snapshot_path)
+                    .with_context(|| format!("failed removing {}", snapshot_path.display()))?;
+            }
+            let store = SqliteStore::open(&snapshot_path)
+                .with_context(|| format!("failed opening {}", snapshot_path.display()))?;
+            store.insert_recent_raw_journal_batch(swaps, completed_at)?;
             Ok(())
         }
 
