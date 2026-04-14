@@ -9,6 +9,7 @@ use copybot_discovery::runtime_restore_ops::{
 use copybot_discovery::{
     DiscoveryService, RecentRawCatchUpDiagnostic, RecentRawPromotionBlockerDiagnostic,
     RecentRawPromotedRetentionContractDiagnostic,
+    RecentRawReplacementPromotionContractDiagnostic,
     RecentRawSourceWindowContractDiagnostic,
     RecentRawStagedBirthDiagnostic, RecentRawStagedLineageDiagnostic,
     RecentRawStagedRegressionDiagnostic, RecentRawStagedWindowSeedingDiagnostic,
@@ -24,6 +25,7 @@ const USAGE: &str = "usage:
   discovery_runtime_export --explain-recent-raw-catch-up-status --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-source-window-contract --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-promoted-retention-contract --state-root <path> [--json]
+  discovery_runtime_export --explain-recent-raw-replacement-promotion-contract --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-window-seeding --state-root <path> [--json]
@@ -74,6 +76,12 @@ struct ExplainRecentRawPromotedRetentionContractConfig {
 }
 
 #[derive(Debug, Clone)]
+struct ExplainRecentRawReplacementPromotionContractConfig {
+    state_root: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 struct ExplainRecentRawStagedLineageConfig {
     state_root: PathBuf,
     json: bool,
@@ -104,6 +112,9 @@ enum Command {
     ExplainRecentRawCatchUpStatus(ExplainRecentRawCatchUpStatusConfig),
     ExplainRecentRawSourceWindowContract(ExplainRecentRawSourceWindowContractConfig),
     ExplainRecentRawPromotedRetentionContract(ExplainRecentRawPromotedRetentionContractConfig),
+    ExplainRecentRawReplacementPromotionContract(
+        ExplainRecentRawReplacementPromotionContractConfig,
+    ),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
     ExplainRecentRawStagedBirth(ExplainRecentRawStagedBirthConfig),
@@ -149,6 +160,7 @@ where
     let mut explain_recent_raw_catch_up_status = false;
     let mut explain_recent_raw_source_window_contract = false;
     let mut explain_recent_raw_promoted_retention_contract = false;
+    let mut explain_recent_raw_replacement_promotion_contract = false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
@@ -175,6 +187,9 @@ where
             }
             "--explain-recent-raw-promoted-retention-contract" => {
                 explain_recent_raw_promoted_retention_contract = true;
+            }
+            "--explain-recent-raw-replacement-promotion-contract" => {
+                explain_recent_raw_replacement_promotion_contract = true;
             }
             "--explain-recent-raw-staged-lineage" => {
                 explain_recent_raw_staged_lineage = true;
@@ -213,13 +228,14 @@ where
         + usize::from(explain_recent_raw_catch_up_status)
         + usize::from(explain_recent_raw_source_window_contract)
         + usize::from(explain_recent_raw_promoted_retention_contract)
+        + usize::from(explain_recent_raw_replacement_promotion_contract)
         + usize::from(explain_recent_raw_staged_lineage)
         + usize::from(explain_recent_raw_staged_regression)
         + usize::from(explain_recent_raw_staged_birth)
         + usize::from(explain_recent_raw_staged_window_seeding);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
 
@@ -291,6 +307,24 @@ where
         }
         return Ok(Some(Command::ExplainRecentRawPromotedRetentionContract(
             ExplainRecentRawPromotedRetentionContractConfig {
+                state_root: state_root.ok_or_else(|| anyhow!("missing required --state-root"))?,
+                json,
+            },
+        )));
+    }
+
+    if explain_recent_raw_replacement_promotion_contract {
+        if config_path.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+        {
+            bail!("--explain-recent-raw-replacement-promotion-contract only accepts --state-root and optional --json");
+        }
+        return Ok(Some(Command::ExplainRecentRawReplacementPromotionContract(
+            ExplainRecentRawReplacementPromotionContractConfig {
                 state_root: state_root.ok_or_else(|| anyhow!("missing required --state-root"))?,
                 json,
             },
@@ -371,7 +405,7 @@ where
 
     if state_root.is_some() {
         bail!(
-            "--state-root requires --explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, or --explain-recent-raw-staged-birth"
+            "--state-root requires --explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, or --explain-recent-raw-staged-birth"
         );
     }
     if scheduled == output_path.is_some() {
@@ -450,6 +484,20 @@ fn run_command(command: Command) -> Result<String> {
                     .context("failed serializing recent_raw promoted retention contract json")
             } else {
                 Ok(render_recent_raw_promoted_retention_contract_human(
+                    &diagnostic,
+                ))
+            }
+        }
+        Command::ExplainRecentRawReplacementPromotionContract(config) => {
+            let diagnostic =
+                DiscoveryService::explain_recent_raw_replacement_promotion_contract_read_only(
+                    &config.state_root,
+                )?;
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic)
+                    .context("failed serializing recent_raw replacement promotion contract json")
+            } else {
+                Ok(render_recent_raw_replacement_promotion_contract_human(
                     &diagnostic,
                 ))
             }
@@ -1388,12 +1436,109 @@ fn render_recent_raw_promoted_retention_contract_human(
     .join("\n")
 }
 
+fn render_recent_raw_replacement_promotion_contract_human(
+    diagnostic: &RecentRawReplacementPromotionContractDiagnostic,
+) -> String {
+    [
+        "event=discovery_recent_raw_replacement_promotion_contract".to_string(),
+        format!("snapshot_dir={}", diagnostic.recent_raw_snapshot_dir),
+        format!(
+            "replacement_promotion_observed={}",
+            diagnostic.recent_raw_replacement_promotion_observed
+        ),
+        format!(
+            "reason_class={}",
+            serde_json::to_string(&diagnostic.recent_raw_replacement_promotion_reason_class)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "replacement_candidate_exists={}",
+            diagnostic.recent_raw_replacement_candidate_exists
+        ),
+        format!(
+            "replacement_candidate_source_db_matches_promoted={}",
+            diagnostic
+                .recent_raw_replacement_candidate_source_db_matches_promoted
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "replacement_candidate_start_matches_current_source={}",
+            diagnostic
+                .recent_raw_replacement_candidate_start_matches_current_source
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "replacement_candidate_complete_against_current_source={}",
+            diagnostic
+                .recent_raw_replacement_candidate_complete_against_current_source
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "replacement_candidate_promotable_now={}",
+            diagnostic
+                .recent_raw_replacement_candidate_promotable_now
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "replacement_candidate_covered_through_relation_to_promoted={}",
+            serde_json::to_string(
+                &diagnostic.recent_raw_replacement_candidate_covered_through_relation_to_promoted
+            )
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+        ),
+        format!(
+            "replacement_candidate_row_count_relation_to_promoted={}",
+            serde_json::to_string(
+                &diagnostic.recent_raw_replacement_candidate_row_count_relation_to_promoted
+            )
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+        ),
+        format!(
+            "replacement_promotion_would_retire_current_promoted_truth={}",
+            diagnostic
+                .recent_raw_replacement_promotion_would_retire_current_promoted_truth
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "stage3_blocked_on_replacement_candidate={}",
+            diagnostic
+                .recent_raw_stage3_blocked_on_replacement_candidate
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "promotion_reason_class={}",
+            serde_json::to_string(&diagnostic.recent_raw_promotion_reason_class)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "promotion_ready_now={}",
+            diagnostic.recent_raw_promotion_ready_now
+        ),
+        format!(
+            "explanation={}",
+            diagnostic.recent_raw_replacement_promotion_explanation
+        ),
+    ]
+    .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         load_json, parse_args_from, run, run_command, write_json_atomic, Command, Config,
         ExplainRecentRawCatchUpStatusConfig, ExplainRecentRawPromotionBlockerConfig,
         ExplainRecentRawPromotedRetentionContractConfig,
+        ExplainRecentRawReplacementPromotionContractConfig,
         ExplainRecentRawSourceWindowContractConfig,
         ExplainRecentRawStagedBirthConfig, ExplainRecentRawStagedLineageConfig,
         ExplainRecentRawStagedRegressionConfig, ExplainRecentRawStagedWindowSeedingConfig,
@@ -1568,6 +1713,23 @@ mod tests {
         .expect("command should be present");
         let Command::ExplainRecentRawPromotedRetentionContract(parsed) = parsed else {
             panic!("expected promoted retention contract command");
+        };
+        assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_recent_raw_replacement_promotion_contract_mode() {
+        let parsed = parse_args_from(vec![
+            "--explain-recent-raw-replacement-promotion-contract".to_string(),
+            "--state-root".to_string(),
+            "/tmp/state".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ExplainRecentRawReplacementPromotionContract(parsed) = parsed else {
+            panic!("expected replacement promotion contract command");
         };
         assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
         assert!(parsed.json);
@@ -2289,6 +2451,137 @@ mod tests {
         assert_eq!(
             parsed["recent_raw_source_window_contract_reason_class"],
             "recent_raw_source_window_current_contract_excludes_older_rows"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_recent_raw_replacement_promotion_contract_renders_json() -> Result<()> {
+        let fixture = make_fixture("runtime-export-recent-raw-replacement-promotion-contract")?;
+        let state_root = fixture
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("state");
+        let recent_raw_dir = state_root.join("discovery_restore/recent_raw");
+        fs::create_dir_all(&recent_raw_dir)?;
+        fixture.store.insert_recent_raw_journal_batch(
+            &[
+                recent_raw_swap(
+                    "raw-wallet",
+                    "sig-source-old",
+                    parse_ts("2026-04-14T07:55:00Z")?,
+                ),
+                recent_raw_swap(
+                    "raw-wallet",
+                    "sig-promoted",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                ),
+                recent_raw_swap(
+                    "raw-wallet",
+                    "sig-source",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                ),
+            ],
+            parse_ts("2026-04-14T08:06:00Z")?,
+        )?;
+        fixture.store.prune_recent_raw_journal_before_batch(
+            parse_ts("2026-04-14T07:56:00Z")?,
+            32,
+            parse_ts("2026-04-14T08:07:00Z")?,
+        )?;
+        let latest_path = recent_raw_dir.join("latest.sqlite");
+        let latest_metadata_path = recent_raw_dir.join("latest.json");
+        let staged_path = recent_raw_dir.join(".discovery_recent_raw_staged.sqlite.archive-staged");
+        let staged_metadata_path =
+            recent_raw_dir.join(".discovery_recent_raw_staged.sqlite.archive-staged.json");
+
+        let promoted_manifest = serde_json::json!({
+            "created_at": "2026-04-14T08:00:00Z",
+            "source_db_path": fixture.db_path.display().to_string(),
+            "snapshot_path": latest_path.display().to_string(),
+            "row_count": 2,
+            "covered_since": "2026-04-14T07:55:00Z",
+            "covered_through_cursor": {
+                "ts_utc": "2026-04-14T07:56:00Z",
+                "slot": parse_ts("2026-04-14T07:56:00Z")?.timestamp() as u64,
+                "signature": "sig-promoted"
+            },
+            "last_batch_completed_at": "2026-04-14T08:00:00Z",
+            "updated_at": "2026-04-14T08:00:00Z",
+            "snapshot_bytes": 8u64
+        });
+        fs::write(&latest_path, b"snapshot")
+            .with_context(|| format!("failed writing {}", latest_path.display()))?;
+        write_json_atomic(&latest_metadata_path, &promoted_manifest)?;
+        write_recent_raw_snapshot_sqlite_content(
+            &staged_path,
+            &[recent_raw_swap(
+                "raw-wallet",
+                "sig-promoted",
+                parse_ts("2026-04-14T07:56:00Z")?,
+            )],
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        let staged_bytes = fs::metadata(&staged_path)
+            .with_context(|| format!("failed stat {}", staged_path.display()))?
+            .len();
+        let staged_manifest = serde_json::json!({
+            "created_at": "2026-04-14T08:05:00Z",
+            "source_db_path": fixture.db_path.display().to_string(),
+            "snapshot_path": staged_path.display().to_string(),
+            "row_count": 1,
+            "covered_since": "2026-04-14T07:56:00Z",
+            "covered_through_cursor": {
+                "ts_utc": "2026-04-14T07:56:00Z",
+                "slot": parse_ts("2026-04-14T07:56:00Z")?.timestamp() as u64,
+                "signature": "sig-promoted"
+            },
+            "last_batch_completed_at": "2026-04-14T08:05:00Z",
+            "updated_at": "2026-04-14T08:05:00Z",
+            "snapshot_bytes": staged_bytes
+        });
+        write_json_atomic(&staged_metadata_path, &staged_manifest)?;
+
+        let rendered = run_command(Command::ExplainRecentRawReplacementPromotionContract(
+            ExplainRecentRawReplacementPromotionContractConfig {
+                state_root,
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["recent_raw_replacement_promotion_reason_class"],
+            "recent_raw_replacement_candidate_incomplete_against_current_source"
+        );
+        assert_eq!(parsed["recent_raw_replacement_candidate_exists"], true);
+        assert_eq!(
+            parsed["recent_raw_replacement_candidate_source_db_matches_promoted"],
+            true
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_candidate_start_matches_current_source"],
+            true
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_candidate_complete_against_current_source"],
+            false
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_candidate_promotable_now"],
+            false
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_promotion_would_retire_current_promoted_truth"],
+            true
+        );
+        assert_eq!(
+            parsed["recent_raw_stage3_blocked_on_replacement_candidate"],
+            true
+        );
+        assert_eq!(
+            parsed["recent_raw_promotion_reason_class"],
+            "recent_raw_promotion_blocked_by_incomplete_staged_coverage"
         );
         Ok(())
     }

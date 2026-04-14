@@ -11812,3 +11812,46 @@ Acceptance update, Stage 3 promoted-retention contract surface (`2026-04-14`):
      contract
    - the current source-window shift changes promotion/readiness state, but by
      itself does not retire the fixed promoted latest surface
+
+Acceptance update, Stage 3 replacement-promotion contract surface (`2026-04-14`):
+
+1. The repo now has one more bounded read-only operator command on the primary
+   runtime-export path:
+   - `discovery_runtime_export --explain-recent-raw-replacement-promotion-contract --state-root <path> --json`
+2. The contract is intentionally proof-only and replacement-path scoped:
+   - it proves whether a fixed staged replacement candidate currently exists
+   - it proves whether that candidate is incomplete against current source,
+     not newer than promoted, or promotable now
+   - it proves whether a successful replacement promotion would retire the
+     retained promoted latest truth surface
+   - it does not change snapshot behavior, promotion behavior, or replay/export
+     semantics
+3. The surface combines already accepted seams:
+   - bounded source-window contract
+   - promoted-retention contract
+   - current promotion blocker contract
+   and reduces them to one operator answer about the exact replacement blocker
+4. The current evidence can now distinguish:
+   - replacement candidate missing
+   - replacement candidate incomplete against current source
+   - replacement candidate complete but not newer than promoted
+   - replacement candidate ready to promote
+   - unproven current-contract inspection
+5. The surface emits explicit replacement-promotion fields such as:
+   - `recent_raw_replacement_candidate_exists`
+   - `recent_raw_replacement_candidate_source_db_matches_promoted`
+   - `recent_raw_replacement_candidate_start_matches_current_source`
+   - `recent_raw_replacement_candidate_complete_against_current_source`
+   - `recent_raw_replacement_candidate_promotable_now`
+   - `recent_raw_replacement_promotion_would_retire_current_promoted_truth`
+   - `recent_raw_stage3_blocked_on_replacement_candidate`
+6. Acceptance stayed on the bounded proof-only surface:
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_replacement_promotion_contract`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+7. Current production implication:
+   - this batch narrows the Stage 3 blocker to the replacement-promotion path
+     itself
+   - retained older promoted truth is no longer the terminal explanation; the
+     next operator question is whether the fixed staged candidate is incomplete,
+     not newer, or ready now
