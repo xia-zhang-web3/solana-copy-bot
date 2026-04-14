@@ -22,8 +22,8 @@ use copybot_storage::{
     DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateRow,
     DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
     DiscoveryTrustedSelectionStateUpdate, ObservedSolLegCursorAccessPath,
-    ObservedSwapsCoverageSnapshot, ObservedWalletActivityDayCountSource, ObservedWalletActivityRow,
-    PersistedWalletMetricSnapshotRow, RecentRawJournalStateRow, SqliteStore,
+    ObservedWalletActivityDayCountSource, ObservedWalletActivityRow, PersistedWalletMetricSnapshotRow,
+    RecentRawJournalStateRow, SqliteStore,
     StartupTrustedSelectionGateStatus, TrustedSelectionState, TrustedSnapshotSourceKind,
     TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite, WalletMetricRow,
     WalletUpsertRow,
@@ -2615,11 +2615,16 @@ pub struct RecentRawSourceWindowContractDiagnostic {
     pub recent_raw_source_window_contract_observed: bool,
     pub recent_raw_source_window_contract_reason_class: RecentRawSourceWindowContractReasonClass,
     pub recent_raw_source_window_contract_explanation: String,
+    pub recent_raw_source_window_probe_bounded: bool,
+    pub recent_raw_source_window_probe_mode: RecentRawSourceWindowProbeMode,
+    pub recent_raw_source_window_probe_explanation: String,
     pub recent_raw_promoted_covered_since: Option<DateTime<Utc>>,
     pub recent_raw_source_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_source_bounded_probe_covered_since: Option<DateTime<Utc>>,
     pub recent_raw_source_scanned_covered_since: Option<DateTime<Utc>>,
     pub recent_raw_promoted_covered_through: Option<DiscoveryRuntimeCursor>,
     pub recent_raw_source_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_source_bounded_probe_covered_through: Option<DiscoveryRuntimeCursor>,
     pub recent_raw_source_scanned_covered_through: Option<DiscoveryRuntimeCursor>,
     pub recent_raw_source_start_later_than_promoted: Option<bool>,
     pub recent_raw_source_contract_currently_excludes_older_rows: Option<bool>,
@@ -2628,12 +2633,19 @@ pub struct RecentRawSourceWindowContractDiagnostic {
     pub recent_raw_source_window_contract_basis: RecentRawSourceWindowContractBasis,
     pub recent_raw_source_window_contract_basis_explanation: String,
     pub recent_raw_source_same_source_db_as_promoted: Option<bool>,
+    pub recent_raw_source_cached_state_matches_bounded_probe: Option<bool>,
     pub recent_raw_source_cached_state_matches_scanned_rows: Option<bool>,
     pub recent_raw_source_row_count: Option<usize>,
     pub recent_raw_source_scanned_row_count: Option<usize>,
     pub recent_raw_source_last_pruned_rows: Option<usize>,
     pub recent_raw_source_last_pruned_at: Option<DateTime<Utc>>,
     pub recent_raw_source_prune_activity_recorded: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawSourceWindowProbeMode {
+    BoundedIndexEdges,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2667,6 +2679,13 @@ struct RecentRawStagedCandidateRead {
 #[derive(Debug, Clone, Default)]
 struct RecentRawSnapshotSqliteContentRead {
     state: Option<RecentRawJournalStateRow>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RecentRawObservedSwapsBoundedProbeRead {
+    covered_since: Option<DateTime<Utc>>,
+    covered_through_cursor: Option<DiscoveryRuntimeCursor>,
     error: Option<String>,
 }
 
@@ -3499,25 +3518,133 @@ impl DiscoveryService {
         })
     }
 
-    fn load_recent_raw_source_observed_swaps_coverage_read_only(
+    fn load_recent_raw_source_observed_swaps_bounded_probe_read_only(
         runtime_db_path: &Path,
-    ) -> Result<ObservedSwapsCoverageSnapshot> {
-        let store = SqliteStore::open_read_only(runtime_db_path)
-            .with_context(|| format!("failed opening {}", runtime_db_path.display()))?;
-        store
-            .observed_swaps_coverage_snapshot()
-            .with_context(|| format!("failed reading observed_swaps coverage from {}", runtime_db_path.display()))
+    ) -> RecentRawObservedSwapsBoundedProbeRead {
+        let conn = match Connection::open_with_flags(runtime_db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("failed opening {}", runtime_db_path.display()))
+        {
+            Ok(conn) => conn,
+            Err(error) => {
+                return RecentRawObservedSwapsBoundedProbeRead {
+                    covered_since: None,
+                    covered_through_cursor: None,
+                    error: Some(format!("{error:#}")),
+                }
+            }
+        };
+        let table_exists = match conn
+            .query_row(
+                "SELECT 1
+                 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'observed_swaps'
+                 LIMIT 1",
+                [],
+                |_| Ok(true),
+            )
+            .optional()
+            .context("failed checking observed_swaps table")
+        {
+            Ok(value) => value.unwrap_or(false),
+            Err(error) => {
+                return RecentRawObservedSwapsBoundedProbeRead {
+                    covered_since: None,
+                    covered_through_cursor: None,
+                    error: Some(format!("{error:#}")),
+                }
+            }
+        };
+        if !table_exists {
+            return RecentRawObservedSwapsBoundedProbeRead {
+                covered_since: None,
+                covered_through_cursor: None,
+                error: Some("observed_swaps table is missing".to_string()),
+            };
+        }
+
+        let oldest_raw = conn
+            .query_row(
+                "SELECT ts
+                 FROM observed_swaps INDEXED BY idx_observed_swaps_ts_slot_signature
+                 ORDER BY ts ASC, slot ASC, signature ASC
+                 LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("failed probing oldest observed_swaps row");
+        let newest_raw = conn
+            .query_row(
+                "SELECT ts, slot, signature
+                 FROM observed_swaps INDEXED BY idx_observed_swaps_ts_slot_signature
+                 ORDER BY ts DESC, slot DESC, signature DESC
+                 LIMIT 1",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
+            )
+            .optional()
+            .context("failed probing newest observed_swaps row");
+
+        match (oldest_raw, newest_raw) {
+            (Ok(oldest_raw), Ok(newest_raw)) => {
+                let covered_since = match oldest_raw {
+                    Some(oldest_raw) => match Self::parse_recent_raw_optional_rfc3339_utc(
+                        Some(oldest_raw),
+                        "observed_swaps.ts",
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            return RecentRawObservedSwapsBoundedProbeRead {
+                                covered_since: None,
+                                covered_through_cursor: None,
+                                error: Some(format!("{error:#}")),
+                            }
+                        }
+                    },
+                    None => None,
+                };
+                let covered_through_cursor = match newest_raw {
+                    Some((ts_raw, slot_raw, signature)) => match DateTime::parse_from_rfc3339(&ts_raw)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .with_context(|| format!("invalid observed_swaps.ts timestamp value: {ts_raw}"))
+                    {
+                        Ok(ts_utc) => Some(DiscoveryRuntimeCursor {
+                            ts_utc,
+                            slot: slot_raw.max(0) as u64,
+                            signature,
+                        }),
+                        Err(error) => {
+                            return RecentRawObservedSwapsBoundedProbeRead {
+                                covered_since: None,
+                                covered_through_cursor: None,
+                                error: Some(format!("{error:#}")),
+                            }
+                        }
+                    },
+                    None => None,
+                };
+                RecentRawObservedSwapsBoundedProbeRead {
+                    covered_since,
+                    covered_through_cursor,
+                    error: None,
+                }
+            }
+            (Err(error), _) | (_, Err(error)) => RecentRawObservedSwapsBoundedProbeRead {
+                covered_since: None,
+                covered_through_cursor: None,
+                error: Some(format!("{error:#}")),
+            },
+        }
     }
 
-    fn recent_raw_source_state_matches_observed_swaps_coverage(
+    fn recent_raw_source_state_matches_observed_swaps_bounded_probe(
         source_state: &RecentRawJournalStateRow,
-        source_scanned_coverage: &ObservedSwapsCoverageSnapshot,
+        source_bounded_probe: &RecentRawObservedSwapsBoundedProbeRead,
     ) -> bool {
-        source_state.covered_since == source_scanned_coverage.covered_since
-            && source_state.row_count == source_scanned_coverage.row_count
+        source_state.covered_since == source_bounded_probe.covered_since
             && Self::recent_raw_optional_cursor_equal(
                 source_state.covered_through_cursor.as_ref(),
-                source_scanned_coverage.covered_through_cursor.as_ref(),
+                source_bounded_probe.covered_through_cursor.as_ref(),
             )
     }
 
@@ -4817,7 +4944,7 @@ impl DiscoveryService {
 
         match source_window_matches_current_bounded_contract {
             Some(false) => {
-                let explanation = "recent_raw source window contract evidence is unproven because the cached recent_raw_journal_state does not match the current observed_swaps coverage snapshot".to_string();
+                let explanation = "recent_raw source window contract evidence is unproven because the cached recent_raw_journal_state does not match the bounded oldest/newest observed_swaps probe".to_string();
                 return (
                     RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentAndPromotedContractRelationUnproven,
                     false,
@@ -4828,7 +4955,7 @@ impl DiscoveryService {
             }
             None => {
                 let explanation = format!(
-                    "recent_raw source window contract evidence is unproven because the current observed_swaps coverage snapshot could not be proven read-only{}",
+                    "recent_raw source window contract evidence is unproven because the bounded observed_swaps edge probe could not be proven read-only{}",
                     source_scan_error
                         .map(|error| format!(" ({error})"))
                         .unwrap_or_default()
@@ -4845,8 +4972,8 @@ impl DiscoveryService {
         }
 
         if source_start_matches_promoted_start == Some(true) {
-            let explanation = "current artifacts show that the cached recent_raw_journal_state matches the direct observed_swaps coverage snapshot and that both start at the same covered_since as promoted latest on the same source path. This proves the current source bounded window still starts where promoted latest starts.".to_string();
-            let basis_explanation = "the current source bounded window is proven from the direct observed_swaps coverage snapshot, and its current covered_since matches promoted latest".to_string();
+            let explanation = "current artifacts show that the cached recent_raw_journal_state matches the bounded oldest/newest observed_swaps probe and that both start at the same covered_since as promoted latest on the same source path. This proves the current source bounded window still starts where promoted latest starts without requiring a full observed_swaps scan.".to_string();
+            let basis_explanation = "the current source bounded window start is proven from the bounded oldest retained observed_swaps row, and that current start matches promoted latest".to_string();
             return (
                 RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentStartMatchesPromotedStart,
                 true,
@@ -4860,8 +4987,8 @@ impl DiscoveryService {
             && source_contract_currently_excludes_older_rows == Some(true)
             && source_prune_activity_recorded == Some(true)
         {
-            let explanation = "current artifacts show that the cached recent_raw_journal_state matches the direct observed_swaps coverage snapshot, that current source covered_since is later than promoted latest on the same source path, and that the source journal records prune activity. This proves the current source-side bounded window has already excluded older rows that promoted latest still reflects.".to_string();
-            let basis_explanation = "the current source bounded window is proven from direct observed_swaps coverage plus recorded prune activity, and its oldest retained row now starts later than promoted latest".to_string();
+            let explanation = "current artifacts show that the cached recent_raw_journal_state matches the bounded oldest/newest observed_swaps probe, that current source covered_since is later than promoted latest on the same source path, and that the source journal records prune activity. This proves the current source-side bounded window has already excluded older rows that promoted latest still reflects, without a deep observed_swaps scan.".to_string();
+            let basis_explanation = "the current source bounded window start is proven from the bounded oldest retained observed_swaps row plus recorded prune activity, and that oldest retained row now starts later than promoted latest".to_string();
             return (
                 RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentContractExcludesOlderRows,
                 true,
@@ -4875,8 +5002,8 @@ impl DiscoveryService {
             && source_contract_currently_excludes_older_rows == Some(true)
             && promoted_reflects_older_still_promoted_window == Some(true)
         {
-            let explanation = "current artifacts show that the cached recent_raw_journal_state matches the direct observed_swaps coverage snapshot and that the current source covered_since starts later than promoted latest on the same source path. This proves promoted latest still reflects an older still-promoted window while the current source window has already advanced to a later start.".to_string();
-            let basis_explanation = "the current source bounded window is proven from direct observed_swaps coverage, and promoted latest still exposes an older covered_since on that same source path".to_string();
+            let explanation = "current artifacts show that the cached recent_raw_journal_state matches the bounded oldest/newest observed_swaps probe and that the current source covered_since starts later than promoted latest on the same source path. This proves promoted latest still reflects an older still-promoted window while the current source window has already advanced to a later start, without a deep observed_swaps scan.".to_string();
+            let basis_explanation = "the current source bounded window start is proven from the bounded oldest retained observed_swaps row, and promoted latest still exposes an older covered_since on that same source path".to_string();
             return (
                 RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowPromotedSurfaceReflectsOlderWindow,
                 true,
@@ -5102,34 +5229,27 @@ impl DiscoveryService {
             _ => None,
         };
 
-        let (source_scanned_coverage, source_scan_error) = match source_runtime_db_path.as_ref() {
-            Some(source_runtime_db_path) => match Self::load_recent_raw_source_observed_swaps_coverage_read_only(
-                source_runtime_db_path,
-            ) {
-                Ok(coverage) => (Some(coverage), None),
-                Err(error) => (
-                    None,
-                    Some(format!(
-                        "failed reading current source observed_swaps coverage {}: {error:#}",
-                        source_runtime_db_path.display()
-                    )),
-                ),
-            },
-            None => (None, None),
-        };
-
-        let source_cached_state_matches_scanned_rows =
-            match (source_state, source_scanned_coverage.as_ref()) {
-                (Some(source_state), Some(source_scanned_coverage)) => Some(
-                    Self::recent_raw_source_state_matches_observed_swaps_coverage(
+        let source_bounded_probe = source_runtime_db_path
+            .as_ref()
+            .map(|source_runtime_db_path| {
+                Self::load_recent_raw_source_observed_swaps_bounded_probe_read_only(
+                    source_runtime_db_path,
+                )
+            })
+            .unwrap_or_default();
+        let source_scan_error = source_bounded_probe.error.clone();
+        let source_cached_state_matches_bounded_probe =
+            match (source_state, source_scan_error.as_ref()) {
+                (Some(source_state), None) => Some(
+                    Self::recent_raw_source_state_matches_observed_swaps_bounded_probe(
                         source_state,
-                        source_scanned_coverage,
+                        &source_bounded_probe,
                     ),
                 ),
                 _ => None,
             };
         let source_window_matches_current_bounded_contract =
-            source_cached_state_matches_scanned_rows;
+            source_cached_state_matches_bounded_probe;
         let source_start_matches_promoted_start = match same_source_db_as_promoted {
             Some(true) => match (
                 source_state.and_then(|state| state.covered_since),
@@ -5152,12 +5272,12 @@ impl DiscoveryService {
         };
         let source_contract_currently_excludes_older_rows = match (
             source_window_matches_current_bounded_contract,
-            source_scanned_coverage.as_ref(),
             same_source_db_as_promoted,
+            source_bounded_probe.covered_since,
             promoted_manifest,
         ) {
-            (Some(true), Some(source_scanned_coverage), Some(true), Some(promoted_manifest)) => {
-                match (source_scanned_coverage.covered_since, promoted_manifest.covered_since) {
+            (Some(true), Some(true), Some(source_since), Some(promoted_manifest)) => {
+                match (Some(source_since), promoted_manifest.covered_since) {
                     (Some(source_since), Some(promoted_since)) => Some(source_since > promoted_since),
                     _ => None,
                 }
@@ -5200,19 +5320,21 @@ impl DiscoveryService {
             recent_raw_source_window_contract_observed: observed,
             recent_raw_source_window_contract_reason_class: reason_class,
             recent_raw_source_window_contract_explanation: explanation,
+            recent_raw_source_window_probe_bounded: true,
+            recent_raw_source_window_probe_mode: RecentRawSourceWindowProbeMode::BoundedIndexEdges,
+            recent_raw_source_window_probe_explanation: "default source-window-contract mode validates only the oldest and newest retained observed_swaps rows via the ts/slot/signature index, does not perform a full observed_swaps row-count scan, and leaves deep-scan-only scanned_* fields null".to_string(),
             recent_raw_promoted_covered_since: promoted_manifest
                 .and_then(|manifest| manifest.covered_since),
             recent_raw_source_covered_since: source_state.and_then(|state| state.covered_since),
-            recent_raw_source_scanned_covered_since: source_scanned_coverage
-                .as_ref()
-                .and_then(|coverage| coverage.covered_since),
+            recent_raw_source_bounded_probe_covered_since: source_bounded_probe.covered_since,
+            recent_raw_source_scanned_covered_since: None,
             recent_raw_promoted_covered_through: promoted_manifest
                 .and_then(|manifest| manifest.covered_through_cursor.clone()),
             recent_raw_source_covered_through: source_state
                 .and_then(|state| state.covered_through_cursor.clone()),
-            recent_raw_source_scanned_covered_through: source_scanned_coverage
-                .as_ref()
-                .and_then(|coverage| coverage.covered_through_cursor.clone()),
+            recent_raw_source_bounded_probe_covered_through:
+                source_bounded_probe.covered_through_cursor,
+            recent_raw_source_scanned_covered_through: None,
             recent_raw_source_start_later_than_promoted: source_start_later_than_promoted,
             recent_raw_source_contract_currently_excludes_older_rows:
                 source_contract_currently_excludes_older_rows,
@@ -5223,12 +5345,11 @@ impl DiscoveryService {
             recent_raw_source_window_contract_basis: basis,
             recent_raw_source_window_contract_basis_explanation: basis_explanation,
             recent_raw_source_same_source_db_as_promoted: same_source_db_as_promoted,
-            recent_raw_source_cached_state_matches_scanned_rows:
-                source_cached_state_matches_scanned_rows,
+            recent_raw_source_cached_state_matches_bounded_probe:
+                source_cached_state_matches_bounded_probe,
+            recent_raw_source_cached_state_matches_scanned_rows: None,
             recent_raw_source_row_count: source_state.map(|state| state.row_count),
-            recent_raw_source_scanned_row_count: source_scanned_coverage
-                .as_ref()
-                .map(|coverage| coverage.row_count),
+            recent_raw_source_scanned_row_count: None,
             recent_raw_source_last_pruned_rows: source_state.map(|state| state.last_pruned_rows),
             recent_raw_source_last_pruned_at: source_state.and_then(|state| state.last_pruned_at),
             recent_raw_source_prune_activity_recorded: source_prune_activity_recorded,
@@ -49049,6 +49170,24 @@ mod tests {
             diagnostic.recent_raw_source_window_matches_current_bounded_contract,
             Some(true)
         );
+        assert!(diagnostic.recent_raw_source_window_probe_bounded);
+        assert_eq!(
+            diagnostic.recent_raw_source_window_probe_mode,
+            RecentRawSourceWindowProbeMode::BoundedIndexEdges
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_cached_state_matches_bounded_probe,
+            Some(true)
+        );
+        assert!(diagnostic.recent_raw_source_bounded_probe_covered_since.is_some());
+        assert!(diagnostic.recent_raw_source_bounded_probe_covered_through.is_some());
+        assert_eq!(diagnostic.recent_raw_source_scanned_covered_since, None);
+        assert_eq!(diagnostic.recent_raw_source_scanned_covered_through, None);
+        assert_eq!(diagnostic.recent_raw_source_scanned_row_count, None);
+        assert_eq!(
+            diagnostic.recent_raw_source_cached_state_matches_scanned_rows,
+            None
+        );
         assert_eq!(
             diagnostic.recent_raw_source_window_contract_basis,
             RecentRawSourceWindowContractBasis::MatchesPromotedStart
@@ -49127,6 +49266,24 @@ mod tests {
             diagnostic.recent_raw_source_window_matches_current_bounded_contract,
             Some(true)
         );
+        assert!(diagnostic.recent_raw_source_window_probe_bounded);
+        assert_eq!(
+            diagnostic.recent_raw_source_window_probe_mode,
+            RecentRawSourceWindowProbeMode::BoundedIndexEdges
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_cached_state_matches_bounded_probe,
+            Some(true)
+        );
+        assert!(diagnostic.recent_raw_source_bounded_probe_covered_since.is_some());
+        assert!(diagnostic.recent_raw_source_bounded_probe_covered_through.is_some());
+        assert_eq!(diagnostic.recent_raw_source_scanned_covered_since, None);
+        assert_eq!(diagnostic.recent_raw_source_scanned_covered_through, None);
+        assert_eq!(diagnostic.recent_raw_source_scanned_row_count, None);
+        assert_eq!(
+            diagnostic.recent_raw_source_cached_state_matches_scanned_rows,
+            None
+        );
         assert_eq!(
             diagnostic.recent_raw_source_prune_activity_recorded,
             Some(true)
@@ -49195,6 +49352,24 @@ mod tests {
             diagnostic.recent_raw_source_window_matches_current_bounded_contract,
             Some(true)
         );
+        assert!(diagnostic.recent_raw_source_window_probe_bounded);
+        assert_eq!(
+            diagnostic.recent_raw_source_window_probe_mode,
+            RecentRawSourceWindowProbeMode::BoundedIndexEdges
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_cached_state_matches_bounded_probe,
+            Some(true)
+        );
+        assert!(diagnostic.recent_raw_source_bounded_probe_covered_since.is_some());
+        assert!(diagnostic.recent_raw_source_bounded_probe_covered_through.is_some());
+        assert_eq!(diagnostic.recent_raw_source_scanned_covered_since, None);
+        assert_eq!(diagnostic.recent_raw_source_scanned_covered_through, None);
+        assert_eq!(diagnostic.recent_raw_source_scanned_row_count, None);
+        assert_eq!(
+            diagnostic.recent_raw_source_cached_state_matches_scanned_rows,
+            None
+        );
         assert_eq!(
             diagnostic.recent_raw_source_prune_activity_recorded,
             Some(false)
@@ -49234,6 +49409,24 @@ mod tests {
         );
         assert_eq!(
             diagnostic.recent_raw_source_window_matches_current_bounded_contract,
+            None
+        );
+        assert!(diagnostic.recent_raw_source_window_probe_bounded);
+        assert_eq!(
+            diagnostic.recent_raw_source_window_probe_mode,
+            RecentRawSourceWindowProbeMode::BoundedIndexEdges
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_cached_state_matches_bounded_probe,
+            None
+        );
+        assert_eq!(diagnostic.recent_raw_source_bounded_probe_covered_since, None);
+        assert_eq!(diagnostic.recent_raw_source_bounded_probe_covered_through, None);
+        assert_eq!(diagnostic.recent_raw_source_scanned_covered_since, None);
+        assert_eq!(diagnostic.recent_raw_source_scanned_covered_through, None);
+        assert_eq!(diagnostic.recent_raw_source_scanned_row_count, None);
+        assert_eq!(
+            diagnostic.recent_raw_source_cached_state_matches_scanned_rows,
             None
         );
         Ok(())
@@ -49295,18 +49488,37 @@ mod tests {
             DiscoveryService::explain_recent_raw_source_window_contract_read_only(&fixture.state_root)?;
         assert!(diagnostic.recent_raw_promoted_covered_since.is_some());
         assert!(diagnostic.recent_raw_source_covered_since.is_some());
-        assert!(diagnostic.recent_raw_source_scanned_covered_since.is_some());
+        assert!(diagnostic.recent_raw_source_window_probe_bounded);
         assert_eq!(
-            diagnostic.recent_raw_source_start_later_than_promoted,
+            diagnostic.recent_raw_source_window_probe_mode,
+            RecentRawSourceWindowProbeMode::BoundedIndexEdges
+        );
+        assert!(
+            diagnostic
+                .recent_raw_source_window_probe_explanation
+                .contains("does not perform a full observed_swaps row-count scan")
+        );
+        assert!(diagnostic.recent_raw_source_bounded_probe_covered_since.is_some());
+        assert!(diagnostic.recent_raw_source_bounded_probe_covered_through.is_some());
+        assert_eq!(
+            diagnostic.recent_raw_source_cached_state_matches_bounded_probe,
             Some(true)
         );
         assert_eq!(
-            diagnostic.recent_raw_source_window_matches_current_bounded_contract,
-            Some(true)
+            diagnostic.recent_raw_source_scanned_covered_since,
+            None
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_scanned_covered_through,
+            None
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_scanned_row_count,
+            None
         );
         assert_eq!(
             diagnostic.recent_raw_source_cached_state_matches_scanned_rows,
-            Some(true)
+            None
         );
         assert!(
             !diagnostic

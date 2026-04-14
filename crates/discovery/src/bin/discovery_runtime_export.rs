@@ -1174,6 +1174,23 @@ fn render_recent_raw_source_window_contract_human(
                 .trim_matches('"')
         ),
         format!(
+            "source_window_probe_bounded={}",
+            diagnostic.recent_raw_source_window_probe_bounded
+        ),
+        format!(
+            "source_window_probe_mode={}",
+            serde_json::to_string(&diagnostic.recent_raw_source_window_probe_mode)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "source_cached_state_matches_bounded_probe={}",
+            diagnostic
+                .recent_raw_source_cached_state_matches_bounded_probe
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
             "source_start_later_than_promoted={}",
             diagnostic
                 .recent_raw_source_start_later_than_promoted
@@ -1220,6 +1237,10 @@ fn render_recent_raw_source_window_contract_human(
                 .recent_raw_source_prune_activity_recorded
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "source_window_probe_explanation={}",
+            diagnostic.recent_raw_source_window_probe_explanation
         ),
         format!(
             "source_window_contract_basis_explanation={}",
@@ -1996,6 +2017,21 @@ mod tests {
             parsed["recent_raw_source_window_matches_current_bounded_contract"],
             true
         );
+        assert_eq!(parsed["recent_raw_source_window_probe_bounded"], true);
+        assert_eq!(
+            parsed["recent_raw_source_window_probe_mode"],
+            "bounded_index_edges"
+        );
+        assert_eq!(
+            parsed["recent_raw_source_cached_state_matches_bounded_probe"],
+            true
+        );
+        assert!(parsed["recent_raw_source_bounded_probe_covered_since"].is_string());
+        assert!(parsed["recent_raw_source_bounded_probe_covered_through"].is_object());
+        assert!(parsed["recent_raw_source_scanned_covered_since"].is_null());
+        assert!(parsed["recent_raw_source_scanned_covered_through"].is_null());
+        assert!(parsed["recent_raw_source_scanned_row_count"].is_null());
+        assert!(parsed["recent_raw_source_cached_state_matches_scanned_rows"].is_null());
         assert_eq!(
             parsed["recent_raw_promoted_reflects_older_still_promoted_window"],
             true

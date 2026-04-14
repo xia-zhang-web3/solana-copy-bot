@@ -11736,11 +11736,14 @@ Acceptance update, Stage 3 source-window contract current-evidence surface (`202
 1. The repo now has one more bounded read-only operator command on the primary
    runtime-export path:
    - `discovery_runtime_export --explain-recent-raw-source-window-contract --state-root <path> --json`
-2. The contract is intentionally current-evidence only:
+2. The default contract is intentionally current-evidence only and
+   operationally bounded:
    - it proves current source `covered_since` and `covered_through` from the
      promoted `source_db_path`
-   - it compares cached `recent_raw_journal_state` with a direct read-only scan
-     of current `observed_swaps`
+   - it compares cached `recent_raw_journal_state` with a bounded read-only
+     oldest/newest retained-row probe on `observed_swaps`
+   - it does not do a full source scan or `COUNT(*)` in the default operator
+     path
    - it does not claim historical source-window provenance beyond what current
      artifacts and prune facts support
 3. The current evidence can now distinguish:
@@ -11749,9 +11752,14 @@ Acceptance update, Stage 3 source-window contract current-evidence surface (`202
    - promoted latest still reflects an older still-promoted window while the
      current source window has moved later
    - unproven current-evidence inspection
-4. The surface emits explicit current-contract fields such as:
-   - `recent_raw_source_scanned_covered_since`
-   - `recent_raw_source_cached_state_matches_scanned_rows`
+4. The surface now emits explicit boundedness/current-contract fields such as:
+   - `recent_raw_source_window_probe_bounded=true`
+   - `recent_raw_source_window_probe_mode="bounded_index_edges"`
+   - `recent_raw_source_bounded_probe_covered_since`
+   - `recent_raw_source_bounded_probe_covered_through`
+   - `recent_raw_source_cached_state_matches_bounded_probe`
+   - deep-scan-only `recent_raw_source_scanned_*` fields stay `null` in default
+     mode
    - `recent_raw_source_last_pruned_rows`
    - `recent_raw_source_last_pruned_at`
    - `recent_raw_source_prune_activity_recorded`
@@ -11762,5 +11770,7 @@ Acceptance update, Stage 3 source-window contract current-evidence surface (`202
 6. Current production implication:
    - this batch narrows the same-source staged regression incident to the
      current source-side bounded window contract on the shared source path
+   - the default operator command is now intended to be live-host usable without
+     the previous multi-minute multi-GB full scan behavior
    - it still does not change snapshot behavior, promotion behavior,
      replay/export semantics, or production authorization
