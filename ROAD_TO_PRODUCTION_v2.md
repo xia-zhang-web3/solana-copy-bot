@@ -11855,3 +11855,47 @@ Acceptance update, Stage 3 replacement-promotion contract surface (`2026-04-14`)
    - retained older promoted truth is no longer the terminal explanation; the
      next operator question is whether the fixed staged candidate is incomplete,
      not newer, or ready now
+
+Acceptance update, Stage 3 replacement-progress contract surface (`2026-04-15`):
+
+1. The repo now has one more bounded read-only operator command on the primary
+   runtime-export path:
+   - `discovery_runtime_export --explain-recent-raw-replacement-progress-contract --state-root <path> --json`
+2. The contract is intentionally proof-only and progress-path scoped:
+   - it proves whether the fixed staged replacement candidate is advancing,
+     stalled, reset/recreated, or still unproven from current persisted
+     evidence
+   - it keeps cross-attempt progress claims gated on actual previous persisted
+     candidate evidence
+   - it does not change snapshot behavior, promotion behavior, or replay/export
+     semantics
+3. The accepted correction removed the earlier proxy overclaim:
+   - `last_batch_completed_at > created_at` is now exposed only as the separate
+     current-artifact field
+     `recent_raw_replacement_candidate_completed_after_creation`
+   - that proxy no longer masquerades as cross-attempt identity or advancement
+4. The current evidence can now distinguish:
+   - replacement candidate advancing but still incomplete
+   - replacement candidate stalled on the same identity
+   - replacement candidate reset or recreated
+   - unproven progress inspection when prior persisted comparison evidence is
+     missing
+5. The surface emits explicit replacement-progress fields such as:
+   - `recent_raw_replacement_candidate_same_identity_as_previous_attempt`
+   - `recent_raw_replacement_candidate_row_count_advanced`
+   - `recent_raw_replacement_candidate_covered_through_advanced`
+   - `recent_raw_replacement_candidate_last_batch_completed_at_advanced`
+   - `recent_raw_replacement_candidate_advancing`
+   - `recent_raw_replacement_candidate_stalled`
+   - `recent_raw_replacement_candidate_reset_or_recreated`
+   - `recent_raw_replacement_candidate_completed_after_creation`
+6. Acceptance stayed on the bounded proof-only surface:
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_replacement_progress_contract`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+7. Current production implication:
+   - this batch narrows the remaining Stage 3 question to whether the fixed
+     replacement candidate is actually progressing toward completeness or is
+     stalled on the same incomplete frontier
+   - the next operator step is a live `replacement-progress` read, not another
+     retention/source-window probe

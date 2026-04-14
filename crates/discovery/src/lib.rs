@@ -7,8 +7,6 @@ use copybot_storage::{
     DiscoveryPersistedRebuildRowDriverCompareDiagnostic as StorageDriverCompareDiagnostic,
     DiscoveryPersistedRebuildRowDriverCompareOptions as StorageDriverCompareOptions,
     DiscoveryPersistedRebuildRowDriverCompareStage as StorageDriverCompareStage,
-    DiscoveryPersistedRebuildRowStepMetaIsolatedSharedDiagnostic as StorageStepMetaIsolatedSharedDiagnostic,
-    DiscoveryPersistedRebuildRowStepMetaIsolatedSharedOptions as StorageStepMetaIsolatedSharedOptions,
     DiscoveryPersistedRebuildRowSharedPathDiffDiagnostic as StorageSharedPathDiffDiagnostic,
     DiscoveryPersistedRebuildRowSharedPathDiffOptions as StorageSharedPathDiffOptions,
     DiscoveryPersistedRebuildRowSharedPathDiffStage as StorageSharedPathDiffStage,
@@ -18,12 +16,14 @@ use copybot_storage::{
     DiscoveryPersistedRebuildRowStepMetaCompareDiagnostic as StorageStepMetaCompareDiagnostic,
     DiscoveryPersistedRebuildRowStepMetaCompareOptions as StorageStepMetaCompareOptions,
     DiscoveryPersistedRebuildRowStepMetaCompareStage as StorageStepMetaCompareStage,
+    DiscoveryPersistedRebuildRowStepMetaIsolatedSharedDiagnostic as StorageStepMetaIsolatedSharedDiagnostic,
+    DiscoveryPersistedRebuildRowStepMetaIsolatedSharedOptions as StorageStepMetaIsolatedSharedOptions,
     DiscoveryPersistedRebuildStateMetaLiteRawRow, DiscoveryPersistedRebuildStateRow,
     DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateRow,
     DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
     DiscoveryTrustedSelectionStateUpdate, ObservedSolLegCursorAccessPath,
-    ObservedWalletActivityDayCountSource, ObservedWalletActivityRow, PersistedWalletMetricSnapshotRow,
-    RecentRawJournalStateRow, SqliteStore,
+    ObservedWalletActivityDayCountSource, ObservedWalletActivityRow,
+    PersistedWalletMetricSnapshotRow, RecentRawJournalStateRow, SqliteStore,
     StartupTrustedSelectionGateStatus, TrustedSelectionState, TrustedSnapshotSourceKind,
     TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite, WalletMetricRow,
     WalletUpsertRow,
@@ -97,7 +97,8 @@ const DRIVER_COMPARE_FAST_EXISTS_MS_THRESHOLD: u64 = 250;
 const STEP_META_COMPARE_MATERIAL_IMPROVEMENT_MS_THRESHOLD: u64 = 1_000;
 const RAW_PERSISTED_REBUILD_ROW_SLOW_QUERY_MS_THRESHOLD: u64 = 5_000;
 const RAW_PERSISTED_REBUILD_ROW_LARGE_STATE_JSON_BYTES_THRESHOLD: usize = 16 * 1024 * 1024;
-const RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME: &str = ".discovery_recent_raw_staged.sqlite.archive-staged";
+const RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME: &str =
+    ".discovery_recent_raw_staged.sqlite.archive-staged";
 const RECENT_RAW_STAGED_METADATA_FILE_NAME: &str =
     ".discovery_recent_raw_staged.sqlite.archive-staged.json";
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_NUMERATOR: usize =
@@ -112,8 +113,7 @@ const ACTIONABLE_OPEN_POSITION_HOLD_MULTIPLIER: i64 = 4;
 const ACTIONABLE_OPEN_POSITION_MIN_HOLD_SAMPLES: usize = 3;
 const OBSERVED_SWAP_WINDOW_PAGED_READ_LIMIT: usize = 256;
 static DISCOVERY_PUBLICATION_TRUTH_REPAIR_TRACE_ID: AtomicU64 = AtomicU64::new(1);
-static PERSISTED_REBUILD_ROW_SLOW_EVENT_CAPTURE_INVOCATION_COUNTER: AtomicU64 =
-    AtomicU64::new(0);
+static PERSISTED_REBUILD_ROW_SLOW_EVENT_CAPTURE_INVOCATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_PARSE_DELAY_MS: AtomicU64 = AtomicU64::new(u64::MAX);
 #[cfg(test)]
@@ -2177,8 +2177,7 @@ pub struct PersistedRebuildRowStepMetaFullOrchestrationDiffDiagnostic {
     pub step_meta_full_orchestration_diff_full_current_prepare_meta_elapsed_ms: Option<u64>,
     pub step_meta_full_orchestration_diff_full_current_step_meta_elapsed_ms: Option<u64>,
     pub step_meta_full_orchestration_diff_full_current_extract_phase_elapsed_ms: Option<u64>,
-    pub step_meta_full_orchestration_diff_full_current_extract_updated_at_elapsed_ms:
-        Option<u64>,
+    pub step_meta_full_orchestration_diff_full_current_extract_updated_at_elapsed_ms: Option<u64>,
     pub step_meta_full_orchestration_diff_full_current_row_exists: Option<bool>,
     pub step_meta_full_orchestration_diff_full_current_ran_later_variants: bool,
     pub step_meta_full_orchestration_diff_full_current_emitted_progress_snapshots: bool,
@@ -2194,8 +2193,7 @@ pub struct PersistedRebuildRowStepMetaFullOrchestrationDiffDiagnostic {
         Option<u64>,
     pub step_meta_full_orchestration_diff_full_truncated_after_shared_extract_updated_at_elapsed_ms:
         Option<u64>,
-    pub step_meta_full_orchestration_diff_full_truncated_after_shared_row_exists:
-        Option<bool>,
+    pub step_meta_full_orchestration_diff_full_truncated_after_shared_row_exists: Option<bool>,
     pub step_meta_full_orchestration_diff_full_truncated_ran_later_variants: bool,
     pub step_meta_full_orchestration_diff_full_no_snapshot_step_meta_elapsed_ms: Option<u64>,
     pub step_meta_full_orchestration_diff_full_no_snapshot_row_exists: Option<bool>,
@@ -2683,8 +2681,7 @@ pub struct RecentRawPromotedRetentionContractDiagnostic {
     pub recent_raw_promoted_invalidated_by_current_source_window_shift: Option<bool>,
     pub recent_raw_promoted_retention_basis: RecentRawPromotedRetentionBasis,
     pub recent_raw_promoted_retention_basis_explanation: String,
-    pub recent_raw_stage3_truth_currently_depends_on_retained_older_promoted_surface:
-        Option<bool>,
+    pub recent_raw_stage3_truth_currently_depends_on_retained_older_promoted_surface: Option<bool>,
     pub recent_raw_stage3_truth_can_advance_without_new_promotion: Option<bool>,
     pub recent_raw_promoted_exists: bool,
     pub recent_raw_promoted_snapshot_present: bool,
@@ -2693,8 +2690,7 @@ pub struct RecentRawPromotedRetentionContractDiagnostic {
     pub recent_raw_promotion_reason_class: RecentRawPromotionBlockerReasonClass,
     pub recent_raw_stage3_truth_blocked_by_promotion: bool,
     pub recent_raw_source_window_contract_observed: bool,
-    pub recent_raw_source_window_contract_reason_class:
-        RecentRawSourceWindowContractReasonClass,
+    pub recent_raw_source_window_contract_reason_class: RecentRawSourceWindowContractReasonClass,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -2711,22 +2707,62 @@ pub enum RecentRawReplacementPromotionReasonClass {
 pub struct RecentRawReplacementPromotionContractDiagnostic {
     pub recent_raw_snapshot_dir: String,
     pub recent_raw_replacement_promotion_observed: bool,
-    pub recent_raw_replacement_promotion_reason_class:
-        RecentRawReplacementPromotionReasonClass,
+    pub recent_raw_replacement_promotion_reason_class: RecentRawReplacementPromotionReasonClass,
     pub recent_raw_replacement_promotion_explanation: String,
     pub recent_raw_replacement_candidate_exists: bool,
     pub recent_raw_replacement_candidate_source_db_matches_promoted: Option<bool>,
     pub recent_raw_replacement_candidate_start_matches_current_source: Option<bool>,
     pub recent_raw_replacement_candidate_covered_through_relation_to_promoted:
         RecentRawLineageRelation,
-    pub recent_raw_replacement_candidate_row_count_relation_to_promoted:
-        RecentRawLineageRelation,
+    pub recent_raw_replacement_candidate_row_count_relation_to_promoted: RecentRawLineageRelation,
     pub recent_raw_replacement_candidate_complete_against_current_source: Option<bool>,
     pub recent_raw_replacement_candidate_promotable_now: Option<bool>,
     pub recent_raw_replacement_promotion_would_retire_current_promoted_truth: Option<bool>,
     pub recent_raw_stage3_blocked_on_replacement_candidate: Option<bool>,
     pub recent_raw_promotion_reason_class: RecentRawPromotionBlockerReasonClass,
     pub recent_raw_promotion_ready_now: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawReplacementProgressReasonClass {
+    RecentRawReplacementProgressAdvancingButIncomplete,
+    RecentRawReplacementProgressStalledOnSameCandidate,
+    RecentRawReplacementProgressResetOrRecreated,
+    RecentRawReplacementProgressUnprovenDueToMissingEvidence,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentRawReplacementProgressContractDiagnostic {
+    pub recent_raw_snapshot_dir: String,
+    pub recent_raw_replacement_progress_observed: bool,
+    pub recent_raw_replacement_progress_reason_class: RecentRawReplacementProgressReasonClass,
+    pub recent_raw_replacement_progress_explanation: String,
+    pub recent_raw_replacement_candidate_exists: bool,
+    pub recent_raw_replacement_candidate_created_at: Option<DateTime<Utc>>,
+    pub recent_raw_replacement_candidate_row_count: Option<usize>,
+    pub recent_raw_replacement_candidate_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_replacement_candidate_last_batch_completed_at: Option<DateTime<Utc>>,
+    pub recent_raw_replacement_candidate_completed_after_creation: Option<bool>,
+    pub recent_raw_replacement_candidate_same_identity_as_previous_attempt: Option<bool>,
+    pub recent_raw_replacement_candidate_row_count_advanced: Option<bool>,
+    pub recent_raw_replacement_candidate_covered_through_advanced: Option<bool>,
+    pub recent_raw_replacement_candidate_last_batch_completed_at_advanced: Option<bool>,
+    pub recent_raw_replacement_candidate_advancing: Option<bool>,
+    pub recent_raw_replacement_candidate_stalled: Option<bool>,
+    pub recent_raw_replacement_candidate_reset_or_recreated: Option<bool>,
+    pub recent_raw_replacement_previous_candidate_exists: bool,
+    pub recent_raw_replacement_previous_candidate_snapshot_path: Option<String>,
+    pub recent_raw_replacement_previous_candidate_metadata_path: Option<String>,
+    pub recent_raw_replacement_previous_candidate_created_at: Option<DateTime<Utc>>,
+    pub recent_raw_replacement_previous_candidate_row_count: Option<usize>,
+    pub recent_raw_replacement_previous_candidate_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_replacement_previous_candidate_last_batch_completed_at: Option<DateTime<Utc>>,
+    pub recent_raw_replacement_manifest_matches_sqlite_content: Option<bool>,
+    pub recent_raw_replacement_manifest_sqlite_match_unproven: bool,
+    pub recent_raw_replacement_sqlite_inspection_error: Option<String>,
+    pub recent_raw_replacement_candidate_complete_against_current_source: Option<bool>,
+    pub recent_raw_replacement_promotion_reason_class: RecentRawReplacementPromotionReasonClass,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3253,17 +3289,13 @@ impl DiscoveryService {
                 {
                     continue;
                 }
-                candidates
-                    .entry(base_name.to_string())
-                    .or_default()
-                    .1 = Some(path);
+                candidates.entry(base_name.to_string()).or_default().1 = Some(path);
             }
         }
         candidates
             .into_iter()
             .map(|(base_name, (snapshot_path, metadata_path))| {
-                let snapshot_path =
-                    snapshot_path.unwrap_or_else(|| snapshot_dir.join(&base_name));
+                let snapshot_path = snapshot_path.unwrap_or_else(|| snapshot_dir.join(&base_name));
                 let metadata_path =
                     metadata_path.unwrap_or_else(|| snapshot_dir.join(format!("{base_name}.json")));
                 let surface =
@@ -3383,7 +3415,8 @@ impl DiscoveryService {
             candidate.covered_through_cursor.as_ref(),
             reference.covered_through_cursor.as_ref(),
         ) {
-            return Self::runtime_cursor_cmp(candidate_cursor, reference_cursor) == Ordering::Greater;
+            return Self::runtime_cursor_cmp(candidate_cursor, reference_cursor)
+                == Ordering::Greater;
         }
         false
     }
@@ -3507,7 +3540,9 @@ impl DiscoveryService {
             .context("failed checking recent_raw_journal_state table")?
             .unwrap_or(false);
         if !table_exists {
-            anyhow::bail!("cached recent raw journal state table recent_raw_journal_state is missing");
+            anyhow::bail!(
+                "cached recent raw journal state table recent_raw_journal_state is missing"
+            );
         }
         let row = conn
             .query_row(
@@ -3602,18 +3637,19 @@ impl DiscoveryService {
     fn load_recent_raw_source_observed_swaps_bounded_probe_read_only(
         runtime_db_path: &Path,
     ) -> RecentRawObservedSwapsBoundedProbeRead {
-        let conn = match Connection::open_with_flags(runtime_db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .with_context(|| format!("failed opening {}", runtime_db_path.display()))
-        {
-            Ok(conn) => conn,
-            Err(error) => {
-                return RecentRawObservedSwapsBoundedProbeRead {
-                    covered_since: None,
-                    covered_through_cursor: None,
-                    error: Some(format!("{error:#}")),
+        let conn =
+            match Connection::open_with_flags(runtime_db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .with_context(|| format!("failed opening {}", runtime_db_path.display()))
+            {
+                Ok(conn) => conn,
+                Err(error) => {
+                    return RecentRawObservedSwapsBoundedProbeRead {
+                        covered_since: None,
+                        covered_through_cursor: None,
+                        error: Some(format!("{error:#}")),
+                    }
                 }
-            }
-        };
+            };
         let table_exists = match conn
             .query_row(
                 "SELECT 1
@@ -3661,7 +3697,13 @@ impl DiscoveryService {
                  ORDER BY ts DESC, slot DESC, signature DESC
                  LIMIT 1",
                 [],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
             )
             .optional()
             .context("failed probing newest observed_swaps row");
@@ -3685,23 +3727,26 @@ impl DiscoveryService {
                     None => None,
                 };
                 let covered_through_cursor = match newest_raw {
-                    Some((ts_raw, slot_raw, signature)) => match DateTime::parse_from_rfc3339(&ts_raw)
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .with_context(|| format!("invalid observed_swaps.ts timestamp value: {ts_raw}"))
-                    {
-                        Ok(ts_utc) => Some(DiscoveryRuntimeCursor {
-                            ts_utc,
-                            slot: slot_raw.max(0) as u64,
-                            signature,
-                        }),
-                        Err(error) => {
-                            return RecentRawObservedSwapsBoundedProbeRead {
-                                covered_since: None,
-                                covered_through_cursor: None,
-                                error: Some(format!("{error:#}")),
+                    Some((ts_raw, slot_raw, signature)) => {
+                        match DateTime::parse_from_rfc3339(&ts_raw)
+                            .map(|dt| dt.with_timezone(&Utc))
+                            .with_context(|| {
+                                format!("invalid observed_swaps.ts timestamp value: {ts_raw}")
+                            }) {
+                            Ok(ts_utc) => Some(DiscoveryRuntimeCursor {
+                                ts_utc,
+                                slot: slot_raw.max(0) as u64,
+                                signature,
+                            }),
+                            Err(error) => {
+                                return RecentRawObservedSwapsBoundedProbeRead {
+                                    covered_since: None,
+                                    covered_through_cursor: None,
+                                    error: Some(format!("{error:#}")),
+                                }
                             }
                         }
-                    },
+                    }
                     None => None,
                 };
                 RecentRawObservedSwapsBoundedProbeRead {
@@ -3731,7 +3776,8 @@ impl DiscoveryService {
 
     fn load_recent_raw_diagnostic_state_read_only(state_root: &Path) -> RecentRawDiagnosticState {
         let snapshot_dir = Self::recent_raw_snapshot_dir_for_state_root(state_root);
-        let promoted_snapshot_path = runtime_restore_ops::journal_snapshot_latest_path(&snapshot_dir);
+        let promoted_snapshot_path =
+            runtime_restore_ops::journal_snapshot_latest_path(&snapshot_dir);
         let promoted_metadata_path =
             runtime_restore_ops::journal_snapshot_latest_metadata_path(&snapshot_dir);
         let staged_snapshot_path = Self::recent_raw_staged_snapshot_path(&snapshot_dir);
@@ -3920,11 +3966,13 @@ impl DiscoveryService {
             Some(false) => RecentRawLineageRelation::DifferentSource,
             None => RecentRawLineageRelation::Unproven,
             Some(true) => match (candidate, reference) {
-                (Some(candidate), Some(reference)) => match Self::runtime_cursor_cmp(candidate, reference) {
-                    Ordering::Greater => RecentRawLineageRelation::Ahead,
-                    Ordering::Equal => RecentRawLineageRelation::Equal,
-                    Ordering::Less => RecentRawLineageRelation::Behind,
-                },
+                (Some(candidate), Some(reference)) => {
+                    match Self::runtime_cursor_cmp(candidate, reference) {
+                        Ordering::Greater => RecentRawLineageRelation::Ahead,
+                        Ordering::Equal => RecentRawLineageRelation::Equal,
+                        Ordering::Less => RecentRawLineageRelation::Behind,
+                    }
+                }
                 _ => RecentRawLineageRelation::Unproven,
             },
         }
@@ -4007,12 +4055,7 @@ impl DiscoveryService {
         source_outruns_promoted: Option<bool>,
         source_outruns_staged: Option<bool>,
         staged_newer_than_promoted: Option<bool>,
-    ) -> (
-        RecentRawPromotionBlockerReasonClass,
-        bool,
-        bool,
-        String,
-    ) {
+    ) -> (RecentRawPromotionBlockerReasonClass, bool, bool, String) {
         if promoted.manifest_error.is_some() || staged.manifest_error.is_some() {
             return (
                 RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByUnprovenState,
@@ -4124,14 +4167,7 @@ impl DiscoveryService {
 
     fn classify_recent_raw_catch_up_status(
         state: &RecentRawDiagnosticState,
-    ) -> (
-        RecentRawCatchUpReasonClass,
-        bool,
-        bool,
-        bool,
-        bool,
-        String,
-    ) {
+    ) -> (RecentRawCatchUpReasonClass, bool, bool, bool, bool, String) {
         if state.promoted.manifest_error.is_some() || state.staged.manifest_error.is_some() {
             return (
                 RecentRawCatchUpReasonClass::RecentRawCatchUpUnprovenDueToMissingEvidence,
@@ -4383,10 +4419,11 @@ impl DiscoveryService {
             ) => Some(false),
             None => None,
         };
-        let staged_last_batch_completed_at_newer_than_promoted = Self::recent_raw_optional_ts_newer_than(
-            staged_manifest.and_then(|manifest| manifest.last_batch_completed_at.as_ref()),
-            promoted_manifest.and_then(|manifest| manifest.last_batch_completed_at.as_ref()),
-        );
+        let staged_last_batch_completed_at_newer_than_promoted =
+            Self::recent_raw_optional_ts_newer_than(
+                staged_manifest.and_then(|manifest| manifest.last_batch_completed_at.as_ref()),
+                promoted_manifest.and_then(|manifest| manifest.last_batch_completed_at.as_ref()),
+            );
 
         let source_vs_staged_row_lag = Self::recent_raw_nonnegative_row_lag(
             source_state.map(|state| state.row_count),
@@ -4396,10 +4433,11 @@ impl DiscoveryService {
             source_state.map(|state| state.row_count),
             promoted_manifest.map(|manifest| manifest.row_count),
         );
-        let source_vs_staged_time_lag_seconds = Self::recent_raw_nonnegative_cursor_time_lag_seconds(
-            source_state.and_then(|state| state.covered_through_cursor.as_ref()),
-            staged_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
-        );
+        let source_vs_staged_time_lag_seconds =
+            Self::recent_raw_nonnegative_cursor_time_lag_seconds(
+                source_state.and_then(|state| state.covered_through_cursor.as_ref()),
+                staged_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
+            );
         let source_vs_promoted_time_lag_seconds =
             Self::recent_raw_nonnegative_cursor_time_lag_seconds(
                 source_state.and_then(|state| state.covered_through_cursor.as_ref()),
@@ -4415,14 +4453,8 @@ impl DiscoveryService {
                 promoted_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
             );
 
-        let (
-            reason_class,
-            observed,
-            progressing,
-            losing_to_source,
-            indeterminate,
-            explanation,
-        ) = Self::classify_recent_raw_catch_up_status(&state);
+        let (reason_class, observed, progressing, losing_to_source, indeterminate, explanation) =
+            Self::classify_recent_raw_catch_up_status(&state);
 
         Ok(RecentRawCatchUpDiagnostic {
             recent_raw_snapshot_dir: state.snapshot_dir.display().to_string(),
@@ -4438,7 +4470,8 @@ impl DiscoveryService {
             recent_raw_promoted_last_batch_completed_at: promoted_manifest
                 .and_then(|manifest| manifest.last_batch_completed_at.clone()),
             recent_raw_staged_exists: state.staged_exists,
-            recent_raw_staged_created_at: staged_manifest.map(|manifest| manifest.created_at.clone()),
+            recent_raw_staged_created_at: staged_manifest
+                .map(|manifest| manifest.created_at.clone()),
             recent_raw_staged_covered_through: staged_manifest
                 .and_then(|manifest| manifest.covered_through_cursor.clone()),
             recent_raw_staged_row_count: staged_manifest.map(|manifest| manifest.row_count),
@@ -4464,8 +4497,7 @@ impl DiscoveryService {
             recent_raw_source_vs_staged_time_lag_seconds: source_vs_staged_time_lag_seconds,
             recent_raw_source_vs_promoted_time_lag_seconds: source_vs_promoted_time_lag_seconds,
             recent_raw_staged_vs_promoted_row_delta: staged_vs_promoted_row_delta,
-            recent_raw_staged_vs_promoted_time_delta_seconds:
-                staged_vs_promoted_time_delta_seconds,
+            recent_raw_staged_vs_promoted_time_delta_seconds: staged_vs_promoted_time_delta_seconds,
             recent_raw_catch_up_progressing: progressing,
             recent_raw_catch_up_losing_to_source: losing_to_source,
             recent_raw_catch_up_indeterminate: indeterminate,
@@ -4478,11 +4510,7 @@ impl DiscoveryService {
         cursor_relation_to_promoted: RecentRawLineageRelation,
         row_count_relation_to_promoted: RecentRawLineageRelation,
         covered_since_relation_to_promoted: RecentRawLineageRelation,
-    ) -> (
-        RecentRawStagedLineageReasonClass,
-        bool,
-        String,
-    ) {
+    ) -> (RecentRawStagedLineageReasonClass, bool, String) {
         if state.promoted.manifest_error.is_some() || state.staged.manifest_error.is_some() {
             return (
                 RecentRawStagedLineageReasonClass::RecentRawStagedLineageUnprovenDueToMissingEvidence,
@@ -4524,12 +4552,16 @@ impl DiscoveryService {
             Some(true) => {}
         }
 
-        let regressed = matches!(cursor_relation_to_promoted, RecentRawLineageRelation::Behind)
-            || matches!(row_count_relation_to_promoted, RecentRawLineageRelation::Behind)
-            || matches!(
-                covered_since_relation_to_promoted,
-                RecentRawLineageRelation::Behind
-            );
+        let regressed = matches!(
+            cursor_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        ) || matches!(
+            row_count_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        ) || matches!(
+            covered_since_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        );
         if regressed {
             return (
                 RecentRawStagedLineageReasonClass::RecentRawStagedLineageRegressedRelativeToPromoted,
@@ -4551,11 +4583,7 @@ impl DiscoveryService {
         selected_staged_frontier_behind_promoted_before_comparison: Option<bool>,
         selected_staged_created_after_promoted: Option<bool>,
         selected_staged_is_latest_candidate: Option<bool>,
-    ) -> (
-        RecentRawStagedRegressionReasonClass,
-        bool,
-        String,
-    ) {
+    ) -> (RecentRawStagedRegressionReasonClass, bool, String) {
         if state.promoted.manifest_error.is_some() || state.staged.manifest_error.is_some() {
             return (
                 RecentRawStagedRegressionReasonClass::RecentRawStagedRegressionUnprovenDueToMissingEvidence,
@@ -4590,7 +4618,8 @@ impl DiscoveryService {
             Some(true) => {}
         }
 
-        let Some(frontier_behind) = selected_staged_frontier_behind_promoted_before_comparison else {
+        let Some(frontier_behind) = selected_staged_frontier_behind_promoted_before_comparison
+        else {
             return (
                 RecentRawStagedRegressionReasonClass::RecentRawStagedRegressionUnprovenDueToMissingEvidence,
                 false,
@@ -4642,11 +4671,7 @@ impl DiscoveryService {
         row_count_relation_to_promoted: RecentRawLineageRelation,
         manifest_matches_sqlite_content: Option<bool>,
         sqlite_inspection_error: Option<&str>,
-    ) -> (
-        RecentRawStagedBirthReasonClass,
-        bool,
-        String,
-    ) {
+    ) -> (RecentRawStagedBirthReasonClass, bool, String) {
         if state.promoted.manifest_error.is_some() || state.staged.manifest_error.is_some() {
             return (
                 RecentRawStagedBirthReasonClass::RecentRawStagedCurrentArtifactUnprovenDueToMissingEvidence,
@@ -4677,9 +4702,16 @@ impl DiscoveryService {
             Some(true) => {}
         }
 
-        let birth_behind = matches!(covered_since_relation_to_promoted, RecentRawLineageRelation::Behind)
-            || matches!(covered_through_relation_to_promoted, RecentRawLineageRelation::Behind)
-            || matches!(row_count_relation_to_promoted, RecentRawLineageRelation::Behind);
+        let birth_behind = matches!(
+            covered_since_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        ) || matches!(
+            covered_through_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        ) || matches!(
+            row_count_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        );
 
         if manifest_matches_sqlite_content == Some(false) {
             return (
@@ -4711,7 +4743,10 @@ impl DiscoveryService {
             );
         }
 
-        if matches!(covered_since_relation_to_promoted, RecentRawLineageRelation::Behind) {
+        if matches!(
+            covered_since_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        ) {
             return (
                 RecentRawStagedBirthReasonClass::RecentRawStagedCurrentArtifactLaterStartWindowObserved,
                 true,
@@ -5331,11 +5366,7 @@ impl DiscoveryService {
         stage3_blocked_on_replacement_candidate: Option<bool>,
         replacement_promotion_would_retire_current_promoted_truth: Option<bool>,
         promotion_reason_class: RecentRawPromotionBlockerReasonClass,
-    ) -> (
-        RecentRawReplacementPromotionReasonClass,
-        bool,
-        String,
-    ) {
+    ) -> (RecentRawReplacementPromotionReasonClass, bool, String) {
         if promoted_manifest_error.is_some() || staged_manifest_error.is_some() {
             return (
                 RecentRawReplacementPromotionReasonClass::RecentRawReplacementPromotionContractUnprovenDueToMissingEvidence,
@@ -5495,6 +5526,180 @@ impl DiscoveryService {
         )
     }
 
+    fn classify_recent_raw_replacement_progress_contract(
+        staged_manifest_error: Option<&str>,
+        replacement_candidate_exists: bool,
+        replacement_candidate_complete_against_current_source: Option<bool>,
+        replacement_promotion_reason_class: RecentRawReplacementPromotionReasonClass,
+        replacement_manifest_matches_sqlite_content: Option<bool>,
+        previous_candidate_exists: bool,
+        candidate_completed_after_creation: Option<bool>,
+        same_identity_as_previous_attempt: Option<bool>,
+        row_count_advanced: Option<bool>,
+        covered_through_advanced: Option<bool>,
+        last_batch_completed_at_advanced: Option<bool>,
+        candidate_advancing: Option<bool>,
+        candidate_stalled: Option<bool>,
+        candidate_reset_or_recreated: Option<bool>,
+    ) -> (RecentRawReplacementProgressReasonClass, bool, String) {
+        if staged_manifest_error.is_some() {
+            return (
+                RecentRawReplacementProgressReasonClass::RecentRawReplacementProgressUnprovenDueToMissingEvidence,
+                false,
+                format!(
+                    "recent_raw replacement progress is unproven because the fixed staged replacement candidate manifest is partial or invalid (staged_error={})",
+                    staged_manifest_error.unwrap_or("null"),
+                ),
+            );
+        }
+
+        if !replacement_candidate_exists {
+            return (
+                RecentRawReplacementProgressReasonClass::RecentRawReplacementProgressUnprovenDueToMissingEvidence,
+                false,
+                "recent_raw replacement progress is unproven because no fixed staged replacement candidate is currently present at the staged paths".to_string(),
+            );
+        }
+
+        if replacement_candidate_complete_against_current_source != Some(false)
+            || replacement_promotion_reason_class
+                != RecentRawReplacementPromotionReasonClass::RecentRawReplacementCandidateIncompleteAgainstCurrentSource
+        {
+            return (
+                RecentRawReplacementProgressReasonClass::RecentRawReplacementProgressUnprovenDueToMissingEvidence,
+                false,
+                format!(
+                    "recent_raw replacement progress is unproven because the current fixed staged candidate is not proven incomplete against current source under the replacement-promotion contract. replacement_candidate_complete_against_current_source={}, replacement_promotion_reason_class={}",
+                    replacement_candidate_complete_against_current_source
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                    serde_json::to_string(&replacement_promotion_reason_class)
+                        .unwrap_or_else(|_| "\"unknown\"".to_string())
+                        .trim_matches('"'),
+                ),
+            );
+        }
+
+        if replacement_manifest_matches_sqlite_content == Some(false) {
+            return (
+                RecentRawReplacementProgressReasonClass::RecentRawReplacementProgressUnprovenDueToMissingEvidence,
+                false,
+                "recent_raw replacement progress is unproven because the fixed staged manifest does not currently agree with the staged sqlite content".to_string(),
+            );
+        }
+
+        if replacement_manifest_matches_sqlite_content.is_none() {
+            return (
+                RecentRawReplacementProgressReasonClass::RecentRawReplacementProgressUnprovenDueToMissingEvidence,
+                false,
+                "recent_raw replacement progress is unproven because the fixed staged sqlite content could not be read read-only to validate the current manifest frontier".to_string(),
+            );
+        }
+
+        if !previous_candidate_exists && candidate_completed_after_creation == Some(true) {
+            return (
+                RecentRawReplacementProgressReasonClass::RecentRawReplacementProgressUnprovenDueToMissingEvidence,
+                false,
+                "recent_raw replacement progress is unproven because the current fixed staged candidate was updated after creation, but no previous persisted replacement candidate artifact is available for cross-attempt comparison".to_string(),
+            );
+        }
+
+        if candidate_reset_or_recreated == Some(true) {
+            return (
+                RecentRawReplacementProgressReasonClass::RecentRawReplacementProgressResetOrRecreated,
+                true,
+                format!(
+                    "recent_raw replacement progress evidence shows that the fixed staged candidate no longer matches the previous persisted replacement identity. previous_candidate_exists={}, same_identity_as_previous_attempt={}, row_count_advanced={}, covered_through_advanced={}, last_batch_completed_at_advanced={}",
+                    previous_candidate_exists,
+                    same_identity_as_previous_attempt
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                    row_count_advanced
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                    covered_through_advanced
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                    last_batch_completed_at_advanced
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                ),
+            );
+        }
+
+        if candidate_stalled == Some(true) && same_identity_as_previous_attempt == Some(true) {
+            return (
+                RecentRawReplacementProgressReasonClass::RecentRawReplacementProgressStalledOnSameCandidate,
+                true,
+                format!(
+                    "recent_raw replacement progress evidence shows that the fixed staged candidate is still the same continuing candidate as the previous persisted attempt artifact, but its row_count, covered_through, and last_batch_completed_at have not advanced. row_count_advanced={}, covered_through_advanced={}, last_batch_completed_at_advanced={}",
+                    row_count_advanced
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                    covered_through_advanced
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                    last_batch_completed_at_advanced
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                ),
+            );
+        }
+
+        if candidate_advancing == Some(true) && same_identity_as_previous_attempt == Some(true) {
+            return (
+                RecentRawReplacementProgressReasonClass::RecentRawReplacementProgressAdvancingButIncomplete,
+                true,
+                format!(
+                    "recent_raw replacement progress evidence shows that the fixed staged candidate is continuing across attempts and has advanced while still remaining incomplete against current source. previous_candidate_exists={}, row_count_advanced={}, covered_through_advanced={}, last_batch_completed_at_advanced={}",
+                    previous_candidate_exists,
+                    row_count_advanced
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                    covered_through_advanced
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                    last_batch_completed_at_advanced
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                ),
+            );
+        }
+
+        (
+            RecentRawReplacementProgressReasonClass::RecentRawReplacementProgressUnprovenDueToMissingEvidence,
+            false,
+            format!(
+                "recent_raw replacement progress remains unproven from current artifacts: previous_candidate_exists={}, candidate_completed_after_creation={}, same_identity_as_previous_attempt={}, row_count_advanced={}, covered_through_advanced={}, last_batch_completed_at_advanced={}, candidate_advancing={}, candidate_stalled={}, candidate_reset_or_recreated={}",
+                previous_candidate_exists,
+                candidate_completed_after_creation
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
+                same_identity_as_previous_attempt
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
+                row_count_advanced
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
+                covered_through_advanced
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
+                last_batch_completed_at_advanced
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
+                candidate_advancing
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
+                candidate_stalled
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
+                candidate_reset_or_recreated
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string()),
+            ),
+        )
+    }
+
     pub fn explain_recent_raw_staged_window_seeding_read_only(
         state_root: &Path,
     ) -> Result<RecentRawStagedWindowSeedingDiagnostic> {
@@ -5515,12 +5720,13 @@ impl DiscoveryService {
             }
             _ => None,
         };
-        let staged_created_at_matches_promoted_created_at = match (staged_manifest, promoted_manifest) {
-            (Some(staged_manifest), Some(promoted_manifest)) => {
-                Some(staged_manifest.created_at == promoted_manifest.created_at)
-            }
-            _ => None,
-        };
+        let staged_created_at_matches_promoted_created_at =
+            match (staged_manifest, promoted_manifest) {
+                (Some(staged_manifest), Some(promoted_manifest)) => {
+                    Some(staged_manifest.created_at == promoted_manifest.created_at)
+                }
+                _ => None,
+            };
         let staged_start_matches_promoted_start = match same_source_db_as_promoted {
             Some(true) => match (
                 staged_manifest.and_then(|manifest| manifest.covered_since),
@@ -5540,15 +5746,16 @@ impl DiscoveryService {
         };
         let staged_start_matches_current_window_cutoff = staged_start_matches_source_start;
 
-        let promoted_seed_blocked_by_source_contract_mismatch = match (source_state, promoted_manifest) {
-            (Some(source_state), Some(promoted_manifest)) => Some(
-                Self::recent_raw_source_contract_no_longer_matches_manifest(
-                    source_state,
-                    promoted_manifest,
-                ),
-            ),
-            _ => None,
-        };
+        let promoted_seed_blocked_by_source_contract_mismatch =
+            match (source_state, promoted_manifest) {
+                (Some(source_state), Some(promoted_manifest)) => {
+                    Some(Self::recent_raw_source_contract_no_longer_matches_manifest(
+                        source_state,
+                        promoted_manifest,
+                    ))
+                }
+                _ => None,
+            };
         let promoted_supersedes_staged_progress = match (promoted_manifest, staged_manifest) {
             (Some(promoted_manifest), Some(staged_manifest)) => Some(
                 Self::recent_raw_published_latest_supersedes_staged_progress(
@@ -5563,14 +5770,14 @@ impl DiscoveryService {
             source_state,
             promoted_manifest,
         ) {
-            (Some(runtime_db_path), Some(source_state), Some(promoted_manifest)) => Some(
-                Self::recent_raw_latest_surface_can_seed_staged_progress(
+            (Some(runtime_db_path), Some(source_state), Some(promoted_manifest)) => {
+                Some(Self::recent_raw_latest_surface_can_seed_staged_progress(
                     Path::new(runtime_db_path),
                     source_state,
                     promoted_manifest,
                     staged_manifest,
-                ),
-            ),
+                ))
+            }
             _ => None,
         };
 
@@ -5588,7 +5795,8 @@ impl DiscoveryService {
             ),
             _ => None,
         };
-        let staged_manifest_sqlite_match_unproven = staged_manifest_matches_sqlite_content.is_none();
+        let staged_manifest_sqlite_match_unproven =
+            staged_manifest_matches_sqlite_content.is_none();
 
         let staged_start_matches_neither_promoted_nor_source = match (
             same_source_db_as_promoted,
@@ -5640,8 +5848,7 @@ impl DiscoveryService {
             recent_raw_staged_start_matches_neither_promoted_nor_source:
                 staged_start_matches_neither_promoted_nor_source,
             recent_raw_staged_start_current_evidence_basis: current_evidence_basis,
-            recent_raw_staged_start_current_evidence_explanation:
-                current_evidence_explanation,
+            recent_raw_staged_start_current_evidence_explanation: current_evidence_explanation,
             recent_raw_staged_same_source_db_as_promoted: same_source_db_as_promoted,
             recent_raw_staged_created_after_promoted: staged_created_after_promoted,
             recent_raw_staged_created_at_matches_promoted_created_at:
@@ -5650,12 +5857,10 @@ impl DiscoveryService {
                 promoted_can_seed_staged_progress_under_current_code,
             recent_raw_promoted_seed_blocked_by_source_contract_mismatch:
                 promoted_seed_blocked_by_source_contract_mismatch,
-            recent_raw_promoted_supersedes_staged_progress:
-                promoted_supersedes_staged_progress,
+            recent_raw_promoted_supersedes_staged_progress: promoted_supersedes_staged_progress,
             recent_raw_staged_manifest_matches_sqlite_content:
                 staged_manifest_matches_sqlite_content,
-            recent_raw_staged_manifest_sqlite_match_unproven:
-                staged_manifest_sqlite_match_unproven,
+            recent_raw_staged_manifest_sqlite_match_unproven: staged_manifest_sqlite_match_unproven,
         })
     }
 
@@ -5664,22 +5869,23 @@ impl DiscoveryService {
     ) -> Result<RecentRawSourceWindowContractDiagnostic> {
         let state = Self::load_recent_raw_diagnostic_state_read_only(state_root);
         let promoted_manifest = state.promoted.manifest.as_ref();
-        let source_runtime_db_path = promoted_manifest
-            .map(|manifest| PathBuf::from(&manifest.source_db_path));
+        let source_runtime_db_path =
+            promoted_manifest.map(|manifest| PathBuf::from(&manifest.source_db_path));
         let (source_state, current_source_state_available) = match source_runtime_db_path.as_ref() {
-            Some(source_runtime_db_path) => match Self::load_recent_raw_source_state_read_only(
-                source_runtime_db_path,
-            ) {
-                Ok(source_state) => (Some(source_state), true),
-                Err(_) => (None, false),
-            },
+            Some(source_runtime_db_path) => {
+                match Self::load_recent_raw_source_state_read_only(source_runtime_db_path) {
+                    Ok(source_state) => (Some(source_state), true),
+                    Err(_) => (None, false),
+                }
+            }
             None => (None, false),
         };
         let source_state = source_state.as_ref();
-        let same_source_db_as_promoted = match (source_runtime_db_path.as_ref(), promoted_manifest) {
-            (Some(source_runtime_db_path), Some(promoted_manifest)) => {
-                Some(source_runtime_db_path.display().to_string() == promoted_manifest.source_db_path)
-            }
+        let same_source_db_as_promoted = match (source_runtime_db_path.as_ref(), promoted_manifest)
+        {
+            (Some(source_runtime_db_path), Some(promoted_manifest)) => Some(
+                source_runtime_db_path.display().to_string() == promoted_manifest.source_db_path,
+            ),
             _ => None,
         };
 
@@ -5732,42 +5938,36 @@ impl DiscoveryService {
         ) {
             (Some(true), Some(true), Some(source_since), Some(promoted_manifest)) => {
                 match (Some(source_since), promoted_manifest.covered_since) {
-                    (Some(source_since), Some(promoted_since)) => Some(source_since > promoted_since),
+                    (Some(source_since), Some(promoted_since)) => {
+                        Some(source_since > promoted_since)
+                    }
                     _ => None,
                 }
             }
             _ => None,
         };
-        let promoted_reflects_older_still_promoted_window = match (
-            same_source_db_as_promoted,
-            source_start_later_than_promoted,
-        ) {
-            (Some(true), Some(value)) => Some(value),
-            _ => None,
-        };
-        let source_prune_activity_recorded = source_state.map(|state| {
-            state.last_pruned_rows > 0 && state.last_pruned_at.is_some()
-        });
+        let promoted_reflects_older_still_promoted_window =
+            match (same_source_db_as_promoted, source_start_later_than_promoted) {
+                (Some(true), Some(value)) => Some(value),
+                _ => None,
+            };
+        let source_prune_activity_recorded =
+            source_state.map(|state| state.last_pruned_rows > 0 && state.last_pruned_at.is_some());
 
-        let (
-            reason_class,
-            observed,
-            basis,
-            explanation,
-            basis_explanation,
-        ) = Self::classify_recent_raw_source_window_contract(
-            state.promoted_exists,
-            state.promoted.manifest_error.as_deref(),
-            current_source_state_available,
-            same_source_db_as_promoted,
-            source_window_matches_current_bounded_contract,
-            source_start_matches_promoted_start,
-            source_start_later_than_promoted,
-            source_contract_currently_excludes_older_rows,
-            promoted_reflects_older_still_promoted_window,
-            source_prune_activity_recorded,
-            source_scan_error.as_deref(),
-        );
+        let (reason_class, observed, basis, explanation, basis_explanation) =
+            Self::classify_recent_raw_source_window_contract(
+                state.promoted_exists,
+                state.promoted.manifest_error.as_deref(),
+                current_source_state_available,
+                same_source_db_as_promoted,
+                source_window_matches_current_bounded_contract,
+                source_start_matches_promoted_start,
+                source_start_later_than_promoted,
+                source_contract_currently_excludes_older_rows,
+                promoted_reflects_older_still_promoted_window,
+                source_prune_activity_recorded,
+                source_scan_error.as_deref(),
+            );
 
         Ok(RecentRawSourceWindowContractDiagnostic {
             recent_raw_snapshot_dir: state.snapshot_dir.display().to_string(),
@@ -5819,15 +6019,15 @@ impl DiscoveryService {
         let source_window_contract =
             Self::explain_recent_raw_source_window_contract_read_only(state_root)?;
 
-        let source_runtime_db_path = promoted_manifest
-            .map(|manifest| PathBuf::from(&manifest.source_db_path));
+        let source_runtime_db_path =
+            promoted_manifest.map(|manifest| PathBuf::from(&manifest.source_db_path));
         let (source_state, current_source_state_available) = match source_runtime_db_path.as_ref() {
-            Some(source_runtime_db_path) => match Self::load_recent_raw_source_state_read_only(
-                source_runtime_db_path,
-            ) {
-                Ok(source_state) => (Some(source_state), true),
-                Err(_) => (None, false),
-            },
+            Some(source_runtime_db_path) => {
+                match Self::load_recent_raw_source_state_read_only(source_runtime_db_path) {
+                    Ok(source_state) => (Some(source_state), true),
+                    Err(_) => (None, false),
+                }
+            }
             None => (None, false),
         };
         let source_state = source_state.as_ref();
@@ -5889,15 +6089,14 @@ impl DiscoveryService {
             source_outruns_staged,
             staged_newer_than_promoted,
         );
-        let promoted_currently_retained_as_truth =
-            if state.promoted.manifest_error.is_some() {
-                None
-            } else {
-                Self::recent_raw_promoted_retained_as_truth_under_current_contract(
-                    state.promoted_exists,
-                    promotion_reason_class,
-                )
-            };
+        let promoted_currently_retained_as_truth = if state.promoted.manifest_error.is_some() {
+            None
+        } else {
+            Self::recent_raw_promoted_retained_as_truth_under_current_contract(
+                state.promoted_exists,
+                promotion_reason_class,
+            )
+        };
         let promoted_has_current_contract_invalidation_rule = match (
             promoted_currently_retained_as_truth,
             promoted_same_source_db_as_current_source,
@@ -5915,8 +6114,7 @@ impl DiscoveryService {
             (Some(true), Some(true), Some(true), Some(false)) => Some(false),
             _ => None,
         };
-        let promoted_current =
-            state.promoted_exists && source_outruns_promoted == Some(false);
+        let promoted_current = state.promoted_exists && source_outruns_promoted == Some(false);
         let stage3_truth_currently_depends_on_retained_older_promoted_surface = match (
             promoted_currently_retained_as_truth,
             promoted_start_older_than_current_source,
@@ -5965,15 +6163,13 @@ impl DiscoveryService {
                 promoted_start_older_than_current_source,
             recent_raw_promoted_same_source_db_as_current_source:
                 promoted_same_source_db_as_current_source,
-            recent_raw_promoted_currently_retained_as_truth:
-                promoted_currently_retained_as_truth,
+            recent_raw_promoted_currently_retained_as_truth: promoted_currently_retained_as_truth,
             recent_raw_promoted_has_current_contract_invalidation_rule:
                 promoted_has_current_contract_invalidation_rule,
             recent_raw_promoted_invalidated_by_current_source_window_shift:
                 promoted_invalidated_by_current_source_window_shift,
             recent_raw_promoted_retention_basis: retention_basis,
-            recent_raw_promoted_retention_basis_explanation:
-                retention_basis_explanation,
+            recent_raw_promoted_retention_basis_explanation: retention_basis_explanation,
             recent_raw_stage3_truth_currently_depends_on_retained_older_promoted_surface:
                 stage3_truth_currently_depends_on_retained_older_promoted_surface,
             recent_raw_stage3_truth_can_advance_without_new_promotion:
@@ -5984,10 +6180,10 @@ impl DiscoveryService {
             recent_raw_promotion_ready_now: promotion_ready_now,
             recent_raw_promotion_reason_class: promotion_reason_class,
             recent_raw_stage3_truth_blocked_by_promotion: !promoted_current,
-            recent_raw_source_window_contract_observed:
-                source_window_contract.recent_raw_source_window_contract_observed,
-            recent_raw_source_window_contract_reason_class:
-                source_window_contract.recent_raw_source_window_contract_reason_class,
+            recent_raw_source_window_contract_observed: source_window_contract
+                .recent_raw_source_window_contract_observed,
+            recent_raw_source_window_contract_reason_class: source_window_contract
+                .recent_raw_source_window_contract_reason_class,
         })
     }
 
@@ -6000,15 +6196,15 @@ impl DiscoveryService {
         let promoted_retention =
             Self::explain_recent_raw_promoted_retention_contract_read_only(state_root)?;
 
-        let source_runtime_db_path = promoted_manifest
-            .map(|manifest| PathBuf::from(&manifest.source_db_path));
+        let source_runtime_db_path =
+            promoted_manifest.map(|manifest| PathBuf::from(&manifest.source_db_path));
         let (source_state, current_source_state_available) = match source_runtime_db_path.as_ref() {
-            Some(source_runtime_db_path) => match Self::load_recent_raw_source_state_read_only(
-                source_runtime_db_path,
-            ) {
-                Ok(source_state) => (Some(source_state), true),
-                Err(_) => (None, false),
-            },
+            Some(source_runtime_db_path) => {
+                match Self::load_recent_raw_source_state_read_only(source_runtime_db_path) {
+                    Ok(source_state) => (Some(source_state), true),
+                    Err(_) => (None, false),
+                }
+            }
             None => (None, false),
         };
         let source_state = source_state.as_ref();
@@ -6156,14 +6352,224 @@ impl DiscoveryService {
                 replacement_candidate_row_count_relation_to_promoted,
             recent_raw_replacement_candidate_complete_against_current_source:
                 replacement_candidate_complete_against_current_source,
-            recent_raw_replacement_candidate_promotable_now:
-                replacement_candidate_promotable_now,
+            recent_raw_replacement_candidate_promotable_now: replacement_candidate_promotable_now,
             recent_raw_replacement_promotion_would_retire_current_promoted_truth:
                 replacement_promotion_would_retire_current_promoted_truth,
             recent_raw_stage3_blocked_on_replacement_candidate:
                 stage3_blocked_on_replacement_candidate,
             recent_raw_promotion_reason_class: promotion_reason_class,
             recent_raw_promotion_ready_now: promotion_ready_now,
+        })
+    }
+
+    pub fn explain_recent_raw_replacement_progress_contract_read_only(
+        state_root: &Path,
+    ) -> Result<RecentRawReplacementProgressContractDiagnostic> {
+        let state = Self::load_recent_raw_diagnostic_state_read_only(state_root);
+        let staged_manifest = state.staged.manifest.as_ref();
+        let replacement_promotion =
+            Self::explain_recent_raw_replacement_promotion_contract_read_only(state_root)?;
+
+        let sqlite_content =
+            Self::read_recent_raw_snapshot_sqlite_content_read_only(&state.staged_snapshot_path);
+        let sqlite_state = sqlite_content.state.as_ref();
+        let replacement_manifest_matches_sqlite_content = match (staged_manifest, sqlite_state) {
+            (Some(manifest), Some(sqlite_state)) => Some(
+                manifest.row_count == sqlite_state.row_count
+                    && manifest.covered_since == sqlite_state.covered_since
+                    && Self::recent_raw_optional_cursor_equal(
+                        manifest.covered_through_cursor.as_ref(),
+                        sqlite_state.covered_through_cursor.as_ref(),
+                    )
+                    && manifest.last_batch_completed_at == sqlite_state.last_batch_completed_at,
+            ),
+            _ => None,
+        };
+        let replacement_manifest_sqlite_match_unproven =
+            replacement_manifest_matches_sqlite_content.is_none();
+
+        let previous_candidate = staged_manifest.and_then(|staged_manifest| {
+            state
+                .staged_candidates
+                .iter()
+                .filter(|candidate| candidate.snapshot_path != state.staged_snapshot_path)
+                .filter_map(|candidate| {
+                    candidate
+                        .surface
+                        .manifest
+                        .as_ref()
+                        .map(|manifest| (candidate, manifest))
+                })
+                .filter(|(_, manifest)| manifest.source_db_path == staged_manifest.source_db_path)
+                .max_by(|(_, left), (_, right)| {
+                    left.created_at
+                        .cmp(&right.created_at)
+                        .then_with(|| {
+                            left.last_batch_completed_at
+                                .unwrap_or(left.created_at)
+                                .cmp(&right.last_batch_completed_at.unwrap_or(right.created_at))
+                        })
+                        .then_with(|| left.row_count.cmp(&right.row_count))
+                })
+        });
+
+        let current_completed_after_creation = staged_manifest.and_then(|manifest| {
+            manifest
+                .last_batch_completed_at
+                .map(|last_batch_completed_at| last_batch_completed_at > manifest.created_at)
+        });
+
+        let (
+            same_identity_as_previous_attempt,
+            row_count_advanced,
+            covered_through_advanced,
+            last_batch_completed_at_advanced,
+            candidate_advancing,
+            candidate_stalled,
+            candidate_reset_or_recreated,
+        ) = match (staged_manifest, previous_candidate.as_ref()) {
+            (Some(staged_manifest), Some((_, previous_manifest))) => {
+                let same_identity =
+                    Some(staged_manifest.created_at == previous_manifest.created_at);
+                let row_count_advanced = same_identity.and_then(|same_identity| {
+                    same_identity.then_some(staged_manifest.row_count > previous_manifest.row_count)
+                });
+                let covered_through_advanced = same_identity.and_then(|same_identity| {
+                    same_identity.then_some(
+                        Self::recent_raw_lineage_relation_from_cursor(
+                            staged_manifest.covered_through_cursor.as_ref(),
+                            previous_manifest.covered_through_cursor.as_ref(),
+                            Some(true),
+                        ) == RecentRawLineageRelation::Ahead,
+                    )
+                });
+                let last_batch_completed_at_advanced = same_identity.and_then(|same_identity| {
+                    same_identity.then_some(
+                        staged_manifest.last_batch_completed_at
+                            > previous_manifest.last_batch_completed_at,
+                    )
+                });
+                let candidate_advancing = match (
+                    row_count_advanced,
+                    covered_through_advanced,
+                    last_batch_completed_at_advanced,
+                ) {
+                    (
+                        Some(row_count_advanced),
+                        Some(covered_through_advanced),
+                        Some(last_batch_completed_at_advanced),
+                    ) => Some(
+                        row_count_advanced
+                            || covered_through_advanced
+                            || last_batch_completed_at_advanced,
+                    ),
+                    _ => None,
+                };
+                let candidate_stalled = match (
+                    same_identity,
+                    row_count_advanced,
+                    covered_through_advanced,
+                    last_batch_completed_at_advanced,
+                ) {
+                    (Some(true), Some(false), Some(false), Some(false)) => Some(true),
+                    (Some(true), Some(_), Some(_), Some(_)) => Some(false),
+                    _ => None,
+                };
+                let candidate_reset_or_recreated = match staged_manifest
+                    .created_at
+                    .cmp(&previous_manifest.created_at)
+                {
+                    Ordering::Greater => Some(true),
+                    Ordering::Equal => Some(false),
+                    Ordering::Less => None,
+                };
+                (
+                    same_identity,
+                    row_count_advanced,
+                    covered_through_advanced,
+                    last_batch_completed_at_advanced,
+                    candidate_advancing,
+                    candidate_stalled,
+                    candidate_reset_or_recreated,
+                )
+            }
+            (Some(_), None) => (None, None, None, None, None, None, None),
+            _ => (None, None, None, None, None, None, None),
+        };
+
+        let (reason_class, observed, explanation) =
+            Self::classify_recent_raw_replacement_progress_contract(
+                state.staged.manifest_error.as_deref(),
+                replacement_promotion.recent_raw_replacement_candidate_exists,
+                replacement_promotion
+                    .recent_raw_replacement_candidate_complete_against_current_source,
+                replacement_promotion.recent_raw_replacement_promotion_reason_class,
+                replacement_manifest_matches_sqlite_content,
+                previous_candidate.is_some(),
+                current_completed_after_creation,
+                same_identity_as_previous_attempt,
+                row_count_advanced,
+                covered_through_advanced,
+                last_batch_completed_at_advanced,
+                candidate_advancing,
+                candidate_stalled,
+                candidate_reset_or_recreated,
+            );
+
+        Ok(RecentRawReplacementProgressContractDiagnostic {
+            recent_raw_snapshot_dir: state.snapshot_dir.display().to_string(),
+            recent_raw_replacement_progress_observed: observed,
+            recent_raw_replacement_progress_reason_class: reason_class,
+            recent_raw_replacement_progress_explanation: explanation,
+            recent_raw_replacement_candidate_exists: replacement_promotion
+                .recent_raw_replacement_candidate_exists,
+            recent_raw_replacement_candidate_created_at: staged_manifest
+                .map(|manifest| manifest.created_at),
+            recent_raw_replacement_candidate_row_count: staged_manifest
+                .map(|manifest| manifest.row_count),
+            recent_raw_replacement_candidate_covered_through: staged_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.clone()),
+            recent_raw_replacement_candidate_last_batch_completed_at: staged_manifest
+                .and_then(|manifest| manifest.last_batch_completed_at),
+            recent_raw_replacement_candidate_completed_after_creation:
+                current_completed_after_creation,
+            recent_raw_replacement_candidate_same_identity_as_previous_attempt:
+                same_identity_as_previous_attempt,
+            recent_raw_replacement_candidate_row_count_advanced: row_count_advanced,
+            recent_raw_replacement_candidate_covered_through_advanced: covered_through_advanced,
+            recent_raw_replacement_candidate_last_batch_completed_at_advanced:
+                last_batch_completed_at_advanced,
+            recent_raw_replacement_candidate_advancing: candidate_advancing,
+            recent_raw_replacement_candidate_stalled: candidate_stalled,
+            recent_raw_replacement_candidate_reset_or_recreated: candidate_reset_or_recreated,
+            recent_raw_replacement_previous_candidate_exists: previous_candidate.is_some(),
+            recent_raw_replacement_previous_candidate_snapshot_path: previous_candidate
+                .as_ref()
+                .map(|(candidate, _)| candidate.snapshot_path.display().to_string()),
+            recent_raw_replacement_previous_candidate_metadata_path: previous_candidate
+                .as_ref()
+                .map(|(candidate, _)| candidate.metadata_path.display().to_string()),
+            recent_raw_replacement_previous_candidate_created_at: previous_candidate
+                .as_ref()
+                .map(|(_, manifest)| manifest.created_at),
+            recent_raw_replacement_previous_candidate_row_count: previous_candidate
+                .as_ref()
+                .map(|(_, manifest)| manifest.row_count),
+            recent_raw_replacement_previous_candidate_covered_through: previous_candidate
+                .as_ref()
+                .and_then(|(_, manifest)| manifest.covered_through_cursor.clone()),
+            recent_raw_replacement_previous_candidate_last_batch_completed_at: previous_candidate
+                .as_ref()
+                .and_then(|(_, manifest)| manifest.last_batch_completed_at),
+            recent_raw_replacement_manifest_matches_sqlite_content:
+                replacement_manifest_matches_sqlite_content,
+            recent_raw_replacement_manifest_sqlite_match_unproven:
+                replacement_manifest_sqlite_match_unproven,
+            recent_raw_replacement_sqlite_inspection_error: sqlite_content.error,
+            recent_raw_replacement_candidate_complete_against_current_source: replacement_promotion
+                .recent_raw_replacement_candidate_complete_against_current_source,
+            recent_raw_replacement_promotion_reason_class: replacement_promotion
+                .recent_raw_replacement_promotion_reason_class,
         })
     }
 
@@ -6221,11 +6627,12 @@ impl DiscoveryService {
             cursor_slot_relation_to_promoted,
             cursor_signature_equal_to_promoted,
         );
-        let row_count_relation_to_promoted = Self::recent_raw_lineage_relation_from_optional_row_count(
-            staged_manifest.map(|manifest| manifest.row_count),
-            promoted_manifest.map(|manifest| manifest.row_count),
-            same_source_db_as_promoted,
-        );
+        let row_count_relation_to_promoted =
+            Self::recent_raw_lineage_relation_from_optional_row_count(
+                staged_manifest.map(|manifest| manifest.row_count),
+                promoted_manifest.map(|manifest| manifest.row_count),
+                same_source_db_as_promoted,
+            );
         let covered_since_relation_to_promoted =
             Self::recent_raw_lineage_relation_from_covered_since(
                 staged_manifest.and_then(|manifest| manifest.covered_since.as_ref()),
@@ -6234,18 +6641,23 @@ impl DiscoveryService {
             );
         let staged_monotonic_relative_to_promoted = match same_source_db_as_promoted {
             Some(true) => Some(
-                !matches!(cursor_relation_to_promoted, RecentRawLineageRelation::Behind)
-                    && !matches!(row_count_relation_to_promoted, RecentRawLineageRelation::Behind)
-                    && !matches!(
-                        covered_since_relation_to_promoted,
-                        RecentRawLineageRelation::Behind
-                    ),
+                !matches!(
+                    cursor_relation_to_promoted,
+                    RecentRawLineageRelation::Behind
+                ) && !matches!(
+                    row_count_relation_to_promoted,
+                    RecentRawLineageRelation::Behind
+                ) && !matches!(
+                    covered_since_relation_to_promoted,
+                    RecentRawLineageRelation::Behind
+                ),
             ),
             Some(false) | None => None,
         };
         let staged_regressed_relative_to_promoted =
             staged_monotonic_relative_to_promoted.map(|monotonic| !monotonic);
-        let source_outruns_both = match (state.source_outruns_staged, state.source_outruns_promoted) {
+        let source_outruns_both = match (state.source_outruns_staged, state.source_outruns_promoted)
+        {
             (Some(staged), Some(promoted)) => Some(staged && promoted),
             _ => None,
         };
@@ -6313,12 +6725,9 @@ impl DiscoveryService {
             recent_raw_staged_row_count_relation_to_promoted: row_count_relation_to_promoted,
             recent_raw_staged_covered_since_relation_to_promoted:
                 covered_since_relation_to_promoted,
-            recent_raw_staged_monotonic_relative_to_promoted:
-                staged_monotonic_relative_to_promoted,
-            recent_raw_staged_regressed_relative_to_promoted:
-                staged_regressed_relative_to_promoted,
-            recent_raw_staged_closer_to_source_than_promoted:
-                staged_closer_to_source_than_promoted,
+            recent_raw_staged_monotonic_relative_to_promoted: staged_monotonic_relative_to_promoted,
+            recent_raw_staged_regressed_relative_to_promoted: staged_regressed_relative_to_promoted,
+            recent_raw_staged_closer_to_source_than_promoted: staged_closer_to_source_than_promoted,
         })
     }
 
@@ -6339,11 +6748,12 @@ impl DiscoveryService {
             promoted_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
             same_source_db_as_promoted,
         );
-        let row_count_relation_to_promoted = Self::recent_raw_lineage_relation_from_optional_row_count(
-            staged_manifest.map(|manifest| manifest.row_count),
-            promoted_manifest.map(|manifest| manifest.row_count),
-            same_source_db_as_promoted,
-        );
+        let row_count_relation_to_promoted =
+            Self::recent_raw_lineage_relation_from_optional_row_count(
+                staged_manifest.map(|manifest| manifest.row_count),
+                promoted_manifest.map(|manifest| manifest.row_count),
+                same_source_db_as_promoted,
+            );
         let covered_since_relation_to_promoted =
             Self::recent_raw_lineage_relation_from_covered_since(
                 staged_manifest.and_then(|manifest| manifest.covered_since.as_ref()),
@@ -6353,12 +6763,16 @@ impl DiscoveryService {
         let selected_staged_frontier_behind_promoted_before_comparison =
             match same_source_db_as_promoted {
                 Some(true) => Some(
-                    matches!(cursor_relation_to_promoted, RecentRawLineageRelation::Behind)
-                        || matches!(row_count_relation_to_promoted, RecentRawLineageRelation::Behind)
-                        || matches!(
-                            covered_since_relation_to_promoted,
-                            RecentRawLineageRelation::Behind
-                        ),
+                    matches!(
+                        cursor_relation_to_promoted,
+                        RecentRawLineageRelation::Behind
+                    ) || matches!(
+                        row_count_relation_to_promoted,
+                        RecentRawLineageRelation::Behind
+                    ) || matches!(
+                        covered_since_relation_to_promoted,
+                        RecentRawLineageRelation::Behind
+                    ),
                 ),
                 Some(false) | None => None,
             };
@@ -6376,15 +6790,23 @@ impl DiscoveryService {
         let parseable_candidate_created_at_max = state
             .staged_candidates
             .iter()
-            .filter_map(|candidate| candidate.surface.manifest.as_ref().map(|manifest| manifest.created_at))
+            .filter_map(|candidate| {
+                candidate
+                    .surface
+                    .manifest
+                    .as_ref()
+                    .map(|manifest| manifest.created_at)
+            })
             .max();
-        let selected_staged_is_latest_candidate =
-            match (staged_manifest.map(|manifest| manifest.created_at), parseable_candidate_created_at_max) {
-                (Some(selected_created_at), Some(candidate_created_at_max)) => {
-                    Some(selected_created_at >= candidate_created_at_max)
-                }
-                _ => None,
-            };
+        let selected_staged_is_latest_candidate = match (
+            staged_manifest.map(|manifest| manifest.created_at),
+            parseable_candidate_created_at_max,
+        ) {
+            (Some(selected_created_at), Some(candidate_created_at_max)) => {
+                Some(selected_created_at >= candidate_created_at_max)
+            }
+            _ => None,
+        };
         let staged_selection_reason = Self::recent_raw_staged_selection_reason(
             &state.staged_snapshot_path,
             &state.staged_metadata_path,
@@ -6410,7 +6832,8 @@ impl DiscoveryService {
             recent_raw_promoted_snapshot_path: state.promoted_snapshot_path.display().to_string(),
             recent_raw_promoted_metadata_path: state.promoted_metadata_path.display().to_string(),
             recent_raw_promoted_created_at: promoted_manifest.map(|manifest| manifest.created_at),
-            recent_raw_promoted_covered_since: promoted_manifest.and_then(|manifest| manifest.covered_since),
+            recent_raw_promoted_covered_since: promoted_manifest
+                .and_then(|manifest| manifest.covered_since),
             recent_raw_promoted_covered_through: promoted_manifest
                 .and_then(|manifest| manifest.covered_through_cursor.clone()),
             recent_raw_promoted_row_count: promoted_manifest.map(|manifest| manifest.row_count),
@@ -6421,7 +6844,8 @@ impl DiscoveryService {
             recent_raw_staged_snapshot_path: state.staged_snapshot_path.display().to_string(),
             recent_raw_staged_metadata_path: state.staged_metadata_path.display().to_string(),
             recent_raw_staged_created_at: staged_manifest.map(|manifest| manifest.created_at),
-            recent_raw_staged_covered_since: staged_manifest.and_then(|manifest| manifest.covered_since),
+            recent_raw_staged_covered_since: staged_manifest
+                .and_then(|manifest| manifest.covered_since),
             recent_raw_staged_covered_through: staged_manifest
                 .and_then(|manifest| manifest.covered_through_cursor.clone()),
             recent_raw_staged_row_count: staged_manifest.map(|manifest| manifest.row_count),
@@ -6485,11 +6909,12 @@ impl DiscoveryService {
             promoted_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
             same_source_db_as_promoted,
         );
-        let row_count_relation_to_promoted = Self::recent_raw_lineage_relation_from_optional_row_count(
-            staged_manifest.map(|manifest| manifest.row_count),
-            promoted_manifest.map(|manifest| manifest.row_count),
-            same_source_db_as_promoted,
-        );
+        let row_count_relation_to_promoted =
+            Self::recent_raw_lineage_relation_from_optional_row_count(
+                staged_manifest.map(|manifest| manifest.row_count),
+                promoted_manifest.map(|manifest| manifest.row_count),
+                same_source_db_as_promoted,
+            );
         let window_later_start_than_promoted = match same_source_db_as_promoted {
             Some(true) => Some(matches!(
                 covered_since_relation_to_promoted,
@@ -6499,16 +6924,21 @@ impl DiscoveryService {
         };
         let window_narrower_or_older_than_promoted = match same_source_db_as_promoted {
             Some(true) => Some(
-                matches!(covered_since_relation_to_promoted, RecentRawLineageRelation::Behind)
-                    || matches!(
-                        covered_through_relation_to_promoted,
-                        RecentRawLineageRelation::Behind
-                    )
-                    || matches!(row_count_relation_to_promoted, RecentRawLineageRelation::Behind),
+                matches!(
+                    covered_since_relation_to_promoted,
+                    RecentRawLineageRelation::Behind
+                ) || matches!(
+                    covered_through_relation_to_promoted,
+                    RecentRawLineageRelation::Behind
+                ) || matches!(
+                    row_count_relation_to_promoted,
+                    RecentRawLineageRelation::Behind
+                ),
             ),
             Some(false) | None => None,
         };
-        let source_outruns_both = match (state.source_outruns_staged, state.source_outruns_promoted) {
+        let source_outruns_both = match (state.source_outruns_staged, state.source_outruns_promoted)
+        {
             (Some(staged), Some(promoted)) => Some(staged && promoted),
             _ => None,
         };
@@ -6548,12 +6978,14 @@ impl DiscoveryService {
             recent_raw_staged_birth_snapshot_path: state.staged_snapshot_path.display().to_string(),
             recent_raw_staged_birth_metadata_path: state.staged_metadata_path.display().to_string(),
             recent_raw_staged_birth_created_at: staged_manifest.map(|manifest| manifest.created_at),
-            recent_raw_staged_birth_covered_since: staged_manifest.and_then(|manifest| manifest.covered_since),
+            recent_raw_staged_birth_covered_since: staged_manifest
+                .and_then(|manifest| manifest.covered_since),
             recent_raw_staged_birth_covered_through: staged_manifest
                 .and_then(|manifest| manifest.covered_through_cursor.clone()),
             recent_raw_staged_birth_row_count: staged_manifest.map(|manifest| manifest.row_count),
             recent_raw_promoted_created_at: promoted_manifest.map(|manifest| manifest.created_at),
-            recent_raw_promoted_covered_since: promoted_manifest.and_then(|manifest| manifest.covered_since),
+            recent_raw_promoted_covered_since: promoted_manifest
+                .and_then(|manifest| manifest.covered_since),
             recent_raw_promoted_covered_through: promoted_manifest
                 .and_then(|manifest| manifest.covered_through_cursor.clone()),
             recent_raw_promoted_row_count: promoted_manifest.map(|manifest| manifest.row_count),
@@ -6571,15 +7003,14 @@ impl DiscoveryService {
             recent_raw_staged_birth_source_outruns_both: source_outruns_both,
             recent_raw_staged_birth_manifest_matches_sqlite_content:
                 manifest_matches_sqlite_content,
-            recent_raw_staged_birth_manifest_sqlite_match_unproven:
-                manifest_sqlite_match_unproven,
-            recent_raw_staged_birth_sqlite_covered_since:
-                sqlite_state.and_then(|state| state.covered_since),
-            recent_raw_staged_birth_sqlite_covered_through:
-                sqlite_state.and_then(|state| state.covered_through_cursor.clone()),
+            recent_raw_staged_birth_manifest_sqlite_match_unproven: manifest_sqlite_match_unproven,
+            recent_raw_staged_birth_sqlite_covered_since: sqlite_state
+                .and_then(|state| state.covered_since),
+            recent_raw_staged_birth_sqlite_covered_through: sqlite_state
+                .and_then(|state| state.covered_through_cursor.clone()),
             recent_raw_staged_birth_sqlite_row_count: sqlite_state.map(|state| state.row_count),
-            recent_raw_staged_birth_sqlite_last_batch_completed_at:
-                sqlite_state.and_then(|state| state.last_batch_completed_at),
+            recent_raw_staged_birth_sqlite_last_batch_completed_at: sqlite_state
+                .and_then(|state| state.last_batch_completed_at),
             recent_raw_staged_birth_sqlite_inspection_error: sqlite_content.error,
         })
     }
@@ -7200,14 +7631,13 @@ impl DiscoveryService {
             );
         }
 
-        let measurement_shape_diff =
-            diagnostic.shared_path_diff_step_meta_detail_extracts_phase_and_updated_at_after_step
-                != diagnostic
-                    .shared_path_diff_shared_sequence_extracts_phase_and_updated_at_after_step
-                || diagnostic.shared_path_diff_step_meta_detail_measures_prepare_meta_separately
-                    != diagnostic.shared_path_diff_shared_sequence_measures_prepare_meta_separately
-                || diagnostic.shared_path_diff_step_meta_detail_measures_extract_separately
-                    != diagnostic.shared_path_diff_shared_sequence_measures_extract_separately;
+        let measurement_shape_diff = diagnostic
+            .shared_path_diff_step_meta_detail_extracts_phase_and_updated_at_after_step
+            != diagnostic.shared_path_diff_shared_sequence_extracts_phase_and_updated_at_after_step
+            || diagnostic.shared_path_diff_step_meta_detail_measures_prepare_meta_separately
+                != diagnostic.shared_path_diff_shared_sequence_measures_prepare_meta_separately
+            || diagnostic.shared_path_diff_step_meta_detail_measures_extract_separately
+                != diagnostic.shared_path_diff_shared_sequence_measures_extract_separately;
 
         if measurement_shape_diff {
             return (
@@ -7282,9 +7712,15 @@ impl DiscoveryService {
     fn step_meta_full_mode_ran_later_variants(
         diagnostic: &PersistedRebuildRowStepMetaCompareDiagnostic,
     ) -> bool {
-        diagnostic.step_meta_fresh_connection_prepare_meta_elapsed_ms.is_some()
-            || diagnostic.step_meta_fresh_connection_step_meta_elapsed_ms.is_some()
-            || diagnostic.step_meta_query_plus_next_variant_elapsed_ms.is_some()
+        diagnostic
+            .step_meta_fresh_connection_prepare_meta_elapsed_ms
+            .is_some()
+            || diagnostic
+                .step_meta_fresh_connection_step_meta_elapsed_ms
+                .is_some()
+            || diagnostic
+                .step_meta_query_plus_next_variant_elapsed_ms
+                .is_some()
             || diagnostic.step_meta_query_row_variant_elapsed_ms.is_some()
             || diagnostic.step_meta_query_only_on_elapsed_ms.is_some()
             || diagnostic.step_meta_cache_tuned_elapsed_ms.is_some()
@@ -7330,10 +7766,8 @@ impl DiscoveryService {
             );
         }
 
-        if !diagnostic
-            .step_meta_full_context_diff_both_sides_use_same_shared_helper_function
-            || !diagnostic
-                .step_meta_full_context_diff_both_sides_measure_same_bucket_boundaries
+        if !diagnostic.step_meta_full_context_diff_both_sides_use_same_shared_helper_function
+            || !diagnostic.step_meta_full_context_diff_both_sides_measure_same_bucket_boundaries
         {
             return (
                 PersistedRebuildRowStepMetaFullContextDiffReasonClass::StepMetaFullContextDiffMeasurementContractDiff,
@@ -7455,11 +7889,7 @@ impl DiscoveryService {
         let truncated_slow = truncated_step > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
         let no_snapshot_slow = no_snapshot_step > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
 
-        if !full_current_slow
-            && truncated_slow
-            && !no_snapshot_slow
-            && !isolated_slow
-        {
+        if !full_current_slow && truncated_slow && !no_snapshot_slow && !isolated_slow {
             return (
                 PersistedRebuildRowStepMetaFullOrchestrationDiffReasonClass::StepMetaFullOrchestrationDiffTruncatedAfterSharedOnlySlow,
                 format!(
@@ -7535,10 +7965,7 @@ impl DiscoveryService {
 
     fn classify_persisted_rebuild_row_shared_ordering_diff(
         diagnostic: &PersistedRebuildRowSharedOrderingDiffDiagnostic,
-    ) -> (
-        PersistedRebuildRowSharedOrderingDiffReasonClass,
-        String,
-    ) {
+    ) -> (PersistedRebuildRowSharedOrderingDiffReasonClass, String) {
         if diagnostic.shared_ordering_diff_budget_exhausted {
             return (
                 PersistedRebuildRowSharedOrderingDiffReasonClass::SharedOrderingDiffUnprovenDueToBudgetExhausted,
@@ -7798,8 +8225,7 @@ impl DiscoveryService {
             step_meta_isolated_shared_step_exists_elapsed_ms: diagnostic.step_exists_elapsed_ms,
             step_meta_isolated_shared_prepare_meta_elapsed_ms: diagnostic.prepare_meta_elapsed_ms,
             step_meta_isolated_shared_step_meta_elapsed_ms: diagnostic.step_meta_elapsed_ms,
-            step_meta_isolated_shared_extract_phase_elapsed_ms: diagnostic
-                .extract_phase_elapsed_ms,
+            step_meta_isolated_shared_extract_phase_elapsed_ms: diagnostic.extract_phase_elapsed_ms,
             step_meta_isolated_shared_extract_updated_at_elapsed_ms: diagnostic
                 .extract_updated_at_elapsed_ms,
             step_meta_isolated_shared_row_exists: diagnostic.row_exists,
@@ -7821,10 +8247,7 @@ impl DiscoveryService {
 
     pub fn classify_persisted_rebuild_row_cross_invocation_diff(
         diagnostic: &PersistedRebuildRowCrossInvocationDiffDiagnostic,
-    ) -> (
-        PersistedRebuildRowCrossInvocationDiffReasonClass,
-        String,
-    ) {
+    ) -> (PersistedRebuildRowCrossInvocationDiffReasonClass, String) {
         if diagnostic.cross_invocation_diff_budget_exhausted {
             return (
                 PersistedRebuildRowCrossInvocationDiffReasonClass::CrossInvocationDiffUnprovenDueToBudgetExhausted,
@@ -7868,11 +8291,7 @@ impl DiscoveryService {
         let isolated_repeat_slow = isolated_repeat > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
         let full_repeat_slow = full_repeat > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
 
-        if isolated_first_slow
-            && !isolated_repeat_slow
-            && !full_first_slow
-            && !full_repeat_slow
-        {
+        if isolated_first_slow && !isolated_repeat_slow && !full_first_slow && !full_repeat_slow {
             return (
                 PersistedRebuildRowCrossInvocationDiffReasonClass::CrossInvocationDiffIsolatedFirstChildInvocationSlowerThanRepeat,
                 format!(
@@ -7887,11 +8306,7 @@ impl DiscoveryService {
             );
         }
 
-        if full_first_slow
-            && !full_repeat_slow
-            && !isolated_first_slow
-            && !isolated_repeat_slow
-        {
+        if full_first_slow && !full_repeat_slow && !isolated_first_slow && !isolated_repeat_slow {
             return (
                 PersistedRebuildRowCrossInvocationDiffReasonClass::CrossInvocationDiffFullFirstChildInvocationSlowerThanRepeat,
                 format!(
@@ -7906,11 +8321,7 @@ impl DiscoveryService {
             );
         }
 
-        if isolated_first_slow
-            && !isolated_repeat_slow
-            && full_first_slow
-            && !full_repeat_slow
-        {
+        if isolated_first_slow && !isolated_repeat_slow && full_first_slow && !full_repeat_slow {
             return (
                 PersistedRebuildRowCrossInvocationDiffReasonClass::CrossInvocationDiffFirstChildInvocationSlowerForBothSurfaces,
                 format!(
@@ -9725,45 +10136,42 @@ impl DiscoveryService {
         };
 
         let remaining_for_full_current = deadline.saturating_duration_since(Instant::now());
-        let full_current = SqliteStore::probe_discovery_persisted_rebuild_row_step_meta_compare_read_only(
-            runtime_db_path,
-            &StorageStepMetaCompareOptions {
-                budget_ms: remaining_for_full_current
-                    .as_millis()
-                    .min(u64::MAX as u128) as u64,
-                test_force_shared_step_meta_delay_ms: options
-                    .test_force_full_current_shared_step_meta_delay_ms,
-                ..StorageStepMetaCompareOptions::default()
-            },
-        )?;
+        let full_current =
+            SqliteStore::probe_discovery_persisted_rebuild_row_step_meta_compare_read_only(
+                runtime_db_path,
+                &StorageStepMetaCompareOptions {
+                    budget_ms: remaining_for_full_current.as_millis().min(u64::MAX as u128) as u64,
+                    test_force_shared_step_meta_delay_ms: options
+                        .test_force_full_current_shared_step_meta_delay_ms,
+                    ..StorageStepMetaCompareOptions::default()
+                },
+            )?;
 
         let remaining_for_truncated = deadline.saturating_duration_since(Instant::now());
-        let full_truncated = SqliteStore::probe_discovery_persisted_rebuild_row_step_meta_compare_read_only(
-            runtime_db_path,
-            &StorageStepMetaCompareOptions {
-                budget_ms: remaining_for_truncated
-                    .as_millis()
-                    .min(u64::MAX as u128) as u64,
-                test_force_shared_step_meta_delay_ms: options
-                    .test_force_full_truncated_shared_step_meta_delay_ms,
-                test_truncate_after_shared_section: true,
-                ..StorageStepMetaCompareOptions::default()
-            },
-        )?;
+        let full_truncated =
+            SqliteStore::probe_discovery_persisted_rebuild_row_step_meta_compare_read_only(
+                runtime_db_path,
+                &StorageStepMetaCompareOptions {
+                    budget_ms: remaining_for_truncated.as_millis().min(u64::MAX as u128) as u64,
+                    test_force_shared_step_meta_delay_ms: options
+                        .test_force_full_truncated_shared_step_meta_delay_ms,
+                    test_truncate_after_shared_section: true,
+                    ..StorageStepMetaCompareOptions::default()
+                },
+            )?;
 
         let remaining_for_no_snapshot = deadline.saturating_duration_since(Instant::now());
-        let full_no_snapshot = SqliteStore::probe_discovery_persisted_rebuild_row_step_meta_compare_read_only(
-            runtime_db_path,
-            &StorageStepMetaCompareOptions {
-                budget_ms: remaining_for_no_snapshot
-                    .as_millis()
-                    .min(u64::MAX as u128) as u64,
-                test_force_shared_step_meta_delay_ms: options
-                    .test_force_full_no_snapshot_shared_step_meta_delay_ms,
-                test_disable_progress_snapshots: true,
-                ..StorageStepMetaCompareOptions::default()
-            },
-        )?;
+        let full_no_snapshot =
+            SqliteStore::probe_discovery_persisted_rebuild_row_step_meta_compare_read_only(
+                runtime_db_path,
+                &StorageStepMetaCompareOptions {
+                    budget_ms: remaining_for_no_snapshot.as_millis().min(u64::MAX as u128) as u64,
+                    test_force_shared_step_meta_delay_ms: options
+                        .test_force_full_no_snapshot_shared_step_meta_delay_ms,
+                    test_disable_progress_snapshots: true,
+                    ..StorageStepMetaCompareOptions::default()
+                },
+            )?;
 
         let mut mapped = PersistedRebuildRowStepMetaFullOrchestrationDiffDiagnostic {
             step_meta_full_orchestration_diff_stage: if isolated.budget_exhausted {
@@ -9951,15 +10359,16 @@ impl DiscoveryService {
 
         let orchestration = orchestration.expect("checked above");
 
-        let row_missing =
-            orchestration.step_meta_full_orchestration_diff_isolated_shared_row_exists == Some(false)
-                || orchestration.step_meta_full_orchestration_diff_full_current_row_exists
-                    == Some(false)
-                || orchestration
-                    .step_meta_full_orchestration_diff_full_truncated_after_shared_row_exists
-                    == Some(false)
-                || orchestration.step_meta_full_orchestration_diff_full_no_snapshot_row_exists
-                    == Some(false);
+        let row_missing = orchestration
+            .step_meta_full_orchestration_diff_isolated_shared_row_exists
+            == Some(false)
+            || orchestration.step_meta_full_orchestration_diff_full_current_row_exists
+                == Some(false)
+            || orchestration
+                .step_meta_full_orchestration_diff_full_truncated_after_shared_row_exists
+                == Some(false)
+            || orchestration.step_meta_full_orchestration_diff_full_no_snapshot_row_exists
+                == Some(false);
 
         let candidates = [
             SlowStageCandidate {
@@ -10133,9 +10542,19 @@ impl DiscoveryService {
             })
             .max_by_key(|(_, elapsed_ms)| *elapsed_ms);
 
-        let (reason_class, explanation, observed, stage, elapsed_ms, path_identity, previous_stage, previous_elapsed_ms, next_stage, next_elapsed_ms) =
-            if row_missing {
-                (
+        let (
+            reason_class,
+            explanation,
+            observed,
+            stage,
+            elapsed_ms,
+            path_identity,
+            previous_stage,
+            previous_elapsed_ms,
+            next_stage,
+            next_elapsed_ms,
+        ) = if row_missing {
+            (
                     PersistedRebuildRowSlowEventCaptureReasonClass::SlowEventRowMissing,
                     "the accepted full-orchestration probe proved that discovery_persisted_rebuild_state(id=1) is missing on the runtime db".to_string(),
                     false,
@@ -10147,13 +10566,13 @@ impl DiscoveryService {
                     None,
                     None,
                 )
-            } else if let Some((candidate, elapsed_ms)) = observed_stage {
-                let reason_class = if candidate.stage.contains("step_meta") {
-                    PersistedRebuildRowSlowEventCaptureReasonClass::SlowEventObservedOnSharedStepMeta
-                } else {
-                    PersistedRebuildRowSlowEventCaptureReasonClass::SlowEventObservedOnOtherStage
-                };
-                (
+        } else if let Some((candidate, elapsed_ms)) = observed_stage {
+            let reason_class = if candidate.stage.contains("step_meta") {
+                PersistedRebuildRowSlowEventCaptureReasonClass::SlowEventObservedOnSharedStepMeta
+            } else {
+                PersistedRebuildRowSlowEventCaptureReasonClass::SlowEventObservedOnOtherStage
+            };
+            (
                     reason_class,
                     format!(
                         "the accepted full-orchestration probe observed a real slow event on stage {} within path {} (elapsed_ms={}, threshold_ms={}, surface_identity=probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only)",
@@ -10171,8 +10590,8 @@ impl DiscoveryService {
                     candidate.next_stage.map(str::to_string),
                     candidate.next_elapsed_ms,
                 )
-            } else if orchestration.step_meta_full_orchestration_diff_budget_exhausted {
-                (
+        } else if orchestration.step_meta_full_orchestration_diff_budget_exhausted {
+            (
                     PersistedRebuildRowSlowEventCaptureReasonClass::SlowEventCaptureUnprovenDueToBudgetExhausted,
                     format!(
                         "the accepted full-orchestration probe exhausted its diagnostic budget while in stage {} before any threshold-exceeding slow event was captured (threshold_ms={})",
@@ -10192,14 +10611,18 @@ impl DiscoveryService {
                     None,
                     None,
                 )
-            } else {
-                let max_candidate = candidates
-                    .into_iter()
-                    .filter_map(|candidate| candidate.elapsed_ms.map(|elapsed_ms| (candidate.stage, elapsed_ms)))
-                    .max_by_key(|(_, elapsed_ms)| *elapsed_ms);
-                let max_stage = max_candidate.map(|(stage, _)| stage).unwrap_or("none");
-                let max_elapsed = max_candidate.map(|(_, elapsed_ms)| elapsed_ms).unwrap_or(0);
-                (
+        } else {
+            let max_candidate = candidates
+                .into_iter()
+                .filter_map(|candidate| {
+                    candidate
+                        .elapsed_ms
+                        .map(|elapsed_ms| (candidate.stage, elapsed_ms))
+                })
+                .max_by_key(|(_, elapsed_ms)| *elapsed_ms);
+            let max_stage = max_candidate.map(|(stage, _)| stage).unwrap_or("none");
+            let max_elapsed = max_candidate.map(|(_, elapsed_ms)| elapsed_ms).unwrap_or(0);
+            (
                     PersistedRebuildRowSlowEventCaptureReasonClass::SlowEventNotObserved,
                     format!(
                         "the accepted full-orchestration probe completed without observing any stage at or above the configured slow-event threshold (threshold_ms={}, max_stage={}, max_elapsed_ms={})",
@@ -10216,7 +10639,7 @@ impl DiscoveryService {
                     None,
                     None,
                 )
-            };
+        };
 
         Ok(PersistedRebuildRowSlowEventCaptureDiagnostic {
             slow_event_capture_observed: observed,
@@ -10303,35 +10726,32 @@ impl DiscoveryService {
                 .as_millis()
                 .min(u64::MAX as u128) as u64
         };
-        let run_branch =
-            |first_isolated: bool,
-             first_delay_ms: Option<u64>,
-             second_delay_ms: Option<u64>|
-             -> Result<SharedOrderingBranchSequenceResult> {
-                let branch_deadline =
-                    Instant::now() + StdDuration::from_millis(remaining_budget_ms(deadline));
-                let mut execution_order = Vec::with_capacity(2);
-                let (isolated, full) = if first_isolated {
-                    execution_order.push("isolated_shared_helper".to_string());
-                    let isolated =
-                        run_isolated(remaining_budget_ms(branch_deadline), first_delay_ms)?;
-                    execution_order.push("full_current_branch".to_string());
-                    let full = run_full(remaining_budget_ms(branch_deadline), second_delay_ms)?;
-                    (isolated, full)
-                } else {
-                    execution_order.push("full_current_branch".to_string());
-                    let full = run_full(remaining_budget_ms(branch_deadline), first_delay_ms)?;
-                    execution_order.push("isolated_shared_helper".to_string());
-                    let isolated =
-                        run_isolated(remaining_budget_ms(branch_deadline), second_delay_ms)?;
-                    (isolated, full)
-                };
-                Ok(SharedOrderingBranchSequenceResult {
-                    execution_order,
-                    isolated,
-                    full,
-                })
+        let run_branch = |first_isolated: bool,
+                          first_delay_ms: Option<u64>,
+                          second_delay_ms: Option<u64>|
+         -> Result<SharedOrderingBranchSequenceResult> {
+            let branch_deadline =
+                Instant::now() + StdDuration::from_millis(remaining_budget_ms(deadline));
+            let mut execution_order = Vec::with_capacity(2);
+            let (isolated, full) = if first_isolated {
+                execution_order.push("isolated_shared_helper".to_string());
+                let isolated = run_isolated(remaining_budget_ms(branch_deadline), first_delay_ms)?;
+                execution_order.push("full_current_branch".to_string());
+                let full = run_full(remaining_budget_ms(branch_deadline), second_delay_ms)?;
+                (isolated, full)
+            } else {
+                execution_order.push("full_current_branch".to_string());
+                let full = run_full(remaining_budget_ms(branch_deadline), first_delay_ms)?;
+                execution_order.push("isolated_shared_helper".to_string());
+                let isolated = run_isolated(remaining_budget_ms(branch_deadline), second_delay_ms)?;
+                (isolated, full)
             };
+            Ok(SharedOrderingBranchSequenceResult {
+                execution_order,
+                isolated,
+                full,
+            })
+        };
 
         let isolated_first_branch = run_branch(
             true,
@@ -46729,14 +47149,15 @@ mod tests {
             .path()
             .join("stage1-deferred-runtime-publication-refresh.db");
 
-        let full_step = DiscoveryService::probe_persisted_rebuild_row_step_meta_compare_read_only_with_options(
-            Path::new(&runtime_db_path),
-            StorageStepMetaCompareOptions {
-                budget_ms: 500,
-                test_force_fresh_connection_query_delay_ms: Some(1_500),
-                ..StorageStepMetaCompareOptions::default()
-            },
-        )?;
+        let full_step =
+            DiscoveryService::probe_persisted_rebuild_row_step_meta_compare_read_only_with_options(
+                Path::new(&runtime_db_path),
+                StorageStepMetaCompareOptions {
+                    budget_ms: 500,
+                    test_force_fresh_connection_query_delay_ms: Some(1_500),
+                    ..StorageStepMetaCompareOptions::default()
+                },
+            )?;
         assert!(full_step.step_meta_compare_budget_exhausted);
 
         let full_shared_sequence =
@@ -46811,10 +47232,10 @@ mod tests {
         assert!(diagnostic
             .step_meta_full_context_diff_explanation
             .contains("does not reproduce the earlier slow shared result"));
-        assert!(diagnostic
-            .step_meta_full_context_diff_full_mode_ran_later_variants_after_shared_path);
-        assert!(diagnostic
-            .step_meta_full_context_diff_isolated_side_ran_only_shared_helper);
+        assert!(
+            diagnostic.step_meta_full_context_diff_full_mode_ran_later_variants_after_shared_path
+        );
+        assert!(diagnostic.step_meta_full_context_diff_isolated_side_ran_only_shared_helper);
         Ok(())
     }
 
@@ -46919,10 +47340,8 @@ mod tests {
         assert!(diagnostic
             .step_meta_full_orchestration_diff_explanation
             .contains("no current full-mode-only orchestration difference"));
-        assert!(diagnostic
-            .step_meta_full_orchestration_diff_full_current_ran_later_variants);
-        assert!(!diagnostic
-            .step_meta_full_orchestration_diff_full_truncated_ran_later_variants);
+        assert!(diagnostic.step_meta_full_orchestration_diff_full_current_ran_later_variants);
+        assert!(!diagnostic.step_meta_full_orchestration_diff_full_truncated_ran_later_variants);
         Ok(())
     }
 
@@ -46994,10 +47413,11 @@ mod tests {
         assert!(diagnostic
             .step_meta_full_orchestration_diff_full_no_snapshot_step_meta_elapsed_ms
             .is_some());
-        assert!(diagnostic
-            .step_meta_full_orchestration_diff_full_no_snapshot_ran_later_variants);
-        assert!(!diagnostic
-            .step_meta_full_orchestration_diff_full_no_snapshot_emitted_progress_snapshots);
+        assert!(diagnostic.step_meta_full_orchestration_diff_full_no_snapshot_ran_later_variants);
+        assert!(
+            !diagnostic
+                .step_meta_full_orchestration_diff_full_no_snapshot_emitted_progress_snapshots
+        );
         Ok(())
     }
 
@@ -47275,8 +47695,8 @@ mod tests {
     }
 
     #[test]
-    fn replay_checkpoint_slow_event_capture_no_slow_event_reports_not_observed_stage1(
-    ) -> Result<()> {
+    fn replay_checkpoint_slow_event_capture_no_slow_event_reports_not_observed_stage1() -> Result<()>
+    {
         let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
             seed_stage1_deferred_runtime_publication_refresh_fixture()?;
         let runtime_db_path = temp
@@ -47356,7 +47776,9 @@ mod tests {
             diagnostic.slow_event_capture_runtime_db_path,
             runtime_db_path.display().to_string()
         );
-        assert!(diagnostic.slow_event_capture_runtime_db_size_bytes.is_some());
+        assert!(diagnostic
+            .slow_event_capture_runtime_db_size_bytes
+            .is_some());
         assert!(diagnostic.slow_event_capture_runtime_db_mtime.is_some());
         assert!(diagnostic.slow_event_capture_busy_timeout_ms.is_some());
         assert!(diagnostic.slow_event_capture_cache_size.is_some());
@@ -47990,10 +48412,11 @@ mod tests {
             Path::new(&runtime_db_path),
             30_000,
         )?;
-        let _ = DiscoveryService::probe_persisted_rebuild_row_step_meta_full_context_diff_read_only(
-            Path::new(&runtime_db_path),
-            30_000,
-        )?;
+        let _ =
+            DiscoveryService::probe_persisted_rebuild_row_step_meta_full_context_diff_read_only(
+                Path::new(&runtime_db_path),
+                30_000,
+            )?;
         let _ =
             DiscoveryService::probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only(
                 Path::new(&runtime_db_path),
@@ -48158,7 +48581,10 @@ mod tests {
             diagnostic.recent_raw_promotion_reason_class,
             RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByStagedNotNewerThanPromoted
         );
-        assert_eq!(diagnostic.recent_raw_staged_newer_than_promoted, Some(false));
+        assert_eq!(
+            diagnostic.recent_raw_staged_newer_than_promoted,
+            Some(false)
+        );
         assert!(diagnostic.recent_raw_stage3_current_fresh_healthy_evidence_possible);
         Ok(())
     }
@@ -48425,7 +48851,10 @@ mod tests {
         assert_eq!(diagnostic.recent_raw_source_vs_staged_row_lag, Some(1));
         assert_eq!(diagnostic.recent_raw_source_vs_promoted_row_lag, Some(2));
         assert_eq!(diagnostic.recent_raw_staged_advancing, Some(true));
-        assert_eq!(diagnostic.recent_raw_staged_last_batch_completed_at_newer_than_promoted, Some(true));
+        assert_eq!(
+            diagnostic.recent_raw_staged_last_batch_completed_at_newer_than_promoted,
+            Some(true)
+        );
         Ok(())
     }
 
@@ -48450,7 +48879,8 @@ mod tests {
         )?;
         let before = fixture.capture_bytes()?;
 
-        let _ = DiscoveryService::explain_recent_raw_catch_up_status_read_only(&fixture.state_root)?;
+        let _ =
+            DiscoveryService::explain_recent_raw_catch_up_status_read_only(&fixture.state_root)?;
 
         let after = fixture.capture_bytes()?;
         assert_eq!(before, after);
@@ -48484,7 +48914,10 @@ mod tests {
             diagnostic.recent_raw_staged_lineage_reason_class,
             RecentRawStagedLineageReasonClass::RecentRawStagedLineageMonotonicButIncomplete
         );
-        assert_eq!(diagnostic.recent_raw_staged_same_source_db_as_promoted, Some(true));
+        assert_eq!(
+            diagnostic.recent_raw_staged_same_source_db_as_promoted,
+            Some(true)
+        );
         assert_eq!(
             diagnostic.recent_raw_staged_cursor_relation_to_promoted,
             RecentRawLineageRelation::Ahead
@@ -48512,8 +48945,14 @@ mod tests {
             diagnostic.recent_raw_staged_covered_since_relation_to_promoted,
             RecentRawLineageRelation::Equal
         );
-        assert_eq!(diagnostic.recent_raw_staged_monotonic_relative_to_promoted, Some(true));
-        assert_eq!(diagnostic.recent_raw_staged_regressed_relative_to_promoted, Some(false));
+        assert_eq!(
+            diagnostic.recent_raw_staged_monotonic_relative_to_promoted,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_regressed_relative_to_promoted,
+            Some(false)
+        );
         Ok(())
     }
 
@@ -48550,8 +48989,14 @@ mod tests {
             diagnostic.recent_raw_staged_covered_since_relation_to_promoted,
             RecentRawLineageRelation::Behind
         );
-        assert_eq!(diagnostic.recent_raw_staged_monotonic_relative_to_promoted, Some(false));
-        assert_eq!(diagnostic.recent_raw_staged_regressed_relative_to_promoted, Some(true));
+        assert_eq!(
+            diagnostic.recent_raw_staged_monotonic_relative_to_promoted,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_regressed_relative_to_promoted,
+            Some(true)
+        );
         Ok(())
     }
 
@@ -48587,8 +49032,14 @@ mod tests {
             diagnostic.recent_raw_staged_covered_since_relation_to_promoted,
             RecentRawLineageRelation::Ahead
         );
-        assert_eq!(diagnostic.recent_raw_staged_monotonic_relative_to_promoted, Some(true));
-        assert_eq!(diagnostic.recent_raw_staged_regressed_relative_to_promoted, Some(false));
+        assert_eq!(
+            diagnostic.recent_raw_staged_monotonic_relative_to_promoted,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_regressed_relative_to_promoted,
+            Some(false)
+        );
         Ok(())
     }
 
@@ -48619,7 +49070,10 @@ mod tests {
             diagnostic.recent_raw_staged_lineage_reason_class,
             RecentRawStagedLineageReasonClass::RecentRawStagedLineageRegressedRelativeToPromoted
         );
-        assert_eq!(diagnostic.recent_raw_staged_same_source_db_as_promoted, Some(true));
+        assert_eq!(
+            diagnostic.recent_raw_staged_same_source_db_as_promoted,
+            Some(true)
+        );
         assert_eq!(
             diagnostic.recent_raw_staged_cursor_relation_to_promoted,
             RecentRawLineageRelation::Behind
@@ -48636,8 +49090,14 @@ mod tests {
             diagnostic.recent_raw_staged_cursor_signature_equal_to_promoted,
             Some(false)
         );
-        assert_eq!(diagnostic.recent_raw_staged_regressed_relative_to_promoted, Some(true));
-        assert_eq!(diagnostic.recent_raw_staged_closer_to_source_than_promoted, Some(false));
+        assert_eq!(
+            diagnostic.recent_raw_staged_regressed_relative_to_promoted,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_closer_to_source_than_promoted,
+            Some(false)
+        );
         Ok(())
     }
 
@@ -48803,7 +49263,10 @@ mod tests {
             diagnostic.recent_raw_staged_lineage_reason_class,
             RecentRawStagedLineageReasonClass::RecentRawStagedLineagePointsToDifferentSource
         );
-        assert_eq!(diagnostic.recent_raw_staged_same_source_db_as_promoted, Some(false));
+        assert_eq!(
+            diagnostic.recent_raw_staged_same_source_db_as_promoted,
+            Some(false)
+        );
         assert_eq!(
             diagnostic.recent_raw_staged_cursor_relation_to_promoted,
             RecentRawLineageRelation::DifferentSource
@@ -48820,8 +49283,14 @@ mod tests {
             diagnostic.recent_raw_staged_cursor_slot_relation_to_promoted,
             RecentRawLineageRelation::DifferentSource
         );
-        assert_eq!(diagnostic.recent_raw_staged_cursor_signature_equal_to_promoted, None);
-        assert_eq!(diagnostic.recent_raw_staged_monotonic_relative_to_promoted, None);
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_signature_equal_to_promoted,
+            None
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_monotonic_relative_to_promoted,
+            None
+        );
         Ok(())
     }
 
@@ -48863,7 +49332,10 @@ mod tests {
             diagnostic.recent_raw_staged_cursor_slot_relation_to_promoted,
             RecentRawLineageRelation::Unproven
         );
-        assert_eq!(diagnostic.recent_raw_staged_cursor_signature_equal_to_promoted, None);
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_signature_equal_to_promoted,
+            None
+        );
         Ok(())
     }
 
@@ -48905,7 +49377,9 @@ mod tests {
             diagnostic.recent_raw_staged_cursor_relation_basis,
             RecentRawCursorRelationBasis::DirectCoveredThroughCursorComparison
         );
-        assert!(!diagnostic.recent_raw_staged_cursor_relation_explanation.is_empty());
+        assert!(!diagnostic
+            .recent_raw_staged_cursor_relation_explanation
+            .is_empty());
         Ok(())
     }
 
@@ -48980,7 +49454,8 @@ mod tests {
     }
 
     #[test]
-    fn recent_raw_staged_regression_multiple_candidates_proves_wrong_selection_stage1() -> Result<()> {
+    fn recent_raw_staged_regression_multiple_candidates_proves_wrong_selection_stage1() -> Result<()>
+    {
         let fixture = make_recent_raw_promotion_fixture(
             "recent-raw-staged-regression-multiple-candidates",
             SourceStateSeed::SourceAheadOfStaged,
@@ -49111,7 +49586,8 @@ mod tests {
             "sig-staged",
             parse_ts("2026-04-14T08:05:00Z")?,
         )?;
-        fixture.rewrite_selected_staged_last_batch_completed_at(parse_ts("2026-04-14T08:10:00Z")?)?;
+        fixture
+            .rewrite_selected_staged_last_batch_completed_at(parse_ts("2026-04-14T08:10:00Z")?)?;
 
         let diagnostic =
             DiscoveryService::explain_recent_raw_staged_regression_read_only(&fixture.state_root)?;
@@ -49179,17 +49655,15 @@ mod tests {
             parse_ts("2026-04-14T08:05:00Z")?,
         )?;
         fixture.write_selected_staged_snapshot_sqlite_content(
-            &[
-                swap(
-                    "wallet-raw",
-                    "sig-staged",
-                    parse_ts("2026-04-14T07:55:00Z")?,
-                    SOL_MINT,
-                    "TokenRaw111111111111111111111111111111111",
-                    1.0,
-                    10.0,
-                ),
-            ],
+            &[swap(
+                "wallet-raw",
+                "sig-staged",
+                parse_ts("2026-04-14T07:55:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                10.0,
+            )],
             parse_ts("2026-04-14T08:05:00Z")?,
         )?;
 
@@ -49236,17 +49710,15 @@ mod tests {
             parse_ts("2026-04-14T08:05:00Z")?,
         )?;
         fixture.write_selected_staged_snapshot_sqlite_content(
-            &[
-                swap(
-                    "wallet-raw",
-                    "sig-staged",
-                    parse_ts("2026-04-14T07:56:00Z")?,
-                    SOL_MINT,
-                    "TokenRaw111111111111111111111111111111111",
-                    1.0,
-                    10.0,
-                ),
-            ],
+            &[swap(
+                "wallet-raw",
+                "sig-staged",
+                parse_ts("2026-04-14T07:56:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                10.0,
+            )],
             parse_ts("2026-04-14T08:05:00Z")?,
         )?;
 
@@ -49380,17 +49852,15 @@ mod tests {
             parse_ts("2026-04-14T08:05:00Z")?,
         )?;
         fixture.write_selected_staged_snapshot_sqlite_content(
-            &[
-                swap(
-                    "wallet-raw",
-                    "sig-staged",
-                    parse_ts("2026-04-14T07:55:00Z")?,
-                    SOL_MINT,
-                    "TokenRaw111111111111111111111111111111111",
-                    1.0,
-                    10.0,
-                ),
-            ],
+            &[swap(
+                "wallet-raw",
+                "sig-staged",
+                parse_ts("2026-04-14T07:55:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                10.0,
+            )],
             parse_ts("2026-04-14T08:05:00Z")?,
         )?;
 
@@ -49407,10 +49877,7 @@ mod tests {
             diagnostic.recent_raw_staged_birth_same_source_db_as_promoted,
             Some(true)
         );
-        assert_eq!(
-            diagnostic.recent_raw_staged_birth_sqlite_row_count,
-            Some(1)
-        );
+        assert_eq!(diagnostic.recent_raw_staged_birth_sqlite_row_count, Some(1));
         assert!(!diagnostic.recent_raw_staged_birth_proven_from_current_artifacts);
         Ok(())
     }
@@ -49435,17 +49902,15 @@ mod tests {
             parse_ts("2026-04-14T08:05:00Z")?,
         )?;
         fixture.write_selected_staged_snapshot_sqlite_content(
-            &[
-                swap(
-                    "wallet-raw",
-                    "sig-staged",
-                    parse_ts("2026-04-14T07:55:00Z")?,
-                    SOL_MINT,
-                    "TokenRaw111111111111111111111111111111111",
-                    1.0,
-                    10.0,
-                ),
-            ],
+            &[swap(
+                "wallet-raw",
+                "sig-staged",
+                parse_ts("2026-04-14T07:55:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                10.0,
+            )],
             parse_ts("2026-04-14T08:05:00Z")?,
         )?;
         let before = fixture.capture_bytes()?;
@@ -49458,7 +49923,8 @@ mod tests {
     }
 
     #[test]
-    fn recent_raw_staged_window_seeding_current_start_matches_promoted_start_stage1() -> Result<()> {
+    fn recent_raw_staged_window_seeding_current_start_matches_promoted_start_stage1() -> Result<()>
+    {
         let fixture = make_recent_raw_promotion_fixture(
             "recent-raw-staged-window-seeding-promoted-start",
             SourceStateSeed::Missing,
@@ -49509,8 +49975,9 @@ mod tests {
             parse_ts("2026-04-14T08:02:00Z")?,
         )?;
 
-        let diagnostic =
-            DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(&fixture.state_root)?;
+        let diagnostic = DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(
+            &fixture.state_root,
+        )?;
         assert_eq!(
             diagnostic.recent_raw_staged_window_seeding_reason_class,
             RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentStartMatchesPromotedStart
@@ -49599,8 +50066,9 @@ mod tests {
             parse_ts("2026-04-14T08:03:00Z")?,
         )?;
 
-        let diagnostic =
-            DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(&fixture.state_root)?;
+        let diagnostic = DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(
+            &fixture.state_root,
+        )?;
         assert_eq!(
             diagnostic.recent_raw_staged_window_seeding_reason_class,
             RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentStartMatchesSourceStart
@@ -49710,8 +50178,9 @@ mod tests {
             parse_ts("2026-04-14T08:03:00Z")?,
         )?;
 
-        let diagnostic =
-            DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(&fixture.state_root)?;
+        let diagnostic = DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(
+            &fixture.state_root,
+        )?;
         assert_eq!(
             diagnostic.recent_raw_staged_window_seeding_reason_class,
             RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentStartMatchesNeitherPromotedNorSource
@@ -49764,8 +50233,9 @@ mod tests {
             parse_ts("2026-04-14T08:03:00Z")?,
         )?;
 
-        let diagnostic =
-            DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(&fixture.state_root)?;
+        let diagnostic = DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(
+            &fixture.state_root,
+        )?;
         assert_eq!(
             diagnostic.recent_raw_staged_window_seeding_reason_class,
             RecentRawStagedWindowSeedingReasonClass::RecentRawStagedWindowCurrentEvidenceUnprovenDueToMissingEvidence
@@ -49835,8 +50305,9 @@ mod tests {
             parse_ts("2026-04-14T08:03:00Z")?,
         )?;
 
-        let diagnostic =
-            DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(&fixture.state_root)?;
+        let diagnostic = DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(
+            &fixture.state_root,
+        )?;
         assert!(diagnostic.recent_raw_promoted_covered_since.is_some());
         assert!(diagnostic.recent_raw_staged_covered_since.is_some());
         assert!(diagnostic.recent_raw_source_covered_since.is_some());
@@ -49860,11 +50331,9 @@ mod tests {
             !diagnostic
                 .recent_raw_staged_window_historical_seeding_basis_proven_from_current_artifacts
         );
-        assert!(
-            !diagnostic
-                .recent_raw_staged_start_current_evidence_explanation
-                .is_empty()
-        );
+        assert!(!diagnostic
+            .recent_raw_staged_start_current_evidence_explanation
+            .is_empty());
         Ok(())
     }
 
@@ -49921,8 +50390,9 @@ mod tests {
         )?;
 
         let before = fixture.capture_bytes()?;
-        let _ =
-            DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(&fixture.state_root)?;
+        let _ = DiscoveryService::explain_recent_raw_staged_window_seeding_read_only(
+            &fixture.state_root,
+        )?;
         let after = fixture.capture_bytes()?;
         assert_eq!(before, after);
         Ok(())
@@ -49966,8 +50436,9 @@ mod tests {
             parse_ts("2026-04-14T08:00:00Z")?,
         )?;
 
-        let diagnostic =
-            DiscoveryService::explain_recent_raw_source_window_contract_read_only(&fixture.state_root)?;
+        let diagnostic = DiscoveryService::explain_recent_raw_source_window_contract_read_only(
+            &fixture.state_root,
+        )?;
         assert_eq!(
             diagnostic.recent_raw_source_window_contract_reason_class,
             RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentStartMatchesPromotedStart
@@ -49990,8 +50461,12 @@ mod tests {
             diagnostic.recent_raw_source_cached_state_matches_bounded_probe,
             Some(true)
         );
-        assert!(diagnostic.recent_raw_source_bounded_probe_covered_since.is_some());
-        assert!(diagnostic.recent_raw_source_bounded_probe_covered_through.is_some());
+        assert!(diagnostic
+            .recent_raw_source_bounded_probe_covered_since
+            .is_some());
+        assert!(diagnostic
+            .recent_raw_source_bounded_probe_covered_through
+            .is_some());
         assert_eq!(diagnostic.recent_raw_source_scanned_covered_since, None);
         assert_eq!(diagnostic.recent_raw_source_scanned_covered_through, None);
         assert_eq!(diagnostic.recent_raw_source_scanned_row_count, None);
@@ -50058,8 +50533,9 @@ mod tests {
             parse_ts("2026-04-14T08:00:00Z")?,
         )?;
 
-        let diagnostic =
-            DiscoveryService::explain_recent_raw_source_window_contract_read_only(&fixture.state_root)?;
+        let diagnostic = DiscoveryService::explain_recent_raw_source_window_contract_read_only(
+            &fixture.state_root,
+        )?;
         assert_eq!(
             diagnostic.recent_raw_source_window_contract_reason_class,
             RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentContractExcludesOlderRows
@@ -50086,8 +50562,12 @@ mod tests {
             diagnostic.recent_raw_source_cached_state_matches_bounded_probe,
             Some(true)
         );
-        assert!(diagnostic.recent_raw_source_bounded_probe_covered_since.is_some());
-        assert!(diagnostic.recent_raw_source_bounded_probe_covered_through.is_some());
+        assert!(diagnostic
+            .recent_raw_source_bounded_probe_covered_since
+            .is_some());
+        assert!(diagnostic
+            .recent_raw_source_bounded_probe_covered_through
+            .is_some());
         assert_eq!(diagnostic.recent_raw_source_scanned_covered_since, None);
         assert_eq!(diagnostic.recent_raw_source_scanned_covered_through, None);
         assert_eq!(diagnostic.recent_raw_source_scanned_row_count, None);
@@ -50144,8 +50624,9 @@ mod tests {
             parse_ts("2026-04-14T08:00:00Z")?,
         )?;
 
-        let diagnostic =
-            DiscoveryService::explain_recent_raw_source_window_contract_read_only(&fixture.state_root)?;
+        let diagnostic = DiscoveryService::explain_recent_raw_source_window_contract_read_only(
+            &fixture.state_root,
+        )?;
         assert_eq!(
             diagnostic.recent_raw_source_window_contract_reason_class,
             RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowPromotedSurfaceReflectsOlderWindow
@@ -50172,8 +50653,12 @@ mod tests {
             diagnostic.recent_raw_source_cached_state_matches_bounded_probe,
             Some(true)
         );
-        assert!(diagnostic.recent_raw_source_bounded_probe_covered_since.is_some());
-        assert!(diagnostic.recent_raw_source_bounded_probe_covered_through.is_some());
+        assert!(diagnostic
+            .recent_raw_source_bounded_probe_covered_since
+            .is_some());
+        assert!(diagnostic
+            .recent_raw_source_bounded_probe_covered_through
+            .is_some());
         assert_eq!(diagnostic.recent_raw_source_scanned_covered_since, None);
         assert_eq!(diagnostic.recent_raw_source_scanned_covered_through, None);
         assert_eq!(diagnostic.recent_raw_source_scanned_row_count, None);
@@ -50207,8 +50692,9 @@ mod tests {
             parse_ts("2026-04-14T08:00:00Z")?,
         )?;
 
-        let diagnostic =
-            DiscoveryService::explain_recent_raw_source_window_contract_read_only(&fixture.state_root)?;
+        let diagnostic = DiscoveryService::explain_recent_raw_source_window_contract_read_only(
+            &fixture.state_root,
+        )?;
         assert_eq!(
             diagnostic.recent_raw_source_window_contract_reason_class,
             RecentRawSourceWindowContractReasonClass::RecentRawSourceWindowCurrentAndPromotedContractRelationUnproven
@@ -50231,8 +50717,14 @@ mod tests {
             diagnostic.recent_raw_source_cached_state_matches_bounded_probe,
             None
         );
-        assert_eq!(diagnostic.recent_raw_source_bounded_probe_covered_since, None);
-        assert_eq!(diagnostic.recent_raw_source_bounded_probe_covered_through, None);
+        assert_eq!(
+            diagnostic.recent_raw_source_bounded_probe_covered_since,
+            None
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_bounded_probe_covered_through,
+            None
+        );
         assert_eq!(diagnostic.recent_raw_source_scanned_covered_since, None);
         assert_eq!(diagnostic.recent_raw_source_scanned_covered_through, None);
         assert_eq!(diagnostic.recent_raw_source_scanned_row_count, None);
@@ -50295,8 +50787,9 @@ mod tests {
             parse_ts("2026-04-14T08:00:00Z")?,
         )?;
 
-        let diagnostic =
-            DiscoveryService::explain_recent_raw_source_window_contract_read_only(&fixture.state_root)?;
+        let diagnostic = DiscoveryService::explain_recent_raw_source_window_contract_read_only(
+            &fixture.state_root,
+        )?;
         assert!(diagnostic.recent_raw_promoted_covered_since.is_some());
         assert!(diagnostic.recent_raw_source_covered_since.is_some());
         assert!(diagnostic.recent_raw_source_window_probe_bounded);
@@ -50304,38 +50797,29 @@ mod tests {
             diagnostic.recent_raw_source_window_probe_mode,
             RecentRawSourceWindowProbeMode::BoundedIndexEdges
         );
-        assert!(
-            diagnostic
-                .recent_raw_source_window_probe_explanation
-                .contains("does not perform a full observed_swaps row-count scan")
-        );
-        assert!(diagnostic.recent_raw_source_bounded_probe_covered_since.is_some());
-        assert!(diagnostic.recent_raw_source_bounded_probe_covered_through.is_some());
+        assert!(diagnostic
+            .recent_raw_source_window_probe_explanation
+            .contains("does not perform a full observed_swaps row-count scan"));
+        assert!(diagnostic
+            .recent_raw_source_bounded_probe_covered_since
+            .is_some());
+        assert!(diagnostic
+            .recent_raw_source_bounded_probe_covered_through
+            .is_some());
         assert_eq!(
             diagnostic.recent_raw_source_cached_state_matches_bounded_probe,
             Some(true)
         );
-        assert_eq!(
-            diagnostic.recent_raw_source_scanned_covered_since,
-            None
-        );
-        assert_eq!(
-            diagnostic.recent_raw_source_scanned_covered_through,
-            None
-        );
-        assert_eq!(
-            diagnostic.recent_raw_source_scanned_row_count,
-            None
-        );
+        assert_eq!(diagnostic.recent_raw_source_scanned_covered_since, None);
+        assert_eq!(diagnostic.recent_raw_source_scanned_covered_through, None);
+        assert_eq!(diagnostic.recent_raw_source_scanned_row_count, None);
         assert_eq!(
             diagnostic.recent_raw_source_cached_state_matches_scanned_rows,
             None
         );
-        assert!(
-            !diagnostic
-                .recent_raw_source_window_contract_basis_explanation
-                .is_empty()
-        );
+        assert!(!diagnostic
+            .recent_raw_source_window_contract_basis_explanation
+            .is_empty());
         Ok(())
     }
 
@@ -50392,8 +50876,9 @@ mod tests {
         )?;
 
         let before = fixture.capture_bytes()?;
-        let _ =
-            DiscoveryService::explain_recent_raw_source_window_contract_read_only(&fixture.state_root)?;
+        let _ = DiscoveryService::explain_recent_raw_source_window_contract_read_only(
+            &fixture.state_root,
+        )?;
         let after = fixture.capture_bytes()?;
         assert_eq!(before, after);
         Ok(())
@@ -50437,9 +50922,10 @@ mod tests {
             parse_ts("2026-04-14T08:00:00Z")?,
         )?;
 
-        let diagnostic = DiscoveryService::explain_recent_raw_promoted_retention_contract_read_only(
-            &fixture.state_root,
-        )?;
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_promoted_retention_contract_read_only(
+                &fixture.state_root,
+            )?;
         assert_eq!(
             diagnostic.recent_raw_promoted_retention_reason_class,
             RecentRawPromotedRetentionReasonClass::RecentRawPromotedCurrentTruthMatchesCurrentSource
@@ -50462,8 +50948,7 @@ mod tests {
             Some(false)
         );
         assert_eq!(
-            diagnostic
-                .recent_raw_stage3_truth_currently_depends_on_retained_older_promoted_surface,
+            diagnostic.recent_raw_stage3_truth_currently_depends_on_retained_older_promoted_surface,
             Some(false)
         );
         assert_eq!(
@@ -50529,9 +51014,10 @@ mod tests {
             parse_ts("2026-04-14T08:00:00Z")?,
         )?;
 
-        let diagnostic = DiscoveryService::explain_recent_raw_promoted_retention_contract_read_only(
-            &fixture.state_root,
-        )?;
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_promoted_retention_contract_read_only(
+                &fixture.state_root,
+            )?;
         assert_eq!(
             diagnostic.recent_raw_promoted_retention_reason_class,
             RecentRawPromotedRetentionReasonClass::RecentRawPromotedRetainedByDesignDespiteOlderWindow
@@ -50554,8 +51040,7 @@ mod tests {
             Some(false)
         );
         assert_eq!(
-            diagnostic
-                .recent_raw_stage3_truth_currently_depends_on_retained_older_promoted_surface,
+            diagnostic.recent_raw_stage3_truth_currently_depends_on_retained_older_promoted_surface,
             Some(true)
         );
         assert_eq!(
@@ -50626,9 +51111,10 @@ mod tests {
             parse_ts("2026-04-14T08:00:00Z")?,
         )?;
 
-        let diagnostic = DiscoveryService::explain_recent_raw_promoted_retention_contract_read_only(
-            &fixture.state_root,
-        )?;
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_promoted_retention_contract_read_only(
+                &fixture.state_root,
+            )?;
         assert_eq!(
             diagnostic.recent_raw_promoted_has_current_contract_invalidation_rule,
             Some(false)
@@ -50637,11 +51123,9 @@ mod tests {
             diagnostic.recent_raw_promoted_invalidated_by_current_source_window_shift,
             Some(false)
         );
-        assert!(
-            diagnostic
-                .recent_raw_promoted_retention_basis_explanation
-                .contains("does not retire promoted latest")
-        );
+        assert!(diagnostic
+            .recent_raw_promoted_retention_basis_explanation
+            .contains("does not retire promoted latest"));
         Ok(())
     }
 
@@ -50652,9 +51136,10 @@ mod tests {
             SourceStateSeed::Missing,
         )?;
 
-        let diagnostic = DiscoveryService::explain_recent_raw_promoted_retention_contract_read_only(
-            &fixture.state_root,
-        )?;
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_promoted_retention_contract_read_only(
+                &fixture.state_root,
+            )?;
         assert_eq!(
             diagnostic.recent_raw_promoted_retention_reason_class,
             RecentRawPromotedRetentionReasonClass::RecentRawPromotedRetentionContractUnprovenDueToMissingEvidence
@@ -50723,24 +51208,24 @@ mod tests {
             parse_ts("2026-04-14T08:00:00Z")?,
         )?;
 
-        let diagnostic = DiscoveryService::explain_recent_raw_promoted_retention_contract_read_only(
-            &fixture.state_root,
-        )?;
-        assert!(diagnostic.recent_raw_promoted_snapshot_path.ends_with("latest.sqlite"));
-        assert!(diagnostic.recent_raw_promoted_metadata_path.ends_with("latest.json"));
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_promoted_retention_contract_read_only(
+                &fixture.state_root,
+            )?;
+        assert!(diagnostic
+            .recent_raw_promoted_snapshot_path
+            .ends_with("latest.sqlite"));
+        assert!(diagnostic
+            .recent_raw_promoted_metadata_path
+            .ends_with("latest.json"));
         assert_eq!(
             diagnostic.recent_raw_promoted_same_source_db_as_current_source,
             Some(true)
         );
-        assert_eq!(
-            diagnostic.recent_raw_source_window_contract_observed,
-            true
-        );
-        assert!(
-            !diagnostic
-                .recent_raw_promoted_retention_basis_explanation
-                .is_empty()
-        );
+        assert_eq!(diagnostic.recent_raw_source_window_contract_observed, true);
+        assert!(!diagnostic
+            .recent_raw_promoted_retention_basis_explanation
+            .is_empty());
         Ok(())
     }
 
@@ -50825,9 +51310,10 @@ mod tests {
             parse_ts("2026-04-14T08:05:00Z")?,
         )?;
 
-        let diagnostic = DiscoveryService::explain_recent_raw_replacement_promotion_contract_read_only(
-            &fixture.state_root,
-        )?;
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_promotion_contract_read_only(
+                &fixture.state_root,
+            )?;
         assert_eq!(
             diagnostic.recent_raw_replacement_promotion_reason_class,
             RecentRawReplacementPromotionReasonClass::RecentRawReplacementCandidateReadyToPromote
@@ -50922,9 +51408,10 @@ mod tests {
             parse_ts("2026-04-14T08:05:00Z")?,
         )?;
 
-        let diagnostic = DiscoveryService::explain_recent_raw_replacement_promotion_contract_read_only(
-            &fixture.state_root,
-        )?;
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_promotion_contract_read_only(
+                &fixture.state_root,
+            )?;
         assert_eq!(
             diagnostic.recent_raw_replacement_promotion_reason_class,
             RecentRawReplacementPromotionReasonClass::RecentRawReplacementCandidateIncompleteAgainstCurrentSource
@@ -50967,8 +51454,7 @@ mod tests {
     }
 
     #[test]
-    fn recent_raw_replacement_promotion_contract_not_newer_than_promoted_stage1() -> Result<()>
-    {
+    fn recent_raw_replacement_promotion_contract_not_newer_than_promoted_stage1() -> Result<()> {
         let fixture = make_recent_raw_promotion_fixture(
             "recent-raw-replacement-promotion-contract-not-newer",
             SourceStateSeed::StagedCurrent,
@@ -50987,9 +51473,10 @@ mod tests {
             parse_ts("2026-04-14T08:05:00Z")?,
         )?;
 
-        let diagnostic = DiscoveryService::explain_recent_raw_replacement_promotion_contract_read_only(
-            &fixture.state_root,
-        )?;
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_promotion_contract_read_only(
+                &fixture.state_root,
+            )?;
         assert_eq!(
             diagnostic.recent_raw_replacement_promotion_reason_class,
             RecentRawReplacementPromotionReasonClass::RecentRawReplacementCandidateNotNewerThanPromoted
@@ -51025,9 +51512,10 @@ mod tests {
             SourceStateSeed::Missing,
         )?;
 
-        let diagnostic = DiscoveryService::explain_recent_raw_replacement_promotion_contract_read_only(
-            &fixture.state_root,
-        )?;
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_promotion_contract_read_only(
+                &fixture.state_root,
+            )?;
         assert_eq!(
             diagnostic.recent_raw_replacement_promotion_reason_class,
             RecentRawReplacementPromotionReasonClass::RecentRawReplacementPromotionContractUnprovenDueToMissingEvidence
@@ -51046,8 +51534,7 @@ mod tests {
     }
 
     #[test]
-    fn recent_raw_replacement_promotion_contract_includes_explicit_fields_stage1() -> Result<()>
-    {
+    fn recent_raw_replacement_promotion_contract_includes_explicit_fields_stage1() -> Result<()> {
         let fixture = make_recent_raw_promotion_fixture(
             "recent-raw-replacement-promotion-contract-fields",
             SourceStateSeed::SourceAheadOfStaged,
@@ -51066,14 +51553,13 @@ mod tests {
             parse_ts("2026-04-14T08:05:00Z")?,
         )?;
 
-        let diagnostic = DiscoveryService::explain_recent_raw_replacement_promotion_contract_read_only(
-            &fixture.state_root,
-        )?;
-        assert!(
-            !diagnostic
-                .recent_raw_replacement_promotion_explanation
-                .is_empty()
-        );
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_promotion_contract_read_only(
+                &fixture.state_root,
+            )?;
+        assert!(!diagnostic
+            .recent_raw_replacement_promotion_explanation
+            .is_empty());
         assert_eq!(
             diagnostic.recent_raw_replacement_candidate_source_db_matches_promoted,
             Some(true)
@@ -51090,8 +51576,7 @@ mod tests {
     }
 
     #[test]
-    fn recent_raw_replacement_promotion_contract_explain_remains_read_only_stage1() -> Result<()>
-    {
+    fn recent_raw_replacement_promotion_contract_explain_remains_read_only_stage1() -> Result<()> {
         let fixture = make_recent_raw_promotion_fixture(
             "recent-raw-replacement-promotion-contract-read-only",
             SourceStateSeed::SourceAheadOfStaged,
@@ -51112,6 +51597,541 @@ mod tests {
 
         let before = fixture.capture_bytes()?;
         let _ = DiscoveryService::explain_recent_raw_replacement_promotion_contract_read_only(
+            &fixture.state_root,
+        )?;
+        let after = fixture.capture_bytes()?;
+        assert_eq!(before, after);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_replacement_progress_contract_advancing_but_incomplete_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-progress-contract-advancing",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-c",
+                    parse_ts("2026-04-14T07:58:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    12.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:12:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_selected_staged_surface_sqlite_with_source_path_and_created_at(
+            &fixture.runtime_db_path,
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:10:00Z")?,
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        fixture.write_named_staged_candidate_surface_with_source_path_and_covered_since(
+            ".discovery_recent_raw_staged.sqlite.archive-staged.prev",
+            &fixture.runtime_db_path,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            1,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-source-a",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_progress_contract_read_only(
+                &fixture.state_root,
+            )?;
+        assert_eq!(
+            diagnostic.recent_raw_replacement_progress_reason_class,
+            RecentRawReplacementProgressReasonClass::RecentRawReplacementProgressAdvancingButIncomplete
+        );
+        assert!(diagnostic.recent_raw_replacement_progress_observed);
+        assert!(diagnostic.recent_raw_replacement_candidate_exists);
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_same_identity_as_previous_attempt,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_row_count_advanced,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_covered_through_advanced,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_last_batch_completed_at_advanced,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_completed_after_creation,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_advancing,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_stalled,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_reset_or_recreated,
+            Some(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_replacement_progress_contract_stalled_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-progress-contract-stalled",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:12:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_selected_staged_surface_sqlite_with_source_path_and_created_at(
+            &fixture.runtime_db_path,
+            &[swap(
+                "wallet-raw",
+                "sig-source-a",
+                parse_ts("2026-04-14T07:56:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                10.0,
+            )],
+            parse_ts("2026-04-14T08:05:00Z")?,
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        fixture.write_named_staged_candidate_surface_with_source_path_and_covered_since(
+            ".discovery_recent_raw_staged.sqlite.archive-staged.prev",
+            &fixture.runtime_db_path,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            1,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-source-a",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_progress_contract_read_only(
+                &fixture.state_root,
+            )?;
+        assert_eq!(
+            diagnostic.recent_raw_replacement_progress_reason_class,
+            RecentRawReplacementProgressReasonClass::RecentRawReplacementProgressStalledOnSameCandidate
+        );
+        assert!(diagnostic.recent_raw_replacement_progress_observed);
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_same_identity_as_previous_attempt,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_row_count_advanced,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_covered_through_advanced,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_last_batch_completed_at_advanced,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_advancing,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_stalled,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_reset_or_recreated,
+            Some(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_replacement_progress_contract_reset_or_recreated_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-progress-contract-reset",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:12:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_selected_staged_surface_sqlite_with_source_path_and_created_at(
+            &fixture.runtime_db_path,
+            &[swap(
+                "wallet-raw",
+                "sig-source-a",
+                parse_ts("2026-04-14T07:56:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                10.0,
+            )],
+            parse_ts("2026-04-14T08:10:00Z")?,
+            parse_ts("2026-04-14T08:10:00Z")?,
+        )?;
+        fixture.write_named_staged_candidate_surface_with_source_path_and_covered_since(
+            ".discovery_recent_raw_staged.sqlite.archive-staged.prev",
+            &fixture.runtime_db_path,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:57:00Z")?,
+            "sig-source-b",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_progress_contract_read_only(
+                &fixture.state_root,
+            )?;
+        assert_eq!(
+            diagnostic.recent_raw_replacement_progress_reason_class,
+            RecentRawReplacementProgressReasonClass::RecentRawReplacementProgressResetOrRecreated
+        );
+        assert!(diagnostic.recent_raw_replacement_progress_observed);
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_same_identity_as_previous_attempt,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_reset_or_recreated,
+            Some(true)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_replacement_progress_contract_unproven_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-progress-contract-unproven",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:12:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_selected_staged_surface_sqlite_with_source_path_and_created_at(
+            &fixture.runtime_db_path,
+            &[swap(
+                "wallet-raw",
+                "sig-source-a",
+                parse_ts("2026-04-14T07:56:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                10.0,
+            )],
+            parse_ts("2026-04-14T08:10:00Z")?,
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_progress_contract_read_only(
+                &fixture.state_root,
+            )?;
+        assert_eq!(
+            diagnostic.recent_raw_replacement_progress_reason_class,
+            RecentRawReplacementProgressReasonClass::RecentRawReplacementProgressUnprovenDueToMissingEvidence
+        );
+        assert!(!diagnostic.recent_raw_replacement_progress_observed);
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_same_identity_as_previous_attempt,
+            None
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_completed_after_creation,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_row_count_advanced,
+            None
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_covered_through_advanced,
+            None
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_last_batch_completed_at_advanced,
+            None
+        );
+        assert_eq!(diagnostic.recent_raw_replacement_candidate_advancing, None);
+        assert_eq!(diagnostic.recent_raw_replacement_candidate_stalled, None);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_replacement_progress_contract_includes_explicit_fields_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-progress-contract-fields",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:12:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_selected_staged_surface_sqlite_with_source_path_and_created_at(
+            &fixture.runtime_db_path,
+            &[swap(
+                "wallet-raw",
+                "sig-source-a",
+                parse_ts("2026-04-14T07:56:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                10.0,
+            )],
+            parse_ts("2026-04-14T08:10:00Z")?,
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_progress_contract_read_only(
+                &fixture.state_root,
+            )?;
+        assert!(diagnostic
+            .recent_raw_replacement_candidate_created_at
+            .is_some());
+        assert!(diagnostic
+            .recent_raw_replacement_candidate_covered_through
+            .is_some());
+        assert!(diagnostic
+            .recent_raw_replacement_candidate_last_batch_completed_at
+            .is_some());
+        assert_eq!(
+            diagnostic.recent_raw_replacement_candidate_completed_after_creation,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_manifest_matches_sqlite_content,
+            Some(true)
+        );
+        assert_eq!(diagnostic.recent_raw_replacement_candidate_advancing, None);
+        assert!(!diagnostic
+            .recent_raw_replacement_progress_explanation
+            .is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_replacement_progress_contract_explain_remains_read_only_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-progress-contract-read-only",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:12:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_selected_staged_surface_sqlite_with_source_path_and_created_at(
+            &fixture.runtime_db_path,
+            &[swap(
+                "wallet-raw",
+                "sig-source-a",
+                parse_ts("2026-04-14T07:56:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                10.0,
+            )],
+            parse_ts("2026-04-14T08:10:00Z")?,
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let before = fixture.capture_bytes()?;
+        let _ = DiscoveryService::explain_recent_raw_replacement_progress_contract_read_only(
             &fixture.state_root,
         )?;
         let after = fixture.capture_bytes()?;
@@ -51267,7 +52287,9 @@ mod tests {
             created_at: DateTime<Utc>,
         ) -> Result<()> {
             let snapshot_path = self.recent_raw_dir.join(snapshot_file_name);
-            let metadata_path = self.recent_raw_dir.join(format!("{snapshot_file_name}.json"));
+            let metadata_path = self
+                .recent_raw_dir
+                .join(format!("{snapshot_file_name}.json"));
             self.write_surface_with_source_path_and_covered_since(
                 &snapshot_path,
                 &metadata_path,
@@ -51288,10 +52310,12 @@ mod tests {
                 .recent_raw_dir
                 .join(RECENT_RAW_STAGED_METADATA_FILE_NAME);
             let mut manifest =
-                runtime_restore_ops::load_json::<RecentRawPromotionSnapshotManifest>(&metadata_path)
-                    .with_context(|| {
-                        format!("failed loading staged metadata {}", metadata_path.display())
-                    })?;
+                runtime_restore_ops::load_json::<RecentRawPromotionSnapshotManifest>(
+                    &metadata_path,
+                )
+                .with_context(|| {
+                    format!("failed loading staged metadata {}", metadata_path.display())
+                })?;
             manifest.last_batch_completed_at = Some(last_batch_completed_at);
             manifest.updated_at = Some(last_batch_completed_at);
             runtime_restore_ops::write_json_atomic(&metadata_path, &manifest).with_context(
@@ -51434,8 +52458,10 @@ mod tests {
                 self.runtime_db_path.clone(),
                 self.recent_raw_dir.join("latest.sqlite"),
                 self.recent_raw_dir.join("latest.json"),
-                self.recent_raw_dir.join(RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME),
-                self.recent_raw_dir.join(RECENT_RAW_STAGED_METADATA_FILE_NAME),
+                self.recent_raw_dir
+                    .join(RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME),
+                self.recent_raw_dir
+                    .join(RECENT_RAW_STAGED_METADATA_FILE_NAME),
             ] {
                 if path.exists() {
                     entries.push((
