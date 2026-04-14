@@ -8554,6 +8554,58 @@ Acceptance correction, staged-lineage cursor relation contract (`2026-04-14`):
    - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
    - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
 
+Acceptance update, recent_raw staged-regression proof surface (`2026-04-14`):
+
+1. Stage 3 now has one bounded read-only operator surface for the same-source
+   staged regression seam:
+   - `discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> --json`
+2. The accepted surface stays on the primary runtime-export path and proves the
+   regression mechanism from current on-disk artifacts:
+   - promoted snapshot/metadata paths and manifest facts
+   - fixed selected staged snapshot/metadata paths and manifest facts
+   - candidate scan across staged artifact files on disk
+   - same-source lineage comparisons for covered-through, row-count, and
+     covered-since
+3. The accepted machine-readable contract is explicit:
+   - it emits how many staged candidates exist and which fixed staged artifact
+     paths are currently selected
+   - it emits whether the fixed selected staged artifact is the newest
+     parseable candidate by `created_at`
+   - it emits whether the selected staged artifact was created after promoted
+     latest
+   - it emits whether the selected staged artifact is already behind promoted
+     before any promotion comparison logic runs
+   - it emits only the tightened proof classes:
+     `recent_raw_staged_regression_selected_older_staged_artifact`,
+     `recent_raw_staged_regression_multiple_candidates_wrong_selection`,
+     `recent_raw_staged_regression_artifact_itself_already_behind`,
+     `recent_raw_staged_regression_unproven_due_to_missing_evidence`, or
+     `recent_raw_staged_regression_no_current_same_source_regression_observed`
+4. Important proof-contract correction:
+   - the earlier overclaims about “resumes from promoted frontier”, “resumes
+     from older staged frontier”, and “preexists current attempt” were removed
+   - the remaining proxy fact is now honestly downgraded to
+     `recent_raw_selected_staged_completed_after_creation`, which proves only
+     `last_batch_completed_at > created_at` for the selected staged artifact
+   - the surface no longer claims attempt provenance that current artifacts do
+     not actually prove
+5. Practical meaning:
+   - one operator run can now tell whether the fixed staged artifact is already
+     behind on the same source lineage, whether multiple staged candidates
+     exist with the fixed selected artifact lagging the newest parseable
+     candidate, or whether there is no current same-source regression at all
+   - this moves the next proof step from reporting semantics onto the actual
+     artifact-selection/regression seam
+6. Acceptance stayed proof-only:
+   - no snapshot behavior changed
+   - no promotion behavior changed
+   - no replay/export/fail-closed semantics changed
+7. Acceptance stayed on the bounded discovery/runtime-export surface:
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+
 Acceptance update, shared-ordering diff contract downgrade (`2026-04-14`):
 
 1. Stage 3 now has one more bounded read-only diagnostic surface for the

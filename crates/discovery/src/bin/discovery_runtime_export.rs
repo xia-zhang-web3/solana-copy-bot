@@ -8,7 +8,7 @@ use copybot_discovery::runtime_restore_ops::{
 };
 use copybot_discovery::{
     DiscoveryService, RecentRawCatchUpDiagnostic, RecentRawPromotionBlockerDiagnostic,
-    RecentRawStagedLineageDiagnostic,
+    RecentRawStagedLineageDiagnostic, RecentRawStagedRegressionDiagnostic,
 };
 use copybot_storage::{DiscoveryRuntimeArtifact, SqliteStore};
 use serde::Serialize;
@@ -19,7 +19,8 @@ const USAGE: &str = "usage:
   discovery_runtime_export --config <path> [--db-path <path>] (--output <path> | --scheduled) [--force] [--json] [--now <rfc3339>]
   discovery_runtime_export --explain-recent-raw-promotion-blocker --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-catch-up-status --state-root <path> [--json]
-  discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]";
+  discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
+  discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]";
 
 fn main() -> Result<()> {
     let Some(command) = parse_args()? else {
@@ -60,11 +61,18 @@ struct ExplainRecentRawStagedLineageConfig {
 }
 
 #[derive(Debug, Clone)]
+struct ExplainRecentRawStagedRegressionConfig {
+    state_root: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 enum Command {
     Export(Config),
     ExplainRecentRawPromotionBlocker(ExplainRecentRawPromotionBlockerConfig),
     ExplainRecentRawCatchUpStatus(ExplainRecentRawCatchUpStatusConfig),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
+    ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -105,6 +113,7 @@ where
     let mut explain_recent_raw_promotion_blocker = false;
     let mut explain_recent_raw_catch_up_status = false;
     let mut explain_recent_raw_staged_lineage = false;
+    let mut explain_recent_raw_staged_regression = false;
     let mut config_path: Option<PathBuf> = None;
     let mut state_root: Option<PathBuf> = None;
     let mut db_path: Option<PathBuf> = None;
@@ -124,6 +133,9 @@ where
             }
             "--explain-recent-raw-staged-lineage" => {
                 explain_recent_raw_staged_lineage = true;
+            }
+            "--explain-recent-raw-staged-regression" => {
+                explain_recent_raw_staged_regression = true;
             }
             "--config" => {
                 config_path = Some(PathBuf::from(parse_string_arg("--config", args.next())?))
@@ -148,10 +160,11 @@ where
 
     let explain_mode_count = usize::from(explain_recent_raw_promotion_blocker)
         + usize::from(explain_recent_raw_catch_up_status)
-        + usize::from(explain_recent_raw_staged_lineage);
+        + usize::from(explain_recent_raw_staged_lineage)
+        + usize::from(explain_recent_raw_staged_regression);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, and --explain-recent-raw-staged-lineage are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-staged-lineage, and --explain-recent-raw-staged-regression are mutually exclusive"
         );
     }
 
@@ -211,9 +224,27 @@ where
         )));
     }
 
+    if explain_recent_raw_staged_regression {
+        if config_path.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+        {
+            bail!("--explain-recent-raw-staged-regression only accepts --state-root and optional --json");
+        }
+        return Ok(Some(Command::ExplainRecentRawStagedRegression(
+            ExplainRecentRawStagedRegressionConfig {
+                state_root: state_root.ok_or_else(|| anyhow!("missing required --state-root"))?,
+                json,
+            },
+        )));
+    }
+
     if state_root.is_some() {
         bail!(
-            "--state-root requires --explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, or --explain-recent-raw-staged-lineage"
+            "--state-root requires --explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-staged-lineage, or --explain-recent-raw-staged-regression"
         );
     }
     if scheduled == output_path.is_some() {
@@ -278,6 +309,16 @@ fn run_command(command: Command) -> Result<String> {
                     .context("failed serializing recent_raw staged lineage json")
             } else {
                 Ok(render_recent_raw_staged_lineage_human(&diagnostic))
+            }
+        }
+        Command::ExplainRecentRawStagedRegression(config) => {
+            let diagnostic =
+                DiscoveryService::explain_recent_raw_staged_regression_read_only(&config.state_root)?;
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic)
+                    .context("failed serializing recent_raw staged regression json")
+            } else {
+                Ok(render_recent_raw_staged_regression_human(&diagnostic))
             }
         }
     }
@@ -743,12 +784,92 @@ fn render_recent_raw_staged_lineage_human(
     .join("\n")
 }
 
+fn render_recent_raw_staged_regression_human(
+    diagnostic: &RecentRawStagedRegressionDiagnostic,
+) -> String {
+    [
+        "event=discovery_recent_raw_staged_regression".to_string(),
+        format!("snapshot_dir={}", diagnostic.recent_raw_snapshot_dir),
+        format!(
+            "staged_regression_observed={}",
+            diagnostic.recent_raw_staged_regression_observed
+        ),
+        format!(
+            "reason_class={}",
+            serde_json::to_string(&diagnostic.recent_raw_staged_regression_reason_class)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "promoted_snapshot_path={}",
+            diagnostic.recent_raw_promoted_snapshot_path
+        ),
+        format!(
+            "promoted_metadata_path={}",
+            diagnostic.recent_raw_promoted_metadata_path
+        ),
+        format!(
+            "staged_snapshot_path={}",
+            diagnostic.recent_raw_staged_snapshot_path
+        ),
+        format!(
+            "staged_metadata_path={}",
+            diagnostic.recent_raw_staged_metadata_path
+        ),
+        format!(
+            "staged_candidate_count={}",
+            diagnostic.recent_raw_staged_candidate_count
+        ),
+        format!(
+            "multiple_staged_candidates_present={}",
+            diagnostic.recent_raw_multiple_staged_candidates_present
+        ),
+        format!(
+            "selected_staged_is_latest_candidate={}",
+            diagnostic
+                .recent_raw_selected_staged_is_latest_candidate
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "selected_staged_created_after_promoted={}",
+            diagnostic
+                .recent_raw_selected_staged_created_after_promoted
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "selected_staged_frontier_behind_promoted_before_comparison={}",
+            diagnostic
+                .recent_raw_selected_staged_frontier_behind_promoted_before_comparison
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "selected_staged_completed_after_creation={}",
+            diagnostic
+                .recent_raw_selected_staged_completed_after_creation
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "selection_reason={}",
+            diagnostic.recent_raw_staged_selection_reason
+        ),
+        format!(
+            "explanation={}",
+            diagnostic.recent_raw_staged_regression_explanation
+        ),
+    ]
+    .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         load_json, parse_args_from, run, run_command, write_json_atomic, Command, Config,
         ExplainRecentRawCatchUpStatusConfig, ExplainRecentRawPromotionBlockerConfig,
-        ExplainRecentRawStagedLineageConfig,
+        ExplainRecentRawStagedLineageConfig, ExplainRecentRawStagedRegressionConfig,
     };
     use anyhow::{Context, Result};
     use chrono::{DateTime, Duration, Utc};
@@ -835,6 +956,23 @@ mod tests {
         .expect("command should be present");
         let Command::ExplainRecentRawStagedLineage(parsed) = parsed else {
             panic!("expected staged lineage command");
+        };
+        assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_recent_raw_staged_regression_mode() {
+        let parsed = parse_args_from(vec![
+            "--explain-recent-raw-staged-regression".to_string(),
+            "--state-root".to_string(),
+            "/tmp/state".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ExplainRecentRawStagedRegression(parsed) = parsed else {
+            panic!("expected staged regression command");
         };
         assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
         assert!(parsed.json);
@@ -1073,6 +1211,89 @@ mod tests {
                 .unwrap_or_default()
                 .contains("direct covered-through cursor comparison")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_recent_raw_staged_regression_renders_json() -> Result<()> {
+        let fixture = make_fixture("runtime-export-recent-raw-staged-regression")?;
+        let state_root = fixture
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("state");
+        let recent_raw_dir = state_root.join("discovery_restore/recent_raw");
+        fs::create_dir_all(&recent_raw_dir)?;
+        seed_recent_raw_source_state(&fixture.store, &fixture.db_path, &recent_raw_dir)?;
+        let promoted_path = recent_raw_dir.join("latest.sqlite");
+        let promoted_metadata_path = recent_raw_dir.join("latest.json");
+        let staged_path = recent_raw_dir.join(".discovery_recent_raw_staged.sqlite.archive-staged");
+        let staged_metadata_path =
+            recent_raw_dir.join(".discovery_recent_raw_staged.sqlite.archive-staged.json");
+        fs::write(&promoted_path, b"promoted")?;
+        fs::write(&staged_path, b"staged")?;
+        write_json_atomic(
+            &promoted_metadata_path,
+            &serde_json::json!({
+                "created_at": "2026-04-14T08:00:00Z",
+                "source_db_path": fixture.db_path.display().to_string(),
+                "snapshot_path": promoted_path.display().to_string(),
+                "row_count": 2,
+                "covered_since": "2026-04-14T07:55:00Z",
+                "covered_through_cursor": {
+                    "ts_utc": "2026-04-14T07:56:00Z",
+                    "slot": parse_ts("2026-04-14T07:56:00Z")?.timestamp() as u64,
+                    "signature": "sig-promoted"
+                },
+                "last_batch_completed_at": "2026-04-14T08:00:00Z",
+                "updated_at": "2026-04-14T08:00:00Z",
+                "snapshot_bytes": 8
+            }),
+        )?;
+        write_json_atomic(
+            &staged_metadata_path,
+            &serde_json::json!({
+                "created_at": "2026-04-14T08:05:00Z",
+                "source_db_path": fixture.db_path.display().to_string(),
+                "snapshot_path": staged_path.display().to_string(),
+                "row_count": 1,
+                "covered_since": "2026-04-14T07:55:00Z",
+                "covered_through_cursor": {
+                    "ts_utc": "2026-04-14T07:55:00Z",
+                    "slot": parse_ts("2026-04-14T07:55:00Z")?.timestamp() as u64,
+                    "signature": "sig-staged"
+                },
+                "last_batch_completed_at": "2026-04-14T08:05:00Z",
+                "updated_at": "2026-04-14T08:05:00Z",
+                "snapshot_bytes": 6
+            }),
+        )?;
+
+        let output = run_command(Command::ExplainRecentRawStagedRegression(
+            ExplainRecentRawStagedRegressionConfig {
+                state_root,
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(
+            parsed["recent_raw_staged_regression_reason_class"],
+            "recent_raw_staged_regression_artifact_itself_already_behind"
+        );
+        assert_eq!(
+            parsed["recent_raw_selected_staged_created_after_promoted"],
+            true
+        );
+        assert_eq!(
+            parsed["recent_raw_selected_staged_frontier_behind_promoted_before_comparison"],
+            true
+        );
+        assert_eq!(
+            parsed["recent_raw_selected_staged_completed_after_creation"],
+            false
+        );
+        assert_eq!(parsed["recent_raw_staged_candidate_count"], 1);
+        assert_eq!(parsed["recent_raw_multiple_staged_candidates_present"], false);
         Ok(())
     }
 

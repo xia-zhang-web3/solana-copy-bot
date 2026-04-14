@@ -2451,6 +2451,53 @@ pub struct RecentRawStagedLineageDiagnostic {
     pub recent_raw_staged_closer_to_source_than_promoted: Option<bool>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawStagedRegressionReasonClass {
+    RecentRawStagedRegressionSelectedOlderStagedArtifact,
+    RecentRawStagedRegressionMultipleCandidatesWrongSelection,
+    RecentRawStagedRegressionArtifactItselfAlreadyBehind,
+    RecentRawStagedRegressionUnprovenDueToMissingEvidence,
+    RecentRawStagedRegressionNoCurrentSameSourceRegressionObserved,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentRawStagedRegressionDiagnostic {
+    pub recent_raw_snapshot_dir: String,
+    pub recent_raw_staged_regression_observed: bool,
+    pub recent_raw_staged_regression_reason_class: RecentRawStagedRegressionReasonClass,
+    pub recent_raw_staged_regression_explanation: String,
+    pub recent_raw_promoted_source_db_path: Option<String>,
+    pub recent_raw_promoted_snapshot_path: String,
+    pub recent_raw_promoted_metadata_path: String,
+    pub recent_raw_promoted_created_at: Option<DateTime<Utc>>,
+    pub recent_raw_promoted_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_promoted_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_promoted_row_count: Option<usize>,
+    pub recent_raw_promoted_last_batch_completed_at: Option<DateTime<Utc>>,
+    pub recent_raw_staged_source_db_path: Option<String>,
+    pub recent_raw_staged_snapshot_path: String,
+    pub recent_raw_staged_metadata_path: String,
+    pub recent_raw_staged_created_at: Option<DateTime<Utc>>,
+    pub recent_raw_staged_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_staged_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_staged_row_count: Option<usize>,
+    pub recent_raw_staged_last_batch_completed_at: Option<DateTime<Utc>>,
+    pub recent_raw_staged_candidate_count: usize,
+    pub recent_raw_multiple_staged_candidates_present: bool,
+    pub recent_raw_staged_candidate_snapshot_paths: Vec<String>,
+    pub recent_raw_staged_candidate_metadata_paths: Vec<String>,
+    pub recent_raw_selected_staged_is_latest_candidate: Option<bool>,
+    pub recent_raw_selected_staged_created_after_promoted: Option<bool>,
+    pub recent_raw_selected_staged_frontier_behind_promoted_before_comparison: Option<bool>,
+    pub recent_raw_staged_selection_reason: String,
+    pub recent_raw_selected_staged_completed_after_creation: Option<bool>,
+    pub recent_raw_staged_same_source_db_as_promoted: Option<bool>,
+    pub recent_raw_selected_staged_cursor_relation_to_promoted: RecentRawLineageRelation,
+    pub recent_raw_selected_staged_row_count_relation_to_promoted: RecentRawLineageRelation,
+    pub recent_raw_selected_staged_covered_since_relation_to_promoted: RecentRawLineageRelation,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct RecentRawPromotionSnapshotManifest {
     created_at: DateTime<Utc>,
@@ -2472,6 +2519,13 @@ struct RecentRawSurfaceRead {
     manifest_error: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct RecentRawStagedCandidateRead {
+    snapshot_path: PathBuf,
+    metadata_path: PathBuf,
+    surface: RecentRawSurfaceRead,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecentRawManifestProgressRelation {
     CandidateAhead,
@@ -2482,6 +2536,11 @@ enum RecentRawManifestProgressRelation {
 #[derive(Debug, Clone)]
 struct RecentRawDiagnosticState {
     snapshot_dir: PathBuf,
+    promoted_snapshot_path: PathBuf,
+    promoted_metadata_path: PathBuf,
+    staged_snapshot_path: PathBuf,
+    staged_metadata_path: PathBuf,
+    staged_candidates: Vec<RecentRawStagedCandidateRead>,
     promoted: RecentRawSurfaceRead,
     staged: RecentRawSurfaceRead,
     promoted_exists: bool,
@@ -2916,6 +2975,64 @@ impl DiscoveryService {
         snapshot_dir.join(RECENT_RAW_STAGED_METADATA_FILE_NAME)
     }
 
+    fn recent_raw_staged_candidate_reads(snapshot_dir: &Path) -> Vec<RecentRawStagedCandidateRead> {
+        let mut candidates: BTreeMap<String, (Option<PathBuf>, Option<PathBuf>)> = BTreeMap::new();
+        let snapshot_prefix = format!("{RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME}.");
+        let Ok(entries) = fs::read_dir(snapshot_dir) else {
+            return Vec::new();
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let name = name.to_string();
+            if name.contains(".tmp-") {
+                continue;
+            }
+            if !name.ends_with(".json")
+                && (name == RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME
+                    || name.starts_with(&snapshot_prefix))
+            {
+                candidates.entry(name).or_default().0 = Some(path);
+                continue;
+            }
+            if name.ends_with(".json") {
+                let Some(base_name) = name.strip_suffix(".json") else {
+                    continue;
+                };
+                if base_name != RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME
+                    && !base_name.starts_with(&snapshot_prefix)
+                {
+                    continue;
+                }
+                candidates
+                    .entry(base_name.to_string())
+                    .or_default()
+                    .1 = Some(path);
+            }
+        }
+        candidates
+            .into_iter()
+            .map(|(base_name, (snapshot_path, metadata_path))| {
+                let snapshot_path =
+                    snapshot_path.unwrap_or_else(|| snapshot_dir.join(&base_name));
+                let metadata_path =
+                    metadata_path.unwrap_or_else(|| snapshot_dir.join(format!("{base_name}.json")));
+                let surface =
+                    Self::read_recent_raw_surface_manifest(&snapshot_path, &metadata_path);
+                RecentRawStagedCandidateRead {
+                    snapshot_path,
+                    metadata_path,
+                    surface,
+                }
+            })
+            .collect()
+    }
+
     fn read_recent_raw_surface_manifest(
         snapshot_path: &Path,
         metadata_path: &Path,
@@ -3024,6 +3141,41 @@ impl DiscoveryService {
                 RecentRawManifestProgressRelation::Equivalent
             },
         )
+    }
+
+    fn recent_raw_staged_selection_reason(
+        staged_snapshot_path: &Path,
+        staged_metadata_path: &Path,
+        candidate_count: usize,
+        selected_is_latest_candidate: Option<bool>,
+        staged_exists: bool,
+    ) -> String {
+        if !staged_exists {
+            return format!(
+                "recent_raw diagnostics read the fixed staged artifact paths {} and {}, but no parseable staged manifest is currently available at that fixed selection point",
+                staged_snapshot_path.display(),
+                staged_metadata_path.display()
+            );
+        }
+        match (candidate_count, selected_is_latest_candidate) {
+            (count, Some(false)) if count > 1 => format!(
+                "recent_raw diagnostics select the fixed staged artifact paths {} and {} directly; candidate scan found {} staged candidates, and the selected fixed staged artifact is not the newest parseable candidate by created_at",
+                staged_snapshot_path.display(),
+                staged_metadata_path.display(),
+                count
+            ),
+            (count, Some(true)) if count > 1 => format!(
+                "recent_raw diagnostics select the fixed staged artifact paths {} and {} directly; candidate scan found {} staged candidates, but the fixed selected staged artifact is also the newest parseable candidate by created_at",
+                staged_snapshot_path.display(),
+                staged_metadata_path.display(),
+                count
+            ),
+            _ => format!(
+                "recent_raw diagnostics select the fixed staged artifact paths {} and {} directly; no dynamic ranking across staged candidates is applied",
+                staged_snapshot_path.display(),
+                staged_metadata_path.display()
+            ),
+        }
     }
 
     fn recent_raw_runtime_db_file_metadata(
@@ -3176,6 +3328,7 @@ impl DiscoveryService {
             runtime_restore_ops::journal_snapshot_latest_metadata_path(&snapshot_dir);
         let staged_snapshot_path = Self::recent_raw_staged_snapshot_path(&snapshot_dir);
         let staged_metadata_path = Self::recent_raw_staged_metadata_path(&snapshot_dir);
+        let staged_candidates = Self::recent_raw_staged_candidate_reads(&snapshot_dir);
 
         let promoted = Self::read_recent_raw_surface_manifest(
             &promoted_snapshot_path,
@@ -3243,6 +3396,11 @@ impl DiscoveryService {
 
         RecentRawDiagnosticState {
             snapshot_dir,
+            promoted_snapshot_path,
+            promoted_metadata_path,
+            staged_snapshot_path,
+            staged_metadata_path,
+            staged_candidates,
             promoted,
             staged,
             promoted_exists,
@@ -3979,6 +4137,94 @@ impl DiscoveryService {
         )
     }
 
+    fn classify_recent_raw_staged_regression(
+        state: &RecentRawDiagnosticState,
+        same_source_db_as_promoted: Option<bool>,
+        selected_staged_frontier_behind_promoted_before_comparison: Option<bool>,
+        selected_staged_created_after_promoted: Option<bool>,
+        selected_staged_is_latest_candidate: Option<bool>,
+    ) -> (
+        RecentRawStagedRegressionReasonClass,
+        bool,
+        String,
+    ) {
+        if state.promoted.manifest_error.is_some() || state.staged.manifest_error.is_some() {
+            return (
+                RecentRawStagedRegressionReasonClass::RecentRawStagedRegressionUnprovenDueToMissingEvidence,
+                false,
+                format!(
+                    "recent_raw staged regression mechanism is unproven because one or more snapshot surfaces are partial or invalid (promoted_error={}, staged_error={})",
+                    state
+                        .promoted
+                        .manifest_error
+                        .as_deref()
+                        .unwrap_or("null"),
+                    state.staged.manifest_error.as_deref().unwrap_or("null"),
+                ),
+            );
+        }
+
+        match same_source_db_as_promoted {
+            Some(false) => {
+                return (
+                    RecentRawStagedRegressionReasonClass::RecentRawStagedRegressionUnprovenDueToMissingEvidence,
+                    false,
+                    "recent_raw staged regression mechanism is unproven on this run because the staged and promoted artifacts do not point at the same source_db_path".to_string(),
+                )
+            }
+            None => {
+                return (
+                    RecentRawStagedRegressionReasonClass::RecentRawStagedRegressionUnprovenDueToMissingEvidence,
+                    false,
+                    "recent_raw staged regression mechanism is unproven because the staged/promoted source_db_path values could not both be proven from current manifests".to_string(),
+                )
+            }
+            Some(true) => {}
+        }
+
+        let Some(frontier_behind) = selected_staged_frontier_behind_promoted_before_comparison else {
+            return (
+                RecentRawStagedRegressionReasonClass::RecentRawStagedRegressionUnprovenDueToMissingEvidence,
+                false,
+                "recent_raw staged regression mechanism is unproven because the selected staged artifact could not be compared directly against promoted latest on the same source lineage".to_string(),
+            );
+        };
+
+        if !frontier_behind {
+            return (
+                RecentRawStagedRegressionReasonClass::RecentRawStagedRegressionNoCurrentSameSourceRegressionObserved,
+                true,
+                "recent_raw staged artifact is selected from the same source_db_path as promoted latest and its own frontier is not behind promoted before any promotion comparison logic runs, so no current same-source staged regression is observed".to_string(),
+            );
+        }
+
+        if state.staged_candidates.len() > 1 && selected_staged_is_latest_candidate == Some(false) {
+            return (
+                RecentRawStagedRegressionReasonClass::RecentRawStagedRegressionMultipleCandidatesWrongSelection,
+                true,
+                format!(
+                    "recent_raw staged regression is explained by artifact selection: diagnostics select the fixed staged artifact path {}, but candidate scan found {} staged candidates and the selected artifact is not the newest parseable candidate by created_at",
+                    state.staged_snapshot_path.display(),
+                    state.staged_candidates.len()
+                ),
+            );
+        }
+
+        if selected_staged_created_after_promoted == Some(true) {
+            return (
+                RecentRawStagedRegressionReasonClass::RecentRawStagedRegressionArtifactItselfAlreadyBehind,
+                true,
+                "recent_raw staged regression is explained by the selected staged artifact itself: it was created after promoted latest, but its own covered_since / covered_through / row_count frontier is already behind promoted before any promotion comparison logic runs".to_string(),
+            );
+        }
+
+        (
+            RecentRawStagedRegressionReasonClass::RecentRawStagedRegressionSelectedOlderStagedArtifact,
+            true,
+            "recent_raw staged regression is explained by the currently selected fixed staged artifact already being behind promoted latest on the same source lineage before any promotion comparison logic runs".to_string(),
+        )
+    }
+
     pub fn explain_recent_raw_staged_lineage_read_only(
         state_root: &Path,
     ) -> Result<RecentRawStagedLineageDiagnostic> {
@@ -4131,6 +4377,140 @@ impl DiscoveryService {
                 staged_regressed_relative_to_promoted,
             recent_raw_staged_closer_to_source_than_promoted:
                 staged_closer_to_source_than_promoted,
+        })
+    }
+
+    pub fn explain_recent_raw_staged_regression_read_only(
+        state_root: &Path,
+    ) -> Result<RecentRawStagedRegressionDiagnostic> {
+        let state = Self::load_recent_raw_diagnostic_state_read_only(state_root);
+        let promoted_manifest = state.promoted.manifest.as_ref();
+        let staged_manifest = state.staged.manifest.as_ref();
+        let same_source_db_as_promoted = match (staged_manifest, promoted_manifest) {
+            (Some(staged_manifest), Some(promoted_manifest)) => {
+                Some(staged_manifest.source_db_path == promoted_manifest.source_db_path)
+            }
+            _ => None,
+        };
+        let cursor_relation_to_promoted = Self::recent_raw_lineage_relation_from_cursor(
+            staged_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
+            promoted_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
+            same_source_db_as_promoted,
+        );
+        let row_count_relation_to_promoted = Self::recent_raw_lineage_relation_from_optional_row_count(
+            staged_manifest.map(|manifest| manifest.row_count),
+            promoted_manifest.map(|manifest| manifest.row_count),
+            same_source_db_as_promoted,
+        );
+        let covered_since_relation_to_promoted =
+            Self::recent_raw_lineage_relation_from_covered_since(
+                staged_manifest.and_then(|manifest| manifest.covered_since.as_ref()),
+                promoted_manifest.and_then(|manifest| manifest.covered_since.as_ref()),
+                same_source_db_as_promoted,
+            );
+        let selected_staged_frontier_behind_promoted_before_comparison =
+            match same_source_db_as_promoted {
+                Some(true) => Some(
+                    matches!(cursor_relation_to_promoted, RecentRawLineageRelation::Behind)
+                        || matches!(row_count_relation_to_promoted, RecentRawLineageRelation::Behind)
+                        || matches!(
+                            covered_since_relation_to_promoted,
+                            RecentRawLineageRelation::Behind
+                        ),
+                ),
+                Some(false) | None => None,
+            };
+        let selected_staged_created_after_promoted = match (staged_manifest, promoted_manifest) {
+            (Some(staged_manifest), Some(promoted_manifest)) => {
+                Some(staged_manifest.created_at > promoted_manifest.created_at)
+            }
+            _ => None,
+        };
+        let selected_staged_completed_after_creation = staged_manifest.and_then(|manifest| {
+            manifest
+                .last_batch_completed_at
+                .map(|last_batch_completed_at| last_batch_completed_at > manifest.created_at)
+        });
+        let parseable_candidate_created_at_max = state
+            .staged_candidates
+            .iter()
+            .filter_map(|candidate| candidate.surface.manifest.as_ref().map(|manifest| manifest.created_at))
+            .max();
+        let selected_staged_is_latest_candidate =
+            match (staged_manifest.map(|manifest| manifest.created_at), parseable_candidate_created_at_max) {
+                (Some(selected_created_at), Some(candidate_created_at_max)) => {
+                    Some(selected_created_at >= candidate_created_at_max)
+                }
+                _ => None,
+            };
+        let staged_selection_reason = Self::recent_raw_staged_selection_reason(
+            &state.staged_snapshot_path,
+            &state.staged_metadata_path,
+            state.staged_candidates.len(),
+            selected_staged_is_latest_candidate,
+            state.staged_exists,
+        );
+        let (reason_class, observed, explanation) = Self::classify_recent_raw_staged_regression(
+            &state,
+            same_source_db_as_promoted,
+            selected_staged_frontier_behind_promoted_before_comparison,
+            selected_staged_created_after_promoted,
+            selected_staged_is_latest_candidate,
+        );
+
+        Ok(RecentRawStagedRegressionDiagnostic {
+            recent_raw_snapshot_dir: state.snapshot_dir.display().to_string(),
+            recent_raw_staged_regression_observed: observed,
+            recent_raw_staged_regression_reason_class: reason_class,
+            recent_raw_staged_regression_explanation: explanation,
+            recent_raw_promoted_source_db_path: promoted_manifest
+                .map(|manifest| manifest.source_db_path.clone()),
+            recent_raw_promoted_snapshot_path: state.promoted_snapshot_path.display().to_string(),
+            recent_raw_promoted_metadata_path: state.promoted_metadata_path.display().to_string(),
+            recent_raw_promoted_created_at: promoted_manifest.map(|manifest| manifest.created_at),
+            recent_raw_promoted_covered_since: promoted_manifest.and_then(|manifest| manifest.covered_since),
+            recent_raw_promoted_covered_through: promoted_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.clone()),
+            recent_raw_promoted_row_count: promoted_manifest.map(|manifest| manifest.row_count),
+            recent_raw_promoted_last_batch_completed_at: promoted_manifest
+                .and_then(|manifest| manifest.last_batch_completed_at),
+            recent_raw_staged_source_db_path: staged_manifest
+                .map(|manifest| manifest.source_db_path.clone()),
+            recent_raw_staged_snapshot_path: state.staged_snapshot_path.display().to_string(),
+            recent_raw_staged_metadata_path: state.staged_metadata_path.display().to_string(),
+            recent_raw_staged_created_at: staged_manifest.map(|manifest| manifest.created_at),
+            recent_raw_staged_covered_since: staged_manifest.and_then(|manifest| manifest.covered_since),
+            recent_raw_staged_covered_through: staged_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.clone()),
+            recent_raw_staged_row_count: staged_manifest.map(|manifest| manifest.row_count),
+            recent_raw_staged_last_batch_completed_at: staged_manifest
+                .and_then(|manifest| manifest.last_batch_completed_at),
+            recent_raw_staged_candidate_count: state.staged_candidates.len(),
+            recent_raw_multiple_staged_candidates_present: state.staged_candidates.len() > 1,
+            recent_raw_staged_candidate_snapshot_paths: state
+                .staged_candidates
+                .iter()
+                .map(|candidate| candidate.snapshot_path.display().to_string())
+                .collect(),
+            recent_raw_staged_candidate_metadata_paths: state
+                .staged_candidates
+                .iter()
+                .map(|candidate| candidate.metadata_path.display().to_string())
+                .collect(),
+            recent_raw_selected_staged_is_latest_candidate: selected_staged_is_latest_candidate,
+            recent_raw_selected_staged_created_after_promoted:
+                selected_staged_created_after_promoted,
+            recent_raw_selected_staged_frontier_behind_promoted_before_comparison:
+                selected_staged_frontier_behind_promoted_before_comparison,
+            recent_raw_staged_selection_reason: staged_selection_reason,
+            recent_raw_selected_staged_completed_after_creation:
+                selected_staged_completed_after_creation,
+            recent_raw_staged_same_source_db_as_promoted: same_source_db_as_promoted,
+            recent_raw_selected_staged_cursor_relation_to_promoted: cursor_relation_to_promoted,
+            recent_raw_selected_staged_row_count_relation_to_promoted:
+                row_count_relation_to_promoted,
+            recent_raw_selected_staged_covered_since_relation_to_promoted:
+                covered_since_relation_to_promoted,
         })
     }
 
@@ -46487,6 +46867,228 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn recent_raw_staged_regression_selected_artifact_already_behind_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-regression-selected-behind",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_regression_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_regression_reason_class,
+            RecentRawStagedRegressionReasonClass::RecentRawStagedRegressionSelectedOlderStagedArtifact
+        );
+        assert_eq!(
+            diagnostic.recent_raw_selected_staged_frontier_behind_promoted_before_comparison,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_selected_staged_created_after_promoted,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_selected_staged_completed_after_creation,
+            Some(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_regression_multiple_candidates_proves_wrong_selection_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-regression-multiple-candidates",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-staged-fixed",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        fixture.write_named_staged_candidate_surface(
+            ".discovery_recent_raw_staged.sqlite.archive-staged.alt",
+            3,
+            parse_ts("2026-04-14T07:57:00Z")?,
+            "sig-staged-alt",
+            parse_ts("2026-04-14T08:10:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_regression_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_regression_reason_class,
+            RecentRawStagedRegressionReasonClass::RecentRawStagedRegressionMultipleCandidatesWrongSelection
+        );
+        assert_eq!(diagnostic.recent_raw_staged_candidate_count, 2);
+        assert!(diagnostic.recent_raw_multiple_staged_candidates_present);
+        assert_eq!(
+            diagnostic.recent_raw_selected_staged_is_latest_candidate,
+            Some(false)
+        );
+        assert!(diagnostic
+            .recent_raw_staged_candidate_snapshot_paths
+            .iter()
+            .any(|path| path.ends_with(".discovery_recent_raw_staged.sqlite.archive-staged.alt")));
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_regression_created_after_promoted_but_behind_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-regression-created-after-promoted",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_regression_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_regression_reason_class,
+            RecentRawStagedRegressionReasonClass::RecentRawStagedRegressionArtifactItselfAlreadyBehind
+        );
+        assert_eq!(
+            diagnostic.recent_raw_selected_staged_created_after_promoted,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_selected_staged_frontier_behind_promoted_before_comparison,
+            Some(true)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_regression_unproven_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-regression-unproven",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_regression_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_regression_reason_class,
+            RecentRawStagedRegressionReasonClass::RecentRawStagedRegressionUnprovenDueToMissingEvidence
+        );
+        assert!(!diagnostic.recent_raw_staged_regression_observed);
+        assert_eq!(diagnostic.recent_raw_staged_candidate_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_regression_includes_selection_fields_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-regression-fields",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface_with_source_path_and_covered_since(
+            &fixture.runtime_db_path,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        fixture.rewrite_selected_staged_last_batch_completed_at(parse_ts("2026-04-14T08:10:00Z")?)?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_regression_read_only(&fixture.state_root)?;
+
+        assert!(diagnostic
+            .recent_raw_promoted_snapshot_path
+            .ends_with("latest.sqlite"));
+        assert!(diagnostic
+            .recent_raw_staged_snapshot_path
+            .ends_with(".discovery_recent_raw_staged.sqlite.archive-staged"));
+        assert_eq!(
+            diagnostic.recent_raw_selected_staged_completed_after_creation,
+            Some(true)
+        );
+        assert!(!diagnostic.recent_raw_staged_selection_reason.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_regression_explain_remains_read_only_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-regression-read-only",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        let before = fixture.capture_bytes()?;
+
+        let _ =
+            DiscoveryService::explain_recent_raw_staged_regression_read_only(&fixture.state_root)?;
+
+        let after = fixture.capture_bytes()?;
+        assert_eq!(before, after);
+        Ok(())
+    }
+
     struct RecentRawPromotionFixture {
         _temp: tempfile::TempDir,
         state_root: PathBuf,
@@ -46603,6 +47205,69 @@ mod tests {
                 signature,
                 created_at,
             )
+        }
+
+        fn write_named_staged_candidate_surface(
+            &self,
+            snapshot_file_name: &str,
+            row_count: usize,
+            cursor_ts: DateTime<Utc>,
+            signature: &str,
+            created_at: DateTime<Utc>,
+        ) -> Result<()> {
+            self.write_named_staged_candidate_surface_with_source_path_and_covered_since(
+                snapshot_file_name,
+                &self.runtime_db_path,
+                parse_ts("2026-04-14T07:55:00Z")?,
+                row_count,
+                cursor_ts,
+                signature,
+                created_at,
+            )
+        }
+
+        fn write_named_staged_candidate_surface_with_source_path_and_covered_since(
+            &self,
+            snapshot_file_name: &str,
+            source_db_path: &Path,
+            covered_since: DateTime<Utc>,
+            row_count: usize,
+            cursor_ts: DateTime<Utc>,
+            signature: &str,
+            created_at: DateTime<Utc>,
+        ) -> Result<()> {
+            let snapshot_path = self.recent_raw_dir.join(snapshot_file_name);
+            let metadata_path = self.recent_raw_dir.join(format!("{snapshot_file_name}.json"));
+            self.write_surface_with_source_path_and_covered_since(
+                &snapshot_path,
+                &metadata_path,
+                source_db_path,
+                covered_since,
+                row_count,
+                cursor_ts,
+                signature,
+                created_at,
+            )
+        }
+
+        fn rewrite_selected_staged_last_batch_completed_at(
+            &self,
+            last_batch_completed_at: DateTime<Utc>,
+        ) -> Result<()> {
+            let metadata_path = self
+                .recent_raw_dir
+                .join(RECENT_RAW_STAGED_METADATA_FILE_NAME);
+            let mut manifest =
+                runtime_restore_ops::load_json::<RecentRawPromotionSnapshotManifest>(&metadata_path)
+                    .with_context(|| {
+                        format!("failed loading staged metadata {}", metadata_path.display())
+                    })?;
+            manifest.last_batch_completed_at = Some(last_batch_completed_at);
+            manifest.updated_at = Some(last_batch_completed_at);
+            runtime_restore_ops::write_json_atomic(&metadata_path, &manifest).with_context(
+                || format!("failed writing staged metadata {}", metadata_path.display()),
+            )?;
+            Ok(())
         }
 
         fn write_surface_with_source_path_and_covered_since(
