@@ -3,6 +3,7 @@ use copybot_discovery::{
     DiscoveryService, PersistedRebuildRowCrossInvocationDiffDiagnostic,
     PersistedRebuildRowCrossInvocationDiffReasonClass,
     PersistedRebuildRowCrossInvocationDiffStage, PersistedRebuildRowDriverCompareDiagnostic,
+    PersistedRebuildRowSlowEventCaptureDiagnostic,
     PersistedRebuildRowStepMetaIsolatedSharedDiagnostic,
     PersistedRebuildRowStepMetaFullContextDiffDiagnostic,
     PersistedRebuildRowStepMetaFullOrchestrationDiffDiagnostic,
@@ -19,7 +20,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS: u64 = 30_000;
-const USAGE: &str = "usage: discovery_replay_checkpoint_diagnose [--inspect-persisted-rebuild-row-meta-lite | --inspect-persisted-rebuild-row-meta | --inspect-persisted-rebuild-state | --explain-publishable-checkpoint-blocker | --compare-sol-leg-source-vs-checkpoint | --explain-replay-sol-leg-incomplete | --probe-persisted-rebuild-row-raw | --probe-persisted-rebuild-row-driver-compare | --probe-persisted-rebuild-row-step-meta-detail | --probe-persisted-rebuild-row-shared-sequence-detail | --probe-persisted-rebuild-row-shared-path-diff | --probe-persisted-rebuild-row-step-meta-full-context-diff | --probe-persisted-rebuild-row-step-meta-full-orchestration-diff | --probe-persisted-rebuild-row-shared-ordering-diff | --probe-persisted-rebuild-row-cross-invocation-diff] --runtime-db <path> [--recent-raw-db <path>] [--budget-ms <ms>] [--json]";
+const DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS: u64 = 1_000;
+const USAGE: &str = "usage: discovery_replay_checkpoint_diagnose [--inspect-persisted-rebuild-row-meta-lite | --inspect-persisted-rebuild-row-meta | --inspect-persisted-rebuild-state | --explain-publishable-checkpoint-blocker | --compare-sol-leg-source-vs-checkpoint | --explain-replay-sol-leg-incomplete | --probe-persisted-rebuild-row-raw | --probe-persisted-rebuild-row-driver-compare | --probe-persisted-rebuild-row-step-meta-detail | --probe-persisted-rebuild-row-shared-sequence-detail | --probe-persisted-rebuild-row-shared-path-diff | --probe-persisted-rebuild-row-step-meta-full-context-diff | --probe-persisted-rebuild-row-step-meta-full-orchestration-diff | --probe-persisted-rebuild-row-shared-ordering-diff | --probe-persisted-rebuild-row-cross-invocation-diff | --capture-persisted-rebuild-row-slow-event] --runtime-db <path> [--recent-raw-db <path>] [--budget-ms <ms>] [--threshold-ms <ms>] [--json]";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -48,6 +50,7 @@ enum Mode {
     ProbePersistedRebuildRowStepMetaFullOrchestrationDiff,
     ProbePersistedRebuildRowSharedOrderingDiff,
     ProbePersistedRebuildRowCrossInvocationDiff,
+    CapturePersistedRebuildRowSlowEvent,
     ProbePersistedRebuildRowStepMetaIsolatedSharedInternal,
 }
 
@@ -58,6 +61,7 @@ struct Config {
     recent_raw_db: Option<PathBuf>,
     json: bool,
     budget_ms: u64,
+    threshold_ms: u64,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -74,6 +78,7 @@ where
     let mut recent_raw_db: Option<PathBuf> = None;
     let mut json = false;
     let mut budget_ms = DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS;
+    let mut threshold_ms = DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -146,6 +151,11 @@ where
                 Mode::ProbePersistedRebuildRowCrossInvocationDiff,
                 arg.as_str(),
             )?,
+            "--capture-persisted-rebuild-row-slow-event" => set_mode(
+                &mut mode,
+                Mode::CapturePersistedRebuildRowSlowEvent,
+                arg.as_str(),
+            )?,
             "--probe-persisted-rebuild-row-step-meta-isolated-shared-internal" => set_mode(
                 &mut mode,
                 Mode::ProbePersistedRebuildRowStepMetaIsolatedSharedInternal,
@@ -165,6 +175,9 @@ where
             }
             "--budget-ms" => {
                 budget_ms = parse_u64_arg("--budget-ms", args.next())?;
+            }
+            "--threshold-ms" => {
+                threshold_ms = parse_u64_arg("--threshold-ms", args.next())?;
             }
             "--json" => json = true,
             "--help" | "-h" => return Ok(None),
@@ -187,6 +200,7 @@ where
         recent_raw_db,
         json,
         budget_ms,
+        threshold_ms,
     }))
 }
 
@@ -386,6 +400,13 @@ fn render_cross_invocation_diff_json(
 ) -> Result<Value> {
     serde_json::to_value(diagnostic)
         .context("failed serializing persisted rebuild row cross-invocation diff probe")
+}
+
+fn render_slow_event_capture_json(
+    diagnostic: &PersistedRebuildRowSlowEventCaptureDiagnostic,
+) -> Result<Value> {
+    serde_json::to_value(diagnostic)
+        .context("failed serializing persisted rebuild row slow-event capture")
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -788,6 +809,13 @@ fn run(config: Config) -> Result<String> {
             )?,
         )?,
         Mode::ProbePersistedRebuildRowCrossInvocationDiff => run_cross_invocation_diff(&config)?,
+        Mode::CapturePersistedRebuildRowSlowEvent => render_slow_event_capture_json(
+            &DiscoveryService::capture_persisted_rebuild_row_slow_event_read_only(
+                &config.runtime_db,
+                config.threshold_ms,
+                config.budget_ms,
+            )?,
+        )?,
         Mode::ProbePersistedRebuildRowStepMetaIsolatedSharedInternal => {
             render_step_meta_isolated_shared_json(
                 &DiscoveryService::probe_persisted_rebuild_row_step_meta_isolated_shared_read_only(
@@ -978,6 +1006,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_accepts_slow_event_capture_mode_stage1() -> Result<()> {
+        let config = parse_args_from([
+            "--capture-persisted-rebuild-row-slow-event".to_string(),
+            "--runtime-db".to_string(),
+            "runtime.sqlite".to_string(),
+            "--threshold-ms".to_string(),
+            "2222".to_string(),
+        ])?
+        .expect("config should parse");
+        assert_eq!(config.mode, Mode::CapturePersistedRebuildRowSlowEvent);
+        assert_eq!(config.threshold_ms, 2222);
+        Ok(())
+    }
+
+    #[test]
     fn run_replay_row_meta_lite_reports_missing_checkpoint_json_stage1() -> Result<()> {
         let (_temp, runtime_db) = make_test_store("diagnose-meta-runtime.sqlite")?;
         let output = run(Config {
@@ -986,6 +1029,7 @@ mod tests {
             recent_raw_db: None,
             json: true,
             budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+            threshold_ms: DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS,
         })?;
         let json: serde_json::Value =
             serde_json::from_str(&output).context("invalid json output")?;
@@ -1008,6 +1052,7 @@ mod tests {
             recent_raw_db: None,
             json: true,
             budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+            threshold_ms: DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS,
         })?;
         let json: serde_json::Value =
             serde_json::from_str(&output).context("invalid json output")?;
@@ -1027,6 +1072,7 @@ mod tests {
             recent_raw_db: None,
             json: true,
             budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+            threshold_ms: DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS,
         })?;
         let json: serde_json::Value =
             serde_json::from_str(&output).context("invalid json output")?;
@@ -1055,6 +1101,7 @@ mod tests {
             recent_raw_db: None,
             json: true,
             budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+            threshold_ms: DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS,
         })?;
         let json: serde_json::Value =
             serde_json::from_str(&output).context("invalid json output")?;
@@ -1081,6 +1128,7 @@ mod tests {
             recent_raw_db: None,
             json: true,
             budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+            threshold_ms: DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS,
         })?;
         let json: serde_json::Value =
             serde_json::from_str(&output).context("invalid json output")?;
@@ -1108,6 +1156,7 @@ mod tests {
             recent_raw_db: None,
             json: true,
             budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+            threshold_ms: DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS,
         })?;
         let json: serde_json::Value =
             serde_json::from_str(&output).context("invalid json output")?;
@@ -1137,6 +1186,7 @@ mod tests {
             recent_raw_db: None,
             json: true,
             budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+            threshold_ms: DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS,
         })?;
         let json: serde_json::Value =
             serde_json::from_str(&output).context("invalid json output")?;
@@ -1171,6 +1221,7 @@ mod tests {
             recent_raw_db: None,
             json: true,
             budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+            threshold_ms: DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS,
         })?;
         let json: serde_json::Value =
             serde_json::from_str(&output).context("invalid json output")?;
@@ -1198,6 +1249,7 @@ mod tests {
             recent_raw_db: None,
             json: true,
             budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+            threshold_ms: DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS,
         })?;
         let json: serde_json::Value =
             serde_json::from_str(&output).context("invalid json output")?;
@@ -1223,6 +1275,7 @@ mod tests {
             recent_raw_db: None,
             json: true,
             budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+            threshold_ms: DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS,
         })?;
         let json: serde_json::Value =
             serde_json::from_str(&output).context("invalid json output")?;
@@ -1248,6 +1301,7 @@ mod tests {
             recent_raw_db: None,
             json: true,
             budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+            threshold_ms: DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS,
         })?;
         let json: serde_json::Value =
             serde_json::from_str(&output).context("invalid json output")?;
@@ -1256,6 +1310,30 @@ mod tests {
             "cross_invocation_diff_row_missing"
         );
         assert_eq!(json["cross_invocation_diff_mode_level_independent_invocations"], false);
+        Ok(())
+    }
+
+    #[test]
+    fn run_slow_event_capture_reports_missing_checkpoint_json_stage1() -> Result<()> {
+        let (_temp, runtime_db) = make_test_store("diagnose-slow-event-capture-runtime.sqlite")?;
+        let output = run(Config {
+            mode: Mode::CapturePersistedRebuildRowSlowEvent,
+            runtime_db,
+            recent_raw_db: None,
+            json: true,
+            budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+            threshold_ms: DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS,
+        })?;
+        let json: serde_json::Value =
+            serde_json::from_str(&output).context("invalid json output")?;
+        assert_eq!(json["slow_event_capture_observed"], false);
+        assert_eq!(json["slow_event_capture_reason_class"], "slow_event_row_missing");
+        assert_eq!(
+            json["slow_event_capture_surface_identity"],
+            "probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only"
+        );
+        assert!(json["slow_event_capture_busy_timeout_ms"].is_number());
+        assert!(json["slow_event_capture_runtime_db_path"].is_string());
         Ok(())
     }
 
@@ -1323,6 +1401,7 @@ mod tests {
             recent_raw_db: None,
             json: true,
             budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+            threshold_ms: DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS,
         })?;
         unsafe {
             env::remove_var("COPYBOT_DISCOVERY_DIAGNOSE_SELF_EXEC_PATH");
@@ -1355,6 +1434,7 @@ mod tests {
             recent_raw_db: None,
             json: true,
             budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+            threshold_ms: DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS,
         })?;
         let json: serde_json::Value =
             serde_json::from_str(&output).context("invalid json output")?;
@@ -1376,6 +1456,7 @@ mod tests {
             recent_raw_db: None,
             json: true,
             budget_ms: 0,
+            threshold_ms: DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS,
         })?;
         let json: serde_json::Value =
             serde_json::from_str(&output).context("invalid json output")?;
@@ -1395,6 +1476,7 @@ mod tests {
             recent_raw_db: Some(recent_raw_db),
             json: true,
             budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+            threshold_ms: DEFAULT_SLOW_EVENT_CAPTURE_THRESHOLD_MS,
         })?;
         let json: serde_json::Value =
             serde_json::from_str(&output).context("invalid json output")?;

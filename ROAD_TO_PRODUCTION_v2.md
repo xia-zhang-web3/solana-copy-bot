@@ -8369,6 +8369,40 @@ Acceptance update, cross-invocation diff probe (`2026-04-14`):
    - the real host still remains non-green while the separate Stage 3 live
      incident remains open
 
+Acceptance update, slow-event capture probe (`2026-04-14`):
+
+1. Stage 3 now has one bounded real-path operator capture surface for the
+   persisted rebuild row timing incident:
+   - `discovery_replay_checkpoint_diagnose --capture-persisted-rebuild-row-slow-event --runtime-db <path> --threshold-ms <ms> --budget-ms <ms> --json`
+2. The accepted surface does not add another synthetic compare matrix:
+   - it runs the accepted
+     `probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only`
+     path once
+   - it returns a compact structured capture only for that invocation
+3. The accepted machine-readable capture contract is explicit:
+   - it reports whether a slow event was observed at all
+   - it reports the exact observed stage, elapsed time, threshold, and adjacent
+     stage timings when available
+   - it reports process id, first-relevant-invocation marker, runtime DB / WAL
+     metadata, and read-only connection facts
+   - it reports both `slow_event_capture_surface_identity` and
+     `slow_event_capture_path_identity`
+4. Practical meaning:
+   - operators no longer need another synthetic theory when the timing incident
+     is not currently reproducible in standalone probes
+   - the next real slow event on the accepted full-orchestration Stage 3 path
+     is now capturable in one bounded command with exact local context
+5. Acceptance stayed on the bounded discovery-only surface:
+   - `cargo test -j 1 -p copybot-discovery --lib replay_checkpoint_slow_event_capture_`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_replay_checkpoint_diagnose`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_replay_checkpoint_diagnose`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_replay_checkpoint_diagnose.rs`
+6. Current production status remains unchanged:
+   - this is a tooling-only Stage 3 proof batch
+   - it does not change replay/export/fail-closed semantics
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+
 Acceptance update, shared-ordering diff contract downgrade (`2026-04-14`):
 
 1. Stage 3 now has one more bounded read-only diagnostic surface for the

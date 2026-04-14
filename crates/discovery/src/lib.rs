@@ -32,7 +32,8 @@ use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -106,6 +107,8 @@ const ACTIONABLE_OPEN_POSITION_HOLD_MULTIPLIER: i64 = 4;
 const ACTIONABLE_OPEN_POSITION_MIN_HOLD_SAMPLES: usize = 3;
 const OBSERVED_SWAP_WINDOW_PAGED_READ_LIMIT: usize = 256;
 static DISCOVERY_PUBLICATION_TRUTH_REPAIR_TRACE_ID: AtomicU64 = AtomicU64::new(1);
+static PERSISTED_REBUILD_ROW_SLOW_EVENT_CAPTURE_INVOCATION_COUNTER: AtomicU64 =
+    AtomicU64::new(0);
 #[cfg(test)]
 static TEST_FORCE_REPLAY_CHECKPOINT_DIAGNOSE_PARSE_DELAY_MS: AtomicU64 = AtomicU64::new(u64::MAX);
 #[cfg(test)]
@@ -1988,6 +1991,16 @@ pub enum PersistedRebuildRowCrossInvocationDiffReasonClass {
     CrossInvocationDiffNoCurrentCrossInvocationRepro,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PersistedRebuildRowSlowEventCaptureReasonClass {
+    SlowEventCaptureUnprovenDueToBudgetExhausted,
+    SlowEventRowMissing,
+    SlowEventNotObserved,
+    SlowEventObservedOnSharedStepMeta,
+    SlowEventObservedOnOtherStage,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PersistedRebuildRowStepMetaIsolatedSharedDiagnostic {
     pub step_meta_isolated_shared_budget_exhausted: bool,
@@ -2239,6 +2252,37 @@ pub struct PersistedRebuildRowCrossInvocationDiffDiagnostic {
     pub cross_invocation_diff_explanation: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PersistedRebuildRowSlowEventCaptureDiagnostic {
+    pub slow_event_capture_observed: bool,
+    pub slow_event_capture_budget_exhausted: bool,
+    pub slow_event_capture_stage: Option<String>,
+    pub slow_event_capture_elapsed_ms: Option<u64>,
+    pub slow_event_capture_threshold_ms: u64,
+    pub slow_event_capture_process_id: u32,
+    pub slow_event_capture_process_uptime_ms: Option<u64>,
+    pub slow_event_capture_first_relevant_invocation_in_process: Option<bool>,
+    pub slow_event_capture_runtime_db_path: String,
+    pub slow_event_capture_runtime_db_size_bytes: Option<u64>,
+    pub slow_event_capture_runtime_db_mtime: Option<String>,
+    pub slow_event_capture_wal_present: bool,
+    pub slow_event_capture_wal_size_bytes: Option<u64>,
+    pub slow_event_capture_busy_timeout_ms: Option<u64>,
+    pub slow_event_capture_cache_size: Option<i64>,
+    pub slow_event_capture_mmap_size: Option<i64>,
+    pub slow_event_capture_query_only: Option<bool>,
+    pub slow_event_capture_journal_mode: Option<String>,
+    pub slow_event_capture_locking_mode: Option<String>,
+    pub slow_event_capture_surface_identity: String,
+    pub slow_event_capture_path_identity: Option<String>,
+    pub slow_event_capture_previous_stage: Option<String>,
+    pub slow_event_capture_previous_elapsed_ms: Option<u64>,
+    pub slow_event_capture_next_stage: Option<String>,
+    pub slow_event_capture_next_elapsed_ms: Option<u64>,
+    pub slow_event_capture_reason_class: PersistedRebuildRowSlowEventCaptureReasonClass,
+    pub slow_event_capture_explanation: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedPersistedReplayCheckpointState(PersistedStreamRebuildState);
 
@@ -2295,6 +2339,16 @@ struct SharedOrderingDiffProbeOptions {
     test_force_isolated_second_delay_ms: Option<u64>,
     test_force_isolated_repeat_delay_ms: Option<u64>,
     test_force_full_repeat_delay_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SlowEventCaptureProbeOptions {
+    budget_ms: u64,
+    threshold_ms: u64,
+    test_force_isolated_shared_step_meta_delay_ms: Option<u64>,
+    test_force_full_current_shared_step_meta_delay_ms: Option<u64>,
+    test_force_full_truncated_shared_step_meta_delay_ms: Option<u64>,
+    test_force_full_no_snapshot_shared_step_meta_delay_ms: Option<u64>,
 }
 
 fn should_request_persisted_stream_catch_up(telemetry: &PersistedStreamProgressTelemetry) -> bool {
@@ -2590,6 +2644,35 @@ impl DiscoveryService {
             .into_iter()
             .skip(cutoff_index.saturating_add(1))
             .collect()
+    }
+
+    fn next_persisted_rebuild_row_slow_event_capture_invocation_ordinal() -> u64 {
+        PERSISTED_REBUILD_ROW_SLOW_EVENT_CAPTURE_INVOCATION_COUNTER
+            .fetch_add(1, AtomicOrdering::SeqCst)
+            .saturating_add(1)
+    }
+
+    fn persisted_rebuild_row_slow_event_db_metadata(
+        runtime_db_path: &Path,
+    ) -> (Option<u64>, Option<String>, bool, Option<u64>) {
+        let runtime_db_metadata = fs::metadata(runtime_db_path).ok();
+        let runtime_db_size_bytes = runtime_db_metadata.as_ref().map(fs::Metadata::len);
+        let runtime_db_mtime = runtime_db_metadata
+            .and_then(|metadata| metadata.modified().ok())
+            .map(DateTime::<Utc>::from)
+            .map(|modified_at| modified_at.to_rfc3339());
+
+        let wal_path = PathBuf::from(format!("{}-wal", runtime_db_path.display()));
+        let wal_metadata = fs::metadata(&wal_path).ok();
+        let wal_present = wal_metadata.is_some();
+        let wal_size_bytes = wal_metadata.map(|metadata| metadata.len());
+
+        (
+            runtime_db_size_bytes,
+            runtime_db_mtime,
+            wal_present,
+            wal_size_bytes,
+        )
     }
 
     fn classify_raw_persisted_rebuild_row_probe(
@@ -5848,6 +5931,416 @@ impl DiscoveryService {
         mapped.step_meta_full_orchestration_diff_reason_class = reason_class;
         mapped.step_meta_full_orchestration_diff_explanation = explanation;
         Ok(mapped)
+    }
+
+    pub fn capture_persisted_rebuild_row_slow_event_read_only(
+        runtime_db_path: &Path,
+        threshold_ms: u64,
+        budget_ms: u64,
+    ) -> Result<PersistedRebuildRowSlowEventCaptureDiagnostic> {
+        Self::capture_persisted_rebuild_row_slow_event_read_only_with_options(
+            runtime_db_path,
+            SlowEventCaptureProbeOptions {
+                budget_ms,
+                threshold_ms,
+                ..SlowEventCaptureProbeOptions::default()
+            },
+        )
+    }
+
+    fn capture_persisted_rebuild_row_slow_event_read_only_with_options(
+        runtime_db_path: &Path,
+        options: SlowEventCaptureProbeOptions,
+    ) -> Result<PersistedRebuildRowSlowEventCaptureDiagnostic> {
+        #[derive(Clone, Copy)]
+        struct SlowStageCandidate {
+            stage: &'static str,
+            elapsed_ms: Option<u64>,
+            path_identity: &'static str,
+            previous_stage: Option<&'static str>,
+            previous_elapsed_ms: Option<u64>,
+            next_stage: Option<&'static str>,
+            next_elapsed_ms: Option<u64>,
+        }
+
+        let invocation_ordinal =
+            Self::next_persisted_rebuild_row_slow_event_capture_invocation_ordinal();
+        let orchestration = match Self::probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only_with_options(
+            runtime_db_path,
+            StepMetaFullOrchestrationDiffProbeOptions {
+                budget_ms: options.budget_ms,
+                test_force_isolated_shared_step_meta_delay_ms: options
+                    .test_force_isolated_shared_step_meta_delay_ms,
+                test_force_full_current_shared_step_meta_delay_ms: options
+                    .test_force_full_current_shared_step_meta_delay_ms,
+                test_force_full_truncated_shared_step_meta_delay_ms: options
+                    .test_force_full_truncated_shared_step_meta_delay_ms,
+                test_force_full_no_snapshot_shared_step_meta_delay_ms: options
+                    .test_force_full_no_snapshot_shared_step_meta_delay_ms,
+            },
+        ) {
+            Ok(value) => Some(value),
+            Err(error)
+                if error
+                    .to_string()
+                    .contains("no such table: discovery_persisted_rebuild_state") =>
+            {
+                None
+            }
+            Err(error) => return Err(error),
+        };
+
+        let connection_facts = SqliteStore::open_read_only(runtime_db_path)
+            .with_context(|| {
+                format!(
+                    "failed opening sqlite db read-only for slow-event capture {}",
+                    runtime_db_path.display()
+                )
+            })?
+            .sqlite_read_only_driver_compare_facts()
+            .context("failed reading sqlite slow-event capture connection facts")?;
+        let (runtime_db_size_bytes, runtime_db_mtime, wal_present, wal_size_bytes) =
+            Self::persisted_rebuild_row_slow_event_db_metadata(runtime_db_path);
+
+        if orchestration.is_none() {
+            return Ok(PersistedRebuildRowSlowEventCaptureDiagnostic {
+                slow_event_capture_observed: false,
+                slow_event_capture_budget_exhausted: false,
+                slow_event_capture_stage: None,
+                slow_event_capture_elapsed_ms: None,
+                slow_event_capture_threshold_ms: options.threshold_ms,
+                slow_event_capture_process_id: std::process::id(),
+                slow_event_capture_process_uptime_ms: None,
+                slow_event_capture_first_relevant_invocation_in_process: Some(
+                    invocation_ordinal == 1,
+                ),
+                slow_event_capture_runtime_db_path: runtime_db_path.display().to_string(),
+                slow_event_capture_runtime_db_size_bytes: runtime_db_size_bytes,
+                slow_event_capture_runtime_db_mtime: runtime_db_mtime,
+                slow_event_capture_wal_present: wal_present,
+                slow_event_capture_wal_size_bytes: wal_size_bytes,
+                slow_event_capture_busy_timeout_ms: Some(connection_facts.busy_timeout_ms),
+                slow_event_capture_cache_size: Some(connection_facts.cache_size),
+                slow_event_capture_mmap_size: Some(connection_facts.mmap_size),
+                slow_event_capture_query_only: Some(connection_facts.query_only),
+                slow_event_capture_journal_mode: Some(connection_facts.journal_mode),
+                slow_event_capture_locking_mode: Some(connection_facts.locking_mode),
+                slow_event_capture_surface_identity:
+                    "probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only"
+                        .to_string(),
+                slow_event_capture_path_identity: Some("persisted_rebuild_row_missing".to_string()),
+                slow_event_capture_previous_stage: None,
+                slow_event_capture_previous_elapsed_ms: None,
+                slow_event_capture_next_stage: None,
+                slow_event_capture_next_elapsed_ms: None,
+                slow_event_capture_reason_class:
+                    PersistedRebuildRowSlowEventCaptureReasonClass::SlowEventRowMissing,
+                slow_event_capture_explanation:
+                    "the accepted full-orchestration probe could not find discovery_persisted_rebuild_state on the runtime db, so the persisted rebuild row is missing for this capture".to_string(),
+            });
+        }
+
+        let orchestration = orchestration.expect("checked above");
+
+        let row_missing =
+            orchestration.step_meta_full_orchestration_diff_isolated_shared_row_exists == Some(false)
+                || orchestration.step_meta_full_orchestration_diff_full_current_row_exists
+                    == Some(false)
+                || orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_row_exists
+                    == Some(false)
+                || orchestration.step_meta_full_orchestration_diff_full_no_snapshot_row_exists
+                    == Some(false);
+
+        let candidates = [
+            SlowStageCandidate {
+                stage: "isolated_shared_step_meta",
+                elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_isolated_shared_step_meta_elapsed_ms,
+                path_identity: "isolated_shared_helper",
+                previous_stage: None,
+                previous_elapsed_ms: None,
+                next_stage: None,
+                next_elapsed_ms: None,
+            },
+            SlowStageCandidate {
+                stage: "full_current_prepare_exists",
+                elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_current_prepare_exists_elapsed_ms,
+                path_identity: "full_current_shared_branch",
+                previous_stage: None,
+                previous_elapsed_ms: None,
+                next_stage: Some("full_current_step_exists"),
+                next_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_current_step_exists_elapsed_ms,
+            },
+            SlowStageCandidate {
+                stage: "full_current_step_exists",
+                elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_current_step_exists_elapsed_ms,
+                path_identity: "full_current_shared_branch",
+                previous_stage: Some("full_current_prepare_exists"),
+                previous_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_current_prepare_exists_elapsed_ms,
+                next_stage: Some("full_current_prepare_meta"),
+                next_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_current_prepare_meta_elapsed_ms,
+            },
+            SlowStageCandidate {
+                stage: "full_current_prepare_meta",
+                elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_current_prepare_meta_elapsed_ms,
+                path_identity: "full_current_shared_branch",
+                previous_stage: Some("full_current_step_exists"),
+                previous_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_current_step_exists_elapsed_ms,
+                next_stage: Some("full_current_step_meta"),
+                next_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_current_step_meta_elapsed_ms,
+            },
+            SlowStageCandidate {
+                stage: "full_current_step_meta",
+                elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_current_step_meta_elapsed_ms,
+                path_identity: "full_current_shared_branch",
+                previous_stage: Some("full_current_prepare_meta"),
+                previous_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_current_prepare_meta_elapsed_ms,
+                next_stage: Some("full_current_extract_phase"),
+                next_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_current_extract_phase_elapsed_ms,
+            },
+            SlowStageCandidate {
+                stage: "full_current_extract_phase",
+                elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_current_extract_phase_elapsed_ms,
+                path_identity: "full_current_shared_branch",
+                previous_stage: Some("full_current_step_meta"),
+                previous_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_current_step_meta_elapsed_ms,
+                next_stage: Some("full_current_extract_updated_at"),
+                next_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_current_extract_updated_at_elapsed_ms,
+            },
+            SlowStageCandidate {
+                stage: "full_current_extract_updated_at",
+                elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_current_extract_updated_at_elapsed_ms,
+                path_identity: "full_current_shared_branch",
+                previous_stage: Some("full_current_extract_phase"),
+                previous_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_current_extract_phase_elapsed_ms,
+                next_stage: None,
+                next_elapsed_ms: None,
+            },
+            SlowStageCandidate {
+                stage: "full_truncated_after_shared_prepare_exists",
+                elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_prepare_exists_elapsed_ms,
+                path_identity: "full_truncated_after_shared_branch",
+                previous_stage: None,
+                previous_elapsed_ms: None,
+                next_stage: Some("full_truncated_after_shared_step_exists"),
+                next_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_step_exists_elapsed_ms,
+            },
+            SlowStageCandidate {
+                stage: "full_truncated_after_shared_step_exists",
+                elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_step_exists_elapsed_ms,
+                path_identity: "full_truncated_after_shared_branch",
+                previous_stage: Some("full_truncated_after_shared_prepare_exists"),
+                previous_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_prepare_exists_elapsed_ms,
+                next_stage: Some("full_truncated_after_shared_prepare_meta"),
+                next_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_prepare_meta_elapsed_ms,
+            },
+            SlowStageCandidate {
+                stage: "full_truncated_after_shared_prepare_meta",
+                elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_prepare_meta_elapsed_ms,
+                path_identity: "full_truncated_after_shared_branch",
+                previous_stage: Some("full_truncated_after_shared_step_exists"),
+                previous_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_step_exists_elapsed_ms,
+                next_stage: Some("full_truncated_after_shared_step_meta"),
+                next_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_step_meta_elapsed_ms,
+            },
+            SlowStageCandidate {
+                stage: "full_truncated_after_shared_step_meta",
+                elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_step_meta_elapsed_ms,
+                path_identity: "full_truncated_after_shared_branch",
+                previous_stage: Some("full_truncated_after_shared_prepare_meta"),
+                previous_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_prepare_meta_elapsed_ms,
+                next_stage: Some("full_truncated_after_shared_extract_phase"),
+                next_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_extract_phase_elapsed_ms,
+            },
+            SlowStageCandidate {
+                stage: "full_truncated_after_shared_extract_phase",
+                elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_extract_phase_elapsed_ms,
+                path_identity: "full_truncated_after_shared_branch",
+                previous_stage: Some("full_truncated_after_shared_step_meta"),
+                previous_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_step_meta_elapsed_ms,
+                next_stage: Some("full_truncated_after_shared_extract_updated_at"),
+                next_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_extract_updated_at_elapsed_ms,
+            },
+            SlowStageCandidate {
+                stage: "full_truncated_after_shared_extract_updated_at",
+                elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_extract_updated_at_elapsed_ms,
+                path_identity: "full_truncated_after_shared_branch",
+                previous_stage: Some("full_truncated_after_shared_extract_phase"),
+                previous_elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_truncated_after_shared_extract_phase_elapsed_ms,
+                next_stage: None,
+                next_elapsed_ms: None,
+            },
+            SlowStageCandidate {
+                stage: "full_no_snapshot_step_meta",
+                elapsed_ms: orchestration
+                    .step_meta_full_orchestration_diff_full_no_snapshot_step_meta_elapsed_ms,
+                path_identity: "full_no_snapshot_branch",
+                previous_stage: None,
+                previous_elapsed_ms: None,
+                next_stage: None,
+                next_elapsed_ms: None,
+            },
+        ];
+        let observed_stage = candidates
+            .into_iter()
+            .filter_map(|candidate| {
+                candidate
+                    .elapsed_ms
+                    .filter(|elapsed_ms| *elapsed_ms >= options.threshold_ms)
+                    .map(|elapsed_ms| (candidate, elapsed_ms))
+            })
+            .max_by_key(|(_, elapsed_ms)| *elapsed_ms);
+
+        let (reason_class, explanation, observed, stage, elapsed_ms, path_identity, previous_stage, previous_elapsed_ms, next_stage, next_elapsed_ms) =
+            if row_missing {
+                (
+                    PersistedRebuildRowSlowEventCaptureReasonClass::SlowEventRowMissing,
+                    "the accepted full-orchestration probe proved that discovery_persisted_rebuild_state(id=1) is missing on the runtime db".to_string(),
+                    false,
+                    None,
+                    None,
+                    Some("persisted_rebuild_row_missing".to_string()),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            } else if let Some((candidate, elapsed_ms)) = observed_stage {
+                let reason_class = if candidate.stage.contains("step_meta") {
+                    PersistedRebuildRowSlowEventCaptureReasonClass::SlowEventObservedOnSharedStepMeta
+                } else {
+                    PersistedRebuildRowSlowEventCaptureReasonClass::SlowEventObservedOnOtherStage
+                };
+                (
+                    reason_class,
+                    format!(
+                        "the accepted full-orchestration probe observed a real slow event on stage {} within path {} (elapsed_ms={}, threshold_ms={}, surface_identity=probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only)",
+                        candidate.stage,
+                        candidate.path_identity,
+                        elapsed_ms,
+                        options.threshold_ms
+                    ),
+                    true,
+                    Some(candidate.stage.to_string()),
+                    Some(elapsed_ms),
+                    Some(candidate.path_identity.to_string()),
+                    candidate.previous_stage.map(str::to_string),
+                    candidate.previous_elapsed_ms,
+                    candidate.next_stage.map(str::to_string),
+                    candidate.next_elapsed_ms,
+                )
+            } else if orchestration.step_meta_full_orchestration_diff_budget_exhausted {
+                (
+                    PersistedRebuildRowSlowEventCaptureReasonClass::SlowEventCaptureUnprovenDueToBudgetExhausted,
+                    format!(
+                        "the accepted full-orchestration probe exhausted its diagnostic budget while in stage {} before any threshold-exceeding slow event was captured (threshold_ms={})",
+                        serde_json::to_string(
+                            &orchestration.step_meta_full_orchestration_diff_stage
+                        )
+                        .unwrap_or_else(|_| "\"unknown\"".to_string())
+                        .trim_matches('"'),
+                        options.threshold_ms
+                    ),
+                    false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            } else {
+                let max_candidate = candidates
+                    .into_iter()
+                    .filter_map(|candidate| candidate.elapsed_ms.map(|elapsed_ms| (candidate.stage, elapsed_ms)))
+                    .max_by_key(|(_, elapsed_ms)| *elapsed_ms);
+                let max_stage = max_candidate.map(|(stage, _)| stage).unwrap_or("none");
+                let max_elapsed = max_candidate.map(|(_, elapsed_ms)| elapsed_ms).unwrap_or(0);
+                (
+                    PersistedRebuildRowSlowEventCaptureReasonClass::SlowEventNotObserved,
+                    format!(
+                        "the accepted full-orchestration probe completed without observing any stage at or above the configured slow-event threshold (threshold_ms={}, max_stage={}, max_elapsed_ms={})",
+                        options.threshold_ms,
+                        max_stage,
+                        max_elapsed
+                    ),
+                    false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            };
+
+        Ok(PersistedRebuildRowSlowEventCaptureDiagnostic {
+            slow_event_capture_observed: observed,
+            slow_event_capture_budget_exhausted: orchestration
+                .step_meta_full_orchestration_diff_budget_exhausted,
+            slow_event_capture_stage: stage,
+            slow_event_capture_elapsed_ms: elapsed_ms,
+            slow_event_capture_threshold_ms: options.threshold_ms,
+            slow_event_capture_process_id: std::process::id(),
+            slow_event_capture_process_uptime_ms: None,
+            slow_event_capture_first_relevant_invocation_in_process: Some(invocation_ordinal == 1),
+            slow_event_capture_runtime_db_path: runtime_db_path.display().to_string(),
+            slow_event_capture_runtime_db_size_bytes: runtime_db_size_bytes,
+            slow_event_capture_runtime_db_mtime: runtime_db_mtime,
+            slow_event_capture_wal_present: wal_present,
+            slow_event_capture_wal_size_bytes: wal_size_bytes,
+            slow_event_capture_busy_timeout_ms: Some(connection_facts.busy_timeout_ms),
+            slow_event_capture_cache_size: Some(connection_facts.cache_size),
+            slow_event_capture_mmap_size: Some(connection_facts.mmap_size),
+            slow_event_capture_query_only: Some(connection_facts.query_only),
+            slow_event_capture_journal_mode: Some(connection_facts.journal_mode),
+            slow_event_capture_locking_mode: Some(connection_facts.locking_mode),
+            slow_event_capture_surface_identity:
+                "probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only"
+                    .to_string(),
+            slow_event_capture_path_identity: path_identity,
+            slow_event_capture_previous_stage: previous_stage,
+            slow_event_capture_previous_elapsed_ms: previous_elapsed_ms,
+            slow_event_capture_next_stage: next_stage,
+            slow_event_capture_next_elapsed_ms: next_elapsed_ms,
+            slow_event_capture_reason_class: reason_class,
+            slow_event_capture_explanation: explanation,
+        })
     }
 
     pub fn probe_persisted_rebuild_row_shared_ordering_diff_read_only(
@@ -42872,6 +43365,103 @@ mod tests {
     }
 
     #[test]
+    fn replay_checkpoint_slow_event_capture_no_slow_event_reports_not_observed_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::capture_persisted_rebuild_row_slow_event_read_only(
+            Path::new(&runtime_db_path),
+            DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD,
+            30_000,
+        )?;
+        assert!(!diagnostic.slow_event_capture_observed);
+        assert_eq!(
+            diagnostic.slow_event_capture_reason_class,
+            PersistedRebuildRowSlowEventCaptureReasonClass::SlowEventNotObserved
+        );
+        assert_eq!(diagnostic.slow_event_capture_stage, None);
+        assert_eq!(diagnostic.slow_event_capture_path_identity, None);
+        assert!(diagnostic
+            .slow_event_capture_explanation
+            .contains("completed without observing"));
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_slow_event_capture_forced_shared_step_reports_observed_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let delay_ms = DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50;
+        let diagnostic =
+            DiscoveryService::capture_persisted_rebuild_row_slow_event_read_only_with_options(
+                Path::new(&runtime_db_path),
+                SlowEventCaptureProbeOptions {
+                    budget_ms: 30_000,
+                    threshold_ms: DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD,
+                    test_force_full_current_shared_step_meta_delay_ms: Some(delay_ms),
+                    ..SlowEventCaptureProbeOptions::default()
+                },
+            )?;
+        assert!(diagnostic.slow_event_capture_observed);
+        assert_eq!(
+            diagnostic.slow_event_capture_stage.as_deref(),
+            Some("full_current_step_meta")
+        );
+        assert_eq!(
+            diagnostic.slow_event_capture_path_identity.as_deref(),
+            Some("full_current_shared_branch")
+        );
+        assert_eq!(
+            diagnostic.slow_event_capture_reason_class,
+            PersistedRebuildRowSlowEventCaptureReasonClass::SlowEventObservedOnSharedStepMeta
+        );
+        assert!(diagnostic
+            .slow_event_capture_elapsed_ms
+            .is_some_and(|elapsed_ms| elapsed_ms >= delay_ms));
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_slow_event_capture_includes_process_db_and_connection_facts_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic = DiscoveryService::capture_persisted_rebuild_row_slow_event_read_only(
+            Path::new(&runtime_db_path),
+            DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD,
+            30_000,
+        )?;
+        assert!(diagnostic.slow_event_capture_process_id > 0);
+        assert_eq!(
+            diagnostic.slow_event_capture_runtime_db_path,
+            runtime_db_path.display().to_string()
+        );
+        assert!(diagnostic.slow_event_capture_runtime_db_size_bytes.is_some());
+        assert!(diagnostic.slow_event_capture_runtime_db_mtime.is_some());
+        assert!(diagnostic.slow_event_capture_busy_timeout_ms.is_some());
+        assert!(diagnostic.slow_event_capture_cache_size.is_some());
+        assert!(diagnostic.slow_event_capture_mmap_size.is_some());
+        assert!(diagnostic.slow_event_capture_query_only.is_some());
+        assert!(diagnostic.slow_event_capture_journal_mode.is_some());
+        assert!(diagnostic.slow_event_capture_locking_mode.is_some());
+        assert_eq!(
+            diagnostic.slow_event_capture_surface_identity,
+            "probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn replay_checkpoint_raw_probe_meta_plan_budget_exhaustion_keeps_row_existence_unproven_stage1(
     ) -> Result<()> {
         let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
@@ -43499,6 +44089,11 @@ mod tests {
                 Path::new(&runtime_db_path),
                 30_000,
             )?;
+        let _ = DiscoveryService::capture_persisted_rebuild_row_slow_event_read_only(
+            Path::new(&runtime_db_path),
+            DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD,
+            30_000,
+        )?;
         let _ = DiscoveryService::probe_persisted_rebuild_row_shared_ordering_diff_read_only(
             Path::new(&runtime_db_path),
             30_000,
