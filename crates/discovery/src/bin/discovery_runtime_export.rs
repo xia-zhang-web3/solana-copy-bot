@@ -6,20 +6,22 @@ use copybot_discovery::runtime_restore_ops::{
     resolve_db_path, resolve_relative_to_config, write_json_atomic, ARTIFACT_ARCHIVE_PREFIX,
     ARTIFACT_ARCHIVE_SUFFIX,
 };
-use copybot_discovery::DiscoveryService;
+use copybot_discovery::{DiscoveryService, RecentRawPromotionBlockerDiagnostic};
 use copybot_storage::{DiscoveryRuntimeArtifact, SqliteStore};
 use serde::Serialize;
 use std::env;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "usage: discovery_runtime_export --config <path> [--db-path <path>] (--output <path> | --scheduled) [--force] [--json] [--now <rfc3339>]";
+const USAGE: &str = "usage:
+  discovery_runtime_export --config <path> [--db-path <path>] (--output <path> | --scheduled) [--force] [--json] [--now <rfc3339>]
+  discovery_runtime_export --explain-recent-raw-promotion-blocker --state-root <path> [--json]";
 
 fn main() -> Result<()> {
-    let Some(config) = parse_args()? else {
+    let Some(command) = parse_args()? else {
         println!("{USAGE}");
         return Ok(());
     };
-    println!("{}", run(config)?);
+    println!("{}", run_command(command)?);
     Ok(())
 }
 
@@ -32,6 +34,18 @@ struct Config {
     force: bool,
     json: bool,
     now: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+struct ExplainRecentRawPromotionBlockerConfig {
+    state_root: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
+enum Command {
+    Export(Config),
+    ExplainRecentRawPromotionBlocker(ExplainRecentRawPromotionBlockerConfig),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -60,16 +74,18 @@ struct ExportOutput {
     runtime_cursor_signature: String,
 }
 
-fn parse_args() -> Result<Option<Config>> {
+fn parse_args() -> Result<Option<Command>> {
     parse_args_from(env::args().skip(1))
 }
 
-fn parse_args_from<I>(args: I) -> Result<Option<Config>>
+fn parse_args_from<I>(args: I) -> Result<Option<Command>>
 where
     I: IntoIterator<Item = String>,
 {
     let mut args = args.into_iter();
+    let mut explain_recent_raw_promotion_blocker = false;
     let mut config_path: Option<PathBuf> = None;
+    let mut state_root: Option<PathBuf> = None;
     let mut db_path: Option<PathBuf> = None;
     let mut output_path: Option<PathBuf> = None;
     let mut scheduled = false;
@@ -79,8 +95,14 @@ where
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--explain-recent-raw-promotion-blocker" => {
+                explain_recent_raw_promotion_blocker = true;
+            }
             "--config" => {
                 config_path = Some(PathBuf::from(parse_string_arg("--config", args.next())?))
+            }
+            "--state-root" => {
+                state_root = Some(PathBuf::from(parse_string_arg("--state-root", args.next())?))
             }
             "--db-path" => {
                 db_path = Some(PathBuf::from(parse_string_arg("--db-path", args.next())?))
@@ -97,11 +119,34 @@ where
         }
     }
 
+    if explain_recent_raw_promotion_blocker {
+        if config_path.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+        {
+            bail!(
+                "--explain-recent-raw-promotion-blocker only accepts --state-root and optional --json"
+            );
+        }
+        return Ok(Some(Command::ExplainRecentRawPromotionBlocker(
+            ExplainRecentRawPromotionBlockerConfig {
+                state_root: state_root.ok_or_else(|| anyhow!("missing required --state-root"))?,
+                json,
+            },
+        )));
+    }
+
+    if state_root.is_some() {
+        bail!("--state-root requires --explain-recent-raw-promotion-blocker");
+    }
     if scheduled == output_path.is_some() {
         bail!("exactly one of --output or --scheduled must be provided");
     }
 
-    Ok(Some(Config {
+    Ok(Some(Command::Export(Config {
         config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
         db_path,
         output_path,
@@ -109,7 +154,7 @@ where
         force,
         json,
         now: now.unwrap_or_else(Utc::now),
-    }))
+    })))
 }
 
 fn parse_ts_arg(flag: &str, value: Option<String>) -> Result<DateTime<Utc>> {
@@ -126,6 +171,22 @@ fn parse_string_arg(flag: &str, value: Option<String>) -> Result<String> {
         bail!("{flag} cannot be empty");
     }
     Ok(trimmed)
+}
+
+fn run_command(command: Command) -> Result<String> {
+    match command {
+        Command::Export(config) => run(config),
+        Command::ExplainRecentRawPromotionBlocker(config) => {
+            let diagnostic =
+                DiscoveryService::explain_recent_raw_promotion_blocker_read_only(&config.state_root)?;
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic)
+                    .context("failed serializing recent_raw promotion blocker json")
+            } else {
+                Ok(render_recent_raw_promotion_blocker_human(&diagnostic))
+            }
+        }
+    }
 }
 
 fn run(config: Config) -> Result<String> {
@@ -382,15 +443,71 @@ fn format_optional_ts(value: Option<&DateTime<Utc>>) -> String {
         .unwrap_or_else(|| "null".to_string())
 }
 
+fn render_recent_raw_promotion_blocker_human(
+    diagnostic: &RecentRawPromotionBlockerDiagnostic,
+) -> String {
+    [
+        "event=discovery_recent_raw_promotion_blocker".to_string(),
+        format!(
+            "snapshot_dir={}",
+            diagnostic.recent_raw_snapshot_dir
+        ),
+        format!(
+            "promotion_blocker_observed={}",
+            diagnostic.recent_raw_promotion_blocker_observed
+        ),
+        format!(
+            "promotion_ready_now={}",
+            diagnostic.recent_raw_promotion_ready_now
+        ),
+        format!(
+            "reason_class={}",
+            serde_json::to_string(&diagnostic.recent_raw_promotion_reason_class)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "promoted_exists={}",
+            diagnostic.recent_raw_promoted_exists
+        ),
+        format!("staged_exists={}", diagnostic.recent_raw_staged_exists),
+        format!(
+            "staged_newer_than_promoted={}",
+            diagnostic
+                .recent_raw_staged_newer_than_promoted
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "stage3_truth_blocked_by_promotion={}",
+            diagnostic.recent_raw_stage3_truth_blocked_by_promotion
+        ),
+        format!(
+            "stage3_current_fresh_healthy_evidence_possible={}",
+            diagnostic.recent_raw_stage3_current_fresh_healthy_evidence_possible
+        ),
+        format!(
+            "explanation={}",
+            diagnostic.recent_raw_promotion_explanation
+        ),
+    ]
+    .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{load_json, parse_args_from, run, Config};
+    use super::{
+        load_json, parse_args_from, run, run_command, write_json_atomic, Command, Config,
+        ExplainRecentRawPromotionBlockerConfig,
+    };
     use anyhow::{Context, Result};
     use chrono::{DateTime, Duration, Utc};
     use copybot_storage::{
         DiscoveryPublicationStateUpdate, DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor,
         DiscoveryRuntimeMode, SqliteStore, WalletMetricRow, WalletUpsertRow,
     };
+    use serde_json::Value;
+    use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::tempdir;
 
@@ -408,7 +525,10 @@ mod tests {
             "2026-03-23T12:00:00Z".to_string(),
         ])
         .expect("parse should succeed")
-        .expect("config should be present");
+        .expect("command should be present");
+        let Command::Export(parsed) = parsed else {
+            panic!("expected export command");
+        };
 
         assert_eq!(parsed.config_path, PathBuf::from("configs/live.toml"));
         assert_eq!(parsed.db_path, Some(PathBuf::from("state/live.db")));
@@ -417,6 +537,94 @@ mod tests {
         assert!(parsed.force);
         assert!(parsed.json);
         assert_eq!(parsed.now.to_rfc3339(), "2026-03-23T12:00:00+00:00");
+    }
+
+    #[test]
+    fn parse_args_from_accepts_recent_raw_promotion_blocker_mode() {
+        let parsed = parse_args_from(vec![
+            "--explain-recent-raw-promotion-blocker".to_string(),
+            "--state-root".to_string(),
+            "/tmp/state".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ExplainRecentRawPromotionBlocker(parsed) = parsed else {
+            panic!("expected explain command");
+        };
+        assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn run_command_recent_raw_promotion_blocker_renders_json() -> Result<()> {
+        let fixture = make_fixture("runtime-export-recent-raw-promotion-blocker")?;
+        let state_root = fixture
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("state");
+        let recent_raw_dir = state_root.join("discovery_restore/recent_raw");
+        fs::create_dir_all(&recent_raw_dir)?;
+        seed_recent_raw_source_state(&fixture.store, &fixture.db_path, &recent_raw_dir)?;
+        let promoted_path = recent_raw_dir.join("latest.sqlite");
+        let promoted_metadata_path = recent_raw_dir.join("latest.json");
+        let staged_path = recent_raw_dir.join(".discovery_recent_raw_staged.sqlite.archive-staged");
+        let staged_metadata_path =
+            recent_raw_dir.join(".discovery_recent_raw_staged.sqlite.archive-staged.json");
+        fs::write(&promoted_path, b"promoted")?;
+        fs::write(&staged_path, b"staged")?;
+        write_json_atomic(
+            &promoted_metadata_path,
+            &serde_json::json!({
+                "created_at": "2026-04-14T08:00:00Z",
+                "source_db_path": fixture.db_path.display().to_string(),
+                "snapshot_path": promoted_path.display().to_string(),
+                "row_count": 1,
+                "covered_since": "2026-04-14T07:55:00Z",
+                "covered_through_cursor": {
+                    "ts_utc": "2026-04-14T07:55:00Z",
+                    "slot": parse_ts("2026-04-14T07:55:00Z")?.timestamp() as u64,
+                    "signature": "sig-promoted"
+                },
+                "last_batch_completed_at": "2026-04-14T08:00:00Z",
+                "updated_at": "2026-04-14T08:00:00Z",
+                "snapshot_bytes": 8
+            }),
+        )?;
+        write_json_atomic(
+            &staged_metadata_path,
+            &serde_json::json!({
+                "created_at": "2026-04-14T08:05:00Z",
+                "source_db_path": fixture.db_path.display().to_string(),
+                "snapshot_path": staged_path.display().to_string(),
+                "row_count": 2,
+                "covered_since": "2026-04-14T07:55:00Z",
+                "covered_through_cursor": {
+                    "ts_utc": "2026-04-14T07:56:00Z",
+                    "slot": parse_ts("2026-04-14T07:56:00Z")?.timestamp() as u64,
+                    "signature": "sig-staged"
+                },
+                "last_batch_completed_at": "2026-04-14T08:05:00Z",
+                "updated_at": "2026-04-14T08:05:00Z",
+                "snapshot_bytes": 6
+            }),
+        )?;
+
+        let output = run_command(Command::ExplainRecentRawPromotionBlocker(
+            ExplainRecentRawPromotionBlockerConfig {
+                state_root,
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(
+            parsed["recent_raw_promotion_reason_class"],
+            "recent_raw_promotion_ready_now"
+        );
+        assert_eq!(parsed["recent_raw_promoted_exists"], true);
+        assert_eq!(parsed["recent_raw_staged_exists"], true);
+        Ok(())
     }
 
     #[test]
@@ -645,6 +853,7 @@ mod tests {
     struct Fixture {
         store: SqliteStore,
         config_path: PathBuf,
+        db_path: PathBuf,
         _temp: tempfile::TempDir,
     }
 
@@ -666,6 +875,7 @@ mod tests {
         Ok(Fixture {
             store,
             config_path,
+            db_path,
             _temp: temp,
         })
     }
@@ -737,6 +947,24 @@ mod tests {
         Ok(())
     }
 
+    fn seed_recent_raw_source_state(
+        store: &SqliteStore,
+        _db_path: &Path,
+        recent_raw_dir: &Path,
+    ) -> Result<()> {
+        let now = parse_ts("2026-04-14T08:06:00Z")?;
+        store.insert_recent_raw_journal_batch(
+            &[
+                recent_raw_swap("raw-wallet", "sig-promoted", parse_ts("2026-04-14T07:55:00Z")?),
+                recent_raw_swap("raw-wallet", "sig-staged", parse_ts("2026-04-14T07:56:00Z")?),
+            ],
+            now,
+        )?;
+        std::fs::create_dir_all(recent_raw_dir)
+            .with_context(|| format!("failed creating {}", recent_raw_dir.display()))?;
+        Ok(())
+    }
+
     fn metrics_window_start(now: DateTime<Utc>) -> DateTime<Utc> {
         let interval_seconds = 1_800_i64;
         let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
@@ -746,5 +974,20 @@ mod tests {
 
     fn parse_ts(raw: &str) -> Result<DateTime<Utc>> {
         Ok(DateTime::parse_from_rfc3339(raw)?.with_timezone(&Utc))
+    }
+
+    fn recent_raw_swap(wallet: &str, signature: &str, ts_utc: DateTime<Utc>) -> copybot_core_types::SwapEvent {
+        copybot_core_types::SwapEvent {
+            wallet: wallet.to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenMint1111111111111111111111111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: signature.to_string(),
+            slot: ts_utc.timestamp().max(0) as u64,
+            ts_utc,
+            exact_amounts: None,
+        }
     }
 }

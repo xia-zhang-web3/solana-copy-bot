@@ -8403,6 +8403,45 @@ Acceptance update, slow-event capture probe (`2026-04-14`):
    - the real host still remains non-green while the separate Stage 3 live
      incident remains open
 
+Acceptance update, recent_raw promotion blocker proof surface (`2026-04-14`):
+
+1. Stage 3 now has one bounded read-only operator surface for the primary
+   recent_raw promotion blocker:
+   - `discovery_runtime_export --explain-recent-raw-promotion-blocker --state-root <path> --json`
+2. The accepted surface inspects current on-disk state directly instead of
+   relying on stale docs:
+   - promoted latest snapshot presence and manifest facts
+   - staged snapshot presence and manifest facts
+   - current source recent_raw journal state from the runtime db via read-only
+     sqlite access
+   - runtime DB / WAL metadata
+3. The accepted machine-readable contract is explicit:
+   - it emits exact blocker classification and explanation
+   - it emits whether promotion is ready now
+   - it emits whether staged is newer than promoted
+   - it emits whether source recent_raw state outruns staged or promoted
+   - it emits whether Stage 3 truth is still blocked by promotion or whether
+     fresh healthy evidence is currently possible
+4. Practical meaning:
+   - one operator run can now prove whether the primary Stage 3 blocker is
+     “wait for recent_raw promotion” versus some other class of issue
+   - this shifts the investigation back onto the main recent_raw truth path
+     instead of synthetic timing seams
+5. Acceptance stayed proof-only:
+   - no promotion behavior changed
+   - no replay/export/fail-closed semantics changed
+   - the earlier out-of-scope scheduled export invalidation path was removed
+6. Acceptance stayed on the bounded discovery/runtime-export surface:
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_promotion_`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/Cargo.toml crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+7. Current production status remains unchanged until a live operator run is
+   taken:
+   - this batch adds proof tooling only
+   - it does not itself promote staged recent_raw state
+   - it does not itself unblock Stage 3
+
 Acceptance update, shared-ordering diff contract downgrade (`2026-04-14`):
 
 1. Stage 3 now has one more bounded read-only diagnostic surface for the

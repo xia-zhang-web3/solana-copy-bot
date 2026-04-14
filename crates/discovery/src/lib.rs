@@ -23,10 +23,12 @@ use copybot_storage::{
     DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
     DiscoveryTrustedSelectionStateUpdate, ObservedSolLegCursorAccessPath,
     ObservedWalletActivityDayCountSource, ObservedWalletActivityRow,
-    PersistedWalletMetricSnapshotRow, SqliteStore, StartupTrustedSelectionGateStatus,
-    TrustedSelectionState, TrustedSnapshotSourceKind, TrustedWalletMetricsSnapshotRow,
-    TrustedWalletMetricsSnapshotWrite, WalletMetricRow, WalletUpsertRow,
+    PersistedWalletMetricSnapshotRow, RecentRawJournalStateRow, SqliteStore,
+    StartupTrustedSelectionGateStatus, TrustedSelectionState, TrustedSnapshotSourceKind,
+    TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite, WalletMetricRow,
+    WalletUpsertRow,
 };
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::cell::Cell;
@@ -95,6 +97,9 @@ const DRIVER_COMPARE_FAST_EXISTS_MS_THRESHOLD: u64 = 250;
 const STEP_META_COMPARE_MATERIAL_IMPROVEMENT_MS_THRESHOLD: u64 = 1_000;
 const RAW_PERSISTED_REBUILD_ROW_SLOW_QUERY_MS_THRESHOLD: u64 = 5_000;
 const RAW_PERSISTED_REBUILD_ROW_LARGE_STATE_JSON_BYTES_THRESHOLD: usize = 16 * 1024 * 1024;
+const RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME: &str = ".discovery_recent_raw_staged.sqlite.archive-staged";
+const RECENT_RAW_STAGED_METADATA_FILE_NAME: &str =
+    ".discovery_recent_raw_staged.sqlite.archive-staged.json";
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_NUMERATOR: usize =
     3;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_DENOMINATOR: usize =
@@ -2283,6 +2288,79 @@ pub struct PersistedRebuildRowSlowEventCaptureDiagnostic {
     pub slow_event_capture_explanation: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawPromotionBlockerReasonClass {
+    RecentRawPromotionReadyNow,
+    RecentRawPromotionBlockedByMissingStagedSnapshot,
+    RecentRawPromotionBlockedByIncompleteStagedCoverage,
+    RecentRawPromotionBlockedByStagedNotNewerThanPromoted,
+    RecentRawPromotionBlockedByMissingPromotedLatest,
+    RecentRawPromotionBlockedByUnprovenState,
+    RecentRawPromotionNotNeededPromotedAlreadyCurrent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentRawPromotionBlockerDiagnostic {
+    pub recent_raw_snapshot_dir: String,
+    pub recent_raw_promotion_blocker_observed: bool,
+    pub recent_raw_promotion_ready_now: bool,
+    pub recent_raw_promotion_reason_class: RecentRawPromotionBlockerReasonClass,
+    pub recent_raw_promotion_explanation: String,
+    pub recent_raw_promoted_exists: bool,
+    pub recent_raw_promoted_snapshot_present: bool,
+    pub recent_raw_promoted_metadata_present: bool,
+    pub recent_raw_promoted_created_at: Option<DateTime<Utc>>,
+    pub recent_raw_promoted_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_promoted_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_promoted_row_count: Option<usize>,
+    pub recent_raw_promoted_last_batch_completed_at: Option<DateTime<Utc>>,
+    pub recent_raw_staged_exists: bool,
+    pub recent_raw_staged_snapshot_present: bool,
+    pub recent_raw_staged_metadata_present: bool,
+    pub recent_raw_staged_created_at: Option<DateTime<Utc>>,
+    pub recent_raw_staged_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_staged_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_staged_row_count: Option<usize>,
+    pub recent_raw_staged_last_batch_completed_at: Option<DateTime<Utc>>,
+    pub recent_raw_staged_newer_than_promoted: Option<bool>,
+    pub recent_raw_runtime_db_path: Option<String>,
+    pub recent_raw_runtime_db_size_bytes: Option<u64>,
+    pub recent_raw_runtime_db_mtime: Option<String>,
+    pub recent_raw_runtime_db_wal_present: bool,
+    pub recent_raw_runtime_db_wal_size_bytes: Option<u64>,
+    pub recent_raw_source_state_available: bool,
+    pub recent_raw_source_row_count: Option<usize>,
+    pub recent_raw_source_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_source_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_source_last_batch_completed_at: Option<DateTime<Utc>>,
+    pub recent_raw_source_outruns_staged: Option<bool>,
+    pub recent_raw_source_outruns_promoted: Option<bool>,
+    pub recent_raw_stage3_truth_blocked_by_promotion: bool,
+    pub recent_raw_stage3_current_fresh_healthy_evidence_possible: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct RecentRawPromotionSnapshotManifest {
+    created_at: DateTime<Utc>,
+    source_db_path: String,
+    snapshot_path: String,
+    row_count: usize,
+    covered_since: Option<DateTime<Utc>>,
+    covered_through_cursor: Option<DiscoveryRuntimeCursor>,
+    last_batch_completed_at: Option<DateTime<Utc>>,
+    updated_at: Option<DateTime<Utc>>,
+    snapshot_bytes: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RecentRawSurfaceRead {
+    snapshot_present: bool,
+    metadata_present: bool,
+    manifest: Option<RecentRawPromotionSnapshotManifest>,
+    manifest_error: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedPersistedReplayCheckpointState(PersistedStreamRebuildState);
 
@@ -2673,6 +2751,564 @@ impl DiscoveryService {
             wal_present,
             wal_size_bytes,
         )
+    }
+
+    fn recent_raw_snapshot_dir_for_state_root(state_root: &Path) -> PathBuf {
+        let direct_candidate = state_root.to_path_buf();
+        let nested_candidate = state_root.join("discovery_restore/recent_raw");
+        let direct_has_recent_raw_artifacts = [
+            runtime_restore_ops::journal_snapshot_latest_path(&direct_candidate),
+            runtime_restore_ops::journal_snapshot_latest_metadata_path(&direct_candidate),
+            direct_candidate.join(RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME),
+            direct_candidate.join(RECENT_RAW_STAGED_METADATA_FILE_NAME),
+        ]
+        .iter()
+        .any(|path| path.exists());
+        if direct_has_recent_raw_artifacts {
+            direct_candidate
+        } else {
+            nested_candidate
+        }
+    }
+
+    fn recent_raw_staged_snapshot_path(snapshot_dir: &Path) -> PathBuf {
+        snapshot_dir.join(RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME)
+    }
+
+    fn recent_raw_staged_metadata_path(snapshot_dir: &Path) -> PathBuf {
+        snapshot_dir.join(RECENT_RAW_STAGED_METADATA_FILE_NAME)
+    }
+
+    fn read_recent_raw_surface_manifest(
+        snapshot_path: &Path,
+        metadata_path: &Path,
+    ) -> RecentRawSurfaceRead {
+        let snapshot_present = snapshot_path.exists();
+        let metadata_present = metadata_path.exists();
+        if !snapshot_present && !metadata_present {
+            return RecentRawSurfaceRead::default();
+        }
+        if !snapshot_present || !metadata_present {
+            return RecentRawSurfaceRead {
+                snapshot_present,
+                metadata_present,
+                manifest: None,
+                manifest_error: Some(format!(
+                    "recent_raw surface is partial (snapshot_present={}, metadata_present={})",
+                    snapshot_present, metadata_present
+                )),
+            };
+        }
+        match runtime_restore_ops::load_json::<RecentRawPromotionSnapshotManifest>(metadata_path) {
+            Ok(manifest) => RecentRawSurfaceRead {
+                snapshot_present,
+                metadata_present,
+                manifest: Some(manifest),
+                manifest_error: None,
+            },
+            Err(error) => RecentRawSurfaceRead {
+                snapshot_present,
+                metadata_present,
+                manifest: None,
+                manifest_error: Some(format!(
+                    "failed parsing recent_raw metadata {}: {error:#}",
+                    metadata_path.display()
+                )),
+            },
+        }
+    }
+
+    fn recent_raw_source_outruns_manifest(
+        source_state: &RecentRawJournalStateRow,
+        manifest: &RecentRawPromotionSnapshotManifest,
+    ) -> bool {
+        if source_state.row_count == 0 {
+            return manifest.row_count > 0;
+        }
+        if let (Some(source_since), Some(manifest_since)) =
+            (source_state.covered_since, manifest.covered_since)
+        {
+            if source_since > manifest_since {
+                return true;
+            }
+        }
+        if let (Some(source_cursor), Some(manifest_cursor)) = (
+            source_state.covered_through_cursor.as_ref(),
+            manifest.covered_through_cursor.as_ref(),
+        ) {
+            return Self::runtime_cursor_cmp(source_cursor, manifest_cursor) == Ordering::Greater;
+        }
+        false
+    }
+
+    fn recent_raw_manifest_outruns_reference(
+        candidate: &RecentRawPromotionSnapshotManifest,
+        reference: &RecentRawPromotionSnapshotManifest,
+    ) -> bool {
+        if candidate.row_count == 0 {
+            return reference.row_count > 0;
+        }
+        if candidate.row_count > reference.row_count {
+            return true;
+        }
+        if let (Some(candidate_since), Some(reference_since)) =
+            (candidate.covered_since, reference.covered_since)
+        {
+            if candidate_since > reference_since {
+                return true;
+            }
+        }
+        if let (Some(candidate_cursor), Some(reference_cursor)) = (
+            candidate.covered_through_cursor.as_ref(),
+            reference.covered_through_cursor.as_ref(),
+        ) {
+            return Self::runtime_cursor_cmp(candidate_cursor, reference_cursor) == Ordering::Greater;
+        }
+        false
+    }
+
+    fn recent_raw_manifest_newer_than_promoted(
+        staged: &RecentRawPromotionSnapshotManifest,
+        promoted: &RecentRawPromotionSnapshotManifest,
+    ) -> Option<bool> {
+        if staged.source_db_path != promoted.source_db_path {
+            return None;
+        }
+        let staged_outruns_promoted = Self::recent_raw_manifest_outruns_reference(staged, promoted);
+        let promoted_outruns_staged = Self::recent_raw_manifest_outruns_reference(promoted, staged);
+        Some(staged_outruns_promoted && !promoted_outruns_staged)
+    }
+
+    fn recent_raw_runtime_db_file_metadata(
+        runtime_db_path: &Path,
+    ) -> (Option<u64>, Option<String>, bool, Option<u64>) {
+        let runtime_db_metadata = fs::metadata(runtime_db_path).ok();
+        let runtime_db_size_bytes = runtime_db_metadata.as_ref().map(fs::Metadata::len);
+        let runtime_db_mtime = runtime_db_metadata
+            .and_then(|metadata| metadata.modified().ok())
+            .map(DateTime::<Utc>::from)
+            .map(|mtime| mtime.to_rfc3339());
+        let wal_path = PathBuf::from(format!("{}-wal", runtime_db_path.display()));
+        let wal_metadata = fs::metadata(&wal_path).ok();
+        let wal_present = wal_metadata.is_some();
+        let wal_size_bytes = wal_metadata.map(|metadata| metadata.len());
+        (
+            runtime_db_size_bytes,
+            runtime_db_mtime,
+            wal_present,
+            wal_size_bytes,
+        )
+    }
+
+    fn parse_recent_raw_optional_rfc3339_utc(
+        raw: Option<String>,
+        field_name: &str,
+    ) -> Result<Option<DateTime<Utc>>> {
+        raw.map(|raw| {
+            DateTime::parse_from_rfc3339(&raw)
+                .map(|dt| dt.with_timezone(&Utc))
+                .with_context(|| format!("invalid {field_name} timestamp value: {raw}"))
+        })
+        .transpose()
+    }
+
+    fn load_recent_raw_source_state_read_only(
+        runtime_db_path: &Path,
+    ) -> Result<RecentRawJournalStateRow> {
+        let conn = Connection::open_with_flags(runtime_db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("failed opening {}", runtime_db_path.display()))?;
+        let table_exists = conn
+            .query_row(
+                "SELECT 1
+                 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'recent_raw_journal_state'
+                 LIMIT 1",
+                [],
+                |_| Ok(true),
+            )
+            .optional()
+            .context("failed checking recent_raw_journal_state table")?
+            .unwrap_or(false);
+        if !table_exists {
+            anyhow::bail!("cached recent raw journal state table recent_raw_journal_state is missing");
+        }
+        let row = conn
+            .query_row(
+                "SELECT
+                    covered_since_ts,
+                    covered_through_cursor_ts,
+                    covered_through_cursor_slot,
+                    covered_through_cursor_signature,
+                    row_count,
+                    last_batch_rows,
+                    last_batch_completed_at,
+                    last_pruned_rows,
+                    last_pruned_at,
+                    updated_at
+                 FROM recent_raw_journal_state
+                 WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("failed reading cached recent raw journal state")?;
+        let Some((
+            covered_since_raw,
+            covered_through_ts_raw,
+            covered_through_slot_raw,
+            covered_through_signature,
+            row_count,
+            last_batch_rows,
+            last_batch_completed_at_raw,
+            last_pruned_rows,
+            last_pruned_at_raw,
+            updated_at_raw,
+        )) = row
+        else {
+            anyhow::bail!("cached recent raw journal state row id=1 is missing");
+        };
+        let covered_through_cursor = match (
+            covered_through_ts_raw,
+            covered_through_slot_raw,
+            covered_through_signature,
+        ) {
+            (Some(ts_raw), Some(slot_raw), Some(signature)) => Some(DiscoveryRuntimeCursor {
+                ts_utc: DateTime::parse_from_rfc3339(&ts_raw)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .with_context(|| {
+                        format!(
+                            "invalid recent_raw_journal_state.covered_through_cursor_ts timestamp value: {ts_raw}"
+                        )
+                    })?,
+                slot: slot_raw.max(0) as u64,
+                signature,
+            }),
+            _ => None,
+        };
+        Ok(RecentRawJournalStateRow {
+            covered_since: Self::parse_recent_raw_optional_rfc3339_utc(
+                covered_since_raw,
+                "recent_raw_journal_state.covered_since_ts",
+            )?,
+            covered_through_cursor,
+            row_count: row_count.max(0) as usize,
+            last_batch_rows: last_batch_rows.max(0) as usize,
+            last_batch_completed_at: Self::parse_recent_raw_optional_rfc3339_utc(
+                last_batch_completed_at_raw,
+                "recent_raw_journal_state.last_batch_completed_at",
+            )?,
+            last_pruned_rows: last_pruned_rows.max(0) as usize,
+            last_pruned_at: Self::parse_recent_raw_optional_rfc3339_utc(
+                last_pruned_at_raw,
+                "recent_raw_journal_state.last_pruned_at",
+            )?,
+            updated_at: Self::parse_recent_raw_optional_rfc3339_utc(
+                updated_at_raw,
+                "recent_raw_journal_state.updated_at",
+            )?,
+        })
+    }
+
+    fn classify_recent_raw_promotion_blocker(
+        promoted: &RecentRawSurfaceRead,
+        staged: &RecentRawSurfaceRead,
+        promoted_exists: bool,
+        staged_exists: bool,
+        source_state_available: bool,
+        source_outruns_promoted: Option<bool>,
+        source_outruns_staged: Option<bool>,
+        staged_newer_than_promoted: Option<bool>,
+    ) -> (
+        RecentRawPromotionBlockerReasonClass,
+        bool,
+        bool,
+        String,
+    ) {
+        if promoted.manifest_error.is_some() || staged.manifest_error.is_some() {
+            return (
+                RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByUnprovenState,
+                true,
+                false,
+                format!(
+                    "recent_raw promotion state is unproven because one or more snapshot surfaces are partial or invalid (promoted_error={}, staged_error={})",
+                    promoted
+                        .manifest_error
+                        .as_deref()
+                        .unwrap_or("null"),
+                    staged.manifest_error.as_deref().unwrap_or("null")
+                ),
+            );
+        }
+
+        if !promoted_exists && !staged_exists {
+            return (
+                RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByMissingPromotedLatest,
+                true,
+                false,
+                "recent_raw promotion is blocked because neither a promoted latest surface nor a staged recent_raw snapshot is currently present".to_string(),
+            );
+        }
+
+        if staged_exists {
+            if !source_state_available {
+                return (
+                    RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByUnprovenState,
+                    true,
+                    false,
+                    "recent_raw staged snapshot exists, but current source recent_raw journal state could not be proven read-only from the runtime db".to_string(),
+                );
+            }
+            if source_outruns_staged == Some(true) {
+                return (
+                    RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByIncompleteStagedCoverage,
+                    true,
+                    false,
+                    "recent_raw staged snapshot is still behind the current source recent_raw journal coverage, so promotion is not ready yet".to_string(),
+                );
+            }
+            if !promoted_exists {
+                return (
+                    RecentRawPromotionBlockerReasonClass::RecentRawPromotionReadyNow,
+                    false,
+                    true,
+                    "recent_raw staged snapshot is complete against the current source state and no promoted latest surface exists, so promotion is ready now".to_string(),
+                );
+            }
+            if staged_newer_than_promoted == Some(false) {
+                return (
+                    RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByStagedNotNewerThanPromoted,
+                    true,
+                    false,
+                    "recent_raw staged snapshot is not newer than the currently promoted latest surface, so promotion is not actionable on this run".to_string(),
+                );
+            }
+            if staged_newer_than_promoted == Some(true) || source_outruns_promoted == Some(true) {
+                return (
+                    RecentRawPromotionBlockerReasonClass::RecentRawPromotionReadyNow,
+                    false,
+                    true,
+                    "recent_raw staged snapshot is complete and ahead of the currently promoted truth, so promotion is ready now".to_string(),
+                );
+            }
+            return (
+                RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByUnprovenState,
+                true,
+                false,
+                "recent_raw staged snapshot exists, but its readiness relative to the promoted latest surface could not be proven from current on-disk state".to_string(),
+            );
+        }
+
+        if !promoted_exists {
+            return (
+                RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByMissingPromotedLatest,
+                true,
+                false,
+                "recent_raw promotion is blocked because the promoted latest surface is missing and no staged snapshot is available to promote".to_string(),
+            );
+        }
+
+        if !source_state_available {
+            return (
+                RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByUnprovenState,
+                true,
+                false,
+                "recent_raw promoted latest surface exists, but the current source recent_raw journal state could not be proven read-only from the runtime db".to_string(),
+            );
+        }
+
+        if source_outruns_promoted == Some(true) {
+            return (
+                RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByMissingStagedSnapshot,
+                true,
+                false,
+                "recent_raw promoted latest surface is behind the current source journal coverage and no staged snapshot is available to promote".to_string(),
+            );
+        }
+
+        (
+            RecentRawPromotionBlockerReasonClass::RecentRawPromotionNotNeededPromotedAlreadyCurrent,
+            false,
+            false,
+            "recent_raw promoted latest surface already matches current source coverage closely enough that no staged promotion is needed on this run".to_string(),
+        )
+    }
+
+    pub fn explain_recent_raw_promotion_blocker_read_only(
+        state_root: &Path,
+    ) -> Result<RecentRawPromotionBlockerDiagnostic> {
+        let snapshot_dir = Self::recent_raw_snapshot_dir_for_state_root(state_root);
+        let promoted_snapshot_path = runtime_restore_ops::journal_snapshot_latest_path(&snapshot_dir);
+        let promoted_metadata_path =
+            runtime_restore_ops::journal_snapshot_latest_metadata_path(&snapshot_dir);
+        let staged_snapshot_path = Self::recent_raw_staged_snapshot_path(&snapshot_dir);
+        let staged_metadata_path = Self::recent_raw_staged_metadata_path(&snapshot_dir);
+
+        let promoted = Self::read_recent_raw_surface_manifest(
+            &promoted_snapshot_path,
+            &promoted_metadata_path,
+        );
+        let staged =
+            Self::read_recent_raw_surface_manifest(&staged_snapshot_path, &staged_metadata_path);
+        let promoted_exists = promoted.manifest.is_some();
+        let staged_exists = staged.manifest.is_some();
+
+        let preferred_source_path = staged
+            .manifest
+            .as_ref()
+            .map(|manifest| PathBuf::from(&manifest.source_db_path))
+            .or_else(|| {
+                promoted
+                    .manifest
+                    .as_ref()
+                    .map(|manifest| PathBuf::from(&manifest.source_db_path))
+            });
+
+        let (
+            runtime_db_path,
+            runtime_db_size_bytes,
+            runtime_db_mtime,
+            runtime_db_wal_present,
+            runtime_db_wal_size_bytes,
+        ) = if let Some(path) = preferred_source_path.as_ref() {
+            let (size_bytes, mtime, wal_present, wal_size_bytes) =
+                Self::recent_raw_runtime_db_file_metadata(path);
+            (
+                Some(path.display().to_string()),
+                size_bytes,
+                mtime,
+                wal_present,
+                wal_size_bytes,
+            )
+        } else {
+            (None, None, None, false, None)
+        };
+
+        let source_state = if let Some(path) = preferred_source_path.as_ref() {
+            Self::load_recent_raw_source_state_read_only(path).ok()
+        } else {
+            None
+        };
+        let source_state_available = source_state.is_some();
+        let source_outruns_promoted = source_state.as_ref().and_then(|source_state| {
+            promoted
+                .manifest
+                .as_ref()
+                .map(|manifest| Self::recent_raw_source_outruns_manifest(source_state, manifest))
+        });
+        let source_outruns_staged = source_state.as_ref().and_then(|source_state| {
+            staged
+                .manifest
+                .as_ref()
+                .map(|manifest| Self::recent_raw_source_outruns_manifest(source_state, manifest))
+        });
+        let staged_newer_than_promoted = match (staged.manifest.as_ref(), promoted.manifest.as_ref())
+        {
+            (Some(staged_manifest), Some(promoted_manifest)) => {
+                Self::recent_raw_manifest_newer_than_promoted(staged_manifest, promoted_manifest)
+            }
+            _ => None,
+        };
+
+        let (reason_class, blocker_observed, ready_now, explanation) =
+            Self::classify_recent_raw_promotion_blocker(
+                &promoted,
+                &staged,
+                promoted_exists,
+                staged_exists,
+                source_state_available,
+                source_outruns_promoted,
+                source_outruns_staged,
+                staged_newer_than_promoted,
+            );
+
+        let promoted_current = promoted_exists && source_outruns_promoted == Some(false);
+        Ok(RecentRawPromotionBlockerDiagnostic {
+            recent_raw_snapshot_dir: snapshot_dir.display().to_string(),
+            recent_raw_promotion_blocker_observed: blocker_observed,
+            recent_raw_promotion_ready_now: ready_now,
+            recent_raw_promotion_reason_class: reason_class,
+            recent_raw_promotion_explanation: explanation,
+            recent_raw_promoted_exists: promoted_exists,
+            recent_raw_promoted_snapshot_present: promoted.snapshot_present,
+            recent_raw_promoted_metadata_present: promoted.metadata_present,
+            recent_raw_promoted_created_at: promoted
+                .manifest
+                .as_ref()
+                .map(|manifest| manifest.created_at.clone()),
+            recent_raw_promoted_covered_since: promoted
+                .manifest
+                .as_ref()
+                .and_then(|manifest| manifest.covered_since.clone()),
+            recent_raw_promoted_covered_through: promoted
+                .manifest
+                .as_ref()
+                .and_then(|manifest| manifest.covered_through_cursor.clone()),
+            recent_raw_promoted_row_count: promoted
+                .manifest
+                .as_ref()
+                .map(|manifest| manifest.row_count),
+            recent_raw_promoted_last_batch_completed_at: promoted
+                .manifest
+                .as_ref()
+                .and_then(|manifest| manifest.last_batch_completed_at.clone()),
+            recent_raw_staged_exists: staged_exists,
+            recent_raw_staged_snapshot_present: staged.snapshot_present,
+            recent_raw_staged_metadata_present: staged.metadata_present,
+            recent_raw_staged_created_at: staged
+                .manifest
+                .as_ref()
+                .map(|manifest| manifest.created_at.clone()),
+            recent_raw_staged_covered_since: staged
+                .manifest
+                .as_ref()
+                .and_then(|manifest| manifest.covered_since.clone()),
+            recent_raw_staged_covered_through: staged
+                .manifest
+                .as_ref()
+                .and_then(|manifest| manifest.covered_through_cursor.clone()),
+            recent_raw_staged_row_count: staged
+                .manifest
+                .as_ref()
+                .map(|manifest| manifest.row_count),
+            recent_raw_staged_last_batch_completed_at: staged
+                .manifest
+                .as_ref()
+                .and_then(|manifest| manifest.last_batch_completed_at.clone()),
+            recent_raw_staged_newer_than_promoted: staged_newer_than_promoted,
+            recent_raw_runtime_db_path: runtime_db_path,
+            recent_raw_runtime_db_size_bytes: runtime_db_size_bytes,
+            recent_raw_runtime_db_mtime: runtime_db_mtime,
+            recent_raw_runtime_db_wal_present: runtime_db_wal_present,
+            recent_raw_runtime_db_wal_size_bytes: runtime_db_wal_size_bytes,
+            recent_raw_source_state_available: source_state_available,
+            recent_raw_source_row_count: source_state.as_ref().map(|state| state.row_count),
+            recent_raw_source_covered_since: source_state
+                .as_ref()
+                .and_then(|state| state.covered_since.clone()),
+            recent_raw_source_covered_through: source_state
+                .as_ref()
+                .and_then(|state| state.covered_through_cursor.clone()),
+            recent_raw_source_last_batch_completed_at: source_state
+                .as_ref()
+                .and_then(|state| state.last_batch_completed_at.clone()),
+            recent_raw_source_outruns_staged: source_outruns_staged,
+            recent_raw_source_outruns_promoted: source_outruns_promoted,
+            recent_raw_stage3_truth_blocked_by_promotion: !promoted_current,
+            recent_raw_stage3_current_fresh_healthy_evidence_possible: promoted_current,
+        })
     }
 
     fn classify_raw_persisted_rebuild_row_probe(
@@ -18046,7 +18682,8 @@ mod tests {
     use rusqlite::Connection;
     use serde::Deserialize;
     use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-    use std::path::Path;
+    use std::fs;
+    use std::path::{Path, PathBuf};
     use tempfile::tempdir;
 
     // Reduced inline fixture copied from the extracted prod morning fallback row.
@@ -44125,6 +44762,367 @@ mod tests {
         );
         assert_eq!(runtime_cursor_after, runtime_cursor_before);
         Ok(())
+    }
+
+    #[test]
+    fn recent_raw_promotion_ready_case_reports_ready_now_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-promotion-ready",
+            SourceStateSeed::StagedCurrent,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_promotion_blocker_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_promotion_reason_class,
+            RecentRawPromotionBlockerReasonClass::RecentRawPromotionReadyNow
+        );
+        assert!(diagnostic.recent_raw_promotion_ready_now);
+        assert_eq!(diagnostic.recent_raw_staged_newer_than_promoted, Some(true));
+        assert_eq!(diagnostic.recent_raw_source_outruns_staged, Some(false));
+        assert!(diagnostic.recent_raw_stage3_truth_blocked_by_promotion);
+        assert!(!diagnostic.recent_raw_stage3_current_fresh_healthy_evidence_possible);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_promotion_missing_staged_snapshot_reports_blocker_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-promotion-missing-staged",
+            SourceStateSeed::StagedCurrent,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_promotion_blocker_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_promotion_reason_class,
+            RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByMissingStagedSnapshot
+        );
+        assert!(diagnostic.recent_raw_promotion_blocker_observed);
+        assert!(!diagnostic.recent_raw_staged_exists);
+        assert_eq!(diagnostic.recent_raw_source_outruns_promoted, Some(true));
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_promotion_incomplete_staged_coverage_reports_blocker_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-promotion-incomplete-staged",
+            SourceStateSeed::StagedCurrent,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:01:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_promotion_blocker_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_promotion_reason_class,
+            RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByIncompleteStagedCoverage
+        );
+        assert_eq!(diagnostic.recent_raw_source_outruns_staged, Some(true));
+        assert!(!diagnostic.recent_raw_promotion_ready_now);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_promotion_staged_not_newer_than_promoted_reports_blocker_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-promotion-staged-not-newer",
+            SourceStateSeed::StagedCurrent,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_promotion_blocker_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_promotion_reason_class,
+            RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByStagedNotNewerThanPromoted
+        );
+        assert_eq!(diagnostic.recent_raw_staged_newer_than_promoted, Some(false));
+        assert!(diagnostic.recent_raw_stage3_current_fresh_healthy_evidence_possible);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_promotion_includes_promoted_staged_and_source_facts_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-promotion-facts",
+            SourceStateSeed::StagedCurrent,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_promotion_blocker_read_only(&fixture.state_root)?;
+
+        assert_eq!(diagnostic.recent_raw_promoted_exists, true);
+        assert_eq!(diagnostic.recent_raw_staged_exists, true);
+        assert_eq!(
+            diagnostic.recent_raw_runtime_db_path.as_deref(),
+            Some(fixture.runtime_db_path.to_string_lossy().as_ref())
+        );
+        assert!(diagnostic.recent_raw_runtime_db_size_bytes.is_some());
+        assert!(diagnostic.recent_raw_runtime_db_mtime.is_some());
+        assert!(diagnostic.recent_raw_source_state_available);
+        assert_eq!(diagnostic.recent_raw_source_row_count, Some(2));
+        assert!(diagnostic.recent_raw_promoted_created_at.is_some());
+        assert!(diagnostic.recent_raw_staged_created_at.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_promotion_explain_remains_read_only_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-promotion-read-only",
+            SourceStateSeed::StagedCurrent,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        let before = fixture.capture_bytes()?;
+
+        let _ =
+            DiscoveryService::explain_recent_raw_promotion_blocker_read_only(&fixture.state_root)?;
+
+        let after = fixture.capture_bytes()?;
+        assert_eq!(before, after);
+        Ok(())
+    }
+
+    struct RecentRawPromotionFixture {
+        _temp: tempfile::TempDir,
+        state_root: PathBuf,
+        recent_raw_dir: PathBuf,
+        runtime_db_path: PathBuf,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum SourceStateSeed {
+        StagedCurrent,
+    }
+
+    impl RecentRawPromotionFixture {
+        fn write_promoted_surface(
+            &self,
+            snapshot_file_name: &str,
+            row_count: usize,
+            cursor_ts: DateTime<Utc>,
+            signature: &str,
+            created_at: DateTime<Utc>,
+        ) -> Result<()> {
+            let snapshot_path = self.recent_raw_dir.join(snapshot_file_name);
+            let metadata_path = self.recent_raw_dir.join("latest.json");
+            self.write_surface(
+                &snapshot_path,
+                &metadata_path,
+                row_count,
+                cursor_ts,
+                signature,
+                created_at,
+            )
+        }
+
+        fn write_staged_surface(
+            &self,
+            row_count: usize,
+            cursor_ts: DateTime<Utc>,
+            signature: &str,
+            created_at: DateTime<Utc>,
+        ) -> Result<()> {
+            let snapshot_path = self
+                .recent_raw_dir
+                .join(RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME);
+            let metadata_path = self
+                .recent_raw_dir
+                .join(RECENT_RAW_STAGED_METADATA_FILE_NAME);
+            self.write_surface(
+                &snapshot_path,
+                &metadata_path,
+                row_count,
+                cursor_ts,
+                signature,
+                created_at,
+            )
+        }
+
+        fn write_surface(
+            &self,
+            snapshot_path: &Path,
+            metadata_path: &Path,
+            row_count: usize,
+            cursor_ts: DateTime<Utc>,
+            signature: &str,
+            created_at: DateTime<Utc>,
+        ) -> Result<()> {
+            fs::write(snapshot_path, b"snapshot")
+                .with_context(|| format!("failed writing {}", snapshot_path.display()))?;
+            let manifest = RecentRawPromotionSnapshotManifest {
+                created_at,
+                source_db_path: self.runtime_db_path.display().to_string(),
+                snapshot_path: snapshot_path.display().to_string(),
+                row_count,
+                covered_since: Some(parse_ts("2026-04-14T07:55:00Z")?),
+                covered_through_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: cursor_ts,
+                    slot: cursor_ts.timestamp().max(0) as u64,
+                    signature: signature.to_string(),
+                }),
+                last_batch_completed_at: Some(created_at),
+                updated_at: Some(created_at),
+                snapshot_bytes: 8,
+            };
+            runtime_restore_ops::write_json_atomic(metadata_path, &manifest)
+                .with_context(|| format!("failed writing {}", metadata_path.display()))?;
+            Ok(())
+        }
+
+        fn capture_bytes(&self) -> Result<Vec<(String, Vec<u8>)>> {
+            let mut entries = Vec::new();
+            for path in [
+                self.runtime_db_path.clone(),
+                self.recent_raw_dir.join("latest.sqlite"),
+                self.recent_raw_dir.join("latest.json"),
+                self.recent_raw_dir.join(RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME),
+                self.recent_raw_dir.join(RECENT_RAW_STAGED_METADATA_FILE_NAME),
+            ] {
+                if path.exists() {
+                    entries.push((
+                        path.display().to_string(),
+                        fs::read(&path)
+                            .with_context(|| format!("failed reading {}", path.display()))?,
+                    ));
+                }
+            }
+            Ok(entries)
+        }
+    }
+
+    fn make_recent_raw_promotion_fixture(
+        name: &str,
+        source_seed: SourceStateSeed,
+    ) -> Result<RecentRawPromotionFixture> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let state_root = temp.path().join("state");
+        let recent_raw_dir = state_root.join("discovery_restore/recent_raw");
+        fs::create_dir_all(&recent_raw_dir)
+            .with_context(|| format!("failed creating {}", recent_raw_dir.display()))?;
+        let runtime_db_path = temp.path().join(format!("{name}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&runtime_db_path)?;
+        store.run_migrations(&migration_dir)?;
+        seed_recent_raw_source_state_for_fixture(&store, source_seed)?;
+        Ok(RecentRawPromotionFixture {
+            _temp: temp,
+            state_root,
+            recent_raw_dir,
+            runtime_db_path,
+        })
+    }
+
+    fn seed_recent_raw_source_state_for_fixture(
+        store: &SqliteStore,
+        source_seed: SourceStateSeed,
+    ) -> Result<()> {
+        match source_seed {
+            SourceStateSeed::StagedCurrent => {
+                store.insert_recent_raw_journal_batch(
+                    &[
+                        swap(
+                            "wallet-raw",
+                            "sig-promoted",
+                            parse_ts("2026-04-14T07:55:00Z")?,
+                            SOL_MINT,
+                            "TokenRaw111111111111111111111111111111111",
+                            1.0,
+                            10.0,
+                        ),
+                        swap(
+                            "wallet-raw",
+                            "sig-staged",
+                            parse_ts("2026-04-14T07:56:00Z")?,
+                            SOL_MINT,
+                            "TokenRaw111111111111111111111111111111111",
+                            1.0,
+                            11.0,
+                        ),
+                    ],
+                    parse_ts("2026-04-14T08:06:00Z")?,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_ts(raw: &str) -> Result<DateTime<Utc>> {
+        Ok(DateTime::parse_from_rfc3339(raw)?.with_timezone(&Utc))
     }
 
     fn insert_recent_profitable_pair(
