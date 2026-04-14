@@ -8334,6 +8334,41 @@ Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
+Acceptance update, shared-ordering diff contract downgrade (`2026-04-14`):
+
+1. Stage 3 now has one more bounded read-only diagnostic surface for the
+   persisted rebuild row ordering seam:
+   - `discovery_replay_checkpoint_diagnose --probe-persisted-rebuild-row-shared-ordering-diff --runtime-db <path> --budget-ms <ms> --json`
+2. The accepted surface is explicitly pair-local, not mode-level cold-ordering
+   proof:
+   - it compares branch-local `isolated_shared_helper -> full_current_branch`
+     and `full_current_branch -> isolated_shared_helper` orderings plus repeat
+     branches inside one overall probe run
+   - it does not claim that those pair-local orderings are mode-level
+     independent cold-start runs
+3. The accepted machine-readable contract now says that explicitly:
+   - `shared_ordering_diff_mode_level_independent_orderings=false`
+   - reason classes and explanations now describe only pair-local asymmetry:
+     `shared_ordering_diff_isolated_slower_in_isolated_then_full_pair`,
+     `shared_ordering_diff_full_slower_in_full_then_isolated_pair`,
+     `shared_ordering_diff_pair_local_asymmetry_on_both_pairs`, and
+     `shared_ordering_diff_no_material_pair_local_ordering_difference_observed`
+4. The acceptance closed the earlier semantic drift:
+   - the surface no longer overclaims first-run / cold-ordering proof that the
+     implementation does not actually provide
+   - measured branch execution-order fields remain present so operators can see
+     the real pair-local helper order inside the current overall run
+5. Acceptance stayed on the bounded discovery-only surface:
+   - `cargo test -j 1 -p copybot-discovery --lib replay_checkpoint_shared_ordering_diff_`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_replay_checkpoint_diagnose`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_replay_checkpoint_diagnose`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_replay_checkpoint_diagnose.rs`
+6. Current production status remains unchanged:
+   - this is a tooling-only Stage 3 proof batch
+   - it does not change replay/export/fail-closed semantics
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+
 Acceptance update, pedestal-certificate / imprint-seal layer (`2026-03-31`):
 
 1. The repo now has one more final immutable archival layer over the verified

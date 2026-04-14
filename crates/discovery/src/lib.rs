@@ -1947,6 +1947,26 @@ pub enum PersistedRebuildRowStepMetaFullOrchestrationDiffReasonClass {
     StepMetaFullOrchestrationDiffNoCurrentOrchestrationDifferenceObserved,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PersistedRebuildRowSharedOrderingDiffStage {
+    IsolatedFirstThenFullSecond,
+    FullFirstThenIsolatedSecond,
+    RepeatBranches,
+    Complete,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PersistedRebuildRowSharedOrderingDiffReasonClass {
+    SharedOrderingDiffUnprovenDueToBudgetExhausted,
+    SharedOrderingDiffRowMissing,
+    SharedOrderingDiffIsolatedSlowerInIsolatedThenFullPair,
+    SharedOrderingDiffFullSlowerInFullThenIsolatedPair,
+    SharedOrderingDiffPairLocalAsymmetryOnBothPairs,
+    SharedOrderingDiffNoMaterialPairLocalOrderingDifferenceObserved,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PersistedRebuildRowStepMetaCompareDiagnostic {
     pub step_meta_compare_stage: StorageStepMetaCompareStage,
@@ -2126,6 +2146,33 @@ pub struct PersistedRebuildRowStepMetaFullOrchestrationDiffDiagnostic {
     pub step_meta_full_orchestration_diff_explanation: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PersistedRebuildRowSharedOrderingDiffDiagnostic {
+    pub shared_ordering_diff_stage: PersistedRebuildRowSharedOrderingDiffStage,
+    pub shared_ordering_diff_budget_exhausted: bool,
+    pub shared_ordering_diff_total_elapsed_ms: u64,
+    pub shared_ordering_diff_mode_level_independent_orderings: bool,
+    pub shared_ordering_diff_isolated_first_branch_execution_order: Vec<String>,
+    pub shared_ordering_diff_isolated_first_step_meta_elapsed_ms: Option<u64>,
+    pub shared_ordering_diff_isolated_first_row_exists: Option<bool>,
+    pub shared_ordering_diff_full_second_step_meta_elapsed_ms: Option<u64>,
+    pub shared_ordering_diff_full_second_row_exists: Option<bool>,
+    pub shared_ordering_diff_full_second_ran_later_variants: bool,
+    pub shared_ordering_diff_full_first_branch_execution_order: Vec<String>,
+    pub shared_ordering_diff_full_first_step_meta_elapsed_ms: Option<u64>,
+    pub shared_ordering_diff_full_first_row_exists: Option<bool>,
+    pub shared_ordering_diff_full_first_ran_later_variants: bool,
+    pub shared_ordering_diff_isolated_second_step_meta_elapsed_ms: Option<u64>,
+    pub shared_ordering_diff_isolated_second_row_exists: Option<bool>,
+    pub shared_ordering_diff_isolated_repeat_step_meta_elapsed_ms: Option<u64>,
+    pub shared_ordering_diff_isolated_repeat_row_exists: Option<bool>,
+    pub shared_ordering_diff_full_repeat_step_meta_elapsed_ms: Option<u64>,
+    pub shared_ordering_diff_full_repeat_row_exists: Option<bool>,
+    pub shared_ordering_diff_full_repeat_ran_later_variants: bool,
+    pub shared_ordering_diff_reason_class: PersistedRebuildRowSharedOrderingDiffReasonClass,
+    pub shared_ordering_diff_explanation: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedPersistedReplayCheckpointState(PersistedStreamRebuildState);
 
@@ -2171,6 +2218,17 @@ struct StepMetaFullOrchestrationDiffProbeOptions {
     test_force_full_truncated_shared_step_meta_delay_ms: Option<u64>,
     test_force_isolated_shared_step_meta_delay_ms: Option<u64>,
     test_force_full_no_snapshot_shared_step_meta_delay_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SharedOrderingDiffProbeOptions {
+    budget_ms: u64,
+    test_force_isolated_first_delay_ms: Option<u64>,
+    test_force_full_second_delay_ms: Option<u64>,
+    test_force_full_first_delay_ms: Option<u64>,
+    test_force_isolated_second_delay_ms: Option<u64>,
+    test_force_isolated_repeat_delay_ms: Option<u64>,
+    test_force_full_repeat_delay_ms: Option<u64>,
 }
 
 fn should_request_persisted_stream_catch_up(telemetry: &PersistedStreamProgressTelemetry) -> bool {
@@ -3413,6 +3471,155 @@ impl DiscoveryService {
                     .step_meta_full_orchestration_diff_full_current_emitted_progress_snapshots,
                 diagnostic
                     .step_meta_full_orchestration_diff_full_no_snapshot_emitted_progress_snapshots
+            ),
+        )
+    }
+
+    fn classify_persisted_rebuild_row_shared_ordering_diff(
+        diagnostic: &PersistedRebuildRowSharedOrderingDiffDiagnostic,
+    ) -> (
+        PersistedRebuildRowSharedOrderingDiffReasonClass,
+        String,
+    ) {
+        if diagnostic.shared_ordering_diff_budget_exhausted {
+            return (
+                PersistedRebuildRowSharedOrderingDiffReasonClass::SharedOrderingDiffUnprovenDueToBudgetExhausted,
+                format!(
+                    "shared-ordering diff exhausted its diagnostic budget while in stage {} before all ordering branches completed",
+                    serde_json::to_string(&diagnostic.shared_ordering_diff_stage)
+                        .unwrap_or_else(|_| "\"unknown\"".to_string())
+                        .trim_matches('"')
+                ),
+            );
+        }
+
+        if diagnostic.shared_ordering_diff_isolated_first_row_exists == Some(false)
+            || diagnostic.shared_ordering_diff_full_second_row_exists == Some(false)
+            || diagnostic.shared_ordering_diff_full_first_row_exists == Some(false)
+            || diagnostic.shared_ordering_diff_isolated_second_row_exists == Some(false)
+            || diagnostic.shared_ordering_diff_isolated_repeat_row_exists == Some(false)
+            || diagnostic.shared_ordering_diff_full_repeat_row_exists == Some(false)
+        {
+            return (
+                PersistedRebuildRowSharedOrderingDiffReasonClass::SharedOrderingDiffRowMissing,
+                "the compared shared-ordering branches proved that discovery_persisted_rebuild_state(id=1) is missing on the runtime db".to_string(),
+            );
+        }
+
+        let isolated_first = diagnostic
+            .shared_ordering_diff_isolated_first_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let full_second = diagnostic
+            .shared_ordering_diff_full_second_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let full_first = diagnostic
+            .shared_ordering_diff_full_first_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let isolated_second = diagnostic
+            .shared_ordering_diff_isolated_second_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let isolated_repeat = diagnostic
+            .shared_ordering_diff_isolated_repeat_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let full_repeat = diagnostic
+            .shared_ordering_diff_full_repeat_step_meta_elapsed_ms
+            .unwrap_or(0);
+
+        let isolated_first_slow = isolated_first > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+        let full_second_slow = full_second > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+        let full_first_slow = full_first > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+        let isolated_second_slow = isolated_second > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+        let isolated_repeat_slow = isolated_repeat > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+        let full_repeat_slow = full_repeat > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+
+        if isolated_first_slow
+            && !full_second_slow
+            && !isolated_second_slow
+            && !isolated_repeat_slow
+            && !full_first_slow
+            && !full_repeat_slow
+        {
+            return (
+                PersistedRebuildRowSharedOrderingDiffReasonClass::SharedOrderingDiffIsolatedSlowerInIsolatedThenFullPair,
+                format!(
+                    "the isolated shared helper is slower in the branch-local isolated->full pair while the full member of that pair and the later repeats stay fast; this mode compares pair-local order only and does not prove a mode-level cold-ordering effect (mode_level_independent_orderings={}, isolated_first_branch_execution_order={:?}, full_first_branch_execution_order={:?}, isolated_first_step_meta_elapsed_ms={}, full_second_step_meta_elapsed_ms={}, full_first_step_meta_elapsed_ms={}, isolated_second_step_meta_elapsed_ms={}, isolated_repeat_step_meta_elapsed_ms={}, full_repeat_step_meta_elapsed_ms={})",
+                    diagnostic.shared_ordering_diff_mode_level_independent_orderings,
+                    diagnostic.shared_ordering_diff_isolated_first_branch_execution_order,
+                    diagnostic.shared_ordering_diff_full_first_branch_execution_order,
+                    isolated_first,
+                    full_second,
+                    full_first,
+                    isolated_second,
+                    isolated_repeat,
+                    full_repeat
+                ),
+            );
+        }
+
+        if full_first_slow
+            && !isolated_second_slow
+            && !full_repeat_slow
+            && !isolated_first_slow
+            && !full_second_slow
+            && !isolated_repeat_slow
+        {
+            return (
+                PersistedRebuildRowSharedOrderingDiffReasonClass::SharedOrderingDiffFullSlowerInFullThenIsolatedPair,
+                format!(
+                    "the current full shared branch is slower in the branch-local full->isolated pair while the isolated member of that pair and the later repeats stay fast; this mode compares pair-local order only and does not prove a mode-level cold-ordering effect (mode_level_independent_orderings={}, isolated_first_branch_execution_order={:?}, full_first_branch_execution_order={:?}, isolated_first_step_meta_elapsed_ms={}, full_second_step_meta_elapsed_ms={}, full_first_step_meta_elapsed_ms={}, isolated_second_step_meta_elapsed_ms={}, isolated_repeat_step_meta_elapsed_ms={}, full_repeat_step_meta_elapsed_ms={})",
+                    diagnostic.shared_ordering_diff_mode_level_independent_orderings,
+                    diagnostic.shared_ordering_diff_isolated_first_branch_execution_order,
+                    diagnostic.shared_ordering_diff_full_first_branch_execution_order,
+                    isolated_first,
+                    full_second,
+                    full_first,
+                    isolated_second,
+                    isolated_repeat,
+                    full_repeat
+                ),
+            );
+        }
+
+        if isolated_first_slow
+            && !isolated_repeat_slow
+            && full_first_slow
+            && !full_repeat_slow
+            && !full_second_slow
+            && !isolated_second_slow
+        {
+            return (
+                PersistedRebuildRowSharedOrderingDiffReasonClass::SharedOrderingDiffPairLocalAsymmetryOnBothPairs,
+                format!(
+                    "both helpers are slower in the first slot of their own branch-local pairs and then converge on repeats; because both pairs run within one overall probe run, this is pair-local asymmetry only and not proof of a mode-level cold-ordering effect (mode_level_independent_orderings={}, isolated_first_branch_execution_order={:?}, full_first_branch_execution_order={:?}, isolated_first_step_meta_elapsed_ms={}, full_second_step_meta_elapsed_ms={}, full_first_step_meta_elapsed_ms={}, isolated_second_step_meta_elapsed_ms={}, isolated_repeat_step_meta_elapsed_ms={}, full_repeat_step_meta_elapsed_ms={})",
+                    diagnostic.shared_ordering_diff_mode_level_independent_orderings,
+                    diagnostic.shared_ordering_diff_isolated_first_branch_execution_order,
+                    diagnostic.shared_ordering_diff_full_first_branch_execution_order,
+                    isolated_first,
+                    full_second,
+                    full_first,
+                    isolated_second,
+                    isolated_repeat,
+                    full_repeat
+                ),
+            );
+        }
+
+        (
+            PersistedRebuildRowSharedOrderingDiffReasonClass::SharedOrderingDiffNoMaterialPairLocalOrderingDifferenceObserved,
+            format!(
+                "no material pair-local ordering difference was observed across the compared branch-local shared helper pairs; this mode does not prove mode-level cold-ordering behavior because both pairs run within one overall probe run (mode_level_independent_orderings={}, isolated_first_branch_execution_order={:?}, full_first_branch_execution_order={:?}, isolated_first_step_meta_elapsed_ms={}, full_second_step_meta_elapsed_ms={}, full_first_step_meta_elapsed_ms={}, isolated_second_step_meta_elapsed_ms={}, isolated_repeat_step_meta_elapsed_ms={}, full_repeat_step_meta_elapsed_ms={}, full_second_ran_later_variants={}, full_first_ran_later_variants={}, full_repeat_ran_later_variants={})",
+                diagnostic.shared_ordering_diff_mode_level_independent_orderings,
+                diagnostic.shared_ordering_diff_isolated_first_branch_execution_order,
+                diagnostic.shared_ordering_diff_full_first_branch_execution_order,
+                isolated_first,
+                full_second,
+                full_first,
+                isolated_second,
+                isolated_repeat,
+                full_repeat,
+                diagnostic.shared_ordering_diff_full_second_ran_later_variants,
+                diagnostic.shared_ordering_diff_full_first_ran_later_variants,
+                diagnostic.shared_ordering_diff_full_repeat_ran_later_variants
             ),
         )
     }
@@ -5406,6 +5613,186 @@ impl DiscoveryService {
             Self::classify_persisted_rebuild_row_step_meta_full_orchestration_diff(&mapped);
         mapped.step_meta_full_orchestration_diff_reason_class = reason_class;
         mapped.step_meta_full_orchestration_diff_explanation = explanation;
+        Ok(mapped)
+    }
+
+    pub fn probe_persisted_rebuild_row_shared_ordering_diff_read_only(
+        runtime_db_path: &Path,
+        budget_ms: u64,
+    ) -> Result<PersistedRebuildRowSharedOrderingDiffDiagnostic> {
+        Self::probe_persisted_rebuild_row_shared_ordering_diff_read_only_with_options(
+            runtime_db_path,
+            SharedOrderingDiffProbeOptions {
+                budget_ms,
+                ..SharedOrderingDiffProbeOptions::default()
+            },
+        )
+    }
+
+    fn probe_persisted_rebuild_row_shared_ordering_diff_read_only_with_options(
+        runtime_db_path: &Path,
+        options: SharedOrderingDiffProbeOptions,
+    ) -> Result<PersistedRebuildRowSharedOrderingDiffDiagnostic> {
+        #[derive(Debug)]
+        struct SharedOrderingBranchSequenceResult {
+            execution_order: Vec<String>,
+            isolated: StorageStepMetaIsolatedSharedDiagnostic,
+            full: PersistedRebuildRowStepMetaCompareDiagnostic,
+        }
+
+        let started_at = Instant::now();
+        let deadline = started_at + StdDuration::from_millis(options.budget_ms);
+        let run_isolated = |budget_ms: u64, delay_ms: Option<u64>| {
+            SqliteStore::probe_discovery_persisted_rebuild_row_step_meta_isolated_shared_read_only(
+                runtime_db_path,
+                &StorageStepMetaIsolatedSharedOptions {
+                    budget_ms,
+                    test_force_shared_step_meta_delay_ms: delay_ms,
+                },
+            )
+        };
+        let run_full = |budget_ms: u64, delay_ms: Option<u64>| {
+            Self::probe_persisted_rebuild_row_step_meta_compare_read_only_with_options(
+                runtime_db_path,
+                StorageStepMetaCompareOptions {
+                    budget_ms,
+                    test_force_shared_step_meta_delay_ms: delay_ms,
+                    ..StorageStepMetaCompareOptions::default()
+                },
+            )
+        };
+        let remaining_budget_ms = |deadline: Instant| {
+            deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis()
+                .min(u64::MAX as u128) as u64
+        };
+        let run_branch =
+            |first_isolated: bool,
+             first_delay_ms: Option<u64>,
+             second_delay_ms: Option<u64>|
+             -> Result<SharedOrderingBranchSequenceResult> {
+                let branch_deadline =
+                    Instant::now() + StdDuration::from_millis(remaining_budget_ms(deadline));
+                let mut execution_order = Vec::with_capacity(2);
+                let (isolated, full) = if first_isolated {
+                    execution_order.push("isolated_shared_helper".to_string());
+                    let isolated =
+                        run_isolated(remaining_budget_ms(branch_deadline), first_delay_ms)?;
+                    execution_order.push("full_current_branch".to_string());
+                    let full = run_full(remaining_budget_ms(branch_deadline), second_delay_ms)?;
+                    (isolated, full)
+                } else {
+                    execution_order.push("full_current_branch".to_string());
+                    let full = run_full(remaining_budget_ms(branch_deadline), first_delay_ms)?;
+                    execution_order.push("isolated_shared_helper".to_string());
+                    let isolated =
+                        run_isolated(remaining_budget_ms(branch_deadline), second_delay_ms)?;
+                    (isolated, full)
+                };
+                Ok(SharedOrderingBranchSequenceResult {
+                    execution_order,
+                    isolated,
+                    full,
+                })
+            };
+
+        let isolated_first_branch = run_branch(
+            true,
+            options.test_force_isolated_first_delay_ms,
+            options.test_force_full_second_delay_ms,
+        )?;
+        let full_first_branch = run_branch(
+            false,
+            options.test_force_full_first_delay_ms,
+            options.test_force_isolated_second_delay_ms,
+        )?;
+
+        let isolated_repeat = run_isolated(
+            remaining_budget_ms(deadline),
+            options.test_force_isolated_repeat_delay_ms,
+        )?;
+        let full_repeat = run_full(
+            remaining_budget_ms(deadline),
+            options.test_force_full_repeat_delay_ms,
+        )?;
+
+        let mut mapped = PersistedRebuildRowSharedOrderingDiffDiagnostic {
+            shared_ordering_diff_stage: if isolated_first_branch.isolated.budget_exhausted
+                || isolated_first_branch.full.step_meta_compare_budget_exhausted
+            {
+                PersistedRebuildRowSharedOrderingDiffStage::IsolatedFirstThenFullSecond
+            } else if full_first_branch.full.step_meta_compare_budget_exhausted
+                || full_first_branch.isolated.budget_exhausted
+            {
+                PersistedRebuildRowSharedOrderingDiffStage::FullFirstThenIsolatedSecond
+            } else if isolated_repeat.budget_exhausted || full_repeat.step_meta_compare_budget_exhausted
+            {
+                PersistedRebuildRowSharedOrderingDiffStage::RepeatBranches
+            } else {
+                PersistedRebuildRowSharedOrderingDiffStage::Complete
+            },
+            shared_ordering_diff_budget_exhausted: isolated_first_branch.isolated.budget_exhausted
+                || isolated_first_branch.full.step_meta_compare_budget_exhausted
+                || full_first_branch.full.step_meta_compare_budget_exhausted
+                || full_first_branch.isolated.budget_exhausted
+                || isolated_repeat.budget_exhausted
+                || full_repeat.step_meta_compare_budget_exhausted,
+            shared_ordering_diff_total_elapsed_ms: started_at
+                .elapsed()
+                .as_millis()
+                .min(u64::MAX as u128) as u64,
+            shared_ordering_diff_mode_level_independent_orderings: false,
+            shared_ordering_diff_isolated_first_branch_execution_order:
+                isolated_first_branch.execution_order,
+            shared_ordering_diff_isolated_first_step_meta_elapsed_ms: isolated_first_branch
+                .isolated
+                .step_meta_elapsed_ms,
+            shared_ordering_diff_isolated_first_row_exists: isolated_first_branch
+                .isolated
+                .row_exists,
+            shared_ordering_diff_full_second_step_meta_elapsed_ms: isolated_first_branch
+                .full
+                .step_meta_shared_connection_step_meta_elapsed_ms,
+            shared_ordering_diff_full_second_row_exists: isolated_first_branch
+                .full
+                .step_meta_shared_connection_row_exists,
+            shared_ordering_diff_full_second_ran_later_variants:
+                Self::step_meta_full_mode_ran_later_variants(&isolated_first_branch.full),
+            shared_ordering_diff_full_first_branch_execution_order:
+                full_first_branch.execution_order,
+            shared_ordering_diff_full_first_step_meta_elapsed_ms: full_first_branch
+                .full
+                .step_meta_shared_connection_step_meta_elapsed_ms,
+            shared_ordering_diff_full_first_row_exists: full_first_branch
+                .full
+                .step_meta_shared_connection_row_exists,
+            shared_ordering_diff_full_first_ran_later_variants:
+                Self::step_meta_full_mode_ran_later_variants(&full_first_branch.full),
+            shared_ordering_diff_isolated_second_step_meta_elapsed_ms: full_first_branch
+                .isolated
+                .step_meta_elapsed_ms,
+            shared_ordering_diff_isolated_second_row_exists: full_first_branch
+                .isolated
+                .row_exists,
+            shared_ordering_diff_isolated_repeat_step_meta_elapsed_ms: isolated_repeat
+                .step_meta_elapsed_ms,
+            shared_ordering_diff_isolated_repeat_row_exists: isolated_repeat.row_exists,
+            shared_ordering_diff_full_repeat_step_meta_elapsed_ms: full_repeat
+                .step_meta_shared_connection_step_meta_elapsed_ms,
+            shared_ordering_diff_full_repeat_row_exists: full_repeat
+                .step_meta_shared_connection_row_exists,
+            shared_ordering_diff_full_repeat_ran_later_variants:
+                Self::step_meta_full_mode_ran_later_variants(&full_repeat),
+            shared_ordering_diff_reason_class:
+                PersistedRebuildRowSharedOrderingDiffReasonClass::SharedOrderingDiffUnprovenDueToBudgetExhausted,
+            shared_ordering_diff_explanation:
+                "shared-ordering diff has not been classified yet".to_string(),
+        };
+        let (reason_class, explanation) =
+            Self::classify_persisted_rebuild_row_shared_ordering_diff(&mapped);
+        mapped.shared_ordering_diff_reason_class = reason_class;
+        mapped.shared_ordering_diff_explanation = explanation;
         Ok(mapped)
     }
 
@@ -41978,6 +42365,189 @@ mod tests {
     }
 
     #[test]
+    fn replay_checkpoint_shared_ordering_diff_emits_both_orderings_stage1() -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_shared_ordering_diff_read_only(
+                Path::new(&runtime_db_path),
+                30_000,
+            )?;
+        assert!(!diagnostic.shared_ordering_diff_budget_exhausted);
+        assert!(diagnostic
+            .shared_ordering_diff_isolated_first_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .shared_ordering_diff_full_second_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .shared_ordering_diff_full_first_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .shared_ordering_diff_isolated_second_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .shared_ordering_diff_isolated_repeat_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .shared_ordering_diff_full_repeat_step_meta_elapsed_ms
+            .is_some());
+        assert!(!diagnostic.shared_ordering_diff_mode_level_independent_orderings);
+        assert_eq!(
+            diagnostic.shared_ordering_diff_isolated_first_branch_execution_order,
+            vec![
+                "isolated_shared_helper".to_string(),
+                "full_current_branch".to_string()
+            ]
+        );
+        assert_eq!(
+            diagnostic.shared_ordering_diff_full_first_branch_execution_order,
+            vec![
+                "full_current_branch".to_string(),
+                "isolated_shared_helper".to_string()
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_shared_ordering_diff_normal_run_reports_coherent_reason_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_shared_ordering_diff_read_only(
+                Path::new(&runtime_db_path),
+                30_000,
+            )?;
+        assert_eq!(
+            diagnostic.shared_ordering_diff_reason_class,
+            PersistedRebuildRowSharedOrderingDiffReasonClass::SharedOrderingDiffNoMaterialPairLocalOrderingDifferenceObserved
+        );
+        assert!(diagnostic
+            .shared_ordering_diff_explanation
+            .contains("does not prove mode-level cold-ordering behavior"));
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_shared_ordering_diff_first_isolated_delay_is_surfaced_distinctly_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_shared_ordering_diff_read_only_with_options(
+                Path::new(&runtime_db_path),
+                SharedOrderingDiffProbeOptions {
+                    budget_ms: 30_000,
+                    test_force_isolated_first_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    ..SharedOrderingDiffProbeOptions::default()
+                },
+            )?;
+        assert_eq!(
+            diagnostic.shared_ordering_diff_reason_class,
+            PersistedRebuildRowSharedOrderingDiffReasonClass::SharedOrderingDiffIsolatedSlowerInIsolatedThenFullPair
+        );
+        assert!(diagnostic
+            .shared_ordering_diff_explanation
+            .contains("pair-local order only"));
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_shared_ordering_diff_first_full_delay_is_surfaced_distinctly_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_shared_ordering_diff_read_only_with_options(
+                Path::new(&runtime_db_path),
+                SharedOrderingDiffProbeOptions {
+                    budget_ms: 30_000,
+                    test_force_full_first_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    ..SharedOrderingDiffProbeOptions::default()
+                },
+            )?;
+        assert_eq!(
+            diagnostic.shared_ordering_diff_reason_class,
+            PersistedRebuildRowSharedOrderingDiffReasonClass::SharedOrderingDiffFullSlowerInFullThenIsolatedPair
+        );
+        assert!(diagnostic
+            .shared_ordering_diff_explanation
+            .contains("pair-local order only"));
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_shared_ordering_diff_both_pair_first_slots_slow_reports_pair_local_asymmetry_stage1(
+    ) -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_shared_ordering_diff_read_only_with_options(
+                Path::new(&runtime_db_path),
+                SharedOrderingDiffProbeOptions {
+                    budget_ms: 30_000,
+                    test_force_isolated_first_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    test_force_full_first_delay_ms: Some(
+                        DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+                    ),
+                    ..SharedOrderingDiffProbeOptions::default()
+                },
+            )?;
+        assert_eq!(
+            diagnostic.shared_ordering_diff_reason_class,
+            PersistedRebuildRowSharedOrderingDiffReasonClass::SharedOrderingDiffPairLocalAsymmetryOnBothPairs
+        );
+        assert!(diagnostic
+            .shared_ordering_diff_explanation
+            .contains("pair-local asymmetry only"));
+        Ok(())
+    }
+
+    #[test]
+    fn replay_checkpoint_shared_ordering_diff_repeat_fields_are_surfaced_stage1() -> Result<()> {
+        let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
+            seed_stage1_deferred_runtime_publication_refresh_fixture()?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-deferred-runtime-publication-refresh.db");
+        let diagnostic =
+            DiscoveryService::probe_persisted_rebuild_row_shared_ordering_diff_read_only(
+                Path::new(&runtime_db_path),
+                30_000,
+            )?;
+        assert!(diagnostic
+            .shared_ordering_diff_isolated_repeat_step_meta_elapsed_ms
+            .is_some());
+        assert!(diagnostic
+            .shared_ordering_diff_full_repeat_step_meta_elapsed_ms
+            .is_some());
+        Ok(())
+    }
+
+    #[test]
     fn replay_checkpoint_raw_probe_meta_plan_budget_exhaustion_keeps_row_existence_unproven_stage1(
     ) -> Result<()> {
         let (temp, _runtime_store, _discovery, _now, _stale_last_published_at, _wallets) =
@@ -42601,6 +43171,10 @@ mod tests {
                 Path::new(&runtime_db_path),
                 30_000,
             )?;
+        let _ = DiscoveryService::probe_persisted_rebuild_row_shared_ordering_diff_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
 
         let rebuild_after = runtime_store
             .load_discovery_persisted_rebuild_state_read_only()?
