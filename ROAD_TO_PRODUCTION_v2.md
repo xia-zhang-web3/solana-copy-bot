@@ -11774,3 +11774,41 @@ Acceptance update, Stage 3 source-window contract current-evidence surface (`202
      the previous multi-minute multi-GB full scan behavior
    - it still does not change snapshot behavior, promotion behavior,
      replay/export semantics, or production authorization
+
+Acceptance update, Stage 3 promoted-retention contract surface (`2026-04-14`):
+
+1. The repo now has one more bounded read-only operator command on the primary
+   runtime-export path:
+   - `discovery_runtime_export --explain-recent-raw-promoted-retention-contract --state-root <path> --json`
+2. The contract is intentionally proof-only and current-contract scoped:
+   - it proves whether the fixed promoted latest surface is still retained as
+     Stage 3 truth on the same `source_db_path`
+   - it proves whether a current source-window shift invalidates that promoted
+     surface under current code
+   - it does not change snapshot behavior, promotion behavior, or replay/export
+     semantics
+3. The surface combines two already accepted seams:
+   - the bounded source-window contract proof
+   - the current promotion blocker contract
+   and reduces them to one operator answer about retained older promoted truth
+4. The current evidence can now distinguish:
+   - promoted truth still matches the current source start
+   - promoted truth is older than the current source window but retained by
+     design until replacement promotion
+   - unproven current-contract inspection
+5. The surface emits explicit promoted-retention fields such as:
+   - `recent_raw_promoted_start_older_than_current_source`
+   - `recent_raw_promoted_currently_retained_as_truth`
+   - `recent_raw_promoted_has_current_contract_invalidation_rule`
+   - `recent_raw_promoted_invalidated_by_current_source_window_shift`
+   - `recent_raw_stage3_truth_currently_depends_on_retained_older_promoted_surface`
+   - `recent_raw_stage3_truth_can_advance_without_new_promotion`
+6. Acceptance stayed on the bounded proof-only surface:
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_promoted_retention_contract`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+7. Current production implication:
+   - this batch narrows the Stage 3 blocker to a retained older promoted truth
+     contract
+   - the current source-window shift changes promotion/readiness state, but by
+     itself does not retire the fixed promoted latest surface

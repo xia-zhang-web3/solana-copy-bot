@@ -2648,6 +2648,55 @@ pub enum RecentRawSourceWindowProbeMode {
     BoundedIndexEdges,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawPromotedRetentionReasonClass {
+    RecentRawPromotedCurrentTruthMatchesCurrentSource,
+    RecentRawPromotedRetainedByDesignDespiteOlderWindow,
+    RecentRawPromotedRetentionContractUnprovenDueToMissingEvidence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawPromotedRetentionBasis {
+    MatchesCurrentSourceStart,
+    FixedPromotedLatestRetainedUntilReplacement,
+    Unproven,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentRawPromotedRetentionContractDiagnostic {
+    pub recent_raw_snapshot_dir: String,
+    pub recent_raw_promoted_snapshot_path: String,
+    pub recent_raw_promoted_metadata_path: String,
+    pub recent_raw_promoted_retention_observed: bool,
+    pub recent_raw_promoted_retention_reason_class: RecentRawPromotedRetentionReasonClass,
+    pub recent_raw_promoted_retention_explanation: String,
+    pub recent_raw_promoted_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_source_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_promoted_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_source_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_promoted_start_older_than_current_source: Option<bool>,
+    pub recent_raw_promoted_same_source_db_as_current_source: Option<bool>,
+    pub recent_raw_promoted_currently_retained_as_truth: Option<bool>,
+    pub recent_raw_promoted_has_current_contract_invalidation_rule: Option<bool>,
+    pub recent_raw_promoted_invalidated_by_current_source_window_shift: Option<bool>,
+    pub recent_raw_promoted_retention_basis: RecentRawPromotedRetentionBasis,
+    pub recent_raw_promoted_retention_basis_explanation: String,
+    pub recent_raw_stage3_truth_currently_depends_on_retained_older_promoted_surface:
+        Option<bool>,
+    pub recent_raw_stage3_truth_can_advance_without_new_promotion: Option<bool>,
+    pub recent_raw_promoted_exists: bool,
+    pub recent_raw_promoted_snapshot_present: bool,
+    pub recent_raw_promoted_metadata_present: bool,
+    pub recent_raw_promotion_ready_now: bool,
+    pub recent_raw_promotion_reason_class: RecentRawPromotionBlockerReasonClass,
+    pub recent_raw_stage3_truth_blocked_by_promotion: bool,
+    pub recent_raw_source_window_contract_observed: bool,
+    pub recent_raw_source_window_contract_reason_class:
+        RecentRawSourceWindowContractReasonClass,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct RecentRawPromotionSnapshotManifest {
     created_at: DateTime<Utc>,
@@ -5041,6 +5090,200 @@ impl DiscoveryService {
         )
     }
 
+    fn recent_raw_promoted_retained_as_truth_under_current_contract(
+        promoted_exists: bool,
+        reason_class: RecentRawPromotionBlockerReasonClass,
+    ) -> Option<bool> {
+        if !promoted_exists {
+            return Some(false);
+        }
+        match reason_class {
+            RecentRawPromotionBlockerReasonClass::RecentRawPromotionReadyNow
+            | RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByMissingStagedSnapshot
+            | RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByIncompleteStagedCoverage
+            | RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByStagedNotNewerThanPromoted
+            | RecentRawPromotionBlockerReasonClass::RecentRawPromotionNotNeededPromotedAlreadyCurrent => Some(true),
+            RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByMissingPromotedLatest => {
+                Some(false)
+            }
+            RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByUnprovenState => None,
+        }
+    }
+
+    fn classify_recent_raw_promoted_retention_contract(
+        promoted_manifest_error: Option<&str>,
+        source_window_contract_observed: bool,
+        source_window_reason_class: RecentRawSourceWindowContractReasonClass,
+        promotion_reason_class: RecentRawPromotionBlockerReasonClass,
+        promoted_same_source_db_as_current_source: Option<bool>,
+        promoted_currently_retained_as_truth: Option<bool>,
+        promoted_start_older_than_current_source: Option<bool>,
+        promoted_has_current_contract_invalidation_rule: Option<bool>,
+        promoted_invalidated_by_current_source_window_shift: Option<bool>,
+        stage3_truth_currently_depends_on_retained_older_promoted_surface: Option<bool>,
+        stage3_truth_can_advance_without_new_promotion: Option<bool>,
+    ) -> (
+        RecentRawPromotedRetentionReasonClass,
+        bool,
+        RecentRawPromotedRetentionBasis,
+        String,
+        String,
+    ) {
+        if promoted_manifest_error.is_some() {
+            let explanation = format!(
+                "recent_raw promoted retention contract is unproven because the fixed promoted latest surface is partial or invalid (promoted_error={})",
+                promoted_manifest_error.unwrap_or("null"),
+            );
+            return (
+                RecentRawPromotedRetentionReasonClass::RecentRawPromotedRetentionContractUnprovenDueToMissingEvidence,
+                false,
+                RecentRawPromotedRetentionBasis::Unproven,
+                explanation.clone(),
+                explanation,
+            );
+        }
+
+        if !source_window_contract_observed {
+            let explanation = format!(
+                "recent_raw promoted retention contract is unproven because the current source-window relation to promoted latest could not be proven from bounded current evidence (source_window_reason_class={})",
+                serde_json::to_string(&source_window_reason_class)
+                    .unwrap_or_else(|_| "\"unknown\"".to_string())
+                    .trim_matches('"'),
+            );
+            return (
+                RecentRawPromotedRetentionReasonClass::RecentRawPromotedRetentionContractUnprovenDueToMissingEvidence,
+                false,
+                RecentRawPromotedRetentionBasis::Unproven,
+                explanation.clone(),
+                explanation,
+            );
+        }
+
+        match promoted_same_source_db_as_current_source {
+            Some(false) => {
+                let explanation = "recent_raw promoted retention contract is unproven because the currently promoted latest surface does not point at the same source_db_path as the current source window evidence".to_string();
+                return (
+                    RecentRawPromotedRetentionReasonClass::RecentRawPromotedRetentionContractUnprovenDueToMissingEvidence,
+                    false,
+                    RecentRawPromotedRetentionBasis::Unproven,
+                    explanation.clone(),
+                    explanation,
+                );
+            }
+            None => {
+                let explanation = "recent_raw promoted retention contract is unproven because the promoted/source source_db_path relation could not both be proven from current artifacts".to_string();
+                return (
+                    RecentRawPromotedRetentionReasonClass::RecentRawPromotedRetentionContractUnprovenDueToMissingEvidence,
+                    false,
+                    RecentRawPromotedRetentionBasis::Unproven,
+                    explanation.clone(),
+                    explanation,
+                );
+            }
+            Some(true) => {}
+        }
+
+        match promoted_currently_retained_as_truth {
+            Some(false) => {
+                let explanation = "recent_raw promoted retention contract is unproven because no currently retained promoted latest truth surface is present at the fixed latest paths".to_string();
+                return (
+                    RecentRawPromotedRetentionReasonClass::RecentRawPromotedRetentionContractUnprovenDueToMissingEvidence,
+                    false,
+                    RecentRawPromotedRetentionBasis::Unproven,
+                    explanation.clone(),
+                    explanation,
+                );
+            }
+            None => {
+                let explanation = format!(
+                    "recent_raw promoted retention contract is unproven because the current promotion contract result did not prove whether promoted latest is still retained as truth (promotion_reason_class={})",
+                    serde_json::to_string(&promotion_reason_class)
+                        .unwrap_or_else(|_| "\"unknown\"".to_string())
+                        .trim_matches('"'),
+                );
+                return (
+                    RecentRawPromotedRetentionReasonClass::RecentRawPromotedRetentionContractUnprovenDueToMissingEvidence,
+                    false,
+                    RecentRawPromotedRetentionBasis::Unproven,
+                    explanation.clone(),
+                    explanation,
+                );
+            }
+            Some(true) => {}
+        }
+
+        if promoted_start_older_than_current_source == Some(false)
+            && promoted_has_current_contract_invalidation_rule == Some(false)
+            && promoted_invalidated_by_current_source_window_shift == Some(false)
+            && stage3_truth_can_advance_without_new_promotion == Some(true)
+        {
+            let explanation = "current bounded source-window evidence shows that promoted latest and the current source window still start at the same covered_since on the same source path. Under the current recent_raw contract, the fixed promoted latest surface remains the active Stage 3 truth and no replacement promotion is required for truth to advance.".to_string();
+            let basis_explanation = "the fixed promoted latest surface still matches the current source start, so current code keeps it as Stage 3 truth without requiring a replacement write".to_string();
+            return (
+                RecentRawPromotedRetentionReasonClass::RecentRawPromotedCurrentTruthMatchesCurrentSource,
+                true,
+                RecentRawPromotedRetentionBasis::MatchesCurrentSourceStart,
+                explanation,
+                basis_explanation,
+            );
+        }
+
+        if promoted_start_older_than_current_source == Some(true)
+            && promoted_has_current_contract_invalidation_rule == Some(false)
+            && promoted_invalidated_by_current_source_window_shift == Some(false)
+            && stage3_truth_currently_depends_on_retained_older_promoted_surface == Some(true)
+            && stage3_truth_can_advance_without_new_promotion == Some(false)
+        {
+            let explanation = format!(
+                "current bounded source-window evidence shows that the current source covered_since has moved later than promoted latest on the same source path, but the current recent_raw promotion contract still retains the fixed promoted latest surface as truth. Under current code this window shift changes promotion/readiness state (promotion_reason_class={}) and blocks Stage 3 truth from advancing without a replacement promotion, but it does not invalidate or retire the existing promoted latest surface on its own.",
+                serde_json::to_string(&promotion_reason_class)
+                    .unwrap_or_else(|_| "\"unknown\"".to_string())
+                    .trim_matches('"'),
+            );
+            let basis_explanation = "the fixed promoted latest surface remains retained until a replacement write/promotion updates the latest paths; the current source-window shift only changes promotion/readiness state and does not retire promoted latest by itself".to_string();
+            return (
+                RecentRawPromotedRetentionReasonClass::RecentRawPromotedRetainedByDesignDespiteOlderWindow,
+                true,
+                RecentRawPromotedRetentionBasis::FixedPromotedLatestRetainedUntilReplacement,
+                explanation,
+                basis_explanation,
+            );
+        }
+
+        let explanation = format!(
+            "recent_raw promoted retention contract remains unproven from current artifacts: promoted_start_older_than_current_source={}, promoted_has_current_contract_invalidation_rule={}, promoted_invalidated_by_current_source_window_shift={}, stage3_truth_depends_on_retained_older_promoted_surface={}, stage3_truth_can_advance_without_new_promotion={}, promotion_reason_class={}, source_window_reason_class={}",
+            promoted_start_older_than_current_source
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            promoted_has_current_contract_invalidation_rule
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            promoted_invalidated_by_current_source_window_shift
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            stage3_truth_currently_depends_on_retained_older_promoted_surface
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            stage3_truth_can_advance_without_new_promotion
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+            serde_json::to_string(&promotion_reason_class)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"'),
+            serde_json::to_string(&source_window_reason_class)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"'),
+        );
+        let basis_explanation = "current artifacts do not reduce the promoted-latest retention contract to one exact proven relation without inference".to_string();
+        (
+            RecentRawPromotedRetentionReasonClass::RecentRawPromotedRetentionContractUnprovenDueToMissingEvidence,
+            false,
+            RecentRawPromotedRetentionBasis::Unproven,
+            explanation,
+            basis_explanation,
+        )
+    }
+
     pub fn explain_recent_raw_staged_window_seeding_read_only(
         state_root: &Path,
     ) -> Result<RecentRawStagedWindowSeedingDiagnostic> {
@@ -5353,6 +5596,187 @@ impl DiscoveryService {
             recent_raw_source_last_pruned_rows: source_state.map(|state| state.last_pruned_rows),
             recent_raw_source_last_pruned_at: source_state.and_then(|state| state.last_pruned_at),
             recent_raw_source_prune_activity_recorded: source_prune_activity_recorded,
+        })
+    }
+
+    pub fn explain_recent_raw_promoted_retention_contract_read_only(
+        state_root: &Path,
+    ) -> Result<RecentRawPromotedRetentionContractDiagnostic> {
+        let state = Self::load_recent_raw_diagnostic_state_read_only(state_root);
+        let promoted_manifest = state.promoted.manifest.as_ref();
+        let staged_manifest = state.staged.manifest.as_ref();
+        let source_window_contract =
+            Self::explain_recent_raw_source_window_contract_read_only(state_root)?;
+
+        let source_runtime_db_path = promoted_manifest
+            .map(|manifest| PathBuf::from(&manifest.source_db_path));
+        let (source_state, current_source_state_available) = match source_runtime_db_path.as_ref() {
+            Some(source_runtime_db_path) => match Self::load_recent_raw_source_state_read_only(
+                source_runtime_db_path,
+            ) {
+                Ok(source_state) => (Some(source_state), true),
+                Err(_) => (None, false),
+            },
+            None => (None, false),
+        };
+        let source_state = source_state.as_ref();
+        let promoted_same_source_db_as_current_source =
+            source_window_contract.recent_raw_source_same_source_db_as_promoted;
+        let promoted_start_older_than_current_source = match (
+            promoted_same_source_db_as_current_source,
+            source_window_contract.recent_raw_source_window_matches_current_bounded_contract,
+            promoted_manifest.and_then(|manifest| manifest.covered_since),
+            source_state.and_then(|state| state.covered_since),
+        ) {
+            (Some(true), Some(true), Some(promoted_since), Some(source_since)) => {
+                Some(promoted_since < source_since)
+            }
+            _ => None,
+        };
+        let source_outruns_promoted = match (source_state, promoted_manifest) {
+            (Some(source_state), Some(promoted_manifest)) => Some(
+                Self::recent_raw_source_outruns_manifest(source_state, promoted_manifest),
+            ),
+            _ => None,
+        };
+        let source_outruns_staged = match (
+            promoted_same_source_db_as_current_source,
+            source_state,
+            staged_manifest,
+            promoted_manifest,
+        ) {
+            (Some(true), Some(source_state), Some(staged_manifest), Some(promoted_manifest))
+                if staged_manifest.source_db_path == promoted_manifest.source_db_path =>
+            {
+                Some(Self::recent_raw_source_outruns_manifest(
+                    source_state,
+                    staged_manifest,
+                ))
+            }
+            _ => None,
+        };
+        let staged_newer_than_promoted = match state.staged_vs_promoted_relation {
+            Some(RecentRawManifestProgressRelation::CandidateAhead) => Some(true),
+            Some(
+                RecentRawManifestProgressRelation::ReferenceAhead
+                | RecentRawManifestProgressRelation::Equivalent,
+            ) => Some(false),
+            None => None,
+        };
+        let (
+            promotion_reason_class,
+            _promotion_blocker_observed,
+            promotion_ready_now,
+            _promotion_explanation,
+        ) = Self::classify_recent_raw_promotion_blocker(
+            &state.promoted,
+            &state.staged,
+            state.promoted_exists,
+            state.staged_exists,
+            current_source_state_available,
+            source_outruns_promoted,
+            source_outruns_staged,
+            staged_newer_than_promoted,
+        );
+        let promoted_currently_retained_as_truth =
+            if state.promoted.manifest_error.is_some() {
+                None
+            } else {
+                Self::recent_raw_promoted_retained_as_truth_under_current_contract(
+                    state.promoted_exists,
+                    promotion_reason_class,
+                )
+            };
+        let promoted_has_current_contract_invalidation_rule = match (
+            promoted_currently_retained_as_truth,
+            promoted_same_source_db_as_current_source,
+            source_window_contract.recent_raw_source_window_matches_current_bounded_contract,
+        ) {
+            (Some(true), Some(true), Some(true)) => Some(false),
+            _ => None,
+        };
+        let promoted_invalidated_by_current_source_window_shift = match (
+            promoted_currently_retained_as_truth,
+            promoted_same_source_db_as_current_source,
+            source_window_contract.recent_raw_source_window_matches_current_bounded_contract,
+            promoted_has_current_contract_invalidation_rule,
+        ) {
+            (Some(true), Some(true), Some(true), Some(false)) => Some(false),
+            _ => None,
+        };
+        let promoted_current =
+            state.promoted_exists && source_outruns_promoted == Some(false);
+        let stage3_truth_currently_depends_on_retained_older_promoted_surface = match (
+            promoted_currently_retained_as_truth,
+            promoted_start_older_than_current_source,
+        ) {
+            (Some(true), Some(older_than_source)) => Some(older_than_source && !promoted_current),
+            _ => None,
+        };
+        let stage3_truth_can_advance_without_new_promotion =
+            promoted_currently_retained_as_truth.map(|retained| retained && promoted_current);
+
+        let (
+            reason_class,
+            observed,
+            retention_basis,
+            retention_explanation,
+            retention_basis_explanation,
+        ) = Self::classify_recent_raw_promoted_retention_contract(
+            state.promoted.manifest_error.as_deref(),
+            source_window_contract.recent_raw_source_window_contract_observed,
+            source_window_contract.recent_raw_source_window_contract_reason_class,
+            promotion_reason_class,
+            promoted_same_source_db_as_current_source,
+            promoted_currently_retained_as_truth,
+            promoted_start_older_than_current_source,
+            promoted_has_current_contract_invalidation_rule,
+            promoted_invalidated_by_current_source_window_shift,
+            stage3_truth_currently_depends_on_retained_older_promoted_surface,
+            stage3_truth_can_advance_without_new_promotion,
+        );
+
+        Ok(RecentRawPromotedRetentionContractDiagnostic {
+            recent_raw_snapshot_dir: state.snapshot_dir.display().to_string(),
+            recent_raw_promoted_snapshot_path: state.promoted_snapshot_path.display().to_string(),
+            recent_raw_promoted_metadata_path: state.promoted_metadata_path.display().to_string(),
+            recent_raw_promoted_retention_observed: observed,
+            recent_raw_promoted_retention_reason_class: reason_class,
+            recent_raw_promoted_retention_explanation: retention_explanation,
+            recent_raw_promoted_covered_since: promoted_manifest
+                .and_then(|manifest| manifest.covered_since),
+            recent_raw_source_covered_since: source_state.and_then(|state| state.covered_since),
+            recent_raw_promoted_covered_through: promoted_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.clone()),
+            recent_raw_source_covered_through: source_state
+                .and_then(|state| state.covered_through_cursor.clone()),
+            recent_raw_promoted_start_older_than_current_source:
+                promoted_start_older_than_current_source,
+            recent_raw_promoted_same_source_db_as_current_source:
+                promoted_same_source_db_as_current_source,
+            recent_raw_promoted_currently_retained_as_truth:
+                promoted_currently_retained_as_truth,
+            recent_raw_promoted_has_current_contract_invalidation_rule:
+                promoted_has_current_contract_invalidation_rule,
+            recent_raw_promoted_invalidated_by_current_source_window_shift:
+                promoted_invalidated_by_current_source_window_shift,
+            recent_raw_promoted_retention_basis: retention_basis,
+            recent_raw_promoted_retention_basis_explanation:
+                retention_basis_explanation,
+            recent_raw_stage3_truth_currently_depends_on_retained_older_promoted_surface:
+                stage3_truth_currently_depends_on_retained_older_promoted_surface,
+            recent_raw_stage3_truth_can_advance_without_new_promotion:
+                stage3_truth_can_advance_without_new_promotion,
+            recent_raw_promoted_exists: state.promoted_exists,
+            recent_raw_promoted_snapshot_present: state.promoted.snapshot_present,
+            recent_raw_promoted_metadata_present: state.promoted.metadata_present,
+            recent_raw_promotion_ready_now: promotion_ready_now,
+            recent_raw_promotion_reason_class: promotion_reason_class,
+            recent_raw_stage3_truth_blocked_by_promotion: !promoted_current,
+            recent_raw_source_window_contract_observed:
+                source_window_contract.recent_raw_source_window_contract_observed,
+            recent_raw_source_window_contract_reason_class:
+                source_window_contract.recent_raw_source_window_contract_reason_class,
         })
     }
 
@@ -48870,7 +49294,7 @@ mod tests {
             parse_ts("2026-04-14T07:55:00Z")?,
             2,
             parse_ts("2026-04-14T07:56:00Z")?,
-            "sig-promoted",
+            "sig-source-b",
             parse_ts("2026-04-14T08:00:00Z")?,
         )?;
         fixture.write_selected_staged_surface_sqlite_with_source_path_and_created_at(
@@ -49583,6 +50007,412 @@ mod tests {
         let before = fixture.capture_bytes()?;
         let _ =
             DiscoveryService::explain_recent_raw_source_window_contract_read_only(&fixture.state_root)?;
+        let after = fixture.capture_bytes()?;
+        assert_eq!(before, after);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_promoted_retention_contract_matches_current_source_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-promoted-retention-contract-matches-current-source",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:55:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:06:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-source-b",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+
+        let diagnostic = DiscoveryService::explain_recent_raw_promoted_retention_contract_read_only(
+            &fixture.state_root,
+        )?;
+        assert_eq!(
+            diagnostic.recent_raw_promoted_retention_reason_class,
+            RecentRawPromotedRetentionReasonClass::RecentRawPromotedCurrentTruthMatchesCurrentSource
+        );
+        assert!(diagnostic.recent_raw_promoted_retention_observed);
+        assert_eq!(
+            diagnostic.recent_raw_promoted_start_older_than_current_source,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_promoted_currently_retained_as_truth,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_promoted_has_current_contract_invalidation_rule,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_promoted_invalidated_by_current_source_window_shift,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic
+                .recent_raw_stage3_truth_currently_depends_on_retained_older_promoted_surface,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_stage3_truth_can_advance_without_new_promotion,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_promoted_retention_basis,
+            RecentRawPromotedRetentionBasis::MatchesCurrentSourceStart
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_promoted_retention_contract_retains_older_promoted_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-promoted-retention-contract-retains-older-promoted",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-old",
+                    parse_ts("2026-04-14T07:54:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    9.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:06:00Z")?,
+        )?;
+        fixture.prune_source_state_before(
+            parse_ts("2026-04-14T07:56:00Z")?,
+            32,
+            parse_ts("2026-04-14T08:07:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:57:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+
+        let diagnostic = DiscoveryService::explain_recent_raw_promoted_retention_contract_read_only(
+            &fixture.state_root,
+        )?;
+        assert_eq!(
+            diagnostic.recent_raw_promoted_retention_reason_class,
+            RecentRawPromotedRetentionReasonClass::RecentRawPromotedRetainedByDesignDespiteOlderWindow
+        );
+        assert!(diagnostic.recent_raw_promoted_retention_observed);
+        assert_eq!(
+            diagnostic.recent_raw_promoted_start_older_than_current_source,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_promoted_currently_retained_as_truth,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_promoted_has_current_contract_invalidation_rule,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_promoted_invalidated_by_current_source_window_shift,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic
+                .recent_raw_stage3_truth_currently_depends_on_retained_older_promoted_surface,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_stage3_truth_can_advance_without_new_promotion,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_promoted_retention_basis,
+            RecentRawPromotedRetentionBasis::FixedPromotedLatestRetainedUntilReplacement
+        );
+        assert_eq!(
+            diagnostic.recent_raw_promotion_reason_class,
+            RecentRawPromotionBlockerReasonClass::RecentRawPromotionBlockedByMissingStagedSnapshot
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_promoted_retention_contract_exposes_no_shift_invalidation_rule_stage1(
+    ) -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-promoted-retention-contract-no-invalidation-rule",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-old",
+                    parse_ts("2026-04-14T07:54:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    9.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:06:00Z")?,
+        )?;
+        fixture.prune_source_state_before(
+            parse_ts("2026-04-14T07:56:00Z")?,
+            32,
+            parse_ts("2026-04-14T08:07:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:57:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+
+        let diagnostic = DiscoveryService::explain_recent_raw_promoted_retention_contract_read_only(
+            &fixture.state_root,
+        )?;
+        assert_eq!(
+            diagnostic.recent_raw_promoted_has_current_contract_invalidation_rule,
+            Some(false)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_promoted_invalidated_by_current_source_window_shift,
+            Some(false)
+        );
+        assert!(
+            diagnostic
+                .recent_raw_promoted_retention_basis_explanation
+                .contains("does not retire promoted latest")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_promoted_retention_contract_unproven_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-promoted-retention-contract-unproven",
+            SourceStateSeed::Missing,
+        )?;
+
+        let diagnostic = DiscoveryService::explain_recent_raw_promoted_retention_contract_read_only(
+            &fixture.state_root,
+        )?;
+        assert_eq!(
+            diagnostic.recent_raw_promoted_retention_reason_class,
+            RecentRawPromotedRetentionReasonClass::RecentRawPromotedRetentionContractUnprovenDueToMissingEvidence
+        );
+        assert!(!diagnostic.recent_raw_promoted_retention_observed);
+        assert_eq!(
+            diagnostic.recent_raw_promoted_retention_basis,
+            RecentRawPromotedRetentionBasis::Unproven
+        );
+        assert_eq!(
+            diagnostic.recent_raw_promoted_currently_retained_as_truth,
+            Some(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_promoted_retention_contract_includes_explicit_fields_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-promoted-retention-contract-fields",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-old",
+                    parse_ts("2026-04-14T07:54:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    9.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:06:00Z")?,
+        )?;
+        fixture.prune_source_state_before(
+            parse_ts("2026-04-14T07:56:00Z")?,
+            32,
+            parse_ts("2026-04-14T08:07:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:57:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+
+        let diagnostic = DiscoveryService::explain_recent_raw_promoted_retention_contract_read_only(
+            &fixture.state_root,
+        )?;
+        assert!(diagnostic.recent_raw_promoted_snapshot_path.ends_with("latest.sqlite"));
+        assert!(diagnostic.recent_raw_promoted_metadata_path.ends_with("latest.json"));
+        assert_eq!(
+            diagnostic.recent_raw_promoted_same_source_db_as_current_source,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_source_window_contract_observed,
+            true
+        );
+        assert!(
+            !diagnostic
+                .recent_raw_promoted_retention_basis_explanation
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_promoted_retention_contract_explain_remains_read_only_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-promoted-retention-contract-read-only",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.rewrite_source_state(
+            &[
+                swap(
+                    "wallet-raw",
+                    "sig-source-old",
+                    parse_ts("2026-04-14T07:54:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    9.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-a",
+                    parse_ts("2026-04-14T07:56:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    10.0,
+                ),
+                swap(
+                    "wallet-raw",
+                    "sig-source-b",
+                    parse_ts("2026-04-14T07:57:00Z")?,
+                    SOL_MINT,
+                    "TokenRaw111111111111111111111111111111111",
+                    1.0,
+                    11.0,
+                ),
+            ],
+            parse_ts("2026-04-14T08:06:00Z")?,
+        )?;
+        fixture.prune_source_state_before(
+            parse_ts("2026-04-14T07:56:00Z")?,
+            32,
+            parse_ts("2026-04-14T08:07:00Z")?,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:55:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:57:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+
+        let before = fixture.capture_bytes()?;
+        let _ = DiscoveryService::explain_recent_raw_promoted_retention_contract_read_only(
+            &fixture.state_root,
+        )?;
         let after = fixture.capture_bytes()?;
         assert_eq!(before, after);
         Ok(())
