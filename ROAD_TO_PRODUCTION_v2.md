@@ -8524,6 +8524,36 @@ Acceptance update, recent_raw staged-lineage proof surface (`2026-04-14`):
    - it does not itself repair staged recent_raw progress
    - it does not itself unblock Stage 3
 
+Acceptance correction, staged-lineage cursor relation contract (`2026-04-14`):
+
+1. The staged-lineage proof surface now proves the covered-through cursor
+   relation on the right basis:
+   - `recent_raw_staged_cursor_relation_to_promoted` is now derived from direct
+     covered-through cursor comparison
+   - it no longer reuses the broader manifest-progress proxy relation
+2. The accepted machine-readable contract is now explicit about that basis:
+   - `recent_raw_staged_cursor_relation_basis`
+   - `recent_raw_staged_cursor_relation_explanation`
+   - `recent_raw_staged_cursor_ts_relation_to_promoted`
+   - `recent_raw_staged_cursor_slot_relation_to_promoted`
+   - `recent_raw_staged_cursor_signature_equal_to_promoted`
+3. Practical meaning:
+   - the live contradiction where visibly different staged/promoted
+     covered-through cursors could still report `cursor_relation="equal"` is now
+     removed
+   - one operator run can now prove whether staged covered-through is directly
+     `ahead`, `equal`, or `behind` relative to promoted on the same source
+     lineage
+4. Acceptance stayed proof-only:
+   - no snapshot behavior changed
+   - no promotion behavior changed
+   - no replay/export/fail-closed semantics changed
+5. Acceptance stayed on the bounded discovery/runtime-export surface:
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+
 Acceptance update, shared-ordering diff contract downgrade (`2026-04-14`):
 
 1. Stage 3 now has one more bounded read-only diagnostic surface for the

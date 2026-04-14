@@ -677,6 +677,35 @@ fn render_recent_raw_staged_lineage_human(
                 .trim_matches('"')
         ),
         format!(
+            "cursor_relation_basis={}",
+            serde_json::to_string(&diagnostic.recent_raw_staged_cursor_relation_basis)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "cursor_relation_explanation={}",
+            diagnostic.recent_raw_staged_cursor_relation_explanation
+        ),
+        format!(
+            "cursor_ts_relation_to_promoted={}",
+            serde_json::to_string(&diagnostic.recent_raw_staged_cursor_ts_relation_to_promoted)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "cursor_slot_relation_to_promoted={}",
+            serde_json::to_string(&diagnostic.recent_raw_staged_cursor_slot_relation_to_promoted)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "cursor_signature_equal_to_promoted={}",
+            diagnostic
+                .recent_raw_staged_cursor_signature_equal_to_promoted
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
             "row_count_relation_to_promoted={}",
             serde_json::to_string(&diagnostic.recent_raw_staged_row_count_relation_to_promoted)
                 .unwrap_or_else(|_| "\"unknown\"".to_string())
@@ -1022,6 +1051,28 @@ mod tests {
         );
         assert_eq!(parsed["recent_raw_staged_same_source_db_as_promoted"], true);
         assert_eq!(parsed["recent_raw_staged_cursor_relation_to_promoted"], "ahead");
+        assert_eq!(
+            parsed["recent_raw_staged_cursor_relation_basis"],
+            "direct_covered_through_cursor_comparison"
+        );
+        assert_eq!(
+            parsed["recent_raw_staged_cursor_ts_relation_to_promoted"],
+            "ahead"
+        );
+        assert_eq!(
+            parsed["recent_raw_staged_cursor_slot_relation_to_promoted"],
+            "ahead"
+        );
+        assert_eq!(
+            parsed["recent_raw_staged_cursor_signature_equal_to_promoted"],
+            false
+        );
+        assert!(
+            parsed["recent_raw_staged_cursor_relation_explanation"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("direct covered-through cursor comparison")
+        );
         Ok(())
     }
 

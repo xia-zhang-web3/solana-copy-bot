@@ -2408,6 +2408,12 @@ pub enum RecentRawLineageRelation {
     Unproven,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawCursorRelationBasis {
+    DirectCoveredThroughCursorComparison,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RecentRawStagedLineageDiagnostic {
     pub recent_raw_snapshot_dir: String,
@@ -2432,7 +2438,12 @@ pub struct RecentRawStagedLineageDiagnostic {
     pub recent_raw_source_outruns_promoted: Option<bool>,
     pub recent_raw_source_outruns_both: Option<bool>,
     pub recent_raw_staged_same_source_db_as_promoted: Option<bool>,
+    pub recent_raw_staged_cursor_relation_basis: RecentRawCursorRelationBasis,
+    pub recent_raw_staged_cursor_relation_explanation: String,
     pub recent_raw_staged_cursor_relation_to_promoted: RecentRawLineageRelation,
+    pub recent_raw_staged_cursor_ts_relation_to_promoted: RecentRawLineageRelation,
+    pub recent_raw_staged_cursor_slot_relation_to_promoted: RecentRawLineageRelation,
+    pub recent_raw_staged_cursor_signature_equal_to_promoted: Option<bool>,
     pub recent_raw_staged_row_count_relation_to_promoted: RecentRawLineageRelation,
     pub recent_raw_staged_covered_since_relation_to_promoted: RecentRawLineageRelation,
     pub recent_raw_staged_monotonic_relative_to_promoted: Option<bool>,
@@ -3296,28 +3307,6 @@ impl DiscoveryService {
         Some(candidate? > reference?)
     }
 
-    fn recent_raw_lineage_relation_from_manifest_progress(
-        relation: Option<RecentRawManifestProgressRelation>,
-        same_source: Option<bool>,
-    ) -> RecentRawLineageRelation {
-        match same_source {
-            Some(false) => RecentRawLineageRelation::DifferentSource,
-            None => RecentRawLineageRelation::Unproven,
-            Some(true) => match relation {
-                Some(RecentRawManifestProgressRelation::CandidateAhead) => {
-                    RecentRawLineageRelation::Ahead
-                }
-                Some(RecentRawManifestProgressRelation::Equivalent) => {
-                    RecentRawLineageRelation::Equal
-                }
-                Some(RecentRawManifestProgressRelation::ReferenceAhead) => {
-                    RecentRawLineageRelation::Behind
-                }
-                None => RecentRawLineageRelation::Unproven,
-            },
-        }
-    }
-
     fn recent_raw_lineage_relation_from_covered_since(
         candidate: Option<&DateTime<Utc>>,
         reference: Option<&DateTime<Utc>>,
@@ -3334,6 +3323,72 @@ impl DiscoveryService {
                 },
                 _ => RecentRawLineageRelation::Unproven,
             },
+        }
+    }
+
+    fn recent_raw_lineage_relation_from_ord<T: Ord>(
+        candidate: Option<T>,
+        reference: Option<T>,
+        same_source: Option<bool>,
+    ) -> RecentRawLineageRelation {
+        match same_source {
+            Some(false) => RecentRawLineageRelation::DifferentSource,
+            None => RecentRawLineageRelation::Unproven,
+            Some(true) => match (candidate, reference) {
+                (Some(candidate), Some(reference)) => match candidate.cmp(&reference) {
+                    Ordering::Greater => RecentRawLineageRelation::Ahead,
+                    Ordering::Equal => RecentRawLineageRelation::Equal,
+                    Ordering::Less => RecentRawLineageRelation::Behind,
+                },
+                _ => RecentRawLineageRelation::Unproven,
+            },
+        }
+    }
+
+    fn recent_raw_lineage_relation_from_cursor(
+        candidate: Option<&DiscoveryRuntimeCursor>,
+        reference: Option<&DiscoveryRuntimeCursor>,
+        same_source: Option<bool>,
+    ) -> RecentRawLineageRelation {
+        match same_source {
+            Some(false) => RecentRawLineageRelation::DifferentSource,
+            None => RecentRawLineageRelation::Unproven,
+            Some(true) => match (candidate, reference) {
+                (Some(candidate), Some(reference)) => match Self::runtime_cursor_cmp(candidate, reference) {
+                    Ordering::Greater => RecentRawLineageRelation::Ahead,
+                    Ordering::Equal => RecentRawLineageRelation::Equal,
+                    Ordering::Less => RecentRawLineageRelation::Behind,
+                },
+                _ => RecentRawLineageRelation::Unproven,
+            },
+        }
+    }
+
+    fn recent_raw_cursor_relation_explanation(
+        same_source: Option<bool>,
+        cursor_relation: RecentRawLineageRelation,
+        ts_relation: RecentRawLineageRelation,
+        slot_relation: RecentRawLineageRelation,
+        signature_equal: Option<bool>,
+    ) -> String {
+        match same_source {
+            Some(false) => "recent_raw staged cursor relation is derived from direct covered-through cursor comparison, but the staged and promoted manifests point at different source_db_path values, so the cursor relation is reported as different_source instead of comparing unrelated lineages".to_string(),
+            None => "recent_raw staged cursor relation is derived from direct covered-through cursor comparison, but one or both manifests are missing the source_db_path or covered-through cursor needed to prove the relation".to_string(),
+            Some(true) => format!(
+                "recent_raw staged cursor relation is derived from direct covered-through cursor comparison using ts_utc, then slot, then signature; result={}, ts_relation={}, slot_relation={}, signature_equal={}",
+                serde_json::to_string(&cursor_relation)
+                    .unwrap_or_else(|_| "\"unknown\"".to_string())
+                    .trim_matches('"'),
+                serde_json::to_string(&ts_relation)
+                    .unwrap_or_else(|_| "\"unknown\"".to_string())
+                    .trim_matches('"'),
+                serde_json::to_string(&slot_relation)
+                    .unwrap_or_else(|_| "\"unknown\"".to_string())
+                    .trim_matches('"'),
+                signature_equal
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "null".to_string())
+            ),
         }
     }
 
@@ -3936,9 +3991,47 @@ impl DiscoveryService {
             }
             _ => None,
         };
-        let cursor_relation_to_promoted = Self::recent_raw_lineage_relation_from_manifest_progress(
-            state.staged_vs_promoted_relation,
+        let cursor_relation_to_promoted = Self::recent_raw_lineage_relation_from_cursor(
+            staged_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
+            promoted_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
             same_source_db_as_promoted,
+        );
+        let cursor_ts_relation_to_promoted = Self::recent_raw_lineage_relation_from_ord(
+            staged_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.as_ref())
+                .map(|cursor| cursor.ts_utc),
+            promoted_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.as_ref())
+                .map(|cursor| cursor.ts_utc),
+            same_source_db_as_promoted,
+        );
+        let cursor_slot_relation_to_promoted = Self::recent_raw_lineage_relation_from_ord(
+            staged_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.as_ref())
+                .map(|cursor| cursor.slot),
+            promoted_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.as_ref())
+                .map(|cursor| cursor.slot),
+            same_source_db_as_promoted,
+        );
+        let cursor_signature_equal_to_promoted = match same_source_db_as_promoted {
+            Some(true) => match (
+                staged_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
+                promoted_manifest.and_then(|manifest| manifest.covered_through_cursor.as_ref()),
+            ) {
+                (Some(staged_cursor), Some(promoted_cursor)) => {
+                    Some(staged_cursor.signature == promoted_cursor.signature)
+                }
+                _ => None,
+            },
+            Some(false) | None => None,
+        };
+        let cursor_relation_explanation = Self::recent_raw_cursor_relation_explanation(
+            same_source_db_as_promoted,
+            cursor_relation_to_promoted,
+            cursor_ts_relation_to_promoted,
+            cursor_slot_relation_to_promoted,
+            cursor_signature_equal_to_promoted,
         );
         let row_count_relation_to_promoted = Self::recent_raw_lineage_relation_from_optional_row_count(
             staged_manifest.map(|manifest| manifest.row_count),
@@ -4021,7 +4114,14 @@ impl DiscoveryService {
             recent_raw_source_outruns_promoted: state.source_outruns_promoted,
             recent_raw_source_outruns_both: source_outruns_both,
             recent_raw_staged_same_source_db_as_promoted: same_source_db_as_promoted,
+            recent_raw_staged_cursor_relation_basis:
+                RecentRawCursorRelationBasis::DirectCoveredThroughCursorComparison,
+            recent_raw_staged_cursor_relation_explanation: cursor_relation_explanation,
             recent_raw_staged_cursor_relation_to_promoted: cursor_relation_to_promoted,
+            recent_raw_staged_cursor_ts_relation_to_promoted: cursor_ts_relation_to_promoted,
+            recent_raw_staged_cursor_slot_relation_to_promoted: cursor_slot_relation_to_promoted,
+            recent_raw_staged_cursor_signature_equal_to_promoted:
+                cursor_signature_equal_to_promoted,
             recent_raw_staged_row_count_relation_to_promoted: row_count_relation_to_promoted,
             recent_raw_staged_covered_since_relation_to_promoted:
                 covered_since_relation_to_promoted,
@@ -45940,6 +46040,25 @@ mod tests {
             RecentRawLineageRelation::Ahead
         );
         assert_eq!(
+            diagnostic.recent_raw_staged_cursor_relation_basis,
+            RecentRawCursorRelationBasis::DirectCoveredThroughCursorComparison
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_ts_relation_to_promoted,
+            RecentRawLineageRelation::Ahead
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_slot_relation_to_promoted,
+            RecentRawLineageRelation::Ahead
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_signature_equal_to_promoted,
+            Some(false)
+        );
+        assert!(diagnostic
+            .recent_raw_staged_cursor_relation_explanation
+            .contains("direct covered-through cursor comparison"));
+        assert_eq!(
             diagnostic.recent_raw_staged_covered_since_relation_to_promoted,
             RecentRawLineageRelation::Equal
         );
@@ -46055,8 +46174,154 @@ mod tests {
             diagnostic.recent_raw_staged_cursor_relation_to_promoted,
             RecentRawLineageRelation::Behind
         );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_ts_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_slot_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_signature_equal_to_promoted,
+            Some(false)
+        );
         assert_eq!(diagnostic.recent_raw_staged_regressed_relative_to_promoted, Some(true));
         assert_eq!(diagnostic.recent_raw_staged_closer_to_source_than_promoted, Some(false));
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_lineage_identical_cursor_reports_equal_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-lineage-identical-cursor",
+            SourceStateSeed::StagedCurrent,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-same",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            2,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-same",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_lineage_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_relation_basis,
+            RecentRawCursorRelationBasis::DirectCoveredThroughCursorComparison
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_relation_to_promoted,
+            RecentRawLineageRelation::Equal
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_ts_relation_to_promoted,
+            RecentRawLineageRelation::Equal
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_slot_relation_to_promoted,
+            RecentRawLineageRelation::Equal
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_signature_equal_to_promoted,
+            Some(true)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_lineage_signature_difference_does_not_report_equal_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-lineage-signature-difference",
+            SourceStateSeed::StagedCurrent,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-b",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            2,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-a",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_lineage_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_ts_relation_to_promoted,
+            RecentRawLineageRelation::Equal
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_slot_relation_to_promoted,
+            RecentRawLineageRelation::Equal
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_signature_equal_to_promoted,
+            Some(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_lineage_live_shape_contradiction_reports_behind_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-lineage-live-shape-contradiction",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            52_615_967,
+            parse_ts("2026-04-10T09:34:27.024499053Z")?,
+            "3UNhL7QFL6tYg2XNTqiLRi75zDTbNRLbB65uLnJ8m5hz5DesK9FNSVZRaSkoLDqhUon4BVgkRen8pdYnCT7emGuu",
+            parse_ts("2026-04-10T09:43:22.332587209Z")?,
+        )?;
+        fixture.write_staged_surface(
+            21_824_742,
+            parse_ts("2026-03-28T03:15:38.311254197Z")?,
+            "3eBHyga7C7qCgDvRtReEDwbKiGnhFEjeYcfLiMMtBBGtGFjXbAJSB5SrmnMNvqYUssWbRR7y72HdK2Vyd4ChDTni",
+            parse_ts("2026-04-14T11:28:53.343352735Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_lineage_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        );
+        assert_ne!(
+            diagnostic.recent_raw_staged_cursor_relation_to_promoted,
+            RecentRawLineageRelation::Equal
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_ts_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_slot_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_signature_equal_to_promoted,
+            Some(false)
+        );
         Ok(())
     }
 
@@ -46093,6 +46358,19 @@ mod tests {
             diagnostic.recent_raw_staged_cursor_relation_to_promoted,
             RecentRawLineageRelation::DifferentSource
         );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_relation_basis,
+            RecentRawCursorRelationBasis::DirectCoveredThroughCursorComparison
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_ts_relation_to_promoted,
+            RecentRawLineageRelation::DifferentSource
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_slot_relation_to_promoted,
+            RecentRawLineageRelation::DifferentSource
+        );
+        assert_eq!(diagnostic.recent_raw_staged_cursor_signature_equal_to_promoted, None);
         assert_eq!(diagnostic.recent_raw_staged_monotonic_relative_to_promoted, None);
         Ok(())
     }
@@ -46123,6 +46401,19 @@ mod tests {
             diagnostic.recent_raw_staged_cursor_relation_to_promoted,
             RecentRawLineageRelation::Unproven
         );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_relation_basis,
+            RecentRawCursorRelationBasis::DirectCoveredThroughCursorComparison
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_ts_relation_to_promoted,
+            RecentRawLineageRelation::Unproven
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_slot_relation_to_promoted,
+            RecentRawLineageRelation::Unproven
+        );
+        assert_eq!(diagnostic.recent_raw_staged_cursor_signature_equal_to_promoted, None);
         Ok(())
     }
 
@@ -46160,6 +46451,11 @@ mod tests {
             diagnostic.recent_raw_staged_covered_since_relation_to_promoted,
             RecentRawLineageRelation::Equal
         );
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_relation_basis,
+            RecentRawCursorRelationBasis::DirectCoveredThroughCursorComparison
+        );
+        assert!(!diagnostic.recent_raw_staged_cursor_relation_explanation.is_empty());
         Ok(())
     }
 
