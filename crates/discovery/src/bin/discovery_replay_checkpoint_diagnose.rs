@@ -1,6 +1,9 @@
 use anyhow::{anyhow, bail, Context, Result};
 use copybot_discovery::{
-    DiscoveryService, PersistedRebuildRowDriverCompareDiagnostic,
+    DiscoveryService, PersistedRebuildRowCrossInvocationDiffDiagnostic,
+    PersistedRebuildRowCrossInvocationDiffReasonClass,
+    PersistedRebuildRowCrossInvocationDiffStage, PersistedRebuildRowDriverCompareDiagnostic,
+    PersistedRebuildRowStepMetaIsolatedSharedDiagnostic,
     PersistedRebuildRowStepMetaFullContextDiffDiagnostic,
     PersistedRebuildRowStepMetaFullOrchestrationDiffDiagnostic,
     PersistedRebuildRowSharedOrderingDiffDiagnostic,
@@ -13,9 +16,10 @@ use copybot_storage::SqliteStore;
 use serde_json::{Map, Value};
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS: u64 = 30_000;
-const USAGE: &str = "usage: discovery_replay_checkpoint_diagnose [--inspect-persisted-rebuild-row-meta-lite | --inspect-persisted-rebuild-row-meta | --inspect-persisted-rebuild-state | --explain-publishable-checkpoint-blocker | --compare-sol-leg-source-vs-checkpoint | --explain-replay-sol-leg-incomplete | --probe-persisted-rebuild-row-raw | --probe-persisted-rebuild-row-driver-compare | --probe-persisted-rebuild-row-step-meta-detail | --probe-persisted-rebuild-row-shared-sequence-detail | --probe-persisted-rebuild-row-shared-path-diff | --probe-persisted-rebuild-row-step-meta-full-context-diff | --probe-persisted-rebuild-row-step-meta-full-orchestration-diff | --probe-persisted-rebuild-row-shared-ordering-diff] --runtime-db <path> [--recent-raw-db <path>] [--budget-ms <ms>] [--json]";
+const USAGE: &str = "usage: discovery_replay_checkpoint_diagnose [--inspect-persisted-rebuild-row-meta-lite | --inspect-persisted-rebuild-row-meta | --inspect-persisted-rebuild-state | --explain-publishable-checkpoint-blocker | --compare-sol-leg-source-vs-checkpoint | --explain-replay-sol-leg-incomplete | --probe-persisted-rebuild-row-raw | --probe-persisted-rebuild-row-driver-compare | --probe-persisted-rebuild-row-step-meta-detail | --probe-persisted-rebuild-row-shared-sequence-detail | --probe-persisted-rebuild-row-shared-path-diff | --probe-persisted-rebuild-row-step-meta-full-context-diff | --probe-persisted-rebuild-row-step-meta-full-orchestration-diff | --probe-persisted-rebuild-row-shared-ordering-diff | --probe-persisted-rebuild-row-cross-invocation-diff] --runtime-db <path> [--recent-raw-db <path>] [--budget-ms <ms>] [--json]";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -43,6 +47,8 @@ enum Mode {
     ProbePersistedRebuildRowStepMetaFullContextDiff,
     ProbePersistedRebuildRowStepMetaFullOrchestrationDiff,
     ProbePersistedRebuildRowSharedOrderingDiff,
+    ProbePersistedRebuildRowCrossInvocationDiff,
+    ProbePersistedRebuildRowStepMetaIsolatedSharedInternal,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +139,16 @@ where
             "--probe-persisted-rebuild-row-shared-ordering-diff" => set_mode(
                 &mut mode,
                 Mode::ProbePersistedRebuildRowSharedOrderingDiff,
+                arg.as_str(),
+            )?,
+            "--probe-persisted-rebuild-row-cross-invocation-diff" => set_mode(
+                &mut mode,
+                Mode::ProbePersistedRebuildRowCrossInvocationDiff,
+                arg.as_str(),
+            )?,
+            "--probe-persisted-rebuild-row-step-meta-isolated-shared-internal" => set_mode(
+                &mut mode,
+                Mode::ProbePersistedRebuildRowStepMetaIsolatedSharedInternal,
                 arg.as_str(),
             )?,
             "--runtime-db" => {
@@ -358,6 +374,309 @@ fn render_shared_ordering_diff_json(
         .context("failed serializing persisted rebuild row shared-ordering diff probe")
 }
 
+fn render_step_meta_isolated_shared_json(
+    diagnostic: &PersistedRebuildRowStepMetaIsolatedSharedDiagnostic,
+) -> Result<Value> {
+    serde_json::to_value(diagnostic)
+        .context("failed serializing persisted rebuild row isolated-shared step-meta probe")
+}
+
+fn render_cross_invocation_diff_json(
+    diagnostic: &PersistedRebuildRowCrossInvocationDiffDiagnostic,
+) -> Result<Value> {
+    serde_json::to_value(diagnostic)
+        .context("failed serializing persisted rebuild row cross-invocation diff probe")
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CrossInvocationChildSurface {
+    IsolatedShared,
+    FullShared,
+}
+
+#[derive(Debug, Clone)]
+struct CrossInvocationChildOutcome {
+    step_meta_elapsed_ms: Option<u64>,
+    row_exists: Option<bool>,
+    budget_exhausted: bool,
+}
+
+fn build_cross_invocation_diff_diagnostic(
+    started_at: std::time::Instant,
+    stage: PersistedRebuildRowCrossInvocationDiffStage,
+    budget_exhausted: bool,
+    isolated_first: CrossInvocationChildOutcome,
+    full_first: CrossInvocationChildOutcome,
+    isolated_repeat: CrossInvocationChildOutcome,
+    full_repeat: CrossInvocationChildOutcome,
+    each_child_is_fresh_process: bool,
+    mode_level_independent_invocations: bool,
+    invocation_order: Vec<String>,
+) -> PersistedRebuildRowCrossInvocationDiffDiagnostic {
+    let mut diagnostic = PersistedRebuildRowCrossInvocationDiffDiagnostic {
+        cross_invocation_diff_stage: stage,
+        cross_invocation_diff_budget_exhausted: budget_exhausted,
+        cross_invocation_diff_total_elapsed_ms: started_at
+            .elapsed()
+            .as_millis()
+            .min(u64::MAX as u128) as u64,
+        cross_invocation_diff_isolated_child_first_step_meta_elapsed_ms: isolated_first
+            .step_meta_elapsed_ms,
+        cross_invocation_diff_isolated_child_first_row_exists: isolated_first.row_exists,
+        cross_invocation_diff_isolated_child_first_fresh_process: each_child_is_fresh_process,
+        cross_invocation_diff_full_child_first_step_meta_elapsed_ms: full_first.step_meta_elapsed_ms,
+        cross_invocation_diff_full_child_first_row_exists: full_first.row_exists,
+        cross_invocation_diff_full_child_first_fresh_process: each_child_is_fresh_process,
+        cross_invocation_diff_isolated_child_repeat_step_meta_elapsed_ms: isolated_repeat
+            .step_meta_elapsed_ms,
+        cross_invocation_diff_isolated_child_repeat_row_exists: isolated_repeat.row_exists,
+        cross_invocation_diff_isolated_child_repeat_fresh_process: each_child_is_fresh_process,
+        cross_invocation_diff_full_child_repeat_step_meta_elapsed_ms: full_repeat.step_meta_elapsed_ms,
+        cross_invocation_diff_full_child_repeat_row_exists: full_repeat.row_exists,
+        cross_invocation_diff_full_child_repeat_fresh_process: each_child_is_fresh_process,
+        cross_invocation_diff_children_use_exact_existing_surfaces: true,
+        cross_invocation_diff_mode_level_independent_invocations:
+            mode_level_independent_invocations,
+        cross_invocation_diff_invocation_order: invocation_order,
+        cross_invocation_diff_reason_class:
+            PersistedRebuildRowCrossInvocationDiffReasonClass::CrossInvocationDiffUnprovenDueToBudgetExhausted,
+        cross_invocation_diff_explanation:
+            "cross-invocation diff has not been classified yet".to_string(),
+    };
+    let (reason_class, explanation) =
+        DiscoveryService::classify_persisted_rebuild_row_cross_invocation_diff(&diagnostic);
+    diagnostic.cross_invocation_diff_reason_class = reason_class;
+    diagnostic.cross_invocation_diff_explanation = explanation;
+    diagnostic
+}
+
+fn extract_optional_u64_field(json: &Value, field: &str) -> Result<Option<u64>> {
+    match json.get(field) {
+        Some(Value::Null) | None => Ok(None),
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| anyhow!("expected u64 field {field}")),
+        Some(other) => bail!("expected numeric or null field {field}, got {other}"),
+    }
+}
+
+fn extract_optional_bool_field(json: &Value, field: &str) -> Result<Option<bool>> {
+    match json.get(field) {
+        Some(Value::Null) | None => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(other) => bail!("expected bool or null field {field}, got {other}"),
+    }
+}
+
+fn resolve_cross_invocation_self_exec_path() -> Result<Option<PathBuf>> {
+    if let Ok(path) = env::var("COPYBOT_DISCOVERY_DIAGNOSE_SELF_EXEC_PATH") {
+        return Ok(Some(PathBuf::from(path)));
+    }
+    #[cfg(test)]
+    {
+        if env::var_os("COPYBOT_DISCOVERY_DIAGNOSE_FORCE_SELF_EXEC").is_none() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(
+        env::current_exe().context("failed resolving current executable path")?,
+    ))
+}
+
+fn run_cross_invocation_child_subprocess(
+    exec_path: &Path,
+    surface: CrossInvocationChildSurface,
+    runtime_db: &Path,
+    budget_ms: u64,
+) -> Result<CrossInvocationChildOutcome> {
+    let mode_flag = match surface {
+        CrossInvocationChildSurface::IsolatedShared => {
+            "--probe-persisted-rebuild-row-step-meta-isolated-shared-internal"
+        }
+        CrossInvocationChildSurface::FullShared => "--probe-persisted-rebuild-row-step-meta-detail",
+    };
+    let output = Command::new(exec_path)
+        .arg(mode_flag)
+        .arg("--runtime-db")
+        .arg(runtime_db)
+        .arg("--budget-ms")
+        .arg(budget_ms.to_string())
+        .arg("--json")
+        .output()
+        .with_context(|| {
+            format!(
+                "failed running cross-invocation child probe {} via {}",
+                mode_flag,
+                exec_path.display()
+            )
+        })?;
+    if !output.status.success() {
+        bail!(
+            "cross-invocation child probe {} failed: status={:?} stdout={} stderr={}",
+            mode_flag,
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let json: Value = serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("failed parsing child probe json for {mode_flag}"))?;
+    match surface {
+        CrossInvocationChildSurface::IsolatedShared => Ok(CrossInvocationChildOutcome {
+            step_meta_elapsed_ms: extract_optional_u64_field(
+                &json,
+                "step_meta_isolated_shared_step_meta_elapsed_ms",
+            )?,
+            row_exists: extract_optional_bool_field(&json, "step_meta_isolated_shared_row_exists")?,
+            budget_exhausted: json
+                .get("step_meta_isolated_shared_budget_exhausted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }),
+        CrossInvocationChildSurface::FullShared => Ok(CrossInvocationChildOutcome {
+            step_meta_elapsed_ms: extract_optional_u64_field(
+                &json,
+                "step_meta_shared_connection_step_meta_elapsed_ms",
+            )?,
+            row_exists: extract_optional_bool_field(&json, "step_meta_shared_connection_row_exists")?,
+            budget_exhausted: json
+                .get("step_meta_compare_budget_exhausted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }),
+    }
+}
+
+#[cfg(test)]
+fn run_cross_invocation_child_inline(
+    surface: CrossInvocationChildSurface,
+    runtime_db: &Path,
+    budget_ms: u64,
+) -> Result<CrossInvocationChildOutcome> {
+    match surface {
+        CrossInvocationChildSurface::IsolatedShared => {
+            let diagnostic =
+                DiscoveryService::probe_persisted_rebuild_row_step_meta_isolated_shared_read_only(
+                    runtime_db, budget_ms,
+                )?;
+            Ok(CrossInvocationChildOutcome {
+                step_meta_elapsed_ms: diagnostic.step_meta_isolated_shared_step_meta_elapsed_ms,
+                row_exists: diagnostic.step_meta_isolated_shared_row_exists,
+                budget_exhausted: diagnostic.step_meta_isolated_shared_budget_exhausted,
+            })
+        }
+        CrossInvocationChildSurface::FullShared => {
+            let diagnostic =
+                DiscoveryService::probe_persisted_rebuild_row_step_meta_compare_read_only(
+                    runtime_db, budget_ms,
+                )?;
+            Ok(CrossInvocationChildOutcome {
+                step_meta_elapsed_ms: diagnostic.step_meta_shared_connection_step_meta_elapsed_ms,
+                row_exists: diagnostic.step_meta_shared_connection_row_exists,
+                budget_exhausted: diagnostic.step_meta_compare_budget_exhausted,
+            })
+        }
+    }
+}
+
+fn run_cross_invocation_diff(config: &Config) -> Result<Value> {
+    let started_at = std::time::Instant::now();
+    let deadline = started_at + std::time::Duration::from_millis(config.budget_ms);
+    let remaining_budget_ms = |deadline: std::time::Instant| {
+        deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .as_millis()
+            .min(u64::MAX as u128) as u64
+    };
+    let invocation_order = vec![
+        "isolated_child_first".to_string(),
+        "full_child_first".to_string(),
+        "isolated_child_repeat".to_string(),
+        "full_child_repeat".to_string(),
+    ];
+
+    let run_child = |surface: CrossInvocationChildSurface| -> Result<CrossInvocationChildOutcome> {
+        let budget_ms = remaining_budget_ms(deadline);
+        if budget_ms == 0 {
+            return Ok(CrossInvocationChildOutcome {
+                step_meta_elapsed_ms: None,
+                row_exists: None,
+                budget_exhausted: true,
+            });
+        }
+        if let Some(exec_path) = resolve_cross_invocation_self_exec_path()? {
+            run_cross_invocation_child_subprocess(&exec_path, surface, &config.runtime_db, budget_ms)
+        } else {
+            #[cfg(test)]
+            {
+                run_cross_invocation_child_inline(surface, &config.runtime_db, budget_ms)
+            }
+            #[cfg(not(test))]
+            {
+                bail!("cross-invocation mode requires a resolvable self executable path");
+            }
+        }
+    };
+
+    let isolated_first = run_child(CrossInvocationChildSurface::IsolatedShared)?;
+    let full_first = if isolated_first.budget_exhausted {
+        CrossInvocationChildOutcome {
+            step_meta_elapsed_ms: None,
+            row_exists: None,
+            budget_exhausted: true,
+        }
+    } else {
+        run_child(CrossInvocationChildSurface::FullShared)?
+    };
+    let isolated_repeat = if full_first.budget_exhausted {
+        CrossInvocationChildOutcome {
+            step_meta_elapsed_ms: None,
+            row_exists: None,
+            budget_exhausted: true,
+        }
+    } else {
+        run_child(CrossInvocationChildSurface::IsolatedShared)?
+    };
+    let full_repeat = if isolated_repeat.budget_exhausted {
+        CrossInvocationChildOutcome {
+            step_meta_elapsed_ms: None,
+            row_exists: None,
+            budget_exhausted: true,
+        }
+    } else {
+        run_child(CrossInvocationChildSurface::FullShared)?
+    };
+
+    let stage = if isolated_first.budget_exhausted {
+        PersistedRebuildRowCrossInvocationDiffStage::IsolatedChildFirst
+    } else if full_first.budget_exhausted {
+        PersistedRebuildRowCrossInvocationDiffStage::FullChildFirst
+    } else if isolated_repeat.budget_exhausted {
+        PersistedRebuildRowCrossInvocationDiffStage::IsolatedChildRepeat
+    } else if full_repeat.budget_exhausted {
+        PersistedRebuildRowCrossInvocationDiffStage::FullChildRepeat
+    } else {
+        PersistedRebuildRowCrossInvocationDiffStage::Complete
+    };
+    let actual_child_processes = resolve_cross_invocation_self_exec_path()?.is_some();
+    render_cross_invocation_diff_json(&build_cross_invocation_diff_diagnostic(
+        started_at,
+        stage,
+        isolated_first.budget_exhausted
+            || full_first.budget_exhausted
+            || isolated_repeat.budget_exhausted
+            || full_repeat.budget_exhausted,
+        isolated_first,
+        full_first,
+        isolated_repeat,
+        full_repeat,
+        actual_child_processes,
+        actual_child_processes,
+        invocation_order,
+    ))
+}
+
 fn run(config: Config) -> Result<String> {
     let output = match config.mode {
         Mode::InspectPersistedRebuildRowMetaLite => render_runtime_db_diagnostic_json(
@@ -468,6 +787,15 @@ fn run(config: Config) -> Result<String> {
                 config.budget_ms,
             )?,
         )?,
+        Mode::ProbePersistedRebuildRowCrossInvocationDiff => run_cross_invocation_diff(&config)?,
+        Mode::ProbePersistedRebuildRowStepMetaIsolatedSharedInternal => {
+            render_step_meta_isolated_shared_json(
+                &DiscoveryService::probe_persisted_rebuild_row_step_meta_isolated_shared_read_only(
+                    &config.runtime_db,
+                    config.budget_ms,
+                )?,
+            )?
+        }
     };
     render_json(&output, config.json)
 }
@@ -475,6 +803,9 @@ fn run(config: Config) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use copybot_storage::{DiscoveryPersistedRebuildPhase, DiscoveryPersistedRebuildStateRow};
+    use std::sync::OnceLock;
 
     fn make_test_store(name: &str) -> Result<(tempfile::TempDir, PathBuf)> {
         let temp = tempfile::tempdir().context("failed to create tempdir")?;
@@ -631,6 +962,18 @@ mod tests {
         ])?
         .expect("config should parse");
         assert_eq!(config.mode, Mode::ProbePersistedRebuildRowSharedOrderingDiff);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_args_accepts_cross_invocation_diff_mode_stage1() -> Result<()> {
+        let config = parse_args_from([
+            "--probe-persisted-rebuild-row-cross-invocation-diff".to_string(),
+            "--runtime-db".to_string(),
+            "runtime.sqlite".to_string(),
+        ])?
+        .expect("config should parse");
+        assert_eq!(config.mode, Mode::ProbePersistedRebuildRowCrossInvocationDiff);
         Ok(())
     }
 
@@ -890,6 +1233,115 @@ mod tests {
         assert!(json["shared_ordering_diff_explanation"]
             .as_str()
             .is_some_and(|value| value.contains("is missing on the runtime db")));
+        Ok(())
+    }
+
+    #[test]
+    fn run_cross_invocation_diff_reports_missing_checkpoint_json_stage1() -> Result<()> {
+        let (_temp, runtime_db) = make_test_store("diagnose-cross-invocation-diff-runtime.sqlite")?;
+        let store = SqliteStore::open(Path::new(&runtime_db))?;
+        assert!(store.load_discovery_persisted_rebuild_state()?.is_none());
+        drop(store);
+        let output = run(Config {
+            mode: Mode::ProbePersistedRebuildRowCrossInvocationDiff,
+            runtime_db,
+            recent_raw_db: None,
+            json: true,
+            budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+        })?;
+        let json: serde_json::Value =
+            serde_json::from_str(&output).context("invalid json output")?;
+        assert_eq!(
+            json["cross_invocation_diff_reason_class"],
+            "cross_invocation_diff_row_missing"
+        );
+        assert_eq!(json["cross_invocation_diff_mode_level_independent_invocations"], false);
+        Ok(())
+    }
+
+    fn ensure_discovery_diagnose_binary_path_stage1() -> Result<PathBuf> {
+        static PATH: OnceLock<PathBuf> = OnceLock::new();
+        if let Some(path) = PATH.get() {
+            return Ok(path.clone());
+        }
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .context("failed to resolve workspace root")?;
+        let status = Command::new("cargo")
+            .arg("build")
+            .arg("-j")
+            .arg("1")
+            .arg("-p")
+            .arg("copybot-discovery")
+            .arg("--bin")
+            .arg("discovery_replay_checkpoint_diagnose")
+            .current_dir(&workspace_root)
+            .status()
+            .context("failed to build discovery_replay_checkpoint_diagnose for self-exec test")?;
+        assert!(status.success());
+        let mut path = workspace_root.join("target/debug/discovery_replay_checkpoint_diagnose");
+        if cfg!(windows) {
+            path.set_extension("exe");
+        }
+        let _ = PATH.set(path.clone());
+        Ok(path)
+    }
+
+    #[test]
+    fn run_cross_invocation_diff_can_use_actual_fresh_child_processes_stage1() -> Result<()> {
+        let (_temp, runtime_db) = make_test_store("diagnose-cross-invocation-actual-child.sqlite")?;
+        let store = SqliteStore::open(Path::new(&runtime_db))?;
+        let now = Utc::now();
+        store.upsert_discovery_persisted_rebuild_state(&DiscoveryPersistedRebuildStateRow {
+            phase: DiscoveryPersistedRebuildPhase::Replay,
+            window_start: now,
+            horizon_end: now,
+            metrics_window_start: now,
+            phase_cursor: None,
+            prepass_rows_processed: 0,
+            prepass_pages_processed: 0,
+            replay_rows_processed: 0,
+            replay_pages_processed: 0,
+            chunks_completed: 0,
+            state_json: "{}".to_string(),
+            started_at: now,
+            updated_at: now,
+        })?;
+        drop(store);
+        let binary_path = ensure_discovery_diagnose_binary_path_stage1()?;
+        unsafe {
+            env::set_var(
+                "COPYBOT_DISCOVERY_DIAGNOSE_SELF_EXEC_PATH",
+                binary_path.as_os_str(),
+            );
+            env::set_var("COPYBOT_DISCOVERY_DIAGNOSE_FORCE_SELF_EXEC", "1");
+        }
+        let output = run(Config {
+            mode: Mode::ProbePersistedRebuildRowCrossInvocationDiff,
+            runtime_db,
+            recent_raw_db: None,
+            json: true,
+            budget_ms: DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
+        })?;
+        unsafe {
+            env::remove_var("COPYBOT_DISCOVERY_DIAGNOSE_SELF_EXEC_PATH");
+            env::remove_var("COPYBOT_DISCOVERY_DIAGNOSE_FORCE_SELF_EXEC");
+        }
+        let json: serde_json::Value =
+            serde_json::from_str(&output).context("invalid json output")?;
+        assert_eq!(json["cross_invocation_diff_mode_level_independent_invocations"], true);
+        assert_eq!(json["cross_invocation_diff_isolated_child_first_fresh_process"], true);
+        assert_eq!(json["cross_invocation_diff_full_child_first_fresh_process"], true);
+        assert_eq!(
+            json["cross_invocation_diff_invocation_order"],
+            serde_json::json!([
+                "isolated_child_first",
+                "full_child_first",
+                "isolated_child_repeat",
+                "full_child_repeat"
+            ])
+        );
         Ok(())
     }
 

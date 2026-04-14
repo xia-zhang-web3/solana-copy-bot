@@ -1967,6 +1967,48 @@ pub enum PersistedRebuildRowSharedOrderingDiffReasonClass {
     SharedOrderingDiffNoMaterialPairLocalOrderingDifferenceObserved,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PersistedRebuildRowCrossInvocationDiffStage {
+    IsolatedChildFirst,
+    FullChildFirst,
+    IsolatedChildRepeat,
+    FullChildRepeat,
+    Complete,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PersistedRebuildRowCrossInvocationDiffReasonClass {
+    CrossInvocationDiffUnprovenDueToBudgetExhausted,
+    CrossInvocationDiffRowMissing,
+    CrossInvocationDiffIsolatedFirstChildInvocationSlowerThanRepeat,
+    CrossInvocationDiffFullFirstChildInvocationSlowerThanRepeat,
+    CrossInvocationDiffFirstChildInvocationSlowerForBothSurfaces,
+    CrossInvocationDiffNoCurrentCrossInvocationRepro,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PersistedRebuildRowStepMetaIsolatedSharedDiagnostic {
+    pub step_meta_isolated_shared_budget_exhausted: bool,
+    pub step_meta_isolated_shared_total_elapsed_ms: u64,
+    pub step_meta_isolated_shared_prepare_exists_elapsed_ms: Option<u64>,
+    pub step_meta_isolated_shared_step_exists_elapsed_ms: Option<u64>,
+    pub step_meta_isolated_shared_prepare_meta_elapsed_ms: Option<u64>,
+    pub step_meta_isolated_shared_step_meta_elapsed_ms: Option<u64>,
+    pub step_meta_isolated_shared_extract_phase_elapsed_ms: Option<u64>,
+    pub step_meta_isolated_shared_extract_updated_at_elapsed_ms: Option<u64>,
+    pub step_meta_isolated_shared_row_exists: Option<bool>,
+    pub step_meta_isolated_shared_row_phase: Option<String>,
+    pub step_meta_isolated_shared_row_updated_at: Option<String>,
+    pub step_meta_isolated_shared_loads_connection_facts_before_meta_query: bool,
+    pub step_meta_isolated_shared_uses_query_plus_next: bool,
+    pub step_meta_isolated_shared_finalizes_exists_before_prepare_meta: bool,
+    pub step_meta_isolated_shared_extracts_phase_and_updated_at_after_step: bool,
+    pub step_meta_isolated_shared_measures_prepare_meta_separately: bool,
+    pub step_meta_isolated_shared_measures_extract_separately: bool,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PersistedRebuildRowStepMetaCompareDiagnostic {
     pub step_meta_compare_stage: StorageStepMetaCompareStage,
@@ -2171,6 +2213,30 @@ pub struct PersistedRebuildRowSharedOrderingDiffDiagnostic {
     pub shared_ordering_diff_full_repeat_ran_later_variants: bool,
     pub shared_ordering_diff_reason_class: PersistedRebuildRowSharedOrderingDiffReasonClass,
     pub shared_ordering_diff_explanation: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PersistedRebuildRowCrossInvocationDiffDiagnostic {
+    pub cross_invocation_diff_stage: PersistedRebuildRowCrossInvocationDiffStage,
+    pub cross_invocation_diff_budget_exhausted: bool,
+    pub cross_invocation_diff_total_elapsed_ms: u64,
+    pub cross_invocation_diff_isolated_child_first_step_meta_elapsed_ms: Option<u64>,
+    pub cross_invocation_diff_isolated_child_first_row_exists: Option<bool>,
+    pub cross_invocation_diff_isolated_child_first_fresh_process: bool,
+    pub cross_invocation_diff_full_child_first_step_meta_elapsed_ms: Option<u64>,
+    pub cross_invocation_diff_full_child_first_row_exists: Option<bool>,
+    pub cross_invocation_diff_full_child_first_fresh_process: bool,
+    pub cross_invocation_diff_isolated_child_repeat_step_meta_elapsed_ms: Option<u64>,
+    pub cross_invocation_diff_isolated_child_repeat_row_exists: Option<bool>,
+    pub cross_invocation_diff_isolated_child_repeat_fresh_process: bool,
+    pub cross_invocation_diff_full_child_repeat_step_meta_elapsed_ms: Option<u64>,
+    pub cross_invocation_diff_full_child_repeat_row_exists: Option<bool>,
+    pub cross_invocation_diff_full_child_repeat_fresh_process: bool,
+    pub cross_invocation_diff_children_use_exact_existing_surfaces: bool,
+    pub cross_invocation_diff_mode_level_independent_invocations: bool,
+    pub cross_invocation_diff_invocation_order: Vec<String>,
+    pub cross_invocation_diff_reason_class: PersistedRebuildRowCrossInvocationDiffReasonClass,
+    pub cross_invocation_diff_explanation: String,
 }
 
 #[derive(Debug, Clone)]
@@ -3729,6 +3795,159 @@ impl DiscoveryService {
         mapped
     }
 
+    fn map_storage_step_meta_isolated_shared_diagnostic(
+        diagnostic: StorageStepMetaIsolatedSharedDiagnostic,
+    ) -> PersistedRebuildRowStepMetaIsolatedSharedDiagnostic {
+        PersistedRebuildRowStepMetaIsolatedSharedDiagnostic {
+            step_meta_isolated_shared_budget_exhausted: diagnostic.budget_exhausted,
+            step_meta_isolated_shared_total_elapsed_ms: diagnostic.total_elapsed_ms,
+            step_meta_isolated_shared_prepare_exists_elapsed_ms: diagnostic
+                .prepare_exists_elapsed_ms,
+            step_meta_isolated_shared_step_exists_elapsed_ms: diagnostic.step_exists_elapsed_ms,
+            step_meta_isolated_shared_prepare_meta_elapsed_ms: diagnostic.prepare_meta_elapsed_ms,
+            step_meta_isolated_shared_step_meta_elapsed_ms: diagnostic.step_meta_elapsed_ms,
+            step_meta_isolated_shared_extract_phase_elapsed_ms: diagnostic
+                .extract_phase_elapsed_ms,
+            step_meta_isolated_shared_extract_updated_at_elapsed_ms: diagnostic
+                .extract_updated_at_elapsed_ms,
+            step_meta_isolated_shared_row_exists: diagnostic.row_exists,
+            step_meta_isolated_shared_row_phase: diagnostic.row_phase,
+            step_meta_isolated_shared_row_updated_at: diagnostic.row_updated_at,
+            step_meta_isolated_shared_loads_connection_facts_before_meta_query: diagnostic
+                .loads_connection_facts_before_meta_query,
+            step_meta_isolated_shared_uses_query_plus_next: diagnostic.uses_query_plus_next,
+            step_meta_isolated_shared_finalizes_exists_before_prepare_meta: diagnostic
+                .finalizes_exists_before_prepare_meta,
+            step_meta_isolated_shared_extracts_phase_and_updated_at_after_step: diagnostic
+                .extracts_phase_and_updated_at_after_step,
+            step_meta_isolated_shared_measures_prepare_meta_separately: diagnostic
+                .measures_prepare_meta_separately,
+            step_meta_isolated_shared_measures_extract_separately: diagnostic
+                .measures_extract_separately,
+        }
+    }
+
+    pub fn classify_persisted_rebuild_row_cross_invocation_diff(
+        diagnostic: &PersistedRebuildRowCrossInvocationDiffDiagnostic,
+    ) -> (
+        PersistedRebuildRowCrossInvocationDiffReasonClass,
+        String,
+    ) {
+        if diagnostic.cross_invocation_diff_budget_exhausted {
+            return (
+                PersistedRebuildRowCrossInvocationDiffReasonClass::CrossInvocationDiffUnprovenDueToBudgetExhausted,
+                format!(
+                    "cross-invocation diff exhausted its diagnostic budget while in stage {} before all child invocations completed (mode_level_independent_invocations={}, invocation_order={:?})",
+                    serde_json::to_string(&diagnostic.cross_invocation_diff_stage)
+                        .unwrap_or_else(|_| "\"unknown\"".to_string())
+                        .trim_matches('"'),
+                    diagnostic.cross_invocation_diff_mode_level_independent_invocations,
+                    diagnostic.cross_invocation_diff_invocation_order
+                ),
+            );
+        }
+
+        if diagnostic.cross_invocation_diff_isolated_child_first_row_exists == Some(false)
+            || diagnostic.cross_invocation_diff_full_child_first_row_exists == Some(false)
+            || diagnostic.cross_invocation_diff_isolated_child_repeat_row_exists == Some(false)
+            || diagnostic.cross_invocation_diff_full_child_repeat_row_exists == Some(false)
+        {
+            return (
+                PersistedRebuildRowCrossInvocationDiffReasonClass::CrossInvocationDiffRowMissing,
+                "the compared cross-invocation child probes proved that discovery_persisted_rebuild_state(id=1) is missing on the runtime db".to_string(),
+            );
+        }
+
+        let isolated_first = diagnostic
+            .cross_invocation_diff_isolated_child_first_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let full_first = diagnostic
+            .cross_invocation_diff_full_child_first_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let isolated_repeat = diagnostic
+            .cross_invocation_diff_isolated_child_repeat_step_meta_elapsed_ms
+            .unwrap_or(0);
+        let full_repeat = diagnostic
+            .cross_invocation_diff_full_child_repeat_step_meta_elapsed_ms
+            .unwrap_or(0);
+
+        let isolated_first_slow = isolated_first > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+        let full_first_slow = full_first > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+        let isolated_repeat_slow = isolated_repeat > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+        let full_repeat_slow = full_repeat > DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD;
+
+        if isolated_first_slow
+            && !isolated_repeat_slow
+            && !full_first_slow
+            && !full_repeat_slow
+        {
+            return (
+                PersistedRebuildRowCrossInvocationDiffReasonClass::CrossInvocationDiffIsolatedFirstChildInvocationSlowerThanRepeat,
+                format!(
+                    "the isolated shared helper is slower on its first fresh child invocation within this cross-invocation probe order, while the repeated isolated child and both full children stay fast (mode_level_independent_invocations={}, invocation_order={:?}, isolated_child_first_step_meta_elapsed_ms={}, full_child_first_step_meta_elapsed_ms={}, isolated_child_repeat_step_meta_elapsed_ms={}, full_child_repeat_step_meta_elapsed_ms={})",
+                    diagnostic.cross_invocation_diff_mode_level_independent_invocations,
+                    diagnostic.cross_invocation_diff_invocation_order,
+                    isolated_first,
+                    full_first,
+                    isolated_repeat,
+                    full_repeat
+                ),
+            );
+        }
+
+        if full_first_slow
+            && !full_repeat_slow
+            && !isolated_first_slow
+            && !isolated_repeat_slow
+        {
+            return (
+                PersistedRebuildRowCrossInvocationDiffReasonClass::CrossInvocationDiffFullFirstChildInvocationSlowerThanRepeat,
+                format!(
+                    "the full shared branch is slower on its first fresh child invocation within this cross-invocation probe order, while the repeated full child and both isolated children stay fast (mode_level_independent_invocations={}, invocation_order={:?}, isolated_child_first_step_meta_elapsed_ms={}, full_child_first_step_meta_elapsed_ms={}, isolated_child_repeat_step_meta_elapsed_ms={}, full_child_repeat_step_meta_elapsed_ms={})",
+                    diagnostic.cross_invocation_diff_mode_level_independent_invocations,
+                    diagnostic.cross_invocation_diff_invocation_order,
+                    isolated_first,
+                    full_first,
+                    isolated_repeat,
+                    full_repeat
+                ),
+            );
+        }
+
+        if isolated_first_slow
+            && !isolated_repeat_slow
+            && full_first_slow
+            && !full_repeat_slow
+        {
+            return (
+                PersistedRebuildRowCrossInvocationDiffReasonClass::CrossInvocationDiffFirstChildInvocationSlowerForBothSurfaces,
+                format!(
+                    "both accepted surfaces are slower on their first fresh child invocation within this cross-invocation probe order and converge on their repeated child runs (mode_level_independent_invocations={}, invocation_order={:?}, isolated_child_first_step_meta_elapsed_ms={}, full_child_first_step_meta_elapsed_ms={}, isolated_child_repeat_step_meta_elapsed_ms={}, full_child_repeat_step_meta_elapsed_ms={})",
+                    diagnostic.cross_invocation_diff_mode_level_independent_invocations,
+                    diagnostic.cross_invocation_diff_invocation_order,
+                    isolated_first,
+                    full_first,
+                    isolated_repeat,
+                    full_repeat
+                ),
+            );
+        }
+
+        (
+            PersistedRebuildRowCrossInvocationDiffReasonClass::CrossInvocationDiffNoCurrentCrossInvocationRepro,
+            format!(
+                "no current cross-invocation repro was observed across the compared fresh-child probe sequence (mode_level_independent_invocations={}, invocation_order={:?}, isolated_child_first_step_meta_elapsed_ms={}, full_child_first_step_meta_elapsed_ms={}, isolated_child_repeat_step_meta_elapsed_ms={}, full_child_repeat_step_meta_elapsed_ms={}, children_use_exact_existing_surfaces={})",
+                diagnostic.cross_invocation_diff_mode_level_independent_invocations,
+                diagnostic.cross_invocation_diff_invocation_order,
+                isolated_first,
+                full_first,
+                isolated_repeat,
+                full_repeat,
+                diagnostic.cross_invocation_diff_children_use_exact_existing_surfaces
+            ),
+        )
+    }
+
     fn map_storage_shared_sequence_compare_diagnostic(
         diagnostic: StorageSharedSequenceCompareDiagnostic,
     ) -> PersistedRebuildRowSharedSequenceCompareDiagnostic {
@@ -5236,6 +5455,21 @@ impl DiscoveryService {
             SqliteStore::probe_discovery_persisted_rebuild_row_step_meta_compare_read_only(
                 runtime_db_path,
                 &options,
+            )?,
+        ))
+    }
+
+    pub fn probe_persisted_rebuild_row_step_meta_isolated_shared_read_only(
+        runtime_db_path: &Path,
+        budget_ms: u64,
+    ) -> Result<PersistedRebuildRowStepMetaIsolatedSharedDiagnostic> {
+        Ok(Self::map_storage_step_meta_isolated_shared_diagnostic(
+            SqliteStore::probe_discovery_persisted_rebuild_row_step_meta_isolated_shared_read_only(
+                runtime_db_path,
+                &StorageStepMetaIsolatedSharedOptions {
+                    budget_ms,
+                    test_force_shared_step_meta_delay_ms: None,
+                },
             )?,
         ))
     }
@@ -42547,6 +42781,96 @@ mod tests {
         Ok(())
     }
 
+    fn synthetic_cross_invocation_diff_diagnostic(
+        isolated_first: u64,
+        full_first: u64,
+        isolated_repeat: u64,
+        full_repeat: u64,
+    ) -> PersistedRebuildRowCrossInvocationDiffDiagnostic {
+        let mut diagnostic = PersistedRebuildRowCrossInvocationDiffDiagnostic {
+            cross_invocation_diff_stage: PersistedRebuildRowCrossInvocationDiffStage::Complete,
+            cross_invocation_diff_budget_exhausted: false,
+            cross_invocation_diff_total_elapsed_ms: 1,
+            cross_invocation_diff_isolated_child_first_step_meta_elapsed_ms: Some(isolated_first),
+            cross_invocation_diff_isolated_child_first_row_exists: Some(true),
+            cross_invocation_diff_isolated_child_first_fresh_process: true,
+            cross_invocation_diff_full_child_first_step_meta_elapsed_ms: Some(full_first),
+            cross_invocation_diff_full_child_first_row_exists: Some(true),
+            cross_invocation_diff_full_child_first_fresh_process: true,
+            cross_invocation_diff_isolated_child_repeat_step_meta_elapsed_ms: Some(
+                isolated_repeat,
+            ),
+            cross_invocation_diff_isolated_child_repeat_row_exists: Some(true),
+            cross_invocation_diff_isolated_child_repeat_fresh_process: true,
+            cross_invocation_diff_full_child_repeat_step_meta_elapsed_ms: Some(full_repeat),
+            cross_invocation_diff_full_child_repeat_row_exists: Some(true),
+            cross_invocation_diff_full_child_repeat_fresh_process: true,
+            cross_invocation_diff_children_use_exact_existing_surfaces: true,
+            cross_invocation_diff_mode_level_independent_invocations: true,
+            cross_invocation_diff_invocation_order: vec![
+                "isolated_child_first".to_string(),
+                "full_child_first".to_string(),
+                "isolated_child_repeat".to_string(),
+                "full_child_repeat".to_string(),
+            ],
+            cross_invocation_diff_reason_class:
+                PersistedRebuildRowCrossInvocationDiffReasonClass::CrossInvocationDiffUnprovenDueToBudgetExhausted,
+            cross_invocation_diff_explanation:
+                "cross-invocation diff has not been classified yet".to_string(),
+        };
+        let (reason_class, explanation) =
+            DiscoveryService::classify_persisted_rebuild_row_cross_invocation_diff(&diagnostic);
+        diagnostic.cross_invocation_diff_reason_class = reason_class;
+        diagnostic.cross_invocation_diff_explanation = explanation;
+        diagnostic
+    }
+
+    #[test]
+    fn replay_checkpoint_cross_invocation_diff_normal_run_reports_coherent_reason_stage1() {
+        let diagnostic = synthetic_cross_invocation_diff_diagnostic(320, 300, 310, 305);
+        assert_eq!(
+            diagnostic.cross_invocation_diff_reason_class,
+            PersistedRebuildRowCrossInvocationDiffReasonClass::CrossInvocationDiffNoCurrentCrossInvocationRepro
+        );
+        assert!(diagnostic
+            .cross_invocation_diff_explanation
+            .contains("no current cross-invocation repro"));
+    }
+
+    #[test]
+    fn replay_checkpoint_cross_invocation_diff_first_isolated_child_delay_is_surfaced_stage1() {
+        let diagnostic = synthetic_cross_invocation_diff_diagnostic(
+            DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+            300,
+            310,
+            305,
+        );
+        assert_eq!(
+            diagnostic.cross_invocation_diff_reason_class,
+            PersistedRebuildRowCrossInvocationDiffReasonClass::CrossInvocationDiffIsolatedFirstChildInvocationSlowerThanRepeat
+        );
+        assert!(diagnostic
+            .cross_invocation_diff_explanation
+            .contains("first fresh child invocation"));
+    }
+
+    #[test]
+    fn replay_checkpoint_cross_invocation_diff_first_full_child_delay_is_surfaced_stage1() {
+        let diagnostic = synthetic_cross_invocation_diff_diagnostic(
+            320,
+            DRIVER_COMPARE_SLOW_STAGE_MS_THRESHOLD + 50,
+            310,
+            305,
+        );
+        assert_eq!(
+            diagnostic.cross_invocation_diff_reason_class,
+            PersistedRebuildRowCrossInvocationDiffReasonClass::CrossInvocationDiffFullFirstChildInvocationSlowerThanRepeat
+        );
+        assert!(diagnostic
+            .cross_invocation_diff_explanation
+            .contains("first fresh child invocation"));
+    }
+
     #[test]
     fn replay_checkpoint_raw_probe_meta_plan_budget_exhaustion_keeps_row_existence_unproven_stage1(
     ) -> Result<()> {
@@ -43151,6 +43475,10 @@ mod tests {
             30_000,
         )?;
         let _ = DiscoveryService::probe_persisted_rebuild_row_step_meta_compare_read_only(
+            Path::new(&runtime_db_path),
+            30_000,
+        )?;
+        let _ = DiscoveryService::probe_persisted_rebuild_row_step_meta_isolated_shared_read_only(
             Path::new(&runtime_db_path),
             30_000,
         )?;

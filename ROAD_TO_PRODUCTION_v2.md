@@ -8334,6 +8334,41 @@ Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
+Acceptance update, cross-invocation diff probe (`2026-04-14`):
+
+1. Stage 3 now has one more bounded read-only diagnostic surface for the
+   persisted rebuild row timing instability:
+   - `discovery_replay_checkpoint_diagnose --probe-persisted-rebuild-row-cross-invocation-diff --runtime-db <path> --budget-ms <ms> --json`
+2. The accepted surface compares exact existing helper/surface behavior across
+   fresh child invocations instead of adding another approximate SQL path:
+   - isolated child uses a narrow wrapper over the accepted isolated shared
+     helper
+   - full child uses the accepted
+     `--probe-persisted-rebuild-row-step-meta-detail` shared branch surface
+3. The accepted machine-readable contract is explicit about what it proves:
+   - it emits first and repeat child timings for both isolated and full
+     surfaces
+   - it emits per-child fresh-process booleans
+   - it emits `cross_invocation_diff_mode_level_independent_invocations`
+   - it emits `cross_invocation_diff_invocation_order`
+4. Practical meaning:
+   - one live run can now tell operators whether the remaining instability is a
+     cross-invocation / fresh-process effect rather than an in-process helper
+     seam
+   - this closes the earlier proof gap where pair-local in-process probes could
+     not settle first-child vs repeat-child behavior across standalone
+     invocations
+5. Acceptance stayed on the bounded discovery-only surface:
+   - `cargo test -j 1 -p copybot-discovery --lib replay_checkpoint_cross_invocation_diff_`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_replay_checkpoint_diagnose`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_replay_checkpoint_diagnose`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_replay_checkpoint_diagnose.rs`
+6. Current production status remains unchanged:
+   - this is a tooling-only Stage 3 proof batch
+   - it does not change replay/export/fail-closed semantics
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+
 Acceptance update, shared-ordering diff contract downgrade (`2026-04-14`):
 
 1. Stage 3 now has one more bounded read-only diagnostic surface for the
