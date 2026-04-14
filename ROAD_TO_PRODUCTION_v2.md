@@ -8485,6 +8485,45 @@ Acceptance update, recent_raw catch-up status proof surface (`2026-04-14`):
    - it does not itself unblock Stage 3
    - the next operator step is to run the new catch-up command on the real host
 
+Acceptance update, recent_raw staged-lineage proof surface (`2026-04-14`):
+
+1. Stage 3 now has one bounded read-only operator surface for the staged-vs-
+   promoted lineage question:
+   - `discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> --json`
+2. The accepted surface proves lineage from current on-disk evidence instead of
+   leaving staged/frontier drift to inference:
+   - promoted manifest source_db_path, covered_since, covered_through, row_count
+   - staged manifest source_db_path, covered_since, covered_through, row_count
+   - current source journal outrun facts
+3. The accepted machine-readable contract is explicit:
+   - it emits whether staged points at the same source_db_path as promoted
+   - it emits lineage relations for covered_through, row_count, and covered_since
+   - it emits whether staged is monotonic or regressed relative to promoted
+   - it emits whether staged is closer to source than promoted
+4. Important semantic fix:
+   - `covered_since` now uses lineage semantics, not generic increasing-timestamp
+     semantics
+   - later staged `covered_since` than promoted counts as regression
+   - equal or earlier staged `covered_since` remains non-regressed
+5. Practical meaning:
+   - one operator run can now prove whether staged recent_raw is continuing the
+     promoted lineage, has regressed relative to it, or points at a different
+     source lineage entirely
+6. Acceptance stayed proof-only:
+   - no snapshot behavior changed
+   - no promotion behavior changed
+   - no replay/export/fail-closed semantics changed
+7. Acceptance stayed on the bounded discovery/runtime-export surface:
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+8. Current production status remains unchanged until a live operator run is
+   taken:
+   - this batch adds proof tooling only
+   - it does not itself repair staged recent_raw progress
+   - it does not itself unblock Stage 3
+
 Acceptance update, shared-ordering diff contract downgrade (`2026-04-14`):
 
 1. Stage 3 now has one more bounded read-only diagnostic surface for the

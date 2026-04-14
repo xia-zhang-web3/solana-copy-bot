@@ -2389,6 +2389,57 @@ pub struct RecentRawCatchUpDiagnostic {
     pub recent_raw_catch_up_indeterminate: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawStagedLineageReasonClass {
+    RecentRawStagedLineageMonotonicButIncomplete,
+    RecentRawStagedLineageRegressedRelativeToPromoted,
+    RecentRawStagedLineagePointsToDifferentSource,
+    RecentRawStagedLineageUnprovenDueToMissingEvidence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawLineageRelation {
+    Ahead,
+    Equal,
+    Behind,
+    DifferentSource,
+    Unproven,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentRawStagedLineageDiagnostic {
+    pub recent_raw_snapshot_dir: String,
+    pub recent_raw_staged_lineage_observed: bool,
+    pub recent_raw_staged_lineage_reason_class: RecentRawStagedLineageReasonClass,
+    pub recent_raw_staged_lineage_explanation: String,
+    pub recent_raw_promoted_source_db_path: Option<String>,
+    pub recent_raw_promoted_created_at: Option<DateTime<Utc>>,
+    pub recent_raw_promoted_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_promoted_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_promoted_row_count: Option<usize>,
+    pub recent_raw_promoted_last_batch_completed_at: Option<DateTime<Utc>>,
+    pub recent_raw_staged_source_db_path: Option<String>,
+    pub recent_raw_staged_created_at: Option<DateTime<Utc>>,
+    pub recent_raw_staged_covered_since: Option<DateTime<Utc>>,
+    pub recent_raw_staged_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_staged_row_count: Option<usize>,
+    pub recent_raw_staged_last_batch_completed_at: Option<DateTime<Utc>>,
+    pub recent_raw_source_covered_through: Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_source_row_count: Option<usize>,
+    pub recent_raw_source_outruns_staged: Option<bool>,
+    pub recent_raw_source_outruns_promoted: Option<bool>,
+    pub recent_raw_source_outruns_both: Option<bool>,
+    pub recent_raw_staged_same_source_db_as_promoted: Option<bool>,
+    pub recent_raw_staged_cursor_relation_to_promoted: RecentRawLineageRelation,
+    pub recent_raw_staged_row_count_relation_to_promoted: RecentRawLineageRelation,
+    pub recent_raw_staged_covered_since_relation_to_promoted: RecentRawLineageRelation,
+    pub recent_raw_staged_monotonic_relative_to_promoted: Option<bool>,
+    pub recent_raw_staged_regressed_relative_to_promoted: Option<bool>,
+    pub recent_raw_staged_closer_to_source_than_promoted: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct RecentRawPromotionSnapshotManifest {
     created_at: DateTime<Utc>,
@@ -3245,6 +3296,87 @@ impl DiscoveryService {
         Some(candidate? > reference?)
     }
 
+    fn recent_raw_lineage_relation_from_manifest_progress(
+        relation: Option<RecentRawManifestProgressRelation>,
+        same_source: Option<bool>,
+    ) -> RecentRawLineageRelation {
+        match same_source {
+            Some(false) => RecentRawLineageRelation::DifferentSource,
+            None => RecentRawLineageRelation::Unproven,
+            Some(true) => match relation {
+                Some(RecentRawManifestProgressRelation::CandidateAhead) => {
+                    RecentRawLineageRelation::Ahead
+                }
+                Some(RecentRawManifestProgressRelation::Equivalent) => {
+                    RecentRawLineageRelation::Equal
+                }
+                Some(RecentRawManifestProgressRelation::ReferenceAhead) => {
+                    RecentRawLineageRelation::Behind
+                }
+                None => RecentRawLineageRelation::Unproven,
+            },
+        }
+    }
+
+    fn recent_raw_lineage_relation_from_covered_since(
+        candidate: Option<&DateTime<Utc>>,
+        reference: Option<&DateTime<Utc>>,
+        same_source: Option<bool>,
+    ) -> RecentRawLineageRelation {
+        match same_source {
+            Some(false) => RecentRawLineageRelation::DifferentSource,
+            None => RecentRawLineageRelation::Unproven,
+            Some(true) => match (candidate, reference) {
+                (Some(candidate), Some(reference)) => match candidate.cmp(reference) {
+                    Ordering::Less => RecentRawLineageRelation::Ahead,
+                    Ordering::Equal => RecentRawLineageRelation::Equal,
+                    Ordering::Greater => RecentRawLineageRelation::Behind,
+                },
+                _ => RecentRawLineageRelation::Unproven,
+            },
+        }
+    }
+
+    fn recent_raw_lineage_relation_from_optional_row_count(
+        candidate: Option<usize>,
+        reference: Option<usize>,
+        same_source: Option<bool>,
+    ) -> RecentRawLineageRelation {
+        match same_source {
+            Some(false) => RecentRawLineageRelation::DifferentSource,
+            None => RecentRawLineageRelation::Unproven,
+            Some(true) => match (candidate, reference) {
+                (Some(candidate), Some(reference)) => match candidate.cmp(&reference) {
+                    Ordering::Greater => RecentRawLineageRelation::Ahead,
+                    Ordering::Equal => RecentRawLineageRelation::Equal,
+                    Ordering::Less => RecentRawLineageRelation::Behind,
+                },
+                _ => RecentRawLineageRelation::Unproven,
+            },
+        }
+    }
+
+    fn recent_raw_candidate_closer_to_source_than_reference(
+        relation: Option<RecentRawManifestProgressRelation>,
+        source_outruns_candidate: Option<bool>,
+        source_outruns_reference: Option<bool>,
+    ) -> Option<bool> {
+        if source_outruns_candidate == Some(false) && source_outruns_reference == Some(true) {
+            return Some(true);
+        }
+        if source_outruns_candidate == Some(true) && source_outruns_reference == Some(false) {
+            return Some(false);
+        }
+        match relation {
+            Some(RecentRawManifestProgressRelation::CandidateAhead) => Some(true),
+            Some(
+                RecentRawManifestProgressRelation::Equivalent
+                | RecentRawManifestProgressRelation::ReferenceAhead,
+            ) => Some(false),
+            None => None,
+        }
+    }
+
     fn classify_recent_raw_promotion_blocker(
         promoted: &RecentRawSurfaceRead,
         staged: &RecentRawSurfaceRead,
@@ -3716,6 +3848,189 @@ impl DiscoveryService {
             recent_raw_catch_up_progressing: progressing,
             recent_raw_catch_up_losing_to_source: losing_to_source,
             recent_raw_catch_up_indeterminate: indeterminate,
+        })
+    }
+
+    fn classify_recent_raw_staged_lineage(
+        state: &RecentRawDiagnosticState,
+        same_source_db_as_promoted: Option<bool>,
+        cursor_relation_to_promoted: RecentRawLineageRelation,
+        row_count_relation_to_promoted: RecentRawLineageRelation,
+        covered_since_relation_to_promoted: RecentRawLineageRelation,
+    ) -> (
+        RecentRawStagedLineageReasonClass,
+        bool,
+        String,
+    ) {
+        if state.promoted.manifest_error.is_some() || state.staged.manifest_error.is_some() {
+            return (
+                RecentRawStagedLineageReasonClass::RecentRawStagedLineageUnprovenDueToMissingEvidence,
+                false,
+                format!(
+                    "recent_raw staged lineage is unproven because one or more snapshot surfaces are partial or invalid (promoted_error={}, staged_error={})",
+                    state.promoted.manifest_error.as_deref().unwrap_or("null"),
+                    state.staged.manifest_error.as_deref().unwrap_or("null")
+                ),
+            );
+        }
+
+        if !state.promoted_exists || !state.staged_exists {
+            return (
+                RecentRawStagedLineageReasonClass::RecentRawStagedLineageUnprovenDueToMissingEvidence,
+                false,
+                format!(
+                    "recent_raw staged lineage is unproven because promoted_exists={} and staged_exists={}",
+                    state.promoted_exists, state.staged_exists
+                ),
+            );
+        }
+
+        match same_source_db_as_promoted {
+            Some(false) => {
+                return (
+                    RecentRawStagedLineageReasonClass::RecentRawStagedLineagePointsToDifferentSource,
+                    true,
+                    "recent_raw staged surface points at a different source_db_path than the currently promoted latest surface, so their lineages are not directly monotonic".to_string(),
+                )
+            }
+            None => {
+                return (
+                    RecentRawStagedLineageReasonClass::RecentRawStagedLineageUnprovenDueToMissingEvidence,
+                    false,
+                    "recent_raw staged lineage is unproven because the promoted and staged source_db_path values could not both be proven from current manifests".to_string(),
+                )
+            }
+            Some(true) => {}
+        }
+
+        let regressed = matches!(cursor_relation_to_promoted, RecentRawLineageRelation::Behind)
+            || matches!(row_count_relation_to_promoted, RecentRawLineageRelation::Behind)
+            || matches!(
+                covered_since_relation_to_promoted,
+                RecentRawLineageRelation::Behind
+            );
+        if regressed {
+            return (
+                RecentRawStagedLineageReasonClass::RecentRawStagedLineageRegressedRelativeToPromoted,
+                true,
+                "recent_raw staged surface points at the same source_db_path as promoted latest, but its current frontier is older by one or more monotonic dimensions (covered_since, covered_through, or row_count), so the staged lineage has regressed relative to promoted".to_string(),
+            );
+        }
+
+        (
+            RecentRawStagedLineageReasonClass::RecentRawStagedLineageMonotonicButIncomplete,
+            true,
+            "recent_raw staged surface points at the same source_db_path as promoted latest and does not regress on covered_since, covered_through, or row_count, so the staged lineage is monotonic even though it may still be incomplete against the current source".to_string(),
+        )
+    }
+
+    pub fn explain_recent_raw_staged_lineage_read_only(
+        state_root: &Path,
+    ) -> Result<RecentRawStagedLineageDiagnostic> {
+        let state = Self::load_recent_raw_diagnostic_state_read_only(state_root);
+        let promoted_manifest = state.promoted.manifest.as_ref();
+        let staged_manifest = state.staged.manifest.as_ref();
+        let same_source_db_as_promoted = match (staged_manifest, promoted_manifest) {
+            (Some(staged_manifest), Some(promoted_manifest)) => {
+                Some(staged_manifest.source_db_path == promoted_manifest.source_db_path)
+            }
+            _ => None,
+        };
+        let cursor_relation_to_promoted = Self::recent_raw_lineage_relation_from_manifest_progress(
+            state.staged_vs_promoted_relation,
+            same_source_db_as_promoted,
+        );
+        let row_count_relation_to_promoted = Self::recent_raw_lineage_relation_from_optional_row_count(
+            staged_manifest.map(|manifest| manifest.row_count),
+            promoted_manifest.map(|manifest| manifest.row_count),
+            same_source_db_as_promoted,
+        );
+        let covered_since_relation_to_promoted =
+            Self::recent_raw_lineage_relation_from_covered_since(
+                staged_manifest.and_then(|manifest| manifest.covered_since.as_ref()),
+                promoted_manifest.and_then(|manifest| manifest.covered_since.as_ref()),
+                same_source_db_as_promoted,
+            );
+        let staged_monotonic_relative_to_promoted = match same_source_db_as_promoted {
+            Some(true) => Some(
+                !matches!(cursor_relation_to_promoted, RecentRawLineageRelation::Behind)
+                    && !matches!(row_count_relation_to_promoted, RecentRawLineageRelation::Behind)
+                    && !matches!(
+                        covered_since_relation_to_promoted,
+                        RecentRawLineageRelation::Behind
+                    ),
+            ),
+            Some(false) | None => None,
+        };
+        let staged_regressed_relative_to_promoted =
+            staged_monotonic_relative_to_promoted.map(|monotonic| !monotonic);
+        let source_outruns_both = match (state.source_outruns_staged, state.source_outruns_promoted) {
+            (Some(staged), Some(promoted)) => Some(staged && promoted),
+            _ => None,
+        };
+        let staged_closer_to_source_than_promoted = if same_source_db_as_promoted == Some(true) {
+            Self::recent_raw_candidate_closer_to_source_than_reference(
+                state.staged_vs_promoted_relation,
+                state.source_outruns_staged,
+                state.source_outruns_promoted,
+            )
+        } else {
+            None
+        };
+        let (reason_class, observed, explanation) = Self::classify_recent_raw_staged_lineage(
+            &state,
+            same_source_db_as_promoted,
+            cursor_relation_to_promoted,
+            row_count_relation_to_promoted,
+            covered_since_relation_to_promoted,
+        );
+
+        Ok(RecentRawStagedLineageDiagnostic {
+            recent_raw_snapshot_dir: state.snapshot_dir.display().to_string(),
+            recent_raw_staged_lineage_observed: observed,
+            recent_raw_staged_lineage_reason_class: reason_class,
+            recent_raw_staged_lineage_explanation: explanation,
+            recent_raw_promoted_source_db_path: promoted_manifest
+                .map(|manifest| manifest.source_db_path.clone()),
+            recent_raw_promoted_created_at: promoted_manifest
+                .map(|manifest| manifest.created_at.clone()),
+            recent_raw_promoted_covered_since: promoted_manifest
+                .and_then(|manifest| manifest.covered_since.clone()),
+            recent_raw_promoted_covered_through: promoted_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.clone()),
+            recent_raw_promoted_row_count: promoted_manifest.map(|manifest| manifest.row_count),
+            recent_raw_promoted_last_batch_completed_at: promoted_manifest
+                .and_then(|manifest| manifest.last_batch_completed_at.clone()),
+            recent_raw_staged_source_db_path: staged_manifest
+                .map(|manifest| manifest.source_db_path.clone()),
+            recent_raw_staged_created_at: staged_manifest
+                .map(|manifest| manifest.created_at.clone()),
+            recent_raw_staged_covered_since: staged_manifest
+                .and_then(|manifest| manifest.covered_since.clone()),
+            recent_raw_staged_covered_through: staged_manifest
+                .and_then(|manifest| manifest.covered_through_cursor.clone()),
+            recent_raw_staged_row_count: staged_manifest.map(|manifest| manifest.row_count),
+            recent_raw_staged_last_batch_completed_at: staged_manifest
+                .and_then(|manifest| manifest.last_batch_completed_at.clone()),
+            recent_raw_source_covered_through: state
+                .source_state
+                .as_ref()
+                .and_then(|source| source.covered_through_cursor.clone()),
+            recent_raw_source_row_count: state.source_state.as_ref().map(|source| source.row_count),
+            recent_raw_source_outruns_staged: state.source_outruns_staged,
+            recent_raw_source_outruns_promoted: state.source_outruns_promoted,
+            recent_raw_source_outruns_both: source_outruns_both,
+            recent_raw_staged_same_source_db_as_promoted: same_source_db_as_promoted,
+            recent_raw_staged_cursor_relation_to_promoted: cursor_relation_to_promoted,
+            recent_raw_staged_row_count_relation_to_promoted: row_count_relation_to_promoted,
+            recent_raw_staged_covered_since_relation_to_promoted:
+                covered_since_relation_to_promoted,
+            recent_raw_staged_monotonic_relative_to_promoted:
+                staged_monotonic_relative_to_promoted,
+            recent_raw_staged_regressed_relative_to_promoted:
+                staged_regressed_relative_to_promoted,
+            recent_raw_staged_closer_to_source_than_promoted:
+                staged_closer_to_source_than_promoted,
         })
     }
 
@@ -45592,6 +45907,290 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn recent_raw_staged_lineage_monotonic_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-lineage-monotonic",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_lineage_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_lineage_reason_class,
+            RecentRawStagedLineageReasonClass::RecentRawStagedLineageMonotonicButIncomplete
+        );
+        assert_eq!(diagnostic.recent_raw_staged_same_source_db_as_promoted, Some(true));
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_relation_to_promoted,
+            RecentRawLineageRelation::Ahead
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_covered_since_relation_to_promoted,
+            RecentRawLineageRelation::Equal
+        );
+        assert_eq!(diagnostic.recent_raw_staged_monotonic_relative_to_promoted, Some(true));
+        assert_eq!(diagnostic.recent_raw_staged_regressed_relative_to_promoted, Some(false));
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_lineage_later_covered_since_is_regressed_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-lineage-later-covered-since",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface_with_source_path_and_covered_since(
+            &fixture.runtime_db_path,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_lineage_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_lineage_reason_class,
+            RecentRawStagedLineageReasonClass::RecentRawStagedLineageRegressedRelativeToPromoted
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_covered_since_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        );
+        assert_eq!(diagnostic.recent_raw_staged_monotonic_relative_to_promoted, Some(false));
+        assert_eq!(diagnostic.recent_raw_staged_regressed_relative_to_promoted, Some(true));
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_lineage_earlier_covered_since_is_monotonic_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-lineage-earlier-covered-since",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface_with_covered_since(
+            "latest.sqlite",
+            parse_ts("2026-04-14T07:56:00Z")?,
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_lineage_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_lineage_reason_class,
+            RecentRawStagedLineageReasonClass::RecentRawStagedLineageMonotonicButIncomplete
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_covered_since_relation_to_promoted,
+            RecentRawLineageRelation::Ahead
+        );
+        assert_eq!(diagnostic.recent_raw_staged_monotonic_relative_to_promoted, Some(true));
+        assert_eq!(diagnostic.recent_raw_staged_regressed_relative_to_promoted, Some(false));
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_lineage_regressed_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-lineage-regressed",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:10:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_lineage_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_lineage_reason_class,
+            RecentRawStagedLineageReasonClass::RecentRawStagedLineageRegressedRelativeToPromoted
+        );
+        assert_eq!(diagnostic.recent_raw_staged_same_source_db_as_promoted, Some(true));
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        );
+        assert_eq!(diagnostic.recent_raw_staged_regressed_relative_to_promoted, Some(true));
+        assert_eq!(diagnostic.recent_raw_staged_closer_to_source_than_promoted, Some(false));
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_lineage_different_source_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-lineage-different-source",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface_with_source_path(
+            &fixture.state_root.join("foreign-source.db"),
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_lineage_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_lineage_reason_class,
+            RecentRawStagedLineageReasonClass::RecentRawStagedLineagePointsToDifferentSource
+        );
+        assert_eq!(diagnostic.recent_raw_staged_same_source_db_as_promoted, Some(false));
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_relation_to_promoted,
+            RecentRawLineageRelation::DifferentSource
+        );
+        assert_eq!(diagnostic.recent_raw_staged_monotonic_relative_to_promoted, None);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_lineage_unproven_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-lineage-unproven",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_lineage_read_only(&fixture.state_root)?;
+
+        assert_eq!(
+            diagnostic.recent_raw_staged_lineage_reason_class,
+            RecentRawStagedLineageReasonClass::RecentRawStagedLineageUnprovenDueToMissingEvidence
+        );
+        assert!(!diagnostic.recent_raw_staged_lineage_observed);
+        assert_eq!(
+            diagnostic.recent_raw_staged_cursor_relation_to_promoted,
+            RecentRawLineageRelation::Unproven
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_lineage_includes_comparison_fields_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-lineage-fields",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:10:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_staged_lineage_read_only(&fixture.state_root)?;
+
+        assert!(diagnostic.recent_raw_promoted_source_db_path.is_some());
+        assert!(diagnostic.recent_raw_staged_source_db_path.is_some());
+        assert_eq!(diagnostic.recent_raw_source_outruns_both, Some(true));
+        assert_eq!(
+            diagnostic.recent_raw_staged_row_count_relation_to_promoted,
+            RecentRawLineageRelation::Behind
+        );
+        assert_eq!(
+            diagnostic.recent_raw_staged_covered_since_relation_to_promoted,
+            RecentRawLineageRelation::Equal
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_staged_lineage_explain_remains_read_only_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-staged-lineage-read-only",
+            SourceStateSeed::SourceAheadOfStaged,
+        )?;
+        fixture.write_promoted_surface(
+            "latest.sqlite",
+            1,
+            parse_ts("2026-04-14T07:55:00Z")?,
+            "sig-promoted",
+            parse_ts("2026-04-14T08:00:00Z")?,
+        )?;
+        fixture.write_staged_surface(
+            2,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-staged",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        let before = fixture.capture_bytes()?;
+
+        let _ = DiscoveryService::explain_recent_raw_staged_lineage_read_only(&fixture.state_root)?;
+
+        let after = fixture.capture_bytes()?;
+        assert_eq!(before, after);
+        Ok(())
+    }
+
     struct RecentRawPromotionFixture {
         _temp: tempfile::TempDir,
         state_root: PathBuf,
@@ -45615,11 +46214,32 @@ mod tests {
             signature: &str,
             created_at: DateTime<Utc>,
         ) -> Result<()> {
+            self.write_promoted_surface_with_covered_since(
+                snapshot_file_name,
+                parse_ts("2026-04-14T07:55:00Z")?,
+                row_count,
+                cursor_ts,
+                signature,
+                created_at,
+            )
+        }
+
+        fn write_promoted_surface_with_covered_since(
+            &self,
+            snapshot_file_name: &str,
+            covered_since: DateTime<Utc>,
+            row_count: usize,
+            cursor_ts: DateTime<Utc>,
+            signature: &str,
+            created_at: DateTime<Utc>,
+        ) -> Result<()> {
             let snapshot_path = self.recent_raw_dir.join(snapshot_file_name);
             let metadata_path = self.recent_raw_dir.join("latest.json");
-            self.write_surface(
+            self.write_surface_with_source_path_and_covered_since(
                 &snapshot_path,
                 &metadata_path,
+                &self.runtime_db_path,
+                covered_since,
                 row_count,
                 cursor_ts,
                 signature,
@@ -45634,15 +46254,9 @@ mod tests {
             signature: &str,
             created_at: DateTime<Utc>,
         ) -> Result<()> {
-            let snapshot_path = self
-                .recent_raw_dir
-                .join(RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME);
-            let metadata_path = self
-                .recent_raw_dir
-                .join(RECENT_RAW_STAGED_METADATA_FILE_NAME);
-            self.write_surface(
-                &snapshot_path,
-                &metadata_path,
+            self.write_staged_surface_with_source_path_and_covered_since(
+                &self.runtime_db_path,
+                parse_ts("2026-04-14T07:55:00Z")?,
                 row_count,
                 cursor_ts,
                 signature,
@@ -45650,10 +46264,57 @@ mod tests {
             )
         }
 
-        fn write_surface(
+        fn write_staged_surface_with_source_path(
+            &self,
+            source_db_path: &Path,
+            row_count: usize,
+            cursor_ts: DateTime<Utc>,
+            signature: &str,
+            created_at: DateTime<Utc>,
+        ) -> Result<()> {
+            self.write_staged_surface_with_source_path_and_covered_since(
+                source_db_path,
+                parse_ts("2026-04-14T07:55:00Z")?,
+                row_count,
+                cursor_ts,
+                signature,
+                created_at,
+            )
+        }
+
+        fn write_staged_surface_with_source_path_and_covered_since(
+            &self,
+            source_db_path: &Path,
+            covered_since: DateTime<Utc>,
+            row_count: usize,
+            cursor_ts: DateTime<Utc>,
+            signature: &str,
+            created_at: DateTime<Utc>,
+        ) -> Result<()> {
+            let snapshot_path = self
+                .recent_raw_dir
+                .join(RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME);
+            let metadata_path = self
+                .recent_raw_dir
+                .join(RECENT_RAW_STAGED_METADATA_FILE_NAME);
+            self.write_surface_with_source_path_and_covered_since(
+                &snapshot_path,
+                &metadata_path,
+                source_db_path,
+                covered_since,
+                row_count,
+                cursor_ts,
+                signature,
+                created_at,
+            )
+        }
+
+        fn write_surface_with_source_path_and_covered_since(
             &self,
             snapshot_path: &Path,
             metadata_path: &Path,
+            source_db_path: &Path,
+            covered_since: DateTime<Utc>,
             row_count: usize,
             cursor_ts: DateTime<Utc>,
             signature: &str,
@@ -45663,10 +46324,10 @@ mod tests {
                 .with_context(|| format!("failed writing {}", snapshot_path.display()))?;
             let manifest = RecentRawPromotionSnapshotManifest {
                 created_at,
-                source_db_path: self.runtime_db_path.display().to_string(),
+                source_db_path: source_db_path.display().to_string(),
                 snapshot_path: snapshot_path.display().to_string(),
                 row_count,
-                covered_since: Some(parse_ts("2026-04-14T07:55:00Z")?),
+                covered_since: Some(covered_since),
                 covered_through_cursor: Some(DiscoveryRuntimeCursor {
                     ts_utc: cursor_ts,
                     slot: cursor_ts.timestamp().max(0) as u64,
