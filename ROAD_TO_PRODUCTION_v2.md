@@ -90,6 +90,28 @@ Template hardening acceptance (`2026-04-15`):
   and CI guardrail. Any production host change still requires an explicit
   rollout decision.
 
+Publication-quality gate proof acceptance (`2026-04-15`):
+
+- `discovery_publication_quality_gate --config <path> --json` is now the
+  bounded read-only Stage 3 proof for the production publication-quality gate
+  contract.
+- The operator parses the supplied Copybot config and only returns
+  `publication_quality_gate_hardened` when all accepted gates are explicit and
+  satisfied:
+  - `require_open_positions_for_publication = true`
+  - `max_rug_ratio <= 0.60`
+  - `thin_market_min_volume_sol >= 3.0`
+  - `thin_market_min_unique_traders >= 10`
+  - `execution.enabled = false`
+  - `scoring_window_days = 5`
+- Missing or unparseable config evidence is `unproven`, not green, and missing
+  explicit fields do not pass through schema defaults.
+- Local verification against `configs/live.toml` returned
+  `publication_quality_gate_hardened` and
+  `ready_for_publication_quality_rollout=true`.
+- This is still proof-only. It does not change runtime discovery/scoring
+  behavior, does not enable execution, and does not deploy anything by itself.
+
 ## Incident Update (`2026-03-30`)
 
 The acute live `recent_raw` startup wedge has been removed, but the project is
