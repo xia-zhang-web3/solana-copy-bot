@@ -3,9 +3,6 @@ use crate::{
     DiscoveryPersistedRebuildRowDriverCompareDiagnostic,
     DiscoveryPersistedRebuildRowDriverCompareOptions,
     DiscoveryPersistedRebuildRowDriverCompareStage,
-    DiscoveryPersistedRebuildRowStepMetaIsolatedSharedDiagnostic,
-    DiscoveryPersistedRebuildRowStepMetaIsolatedSharedOptions,
-    DiscoveryPersistedRebuildRowStepMetaIsolatedSharedStage,
     DiscoveryPersistedRebuildRowSharedPathDiffDiagnostic,
     DiscoveryPersistedRebuildRowSharedPathDiffOptions,
     DiscoveryPersistedRebuildRowSharedPathDiffStage,
@@ -14,18 +11,23 @@ use crate::{
     DiscoveryPersistedRebuildRowSharedSequenceCompareStage,
     DiscoveryPersistedRebuildRowStepMetaCompareDiagnostic,
     DiscoveryPersistedRebuildRowStepMetaCompareOptions,
-    DiscoveryPersistedRebuildRowStepMetaCompareStage, DiscoveryPersistedRebuildStateMetaLiteRawRow,
-    DiscoveryPersistedRebuildStateMetaRow, DiscoveryPersistedRebuildStateRow,
-    DiscoveryRuntimeCursor, ObservedSwapBatchWriteMetrics, ObservedSwapsCoverageSnapshot,
-    RecentRawJournalReplaySummary, RecentRawJournalStateRow, RecentRawJournalWriteSummary,
-    SqliteBatchedDeleteSummary, SqliteStore, TokenMarketStats, TokenQualityCacheRow,
-    TokenQualityRpcRow, WalletActivityDayRow, WalletRecentActivityCountRow,
+    DiscoveryPersistedRebuildRowStepMetaCompareStage,
+    DiscoveryPersistedRebuildRowStepMetaIsolatedSharedDiagnostic,
+    DiscoveryPersistedRebuildRowStepMetaIsolatedSharedOptions,
+    DiscoveryPersistedRebuildRowStepMetaIsolatedSharedStage,
+    DiscoveryPersistedRebuildStateMetaLiteRawRow, DiscoveryPersistedRebuildStateMetaRow,
+    DiscoveryPersistedRebuildStateRow, DiscoveryRuntimeCursor, ObservedSwapBatchWriteMetrics,
+    ObservedSwapsCoverageSnapshot, RecentRawJournalReplaySummary, RecentRawJournalStateRow,
+    RecentRawJournalWriteSummary, SqliteBatchedDeleteSummary, SqliteStore, TokenMarketStats,
+    TokenQualityCacheRow, TokenQualityRpcRow, WalletActivityDayRow, WalletRecentActivityCountRow,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::{ExactSwapAmounts, SwapEvent};
 use reqwest::blocking::Client;
-use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
+use rusqlite::{
+    params, params_from_iter, types::Value as SqlValue, Connection, ErrorCode, OptionalExtension,
+};
 use serde_json::{json, Value};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -46,6 +48,7 @@ const OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_TABLE: &str =
     "temp_discovery_replay_candidate_wallets";
 const OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_META_TABLE: &str =
     "temp_discovery_replay_candidate_wallets_meta";
+const RECENT_RAW_JOURNAL_BULK_INSERT_CHUNK_ROWS: usize = 64;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ObservedSwapCursorPage {
@@ -297,6 +300,66 @@ fn ensure_recent_raw_journal_tables_on_conn(conn: &Connection) -> Result<()> {
         );",
     )
     .context("failed ensuring recent raw journal tables exist")
+}
+
+fn recent_raw_journal_bulk_insert_sql(row_count: usize) -> String {
+    let row_placeholders = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    let placeholders = std::iter::repeat_n(row_placeholders, row_count)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "INSERT OR IGNORE INTO observed_swaps(
+            signature,
+            wallet_id,
+            dex,
+            token_in,
+            token_out,
+            qty_in,
+            qty_out,
+            qty_in_raw,
+            qty_in_decimals,
+            qty_out_raw,
+            qty_out_decimals,
+            slot,
+            ts
+         ) VALUES {placeholders}"
+    )
+}
+
+fn push_recent_raw_journal_bulk_insert_values(values: &mut Vec<SqlValue>, swap: &SwapEvent) {
+    values.push(SqlValue::Text(swap.signature.clone()));
+    values.push(SqlValue::Text(swap.wallet.clone()));
+    values.push(SqlValue::Text(swap.dex.clone()));
+    values.push(SqlValue::Text(swap.token_in.clone()));
+    values.push(SqlValue::Text(swap.token_out.clone()));
+    values.push(SqlValue::Real(swap.amount_in));
+    values.push(SqlValue::Real(swap.amount_out));
+    values.push(
+        swap.exact_amounts
+            .as_ref()
+            .map(|value| SqlValue::Text(value.amount_in_raw.clone()))
+            .unwrap_or(SqlValue::Null),
+    );
+    values.push(
+        swap.exact_amounts
+            .as_ref()
+            .map(|value| SqlValue::Integer(i64::from(value.amount_in_decimals)))
+            .unwrap_or(SqlValue::Null),
+    );
+    values.push(
+        swap.exact_amounts
+            .as_ref()
+            .map(|value| SqlValue::Text(value.amount_out_raw.clone()))
+            .unwrap_or(SqlValue::Null),
+    );
+    values.push(
+        swap.exact_amounts
+            .as_ref()
+            .map(|value| SqlValue::Integer(i64::from(value.amount_out_decimals)))
+            .unwrap_or(SqlValue::Null),
+    );
+    values.push(SqlValue::Integer(swap.slot as i64));
+    values.push(SqlValue::Text(swap.ts_utc.to_rfc3339()));
 }
 
 fn recent_raw_journal_coverage_snapshot_on_conn(
@@ -616,6 +679,91 @@ impl SqliteStore {
         deadline: Instant,
     ) -> Result<(RecentRawJournalWriteSummary, bool)> {
         self.insert_recent_raw_journal_batch_internal(swaps, completed_at, Some(deadline))
+    }
+
+    pub fn insert_recent_raw_journal_batch_bulk_with_deadline(
+        &self,
+        swaps: &[SwapEvent],
+        completed_at: DateTime<Utc>,
+        deadline: Instant,
+    ) -> Result<(RecentRawJournalWriteSummary, bool)> {
+        self.insert_recent_raw_journal_batch_bulk_with_deadline_internal(
+            swaps,
+            completed_at,
+            deadline,
+            RECENT_RAW_JOURNAL_BULK_INSERT_CHUNK_ROWS,
+        )
+    }
+
+    fn insert_recent_raw_journal_batch_bulk_with_deadline_internal(
+        &self,
+        swaps: &[SwapEvent],
+        completed_at: DateTime<Utc>,
+        deadline: Instant,
+        chunk_rows: usize,
+    ) -> Result<(RecentRawJournalWriteSummary, bool)> {
+        self.ensure_recent_raw_journal_tables()?;
+        if swaps.is_empty() {
+            let state = self.recent_raw_journal_state_cached()?;
+            return Ok((recent_raw_journal_write_summary(&state, 0, 0), false));
+        }
+
+        let chunk_rows = chunk_rows
+            .max(1)
+            .min(RECENT_RAW_JOURNAL_BULK_INSERT_CHUNK_ROWS);
+        self.with_immediate_transaction_retry("recent raw journal bulk batch write", |conn| {
+            ensure_recent_raw_journal_tables_on_conn(conn)?;
+            let mut inserted_rows = 0usize;
+            let mut processed_rows = 0usize;
+            let mut time_budget_exhausted = false;
+            {
+                let _progress_guard = ProgressHandlerGuard::install(conn, deadline);
+                for chunk in swaps.chunks(chunk_rows) {
+                    if Instant::now() >= deadline {
+                        time_budget_exhausted = true;
+                        break;
+                    }
+
+                    let sql = recent_raw_journal_bulk_insert_sql(chunk.len());
+                    let mut values = Vec::with_capacity(chunk.len().saturating_mul(13));
+                    for swap in chunk {
+                        push_recent_raw_journal_bulk_insert_values(&mut values, swap);
+                    }
+                    let mut stmt = conn
+                        .prepare_cached(&sql)
+                        .context("failed to prepare recent raw journal bulk insert statement")?;
+                    let changed = match stmt.execute(params_from_iter(values)) {
+                        Ok(changed) => changed,
+                        Err(error) => {
+                            if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                                time_budget_exhausted = true;
+                                break;
+                            }
+                            return Err(error).context(
+                                "failed to bulk insert observed swaps into recent raw journal batch",
+                            );
+                        }
+                    };
+                    processed_rows = processed_rows.saturating_add(chunk.len());
+                    inserted_rows = inserted_rows.saturating_add(changed);
+                }
+            }
+
+            let mut state = recent_raw_journal_state_cached_query(conn)?;
+            advance_recent_raw_journal_state_for_batch(
+                &mut state,
+                &swaps[..processed_rows],
+                inserted_rows,
+                completed_at,
+            );
+            if processed_rows > 0 {
+                upsert_recent_raw_journal_state_on_conn(conn, &state)?;
+            }
+            Ok((
+                recent_raw_journal_write_summary(&state, processed_rows, inserted_rows),
+                time_budget_exhausted,
+            ))
+        })
     }
 
     fn insert_recent_raw_journal_batch_internal(
@@ -4515,18 +4663,19 @@ impl SqliteStore {
             let _ = tx.send(WorkerMessage::Entered(
                 DiscoveryPersistedRebuildRowStepMetaCompareStage::FreshConnectionQueryOnlyVariant,
             ));
-            let (query_only_store, query_only_facts) = match Self::open_probe_store_with_compare_facts(
-                &runtime_db_path,
-                Some(true),
-                None,
-                None,
-            ) {
-                Ok(value) => value,
-                Err(error) => {
-                    send_finished(Err(error));
-                    return;
-                }
-            };
+            let (query_only_store, query_only_facts) =
+                match Self::open_probe_store_with_compare_facts(
+                    &runtime_db_path,
+                    Some(true),
+                    None,
+                    None,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                };
             let query_only_variant = match Self::run_query_plus_next_variant_with_extracts(
                 &query_only_store,
                 options.test_force_fresh_connection_query_delay_ms,
@@ -4546,18 +4695,19 @@ impl SqliteStore {
             let _ = tx.send(WorkerMessage::Entered(
                 DiscoveryPersistedRebuildRowStepMetaCompareStage::FreshConnectionCacheTunedVariant,
             ));
-            let (cache_tuned_store, cache_tuned_facts) = match Self::open_probe_store_with_compare_facts(
-                &runtime_db_path,
-                None,
-                Some(-131_072),
-                None,
-            ) {
-                Ok(value) => value,
-                Err(error) => {
-                    send_finished(Err(error));
-                    return;
-                }
-            };
+            let (cache_tuned_store, cache_tuned_facts) =
+                match Self::open_probe_store_with_compare_facts(
+                    &runtime_db_path,
+                    None,
+                    Some(-131_072),
+                    None,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                };
             let cache_tuned_variant = match Self::run_query_plus_next_variant_with_extracts(
                 &cache_tuned_store,
                 options.test_force_fresh_connection_query_delay_ms,
@@ -4577,18 +4727,19 @@ impl SqliteStore {
             let _ = tx.send(WorkerMessage::Entered(
                 DiscoveryPersistedRebuildRowStepMetaCompareStage::FreshConnectionMmapTunedVariant,
             ));
-            let (mmap_tuned_store, mmap_tuned_facts) = match Self::open_probe_store_with_compare_facts(
-                &runtime_db_path,
-                None,
-                None,
-                Some(268_435_456),
-            ) {
-                Ok(value) => value,
-                Err(error) => {
-                    send_finished(Err(error));
-                    return;
-                }
-            };
+            let (mmap_tuned_store, mmap_tuned_facts) =
+                match Self::open_probe_store_with_compare_facts(
+                    &runtime_db_path,
+                    None,
+                    None,
+                    Some(268_435_456),
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        send_finished(Err(error));
+                        return;
+                    }
+                };
             let mmap_tuned_variant = match Self::run_query_plus_next_variant_with_extracts(
                 &mmap_tuned_store,
                 options.test_force_fresh_connection_query_delay_ms,
@@ -4608,44 +4759,42 @@ impl SqliteStore {
             let _ = tx.send(WorkerMessage::Finished(Ok(snapshot)));
         });
 
-        let apply_snapshot = |diagnostic: &mut DiscoveryPersistedRebuildRowStepMetaCompareDiagnostic,
-                              snapshot: ProgressSnapshot| {
-            diagnostic.baseline_connection_facts = snapshot.baseline_connection_facts;
-            diagnostic.shared_prepare_exists_elapsed_ms =
-                snapshot.shared_prepare_exists_elapsed_ms;
-            diagnostic.shared_step_exists_elapsed_ms = snapshot.shared_step_exists_elapsed_ms;
-            diagnostic.shared_prepare_meta_elapsed_ms =
-                snapshot.shared_prepare_meta_elapsed_ms;
-            diagnostic.shared_step_meta_elapsed_ms = snapshot.shared_step_meta_elapsed_ms;
-            diagnostic.shared_extract_phase_elapsed_ms =
-                snapshot.shared_extract_phase_elapsed_ms;
-            diagnostic.shared_extract_updated_at_elapsed_ms =
-                snapshot.shared_extract_updated_at_elapsed_ms;
-            diagnostic.shared_row_exists = snapshot.shared_row_exists;
-            diagnostic.shared_row_phase = snapshot.shared_row_phase;
-            diagnostic.shared_row_updated_at = snapshot.shared_row_updated_at;
-            diagnostic.fresh_prepare_meta_elapsed_ms = snapshot.fresh_prepare_meta_elapsed_ms;
-            diagnostic.fresh_step_meta_elapsed_ms = snapshot.fresh_step_meta_elapsed_ms;
-            diagnostic.fresh_extract_phase_elapsed_ms =
-                snapshot.fresh_extract_phase_elapsed_ms;
-            diagnostic.fresh_extract_updated_at_elapsed_ms =
-                snapshot.fresh_extract_updated_at_elapsed_ms;
-            diagnostic.fresh_row_exists = snapshot.fresh_row_exists;
-            diagnostic.fresh_row_phase = snapshot.fresh_row_phase;
-            diagnostic.fresh_row_updated_at = snapshot.fresh_row_updated_at;
-            diagnostic.query_plus_next_variant_elapsed_ms =
-                snapshot.query_plus_next_variant_elapsed_ms;
-            diagnostic.query_row_variant_elapsed_ms = snapshot.query_row_variant_elapsed_ms;
-            diagnostic.query_only_on_elapsed_ms = snapshot.query_only_on_elapsed_ms;
-            diagnostic.query_only_effective_query_only =
-                snapshot.query_only_effective_query_only;
-            diagnostic.cache_tuned_elapsed_ms = snapshot.cache_tuned_elapsed_ms;
-            diagnostic.cache_tuned_effective_cache_size =
-                snapshot.cache_tuned_effective_cache_size;
-            diagnostic.mmap_tuned_elapsed_ms = snapshot.mmap_tuned_elapsed_ms;
-            diagnostic.mmap_tuned_effective_mmap_size =
-                snapshot.mmap_tuned_effective_mmap_size;
-        };
+        let apply_snapshot =
+            |diagnostic: &mut DiscoveryPersistedRebuildRowStepMetaCompareDiagnostic,
+             snapshot: ProgressSnapshot| {
+                diagnostic.baseline_connection_facts = snapshot.baseline_connection_facts;
+                diagnostic.shared_prepare_exists_elapsed_ms =
+                    snapshot.shared_prepare_exists_elapsed_ms;
+                diagnostic.shared_step_exists_elapsed_ms = snapshot.shared_step_exists_elapsed_ms;
+                diagnostic.shared_prepare_meta_elapsed_ms = snapshot.shared_prepare_meta_elapsed_ms;
+                diagnostic.shared_step_meta_elapsed_ms = snapshot.shared_step_meta_elapsed_ms;
+                diagnostic.shared_extract_phase_elapsed_ms =
+                    snapshot.shared_extract_phase_elapsed_ms;
+                diagnostic.shared_extract_updated_at_elapsed_ms =
+                    snapshot.shared_extract_updated_at_elapsed_ms;
+                diagnostic.shared_row_exists = snapshot.shared_row_exists;
+                diagnostic.shared_row_phase = snapshot.shared_row_phase;
+                diagnostic.shared_row_updated_at = snapshot.shared_row_updated_at;
+                diagnostic.fresh_prepare_meta_elapsed_ms = snapshot.fresh_prepare_meta_elapsed_ms;
+                diagnostic.fresh_step_meta_elapsed_ms = snapshot.fresh_step_meta_elapsed_ms;
+                diagnostic.fresh_extract_phase_elapsed_ms = snapshot.fresh_extract_phase_elapsed_ms;
+                diagnostic.fresh_extract_updated_at_elapsed_ms =
+                    snapshot.fresh_extract_updated_at_elapsed_ms;
+                diagnostic.fresh_row_exists = snapshot.fresh_row_exists;
+                diagnostic.fresh_row_phase = snapshot.fresh_row_phase;
+                diagnostic.fresh_row_updated_at = snapshot.fresh_row_updated_at;
+                diagnostic.query_plus_next_variant_elapsed_ms =
+                    snapshot.query_plus_next_variant_elapsed_ms;
+                diagnostic.query_row_variant_elapsed_ms = snapshot.query_row_variant_elapsed_ms;
+                diagnostic.query_only_on_elapsed_ms = snapshot.query_only_on_elapsed_ms;
+                diagnostic.query_only_effective_query_only =
+                    snapshot.query_only_effective_query_only;
+                diagnostic.cache_tuned_elapsed_ms = snapshot.cache_tuned_elapsed_ms;
+                diagnostic.cache_tuned_effective_cache_size =
+                    snapshot.cache_tuned_effective_cache_size;
+                diagnostic.mmap_tuned_elapsed_ms = snapshot.mmap_tuned_elapsed_ms;
+                diagnostic.mmap_tuned_effective_mmap_size = snapshot.mmap_tuned_effective_mmap_size;
+            };
 
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -4808,10 +4957,8 @@ impl SqliteStore {
                 step_meta_elapsed_ms,
                 extract_phase_elapsed_ms: 0,
                 extract_updated_at_elapsed_ms: 0,
-                total_elapsed_ms: total_started_at
-                    .elapsed()
-                    .as_millis()
-                    .min(u64::MAX as u128) as u64,
+                total_elapsed_ms: total_started_at.elapsed().as_millis().min(u64::MAX as u128)
+                    as u64,
                 row_exists: false,
                 row_phase: None,
                 row_updated_at: None,
@@ -4844,8 +4991,7 @@ impl SqliteStore {
             step_meta_elapsed_ms,
             extract_phase_elapsed_ms,
             extract_updated_at_elapsed_ms,
-            total_elapsed_ms: total_started_at.elapsed().as_millis().min(u64::MAX as u128)
-                as u64,
+            total_elapsed_ms: total_started_at.elapsed().as_millis().min(u64::MAX as u128) as u64,
             row_exists: true,
             row_phase: Some(phase),
             row_updated_at: Some(updated_at),
@@ -5215,8 +5361,7 @@ impl SqliteStore {
             snapshot.step_meta_detail_row_exists = Some(old_shared.query_result.row_exists);
             snapshot.step_meta_detail_loads_connection_facts_before_meta_query =
                 old_shared.loads_connection_facts_before_meta_query;
-            snapshot.step_meta_detail_uses_query_plus_next =
-                old_shared.uses_query_plus_next;
+            snapshot.step_meta_detail_uses_query_plus_next = old_shared.uses_query_plus_next;
             snapshot.step_meta_detail_finalizes_exists_before_prepare_meta =
                 old_shared.finalizes_exists_before_prepare_meta;
             snapshot.step_meta_detail_extracts_phase_and_updated_at_after_step =
@@ -5261,8 +5406,7 @@ impl SqliteStore {
             snapshot.shared_sequence_row_exists = Some(new_shared.query_result.row_exists);
             snapshot.shared_sequence_loads_connection_facts_before_meta_query =
                 new_shared.loads_connection_facts_before_meta_query;
-            snapshot.shared_sequence_uses_query_plus_next =
-                new_shared.uses_query_plus_next;
+            snapshot.shared_sequence_uses_query_plus_next = new_shared.uses_query_plus_next;
             snapshot.shared_sequence_finalizes_exists_before_prepare_meta =
                 new_shared.finalizes_exists_before_prepare_meta;
             snapshot.shared_sequence_extracts_phase_and_updated_at_after_step =
@@ -5304,8 +5448,7 @@ impl SqliteStore {
                         snapshot.step_meta_detail_extract_phase_elapsed_ms;
                     diagnostic.step_meta_detail_extract_updated_at_elapsed_ms =
                         snapshot.step_meta_detail_extract_updated_at_elapsed_ms;
-                    diagnostic.step_meta_detail_row_exists =
-                        snapshot.step_meta_detail_row_exists;
+                    diagnostic.step_meta_detail_row_exists = snapshot.step_meta_detail_row_exists;
                     diagnostic.shared_sequence_prepare_exists_elapsed_ms =
                         snapshot.shared_sequence_prepare_exists_elapsed_ms;
                     diagnostic.shared_sequence_step_exists_elapsed_ms =
@@ -7507,6 +7650,108 @@ mod tests {
         assert!(
             time_budget_exhausted,
             "expired deadline must return a bounded outcome instead of hanging in sqlite write path"
+        );
+        assert_eq!(summary.batch_rows, 0);
+
+        let cached_state = store.recent_raw_journal_state_cached()?;
+        let scanned_state = store.recent_raw_journal_state()?;
+        assert_eq!(cached_state, scanned_state);
+        assert_eq!(summary.row_count, scanned_state.row_count);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_bulk_deadline_write_keeps_cached_state_exact_and_ignores_duplicates(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("recent-raw-bulk-cached-state.db");
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let now = DateTime::parse_from_rfc3339("2026-03-29T12:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let existing = swap(
+            "sig-recent-raw-bulk-existing",
+            "wallet-bulk",
+            now,
+            SOL_MINT,
+            "TokenRecentRawBulkExisting111111111111111111",
+            1_000,
+        );
+        store.insert_recent_raw_journal_batch(std::slice::from_ref(&existing), now)?;
+
+        let mut swaps = vec![existing];
+        for idx in 0..130 {
+            swaps.push(swap(
+                &format!("sig-recent-raw-bulk-{idx:04}"),
+                "wallet-bulk",
+                now + Duration::seconds(idx as i64 + 1),
+                SOL_MINT,
+                "TokenRecentRawBulk11111111111111111111111",
+                1_001 + idx as u64,
+            ));
+        }
+
+        let (summary, time_budget_exhausted) = store
+            .insert_recent_raw_journal_batch_bulk_with_deadline_internal(
+                &swaps,
+                now,
+                Instant::now() + StdDuration::from_secs(5),
+                16,
+            )?;
+        assert!(!time_budget_exhausted);
+        assert_eq!(summary.batch_rows, swaps.len());
+        assert_eq!(summary.inserted_rows, swaps.len() - 1);
+
+        let cached_state = store.recent_raw_journal_state_cached()?;
+        let scanned_state = store.recent_raw_journal_state()?;
+        assert_eq!(cached_state, scanned_state);
+        assert_eq!(summary.row_count, scanned_state.row_count);
+        assert_eq!(
+            summary.covered_through_cursor,
+            scanned_state.covered_through_cursor
+        );
+        assert_eq!(scanned_state.row_count, 131);
+        assert_eq!(
+            scanned_state
+                .covered_through_cursor
+                .as_ref()
+                .map(|cursor| cursor.signature.as_str()),
+            Some("sig-recent-raw-bulk-0129")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_bulk_deadline_write_returns_bounded_on_expired_deadline() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("recent-raw-bulk-expired-deadline.db");
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let now = DateTime::parse_from_rfc3339("2026-03-29T12:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let swaps = (0..512)
+            .map(|idx| {
+                swap(
+                    &format!("sig-recent-raw-bulk-deadline-{idx:04}"),
+                    "wallet-bulk-deadline",
+                    now + Duration::seconds(idx as i64),
+                    SOL_MINT,
+                    "TokenRecentRawBulkDeadline111111111111111",
+                    10_000 + idx as u64,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let (summary, time_budget_exhausted) = store
+            .insert_recent_raw_journal_batch_bulk_with_deadline_internal(
+                &swaps,
+                now,
+                Instant::now(),
+                16,
+            )?;
+        assert!(
+            time_budget_exhausted,
+            "expired deadline must return a bounded outcome instead of hanging in optimized recent_raw write path"
         );
         assert_eq!(summary.batch_rows, 0);
 

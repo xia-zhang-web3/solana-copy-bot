@@ -12402,3 +12402,46 @@ Live validation note, Stage 3 recent-raw staged-write throughput hardening (`202
    - `copybot-discovery-recent-raw-snapshot.timer=active`
    - `copybot-discovery-runtime-export.timer=active`
    - server HEAD is `6b83030`
+
+Acceptance update, Stage 3 recent-raw staged bulk-insert write path (`2026-04-15`):
+
+1. The scheduled `discovery_recent_raw_snapshot` staged replacement write path
+   now uses a bounded bulk insert helper for recent-raw staged rows:
+   - `SqliteStore::insert_recent_raw_journal_batch_bulk_with_deadline`
+   - the snapshot resume path calls that helper only for the staged recent-raw
+     journal write
+2. The optimization is deliberately narrow:
+   - it preserves `INSERT OR IGNORE`
+   - it still writes inside the same immediate transaction boundary
+   - it chunks at `64` rows per SQLite insert statement
+   - a `65_536` row staged write batch therefore drops from `65_536` statement
+     executions to about `1_024`
+3. Deadline and staged-only semantics remain unchanged:
+   - the deadline is checked before each chunk
+   - SQLite execution remains guarded by the existing progress handler
+   - `SQLITE_INTERRUPT` still returns `time_budget_exhausted=true`
+   - cached `recent_raw_journal_state` advances only over processed chunks and
+     inserted rows
+   - deferred partial progress remains staged-only and does not publish
+     `latest.sqlite` or `latest.json`
+4. Regression coverage now includes:
+   - bulk write preserves cached-state consistency against a full scan
+   - duplicate rows are still ignored under `INSERT OR IGNORE`
+   - expired deadlines return a bounded `time_budget_exhausted` result instead
+     of hanging in the optimized write path
+   - existing snapshot tests continue to cover deferred staged progress
+     preservation and no partial promotion
+5. Acceptance checks:
+   - `cargo test -j 1 -p copybot-storage --lib recent_raw_journal`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_replacement_convergence`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+   - `cargo check -j 1 -p copybot-storage`
+   - `git diff --check -- crates/discovery/src/bin/discovery_recent_raw_snapshot.rs crates/storage/src/market_data.rs`
+6. Production implication:
+   - roll out by rebuilding only `discovery_recent_raw_snapshot`
+   - do not restart the main `solana-copy-bot.service`
+   - after rollout, run one bounded snapshot attempt and compare
+     `staged_write_rows_per_second`, `staged_write_batch_count`,
+     `staged_write_batch_rows`, and replacement convergence against the
+     previous post-build baseline

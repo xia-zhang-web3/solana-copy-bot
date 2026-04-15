@@ -2399,7 +2399,7 @@ fn resume_staged_snapshot_with_policy(
         progress.terminal_phase = Some(StagedSnapshotTerminalPhase::StagedWrite);
         let staged_write_started = Instant::now();
         let (write_summary, write_budget_exhausted) = match staged_store
-            .insert_recent_raw_journal_batch_with_deadline(&batch, now, deadline)
+            .insert_recent_raw_journal_batch_bulk_with_deadline(&batch, now, deadline)
         {
             Ok(result) => result,
             Err(error) => {
