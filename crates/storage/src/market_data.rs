@@ -50,7 +50,8 @@ const OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_TABLE: &str =
     "temp_discovery_replay_candidate_wallets";
 const OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_META_TABLE: &str =
     "temp_discovery_replay_candidate_wallets_meta";
-const RECENT_RAW_JOURNAL_BULK_INSERT_CHUNK_ROWS: usize = 64;
+const RECENT_RAW_JOURNAL_BULK_INSERT_PARAMS_PER_ROW: usize = 13;
+const RECENT_RAW_JOURNAL_BULK_INSERT_HARD_CAP_ROWS: usize = 512;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ObservedSwapCursorPage {
@@ -380,6 +381,30 @@ fn recent_raw_journal_bulk_insert_sql(row_count: usize) -> String {
             ts
          ) VALUES {placeholders}"
     )
+}
+
+fn recent_raw_journal_effective_bulk_insert_chunk_rows(
+    requested_chunk_rows: Option<usize>,
+    sqlite_variable_limit: usize,
+) -> usize {
+    let requested_or_default =
+        requested_chunk_rows.unwrap_or(RECENT_RAW_JOURNAL_BULK_INSERT_HARD_CAP_ROWS);
+    let sqlite_limit_rows = sqlite_variable_limit / RECENT_RAW_JOURNAL_BULK_INSERT_PARAMS_PER_ROW;
+    requested_or_default
+        .min(RECENT_RAW_JOURNAL_BULK_INSERT_HARD_CAP_ROWS)
+        .min(sqlite_limit_rows)
+        .max(1)
+}
+
+fn recent_raw_journal_sqlite_variable_limit(conn: &Connection) -> usize {
+    unsafe {
+        rusqlite::ffi::sqlite3_limit(
+            conn.handle(),
+            rusqlite::ffi::SQLITE_LIMIT_VARIABLE_NUMBER,
+            -1,
+        )
+    }
+    .max(0) as usize
 }
 
 fn push_recent_raw_journal_bulk_insert_values(values: &mut Vec<SqlValue>, swap: &SwapEvent) {
@@ -763,7 +788,7 @@ impl SqliteStore {
             swaps,
             completed_at,
             deadline,
-            RECENT_RAW_JOURNAL_BULK_INSERT_CHUNK_ROWS,
+            None,
         )
     }
 
@@ -772,7 +797,7 @@ impl SqliteStore {
         swaps: &[SwapEvent],
         completed_at: DateTime<Utc>,
         deadline: Instant,
-        chunk_rows: usize,
+        requested_chunk_rows: Option<usize>,
     ) -> Result<(RecentRawJournalWriteSummary, bool)> {
         self.ensure_recent_raw_journal_tables()?;
         if swaps.is_empty() {
@@ -780,13 +805,15 @@ impl SqliteStore {
             return Ok((recent_raw_journal_write_summary(&state, 0, 0), false));
         }
 
-        let chunk_rows = chunk_rows
-            .max(1)
-            .min(RECENT_RAW_JOURNAL_BULK_INSERT_CHUNK_ROWS);
         let write_result = self.with_immediate_transaction_retry(
             "recent raw journal bulk batch write",
             |conn| {
                 ensure_recent_raw_journal_tables_on_conn(conn)?;
+                let sqlite_variable_limit = recent_raw_journal_sqlite_variable_limit(conn);
+                let chunk_rows = recent_raw_journal_effective_bulk_insert_chunk_rows(
+                    requested_chunk_rows,
+                    sqlite_variable_limit,
+                );
                 let mut inserted_rows = 0usize;
                 let mut processed_rows = 0usize;
                 let mut time_budget_exhausted = false;
@@ -797,8 +824,20 @@ impl SqliteStore {
                         break;
                     }
 
+                    let bind_count =
+                        chunk.len() * RECENT_RAW_JOURNAL_BULK_INSERT_PARAMS_PER_ROW;
+                    if bind_count > sqlite_variable_limit {
+                        bail!(
+                            "recent raw journal bulk insert chunk would exceed SQLite variable limit: bind_count={bind_count} sqlite_variable_limit={sqlite_variable_limit}"
+                        );
+                    }
+
                     let sql = recent_raw_journal_bulk_insert_sql(chunk.len());
-                    let mut values = Vec::with_capacity(chunk.len().saturating_mul(13));
+                    let mut values = Vec::with_capacity(
+                        chunk
+                            .len()
+                            .saturating_mul(RECENT_RAW_JOURNAL_BULK_INSERT_PARAMS_PER_ROW),
+                    );
                     for swap in chunk {
                         push_recent_raw_journal_bulk_insert_values(&mut values, swap);
                     }
@@ -7679,6 +7718,42 @@ mod tests {
     }
 
     #[test]
+    fn recent_raw_journal_effective_bulk_insert_chunk_rows_honors_sqlite_variable_limit() {
+        assert_eq!(
+            recent_raw_journal_effective_bulk_insert_chunk_rows(None, 999),
+            76
+        );
+        assert_eq!(
+            recent_raw_journal_effective_bulk_insert_chunk_rows(Some(512), 999),
+            76
+        );
+    }
+
+    #[test]
+    fn recent_raw_journal_effective_bulk_insert_chunk_rows_uses_hard_cap_for_high_limit() {
+        assert_eq!(
+            recent_raw_journal_effective_bulk_insert_chunk_rows(None, 32_766),
+            RECENT_RAW_JOURNAL_BULK_INSERT_HARD_CAP_ROWS
+        );
+        assert_eq!(
+            recent_raw_journal_effective_bulk_insert_chunk_rows(Some(4096), 32_766),
+            RECENT_RAW_JOURNAL_BULK_INSERT_HARD_CAP_ROWS
+        );
+    }
+
+    #[test]
+    fn recent_raw_journal_effective_bulk_insert_chunk_rows_preserves_forced_small_test_chunk() {
+        assert_eq!(
+            recent_raw_journal_effective_bulk_insert_chunk_rows(Some(16), 32_766),
+            16
+        );
+        assert_eq!(
+            recent_raw_journal_effective_bulk_insert_chunk_rows(Some(0), 32_766),
+            1
+        );
+    }
+
+    #[test]
     fn recent_raw_journal_batch_write_keeps_cached_state_exact() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("recent-raw-cached-state.db");
@@ -7806,7 +7881,7 @@ mod tests {
                 &swaps,
                 now,
                 Instant::now() + StdDuration::from_secs(5),
-                16,
+                Some(16),
             )?;
         assert!(!time_budget_exhausted);
         assert_eq!(summary.batch_rows, swaps.len());
@@ -7828,6 +7903,57 @@ mod tests {
                 .map(|cursor| cursor.signature.as_str()),
             Some("sig-recent-raw-bulk-0129")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_bulk_default_path_uses_adaptive_effective_chunk_size() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("recent-raw-bulk-adaptive-default.db");
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let now = DateTime::parse_from_rfc3339("2026-03-29T12:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let expected_chunk_rows = recent_raw_journal_effective_bulk_insert_chunk_rows(
+            None,
+            recent_raw_journal_sqlite_variable_limit(&store.conn),
+        );
+        assert!(
+            expected_chunk_rows > 64,
+            "test SQLite variable limit should permit exercising a chunk larger than the old 64-row ceiling; got {expected_chunk_rows}"
+        );
+        let swaps = (0..(expected_chunk_rows + 8))
+            .map(|idx| {
+                swap(
+                    &format!("sig-recent-raw-bulk-adaptive-{idx:04}"),
+                    "wallet-bulk-adaptive",
+                    now + Duration::seconds(idx as i64),
+                    SOL_MINT,
+                    "TokenRecentRawBulkAdaptive111111111111",
+                    20_000 + idx as u64,
+                )
+            })
+            .collect::<Vec<_>>();
+        let _guard = super::install_recent_raw_bulk_write_budget_hook(
+            move |processed_rows, inserted_rows| {
+                processed_rows >= expected_chunk_rows && inserted_rows >= expected_chunk_rows
+            },
+        );
+
+        let (summary, time_budget_exhausted) = store
+            .insert_recent_raw_journal_batch_bulk_with_deadline(
+                &swaps,
+                now,
+                Instant::now() + StdDuration::from_secs(5),
+            )?;
+
+        assert!(time_budget_exhausted);
+        assert_eq!(summary.batch_rows, expected_chunk_rows);
+        assert_eq!(summary.inserted_rows, expected_chunk_rows);
+        let cached_state = store.recent_raw_journal_state_cached()?;
+        let scanned_state = store.recent_raw_journal_state()?;
+        assert_eq!(cached_state, scanned_state);
+        assert_eq!(summary.row_count, scanned_state.row_count);
         Ok(())
     }
 
@@ -7862,7 +7988,7 @@ mod tests {
                 &swaps,
                 now,
                 Instant::now() + StdDuration::from_secs(5),
-                16,
+                Some(16),
             )?;
         assert!(time_budget_exhausted);
         assert_eq!(summary.batch_rows, 16);
@@ -7909,7 +8035,7 @@ mod tests {
                 &swaps,
                 now,
                 Instant::now(),
-                16,
+                Some(16),
             )?;
         assert!(
             time_budget_exhausted,
@@ -7921,6 +8047,57 @@ mod tests {
         let scanned_state = store.recent_raw_journal_state()?;
         assert_eq!(cached_state, scanned_state);
         assert_eq!(summary.row_count, scanned_state.row_count);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_bulk_deadline_write_preserves_generic_sqlite_errors_as_hard_failures(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("recent-raw-bulk-hard-failure.db");
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        store.ensure_recent_raw_journal_tables()?;
+        store.conn.execute_batch(
+            "CREATE TRIGGER recent_raw_bulk_hard_failure
+             BEFORE INSERT ON observed_swaps
+             BEGIN
+                 SELECT RAISE(FAIL, 'synthetic non-timeout recent_raw bulk failure');
+             END;",
+        )?;
+        let now = DateTime::parse_from_rfc3339("2026-03-29T12:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let swaps = vec![swap(
+            "sig-recent-raw-bulk-hard-failure",
+            "wallet-bulk-hard-failure",
+            now,
+            SOL_MINT,
+            "TokenRecentRawBulkHardFailure1111111111",
+            30_000,
+        )];
+
+        let error = store
+            .insert_recent_raw_journal_batch_bulk_with_deadline_internal(
+                &swaps,
+                now,
+                Instant::now() + StdDuration::from_secs(5),
+                Some(16),
+            )
+            .expect_err("non-timeout sqlite errors must remain hard failures");
+
+        let error = error
+            .chain()
+            .map(|cause| cause.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            error.contains("failed to bulk insert observed swaps into recent raw journal batch"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.contains("synthetic non-timeout recent_raw bulk failure"),
+            "unexpected error: {error}"
+        );
         Ok(())
     }
 

@@ -13415,3 +13415,53 @@ Live validation note:
      incomplete against current source
    - continue watching for `state=written`, `archive_promoted=true`, and a
      newer promoted `latest.sqlite` frontier
+
+### Stage 3 recent-raw adaptive bulk-insert statement chunking (`2026-04-15`)
+
+Accepted repository change:
+
+1. The staged recent-raw bulk write path no longer uses the fixed 64-row
+   multi-row INSERT statement ceiling.
+2. The storage helper now derives the effective statement chunk size from the
+   active SQLite connection:
+   - `params_per_row = 13`
+   - hard cap = `512` rows per statement
+   - effective rows = `min(requested_or_default, 512, SQLITE_LIMIT_VARIABLE_NUMBER / 13).max(1)`
+3. A runtime bind-count guard refuses to execute a generated INSERT if it would
+   exceed the active SQLite variable limit.
+4. The change preserves:
+   - `INSERT OR IGNORE`
+   - immediate transaction semantics
+   - deadline / progress-handler interruption handling
+   - deferred partial staged progress
+   - promotion eligibility
+   - latest/archive retention
+5. No runtime-export diagnostics, scoring/fail-closed behavior, config, server
+   template, or Stage 4 wrapper code changed.
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-storage --lib recent_raw_journal` passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+   passed.
+3. `cargo test -j 1 -p copybot-discovery --lib recent_raw_replacement_convergence`
+   passed.
+4. `cargo check -j 1 -p copybot-storage` passed with existing
+   `backfill_discovery_scoring` warnings.
+5. `cargo check -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+   passed.
+6. `git diff --check -- crates/storage/src/market_data.rs crates/storage/src/lib.rs crates/discovery/src/bin/discovery_recent_raw_snapshot.rs`
+   passed.
+
+Rollout requirement:
+
+1. This affects the live scheduled recent-raw snapshot job and should be
+   deployed by rebuilding the needed binary before judging live throughput.
+2. Do not restart `solana-copy-bot.service`.
+3. Post-rollout verification should compare the next scheduled/manual attempt
+   against the previous live bottleneck:
+   - old live shape was `staged_write_batch_rows=65536`,
+     `staged_write_batch_count=2`, and roughly `558 rows/sec`
+   - expected safe outcomes remain `state=deferred` with forward staged
+     progress or `state=written` with `archive_promoted=true`
+   - any `state=hard_failure` in staged write remains a blocker
