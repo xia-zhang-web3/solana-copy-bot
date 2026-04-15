@@ -12038,6 +12038,53 @@ Acceptance update, package-clerestory-certificate-latest handoff surface (`2026-
      incident remains open
    - this batch does not authorize or perform production activation
 
+Acceptance update, package latest-chain closure surface (`2026-04-15`):
+
+1. Stage 4 now has one bounded read-only closure surface over the accepted
+   latest-chain ladder:
+   - `copybot_tiny_live_activation_package_latest_chain_closure`
+2. The operator surface is deliberately small:
+   - `--plan-latest-chain-closure --root <path> --json`
+   - `--verify-latest-chain-closure --root <path> [--session-dir <path>] --json`
+3. The closure surface does not invent another chain resolver:
+   - plan mode invokes only
+     `copybot_tiny_live_activation_package_clerestory_certificate_latest --plan-latest-clerestory-certificate --root <path> --json`
+   - verify mode invokes only
+     `copybot_tiny_live_activation_package_clerestory_certificate_latest --verify-latest-clerestory-certificate --session-dir <path> --json`
+   - verify mode defaults the top wrapper session to
+     `<root>/tiny_live_activation_package_clerestory_certificate_latest.session`
+4. The closed verdict is fail-closed on complete top-wrapper evidence:
+   - top wrapper mode must match the requested closure mode
+   - top wrapper verdict must be the expected green latest-clerestory verdict
+   - `latest_top_step_name` must equal `clerestory_certificate`
+   - `latest_top_session_dir` must be present
+   - the top wrapper session dir must be present, with fallback allowed only
+     for verify mode
+   - `downstream_decision_packet_session_dir` must be present and is preserved
+     exactly from the top wrapper output
+   - `activation_authorized` must be present and false
+5. The surface explicitly remains non-authorizing:
+   - `planning_safe_only=true`
+   - `stage3_gate_overridden=false`
+   - `activation_authorized=false`
+   - Stage 3 production discovery truth remains the hard gate
+6. The accepted reason classes are:
+   - `latest_chain_closure_closed_through_clerestory`
+   - `latest_chain_closure_top_wrapper_missing_or_failed`
+   - `latest_chain_closure_top_wrapper_not_green`
+   - `latest_chain_closure_top_step_mismatch`
+   - `latest_chain_closure_activation_authorized_drift`
+   - `latest_chain_closure_unproven_due_to_missing_evidence`
+7. Acceptance checks:
+   - `rustfmt --check crates/app/src/bin/copybot_tiny_live_activation_package_latest_chain_closure.rs`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_latest_chain_closure`
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_latest_chain_closure`
+   - `git diff --check --no-index -- /dev/null crates/app/src/bin/copybot_tiny_live_activation_package_latest_chain_closure.rs`
+8. Current production status remains unchanged:
+   - this batch is a read-only Stage 4 operator surface
+   - it does not change Stage 3 semantics, server behavior, systemd, rollout
+     files, or execution enablement
+
 Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
 
 1. The repo now has one more final immutable archival layer over the verified
