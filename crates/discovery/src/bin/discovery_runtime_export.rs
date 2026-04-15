@@ -28,7 +28,7 @@ const USAGE: &str = "usage:
   discovery_runtime_export --explain-recent-raw-replacement-promotion-contract --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-replacement-progress-contract --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-replacement-artifact-history-contract --state-root <path> [--json]
-  discovery_runtime_export --explain-recent-raw-replacement-attempt-telemetry --state-root <path> [--json]
+  discovery_runtime_export --explain-recent-raw-replacement-attempt-telemetry --state-root <path> [--json] [--deep-attempt-telemetry-scan]
   discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-window-seeding --state-root <path> [--json]
@@ -100,6 +100,7 @@ struct ExplainRecentRawReplacementArtifactHistoryContractConfig {
 struct ExplainRecentRawReplacementAttemptTelemetryConfig {
     state_root: PathBuf,
     json: bool,
+    deep_attempt_telemetry_scan: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -190,6 +191,7 @@ where
     let mut explain_recent_raw_replacement_progress_contract = false;
     let mut explain_recent_raw_replacement_artifact_history_contract = false;
     let mut explain_recent_raw_replacement_attempt_telemetry = false;
+    let mut deep_attempt_telemetry_scan = false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
@@ -228,6 +230,9 @@ where
             }
             "--explain-recent-raw-replacement-attempt-telemetry" => {
                 explain_recent_raw_replacement_attempt_telemetry = true;
+            }
+            "--deep-attempt-telemetry-scan" => {
+                deep_attempt_telemetry_scan = true;
             }
             "--explain-recent-raw-staged-lineage" => {
                 explain_recent_raw_staged_lineage = true;
@@ -280,6 +285,11 @@ where
     if explain_mode_count > 1 {
         bail!(
             "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
+        );
+    }
+    if deep_attempt_telemetry_scan && !explain_recent_raw_replacement_attempt_telemetry {
+        bail!(
+            "--deep-attempt-telemetry-scan requires --explain-recent-raw-replacement-attempt-telemetry"
         );
     }
 
@@ -422,12 +432,13 @@ where
             || force
             || now.is_some()
         {
-            bail!("--explain-recent-raw-replacement-attempt-telemetry only accepts --state-root and optional --json");
+            bail!("--explain-recent-raw-replacement-attempt-telemetry only accepts --state-root, optional --json, and optional --deep-attempt-telemetry-scan");
         }
         return Ok(Some(Command::ExplainRecentRawReplacementAttemptTelemetry(
             ExplainRecentRawReplacementAttemptTelemetryConfig {
                 state_root: state_root.ok_or_else(|| anyhow!("missing required --state-root"))?,
                 json,
+                deep_attempt_telemetry_scan,
             },
         )));
     }
@@ -635,8 +646,9 @@ fn run_command(command: Command) -> Result<String> {
         }
         Command::ExplainRecentRawReplacementAttemptTelemetry(config) => {
             let diagnostic =
-                DiscoveryService::explain_recent_raw_replacement_attempt_telemetry_read_only(
+                DiscoveryService::explain_recent_raw_replacement_attempt_telemetry_with_deep_scan_read_only(
                     &config.state_root,
+                    config.deep_attempt_telemetry_scan,
                 )?;
             if config.json {
                 serde_json::to_string_pretty(&diagnostic)
@@ -1909,6 +1921,21 @@ fn render_recent_raw_replacement_attempt_telemetry_human(
             diagnostic.recent_raw_replacement_attempt_telemetry_probe_bounded
         ),
         format!(
+            "replacement_attempt_telemetry_probe_mode={}",
+            diagnostic.recent_raw_replacement_attempt_telemetry_probe_mode
+        ),
+        format!(
+            "replacement_attempt_telemetry_deep_scan_used={}",
+            diagnostic.recent_raw_replacement_attempt_telemetry_deep_scan_used
+        ),
+        format!(
+            "replacement_attempt_telemetry_explicit_paths_checked={}",
+            serde_json::to_string(
+                &diagnostic.recent_raw_replacement_attempt_telemetry_explicit_paths_checked
+            )
+            .unwrap_or_else(|_| "[]".to_string())
+        ),
+        format!(
             "replacement_attempt_telemetry_scan_truncated={}",
             diagnostic.recent_raw_replacement_attempt_telemetry_scan_truncated
         ),
@@ -2245,6 +2272,25 @@ mod tests {
         };
         assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
         assert!(parsed.json);
+        assert!(!parsed.deep_attempt_telemetry_scan);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_recent_raw_replacement_attempt_telemetry_deep_scan_mode() {
+        let parsed = parse_args_from(vec![
+            "--explain-recent-raw-replacement-attempt-telemetry".to_string(),
+            "--state-root".to_string(),
+            "/tmp/state".to_string(),
+            "--deep-attempt-telemetry-scan".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ExplainRecentRawReplacementAttemptTelemetry(parsed) = parsed else {
+            panic!("expected replacement attempt telemetry command");
+        };
+        assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
+        assert!(!parsed.json);
+        assert!(parsed.deep_attempt_telemetry_scan);
     }
 
     #[test]
@@ -3379,6 +3425,7 @@ mod tests {
             ExplainRecentRawReplacementAttemptTelemetryConfig {
                 state_root,
                 json: true,
+                deep_attempt_telemetry_scan: false,
             },
         ))?;
         let parsed: Value = serde_json::from_str(&rendered)?;
@@ -3393,6 +3440,27 @@ mod tests {
         assert_eq!(
             parsed["recent_raw_replacement_attempt_telemetry_parseable_count"],
             1
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_attempt_telemetry_probe_mode"],
+            "bounded_explicit_paths"
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_attempt_telemetry_probe_bounded"],
+            true
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_attempt_telemetry_deep_scan_used"],
+            false
+        );
+        assert!(
+            parsed["recent_raw_replacement_attempt_telemetry_explicit_paths_checked"]
+                .as_array()
+                .is_some_and(|paths| !paths.is_empty())
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_attempt_telemetry_scanned_dirs"],
+            serde_json::json!([])
         );
         assert_eq!(
             parsed["recent_raw_replacement_attempt_telemetry_proves_advancing"],

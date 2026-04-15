@@ -12004,3 +12004,34 @@ Live validation note, Stage 3 replacement-attempt-telemetry surface (`2026-04-15
    - the next batch should correct the attempt-telemetry discovery path so it
      does not perform broad artifact-directory reads before proving whether
      telemetry exists
+
+Acceptance update, Stage 3 replacement-attempt-telemetry bounded correction (`2026-04-15`):
+
+1. The accepted attempt-telemetry surface keeps the same default command:
+   - `discovery_runtime_export --explain-recent-raw-replacement-attempt-telemetry --state-root <path> --json`
+2. The default probe is now operationally bounded by exact-path inspection:
+   - it no longer calls `read_dir` on artifact directories in default mode
+   - it checks a fixed allowlist of exact telemetry paths, including
+     `state/discovery_restore/artifacts/latest.json`,
+     `state/discovery_restore/recent_raw/latest.json`, and exact
+     `*_attempt_latest.json` names in the recent_raw snapshot directory
+3. Broad artifact discovery is now opt-in only:
+   - `--deep-attempt-telemetry-scan`
+   - deep mode is explicitly reported through probe fields and is not the
+     default operator path
+4. The surface now emits explicit boundedness fields:
+   - `recent_raw_replacement_attempt_telemetry_probe_mode`
+   - `recent_raw_replacement_attempt_telemetry_deep_scan_used`
+   - `recent_raw_replacement_attempt_telemetry_explicit_paths_checked`
+   - `recent_raw_replacement_attempt_telemetry_scanned_dirs`
+   - `recent_raw_replacement_attempt_telemetry_scan_file_limit`
+5. Acceptance stayed on the bounded proof-only correction:
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_replacement_attempt_telemetry`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+6. Current production implication:
+   - the next live validation should rerun the default command and confirm it
+     returns JSON without broad artifact-directory reads
+   - if default mode finds no exact-path telemetry, the next seam is no longer
+     boundedness; it is whether narrow durable attempt telemetry should be
+     persisted by the snapshot path
