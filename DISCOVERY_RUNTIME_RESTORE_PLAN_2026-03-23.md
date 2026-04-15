@@ -2411,3 +2411,40 @@ Live validation:
   - `recent_raw_replacement_attempt_telemetry_last_row_count_before=44873682`
   - `recent_raw_replacement_attempt_telemetry_last_row_count_after=44947410`
 - the main service and both relevant timers remained active after rollout
+
+### 20.12 Replacement convergence operator summary (`2026-04-15`)
+
+Accepted repository change:
+
+- `discovery_runtime_export` now has one bounded read-only convergence command:
+  - `discovery_runtime_export --explain-recent-raw-replacement-convergence --state-root <path> --json`
+- the command summarizes the current replacement path from exact/current
+  evidence only:
+  - promoted latest manifest
+  - fixed staged replacement manifest
+  - current source `recent_raw_journal_state` from `promoted.source_db_path`
+  - latest attempt telemetry at
+    `state/discovery_restore/recent_raw/discovery_recent_raw_snapshot_attempt_latest.json`
+- the command does not call `read_dir`, does not use deep telemetry scan, and
+  does not change snapshot, promotion, replay/export, scoring, retention, or
+  migration behavior
+
+Operator path:
+
+- run the convergence summary on the live state root:
+  - `discovery_runtime_export --explain-recent-raw-replacement-convergence --state-root /var/www/solana-copy-bot/state --json`
+- expected useful classes are:
+  - `recent_raw_replacement_convergence_ready_to_promote`
+  - `recent_raw_replacement_convergence_advancing_but_incomplete`
+  - `recent_raw_replacement_convergence_stalled_on_latest_attempt`
+  - `recent_raw_replacement_convergence_reset_or_recreated`
+  - `recent_raw_replacement_convergence_missing_or_unparseable_attempt_telemetry`
+  - `recent_raw_replacement_convergence_unproven_due_to_missing_evidence`
+- key fields for production interpretation are:
+  - `recent_raw_replacement_candidate_row_count`
+  - `recent_raw_source_row_count`
+  - `recent_raw_replacement_rows_remaining_to_current_source`
+  - `recent_raw_replacement_latest_attempt_row_count_delta`
+  - `recent_raw_replacement_estimated_attempts_to_current_source`
+  - `recent_raw_replacement_candidate_complete_against_current_source`
+  - `recent_raw_replacement_candidate_promotable_now`

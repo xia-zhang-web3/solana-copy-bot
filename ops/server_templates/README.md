@@ -646,6 +646,21 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
    - `solana-copy-bot.service`,
      `copybot-discovery-recent-raw-snapshot.timer`, and
      `copybot-discovery-runtime-export.timer` remained `active`
+28. Operators now also have one bounded replacement-convergence summary over the
+    same exact evidence:
+   - `discovery_runtime_export --explain-recent-raw-replacement-convergence --state-root /var/www/solana-copy-bot/state --json`
+   - default mode reads the promoted latest manifest, fixed staged manifest,
+     current source `recent_raw_journal_state`, and exact latest attempt
+     telemetry path
+   - it does not perform broad artifact-directory discovery
+   - important output fields:
+     - `recent_raw_replacement_convergence_reason_class`
+     - `recent_raw_replacement_candidate_row_count`
+     - `recent_raw_source_row_count`
+     - `recent_raw_replacement_rows_remaining_to_current_source`
+     - `recent_raw_replacement_latest_attempt_row_count_delta`
+     - `recent_raw_replacement_estimated_attempts_to_current_source`
+     - `recent_raw_replacement_candidate_promotable_now`
 
 ## Stage 4 Execution Readiness Audit
 

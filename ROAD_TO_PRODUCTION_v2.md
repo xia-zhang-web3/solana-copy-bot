@@ -12169,3 +12169,48 @@ Live validation note, Stage 3 latest snapshot-attempt telemetry persistence (`20
    - `solana-copy-bot.service=active`
    - `copybot-discovery-recent-raw-snapshot.timer=active`
    - `copybot-discovery-runtime-export.timer=active`
+
+Acceptance update, Stage 3 replacement-convergence surface (`2026-04-15`):
+
+1. The primary runtime-export path now has one bounded convergence summary
+   command over the replacement path:
+   - `discovery_runtime_export --explain-recent-raw-replacement-convergence --state-root <path> --json`
+2. The surface uses only exact/current evidence:
+   - promoted latest manifest
+   - fixed staged replacement manifest
+   - current source `recent_raw_journal_state` from `promoted.source_db_path`
+   - exact latest attempt telemetry at
+     `state/discovery_restore/recent_raw/discovery_recent_raw_snapshot_attempt_latest.json`
+3. The surface is intentionally read-only and bounded:
+   - no `read_dir`
+   - no deep telemetry scan
+   - no `load_recent_raw_diagnostic_state_read_only`
+   - no snapshot, promotion, replay/export, scoring, retention, migration, or
+     systemd behavior changes
+4. The surface is the current operator summary for the replacement path:
+   - `recent_raw_replacement_convergence_ready_to_promote`
+   - `recent_raw_replacement_convergence_advancing_but_incomplete`
+   - `recent_raw_replacement_convergence_stalled_on_latest_attempt`
+   - `recent_raw_replacement_convergence_reset_or_recreated`
+   - `recent_raw_replacement_convergence_missing_or_unparseable_attempt_telemetry`
+   - `recent_raw_replacement_convergence_unproven_due_to_missing_evidence`
+5. Key emitted fields include:
+   - `recent_raw_replacement_candidate_row_count`
+   - `recent_raw_source_row_count`
+   - `recent_raw_replacement_rows_remaining_to_current_source`
+   - `recent_raw_replacement_latest_attempt_row_count_delta`
+   - `recent_raw_replacement_estimated_attempts_to_current_source`
+   - `recent_raw_replacement_candidate_complete_against_current_source`
+   - `recent_raw_replacement_candidate_promotable_now`
+   - `recent_raw_replacement_attempt_telemetry_probe_bounded`
+6. Acceptance stayed on the bounded proof-only surface:
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_replacement_convergence`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+7. Current production implication:
+   - this command should be rolled out with `discovery_runtime_export`
+   - a live run should give the operator one summary of whether the retained
+     older promoted surface is waiting on a ready promotion, an advancing but
+     incomplete replacement, a stalled latest attempt, a reset/recreate, missing
+     telemetry, or unproven evidence
