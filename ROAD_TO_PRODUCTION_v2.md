@@ -11943,3 +11943,43 @@ Acceptance update, Stage 3 replacement-artifact-history contract surface (`2026-
    - the next operator step is a live `replacement-artifact-history` read to
      confirm whether production has only the fixed in-place pair or any
      discoverable sidecars
+
+Acceptance update, Stage 3 replacement-attempt-telemetry surface (`2026-04-15`):
+
+1. The repo now has one more bounded read-only operator command on the primary
+   runtime-export path:
+   - `discovery_runtime_export --explain-recent-raw-replacement-attempt-telemetry --state-root <path> --json`
+2. The contract is intentionally proof-only and telemetry scoped:
+   - it discovers durable `discovery_recent_raw_snapshot` JSON attempt
+     telemetry from bounded on-disk artifact locations
+   - it proves replacement progress from persisted attempt fields, not from the
+     current staged manifest alone
+   - it does not add persistence and does not change snapshot behavior,
+     promotion behavior, or replay/export semantics
+3. The surface can now distinguish:
+   - persisted telemetry proves advancing but incomplete
+   - persisted telemetry proves stalled
+   - persisted telemetry proves reset/recreated
+   - telemetry is missing or unparseable, so progress remains unproven
+4. The surface emits explicit bounded telemetry fields such as:
+   - `recent_raw_replacement_attempt_telemetry_probe_bounded`
+   - `recent_raw_replacement_attempt_telemetry_artifact_count`
+   - `recent_raw_replacement_attempt_telemetry_parseable_count`
+   - `recent_raw_replacement_attempt_telemetry_latest_path`
+   - `recent_raw_replacement_attempt_telemetry_proves_advancing`
+   - `recent_raw_replacement_attempt_telemetry_proves_stalled`
+   - `recent_raw_replacement_attempt_telemetry_proves_reset_or_recreated`
+   - `recent_raw_replacement_attempt_telemetry_last_row_count_before`
+   - `recent_raw_replacement_attempt_telemetry_last_row_count_after`
+   - `recent_raw_replacement_attempt_telemetry_staged_progress_advanced`
+5. Acceptance stayed on the bounded proof-only surface:
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_replacement_attempt_telemetry`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+6. Current production implication:
+   - this batch gives the operator one bounded way to answer whether durable
+     snapshot-attempt telemetry can prove the fixed replacement candidate is
+     advancing, stalled, or reset/recreated
+   - if production has no durable parseable telemetry, the next seam becomes
+     whether to add narrow persisted attempt telemetry in a later behavior
+     batch

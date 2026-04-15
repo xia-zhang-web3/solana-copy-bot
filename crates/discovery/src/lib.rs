@@ -101,6 +101,7 @@ const RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME: &str =
     ".discovery_recent_raw_staged.sqlite.archive-staged";
 const RECENT_RAW_STAGED_METADATA_FILE_NAME: &str =
     ".discovery_recent_raw_staged.sqlite.archive-staged.json";
+const RECENT_RAW_ATTEMPT_TELEMETRY_SCAN_FILE_LIMIT: usize = 256;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_NUMERATOR: usize =
     3;
 const DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEEP_REPLAY_WALLET_STATS_PAGE_HEADROOM_DENOMINATOR: usize =
@@ -2796,6 +2797,45 @@ pub struct RecentRawReplacementArtifactHistoryContractDiagnostic {
     pub recent_raw_replacement_previous_artifact_history_missing_due_to_unproven_evidence: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawReplacementAttemptTelemetryReasonClass {
+    RecentRawReplacementAttemptTelemetryAdvancingButIncomplete,
+    RecentRawReplacementAttemptTelemetryStalled,
+    RecentRawReplacementAttemptTelemetryResetOrRecreated,
+    RecentRawReplacementAttemptTelemetryMissingOrUnparseable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentRawReplacementAttemptTelemetryDiagnostic {
+    pub recent_raw_snapshot_dir: String,
+    pub recent_raw_replacement_attempt_telemetry_observed: bool,
+    pub recent_raw_replacement_attempt_telemetry_reason_class:
+        RecentRawReplacementAttemptTelemetryReasonClass,
+    pub recent_raw_replacement_attempt_telemetry_explanation: String,
+    pub recent_raw_replacement_attempt_telemetry_probe_bounded: bool,
+    pub recent_raw_replacement_attempt_telemetry_scanned_dirs: Vec<String>,
+    pub recent_raw_replacement_attempt_telemetry_scan_file_limit: usize,
+    pub recent_raw_replacement_attempt_telemetry_scan_truncated: bool,
+    pub recent_raw_replacement_attempt_telemetry_artifact_count: usize,
+    pub recent_raw_replacement_attempt_telemetry_parseable_count: usize,
+    pub recent_raw_replacement_attempt_telemetry_latest_path: Option<String>,
+    pub recent_raw_replacement_attempt_telemetry_latest_state: Option<String>,
+    pub recent_raw_replacement_attempt_telemetry_latest_timestamp: Option<DateTime<Utc>>,
+    pub recent_raw_replacement_attempt_telemetry_proves_advancing: bool,
+    pub recent_raw_replacement_attempt_telemetry_proves_stalled: bool,
+    pub recent_raw_replacement_attempt_telemetry_proves_reset_or_recreated: bool,
+    pub recent_raw_replacement_attempt_telemetry_last_row_count_before: Option<usize>,
+    pub recent_raw_replacement_attempt_telemetry_last_row_count_after: Option<usize>,
+    pub recent_raw_replacement_attempt_telemetry_last_covered_through_before:
+        Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_replacement_attempt_telemetry_last_covered_through_after:
+        Option<DiscoveryRuntimeCursor>,
+    pub recent_raw_replacement_attempt_telemetry_staged_progress_advanced: Option<bool>,
+    pub recent_raw_replacement_attempt_telemetry_staged_progress_resumed: Option<bool>,
+    pub recent_raw_replacement_attempt_telemetry_staged_progress_preserved_for_retry: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct RecentRawPromotionSnapshotManifest {
     created_at: DateTime<Utc>,
@@ -2835,6 +2875,29 @@ struct RecentRawObservedSwapsBoundedProbeRead {
     covered_since: Option<DateTime<Utc>>,
     covered_through_cursor: Option<DiscoveryRuntimeCursor>,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RecentRawSnapshotAttemptTelemetryArtifact {
+    event: Option<String>,
+    state: Option<String>,
+    staged_progress_resumed: Option<bool>,
+    staged_seeded_from_latest_surface: Option<bool>,
+    staged_progress_preserved_for_retry: Option<bool>,
+    staged_progress_advanced: Option<bool>,
+    staged_row_count_before_attempt: Option<usize>,
+    staged_row_count_after_attempt: Option<usize>,
+    staged_covered_through_cursor_before_attempt: Option<DiscoveryRuntimeCursor>,
+    staged_covered_through_cursor_after_attempt: Option<DiscoveryRuntimeCursor>,
+    created_at: Option<DateTime<Utc>>,
+    last_batch_completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+struct RecentRawSnapshotAttemptTelemetryRead {
+    path: PathBuf,
+    modified_at: Option<DateTime<Utc>>,
+    telemetry: Option<RecentRawSnapshotAttemptTelemetryArtifact>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3343,6 +3406,151 @@ impl DiscoveryService {
 
     fn recent_raw_staged_candidate_reads(snapshot_dir: &Path) -> Vec<RecentRawStagedCandidateRead> {
         Self::recent_raw_staged_candidate_reads_result(snapshot_dir).unwrap_or_default()
+    }
+
+    fn recent_raw_replacement_attempt_telemetry_candidate_dirs(
+        state_root: &Path,
+        snapshot_dir: &Path,
+    ) -> Vec<PathBuf> {
+        let candidates = [
+            snapshot_dir.to_path_buf(),
+            state_root.join("discovery_restore/artifacts"),
+            state_root.join("artifacts"),
+        ];
+        let mut seen = BTreeSet::new();
+        candidates
+            .into_iter()
+            .filter(|path| seen.insert(path.display().to_string()))
+            .collect()
+    }
+
+    fn recent_raw_replacement_attempt_telemetry_filename_candidate(name: &str) -> bool {
+        name.contains("discovery_recent_raw_snapshot")
+            || name.contains("recent_raw_snapshot")
+            || name.contains("snapshot_attempt")
+    }
+
+    fn recent_raw_replacement_attempt_telemetry_modified_at(path: &Path) -> Option<DateTime<Utc>> {
+        fs::metadata(path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .map(DateTime::<Utc>::from)
+    }
+
+    fn recent_raw_replacement_attempt_telemetry_timestamp(
+        read: &RecentRawSnapshotAttemptTelemetryRead,
+    ) -> Option<DateTime<Utc>> {
+        read.telemetry
+            .as_ref()
+            .and_then(|telemetry| {
+                telemetry
+                    .last_batch_completed_at
+                    .or(telemetry.created_at)
+                    .or(read.modified_at)
+            })
+            .or(read.modified_at)
+    }
+
+    fn recent_raw_replacement_attempt_telemetry_reads(
+        state_root: &Path,
+        snapshot_dir: &Path,
+    ) -> (
+        Vec<String>,
+        Vec<RecentRawSnapshotAttemptTelemetryRead>,
+        bool,
+    ) {
+        let dirs =
+            Self::recent_raw_replacement_attempt_telemetry_candidate_dirs(state_root, snapshot_dir);
+        let mut reads = Vec::new();
+        let mut scan_truncated = false;
+        for dir in &dirs {
+            let Ok(entries) = fs::read_dir(dir) else {
+                continue;
+            };
+            let mut json_files_seen = 0usize;
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if !name.ends_with(".json") {
+                    continue;
+                }
+                json_files_seen = json_files_seen.saturating_add(1);
+                if json_files_seen > RECENT_RAW_ATTEMPT_TELEMETRY_SCAN_FILE_LIMIT {
+                    scan_truncated = true;
+                    continue;
+                }
+
+                let filename_candidate =
+                    Self::recent_raw_replacement_attempt_telemetry_filename_candidate(name);
+                let modified_at = Self::recent_raw_replacement_attempt_telemetry_modified_at(&path);
+                let raw = match fs::read_to_string(&path) {
+                    Ok(raw) => raw,
+                    Err(_) => {
+                        if filename_candidate {
+                            reads.push(RecentRawSnapshotAttemptTelemetryRead {
+                                path,
+                                modified_at,
+                                telemetry: None,
+                            });
+                        }
+                        continue;
+                    }
+                };
+                let value = match serde_json::from_str::<serde_json::Value>(&raw) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        if filename_candidate {
+                            reads.push(RecentRawSnapshotAttemptTelemetryRead {
+                                path,
+                                modified_at,
+                                telemetry: None,
+                            });
+                        }
+                        continue;
+                    }
+                };
+                let event_matches = value.get("event").and_then(serde_json::Value::as_str)
+                    == Some("discovery_recent_raw_snapshot");
+                if !event_matches && !filename_candidate {
+                    continue;
+                }
+                let telemetry =
+                    serde_json::from_value::<RecentRawSnapshotAttemptTelemetryArtifact>(value);
+                match telemetry {
+                    Ok(telemetry)
+                        if telemetry.event.as_deref() == Some("discovery_recent_raw_snapshot") =>
+                    {
+                        reads.push(RecentRawSnapshotAttemptTelemetryRead {
+                            path,
+                            modified_at,
+                            telemetry: Some(telemetry),
+                        });
+                    }
+                    Ok(_) => reads.push(RecentRawSnapshotAttemptTelemetryRead {
+                        path,
+                        modified_at,
+                        telemetry: None,
+                    }),
+                    Err(_) => reads.push(RecentRawSnapshotAttemptTelemetryRead {
+                        path,
+                        modified_at,
+                        telemetry: None,
+                    }),
+                }
+            }
+        }
+        (
+            dirs.into_iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            reads,
+            scan_truncated,
+        )
     }
 
     fn read_recent_raw_surface_manifest(
@@ -5805,6 +6013,82 @@ impl DiscoveryService {
         )
     }
 
+    fn classify_recent_raw_replacement_attempt_telemetry(
+        artifact_count: usize,
+        parseable_count: usize,
+        scan_truncated: bool,
+        latest_state: Option<&str>,
+        latest_path: Option<&str>,
+        proves_advancing: bool,
+        proves_stalled: bool,
+        proves_reset_or_recreated: bool,
+    ) -> (
+        RecentRawReplacementAttemptTelemetryReasonClass,
+        bool,
+        String,
+    ) {
+        if parseable_count == 0 {
+            return (
+                RecentRawReplacementAttemptTelemetryReasonClass::RecentRawReplacementAttemptTelemetryMissingOrUnparseable,
+                false,
+                format!(
+                    "recent_raw replacement attempt telemetry is missing or unparseable from bounded on-disk artifact discovery. telemetry_artifact_count={}, parseable_count={}, scan_truncated={}. Without a durable discovery_recent_raw_snapshot telemetry artifact, fixed replacement progress cannot be proven from persisted attempt telemetry in this batch",
+                    artifact_count,
+                    parseable_count,
+                    scan_truncated,
+                ),
+            );
+        }
+
+        if proves_reset_or_recreated {
+            return (
+                RecentRawReplacementAttemptTelemetryReasonClass::RecentRawReplacementAttemptTelemetryResetOrRecreated,
+                true,
+                format!(
+                    "latest persisted recent_raw snapshot-attempt telemetry proves reset/recreated behavior via explicit staged reseed/reset evidence. latest_path={}, latest_state={}",
+                    latest_path.unwrap_or("null"),
+                    latest_state.unwrap_or("null"),
+                ),
+            );
+        }
+
+        if proves_advancing {
+            return (
+                RecentRawReplacementAttemptTelemetryReasonClass::RecentRawReplacementAttemptTelemetryAdvancingButIncomplete,
+                true,
+                format!(
+                    "latest persisted recent_raw snapshot-attempt telemetry proves the fixed staged replacement candidate advanced during a deferred attempt. latest_path={}, latest_state={}",
+                    latest_path.unwrap_or("null"),
+                    latest_state.unwrap_or("null"),
+                ),
+            );
+        }
+
+        if proves_stalled {
+            return (
+                RecentRawReplacementAttemptTelemetryReasonClass::RecentRawReplacementAttemptTelemetryStalled,
+                true,
+                format!(
+                    "latest persisted recent_raw snapshot-attempt telemetry proves the fixed staged replacement candidate resumed but did not advance during the attempt. latest_path={}, latest_state={}",
+                    latest_path.unwrap_or("null"),
+                    latest_state.unwrap_or("null"),
+                ),
+            );
+        }
+
+        (
+            RecentRawReplacementAttemptTelemetryReasonClass::RecentRawReplacementAttemptTelemetryMissingOrUnparseable,
+            false,
+            format!(
+                "recent_raw replacement attempt telemetry artifacts are parseable, but the latest artifact does not prove advancing, stalled, or reset/recreated progress. latest_path={}, latest_state={}, telemetry_artifact_count={}, parseable_count={}",
+                latest_path.unwrap_or("null"),
+                latest_state.unwrap_or("null"),
+                artifact_count,
+                parseable_count,
+            ),
+        )
+    }
+
     pub fn explain_recent_raw_staged_window_seeding_read_only(
         state_root: &Path,
     ) -> Result<RecentRawStagedWindowSeedingDiagnostic> {
@@ -6756,6 +7040,149 @@ impl DiscoveryService {
                 previous_artifact_history_expected_under_current_contract,
             recent_raw_replacement_previous_artifact_history_missing_due_to_unproven_evidence:
                 missing_due_to_unproven_evidence,
+        })
+    }
+
+    pub fn explain_recent_raw_replacement_attempt_telemetry_read_only(
+        state_root: &Path,
+    ) -> Result<RecentRawReplacementAttemptTelemetryDiagnostic> {
+        let snapshot_dir = Self::recent_raw_snapshot_dir_for_state_root(state_root);
+        let (scanned_dirs, telemetry_reads, scan_truncated) =
+            Self::recent_raw_replacement_attempt_telemetry_reads(state_root, &snapshot_dir);
+        let artifact_count = telemetry_reads.len();
+        let parseable_count = telemetry_reads
+            .iter()
+            .filter(|read| read.telemetry.is_some())
+            .count();
+        let latest_read = telemetry_reads
+            .iter()
+            .filter(|read| read.telemetry.is_some())
+            .max_by(|left, right| {
+                Self::recent_raw_replacement_attempt_telemetry_timestamp(left)
+                    .cmp(&Self::recent_raw_replacement_attempt_telemetry_timestamp(
+                        right,
+                    ))
+                    .then_with(|| left.path.cmp(&right.path))
+            });
+        let latest_telemetry = latest_read.and_then(|read| read.telemetry.as_ref());
+        let latest_timestamp =
+            latest_read.and_then(Self::recent_raw_replacement_attempt_telemetry_timestamp);
+        let latest_path = latest_read.map(|read| read.path.display().to_string());
+        let latest_state = latest_telemetry.and_then(|telemetry| telemetry.state.clone());
+
+        let row_count_advanced = latest_telemetry.and_then(|telemetry| {
+            match (
+                telemetry.staged_row_count_before_attempt,
+                telemetry.staged_row_count_after_attempt,
+            ) {
+                (Some(before), Some(after)) => Some(after > before),
+                _ => None,
+            }
+        });
+        let row_count_stalled = latest_telemetry.and_then(|telemetry| {
+            match (
+                telemetry.staged_row_count_before_attempt,
+                telemetry.staged_row_count_after_attempt,
+            ) {
+                (Some(before), Some(after)) => Some(after == before),
+                _ => None,
+            }
+        });
+        let covered_through_advanced = latest_telemetry.map(|telemetry| {
+            Self::recent_raw_lineage_relation_from_cursor(
+                telemetry
+                    .staged_covered_through_cursor_after_attempt
+                    .as_ref(),
+                telemetry
+                    .staged_covered_through_cursor_before_attempt
+                    .as_ref(),
+                Some(true),
+            ) == RecentRawLineageRelation::Ahead
+        });
+        let covered_through_stalled = latest_telemetry.map(|telemetry| {
+            Self::recent_raw_optional_cursor_equal(
+                telemetry
+                    .staged_covered_through_cursor_before_attempt
+                    .as_ref(),
+                telemetry
+                    .staged_covered_through_cursor_after_attempt
+                    .as_ref(),
+            )
+        });
+        let staged_progress_advanced =
+            latest_telemetry.and_then(|telemetry| telemetry.staged_progress_advanced);
+        let staged_progress_resumed =
+            latest_telemetry.and_then(|telemetry| telemetry.staged_progress_resumed);
+        let staged_progress_preserved_for_retry =
+            latest_telemetry.and_then(|telemetry| telemetry.staged_progress_preserved_for_retry);
+
+        let proves_reset_or_recreated = latest_telemetry
+            .is_some_and(|telemetry| telemetry.staged_seeded_from_latest_surface == Some(true));
+        let proves_advancing = latest_telemetry.is_some_and(|telemetry| {
+            telemetry.state.as_deref() == Some("deferred")
+                && telemetry.staged_progress_advanced == Some(true)
+                && (row_count_advanced == Some(true) || covered_through_advanced == Some(true))
+        });
+        let proves_stalled = latest_telemetry.is_some_and(|telemetry| {
+            telemetry.staged_progress_resumed == Some(true)
+                && telemetry.staged_progress_advanced == Some(false)
+                && row_count_stalled == Some(true)
+                && covered_through_stalled == Some(true)
+        });
+
+        let (reason_class, observed, explanation) =
+            Self::classify_recent_raw_replacement_attempt_telemetry(
+                artifact_count,
+                parseable_count,
+                scan_truncated,
+                latest_state.as_deref(),
+                latest_path.as_deref(),
+                proves_advancing,
+                proves_stalled,
+                proves_reset_or_recreated,
+            );
+
+        Ok(RecentRawReplacementAttemptTelemetryDiagnostic {
+            recent_raw_snapshot_dir: snapshot_dir.display().to_string(),
+            recent_raw_replacement_attempt_telemetry_observed: observed,
+            recent_raw_replacement_attempt_telemetry_reason_class: reason_class,
+            recent_raw_replacement_attempt_telemetry_explanation: explanation,
+            recent_raw_replacement_attempt_telemetry_probe_bounded: true,
+            recent_raw_replacement_attempt_telemetry_scanned_dirs: scanned_dirs,
+            recent_raw_replacement_attempt_telemetry_scan_file_limit:
+                RECENT_RAW_ATTEMPT_TELEMETRY_SCAN_FILE_LIMIT,
+            recent_raw_replacement_attempt_telemetry_scan_truncated: scan_truncated,
+            recent_raw_replacement_attempt_telemetry_artifact_count: artifact_count,
+            recent_raw_replacement_attempt_telemetry_parseable_count: parseable_count,
+            recent_raw_replacement_attempt_telemetry_latest_path: latest_path,
+            recent_raw_replacement_attempt_telemetry_latest_state: latest_state,
+            recent_raw_replacement_attempt_telemetry_latest_timestamp: latest_timestamp,
+            recent_raw_replacement_attempt_telemetry_proves_advancing: proves_advancing,
+            recent_raw_replacement_attempt_telemetry_proves_stalled: proves_stalled,
+            recent_raw_replacement_attempt_telemetry_proves_reset_or_recreated:
+                proves_reset_or_recreated,
+            recent_raw_replacement_attempt_telemetry_last_row_count_before: latest_telemetry
+                .and_then(|telemetry| telemetry.staged_row_count_before_attempt),
+            recent_raw_replacement_attempt_telemetry_last_row_count_after: latest_telemetry
+                .and_then(|telemetry| telemetry.staged_row_count_after_attempt),
+            recent_raw_replacement_attempt_telemetry_last_covered_through_before: latest_telemetry
+                .and_then(|telemetry| {
+                    telemetry
+                        .staged_covered_through_cursor_before_attempt
+                        .clone()
+                }),
+            recent_raw_replacement_attempt_telemetry_last_covered_through_after: latest_telemetry
+                .and_then(|telemetry| {
+                    telemetry
+                        .staged_covered_through_cursor_after_attempt
+                        .clone()
+                }),
+            recent_raw_replacement_attempt_telemetry_staged_progress_advanced:
+                staged_progress_advanced,
+            recent_raw_replacement_attempt_telemetry_staged_progress_resumed:
+                staged_progress_resumed,
+            recent_raw_replacement_attempt_telemetry_staged_progress_preserved_for_retry:
+                staged_progress_preserved_for_retry,
         })
     }
 
@@ -52530,6 +52957,288 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn recent_raw_replacement_attempt_telemetry_advancing_but_incomplete_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-attempt-telemetry-advancing",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.write_attempt_telemetry_json(
+            "discovery_recent_raw_snapshot_attempt_latest.json",
+            serde_json::json!({
+                "event": "discovery_recent_raw_snapshot",
+                "state": "deferred",
+                "staged_progress_resumed": true,
+                "staged_seeded_from_latest_surface": false,
+                "staged_progress_preserved_for_retry": true,
+                "staged_progress_advanced": true,
+                "staged_row_count_before_attempt": 1,
+                "staged_row_count_after_attempt": 2,
+                "staged_covered_through_cursor_before_attempt": {
+                    "ts_utc": "2026-04-14T07:56:00Z",
+                    "slot": parse_ts("2026-04-14T07:56:00Z")?.timestamp() as u64,
+                    "signature": "sig-source-a"
+                },
+                "staged_covered_through_cursor_after_attempt": {
+                    "ts_utc": "2026-04-14T07:57:00Z",
+                    "slot": parse_ts("2026-04-14T07:57:00Z")?.timestamp() as u64,
+                    "signature": "sig-source-b"
+                },
+                "created_at": "2026-04-14T08:05:00Z",
+                "last_batch_completed_at": "2026-04-14T08:10:00Z"
+            }),
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_attempt_telemetry_read_only(
+                &fixture.state_root,
+            )?;
+        assert_eq!(
+            diagnostic.recent_raw_replacement_attempt_telemetry_reason_class,
+            RecentRawReplacementAttemptTelemetryReasonClass::RecentRawReplacementAttemptTelemetryAdvancingButIncomplete
+        );
+        assert!(diagnostic.recent_raw_replacement_attempt_telemetry_observed);
+        assert!(diagnostic.recent_raw_replacement_attempt_telemetry_proves_advancing);
+        assert!(!diagnostic.recent_raw_replacement_attempt_telemetry_proves_stalled);
+        assert_eq!(
+            diagnostic.recent_raw_replacement_attempt_telemetry_last_row_count_before,
+            Some(1)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_attempt_telemetry_last_row_count_after,
+            Some(2)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_attempt_telemetry_staged_progress_advanced,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_attempt_telemetry_staged_progress_resumed,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_attempt_telemetry_staged_progress_preserved_for_retry,
+            Some(true)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_replacement_attempt_telemetry_stalled_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-attempt-telemetry-stalled",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.write_attempt_telemetry_json(
+            "discovery_recent_raw_snapshot_attempt_latest.json",
+            serde_json::json!({
+                "event": "discovery_recent_raw_snapshot",
+                "state": "deferred",
+                "staged_progress_resumed": true,
+                "staged_seeded_from_latest_surface": false,
+                "staged_progress_preserved_for_retry": true,
+                "staged_progress_advanced": false,
+                "staged_row_count_before_attempt": 2,
+                "staged_row_count_after_attempt": 2,
+                "staged_covered_through_cursor_before_attempt": {
+                    "ts_utc": "2026-04-14T07:57:00Z",
+                    "slot": parse_ts("2026-04-14T07:57:00Z")?.timestamp() as u64,
+                    "signature": "sig-source-b"
+                },
+                "staged_covered_through_cursor_after_attempt": {
+                    "ts_utc": "2026-04-14T07:57:00Z",
+                    "slot": parse_ts("2026-04-14T07:57:00Z")?.timestamp() as u64,
+                    "signature": "sig-source-b"
+                },
+                "created_at": "2026-04-14T08:05:00Z",
+                "last_batch_completed_at": "2026-04-14T08:10:00Z"
+            }),
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_attempt_telemetry_read_only(
+                &fixture.state_root,
+            )?;
+        assert_eq!(
+            diagnostic.recent_raw_replacement_attempt_telemetry_reason_class,
+            RecentRawReplacementAttemptTelemetryReasonClass::RecentRawReplacementAttemptTelemetryStalled
+        );
+        assert!(diagnostic.recent_raw_replacement_attempt_telemetry_observed);
+        assert!(!diagnostic.recent_raw_replacement_attempt_telemetry_proves_advancing);
+        assert!(diagnostic.recent_raw_replacement_attempt_telemetry_proves_stalled);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_replacement_attempt_telemetry_reset_or_recreated_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-attempt-telemetry-reset",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.write_attempt_telemetry_json(
+            "discovery_recent_raw_snapshot_attempt_latest.json",
+            serde_json::json!({
+                "event": "discovery_recent_raw_snapshot",
+                "state": "deferred",
+                "staged_progress_resumed": false,
+                "staged_seeded_from_latest_surface": true,
+                "staged_progress_preserved_for_retry": true,
+                "staged_progress_advanced": false,
+                "staged_row_count_before_attempt": 0,
+                "staged_row_count_after_attempt": 0,
+                "created_at": "2026-04-14T08:05:00Z",
+                "last_batch_completed_at": "2026-04-14T08:10:00Z"
+            }),
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_attempt_telemetry_read_only(
+                &fixture.state_root,
+            )?;
+        assert_eq!(
+            diagnostic.recent_raw_replacement_attempt_telemetry_reason_class,
+            RecentRawReplacementAttemptTelemetryReasonClass::RecentRawReplacementAttemptTelemetryResetOrRecreated
+        );
+        assert!(diagnostic.recent_raw_replacement_attempt_telemetry_observed);
+        assert!(diagnostic.recent_raw_replacement_attempt_telemetry_proves_reset_or_recreated);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_replacement_attempt_telemetry_missing_or_unparseable_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-attempt-telemetry-missing",
+            SourceStateSeed::Missing,
+        )?;
+        fs::write(
+            fixture
+                .recent_raw_dir
+                .join("discovery_recent_raw_snapshot_attempt_bad.json"),
+            b"{not-json",
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_attempt_telemetry_read_only(
+                &fixture.state_root,
+            )?;
+        assert_eq!(
+            diagnostic.recent_raw_replacement_attempt_telemetry_reason_class,
+            RecentRawReplacementAttemptTelemetryReasonClass::RecentRawReplacementAttemptTelemetryMissingOrUnparseable
+        );
+        assert!(!diagnostic.recent_raw_replacement_attempt_telemetry_observed);
+        assert_eq!(
+            diagnostic.recent_raw_replacement_attempt_telemetry_artifact_count,
+            1
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_attempt_telemetry_parseable_count,
+            0
+        );
+        assert!(!diagnostic.recent_raw_replacement_attempt_telemetry_proves_advancing);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_replacement_attempt_telemetry_includes_explicit_fields_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-attempt-telemetry-fields",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.write_attempt_telemetry_json(
+            "discovery_recent_raw_snapshot_attempt_latest.json",
+            serde_json::json!({
+                "event": "discovery_recent_raw_snapshot",
+                "state": "deferred",
+                "staged_progress_resumed": true,
+                "staged_seeded_from_latest_surface": false,
+                "staged_progress_preserved_for_retry": true,
+                "staged_progress_advanced": true,
+                "staged_row_count_before_attempt": 1,
+                "staged_row_count_after_attempt": 2,
+                "staged_covered_through_cursor_before_attempt": {
+                    "ts_utc": "2026-04-14T07:56:00Z",
+                    "slot": parse_ts("2026-04-14T07:56:00Z")?.timestamp() as u64,
+                    "signature": "sig-source-a"
+                },
+                "staged_covered_through_cursor_after_attempt": {
+                    "ts_utc": "2026-04-14T07:57:00Z",
+                    "slot": parse_ts("2026-04-14T07:57:00Z")?.timestamp() as u64,
+                    "signature": "sig-source-b"
+                },
+                "created_at": "2026-04-14T08:05:00Z",
+                "last_batch_completed_at": "2026-04-14T08:10:00Z"
+            }),
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_attempt_telemetry_read_only(
+                &fixture.state_root,
+            )?;
+        assert!(diagnostic.recent_raw_replacement_attempt_telemetry_probe_bounded);
+        assert!(!diagnostic
+            .recent_raw_replacement_attempt_telemetry_scanned_dirs
+            .is_empty());
+        assert_eq!(
+            diagnostic.recent_raw_replacement_attempt_telemetry_scan_file_limit,
+            RECENT_RAW_ATTEMPT_TELEMETRY_SCAN_FILE_LIMIT
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_attempt_telemetry_artifact_count,
+            1
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_attempt_telemetry_parseable_count,
+            1
+        );
+        assert!(diagnostic
+            .recent_raw_replacement_attempt_telemetry_latest_path
+            .is_some());
+        assert!(diagnostic
+            .recent_raw_replacement_attempt_telemetry_latest_timestamp
+            .is_some());
+        assert!(diagnostic
+            .recent_raw_replacement_attempt_telemetry_last_covered_through_before
+            .is_some());
+        assert!(diagnostic
+            .recent_raw_replacement_attempt_telemetry_last_covered_through_after
+            .is_some());
+        assert!(!diagnostic
+            .recent_raw_replacement_attempt_telemetry_explanation
+            .is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_replacement_attempt_telemetry_explain_remains_read_only_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-attempt-telemetry-read-only",
+            SourceStateSeed::Missing,
+        )?;
+        let telemetry_path = fixture.write_attempt_telemetry_json(
+            "discovery_recent_raw_snapshot_attempt_latest.json",
+            serde_json::json!({
+                "event": "discovery_recent_raw_snapshot",
+                "state": "deferred",
+                "staged_progress_resumed": true,
+                "staged_seeded_from_latest_surface": false,
+                "staged_progress_preserved_for_retry": true,
+                "staged_progress_advanced": true,
+                "staged_row_count_before_attempt": 1,
+                "staged_row_count_after_attempt": 2,
+                "created_at": "2026-04-14T08:05:00Z",
+                "last_batch_completed_at": "2026-04-14T08:10:00Z"
+            }),
+        )?;
+
+        let before = fs::read(&telemetry_path)?;
+        let _ = DiscoveryService::explain_recent_raw_replacement_attempt_telemetry_read_only(
+            &fixture.state_root,
+        )?;
+        let after = fs::read(&telemetry_path)?;
+        assert_eq!(before, after);
+        Ok(())
+    }
+
     struct RecentRawPromotionFixture {
         _temp: tempfile::TempDir,
         state_root: PathBuf,
@@ -52691,6 +53400,17 @@ mod tests {
                 signature,
                 created_at,
             )
+        }
+
+        fn write_attempt_telemetry_json(
+            &self,
+            file_name: &str,
+            value: serde_json::Value,
+        ) -> Result<PathBuf> {
+            let path = self.recent_raw_dir.join(file_name);
+            runtime_restore_ops::write_json_atomic(&path, &value)
+                .with_context(|| format!("failed writing {}", path.display()))?;
+            Ok(path)
         }
 
         fn rewrite_selected_staged_last_batch_completed_at(

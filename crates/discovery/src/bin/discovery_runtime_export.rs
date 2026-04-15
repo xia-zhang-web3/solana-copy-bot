@@ -9,7 +9,7 @@ use copybot_discovery::runtime_restore_ops::{
 use copybot_discovery::{
     DiscoveryService, RecentRawCatchUpDiagnostic, RecentRawPromotedRetentionContractDiagnostic,
     RecentRawPromotionBlockerDiagnostic, RecentRawReplacementArtifactHistoryContractDiagnostic,
-    RecentRawReplacementProgressContractDiagnostic,
+    RecentRawReplacementAttemptTelemetryDiagnostic, RecentRawReplacementProgressContractDiagnostic,
     RecentRawReplacementPromotionContractDiagnostic, RecentRawSourceWindowContractDiagnostic,
     RecentRawStagedBirthDiagnostic, RecentRawStagedLineageDiagnostic,
     RecentRawStagedRegressionDiagnostic, RecentRawStagedWindowSeedingDiagnostic,
@@ -28,6 +28,7 @@ const USAGE: &str = "usage:
   discovery_runtime_export --explain-recent-raw-replacement-promotion-contract --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-replacement-progress-contract --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-replacement-artifact-history-contract --state-root <path> [--json]
+  discovery_runtime_export --explain-recent-raw-replacement-attempt-telemetry --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-window-seeding --state-root <path> [--json]
@@ -96,6 +97,12 @@ struct ExplainRecentRawReplacementArtifactHistoryContractConfig {
 }
 
 #[derive(Debug, Clone)]
+struct ExplainRecentRawReplacementAttemptTelemetryConfig {
+    state_root: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 struct ExplainRecentRawStagedLineageConfig {
     state_root: PathBuf,
     json: bool,
@@ -133,6 +140,7 @@ enum Command {
     ExplainRecentRawReplacementArtifactHistoryContract(
         ExplainRecentRawReplacementArtifactHistoryContractConfig,
     ),
+    ExplainRecentRawReplacementAttemptTelemetry(ExplainRecentRawReplacementAttemptTelemetryConfig),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
     ExplainRecentRawStagedBirth(ExplainRecentRawStagedBirthConfig),
@@ -181,6 +189,7 @@ where
     let mut explain_recent_raw_replacement_promotion_contract = false;
     let mut explain_recent_raw_replacement_progress_contract = false;
     let mut explain_recent_raw_replacement_artifact_history_contract = false;
+    let mut explain_recent_raw_replacement_attempt_telemetry = false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
@@ -216,6 +225,9 @@ where
             }
             "--explain-recent-raw-replacement-artifact-history-contract" => {
                 explain_recent_raw_replacement_artifact_history_contract = true;
+            }
+            "--explain-recent-raw-replacement-attempt-telemetry" => {
+                explain_recent_raw_replacement_attempt_telemetry = true;
             }
             "--explain-recent-raw-staged-lineage" => {
                 explain_recent_raw_staged_lineage = true;
@@ -260,13 +272,14 @@ where
         + usize::from(explain_recent_raw_replacement_promotion_contract)
         + usize::from(explain_recent_raw_replacement_progress_contract)
         + usize::from(explain_recent_raw_replacement_artifact_history_contract)
+        + usize::from(explain_recent_raw_replacement_attempt_telemetry)
         + usize::from(explain_recent_raw_staged_lineage)
         + usize::from(explain_recent_raw_staged_regression)
         + usize::from(explain_recent_raw_staged_birth)
         + usize::from(explain_recent_raw_staged_window_seeding);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
 
@@ -401,6 +414,24 @@ where
         ));
     }
 
+    if explain_recent_raw_replacement_attempt_telemetry {
+        if config_path.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+        {
+            bail!("--explain-recent-raw-replacement-attempt-telemetry only accepts --state-root and optional --json");
+        }
+        return Ok(Some(Command::ExplainRecentRawReplacementAttemptTelemetry(
+            ExplainRecentRawReplacementAttemptTelemetryConfig {
+                state_root: state_root.ok_or_else(|| anyhow!("missing required --state-root"))?,
+                json,
+            },
+        )));
+    }
+
     if explain_recent_raw_staged_lineage {
         if config_path.is_some()
             || db_path.is_some()
@@ -479,7 +510,7 @@ where
 
     if state_root.is_some() {
         bail!(
-            "--state-root requires --explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, or --explain-recent-raw-staged-birth"
+            "--state-root requires --explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, or --explain-recent-raw-staged-birth"
         );
     }
     if scheduled == output_path.is_some() {
@@ -600,6 +631,20 @@ fn run_command(command: Command) -> Result<String> {
                 )
             } else {
                 Ok(render_recent_raw_replacement_artifact_history_contract_human(&diagnostic))
+            }
+        }
+        Command::ExplainRecentRawReplacementAttemptTelemetry(config) => {
+            let diagnostic =
+                DiscoveryService::explain_recent_raw_replacement_attempt_telemetry_read_only(
+                    &config.state_root,
+                )?;
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic)
+                    .context("failed serializing recent_raw replacement attempt telemetry json")
+            } else {
+                Ok(render_recent_raw_replacement_attempt_telemetry_human(
+                    &diagnostic,
+                ))
             }
         }
         Command::ExplainRecentRawStagedLineage(config) => {
@@ -1841,6 +1886,110 @@ fn render_recent_raw_replacement_artifact_history_contract_human(
     .join("\n")
 }
 
+fn render_recent_raw_replacement_attempt_telemetry_human(
+    diagnostic: &RecentRawReplacementAttemptTelemetryDiagnostic,
+) -> String {
+    [
+        "event=discovery_recent_raw_replacement_attempt_telemetry".to_string(),
+        format!("snapshot_dir={}", diagnostic.recent_raw_snapshot_dir),
+        format!(
+            "replacement_attempt_telemetry_observed={}",
+            diagnostic.recent_raw_replacement_attempt_telemetry_observed
+        ),
+        format!(
+            "reason_class={}",
+            serde_json::to_string(
+                &diagnostic.recent_raw_replacement_attempt_telemetry_reason_class
+            )
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+        ),
+        format!(
+            "replacement_attempt_telemetry_probe_bounded={}",
+            diagnostic.recent_raw_replacement_attempt_telemetry_probe_bounded
+        ),
+        format!(
+            "replacement_attempt_telemetry_scan_truncated={}",
+            diagnostic.recent_raw_replacement_attempt_telemetry_scan_truncated
+        ),
+        format!(
+            "replacement_attempt_telemetry_artifact_count={}",
+            diagnostic.recent_raw_replacement_attempt_telemetry_artifact_count
+        ),
+        format!(
+            "replacement_attempt_telemetry_parseable_count={}",
+            diagnostic.recent_raw_replacement_attempt_telemetry_parseable_count
+        ),
+        format!(
+            "replacement_attempt_telemetry_latest_path={}",
+            diagnostic
+                .recent_raw_replacement_attempt_telemetry_latest_path
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "replacement_attempt_telemetry_latest_timestamp={}",
+            format_optional_ts(
+                diagnostic
+                    .recent_raw_replacement_attempt_telemetry_latest_timestamp
+                    .as_ref()
+            )
+        ),
+        format!(
+            "replacement_attempt_telemetry_proves_advancing={}",
+            diagnostic.recent_raw_replacement_attempt_telemetry_proves_advancing
+        ),
+        format!(
+            "replacement_attempt_telemetry_proves_stalled={}",
+            diagnostic.recent_raw_replacement_attempt_telemetry_proves_stalled
+        ),
+        format!(
+            "replacement_attempt_telemetry_proves_reset_or_recreated={}",
+            diagnostic.recent_raw_replacement_attempt_telemetry_proves_reset_or_recreated
+        ),
+        format!(
+            "replacement_attempt_telemetry_last_row_count_before={}",
+            diagnostic
+                .recent_raw_replacement_attempt_telemetry_last_row_count_before
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "replacement_attempt_telemetry_last_row_count_after={}",
+            diagnostic
+                .recent_raw_replacement_attempt_telemetry_last_row_count_after
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "replacement_attempt_telemetry_staged_progress_advanced={}",
+            diagnostic
+                .recent_raw_replacement_attempt_telemetry_staged_progress_advanced
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "replacement_attempt_telemetry_staged_progress_resumed={}",
+            diagnostic
+                .recent_raw_replacement_attempt_telemetry_staged_progress_resumed
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "replacement_attempt_telemetry_staged_progress_preserved_for_retry={}",
+            diagnostic
+                .recent_raw_replacement_attempt_telemetry_staged_progress_preserved_for_retry
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "explanation={}",
+            diagnostic.recent_raw_replacement_attempt_telemetry_explanation
+        ),
+    ]
+    .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1848,6 +1997,7 @@ mod tests {
         ExplainRecentRawCatchUpStatusConfig, ExplainRecentRawPromotedRetentionContractConfig,
         ExplainRecentRawPromotionBlockerConfig,
         ExplainRecentRawReplacementArtifactHistoryContractConfig,
+        ExplainRecentRawReplacementAttemptTelemetryConfig,
         ExplainRecentRawReplacementProgressContractConfig,
         ExplainRecentRawReplacementPromotionContractConfig,
         ExplainRecentRawSourceWindowContractConfig, ExplainRecentRawStagedBirthConfig,
@@ -2075,6 +2225,23 @@ mod tests {
         .expect("command should be present");
         let Command::ExplainRecentRawReplacementArtifactHistoryContract(parsed) = parsed else {
             panic!("expected replacement artifact history contract command");
+        };
+        assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_recent_raw_replacement_attempt_telemetry_mode() {
+        let parsed = parse_args_from(vec![
+            "--explain-recent-raw-replacement-attempt-telemetry".to_string(),
+            "--state-root".to_string(),
+            "/tmp/state".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ExplainRecentRawReplacementAttemptTelemetry(parsed) = parsed else {
+            panic!("expected replacement attempt telemetry command");
         };
         assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
         assert!(parsed.json);
@@ -3166,6 +3333,90 @@ mod tests {
         assert_eq!(
             parsed["recent_raw_replacement_previous_artifact_history_missing_due_to_unproven_evidence"],
             false
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_recent_raw_replacement_attempt_telemetry_renders_json() -> Result<()> {
+        let fixture = make_fixture("runtime-export-recent-raw-replacement-attempt-telemetry")?;
+        let state_root = fixture
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("state");
+        let recent_raw_dir = state_root.join("discovery_restore/recent_raw");
+        fs::create_dir_all(&recent_raw_dir)?;
+        let telemetry_path =
+            recent_raw_dir.join("discovery_recent_raw_snapshot_attempt_latest.json");
+        write_json_atomic(
+            &telemetry_path,
+            &serde_json::json!({
+                "event": "discovery_recent_raw_snapshot",
+                "state": "deferred",
+                "staged_progress_resumed": true,
+                "staged_seeded_from_latest_surface": false,
+                "staged_progress_preserved_for_retry": true,
+                "staged_progress_advanced": true,
+                "staged_row_count_before_attempt": 1,
+                "staged_row_count_after_attempt": 2,
+                "staged_covered_through_cursor_before_attempt": {
+                    "ts_utc": "2026-04-14T07:56:00Z",
+                    "slot": parse_ts("2026-04-14T07:56:00Z")?.timestamp() as u64,
+                    "signature": "sig-source-a"
+                },
+                "staged_covered_through_cursor_after_attempt": {
+                    "ts_utc": "2026-04-14T07:57:00Z",
+                    "slot": parse_ts("2026-04-14T07:57:00Z")?.timestamp() as u64,
+                    "signature": "sig-source-b"
+                },
+                "created_at": "2026-04-14T08:05:00Z",
+                "last_batch_completed_at": "2026-04-14T08:10:00Z"
+            }),
+        )?;
+
+        let rendered = run_command(Command::ExplainRecentRawReplacementAttemptTelemetry(
+            ExplainRecentRawReplacementAttemptTelemetryConfig {
+                state_root,
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["recent_raw_replacement_attempt_telemetry_reason_class"],
+            "recent_raw_replacement_attempt_telemetry_advancing_but_incomplete"
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_attempt_telemetry_artifact_count"],
+            1
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_attempt_telemetry_parseable_count"],
+            1
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_attempt_telemetry_proves_advancing"],
+            true
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_attempt_telemetry_last_row_count_before"],
+            1
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_attempt_telemetry_last_row_count_after"],
+            2
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_attempt_telemetry_staged_progress_advanced"],
+            true
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_attempt_telemetry_staged_progress_resumed"],
+            true
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_attempt_telemetry_staged_progress_preserved_for_retry"],
+            true
         );
         Ok(())
     }
