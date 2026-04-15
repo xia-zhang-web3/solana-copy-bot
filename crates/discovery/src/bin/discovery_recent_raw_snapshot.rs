@@ -36,7 +36,8 @@ const SNAPSHOT_SMALL_MAX_ATTEMPT_DURATION_MS: u64 = 45_000;
 const SNAPSHOT_MEDIUM_MAX_ATTEMPT_DURATION_MS: u64 = 60_000;
 const SNAPSHOT_LARGE_MAX_ATTEMPT_DURATION_MS: u64 = 90_000;
 const SNAPSHOT_HUGE_MAX_ATTEMPT_DURATION_MS: u64 = 120_000;
-const SNAPSHOT_RESUME_ROW_BATCH_MULTIPLIER: usize = 8;
+const SNAPSHOT_RESUME_ROW_BATCH_MULTIPLIER: usize = 64;
+const SNAPSHOT_RESUME_ROW_BATCH_MAX_ROWS: usize = 65_536;
 const STAGED_ARCHIVE_SNAPSHOT_SUFFIX: &str = ".archive-staged";
 const STAGED_ARCHIVE_METADATA_SUFFIX: &str = ".archive-staged.json";
 const LATEST_ATTEMPT_TELEMETRY_FILE_NAME: &str =
@@ -114,6 +115,9 @@ struct SnapshotOutput {
     staged_terminal_phase: Option<String>,
     staged_source_read_duration_ms: u64,
     staged_write_duration_ms: u64,
+    staged_write_rows_per_second: Option<f64>,
+    staged_write_batch_count: usize,
+    staged_write_batch_rows: usize,
     source_db_bytes: u64,
     source_wal_bytes: u64,
     source_total_bytes: u64,
@@ -318,6 +322,7 @@ struct StagedSnapshotProgress {
     terminal_phase: Option<StagedSnapshotTerminalPhase>,
     source_read_duration_ms: u64,
     staged_write_duration_ms: u64,
+    write_batch_rows: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -547,7 +552,16 @@ fn discovery_runtime_cursor_cmp(
 fn snapshot_resume_batch_size(policy: &SqliteSnapshotPolicy) -> usize {
     (policy.pages_per_step.max(1) as usize)
         .saturating_mul(SNAPSHOT_RESUME_ROW_BATCH_MULTIPLIER)
+        .min(SNAPSHOT_RESUME_ROW_BATCH_MAX_ROWS)
         .max(1)
+}
+
+fn staged_write_rows_per_second(progress: &StagedSnapshotProgress) -> Option<f64> {
+    if progress.rows_inserted_during_attempt == 0 {
+        return None;
+    }
+    let duration_ms = progress.staged_write_duration_ms.max(1);
+    Some(progress.rows_inserted_during_attempt as f64 * 1_000.0 / duration_ms as f64)
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -2303,6 +2317,7 @@ fn resume_staged_snapshot_with_policy(
     let deadline = snapshot_attempt_deadline(snapshot_policy.max_attempt_duration);
     let started = Instant::now();
     let batch_limit = snapshot_resume_batch_size(snapshot_policy);
+    progress.write_batch_rows = batch_limit;
     let mut completed_batches = 0usize;
     let mut current_state = before_state.clone();
     let mut budget_exhausted = false;
@@ -2736,6 +2751,9 @@ fn render_output(
             .map(str::to_string),
         staged_source_read_duration_ms: output_context.staged_progress.source_read_duration_ms,
         staged_write_duration_ms: output_context.staged_progress.staged_write_duration_ms,
+        staged_write_rows_per_second: staged_write_rows_per_second(&output_context.staged_progress),
+        staged_write_batch_count: output_context.staged_progress.completed_batches,
+        staged_write_batch_rows: output_context.staged_progress.write_batch_rows,
         source_db_bytes: snapshot_context.source_stats.source_db_bytes,
         source_wal_bytes: snapshot_context.source_stats.source_wal_bytes,
         source_total_bytes: snapshot_context.source_stats.source_total_bytes(),
@@ -2916,6 +2934,18 @@ fn render_human(output: &SnapshotOutput) -> String {
             "staged_write_duration_ms={}",
             output.staged_write_duration_ms
         ),
+        format!(
+            "staged_write_rows_per_second={}",
+            output
+                .staged_write_rows_per_second
+                .map(|value| format!("{value:.2}"))
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "staged_write_batch_count={}",
+            output.staged_write_batch_count
+        ),
+        format!("staged_write_batch_rows={}", output.staged_write_batch_rows),
         format!("source_db_bytes={}", output.source_db_bytes),
         format!("source_wal_bytes={}", output.source_wal_bytes),
         format!("source_total_bytes={}", output.source_total_bytes),
@@ -3103,6 +3133,36 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_resume_batch_size_uses_explicit_staged_write_cap() {
+        let small_policy = copybot_storage::SqliteSnapshotPolicy {
+            pages_per_step: 8,
+            ..copybot_storage::SqliteSnapshotPolicy::default()
+        };
+        assert_eq!(
+            super::snapshot_resume_batch_size(&small_policy),
+            8 * super::SNAPSHOT_RESUME_ROW_BATCH_MULTIPLIER
+        );
+
+        let live_capped_policy = copybot_storage::SqliteSnapshotPolicy {
+            pages_per_step: super::SNAPSHOT_MAX_PAGES_PER_STEP as i32,
+            ..copybot_storage::SqliteSnapshotPolicy::default()
+        };
+        assert_eq!(
+            super::snapshot_resume_batch_size(&live_capped_policy),
+            super::SNAPSHOT_RESUME_ROW_BATCH_MAX_ROWS
+        );
+
+        let oversized_policy = copybot_storage::SqliteSnapshotPolicy {
+            pages_per_step: 16_384,
+            ..copybot_storage::SqliteSnapshotPolicy::default()
+        };
+        assert_eq!(
+            super::snapshot_resume_batch_size(&oversized_policy),
+            super::SNAPSHOT_RESUME_ROW_BATCH_MAX_ROWS
+        );
+    }
+
+    #[test]
     fn source_window_outran_staged_progress_returns_true_when_source_cursor_is_newer() -> Result<()>
     {
         let source_state = RecentRawJournalStateRow {
@@ -3148,7 +3208,7 @@ mod tests {
             now - Duration::minutes(30),
             10,
             "sig-budget",
-            512,
+            1_024,
             now,
         )?;
         let _guard =
@@ -3201,6 +3261,21 @@ mod tests {
         );
         assert!(output["staged_rows_processed"].as_u64().unwrap_or_default() > 0);
         assert!(output["staged_rows_inserted"].as_u64().unwrap_or_default() > 0);
+        assert_eq!(
+            output["staged_write_batch_count"],
+            output["staged_completed_batches"]
+        );
+        assert_eq!(
+            output["staged_write_batch_rows"].as_u64(),
+            Some(
+                (8 * super::SNAPSHOT_RESUME_ROW_BATCH_MULTIPLIER)
+                    .min(super::SNAPSHOT_RESUME_ROW_BATCH_MAX_ROWS) as u64
+            )
+        );
+        assert!(
+            output["staged_write_rows_per_second"].as_f64().is_some(),
+            "deferred progress must expose write-throughput telemetry"
+        );
         assert_eq!(output["staged_terminal_phase"], "staged_write");
         assert_eq!(output["staged_progress_preserved_for_retry"], true);
         assert_eq!(output["staged_progress_advanced"], true);
@@ -3212,6 +3287,14 @@ mod tests {
                     .as_u64()
                     .unwrap_or_default(),
             "bounded deferred outcome must expose preserved staged forward progress"
+        );
+        assert!(
+            !fixture.snapshot_dir().join("latest.sqlite").exists(),
+            "partial staged progress must not be published as latest"
+        );
+        assert!(
+            !fixture.snapshot_dir().join("latest.json").exists(),
+            "partial staged progress must not publish latest metadata"
         );
         let telemetry_path = super::latest_attempt_telemetry_path(&fixture.snapshot_dir());
         let telemetry: Value = load_json(&telemetry_path)?;
@@ -3236,6 +3319,18 @@ mod tests {
         assert_eq!(
             telemetry["staged_covered_through_cursor_after_attempt"],
             output["staged_covered_through_cursor_after_attempt"]
+        );
+        assert_eq!(
+            telemetry["staged_write_rows_per_second"],
+            output["staged_write_rows_per_second"]
+        );
+        assert_eq!(
+            telemetry["staged_write_batch_count"],
+            output["staged_write_batch_count"]
+        );
+        assert_eq!(
+            telemetry["staged_write_batch_rows"],
+            output["staged_write_batch_rows"]
         );
         assert!(telemetry.get("created_at").is_some());
         assert!(telemetry.get("last_batch_completed_at").is_some());
@@ -3582,7 +3677,7 @@ mod tests {
         });
         let policy = Some(copybot_storage::SqliteSnapshotPolicy {
             busy_timeout: StdDuration::from_millis(1),
-            pages_per_step: 64,
+            pages_per_step: 8,
             pause_between_steps: StdDuration::from_millis(0),
             retry_backoff_ms: vec![1, 1],
             max_attempt_duration: Some(StdDuration::from_secs(5)),

@@ -12257,3 +12257,35 @@ Live validation note, Stage 3 replacement-convergence surface (`2026-04-15`):
    - `solana-copy-bot.service=active`
    - `copybot-discovery-recent-raw-snapshot.timer=active`
    - `copybot-discovery-runtime-export.timer=active`
+
+Acceptance update, Stage 3 recent-raw staged-write throughput hardening (`2026-04-15`):
+
+1. The scheduled `discovery_recent_raw_snapshot` staged replacement path now uses
+   a larger bounded SQLite write batch:
+   - `SNAPSHOT_RESUME_ROW_BATCH_MULTIPLIER = 64`
+   - `SNAPSHOT_RESUME_ROW_BATCH_MAX_ROWS = 65_536`
+   - effective batch rows are `min(pages_per_step * 64, 65_536)`
+2. For the current live adaptive policy, `pages_per_step=1024` therefore maps to
+   at most `65_536` staged rows per write batch instead of the previous `8192`.
+3. This is intentionally a throughput-only change:
+   - attempt deadline is still enforced during source read and staged write
+   - deferred partial progress remains staged-only
+   - `latest.sqlite` / `latest.json` are still not published until completion
+   - promotion eligibility, archive retention, replay/export, scoring, systemd,
+     and Stage 3 gate semantics are unchanged
+4. Snapshot output and latest attempt telemetry now include write-throughput
+   fields:
+   - `staged_write_rows_per_second`
+   - `staged_write_batch_count`
+   - `staged_write_batch_rows`
+5. Acceptance checks:
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_replacement_convergence`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+   - `git diff --check -- crates/discovery/src/bin/discovery_recent_raw_snapshot.rs crates/discovery/src/lib.rs`
+6. Production implication:
+   - roll out by rebuilding only `discovery_recent_raw_snapshot`
+   - do not restart the main `solana-copy-bot.service`
+   - after the next scheduled/manual snapshot attempt, inspect telemetry and the
+     replacement convergence command to confirm whether the larger staged write
+     batches materially increase `recent_raw_replacement_latest_attempt_row_count_delta`

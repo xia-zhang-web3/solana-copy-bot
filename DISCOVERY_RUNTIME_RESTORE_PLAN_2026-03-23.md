@@ -2474,3 +2474,42 @@ Live validation:
   - Stage 3 remains blocked until the fixed staged replacement catches up and a
     newer latest surface is promoted
   - the main service and both relevant timers remained active after rollout
+
+### 20.13 Recent-raw staged-write throughput hardening (`2026-04-15`)
+
+Accepted repository change:
+
+- the scheduled `discovery_recent_raw_snapshot` staged replacement path now
+  writes larger bounded row batches into the fixed staged snapshot artifact
+- the batch size is now:
+  - `min(pages_per_step * 64, 65_536)`
+- on the live adaptive policy where `pages_per_step=1024`, this raises the
+  maximum staged write batch from `8192` rows to `65_536` rows
+- the change is deliberately scoped to throughput:
+  - the attempt deadline is still passed into both source reads and staged
+    writes
+  - deferred progress remains staged-only
+  - `latest.sqlite` and `latest.json` are not published until a completed
+    replacement attempt
+  - promotion eligibility, archive retention, replay/export, scoring, systemd,
+    and Stage 3 gate semantics are unchanged
+
+New telemetry:
+
+- snapshot output and latest attempt telemetry now emit:
+  - `staged_write_rows_per_second`
+  - `staged_write_batch_count`
+  - `staged_write_batch_rows`
+
+Operator path:
+
+- roll out by rebuilding only `discovery_recent_raw_snapshot`
+- do not restart `solana-copy-bot.service`
+- after one scheduled/manual snapshot attempt, compare:
+  - `staged_write_batch_rows`
+  - `staged_write_batch_count`
+  - `staged_write_rows_per_second`
+  - `recent_raw_replacement_latest_attempt_row_count_delta`
+  - `recent_raw_replacement_estimated_attempts_to_current_source`
+- the expected outcome is not immediate Stage 3 green; it is higher bounded
+  staged replacement throughput while preserving the same fail-closed semantics
