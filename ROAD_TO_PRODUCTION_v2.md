@@ -12035,3 +12035,43 @@ Acceptance update, Stage 3 replacement-attempt-telemetry bounded correction (`20
    - if default mode finds no exact-path telemetry, the next seam is no longer
      boundedness; it is whether narrow durable attempt telemetry should be
      persisted by the snapshot path
+
+Acceptance update, Stage 3 latest snapshot-attempt telemetry persistence (`2026-04-15`):
+
+1. The scheduled recent-raw snapshot binary now persists one latest-only attempt
+   telemetry artifact after each fresh scheduled snapshot attempt:
+   - `state/discovery_restore/recent_raw/discovery_recent_raw_snapshot_attempt_latest.json`
+2. The artifact reuses the existing `discovery_recent_raw_snapshot`
+   `SnapshotOutput` JSON schema, including the current staged-progress fields:
+   - `state`
+   - `staged_progress_resumed`
+   - `staged_seeded_from_latest_surface`
+   - `staged_progress_preserved_for_retry`
+   - `staged_progress_advanced`
+   - `staged_row_count_before_attempt`
+   - `staged_row_count_after_attempt`
+   - `staged_covered_through_cursor_before_attempt`
+   - `staged_covered_through_cursor_after_attempt`
+   - `created_at`
+   - `last_batch_completed_at`
+3. The write is intentionally narrow and non-authoritative:
+   - latest-only, no per-attempt archive fanout
+   - atomic via `write_json_atomic`
+   - best-effort; write failure logs a warning and returns the original
+     snapshot output unchanged
+   - no change to `Deferred`, `Written`, `HardFailure`, exit codes, promotion
+     eligibility, archive retention, replay/export, or scoring policy
+4. The existing bounded operator surface can now consume this exact path:
+   - `discovery_runtime_export --explain-recent-raw-replacement-attempt-telemetry --state-root <path> --json`
+5. Acceptance checks:
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_replacement_attempt_telemetry`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+   - `git diff --check -- crates/discovery/src/bin/discovery_recent_raw_snapshot.rs`
+6. Production implication:
+   - after rollout of `discovery_recent_raw_snapshot`, the next scheduled or
+     manual scheduled run should create the exact latest telemetry artifact
+   - the runtime-export bounded telemetry surface should then be able to prove
+     whether the current replacement attempt is advancing, stalled, or
+     reset/recreated from persisted attempt facts instead of returning
+     `missing_or_unparseable`

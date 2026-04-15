@@ -2355,3 +2355,37 @@ Reading:
 - the recovery/snapshot branch remains frozen as a coding focus, but the live
   host now also has a concrete storage-retention guardrail that must be kept
   under control during normal operations
+
+### 20.11 Latest recent-raw snapshot attempt telemetry (`2026-04-15`)
+
+Accepted repository change:
+
+- `discovery_recent_raw_snapshot --scheduled` now writes one latest-only attempt
+  telemetry artifact after a fresh scheduled attempt returns:
+  - `state/discovery_restore/recent_raw/discovery_recent_raw_snapshot_attempt_latest.json`
+- the artifact reuses the existing `SnapshotOutput` JSON contract, so it records
+  the same staged-progress fields already printed by the service:
+  - `staged_progress_resumed`
+  - `staged_seeded_from_latest_surface`
+  - `staged_progress_preserved_for_retry`
+  - `staged_progress_advanced`
+  - `staged_row_count_before_attempt`
+  - `staged_row_count_after_attempt`
+  - `staged_covered_through_cursor_before_attempt`
+  - `staged_covered_through_cursor_after_attempt`
+  - `created_at`
+  - `last_batch_completed_at`
+- persistence is atomic and best-effort:
+  - telemetry write failure logs a warning
+  - the original snapshot output and exit code are returned unchanged
+  - promotion, archive retention, replay/export, and scoring semantics are not
+    changed
+
+Operator path:
+
+- after rollout and one scheduled/manual scheduled snapshot attempt, inspect the
+  durable telemetry through:
+  - `discovery_runtime_export --explain-recent-raw-replacement-attempt-telemetry --state-root /var/www/solana-copy-bot/state --json`
+- default runtime-export mode remains bounded to exact paths; it should now find
+  the new latest telemetry artifact when present instead of requiring a deep
+  directory scan

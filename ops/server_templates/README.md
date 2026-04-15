@@ -612,6 +612,23 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
      - do not yet treat the runtime discovery export / top-wallet artifact
        surface as healthy until `copybot-discovery-runtime-export.service`
        stops failing and exports fresh runtime truth again
+25. The scheduled recent-raw snapshot service now also writes one latest-only
+    durable attempt telemetry artifact:
+   - path:
+     `/var/www/solana-copy-bot/state/discovery_restore/recent_raw/discovery_recent_raw_snapshot_attempt_latest.json`
+   - schema: the same `discovery_recent_raw_snapshot` `SnapshotOutput` JSON
+     emitted by the service
+   - write contract: atomic, latest-only, and best-effort
+   - write failure logs a warning but does not change service result, exit code,
+     promotion eligibility, archive retention, or Stage 3 truth
+26. Operators should inspect that persisted attempt state through the bounded
+    runtime-export surface, not by broad artifact-directory scans:
+   - `discovery_runtime_export --explain-recent-raw-replacement-attempt-telemetry --state-root /var/www/solana-copy-bot/state --json`
+   - default mode checks exact bounded paths and should report
+     `recent_raw_replacement_attempt_telemetry_probe_bounded=true`
+   - after a fresh scheduled snapshot attempt, a healthy telemetry path should
+     move away from `recent_raw_replacement_attempt_telemetry_missing_or_unparseable`
+     when the latest telemetry JSON is present and parseable
 
 ## Stage 4 Execution Readiness Audit
 

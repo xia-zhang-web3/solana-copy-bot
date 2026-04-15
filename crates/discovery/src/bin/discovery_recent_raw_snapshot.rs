@@ -17,6 +17,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
 const USAGE: &str = "usage: discovery_recent_raw_snapshot --config <path> [--journal-db-path <path>] (--output <path> | --scheduled) [--force] [--json] [--now <rfc3339>]";
 const SNAPSHOT_SMALL_SOURCE_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
@@ -38,6 +39,8 @@ const SNAPSHOT_HUGE_MAX_ATTEMPT_DURATION_MS: u64 = 120_000;
 const SNAPSHOT_RESUME_ROW_BATCH_MULTIPLIER: usize = 8;
 const STAGED_ARCHIVE_SNAPSHOT_SUFFIX: &str = ".archive-staged";
 const STAGED_ARCHIVE_METADATA_SUFFIX: &str = ".archive-staged.json";
+const LATEST_ATTEMPT_TELEMETRY_FILE_NAME: &str =
+    "discovery_recent_raw_snapshot_attempt_latest.json";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -905,7 +908,7 @@ fn run_scheduled(
     } else {
         LatestSurfaceAction::RecreatedLatestSurfaceFromSource
     };
-    write_fresh_scheduled_snapshot(
+    let output = write_fresh_scheduled_snapshot(
         &config.config_path,
         source_db_path,
         source_store,
@@ -920,7 +923,26 @@ fn run_scheduled(
         snapshot_context,
         latest_surface.manifest.as_ref(),
         archive_maintenance,
-    )
+    )?;
+    persist_latest_attempt_telemetry_best_effort(&snapshot_dir, &output);
+    Ok(output)
+}
+
+fn latest_attempt_telemetry_path(snapshot_dir: &Path) -> PathBuf {
+    snapshot_dir.join(LATEST_ATTEMPT_TELEMETRY_FILE_NAME)
+}
+
+fn persist_latest_attempt_telemetry_best_effort(snapshot_dir: &Path, output: &SnapshotOutput) {
+    let telemetry_path = latest_attempt_telemetry_path(snapshot_dir);
+    if let Err(error) = write_json_atomic(&telemetry_path, output)
+        .with_context(|| format!("failed writing {}", telemetry_path.display()))
+    {
+        warn!(
+            telemetry_path = %telemetry_path.display(),
+            error = %error,
+            "failed to persist latest recent_raw snapshot attempt telemetry"
+        );
+    }
 }
 
 fn assess_latest_surface(
@@ -3017,6 +3039,7 @@ mod tests {
     use chrono::{DateTime, Duration, Utc};
     use copybot_core_types::SwapEvent;
     use copybot_discovery::runtime_restore_ops::{load_json, write_json_atomic};
+    use copybot_discovery::{DiscoveryService, RecentRawReplacementAttemptTelemetryReasonClass};
     use copybot_storage::RecentRawJournalStateRow;
     use serde_json::Value;
     use std::path::{Path, PathBuf};
@@ -3190,7 +3213,111 @@ mod tests {
                     .unwrap_or_default(),
             "bounded deferred outcome must expose preserved staged forward progress"
         );
+        let telemetry_path = super::latest_attempt_telemetry_path(&fixture.snapshot_dir());
+        let telemetry: Value = load_json(&telemetry_path)?;
+        assert_eq!(telemetry["event"], "discovery_recent_raw_snapshot");
+        assert_eq!(telemetry["state"], "deferred");
+        assert_eq!(telemetry["staged_progress_resumed"], false);
+        assert_eq!(telemetry["staged_seeded_from_latest_surface"], false);
+        assert_eq!(telemetry["staged_progress_preserved_for_retry"], true);
+        assert_eq!(telemetry["staged_progress_advanced"], true);
+        assert_eq!(
+            telemetry["staged_row_count_before_attempt"],
+            output["staged_row_count_before_attempt"]
+        );
+        assert_eq!(
+            telemetry["staged_row_count_after_attempt"],
+            output["staged_row_count_after_attempt"]
+        );
+        assert_eq!(
+            telemetry["staged_covered_through_cursor_before_attempt"],
+            output["staged_covered_through_cursor_before_attempt"]
+        );
+        assert_eq!(
+            telemetry["staged_covered_through_cursor_after_attempt"],
+            output["staged_covered_through_cursor_after_attempt"]
+        );
+        assert!(telemetry.get("created_at").is_some());
+        assert!(telemetry.get("last_batch_completed_at").is_some());
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_attempt_telemetry_read_only(
+                &fixture
+                    .config_path
+                    .parent()
+                    .expect("config parent")
+                    .join("state"),
+            )?;
+        assert_eq!(
+            diagnostic.recent_raw_replacement_attempt_telemetry_reason_class,
+            RecentRawReplacementAttemptTelemetryReasonClass::RecentRawReplacementAttemptTelemetryAdvancingButIncomplete
+        );
+        assert_eq!(
+            diagnostic
+                .recent_raw_replacement_attempt_telemetry_latest_path
+                .as_deref(),
+            Some(telemetry_path.to_string_lossy().as_ref())
+        );
+        assert!(diagnostic.recent_raw_replacement_attempt_telemetry_probe_bounded);
+        assert!(diagnostic
+            .recent_raw_replacement_attempt_telemetry_scanned_dirs
+            .is_empty());
+        assert_eq!(
+            diagnostic.recent_raw_replacement_attempt_telemetry_scan_file_limit,
+            0
+        );
         assert_eq!(staged_artifact_count(&fixture.snapshot_dir())?, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduled_attempt_telemetry_write_failure_does_not_change_snapshot_result() -> Result<()> {
+        let fixture = make_fixture("recent-raw-snapshot-telemetry-write-failure")?;
+        let now = parse_ts("2026-03-23T12:00:00Z")?;
+        seed_recent_raw_journal_range(
+            &fixture.journal_store,
+            now - Duration::minutes(30),
+            10,
+            "sig-telemetry-failure",
+            512,
+            now,
+        )?;
+        let telemetry_path = super::latest_attempt_telemetry_path(&fixture.snapshot_dir());
+        std::fs::create_dir_all(&telemetry_path)?;
+        let _guard =
+            install_resumable_snapshot_progress_hook(|completed_batches, _staged_row_count| {
+                completed_batches >= 1
+            });
+
+        let deferred = run_with_snapshot_policy_override(
+            Config {
+                config_path: fixture.config_path.clone(),
+                journal_db_path: Some(fixture.journal_db_path.clone()),
+                output_path: None,
+                scheduled: true,
+                force: true,
+                json: true,
+                now,
+            },
+            Some(copybot_storage::SqliteSnapshotPolicy {
+                busy_timeout: StdDuration::from_millis(1),
+                pages_per_step: 8,
+                pause_between_steps: StdDuration::from_millis(0),
+                retry_backoff_ms: vec![1, 1],
+                max_attempt_duration: Some(StdDuration::from_secs(5)),
+                pin_source_snapshot: true,
+            }),
+        )?;
+
+        assert_eq!(deferred.exit_code, 75);
+        let output: Value = serde_json::from_str(&deferred.rendered_output)?;
+        assert_eq!(output["state"], "deferred");
+        assert_eq!(
+            output["latest_surface_action"],
+            "unchanged_due_to_attempt_budget"
+        );
+        assert_eq!(output["staged_progress_preserved_for_retry"], true);
+        assert!(telemetry_path.is_dir());
         Ok(())
     }
 
@@ -3493,6 +3620,13 @@ mod tests {
             .as_u64()
             .context("first deferred staged row count must be present")?;
         assert!(first_staged_rows > stale_latest_manifest.row_count as u64);
+        let telemetry_path = super::latest_attempt_telemetry_path(&fixture.snapshot_dir());
+        let first_telemetry: Value = load_json(&telemetry_path)?;
+        assert_eq!(first_telemetry["state"], "deferred");
+        assert_eq!(
+            first_telemetry["staged_row_count_after_attempt"].as_u64(),
+            Some(first_staged_rows)
+        );
         assert_eq!(staged_artifact_count(&fixture.snapshot_dir())?, 2);
 
         let second_deferred = run_with_snapshot_policy_override(
@@ -3521,6 +3655,17 @@ mod tests {
             .as_u64()
             .context("second deferred staged row count must be present")?;
         assert!(second_staged_rows > first_staged_rows);
+        let second_telemetry: Value = load_json(&telemetry_path)?;
+        assert_eq!(second_telemetry["state"], "deferred");
+        assert_eq!(
+            second_telemetry["staged_row_count_before_attempt"].as_u64(),
+            Some(first_staged_rows)
+        );
+        assert_eq!(
+            second_telemetry["staged_row_count_after_attempt"].as_u64(),
+            Some(second_staged_rows)
+        );
+        assert_ne!(first_telemetry, second_telemetry);
         assert_eq!(staged_artifact_count(&fixture.snapshot_dir())?, 2);
 
         let completed = run_with_snapshot_policy_override(
