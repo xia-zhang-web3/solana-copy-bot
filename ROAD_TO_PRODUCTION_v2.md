@@ -12445,3 +12445,56 @@ Acceptance update, Stage 3 recent-raw staged bulk-insert write path (`2026-04-15
      `staged_write_rows_per_second`, `staged_write_batch_count`,
      `staged_write_batch_rows`, and replacement convergence against the
      previous post-build baseline
+
+Live validation note, Stage 3 recent-raw staged bulk-insert write path (`2026-04-15`):
+
+1. Commit `4d2d81f` was rolled out to the production host.
+2. Only `discovery_recent_raw_snapshot` was rebuilt in release mode; the main
+   `solana-copy-bot.service` was not restarted.
+3. The snapshot timer was briefly stopped during rebuild/manual verification and
+   then restarted:
+   - `copybot-discovery-recent-raw-snapshot.timer=active`
+4. The post-build manual snapshot attempt completed as a bounded deferred run:
+   - `state=deferred`
+   - `terminal_reason=staged_write_attempt_duration_budget_exhausted`
+   - `latest_surface_action=deferred_due_to_attempt_budget`
+   - `archive_promoted=false`
+5. The optimized staged write path preserved forward progress but did not yet
+   complete the replacement:
+   - `staged_progress_resumed=true`
+   - `staged_progress_preserved_for_retry=true`
+   - `staged_progress_advanced=true`
+   - `staged_row_count_before_attempt=46828273`
+   - `staged_row_count_after_attempt=46897713`
+   - `staged_rows_inserted=69440`
+6. Live throughput telemetry was present under the new binary:
+   - `staged_write_batch_rows=65536`
+   - `staged_write_batch_count=2`
+   - `staged_write_rows_per_second=573.964937222585`
+   - `staged_write_duration_ms=120983`
+   - `staged_source_read_duration_ms=529`
+7. The bounded convergence surface still correctly reports Stage 3 as blocked
+   on an advancing but incomplete replacement:
+   - `recent_raw_replacement_convergence_reason_class=recent_raw_replacement_convergence_advancing_but_incomplete`
+   - `recent_raw_replacement_candidate_row_count=46897713`
+   - `recent_raw_source_row_count=56180677`
+   - `recent_raw_replacement_rows_remaining_to_current_source=9282964`
+   - `recent_raw_replacement_latest_attempt_row_count_delta=69440`
+   - `recent_raw_replacement_estimated_attempts_to_current_source=134`
+   - `recent_raw_replacement_candidate_complete_against_current_source=false`
+   - `recent_raw_replacement_candidate_promotable_now=false`
+   - `recent_raw_replacement_attempt_telemetry_parseable=true`
+   - `recent_raw_replacement_attempt_telemetry_probe_bounded=true`
+8. Current interpretation:
+   - Stage 3 remains blocked
+   - the new bulk-insert path is deployed and preserves staged forward progress
+   - this first live run proves bounded behavior under the new code, but does
+     not yet prove a material live throughput increase versus the previous
+     post-build baseline
+   - continue watching for `state=written`, `archive_promoted=true`, and a
+     newer promoted `latest.sqlite` frontier
+9. Post-rollout service state remained healthy:
+   - `solana-copy-bot.service=active`
+   - `copybot-discovery-recent-raw-snapshot.timer=active`
+   - `copybot-discovery-runtime-export.timer=active`
+   - server HEAD is `4d2d81f`
