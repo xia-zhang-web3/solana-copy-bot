@@ -11622,6 +11622,75 @@ Acceptance update, package-chancel-certificate-latest handoff surface (`2026-04-
      incident remains open
    - this batch does not authorize or perform production activation
 
+Acceptance update, package-apse-receipt-latest handoff surface (`2026-04-15`):
+
+1. Stage 4 now also has one bounded apse-receipt-side handoff surface from
+   the latest immutable package chain to the already accepted apse-receipt
+   contract:
+   - `copybot_tiny_live_activation_package_apse_receipt_latest`
+2. The new operator surface is explicit and bounded:
+   - `--plan-latest-apse-receipt --root <path> [--json]`
+   - `--render-latest-apse-receipt-script --root <path> --output <path> [--json]`
+   - `--run-latest-apse-receipt --root <path> --session-dir <path> [--json]`
+   - `--verify-latest-apse-receipt --session-dir <path> [--json]`
+3. The command deliberately reuses accepted truth instead of inventing a new
+   apse-receipt path:
+   - latest immutable chain resolution still comes from the accepted
+     `copybot_tiny_live_activation_package_chancel_certificate_latest`
+     handoff
+   - latest chain validity still requires the current top accepted layer
+     `clerestory_certificate`
+   - downstream apse-receipt execution still runs through the accepted
+     `copybot_tiny_live_activation_package_apse_receipt` contract with the
+     exact latest-chancel-certificate session and exact downstream
+     decision-packet confirmation anchor proved by the resolved latest chain
+4. The handoff remains fail-closed, archival, and planning-safe:
+   - it refuses when no latest chain exists, when the latest chain is invalid,
+     or when the latest chain does not prove the exact nested
+     latest-chancel-certificate lineage required by the accepted apse-receipt
+     contract
+   - the downstream `--confirm-decision-packet-session-dir` remains
+     confirmation-only and never replaces latest-chancel-certificate lineage
+     as the source of truth
+   - it remains read-only / archival exactly like the accepted native
+     apse-receipt contract
+   - it never marks `activation_authorized=true`
+   - run mode still preserves the existing Stage 3 / pre-activation refusal
+     semantics of the downstream apse-receipt contract
+5. Verification is now real on wrapper truth, copied
+   latest-chancel-certificate truth, copied native apse-receipt truth, and
+   nested accepted verify truth:
+   - `--verify-latest-apse-receipt` re-resolves the current latest immutable
+     chain, verifies the accepted nested latest-chancel-certificate and
+     apse-receipt contracts, and compares stored wrapper session / status /
+     report artifacts against that resolved snapshot
+   - fail-closed checks cover wrapper metadata, copied
+     latest-chancel-certificate plan / run truth, drifted downstream
+     decision-packet confirmation anchor, copied native apse-receipt run
+     truth, nested persisted apse-receipt session/status truth, accepted
+     nested verify truth, and copied native apse-receipt identity metadata
+   - nested latest-chancel copied evidence stays on upstream modes
+     `plan_latest_chancel_certificate`, `run_latest_chancel_certificate`, and
+     `verify_latest_chancel_certificate`; stale parent latest-apse modes are
+     rejected as drifted nested evidence
+   - apse identity wording uses accepted native `standard-seal` language;
+     upstream chancel identity wording remains `herald` only where it refers
+     to the accepted chancel-certificate input
+6. Practical meaning:
+   - operators can now move from the latest immutable package chain to the exact
+     accepted apse-receipt contract without manual session-dir archaeology
+   - this closes the remaining latest-chain apse-receipt blind spot while
+     Stage 3 remains non-green
+7. Acceptance stayed on the bounded surface:
+   - `rustfmt --check crates/app/src/bin/copybot_tiny_live_activation_package_apse_receipt_latest.rs`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_apse_receipt_latest`
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_apse_receipt_latest`
+   - `git diff --check --no-index -- /dev/null crates/app/src/bin/copybot_tiny_live_activation_package_apse_receipt_latest.rs`
+8. Current production status remains unchanged:
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+   - this batch does not authorize or perform production activation
+
 Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
 
 1. The repo now has one more final immutable archival layer over the verified
