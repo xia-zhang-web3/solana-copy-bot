@@ -2448,3 +2448,29 @@ Operator path:
   - `recent_raw_replacement_estimated_attempts_to_current_source`
   - `recent_raw_replacement_candidate_complete_against_current_source`
   - `recent_raw_replacement_candidate_promotable_now`
+
+Live validation:
+
+- commit `c2f87c7` was deployed on the production host and only
+  `discovery_runtime_export` was rebuilt
+- the first immediate convergence probe returned quickly but could not parse
+  latest telemetry because the previous scheduled snapshot cleanup had removed:
+  - `/var/www/solana-copy-bot/state/discovery_restore/recent_raw/discovery_recent_raw_snapshot_attempt_latest.json`
+- after the next scheduled snapshot attempt completed at
+  `2026-04-15 13:59:52 UTC`, the exact latest telemetry file existed again
+- the live convergence command then returned:
+  - `recent_raw_replacement_convergence_reason_class=recent_raw_replacement_convergence_advancing_but_incomplete`
+  - `recent_raw_replacement_candidate_row_count=45625723`
+  - `recent_raw_source_row_count=56180677`
+  - `recent_raw_replacement_rows_remaining_to_current_source=10554954`
+  - `recent_raw_replacement_latest_attempt_row_count_delta=66566`
+  - `recent_raw_replacement_estimated_attempts_to_current_source=159`
+  - `recent_raw_replacement_candidate_complete_against_current_source=false`
+  - `recent_raw_replacement_candidate_promotable_now=false`
+  - `recent_raw_replacement_attempt_telemetry_parseable=true`
+  - `recent_raw_replacement_attempt_telemetry_probe_bounded=true`
+- current reading:
+  - the replacement path is advancing but still incomplete
+  - Stage 3 remains blocked until the fixed staged replacement catches up and a
+    newer latest surface is promoted
+  - the main service and both relevant timers remained active after rollout

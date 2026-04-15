@@ -661,6 +661,21 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
      - `recent_raw_replacement_latest_attempt_row_count_delta`
      - `recent_raw_replacement_estimated_attempts_to_current_source`
      - `recent_raw_replacement_candidate_promotable_now`
+29. Live validation on `2026-04-15 13:59 UTC`:
+   - commit `c2f87c7` was deployed and only `discovery_runtime_export` was
+     rebuilt
+   - the convergence command returned bounded JSON without broad artifact scans
+   - after the scheduled snapshot attempt recreated the latest telemetry file,
+     the convergence command reported:
+     - `recent_raw_replacement_convergence_reason_class=recent_raw_replacement_convergence_advancing_but_incomplete`
+     - `recent_raw_replacement_candidate_row_count=45625723`
+     - `recent_raw_source_row_count=56180677`
+     - `recent_raw_replacement_rows_remaining_to_current_source=10554954`
+     - `recent_raw_replacement_latest_attempt_row_count_delta=66566`
+     - `recent_raw_replacement_estimated_attempts_to_current_source=159`
+     - `recent_raw_replacement_candidate_promotable_now=false`
+   - operational reading: the fixed staged replacement path is advancing but is
+     still incomplete against current source, so Stage 3 remains blocked
 
 ## Stage 4 Execution Readiness Audit
 

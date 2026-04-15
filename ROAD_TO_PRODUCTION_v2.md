@@ -12214,3 +12214,46 @@ Acceptance update, Stage 3 replacement-convergence surface (`2026-04-15`):
      older promoted surface is waiting on a ready promotion, an advancing but
      incomplete replacement, a stalled latest attempt, a reset/recreate, missing
      telemetry, or unproven evidence
+
+Live validation note, Stage 3 replacement-convergence surface (`2026-04-15`):
+
+1. Commit `c2f87c7` was rolled out to the production host.
+2. Only `discovery_runtime_export` was rebuilt in release mode; the main
+   `solana-copy-bot.service` was not restarted.
+3. The new bounded command returned JSON quickly:
+   - `discovery_runtime_export --explain-recent-raw-replacement-convergence --state-root /var/www/solana-copy-bot/state --json`
+4. The first immediate run happened while latest attempt telemetry was absent
+   from the exact path because the preceding scheduled snapshot cleanup had
+   removed it. That run correctly returned:
+   - `recent_raw_replacement_convergence_reason_class=recent_raw_replacement_convergence_missing_or_unparseable_attempt_telemetry`
+   - `recent_raw_replacement_attempt_telemetry_probe_bounded=true`
+5. After the next scheduled snapshot attempt completed at
+   `2026-04-15 13:59:52 UTC`, the exact latest telemetry file was recreated and
+   the same convergence command reported:
+   - `recent_raw_replacement_convergence_observed=true`
+   - `recent_raw_replacement_convergence_reason_class=recent_raw_replacement_convergence_advancing_but_incomplete`
+   - `recent_raw_replacement_candidate_row_count=45625723`
+   - `recent_raw_source_row_count=56180677`
+   - `recent_raw_replacement_rows_remaining_to_current_source=10554954`
+   - `recent_raw_replacement_latest_attempt_row_count_before=45559157`
+   - `recent_raw_replacement_latest_attempt_row_count_after=45625723`
+   - `recent_raw_replacement_latest_attempt_row_count_delta=66566`
+   - `recent_raw_replacement_latest_attempt_advanced=true`
+   - `recent_raw_replacement_latest_attempt_resumed=true`
+   - `recent_raw_replacement_latest_attempt_preserved_for_retry=true`
+   - `recent_raw_replacement_estimated_attempts_to_current_source=159`
+   - `recent_raw_replacement_candidate_complete_against_current_source=false`
+   - `recent_raw_replacement_candidate_promotable_now=false`
+   - `recent_raw_replacement_attempt_telemetry_parseable=true`
+   - `recent_raw_replacement_attempt_telemetry_probe_bounded=true`
+6. Current production interpretation:
+   - Stage 3 is still blocked
+   - the fixed staged replacement path is advancing, not stalled
+   - the immediate blocker is incomplete replacement coverage against current
+     source, not promotion readiness
+   - the latest scheduled attempt remained time-bounded at staged write
+     exhaustion, but preserved forward progress for retry
+7. Post-rollout service state remained healthy:
+   - `solana-copy-bot.service=active`
+   - `copybot-discovery-recent-raw-snapshot.timer=active`
+   - `copybot-discovery-runtime-export.timer=active`
