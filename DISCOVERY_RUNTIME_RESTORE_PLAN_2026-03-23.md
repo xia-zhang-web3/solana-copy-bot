@@ -2659,3 +2659,40 @@ Operator rollout path:
 - do not restart `solana-copy-bot.service`
 - verify the latest attempt telemetry moves from the prior `hard_failure`
   shape to `deferred` or `written`
+
+Live validation:
+
+- commit `24d8a03` was deployed on the production host and only
+  `discovery_recent_raw_snapshot` was rebuilt
+- the main `solana-copy-bot.service` was not restarted
+- service state after rollout:
+  - `solana-copy-bot.service=active`
+  - `copybot-discovery-recent-raw-snapshot.timer=active`
+  - `copybot-discovery-runtime-export.timer=active`
+- a post-build manual snapshot attempt returned the expected deferred outcome:
+  - `state=deferred`
+  - `terminal_reason=staged_write_attempt_duration_budget_exhausted`
+  - `deferred_reason=healthy_latest_surface_retained_after_staged_write_attempt_duration_budget_exhausted`
+  - `hard_failure_reason=null`
+  - `archive_promoted=false`
+  - `latest_surface_action=deferred_due_to_attempt_budget`
+- staged progress was preserved:
+  - `staged_progress_resumed=true`
+  - `staged_progress_preserved_for_retry=true`
+  - `staged_progress_advanced=true`
+  - `staged_row_count_before_attempt=49055921`
+  - `staged_row_count_after_attempt=49121457`
+  - `staged_rows_inserted=65536`
+- convergence remains blocked but advancing:
+  - `recent_raw_replacement_convergence_reason_class=recent_raw_replacement_convergence_advancing_but_incomplete`
+  - `recent_raw_replacement_candidate_row_count=49121457`
+  - `recent_raw_source_row_count=56180677`
+  - `recent_raw_replacement_rows_remaining_to_current_source=7059220`
+  - `recent_raw_replacement_latest_attempt_row_count_delta=65536`
+  - `recent_raw_replacement_estimated_attempts_to_current_source=108`
+  - `recent_raw_replacement_candidate_complete_against_current_source=false`
+  - `recent_raw_replacement_candidate_promotable_now=false`
+- current reading:
+  - the live hard-failure regression is closed
+  - Stage 3 remains blocked until the replacement candidate completes and a
+    newer latest surface is promoted

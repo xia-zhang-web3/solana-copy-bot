@@ -12802,3 +12802,41 @@ Follow-up acceptance:
    - do not restart `solana-copy-bot.service`
    - verify the next manual or scheduled attempt returns `state=deferred` or
      `state=written`, not `state=hard_failure`
+
+Live validation note:
+
+1. Commit `24d8a03` was deployed on the production host and only
+   `discovery_recent_raw_snapshot` was rebuilt.
+2. The main service was not restarted and service state stayed active:
+   - `solana-copy-bot.service=active`
+   - `copybot-discovery-recent-raw-snapshot.timer=active`
+   - `copybot-discovery-runtime-export.timer=active`
+3. A post-build manual snapshot attempt completed through the expected deferred
+   path, not hard failure:
+   - `state=deferred`
+   - `terminal_reason=staged_write_attempt_duration_budget_exhausted`
+   - `hard_failure_reason=null`
+   - `archive_promoted=false`
+   - `latest_surface_action=deferred_due_to_attempt_budget`
+4. The fixed staged replacement preserved forward progress:
+   - `staged_progress_resumed=true`
+   - `staged_progress_preserved_for_retry=true`
+   - `staged_progress_advanced=true`
+   - `staged_row_count_before_attempt=49055921`
+   - `staged_row_count_after_attempt=49121457`
+   - `staged_rows_inserted=65536`
+5. The bounded convergence surface now reports:
+   - `recent_raw_replacement_convergence_reason_class=recent_raw_replacement_convergence_advancing_but_incomplete`
+   - `recent_raw_replacement_candidate_row_count=49121457`
+   - `recent_raw_source_row_count=56180677`
+   - `recent_raw_replacement_rows_remaining_to_current_source=7059220`
+   - `recent_raw_replacement_latest_attempt_row_count_delta=65536`
+   - `recent_raw_replacement_estimated_attempts_to_current_source=108`
+   - `recent_raw_replacement_candidate_complete_against_current_source=false`
+   - `recent_raw_replacement_candidate_promotable_now=false`
+6. Current interpretation:
+   - the live hard-failure regression is closed
+   - Stage 3 is still blocked while the replacement candidate remains
+     incomplete against current source
+   - continue watching for `state=written`, `archive_promoted=true`, and a
+     newer promoted `latest.sqlite` frontier
