@@ -507,6 +507,39 @@ fn live_server_template_exposes_recent_raw_gap_fill_contract() {
 }
 
 #[test]
+fn live_server_template_locks_publication_quality_gates() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let template_path = manifest_dir.join("../../ops/server_templates/live.server.toml.example");
+    let live_path = manifest_dir.join("../../configs/live.toml");
+
+    let template = load_from_path(&template_path).expect("live server template must parse");
+    let live = load_from_path(&live_path).expect("live config must parse");
+
+    assert!(template.discovery.require_open_positions_for_publication);
+    assert_eq!(template.discovery.max_rug_ratio, 0.60);
+    assert_eq!(template.discovery.thin_market_min_volume_sol, 3.0);
+    assert_eq!(template.discovery.thin_market_min_unique_traders, 10);
+    assert!(!template.execution.enabled);
+
+    assert_eq!(
+        template.discovery.require_open_positions_for_publication,
+        live.discovery.require_open_positions_for_publication
+    );
+    assert_eq!(
+        template.discovery.max_rug_ratio,
+        live.discovery.max_rug_ratio
+    );
+    assert_eq!(
+        template.discovery.thin_market_min_volume_sol,
+        live.discovery.thin_market_min_volume_sol
+    );
+    assert_eq!(
+        template.discovery.thin_market_min_unique_traders,
+        live.discovery.thin_market_min_unique_traders
+    );
+}
+
+#[test]
 fn load_from_path_rejects_invalid_recent_raw_gap_fill_bounds() {
     with_temp_config_file(
         r#"

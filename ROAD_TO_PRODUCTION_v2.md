@@ -71,6 +71,25 @@ Current live verdict:
     wallets before they enter the published universe
   - shadow trading should remain blocked until that quality issue is solved
 
+Template hardening acceptance (`2026-04-15`):
+
+- The repo-side live server template now locks the accepted publication-quality
+  gates so a future server copy cannot silently reintroduce the drained /
+  clustered junk-wallet hole:
+  - `require_open_positions_for_publication = true`
+  - `max_rug_ratio = 0.60`
+  - `thin_market_min_volume_sol = 3.0`
+  - `thin_market_min_unique_traders = 10`
+- `execution.enabled = false` remains preserved in the template.
+- `scoring_window_days = 5` remains unchanged.
+- `copybot-config` now has a regression that parses
+  `ops/server_templates/live.server.toml.example`, asserts the four publication
+  quality gates exactly, asserts `execution.enabled=false`, and compares those
+  four values against `configs/live.toml`.
+- This batch does not change live runtime behavior by itself; it is a template
+  and CI guardrail. Any production host change still requires an explicit
+  rollout decision.
+
 ## Incident Update (`2026-03-30`)
 
 The acute live `recent_raw` startup wedge has been removed, but the project is
