@@ -11983,3 +11983,24 @@ Acceptance update, Stage 3 replacement-attempt-telemetry surface (`2026-04-15`):
    - if production has no durable parseable telemetry, the next seam becomes
      whether to add narrow persisted attempt telemetry in a later behavior
      batch
+
+Live validation note, Stage 3 replacement-attempt-telemetry surface (`2026-04-15`):
+
+1. The accepted operator binary was rolled out to the production host at
+   commit `264eafbb15d6412d541f6bd9129a861c629303f3`.
+2. The rollout itself succeeded:
+   - only `discovery_runtime_export` was rebuilt
+   - the main `solana-copy-bot.service` was not restarted
+   - the service remained active with the same main process
+3. The first live operator run of:
+   - `discovery_runtime_export --explain-recent-raw-replacement-attempt-telemetry --state-root /var/www/solana-copy-bot/state --json`
+   did not return JSON in the expected bounded operator window.
+4. The probe process was observed after about one minute in kernel `D` state
+   and was stopped manually.
+5. Current interpretation:
+   - the proof contract remains read-only
+   - the default live implementation is not yet operationally bounded enough
+     for production use
+   - the next batch should correct the attempt-telemetry discovery path so it
+     does not perform broad artifact-directory reads before proving whether
+     telemetry exists
