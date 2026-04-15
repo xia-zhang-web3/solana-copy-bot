@@ -11,6 +11,7 @@ use copybot_storage::{
     DiscoveryRuntimeCursor, RecentRawJournalStateRow, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
     SqliteSnapshotSourceMetrics, SqliteSnapshotSummary, SqliteStore,
 };
+use rusqlite::ErrorCode;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
@@ -2108,6 +2109,20 @@ fn snapshot_attempt_deadline(max_attempt_duration: Option<StdDuration>) -> Optio
     max_attempt_duration.map(|budget| Instant::now() + budget)
 }
 
+fn recent_raw_staged_write_error_is_budget_exhaustion(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(|sqlite_error| {
+                sqlite_error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted)
+            })
+            || cause
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("interrupted")
+    })
+}
+
 // Preserve the staged snapshot across deferred runs so the bounded scheduled path keeps advancing
 // on live-size journals instead of restarting from zero on every timer tick.
 fn resume_staged_snapshot_with_policy(
@@ -2398,10 +2413,20 @@ fn resume_staged_snapshot_with_policy(
 
         progress.terminal_phase = Some(StagedSnapshotTerminalPhase::StagedWrite);
         let staged_write_started = Instant::now();
-        let (write_summary, write_budget_exhausted) = match staged_store
-            .insert_recent_raw_journal_batch_bulk_with_deadline(&batch, now, deadline)
-        {
+        let write_result =
+            staged_store.insert_recent_raw_journal_batch_bulk_with_deadline(&batch, now, deadline);
+        progress.staged_write_duration_ms = progress.staged_write_duration_ms.saturating_add(
+            staged_write_started
+                .elapsed()
+                .as_millis()
+                .min(u64::MAX as u128) as u64,
+        );
+        let (write_summary, write_budget_exhausted) = match write_result {
             Ok(result) => result,
+            Err(error) if recent_raw_staged_write_error_is_budget_exhaustion(&error) => {
+                budget_exhausted = true;
+                break;
+            }
             Err(error) => {
                 let attempt_duration_ms =
                     started.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -2423,12 +2448,6 @@ fn resume_staged_snapshot_with_policy(
                     };
             }
         };
-        progress.staged_write_duration_ms = progress.staged_write_duration_ms.saturating_add(
-            staged_write_started
-                .elapsed()
-                .as_millis()
-                .min(u64::MAX as u128) as u64,
-        );
 
         current_state = match staged_store.recent_raw_journal_state_cached() {
             Ok(state) => state,
@@ -3109,6 +3128,22 @@ mod tests {
     }
 
     #[test]
+    fn staged_write_interrupted_error_is_classified_as_budget_exhaustion() {
+        let interrupted = anyhow::anyhow!(
+            "failed to run recent raw journal bulk batch write: interrupted by progress handler"
+        );
+        assert!(super::recent_raw_staged_write_error_is_budget_exhaustion(
+            &interrupted
+        ));
+
+        let real_error =
+            anyhow::anyhow!("failed to run recent raw journal bulk batch write: disk I/O error");
+        assert!(!super::recent_raw_staged_write_error_is_budget_exhaustion(
+            &real_error
+        ));
+    }
+
+    #[test]
     fn adaptive_snapshot_policy_scales_for_large_sources() {
         let policy = adaptive_snapshot_policy(&SnapshotSourceStats {
             source_db_bytes: 1_200 * 1024 * 1024,
@@ -3251,6 +3286,8 @@ mod tests {
             output["latest_surface_action"],
             "unchanged_due_to_attempt_budget"
         );
+        assert_eq!(output["hard_failure_reason"], Value::Null);
+        assert_eq!(output["archive_promoted"], false);
         assert_eq!(output["snapshot_pages_per_step"], 8);
         assert_eq!(output["staged_completed_batches"].as_u64(), Some(1));
         assert!(
@@ -3300,6 +3337,8 @@ mod tests {
         let telemetry: Value = load_json(&telemetry_path)?;
         assert_eq!(telemetry["event"], "discovery_recent_raw_snapshot");
         assert_eq!(telemetry["state"], "deferred");
+        assert_eq!(telemetry["hard_failure_reason"], Value::Null);
+        assert_eq!(telemetry["archive_promoted"], false);
         assert_eq!(telemetry["staged_progress_resumed"], false);
         assert_eq!(telemetry["staged_seeded_from_latest_surface"], false);
         assert_eq!(telemetry["staged_progress_preserved_for_retry"], true);

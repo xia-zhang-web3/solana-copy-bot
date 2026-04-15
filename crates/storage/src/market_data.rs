@@ -29,6 +29,8 @@ use rusqlite::{
     params, params_from_iter, types::Value as SqlValue, Connection, ErrorCode, OptionalExtension,
 };
 use serde_json::{json, Value};
+#[cfg(test)]
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -242,6 +244,60 @@ impl Drop for ProgressHandlerGuard<'_> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static RECENT_RAW_BULK_WRITE_BUDGET_HOOK: RefCell<Option<Box<dyn FnMut(usize, usize) -> bool>>> =
+        RefCell::new(None);
+}
+
+#[cfg(test)]
+struct RecentRawBulkWriteBudgetHookGuard;
+
+#[cfg(test)]
+impl Drop for RecentRawBulkWriteBudgetHookGuard {
+    fn drop(&mut self) {
+        RECENT_RAW_BULK_WRITE_BUDGET_HOOK.with(|slot| {
+            slot.borrow_mut().take();
+        });
+    }
+}
+
+#[cfg(test)]
+fn install_recent_raw_bulk_write_budget_hook<F>(hook: F) -> RecentRawBulkWriteBudgetHookGuard
+where
+    F: FnMut(usize, usize) -> bool + 'static,
+{
+    RECENT_RAW_BULK_WRITE_BUDGET_HOOK.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        assert!(
+            slot.is_none(),
+            "recent_raw bulk write hook already installed"
+        );
+        *slot = Some(Box::new(hook));
+    });
+    RecentRawBulkWriteBudgetHookGuard
+}
+
+#[cfg(test)]
+fn recent_raw_bulk_write_test_hook_requests_budget_exhaustion(
+    processed_rows: usize,
+    inserted_rows: usize,
+) -> bool {
+    RECENT_RAW_BULK_WRITE_BUDGET_HOOK.with(|slot| {
+        slot.borrow_mut()
+            .as_mut()
+            .is_some_and(|hook| hook(processed_rows, inserted_rows))
+    })
+}
+
+#[cfg(not(test))]
+fn recent_raw_bulk_write_test_hook_requests_budget_exhaustion(
+    _processed_rows: usize,
+    _inserted_rows: usize,
+) -> bool {
+    false
+}
+
 fn parse_rfc3339_utc(raw: &str, field_name: &str) -> Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .map(|dt| dt.with_timezone(&Utc))
@@ -360,6 +416,22 @@ fn push_recent_raw_journal_bulk_insert_values(values: &mut Vec<SqlValue>, swap: 
     );
     values.push(SqlValue::Integer(swap.slot as i64));
     values.push(SqlValue::Text(swap.ts_utc.to_rfc3339()));
+}
+
+fn recent_raw_journal_sqlite_error_is_operation_interrupted(error: &rusqlite::Error) -> bool {
+    error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted)
+}
+
+fn recent_raw_journal_anyhow_error_is_operation_interrupted(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(recent_raw_journal_sqlite_error_is_operation_interrupted)
+            || cause
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("interrupted")
+    })
 }
 
 fn recent_raw_journal_coverage_snapshot_on_conn(
@@ -711,13 +783,14 @@ impl SqliteStore {
         let chunk_rows = chunk_rows
             .max(1)
             .min(RECENT_RAW_JOURNAL_BULK_INSERT_CHUNK_ROWS);
-        self.with_immediate_transaction_retry("recent raw journal bulk batch write", |conn| {
-            ensure_recent_raw_journal_tables_on_conn(conn)?;
-            let mut inserted_rows = 0usize;
-            let mut processed_rows = 0usize;
-            let mut time_budget_exhausted = false;
-            {
-                let _progress_guard = ProgressHandlerGuard::install(conn, deadline);
+        let write_result = self.with_immediate_transaction_retry(
+            "recent raw journal bulk batch write",
+            |conn| {
+                ensure_recent_raw_journal_tables_on_conn(conn)?;
+                let mut inserted_rows = 0usize;
+                let mut processed_rows = 0usize;
+                let mut time_budget_exhausted = false;
+
                 for chunk in swaps.chunks(chunk_rows) {
                     if Instant::now() >= deadline {
                         time_budget_exhausted = true;
@@ -729,16 +802,38 @@ impl SqliteStore {
                     for swap in chunk {
                         push_recent_raw_journal_bulk_insert_values(&mut values, swap);
                     }
-                    let mut stmt = conn
-                        .prepare_cached(&sql)
-                        .context("failed to prepare recent raw journal bulk insert statement")?;
-                    let changed = match stmt.execute(params_from_iter(values)) {
-                        Ok(changed) => changed,
+                    let mut stmt = match conn.prepare_cached(&sql) {
+                        Ok(stmt) => stmt,
+                        Err(error)
+                            if recent_raw_journal_sqlite_error_is_operation_interrupted(&error) =>
+                        {
+                            time_budget_exhausted = true;
+                            break;
+                        }
                         Err(error) => {
-                            if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
-                                time_budget_exhausted = true;
-                                break;
-                            }
+                            return Err(error).context(
+                                "failed to prepare recent raw journal bulk insert statement",
+                            );
+                        }
+                    };
+                    if Instant::now() >= deadline {
+                        time_budget_exhausted = true;
+                        break;
+                    }
+
+                    let execute_result = {
+                        let _progress_guard = ProgressHandlerGuard::install(conn, deadline);
+                        stmt.execute(params_from_iter(values))
+                    };
+                    let changed = match execute_result {
+                        Ok(changed) => changed,
+                        Err(error)
+                            if recent_raw_journal_sqlite_error_is_operation_interrupted(&error) =>
+                        {
+                            time_budget_exhausted = true;
+                            break;
+                        }
+                        Err(error) => {
                             return Err(error).context(
                                 "failed to bulk insert observed swaps into recent raw journal batch",
                             );
@@ -746,24 +841,39 @@ impl SqliteStore {
                     };
                     processed_rows = processed_rows.saturating_add(chunk.len());
                     inserted_rows = inserted_rows.saturating_add(changed);
+                    if recent_raw_bulk_write_test_hook_requests_budget_exhaustion(
+                        processed_rows,
+                        inserted_rows,
+                    ) {
+                        time_budget_exhausted = true;
+                        break;
+                    }
                 }
-            }
 
-            let mut state = recent_raw_journal_state_cached_query(conn)?;
-            advance_recent_raw_journal_state_for_batch(
-                &mut state,
-                &swaps[..processed_rows],
-                inserted_rows,
-                completed_at,
-            );
-            if processed_rows > 0 {
-                upsert_recent_raw_journal_state_on_conn(conn, &state)?;
+                let mut state = recent_raw_journal_state_cached_query(conn)?;
+                advance_recent_raw_journal_state_for_batch(
+                    &mut state,
+                    &swaps[..processed_rows],
+                    inserted_rows,
+                    completed_at,
+                );
+                if processed_rows > 0 {
+                    upsert_recent_raw_journal_state_on_conn(conn, &state)?;
+                }
+                Ok((
+                    recent_raw_journal_write_summary(&state, processed_rows, inserted_rows),
+                    time_budget_exhausted,
+                ))
+            },
+        );
+        match write_result {
+            Ok(result) => Ok(result),
+            Err(error) if recent_raw_journal_anyhow_error_is_operation_interrupted(&error) => {
+                let state = self.recent_raw_journal_state_cached()?;
+                Ok((recent_raw_journal_write_summary(&state, 0, 0), true))
             }
-            Ok((
-                recent_raw_journal_write_summary(&state, processed_rows, inserted_rows),
-                time_budget_exhausted,
-            ))
-        })
+            Err(error) => Err(error),
+        }
     }
 
     fn insert_recent_raw_journal_batch_internal(
@@ -7717,6 +7827,58 @@ mod tests {
                 .as_ref()
                 .map(|cursor| cursor.signature.as_str()),
             Some("sig-recent-raw-bulk-0129")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_bulk_deadline_write_preserves_partial_chunks_for_budget_retry(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("recent-raw-bulk-partial-budget.db");
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let now = DateTime::parse_from_rfc3339("2026-03-29T12:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let swaps = (0..130)
+            .map(|idx| {
+                swap(
+                    &format!("sig-recent-raw-bulk-partial-{idx:04}"),
+                    "wallet-bulk-partial",
+                    now + Duration::seconds(idx as i64),
+                    SOL_MINT,
+                    "TokenRecentRawBulkPartial111111111111111",
+                    5_000 + idx as u64,
+                )
+            })
+            .collect::<Vec<_>>();
+        let _guard =
+            super::install_recent_raw_bulk_write_budget_hook(|processed_rows, inserted_rows| {
+                processed_rows >= 16 && inserted_rows >= 16
+            });
+
+        let (summary, time_budget_exhausted) = store
+            .insert_recent_raw_journal_batch_bulk_with_deadline_internal(
+                &swaps,
+                now,
+                Instant::now() + StdDuration::from_secs(5),
+                16,
+            )?;
+        assert!(time_budget_exhausted);
+        assert_eq!(summary.batch_rows, 16);
+        assert_eq!(summary.inserted_rows, 16);
+
+        let cached_state = store.recent_raw_journal_state_cached()?;
+        let scanned_state = store.recent_raw_journal_state()?;
+        assert_eq!(cached_state, scanned_state);
+        assert_eq!(summary.row_count, 16);
+        assert_eq!(summary.row_count, scanned_state.row_count);
+        assert_eq!(
+            scanned_state
+                .covered_through_cursor
+                .as_ref()
+                .map(|cursor| cursor.signature.as_str()),
+            Some("sig-recent-raw-bulk-partial-0015")
         );
         Ok(())
     }

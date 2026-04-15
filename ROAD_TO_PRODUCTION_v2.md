@@ -12638,3 +12638,51 @@ Live validation note, Stage 3 recent-raw staged bulk-insert write path (`2026-04
    - `copybot-discovery-recent-raw-snapshot.timer=active`
    - `copybot-discovery-runtime-export.timer=active`
    - server HEAD is `4d2d81f`
+
+### Stage 3 recent-raw bulk timeout classification correction (`2026-04-15`)
+
+Accepted repository change:
+
+1. The staged recent-raw bulk write path now treats SQLite progress-handler
+   interruption as bounded attempt-budget exhaustion, not as generic hard
+   failure.
+2. The storage bulk helper checks the deadline before prepare, before execute,
+   and during SQLite execution.
+3. If `SQLITE_INTERRUPT` / `OperationInterrupted` is reached through the
+   bounded deadline path, the helper returns the existing write summary with
+   `time_budget_exhausted=true`.
+4. The snapshot caller maps interrupted staged-write budget exhaustion into the
+   existing `Deferred` path:
+   - `hard_failure_reason=null`
+   - `archive_promoted=false`
+   - partial progress remains staged-only
+   - `latest.sqlite` / `latest.json` are still not published until a completed
+     replacement attempt
+5. Real non-timeout SQLite errors still remain hard failures.
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+   passed.
+2. `cargo test -j 1 -p copybot-storage --lib recent_raw_journal` passed.
+3. `cargo test -j 1 -p copybot-discovery --lib recent_raw_replacement_convergence`
+   passed.
+4. `cargo check -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+   passed.
+5. `cargo check -j 1 -p copybot-storage` passed with existing
+   `backfill_discovery_scoring` warnings.
+6. `git diff --check -- crates/discovery/src/bin/discovery_recent_raw_snapshot.rs crates/storage/src/market_data.rs`
+   passed.
+
+Rollout requirement:
+
+1. This affects the live scheduled recent-raw snapshot job and should be
+   deployed by rebuilding only `discovery_recent_raw_snapshot`.
+2. Do not restart `solana-copy-bot.service`.
+3. Post-rollout verification should confirm the next manual or scheduled
+   attempt returns `state=deferred` or `state=written`, not
+   `state=hard_failure`, when the deadline is exhausted inside the staged
+   write.
+4. Continue watching the convergence surface for
+   `recent_raw_replacement_convergence_advancing_but_incomplete` or
+   `recent_raw_replacement_convergence_ready_to_promote`.

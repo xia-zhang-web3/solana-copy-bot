@@ -2549,3 +2549,60 @@ Live validation:
   - replacement accumulation is still advancing and now emits bounded throughput
     evidence for the larger staged write batch
   - the main service and both relevant timers remained active after rollout
+
+### 20.14 Recent-raw bulk-write timeout classification correction (`2026-04-15`)
+
+Accepted repository change:
+
+- the bulk staged-write path now classifies SQLite progress-handler
+  interruption as bounded attempt-budget exhaustion instead of generic SQLite
+  hard failure
+- the storage bulk helper checks the deadline before statement prepare, before
+  statement execute, and during execute
+- `SQLITE_INTERRUPT` / `OperationInterrupted` from the bounded deadline path is
+  converted into `time_budget_exhausted=true`
+- the scheduled snapshot caller routes that condition into the existing
+  deferred attempt path:
+  - `hard_failure_reason=null`
+  - `archive_promoted=false`
+  - staged partial progress is preserved for retry
+  - no partial latest surface is published
+- real non-timeout SQLite failures still return hard failure
+
+Why this was needed:
+
+- after the prior bulk-write rollout, the live one-shot snapshot service showed
+  `state=hard_failure` while still inserting staged rows
+- the failure reason was the bulk write helper returning a generic SQLite error
+  for a deadline/progress-handler interruption
+- that was semantically wrong for the bounded snapshot contract because an
+  expired write budget should defer and preserve staged progress, not fail the
+  attempt as a hard error
+
+Operator rollout path:
+
+- deploy by pulling the accepted commit and rebuilding only
+  `discovery_recent_raw_snapshot`
+- do not restart `solana-copy-bot.service`
+- verify the latest telemetry at
+  `state/discovery_restore/recent_raw/discovery_recent_raw_snapshot_attempt_latest.json`
+- the expected post-rollout outcome under budget exhaustion is:
+  - `state=deferred`
+  - `hard_failure_reason=null`
+  - `archive_promoted=false`
+  - `staged_progress_preserved_for_retry=true`
+  - parseable latest attempt telemetry
+
+Acceptance checks:
+
+- `cargo test -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+  passed
+- `cargo test -j 1 -p copybot-storage --lib recent_raw_journal` passed
+- `cargo test -j 1 -p copybot-discovery --lib recent_raw_replacement_convergence`
+  passed
+- `cargo check -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+  passed
+- `cargo check -j 1 -p copybot-storage` passed with existing
+  `backfill_discovery_scoring` warnings
+- `git diff --check -- crates/discovery/src/bin/discovery_recent_raw_snapshot.rs crates/storage/src/market_data.rs`
+  passed
