@@ -12075,3 +12075,31 @@ Acceptance update, Stage 3 latest snapshot-attempt telemetry persistence (`2026-
      whether the current replacement attempt is advancing, stalled, or
      reset/recreated from persisted attempt facts instead of returning
      `missing_or_unparseable`
+
+Live validation note, Stage 3 latest snapshot-attempt telemetry persistence (`2026-04-15`):
+
+1. Commit `cfc37f7` was rolled out to the production host.
+2. Only `discovery_recent_raw_snapshot` was rebuilt in release mode; the main
+   `solana-copy-bot.service` was not restarted.
+3. A manual systemd snapshot run completed as the expected transient deferred
+   outcome:
+   - `Result=success`
+   - `ExecMainStatus=75`
+   - `ExecMainStartTimestamp=Wed 2026-04-15 13:06:29 UTC`
+   - `ExecMainExitTimestamp=Wed 2026-04-15 13:08:31 UTC`
+4. The run created the latest attempt telemetry artifact:
+   - `/var/www/solana-copy-bot/state/discovery_restore/recent_raw/discovery_recent_raw_snapshot_attempt_latest.json`
+5. The bounded runtime-export telemetry surface now observes the artifact:
+   - `recent_raw_replacement_attempt_telemetry_observed=true`
+   - `recent_raw_replacement_attempt_telemetry_reason_class=recent_raw_replacement_attempt_telemetry_advancing_but_incomplete`
+   - `recent_raw_replacement_attempt_telemetry_probe_bounded=true`
+   - `recent_raw_replacement_attempt_telemetry_probe_mode=bounded_explicit_paths`
+   - `recent_raw_replacement_attempt_telemetry_deep_scan_used=false`
+   - `recent_raw_replacement_attempt_telemetry_artifact_count=1`
+   - `recent_raw_replacement_attempt_telemetry_parseable_count=1`
+   - `recent_raw_replacement_attempt_telemetry_last_row_count_before=44873682`
+   - `recent_raw_replacement_attempt_telemetry_last_row_count_after=44947410`
+6. Post-rollout service state remained healthy:
+   - `solana-copy-bot.service=active`
+   - `copybot-discovery-recent-raw-snapshot.timer=active`
+   - `copybot-discovery-runtime-export.timer=active`

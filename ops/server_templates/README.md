@@ -629,6 +629,23 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
    - after a fresh scheduled snapshot attempt, a healthy telemetry path should
      move away from `recent_raw_replacement_attempt_telemetry_missing_or_unparseable`
      when the latest telemetry JSON is present and parseable
+27. Live validation on `2026-04-15 13:06-13:08 UTC`:
+   - commit `cfc37f7` was deployed and only
+     `discovery_recent_raw_snapshot` was rebuilt
+   - manual service run finished with `Result=success` and `ExecMainStatus=75`
+   - the latest telemetry file exists at the expected path
+   - bounded runtime-export telemetry reported:
+     - `recent_raw_replacement_attempt_telemetry_observed=true`
+     - `recent_raw_replacement_attempt_telemetry_reason_class=recent_raw_replacement_attempt_telemetry_advancing_but_incomplete`
+     - `recent_raw_replacement_attempt_telemetry_probe_bounded=true`
+     - `recent_raw_replacement_attempt_telemetry_deep_scan_used=false`
+     - `recent_raw_replacement_attempt_telemetry_artifact_count=1`
+     - `recent_raw_replacement_attempt_telemetry_parseable_count=1`
+     - `recent_raw_replacement_attempt_telemetry_last_row_count_before=44873682`
+     - `recent_raw_replacement_attempt_telemetry_last_row_count_after=44947410`
+   - `solana-copy-bot.service`,
+     `copybot-discovery-recent-raw-snapshot.timer`, and
+     `copybot-discovery-runtime-export.timer` remained `active`
 
 ## Stage 4 Execution Readiness Audit
 

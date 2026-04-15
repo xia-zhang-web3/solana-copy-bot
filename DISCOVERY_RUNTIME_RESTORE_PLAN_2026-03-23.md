@@ -2389,3 +2389,25 @@ Operator path:
 - default runtime-export mode remains bounded to exact paths; it should now find
   the new latest telemetry artifact when present instead of requiring a deep
   directory scan
+
+Live validation:
+
+- commit `cfc37f7` was deployed on the production host and only
+  `discovery_recent_raw_snapshot` was rebuilt
+- one manual systemd snapshot run completed with:
+  - `Result=success`
+  - `ExecMainStatus=75`
+  - `ExecMainStartTimestamp=Wed 2026-04-15 13:06:29 UTC`
+  - `ExecMainExitTimestamp=Wed 2026-04-15 13:08:31 UTC`
+- the telemetry artifact now exists at:
+  - `/var/www/solana-copy-bot/state/discovery_restore/recent_raw/discovery_recent_raw_snapshot_attempt_latest.json`
+- the bounded runtime-export surface now classifies the latest persisted attempt
+  as:
+  - `recent_raw_replacement_attempt_telemetry_advancing_but_incomplete`
+  - `recent_raw_replacement_attempt_telemetry_probe_bounded=true`
+  - `recent_raw_replacement_attempt_telemetry_deep_scan_used=false`
+  - `recent_raw_replacement_attempt_telemetry_artifact_count=1`
+  - `recent_raw_replacement_attempt_telemetry_parseable_count=1`
+  - `recent_raw_replacement_attempt_telemetry_last_row_count_before=44873682`
+  - `recent_raw_replacement_attempt_telemetry_last_row_count_after=44947410`
+- the main service and both relevant timers remained active after rollout
