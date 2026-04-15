@@ -11965,6 +11965,79 @@ Acceptance update, package-choir-receipt-latest handoff surface (`2026-04-15`):
      incident remains open
    - this batch does not authorize or perform production activation
 
+Acceptance update, package-clerestory-certificate-latest handoff surface (`2026-04-15`):
+
+1. Stage 4 now also has one bounded clerestory-certificate-side handoff surface
+   from the latest immutable package chain to the already accepted
+   clerestory-certificate contract:
+   - `copybot_tiny_live_activation_package_clerestory_certificate_latest`
+2. The new operator surface is explicit and bounded:
+   - `--plan-latest-clerestory-certificate --root <path> [--json]`
+   - `--render-latest-clerestory-certificate-script --root <path> --output <path> [--json]`
+   - `--run-latest-clerestory-certificate --root <path> --session-dir <path> [--json]`
+   - `--verify-latest-clerestory-certificate --session-dir <path> [--json]`
+3. The command deliberately reuses accepted truth instead of inventing a new
+   clerestory-certificate path:
+   - latest immutable chain resolution still comes from the accepted
+     `copybot_tiny_live_activation_package_choir_receipt_latest` handoff
+   - latest chain validity still requires the current top accepted layer
+     `clerestory_certificate`
+   - downstream clerestory-certificate execution still runs through the
+     accepted `copybot_tiny_live_activation_package_clerestory_certificate`
+     contract with the exact latest-choir-receipt session and exact propagated
+     downstream decision-packet confirmation anchor proved by the resolved
+     latest chain
+4. The handoff remains fail-closed, archival, and planning-safe:
+   - it refuses when no latest chain exists, when the latest chain is invalid,
+     or when the latest chain does not prove the exact nested
+     latest-choir-receipt lineage required by the accepted
+     clerestory-certificate contract
+   - the downstream `--confirm-decision-packet-session-dir` remains
+     confirmation-only and never replaces latest-choir-receipt lineage as the
+     source of truth
+   - it preserves the exact propagated latest-choir decision-packet anchor
+     instead of recomputing a synthetic local wrapper path
+   - it remains read-only / archival exactly like the accepted native
+     clerestory-certificate contract
+   - it never marks `activation_authorized=true`
+   - run mode still preserves the existing Stage 3 / pre-activation refusal
+     semantics of the downstream clerestory-certificate contract
+5. Verification is now real on wrapper truth, copied latest-choir-receipt
+   truth, copied native clerestory-certificate truth, and nested accepted verify
+   truth:
+   - `--verify-latest-clerestory-certificate` re-resolves the current latest
+     immutable chain, verifies the accepted nested latest-choir-receipt and
+     clerestory-certificate contracts, and compares stored wrapper session /
+     status / report artifacts against that resolved snapshot
+   - fail-closed checks cover wrapper metadata, copied latest-choir-receipt
+     plan / run truth, drifted propagated downstream decision-packet
+     confirmation anchor, copied native clerestory-certificate run truth,
+     nested persisted clerestory-certificate session/status truth, accepted
+     nested verify truth, and copied native clerestory-certificate identity
+     metadata
+   - nested latest-choir copied evidence stays on upstream modes
+     `plan_latest_choir_receipt`, `run_latest_choir_receipt`, and
+     `verify_latest_choir_receipt`; stale parent latest-clerestory modes are
+     rejected as drifted nested evidence
+   - clerestory identity wording uses accepted native `gonfalon-seal` language;
+     upstream choir identity wording remains `ensign-seal` only where it refers
+     to the accepted choir-receipt input
+6. Practical meaning:
+   - operators can now move from the latest immutable package chain to the exact
+     accepted clerestory-certificate contract without manual session-dir
+     archaeology
+   - this closes the latest-chain wrapper ladder up to the current accepted
+     `clerestory_certificate` top layer while Stage 3 remains non-green
+7. Acceptance stayed on the bounded surface:
+   - `rustfmt --check crates/app/src/bin/copybot_tiny_live_activation_package_clerestory_certificate_latest.rs`
+   - `cargo test -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_clerestory_certificate_latest`
+   - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_clerestory_certificate_latest`
+   - `git diff --check --no-index -- /dev/null crates/app/src/bin/copybot_tiny_live_activation_package_clerestory_certificate_latest.rs`
+8. Current production status remains unchanged:
+   - the real host still remains non-green while the separate Stage 3 live
+     incident remains open
+   - this batch does not authorize or perform production activation
+
 Acceptance update, clerestory-certificate / gonfalon-seal layer (`2026-04-02`):
 
 1. The repo now has one more final immutable archival layer over the verified
