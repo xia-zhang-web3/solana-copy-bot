@@ -13465,3 +13465,49 @@ Rollout requirement:
    - expected safe outcomes remain `state=deferred` with forward staged
      progress or `state=written` with `archive_promoted=true`
    - any `state=hard_failure` in staged write remains a blocker
+
+Live validation note:
+
+1. Commit `3a54d8d` was deployed on the production host.
+2. Server source advanced from `3887414` to `3a54d8d`, and only
+   `discovery_recent_raw_snapshot` was rebuilt for runtime validation.
+3. `solana-copy-bot.service` was not restarted.
+4. Post-build service state:
+   - `solana-copy-bot.service=active`
+   - `copybot-discovery-recent-raw-snapshot.timer=active`
+   - `copybot-discovery-recent-raw-snapshot.service=inactive`
+   - `copybot-discovery-runtime-export.timer=active`
+   - `copybot-discovery-runtime-export.service=failed` for the existing
+     fail-closed publication-truth reason
+5. The first manual post-deploy snapshot attempt stayed on the safe deferred
+   path:
+   - `state=deferred`
+   - `terminal_reason=staged_write_attempt_duration_budget_exhausted`
+   - `hard_failure_reason=null`
+   - `archive_promoted=false`
+   - `staged_progress_resumed=true`
+   - `staged_progress_preserved_for_retry=true`
+   - `staged_progress_advanced=true`
+   - `staged_row_count_before_attempt=51411761`
+   - `staged_row_count_after_attempt=51477297`
+   - `staged_write_batch_rows=65536`
+   - `staged_write_batch_count=1`
+   - `staged_write_rows_per_second=548.2394866947188`
+6. The bounded convergence surface remained honest:
+   - `recent_raw_replacement_convergence_reason_class=recent_raw_replacement_convergence_advancing_but_incomplete`
+   - `recent_raw_replacement_candidate_row_count=51477297`
+   - `recent_raw_source_row_count=56180677`
+   - `recent_raw_replacement_rows_remaining_to_current_source=4703380`
+   - `recent_raw_replacement_latest_attempt_row_count_delta=65536`
+   - `recent_raw_replacement_estimated_attempts_to_current_source=72`
+   - `recent_raw_replacement_candidate_complete_against_current_source=false`
+   - `recent_raw_replacement_candidate_promotable_now=false`
+7. Current interpretation:
+   - the adaptive chunking rollout is safe
+   - it did not produce a material live throughput improvement on the first
+     observed attempt
+   - Stage 3 remains blocked while the fixed staged replacement candidate is
+     still incomplete
+   - the next engineering step should measure or reduce the actual SQLite
+     staged-write bottleneck rather than assuming statement count was the main
+     limiter
