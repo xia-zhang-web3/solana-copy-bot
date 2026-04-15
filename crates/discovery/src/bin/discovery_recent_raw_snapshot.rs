@@ -8,8 +8,9 @@ use copybot_discovery::runtime_restore_ops::{
     JOURNAL_SNAPSHOT_ARCHIVE_SUFFIX,
 };
 use copybot_storage::{
-    DiscoveryRuntimeCursor, RecentRawJournalStateRow, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
-    SqliteSnapshotSourceMetrics, SqliteSnapshotSummary, SqliteStore,
+    is_fatal_sqlite_anyhow_error, DiscoveryRuntimeCursor, RecentRawJournalStateRow,
+    SqliteSnapshotOutcome, SqliteSnapshotPolicy, SqliteSnapshotSourceMetrics,
+    SqliteSnapshotSummary, SqliteStore,
 };
 use rusqlite::ErrorCode;
 use serde::{Deserialize, Serialize};
@@ -1992,6 +1993,13 @@ thread_local! {
         std::cell::RefCell::new(None);
     static RESUMABLE_SNAPSHOT_PROGRESS_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(usize, usize) -> bool>>> =
         std::cell::RefCell::new(None);
+    static STAGED_WRITE_FAILURE_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(usize) -> Option<StagedWriteHookFailure>>>> =
+        std::cell::RefCell::new(None);
+}
+
+struct StagedWriteHookFailure {
+    error: anyhow::Error,
+    force_budget_context: bool,
 }
 
 #[cfg(test)]
@@ -2007,6 +2015,9 @@ impl Drop for SnapshotPublishHookGuard {
             slot.borrow_mut().take();
         });
         RESUMABLE_SNAPSHOT_PROGRESS_HOOK.with(|slot| {
+            slot.borrow_mut().take();
+        });
+        STAGED_WRITE_FAILURE_HOOK.with(|slot| {
             slot.borrow_mut().take();
         });
     }
@@ -2051,6 +2062,22 @@ where
         assert!(
             slot.is_none(),
             "resumable snapshot progress hook already installed"
+        );
+        *slot = Some(Box::new(hook));
+    });
+    SnapshotPublishHookGuard
+}
+
+#[cfg(test)]
+fn install_staged_write_failure_hook<F>(hook: F) -> SnapshotPublishHookGuard
+where
+    F: FnMut(usize) -> Option<StagedWriteHookFailure> + 'static,
+{
+    STAGED_WRITE_FAILURE_HOOK.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        assert!(
+            slot.is_none(),
+            "staged write failure hook already installed"
         );
         *slot = Some(Box::new(hook));
     });
@@ -2105,11 +2132,25 @@ fn resumable_snapshot_progress_hook_requests_budget_exhaustion(
     false
 }
 
+#[cfg(test)]
+fn invoke_staged_write_failure_hook(completed_batches: usize) -> Option<StagedWriteHookFailure> {
+    STAGED_WRITE_FAILURE_HOOK.with(|slot| {
+        slot.borrow_mut()
+            .as_mut()
+            .and_then(|hook| hook(completed_batches))
+    })
+}
+
+#[cfg(not(test))]
+fn invoke_staged_write_failure_hook(_completed_batches: usize) -> Option<StagedWriteHookFailure> {
+    None
+}
+
 fn snapshot_attempt_deadline(max_attempt_duration: Option<StdDuration>) -> Option<Instant> {
     max_attempt_duration.map(|budget| Instant::now() + budget)
 }
 
-fn recent_raw_staged_write_error_is_budget_exhaustion(error: &anyhow::Error) -> bool {
+fn recent_raw_staged_write_error_is_interruption(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<rusqlite::Error>()
@@ -2121,6 +2162,42 @@ fn recent_raw_staged_write_error_is_budget_exhaustion(error: &anyhow::Error) -> 
                 .to_ascii_lowercase()
                 .contains("interrupted")
     })
+}
+
+fn recent_raw_staged_write_error_is_generic_bulk_wrapper(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("failed to run recent raw journal bulk batch write")
+    })
+}
+
+fn recent_raw_staged_write_error_is_fatal_storage(error: &anyhow::Error) -> bool {
+    is_fatal_sqlite_anyhow_error(error)
+        || error.chain().any(|cause| {
+            let lowered = cause.to_string().to_ascii_lowercase();
+            lowered.contains("database disk image is malformed")
+                || lowered.contains("database is corrupt")
+                || lowered.contains("malformed")
+                || lowered.contains("corrupt")
+                || lowered.contains("no such table")
+                || lowered.contains("no such column")
+                || lowered.contains("schema")
+                || lowered.contains("syntax error")
+                || lowered.contains("readonly")
+                || lowered.contains("permission denied")
+        })
+}
+
+fn recent_raw_staged_write_error_is_budget_exhaustion(
+    error: &anyhow::Error,
+    deadline_exhausted: bool,
+) -> bool {
+    recent_raw_staged_write_error_is_interruption(error)
+        || (deadline_exhausted
+            && recent_raw_staged_write_error_is_generic_bulk_wrapper(error)
+            && !recent_raw_staged_write_error_is_fatal_storage(error))
 }
 
 // Preserve the staged snapshot across deferred runs so the bounded scheduled path keeps advancing
@@ -2413,8 +2490,15 @@ fn resume_staged_snapshot_with_policy(
 
         progress.terminal_phase = Some(StagedSnapshotTerminalPhase::StagedWrite);
         let staged_write_started = Instant::now();
-        let write_result =
-            staged_store.insert_recent_raw_journal_batch_bulk_with_deadline(&batch, now, deadline);
+        let staged_write_failure = invoke_staged_write_failure_hook(completed_batches);
+        let force_budget_context = staged_write_failure
+            .as_ref()
+            .is_some_and(|failure| failure.force_budget_context);
+        let write_result = match staged_write_failure {
+            Some(failure) => Err(failure.error),
+            None => staged_store
+                .insert_recent_raw_journal_batch_bulk_with_deadline(&batch, now, deadline),
+        };
         progress.staged_write_duration_ms = progress.staged_write_duration_ms.saturating_add(
             staged_write_started
                 .elapsed()
@@ -2423,7 +2507,12 @@ fn resume_staged_snapshot_with_policy(
         );
         let (write_summary, write_budget_exhausted) = match write_result {
             Ok(result) => result,
-            Err(error) if recent_raw_staged_write_error_is_budget_exhaustion(&error) => {
+            Err(error)
+                if recent_raw_staged_write_error_is_budget_exhaustion(
+                    &error,
+                    force_budget_context || Instant::now() >= deadline,
+                ) =>
+            {
                 budget_exhausted = true;
                 break;
             }
@@ -3080,9 +3169,10 @@ fn render_human(output: &SnapshotOutput) -> String {
 mod tests {
     use super::{
         adaptive_snapshot_policy, install_pre_archive_promotion_hook,
-        install_resumable_snapshot_progress_hook, parse_args_from, run,
-        run_with_snapshot_policy_override, source_window_outran_staged_progress, Config,
-        RecentRawJournalSnapshotManifest, SnapshotSourceStats, SqliteStore,
+        install_resumable_snapshot_progress_hook, install_staged_write_failure_hook,
+        parse_args_from, run, run_with_snapshot_policy_override,
+        source_window_outran_staged_progress, Config, RecentRawJournalSnapshotManifest,
+        SnapshotSourceStats, SqliteStore, StagedWriteHookFailure,
     };
     use anyhow::{Context, Result};
     use chrono::{DateTime, Duration, Utc};
@@ -3133,13 +3223,33 @@ mod tests {
             "failed to run recent raw journal bulk batch write: interrupted by progress handler"
         );
         assert!(super::recent_raw_staged_write_error_is_budget_exhaustion(
-            &interrupted
+            &interrupted,
+            false
+        ));
+
+        let generic_after_deadline =
+            anyhow::anyhow!("failed to run recent raw journal bulk batch write");
+        assert!(super::recent_raw_staged_write_error_is_budget_exhaustion(
+            &generic_after_deadline,
+            true
+        ));
+        assert!(!super::recent_raw_staged_write_error_is_budget_exhaustion(
+            &generic_after_deadline,
+            false
         ));
 
         let real_error =
             anyhow::anyhow!("failed to run recent raw journal bulk batch write: disk I/O error");
         assert!(!super::recent_raw_staged_write_error_is_budget_exhaustion(
-            &real_error
+            &real_error,
+            true
+        ));
+
+        let schema_error =
+            anyhow::anyhow!("failed to run recent raw journal bulk batch write: no such table");
+        assert!(!super::recent_raw_staged_write_error_is_budget_exhaustion(
+            &schema_error,
+            true
         ));
     }
 
@@ -3401,6 +3511,116 @@ mod tests {
             0
         );
         assert_eq!(staged_artifact_count(&fixture.snapshot_dir())?, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduled_run_defers_generic_bulk_write_wrapper_after_committed_staged_batch() -> Result<()>
+    {
+        let fixture = make_fixture("recent-raw-snapshot-generic-bulk-timeout")?;
+        let initial_now = parse_ts("2026-03-23T12:00:00Z")?;
+        seed_recent_raw_journal_range(
+            &fixture.journal_store,
+            initial_now - Duration::minutes(5),
+            10,
+            "sig-generic-bulk-initial",
+            32,
+            initial_now,
+        )?;
+        run(Config {
+            config_path: fixture.config_path.clone(),
+            journal_db_path: Some(fixture.journal_db_path.clone()),
+            output_path: None,
+            scheduled: true,
+            force: true,
+            json: false,
+            now: initial_now,
+        })?;
+
+        let latest_manifest_path = fixture.snapshot_dir().join("latest.json");
+        let latest_before: RecentRawJournalSnapshotManifest = load_json(&latest_manifest_path)?;
+        seed_recent_raw_journal_range(
+            &fixture.journal_store,
+            initial_now + Duration::minutes(1),
+            2_048,
+            "sig-generic-bulk-extra",
+            2_048,
+            initial_now + Duration::minutes(1),
+        )?;
+
+        let _guard = install_staged_write_failure_hook(|completed_batches| {
+            if completed_batches >= 1 {
+                Some(StagedWriteHookFailure {
+                    error: anyhow::anyhow!("failed to run recent raw journal bulk batch write"),
+                    force_budget_context: true,
+                })
+            } else {
+                None
+            }
+        });
+        let deferred = run_with_snapshot_policy_override(
+            Config {
+                config_path: fixture.config_path.clone(),
+                journal_db_path: Some(fixture.journal_db_path.clone()),
+                output_path: None,
+                scheduled: true,
+                force: false,
+                json: true,
+                now: initial_now + Duration::minutes(15),
+            },
+            Some(copybot_storage::SqliteSnapshotPolicy {
+                busy_timeout: StdDuration::from_millis(1),
+                pages_per_step: 8,
+                pause_between_steps: StdDuration::from_millis(0),
+                retry_backoff_ms: vec![1, 1],
+                max_attempt_duration: Some(StdDuration::from_secs(5)),
+                pin_source_snapshot: true,
+            }),
+        )?;
+
+        assert_eq!(deferred.exit_code, 75);
+        let output: Value = serde_json::from_str(&deferred.rendered_output)?;
+        assert_eq!(output["state"], "deferred");
+        assert_eq!(
+            output["terminal_reason"],
+            "staged_write_attempt_duration_budget_exhausted"
+        );
+        assert_eq!(
+            output["latest_surface_action"],
+            "deferred_due_to_attempt_budget"
+        );
+        assert_eq!(output["hard_failure_reason"], Value::Null);
+        assert_eq!(output["archive_promoted"], false);
+        assert_eq!(output["staged_completed_batches"].as_u64(), Some(1));
+        assert_eq!(output["staged_progress_preserved_for_retry"], true);
+        assert_eq!(output["staged_progress_advanced"], true);
+        assert_eq!(
+            output["staged_row_count_before_attempt"].as_u64(),
+            Some(latest_before.row_count as u64)
+        );
+        let staged_after = output["staged_row_count_after_attempt"]
+            .as_u64()
+            .context("staged row_count_after_attempt must be populated")?;
+        assert!(staged_after > latest_before.row_count as u64);
+
+        let latest_after: RecentRawJournalSnapshotManifest = load_json(&latest_manifest_path)?;
+        assert_eq!(latest_after.row_count, latest_before.row_count);
+        assert_eq!(
+            latest_after.covered_through_cursor,
+            latest_before.covered_through_cursor
+        );
+        assert_eq!(staged_artifact_count(&fixture.snapshot_dir())?, 2);
+
+        let telemetry_path = super::latest_attempt_telemetry_path(&fixture.snapshot_dir());
+        let telemetry: Value = load_json(&telemetry_path)?;
+        assert_eq!(telemetry["state"], "deferred");
+        assert_eq!(telemetry["hard_failure_reason"], Value::Null);
+        assert_eq!(telemetry["archive_promoted"], false);
+        assert_eq!(telemetry["staged_progress_preserved_for_retry"], true);
+        assert_eq!(
+            telemetry["staged_row_count_after_attempt"].as_u64(),
+            Some(staged_after)
+        );
         Ok(())
     }
 

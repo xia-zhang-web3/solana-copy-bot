@@ -2606,3 +2606,56 @@ Acceptance checks:
   `backfill_discovery_scoring` warnings
 - `git diff --check -- crates/discovery/src/bin/discovery_recent_raw_snapshot.rs crates/storage/src/market_data.rs`
   passed
+
+### 20.15 Recent-raw generic bulk-wrapper timeout correction (`2026-04-15`)
+
+Follow-up acceptance:
+
+- production validation of commit `74c6a63` still produced a hard failure after
+  a staged write had already committed one batch:
+  - `state=hard_failure`
+  - `staged_terminal_phase=staged_write`
+  - `staged_completed_batches=1`
+  - `staged_rows_inserted=65536`
+  - `staged_write_duration_ms=119554`
+  - `attempt_duration_ms=120130`
+  - `hard_failure_reason="failed persisting bounded recent_raw batch into staged snapshot ... failed to run recent raw journal bulk batch write"`
+- the accepted corrective change handles that exact live shape:
+  - the staged-write error classifier now receives explicit deadline context
+  - `SQLITE_INTERRUPT` / `interrupted` still maps directly to bounded budget
+    exhaustion
+  - a generic `failed to run recent raw journal bulk batch write` wrapper maps
+    to bounded budget exhaustion only after the staged-write deadline is already
+    exhausted
+  - fatal storage classes still remain hard failures, including disk I/O/full,
+    corruption, schema, readonly, permission, and syntax errors
+- the expected live behavior under the same condition is now the existing
+  deferred path:
+  - `state=deferred`
+  - `hard_failure_reason=null`
+  - `archive_promoted=false`
+  - `staged_progress_preserved_for_retry=true`
+  - `staged_row_count_after_attempt` populated from current staged state
+  - no partial staged artifact is promoted
+
+Acceptance checks:
+
+- `cargo test -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+  passed
+- `cargo test -j 1 -p copybot-storage --lib recent_raw_journal` passed
+- `cargo test -j 1 -p copybot-discovery --lib recent_raw_replacement_convergence`
+  passed
+- `cargo check -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+  passed
+- `cargo check -j 1 -p copybot-storage` passed with existing
+  `backfill_discovery_scoring` warnings
+- `git diff --check -- crates/discovery/src/bin/discovery_recent_raw_snapshot.rs crates/storage/src/market_data.rs`
+  passed
+
+Operator rollout path:
+
+- deploy by pulling the accepted commit and rebuilding only
+  `discovery_recent_raw_snapshot`
+- do not restart `solana-copy-bot.service`
+- verify the latest attempt telemetry moves from the prior `hard_failure`
+  shape to `deferred` or `written`

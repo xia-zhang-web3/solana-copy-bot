@@ -12754,3 +12754,51 @@ Rollout requirement:
 4. Continue watching the convergence surface for
    `recent_raw_replacement_convergence_advancing_but_incomplete` or
    `recent_raw_replacement_convergence_ready_to_promote`.
+
+### Stage 3 recent-raw generic bulk-wrapper timeout correction (`2026-04-15`)
+
+Follow-up acceptance:
+
+1. Live validation of the prior timeout-classification batch on commit
+   `74c6a63` exposed one remaining hard-failure shape:
+   - `state=hard_failure`
+   - `staged_terminal_phase=staged_write`
+   - `staged_completed_batches=1`
+   - `staged_rows_inserted=65536`
+   - `staged_write_duration_ms=119554`
+   - `attempt_duration_ms=120130`
+   - `hard_failure_reason="failed persisting bounded recent_raw batch into staged snapshot ... failed to run recent raw journal bulk batch write"`
+2. The accepted corrective change is intentionally caller-side and narrow:
+   - `recent_raw_staged_write_error_is_budget_exhaustion` now receives explicit
+     deadline context
+   - `SQLITE_INTERRUPT` / `interrupted` remains budget exhaustion regardless of
+     the extra context
+   - a generic `failed to run recent raw journal bulk batch write` wrapper is
+     treated as budget exhaustion only when the staged-write deadline is already
+     exhausted
+   - fatal storage classes still remain hard failures, including disk I/O/full,
+     corruption, schema, readonly, permission, and syntax errors
+3. The live shape is now expected to route into the existing `Deferred` path:
+   - `hard_failure_reason=null`
+   - `archive_promoted=false`
+   - `staged_progress_preserved_for_retry=true`
+   - `staged_row_count_after_attempt` populated from the last persisted staged
+     state
+   - no partial staged artifact is promoted as `latest.sqlite` / `latest.json`
+4. Regression coverage now includes the live shape:
+   - first staged bulk batch commits
+   - second staged write returns only the generic bulk transaction wrapper after
+     deadline context
+   - scheduled output is `Deferred`, not `HardFailure`
+5. Acceptance checks:
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+   - `cargo test -j 1 -p copybot-storage --lib recent_raw_journal`
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_replacement_convergence`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+   - `cargo check -j 1 -p copybot-storage`
+   - `git diff --check -- crates/discovery/src/bin/discovery_recent_raw_snapshot.rs crates/storage/src/market_data.rs`
+6. Rollout requirement:
+   - deploy by rebuilding only `discovery_recent_raw_snapshot`
+   - do not restart `solana-copy-bot.service`
+   - verify the next manual or scheduled attempt returns `state=deferred` or
+     `state=written`, not `state=hard_failure`
