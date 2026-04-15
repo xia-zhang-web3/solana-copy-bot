@@ -11899,3 +11899,47 @@ Acceptance update, Stage 3 replacement-progress contract surface (`2026-04-15`):
      stalled on the same incomplete frontier
    - the next operator step is a live `replacement-progress` read, not another
      retention/source-window probe
+
+Acceptance update, Stage 3 replacement-artifact-history contract surface (`2026-04-15`):
+
+1. The repo now has one more bounded read-only operator command on the primary
+   runtime-export path:
+   - `discovery_runtime_export --explain-recent-raw-replacement-artifact-history-contract --state-root <path> --json`
+2. The contract is intentionally proof-only and artifact-history scoped:
+   - it proves whether the fixed staged replacement path uses one fixed
+     snapshot/metadata pair rewritten or resumed in place
+   - it proves whether discoverable sidecar replacement history exists
+   - it does not change snapshot behavior, promotion behavior, or replay/export
+     semantics
+3. The surface makes the progress-proof boundary explicit:
+   - the fixed staged path is
+     `.discovery_recent_raw_staged.sqlite.archive-staged` plus its `.json`
+     metadata
+   - absence of a previous replacement candidate is expected when no
+     discoverable sidecar artifacts exist and the current fixed pair is
+     parseable
+   - any parseable sidecar staged candidate is reported as archived elsewhere
+4. The current evidence can now distinguish:
+   - fixed-path overwrite/resume by design
+   - replacement history archived under discoverable sidecar paths
+   - unproven artifact-history inspection when current or sidecar evidence is
+     missing/unparseable
+5. The surface emits explicit artifact-history fields such as:
+   - `recent_raw_replacement_fixed_path_overwrite_contract`
+   - `recent_raw_replacement_fixed_snapshot_path`
+   - `recent_raw_replacement_fixed_metadata_path`
+   - `recent_raw_replacement_current_fixed_candidate_exists`
+   - `recent_raw_replacement_current_fixed_candidate_manifest_parseable`
+   - `recent_raw_replacement_previous_artifact_archive_candidate_count`
+   - `recent_raw_replacement_previous_artifact_history_expected_under_current_contract`
+6. Acceptance stayed on the bounded proof-only surface:
+   - `cargo test -j 1 -p copybot-discovery --lib recent_raw_replacement_artifact_history_contract`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+7. Current production implication:
+   - this batch explains why the accepted replacement-progress surface cannot
+     prove cross-attempt progress from a previous artifact on the live fixed
+     staged path
+   - the next operator step is a live `replacement-artifact-history` read to
+     confirm whether production has only the fixed in-place pair or any
+     discoverable sidecars

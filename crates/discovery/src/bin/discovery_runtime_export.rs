@@ -8,7 +8,8 @@ use copybot_discovery::runtime_restore_ops::{
 };
 use copybot_discovery::{
     DiscoveryService, RecentRawCatchUpDiagnostic, RecentRawPromotedRetentionContractDiagnostic,
-    RecentRawPromotionBlockerDiagnostic, RecentRawReplacementProgressContractDiagnostic,
+    RecentRawPromotionBlockerDiagnostic, RecentRawReplacementArtifactHistoryContractDiagnostic,
+    RecentRawReplacementProgressContractDiagnostic,
     RecentRawReplacementPromotionContractDiagnostic, RecentRawSourceWindowContractDiagnostic,
     RecentRawStagedBirthDiagnostic, RecentRawStagedLineageDiagnostic,
     RecentRawStagedRegressionDiagnostic, RecentRawStagedWindowSeedingDiagnostic,
@@ -26,6 +27,7 @@ const USAGE: &str = "usage:
   discovery_runtime_export --explain-recent-raw-promoted-retention-contract --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-replacement-promotion-contract --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-replacement-progress-contract --state-root <path> [--json]
+  discovery_runtime_export --explain-recent-raw-replacement-artifact-history-contract --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-window-seeding --state-root <path> [--json]
@@ -88,6 +90,12 @@ struct ExplainRecentRawReplacementProgressContractConfig {
 }
 
 #[derive(Debug, Clone)]
+struct ExplainRecentRawReplacementArtifactHistoryContractConfig {
+    state_root: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 struct ExplainRecentRawStagedLineageConfig {
     state_root: PathBuf,
     json: bool,
@@ -122,6 +130,9 @@ enum Command {
         ExplainRecentRawReplacementPromotionContractConfig,
     ),
     ExplainRecentRawReplacementProgressContract(ExplainRecentRawReplacementProgressContractConfig),
+    ExplainRecentRawReplacementArtifactHistoryContract(
+        ExplainRecentRawReplacementArtifactHistoryContractConfig,
+    ),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
     ExplainRecentRawStagedBirth(ExplainRecentRawStagedBirthConfig),
@@ -169,6 +180,7 @@ where
     let mut explain_recent_raw_promoted_retention_contract = false;
     let mut explain_recent_raw_replacement_promotion_contract = false;
     let mut explain_recent_raw_replacement_progress_contract = false;
+    let mut explain_recent_raw_replacement_artifact_history_contract = false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
@@ -201,6 +213,9 @@ where
             }
             "--explain-recent-raw-replacement-progress-contract" => {
                 explain_recent_raw_replacement_progress_contract = true;
+            }
+            "--explain-recent-raw-replacement-artifact-history-contract" => {
+                explain_recent_raw_replacement_artifact_history_contract = true;
             }
             "--explain-recent-raw-staged-lineage" => {
                 explain_recent_raw_staged_lineage = true;
@@ -244,13 +259,14 @@ where
         + usize::from(explain_recent_raw_promoted_retention_contract)
         + usize::from(explain_recent_raw_replacement_promotion_contract)
         + usize::from(explain_recent_raw_replacement_progress_contract)
+        + usize::from(explain_recent_raw_replacement_artifact_history_contract)
         + usize::from(explain_recent_raw_staged_lineage)
         + usize::from(explain_recent_raw_staged_regression)
         + usize::from(explain_recent_raw_staged_birth)
         + usize::from(explain_recent_raw_staged_window_seeding);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
 
@@ -364,6 +380,27 @@ where
         )));
     }
 
+    if explain_recent_raw_replacement_artifact_history_contract {
+        if config_path.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+        {
+            bail!("--explain-recent-raw-replacement-artifact-history-contract only accepts --state-root and optional --json");
+        }
+        return Ok(Some(
+            Command::ExplainRecentRawReplacementArtifactHistoryContract(
+                ExplainRecentRawReplacementArtifactHistoryContractConfig {
+                    state_root: state_root
+                        .ok_or_else(|| anyhow!("missing required --state-root"))?,
+                    json,
+                },
+            ),
+        ));
+    }
+
     if explain_recent_raw_staged_lineage {
         if config_path.is_some()
             || db_path.is_some()
@@ -442,7 +479,7 @@ where
 
     if state_root.is_some() {
         bail!(
-            "--state-root requires --explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, or --explain-recent-raw-staged-birth"
+            "--state-root requires --explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, or --explain-recent-raw-staged-birth"
         );
     }
     if scheduled == output_path.is_some() {
@@ -551,6 +588,18 @@ fn run_command(command: Command) -> Result<String> {
                 Ok(render_recent_raw_replacement_progress_contract_human(
                     &diagnostic,
                 ))
+            }
+        }
+        Command::ExplainRecentRawReplacementArtifactHistoryContract(config) => {
+            let diagnostic = DiscoveryService::explain_recent_raw_replacement_artifact_history_contract_read_only(
+                &config.state_root,
+            )?;
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic).context(
+                    "failed serializing recent_raw replacement artifact history contract json",
+                )
+            } else {
+                Ok(render_recent_raw_replacement_artifact_history_contract_human(&diagnostic))
             }
         }
         Command::ExplainRecentRawStagedLineage(config) => {
@@ -1722,12 +1771,84 @@ fn render_recent_raw_replacement_progress_contract_human(
     .join("\n")
 }
 
+fn render_recent_raw_replacement_artifact_history_contract_human(
+    diagnostic: &RecentRawReplacementArtifactHistoryContractDiagnostic,
+) -> String {
+    [
+        "event=discovery_recent_raw_replacement_artifact_history_contract".to_string(),
+        format!("snapshot_dir={}", diagnostic.recent_raw_snapshot_dir),
+        format!(
+            "replacement_artifact_history_observed={}",
+            diagnostic.recent_raw_replacement_artifact_history_observed
+        ),
+        format!(
+            "reason_class={}",
+            serde_json::to_string(&diagnostic.recent_raw_replacement_artifact_history_reason_class)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "replacement_fixed_path_overwrite_contract={}",
+            diagnostic.recent_raw_replacement_fixed_path_overwrite_contract
+        ),
+        format!(
+            "replacement_fixed_snapshot_path={}",
+            diagnostic.recent_raw_replacement_fixed_snapshot_path
+        ),
+        format!(
+            "replacement_fixed_metadata_path={}",
+            diagnostic.recent_raw_replacement_fixed_metadata_path
+        ),
+        format!(
+            "replacement_current_fixed_candidate_exists={}",
+            diagnostic.recent_raw_replacement_current_fixed_candidate_exists
+        ),
+        format!(
+            "replacement_current_fixed_candidate_manifest_parseable={}",
+            diagnostic.recent_raw_replacement_current_fixed_candidate_manifest_parseable
+        ),
+        format!(
+            "replacement_staged_candidate_scan_succeeded={}",
+            diagnostic.recent_raw_replacement_staged_candidate_scan_succeeded
+        ),
+        format!(
+            "replacement_previous_artifact_archive_path_present={}",
+            diagnostic.recent_raw_replacement_previous_artifact_archive_path_present
+        ),
+        format!(
+            "replacement_previous_artifact_archive_candidate_count={}",
+            diagnostic.recent_raw_replacement_previous_artifact_archive_candidate_count
+        ),
+        format!(
+            "replacement_previous_artifact_archive_parseable_count={}",
+            diagnostic.recent_raw_replacement_previous_artifact_archive_parseable_count
+        ),
+        format!(
+            "replacement_previous_artifact_history_expected_under_current_contract={}",
+            diagnostic
+                .recent_raw_replacement_previous_artifact_history_expected_under_current_contract
+        ),
+        format!(
+            "replacement_previous_artifact_history_missing_due_to_unproven_evidence={}",
+            diagnostic
+                .recent_raw_replacement_previous_artifact_history_missing_due_to_unproven_evidence
+        ),
+        format!(
+            "explanation={}",
+            diagnostic.recent_raw_replacement_artifact_history_explanation
+        ),
+    ]
+    .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         load_json, parse_args_from, run, run_command, write_json_atomic, Command, Config,
         ExplainRecentRawCatchUpStatusConfig, ExplainRecentRawPromotedRetentionContractConfig,
-        ExplainRecentRawPromotionBlockerConfig, ExplainRecentRawReplacementProgressContractConfig,
+        ExplainRecentRawPromotionBlockerConfig,
+        ExplainRecentRawReplacementArtifactHistoryContractConfig,
+        ExplainRecentRawReplacementProgressContractConfig,
         ExplainRecentRawReplacementPromotionContractConfig,
         ExplainRecentRawSourceWindowContractConfig, ExplainRecentRawStagedBirthConfig,
         ExplainRecentRawStagedLineageConfig, ExplainRecentRawStagedRegressionConfig,
@@ -1937,6 +2058,23 @@ mod tests {
         .expect("command should be present");
         let Command::ExplainRecentRawReplacementProgressContract(parsed) = parsed else {
             panic!("expected replacement progress contract command");
+        };
+        assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_recent_raw_replacement_artifact_history_contract_mode() {
+        let parsed = parse_args_from(vec![
+            "--explain-recent-raw-replacement-artifact-history-contract".to_string(),
+            "--state-root".to_string(),
+            "/tmp/state".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ExplainRecentRawReplacementArtifactHistoryContract(parsed) = parsed else {
+            panic!("expected replacement artifact history contract command");
         };
         assert_eq!(parsed.state_root, PathBuf::from("/tmp/state"));
         assert!(parsed.json);
@@ -2955,6 +3093,79 @@ mod tests {
         assert_eq!(
             parsed["recent_raw_replacement_promotion_reason_class"],
             "recent_raw_replacement_candidate_incomplete_against_current_source"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_recent_raw_replacement_artifact_history_contract_renders_json() -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-recent-raw-replacement-artifact-history-contract")?;
+        let state_root = fixture
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("state");
+        let recent_raw_dir = state_root.join("discovery_restore/recent_raw");
+        fs::create_dir_all(&recent_raw_dir)?;
+        let staged_path = recent_raw_dir.join(".discovery_recent_raw_staged.sqlite.archive-staged");
+        let staged_metadata_path =
+            recent_raw_dir.join(".discovery_recent_raw_staged.sqlite.archive-staged.json");
+        write_recent_raw_snapshot_sqlite_content(
+            &staged_path,
+            &[recent_raw_swap(
+                "raw-wallet",
+                "sig-source-a",
+                parse_ts("2026-04-14T07:56:00Z")?,
+            )],
+            parse_ts("2026-04-14T08:10:00Z")?,
+        )?;
+        let staged_bytes = fs::metadata(&staged_path)
+            .with_context(|| format!("failed stat {}", staged_path.display()))?
+            .len();
+        let staged_manifest = serde_json::json!({
+            "created_at": "2026-04-14T08:05:00Z",
+            "source_db_path": fixture.db_path.display().to_string(),
+            "snapshot_path": staged_path.display().to_string(),
+            "row_count": 1,
+            "covered_since": "2026-04-14T07:56:00Z",
+            "covered_through_cursor": {
+                "ts_utc": "2026-04-14T07:56:00Z",
+                "slot": parse_ts("2026-04-14T07:56:00Z")?.timestamp() as u64,
+                "signature": "sig-source-a"
+            },
+            "last_batch_completed_at": "2026-04-14T08:10:00Z",
+            "updated_at": "2026-04-14T08:10:00Z",
+            "snapshot_bytes": staged_bytes
+        });
+        write_json_atomic(&staged_metadata_path, &staged_manifest)?;
+
+        let rendered = run_command(Command::ExplainRecentRawReplacementArtifactHistoryContract(
+            ExplainRecentRawReplacementArtifactHistoryContractConfig {
+                state_root,
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["recent_raw_replacement_artifact_history_reason_class"],
+            "recent_raw_replacement_artifact_history_fixed_path_overwrite_by_design"
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_fixed_path_overwrite_contract"],
+            true
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_previous_artifact_archive_path_present"],
+            false
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_previous_artifact_history_expected_under_current_contract"],
+            true
+        );
+        assert_eq!(
+            parsed["recent_raw_replacement_previous_artifact_history_missing_due_to_unproven_evidence"],
+            false
         );
         Ok(())
     }

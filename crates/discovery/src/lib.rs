@@ -2765,6 +2765,37 @@ pub struct RecentRawReplacementProgressContractDiagnostic {
     pub recent_raw_replacement_promotion_reason_class: RecentRawReplacementPromotionReasonClass,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentRawReplacementArtifactHistoryReasonClass {
+    RecentRawReplacementArtifactHistoryFixedPathOverwriteByDesign,
+    RecentRawReplacementArtifactHistoryArchivedElsewhere,
+    RecentRawReplacementArtifactHistoryUnprovenDueToMissingEvidence,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentRawReplacementArtifactHistoryContractDiagnostic {
+    pub recent_raw_snapshot_dir: String,
+    pub recent_raw_replacement_artifact_history_observed: bool,
+    pub recent_raw_replacement_artifact_history_reason_class:
+        RecentRawReplacementArtifactHistoryReasonClass,
+    pub recent_raw_replacement_artifact_history_explanation: String,
+    pub recent_raw_replacement_fixed_path_overwrite_contract: bool,
+    pub recent_raw_replacement_fixed_snapshot_path: String,
+    pub recent_raw_replacement_fixed_metadata_path: String,
+    pub recent_raw_replacement_current_fixed_candidate_exists: bool,
+    pub recent_raw_replacement_current_fixed_candidate_manifest_parseable: bool,
+    pub recent_raw_replacement_staged_candidate_scan_succeeded: bool,
+    pub recent_raw_replacement_staged_candidate_scan_error: Option<String>,
+    pub recent_raw_replacement_previous_artifact_archive_path_present: bool,
+    pub recent_raw_replacement_previous_artifact_archive_candidate_count: usize,
+    pub recent_raw_replacement_previous_artifact_archive_parseable_count: usize,
+    pub recent_raw_replacement_previous_artifact_archive_snapshot_paths: Vec<String>,
+    pub recent_raw_replacement_previous_artifact_archive_metadata_paths: Vec<String>,
+    pub recent_raw_replacement_previous_artifact_history_expected_under_current_contract: bool,
+    pub recent_raw_replacement_previous_artifact_history_missing_due_to_unproven_evidence: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct RecentRawPromotionSnapshotManifest {
     created_at: DateTime<Utc>,
@@ -3255,12 +3286,13 @@ impl DiscoveryService {
         snapshot_dir.join(RECENT_RAW_STAGED_METADATA_FILE_NAME)
     }
 
-    fn recent_raw_staged_candidate_reads(snapshot_dir: &Path) -> Vec<RecentRawStagedCandidateRead> {
+    fn recent_raw_staged_candidate_reads_result(
+        snapshot_dir: &Path,
+    ) -> Result<Vec<RecentRawStagedCandidateRead>> {
         let mut candidates: BTreeMap<String, (Option<PathBuf>, Option<PathBuf>)> = BTreeMap::new();
         let snapshot_prefix = format!("{RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME}.");
-        let Ok(entries) = fs::read_dir(snapshot_dir) else {
-            return Vec::new();
-        };
+        let entries = fs::read_dir(snapshot_dir)
+            .with_context(|| format!("failed reading {}", snapshot_dir.display()))?;
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_file() {
@@ -3292,7 +3324,7 @@ impl DiscoveryService {
                 candidates.entry(base_name.to_string()).or_default().1 = Some(path);
             }
         }
-        candidates
+        Ok(candidates
             .into_iter()
             .map(|(base_name, (snapshot_path, metadata_path))| {
                 let snapshot_path = snapshot_path.unwrap_or_else(|| snapshot_dir.join(&base_name));
@@ -3306,7 +3338,11 @@ impl DiscoveryService {
                     surface,
                 }
             })
-            .collect()
+            .collect())
+    }
+
+    fn recent_raw_staged_candidate_reads(snapshot_dir: &Path) -> Vec<RecentRawStagedCandidateRead> {
+        Self::recent_raw_staged_candidate_reads_result(snapshot_dir).unwrap_or_default()
     }
 
     fn read_recent_raw_surface_manifest(
@@ -5700,6 +5736,75 @@ impl DiscoveryService {
         )
     }
 
+    fn classify_recent_raw_replacement_artifact_history_contract(
+        staged_candidate_scan_error: Option<&str>,
+        current_fixed_candidate_exists: bool,
+        current_fixed_candidate_manifest_parseable: bool,
+        previous_artifact_archive_candidate_count: usize,
+        previous_artifact_archive_parseable_count: usize,
+    ) -> (
+        RecentRawReplacementArtifactHistoryReasonClass,
+        bool,
+        bool,
+        String,
+    ) {
+        if let Some(error) = staged_candidate_scan_error {
+            return (
+                RecentRawReplacementArtifactHistoryReasonClass::RecentRawReplacementArtifactHistoryUnprovenDueToMissingEvidence,
+                false,
+                true,
+                format!(
+                    "recent_raw replacement artifact history is unproven because the staged snapshot directory could not be read read-only: {error}"
+                ),
+            );
+        }
+
+        if previous_artifact_archive_parseable_count > 0 {
+            return (
+                RecentRawReplacementArtifactHistoryReasonClass::RecentRawReplacementArtifactHistoryArchivedElsewhere,
+                true,
+                false,
+                format!(
+                    "recent_raw replacement artifact history is present under discoverable staged sidecar artifact paths. previous_artifact_archive_candidate_count={}, previous_artifact_archive_parseable_count={}",
+                    previous_artifact_archive_candidate_count,
+                    previous_artifact_archive_parseable_count,
+                ),
+            );
+        }
+
+        if previous_artifact_archive_candidate_count > 0 {
+            return (
+                RecentRawReplacementArtifactHistoryReasonClass::RecentRawReplacementArtifactHistoryUnprovenDueToMissingEvidence,
+                false,
+                true,
+                format!(
+                    "recent_raw replacement artifact history sidecar paths are present, but none are parseable enough for cross-attempt comparison. previous_artifact_archive_candidate_count={}, previous_artifact_archive_parseable_count=0",
+                    previous_artifact_archive_candidate_count,
+                ),
+            );
+        }
+
+        if current_fixed_candidate_exists && current_fixed_candidate_manifest_parseable {
+            return (
+                RecentRawReplacementArtifactHistoryReasonClass::RecentRawReplacementArtifactHistoryFixedPathOverwriteByDesign,
+                true,
+                false,
+                "recent_raw replacement artifact history is absent as expected under the current fixed staged path contract: the replacement path uses one fixed staged snapshot and metadata pair, resumes and rewrites that pair in place, and does not persist per-attempt replacement history sidecars by default".to_string(),
+            );
+        }
+
+        (
+            RecentRawReplacementArtifactHistoryReasonClass::RecentRawReplacementArtifactHistoryUnprovenDueToMissingEvidence,
+            false,
+            true,
+            format!(
+                "recent_raw replacement artifact history is unproven because no parseable current fixed staged replacement candidate is available. current_fixed_candidate_exists={}, current_fixed_candidate_manifest_parseable={}",
+                current_fixed_candidate_exists,
+                current_fixed_candidate_manifest_parseable,
+            ),
+        )
+    }
+
     pub fn explain_recent_raw_staged_window_seeding_read_only(
         state_root: &Path,
     ) -> Result<RecentRawStagedWindowSeedingDiagnostic> {
@@ -6570,6 +6675,87 @@ impl DiscoveryService {
                 .recent_raw_replacement_candidate_complete_against_current_source,
             recent_raw_replacement_promotion_reason_class: replacement_promotion
                 .recent_raw_replacement_promotion_reason_class,
+        })
+    }
+
+    pub fn explain_recent_raw_replacement_artifact_history_contract_read_only(
+        state_root: &Path,
+    ) -> Result<RecentRawReplacementArtifactHistoryContractDiagnostic> {
+        let state = Self::load_recent_raw_diagnostic_state_read_only(state_root);
+        let staged_candidate_scan =
+            Self::recent_raw_staged_candidate_reads_result(&state.snapshot_dir);
+        let staged_candidate_scan_error = staged_candidate_scan
+            .as_ref()
+            .err()
+            .map(|error| format!("{error:#}"));
+        let staged_candidates = staged_candidate_scan.unwrap_or_default();
+        let previous_artifact_candidates = staged_candidates
+            .iter()
+            .filter(|candidate| candidate.snapshot_path != state.staged_snapshot_path)
+            .collect::<Vec<_>>();
+        let previous_artifact_archive_candidate_count = previous_artifact_candidates.len();
+        let previous_artifact_archive_parseable_count = previous_artifact_candidates
+            .iter()
+            .filter(|candidate| candidate.surface.manifest.is_some())
+            .count();
+        let previous_artifact_archive_snapshot_paths = previous_artifact_candidates
+            .iter()
+            .map(|candidate| candidate.snapshot_path.display().to_string())
+            .collect::<Vec<_>>();
+        let previous_artifact_archive_metadata_paths = previous_artifact_candidates
+            .iter()
+            .map(|candidate| candidate.metadata_path.display().to_string())
+            .collect::<Vec<_>>();
+        let current_fixed_candidate_exists =
+            state.staged.snapshot_present && state.staged.metadata_present;
+        let current_fixed_candidate_manifest_parseable = state.staged.manifest.is_some();
+        let previous_artifact_archive_path_present = previous_artifact_archive_candidate_count > 0;
+
+        let (reason_class, observed, missing_due_to_unproven_evidence, explanation) =
+            Self::classify_recent_raw_replacement_artifact_history_contract(
+                staged_candidate_scan_error.as_deref(),
+                current_fixed_candidate_exists,
+                current_fixed_candidate_manifest_parseable,
+                previous_artifact_archive_candidate_count,
+                previous_artifact_archive_parseable_count,
+            );
+        let previous_artifact_history_expected_under_current_contract = reason_class
+            == RecentRawReplacementArtifactHistoryReasonClass::RecentRawReplacementArtifactHistoryFixedPathOverwriteByDesign;
+
+        Ok(RecentRawReplacementArtifactHistoryContractDiagnostic {
+            recent_raw_snapshot_dir: state.snapshot_dir.display().to_string(),
+            recent_raw_replacement_artifact_history_observed: observed,
+            recent_raw_replacement_artifact_history_reason_class: reason_class,
+            recent_raw_replacement_artifact_history_explanation: explanation,
+            recent_raw_replacement_fixed_path_overwrite_contract: true,
+            recent_raw_replacement_fixed_snapshot_path: state
+                .staged_snapshot_path
+                .display()
+                .to_string(),
+            recent_raw_replacement_fixed_metadata_path: state
+                .staged_metadata_path
+                .display()
+                .to_string(),
+            recent_raw_replacement_current_fixed_candidate_exists: current_fixed_candidate_exists,
+            recent_raw_replacement_current_fixed_candidate_manifest_parseable:
+                current_fixed_candidate_manifest_parseable,
+            recent_raw_replacement_staged_candidate_scan_succeeded: staged_candidate_scan_error
+                .is_none(),
+            recent_raw_replacement_staged_candidate_scan_error: staged_candidate_scan_error,
+            recent_raw_replacement_previous_artifact_archive_path_present:
+                previous_artifact_archive_path_present,
+            recent_raw_replacement_previous_artifact_archive_candidate_count:
+                previous_artifact_archive_candidate_count,
+            recent_raw_replacement_previous_artifact_archive_parseable_count:
+                previous_artifact_archive_parseable_count,
+            recent_raw_replacement_previous_artifact_archive_snapshot_paths:
+                previous_artifact_archive_snapshot_paths,
+            recent_raw_replacement_previous_artifact_archive_metadata_paths:
+                previous_artifact_archive_metadata_paths,
+            recent_raw_replacement_previous_artifact_history_expected_under_current_contract:
+                previous_artifact_history_expected_under_current_contract,
+            recent_raw_replacement_previous_artifact_history_missing_due_to_unproven_evidence:
+                missing_due_to_unproven_evidence,
         })
     }
 
@@ -52134,6 +52320,211 @@ mod tests {
         let _ = DiscoveryService::explain_recent_raw_replacement_progress_contract_read_only(
             &fixture.state_root,
         )?;
+        let after = fixture.capture_bytes()?;
+        assert_eq!(before, after);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_replacement_artifact_history_contract_fixed_path_overwrite_by_design_stage1(
+    ) -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-artifact-history-contract-fixed",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.write_selected_staged_surface_sqlite_with_source_path_and_created_at(
+            &fixture.runtime_db_path,
+            &[swap(
+                "wallet-raw",
+                "sig-source-a",
+                parse_ts("2026-04-14T07:56:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                10.0,
+            )],
+            parse_ts("2026-04-14T08:10:00Z")?,
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_artifact_history_contract_read_only(
+                &fixture.state_root,
+            )?;
+        assert_eq!(
+            diagnostic.recent_raw_replacement_artifact_history_reason_class,
+            RecentRawReplacementArtifactHistoryReasonClass::RecentRawReplacementArtifactHistoryFixedPathOverwriteByDesign
+        );
+        assert!(diagnostic.recent_raw_replacement_artifact_history_observed);
+        assert!(diagnostic.recent_raw_replacement_fixed_path_overwrite_contract);
+        assert!(diagnostic.recent_raw_replacement_current_fixed_candidate_exists);
+        assert!(diagnostic.recent_raw_replacement_current_fixed_candidate_manifest_parseable);
+        assert!(!diagnostic.recent_raw_replacement_previous_artifact_archive_path_present);
+        assert_eq!(
+            diagnostic.recent_raw_replacement_previous_artifact_archive_candidate_count,
+            0
+        );
+        assert!(
+            diagnostic
+                .recent_raw_replacement_previous_artifact_history_expected_under_current_contract
+        );
+        assert!(
+            !diagnostic
+                .recent_raw_replacement_previous_artifact_history_missing_due_to_unproven_evidence
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_replacement_artifact_history_contract_archived_elsewhere_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-artifact-history-contract-archived",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.write_selected_staged_surface_sqlite_with_source_path_and_created_at(
+            &fixture.runtime_db_path,
+            &[swap(
+                "wallet-raw",
+                "sig-source-b",
+                parse_ts("2026-04-14T07:57:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                11.0,
+            )],
+            parse_ts("2026-04-14T08:10:00Z")?,
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+        fixture.write_named_staged_candidate_surface_with_source_path_and_covered_since(
+            ".discovery_recent_raw_staged.sqlite.archive-staged.prev",
+            &fixture.runtime_db_path,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            1,
+            parse_ts("2026-04-14T07:56:00Z")?,
+            "sig-source-a",
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_artifact_history_contract_read_only(
+                &fixture.state_root,
+            )?;
+        assert_eq!(
+            diagnostic.recent_raw_replacement_artifact_history_reason_class,
+            RecentRawReplacementArtifactHistoryReasonClass::RecentRawReplacementArtifactHistoryArchivedElsewhere
+        );
+        assert!(diagnostic.recent_raw_replacement_artifact_history_observed);
+        assert!(diagnostic.recent_raw_replacement_previous_artifact_archive_path_present);
+        assert_eq!(
+            diagnostic.recent_raw_replacement_previous_artifact_archive_candidate_count,
+            1
+        );
+        assert_eq!(
+            diagnostic.recent_raw_replacement_previous_artifact_archive_parseable_count,
+            1
+        );
+        assert!(
+            !diagnostic
+                .recent_raw_replacement_previous_artifact_history_expected_under_current_contract
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_replacement_artifact_history_contract_unproven_case_stage1() -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-artifact-history-contract-unproven",
+            SourceStateSeed::Missing,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_artifact_history_contract_read_only(
+                &fixture.state_root,
+            )?;
+        assert_eq!(
+            diagnostic.recent_raw_replacement_artifact_history_reason_class,
+            RecentRawReplacementArtifactHistoryReasonClass::RecentRawReplacementArtifactHistoryUnprovenDueToMissingEvidence
+        );
+        assert!(!diagnostic.recent_raw_replacement_artifact_history_observed);
+        assert!(diagnostic.recent_raw_replacement_fixed_path_overwrite_contract);
+        assert!(!diagnostic.recent_raw_replacement_current_fixed_candidate_exists);
+        assert!(!diagnostic.recent_raw_replacement_current_fixed_candidate_manifest_parseable);
+        assert!(
+            diagnostic
+                .recent_raw_replacement_previous_artifact_history_missing_due_to_unproven_evidence
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_replacement_artifact_history_contract_includes_explicit_fields_stage1(
+    ) -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-artifact-history-contract-fields",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.write_selected_staged_surface_sqlite_with_source_path_and_created_at(
+            &fixture.runtime_db_path,
+            &[swap(
+                "wallet-raw",
+                "sig-source-a",
+                parse_ts("2026-04-14T07:56:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                10.0,
+            )],
+            parse_ts("2026-04-14T08:10:00Z")?,
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let diagnostic =
+            DiscoveryService::explain_recent_raw_replacement_artifact_history_contract_read_only(
+                &fixture.state_root,
+            )?;
+        assert!(diagnostic
+            .recent_raw_replacement_fixed_snapshot_path
+            .ends_with(RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME));
+        assert!(diagnostic
+            .recent_raw_replacement_fixed_metadata_path
+            .ends_with(RECENT_RAW_STAGED_METADATA_FILE_NAME));
+        assert!(diagnostic.recent_raw_replacement_staged_candidate_scan_succeeded);
+        assert!(diagnostic
+            .recent_raw_replacement_staged_candidate_scan_error
+            .is_none());
+        assert!(!diagnostic
+            .recent_raw_replacement_artifact_history_explanation
+            .is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_replacement_artifact_history_contract_explain_remains_read_only_stage1(
+    ) -> Result<()> {
+        let fixture = make_recent_raw_promotion_fixture(
+            "recent-raw-replacement-artifact-history-contract-read-only",
+            SourceStateSeed::Missing,
+        )?;
+        fixture.write_selected_staged_surface_sqlite_with_source_path_and_created_at(
+            &fixture.runtime_db_path,
+            &[swap(
+                "wallet-raw",
+                "sig-source-a",
+                parse_ts("2026-04-14T07:56:00Z")?,
+                SOL_MINT,
+                "TokenRaw111111111111111111111111111111111",
+                1.0,
+                10.0,
+            )],
+            parse_ts("2026-04-14T08:10:00Z")?,
+            parse_ts("2026-04-14T08:05:00Z")?,
+        )?;
+
+        let before = fixture.capture_bytes()?;
+        let _ =
+            DiscoveryService::explain_recent_raw_replacement_artifact_history_contract_read_only(
+                &fixture.state_root,
+            )?;
         let after = fixture.capture_bytes()?;
         assert_eq!(before, after);
         Ok(())
