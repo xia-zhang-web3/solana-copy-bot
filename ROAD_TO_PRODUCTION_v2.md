@@ -12289,3 +12289,47 @@ Acceptance update, Stage 3 recent-raw staged-write throughput hardening (`2026-0
    - after the next scheduled/manual snapshot attempt, inspect telemetry and the
      replacement convergence command to confirm whether the larger staged write
      batches materially increase `recent_raw_replacement_latest_attempt_row_count_delta`
+
+Live validation note, Stage 3 recent-raw staged-write throughput hardening (`2026-04-15`):
+
+1. Commit `6b83030` was rolled out to the production host.
+2. Only `discovery_recent_raw_snapshot` was rebuilt in release mode; the main
+   `solana-copy-bot.service` was not restarted.
+3. A timer-triggered snapshot attempt was already running around rebuild time and
+   completed as a bounded deferred attempt. A second manual one-shot run after
+   the rebuild verified the new binary and emitted the new telemetry fields.
+4. The verified post-build run completed as expected:
+   - `state=deferred`
+   - `terminal_reason=staged_write_attempt_duration_budget_exhausted`
+   - `latest_surface_action=deferred_due_to_attempt_budget`
+   - `staged_progress_resumed=true`
+   - `staged_progress_preserved_for_retry=true`
+   - `staged_progress_advanced=true`
+   - `archive_promoted=false`
+5. New throughput telemetry was present:
+   - `staged_write_batch_rows=65536`
+   - `staged_write_batch_count=2`
+   - `staged_write_rows_per_second=624.2911115529927`
+   - `staged_write_duration_ms=125725`
+   - `staged_source_read_duration_ms=499`
+6. The latest attempt advanced the fixed staged replacement:
+   - `staged_row_count_before_attempt=46013652`
+   - `staged_row_count_after_attempt=46092141`
+   - `staged_rows_inserted=78489`
+7. The bounded convergence surface still correctly reports Stage 3 as blocked
+   on an advancing but incomplete replacement:
+   - `recent_raw_replacement_convergence_reason_class=recent_raw_replacement_convergence_advancing_but_incomplete`
+   - `recent_raw_replacement_candidate_row_count=46092141`
+   - `recent_raw_source_row_count=56180677`
+   - `recent_raw_replacement_rows_remaining_to_current_source=10088536`
+   - `recent_raw_replacement_latest_attempt_row_count_delta=78489`
+   - `recent_raw_replacement_estimated_attempts_to_current_source=129`
+   - `recent_raw_replacement_candidate_complete_against_current_source=false`
+   - `recent_raw_replacement_candidate_promotable_now=false`
+   - `recent_raw_replacement_attempt_telemetry_parseable=true`
+   - `recent_raw_replacement_attempt_telemetry_probe_bounded=true`
+8. Post-rollout service state remained healthy:
+   - `solana-copy-bot.service=active`
+   - `copybot-discovery-recent-raw-snapshot.timer=active`
+   - `copybot-discovery-runtime-export.timer=active`
+   - server HEAD is `6b83030`

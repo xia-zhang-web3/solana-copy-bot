@@ -2513,3 +2513,39 @@ Operator path:
   - `recent_raw_replacement_estimated_attempts_to_current_source`
 - the expected outcome is not immediate Stage 3 green; it is higher bounded
   staged replacement throughput while preserving the same fail-closed semantics
+
+Live validation:
+
+- commit `6b83030` was deployed on the production host and only
+  `discovery_recent_raw_snapshot` was rebuilt
+- the main `solana-copy-bot.service` was not restarted
+- a post-build manual one-shot snapshot run completed as the expected bounded
+  deferred attempt:
+  - `state=deferred`
+  - `terminal_reason=staged_write_attempt_duration_budget_exhausted`
+  - `latest_surface_action=deferred_due_to_attempt_budget`
+  - `archive_promoted=false`
+- the run proved the new write-batch telemetry:
+  - `staged_write_batch_rows=65536`
+  - `staged_write_batch_count=2`
+  - `staged_write_rows_per_second=624.2911115529927`
+  - `staged_write_duration_ms=125725`
+  - `staged_source_read_duration_ms=499`
+- the fixed staged replacement advanced:
+  - `staged_row_count_before_attempt=46013652`
+  - `staged_row_count_after_attempt=46092141`
+  - `staged_rows_inserted=78489`
+- the bounded convergence surface still reports:
+  - `recent_raw_replacement_convergence_reason_class=recent_raw_replacement_convergence_advancing_but_incomplete`
+  - `recent_raw_replacement_candidate_row_count=46092141`
+  - `recent_raw_source_row_count=56180677`
+  - `recent_raw_replacement_rows_remaining_to_current_source=10088536`
+  - `recent_raw_replacement_latest_attempt_row_count_delta=78489`
+  - `recent_raw_replacement_estimated_attempts_to_current_source=129`
+  - `recent_raw_replacement_candidate_complete_against_current_source=false`
+  - `recent_raw_replacement_candidate_promotable_now=false`
+- current reading:
+  - Stage 3 remains blocked
+  - replacement accumulation is still advancing and now emits bounded throughput
+    evidence for the larger staged write batch
+  - the main service and both relevant timers remained active after rollout

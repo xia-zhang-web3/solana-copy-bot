@@ -216,7 +216,34 @@ This is the expected style for future sessions too.
 
 ## Current Server Facts
 
-Snapshot as of `2026-03-27`.
+Snapshot as of `2026-04-15` after the recent-raw staged-write throughput rollout.
+
+### Latest Stage 3 Update
+
+- Commit `6b83030` is deployed on the production host.
+- Only `discovery_recent_raw_snapshot` was rebuilt; `solana-copy-bot.service`
+  was not restarted.
+- The post-build manual snapshot attempt remained bounded and deferred:
+  - `state=deferred`
+  - `terminal_reason=staged_write_attempt_duration_budget_exhausted`
+  - `archive_promoted=false`
+- The new throughput telemetry is present:
+  - `staged_write_batch_rows=65536`
+  - `staged_write_batch_count=2`
+  - `staged_write_rows_per_second=624.2911115529927`
+  - `staged_rows_inserted=78489`
+- The replacement convergence surface reports:
+  - `recent_raw_replacement_convergence_reason_class=recent_raw_replacement_convergence_advancing_but_incomplete`
+  - `recent_raw_replacement_candidate_row_count=46092141`
+  - `recent_raw_source_row_count=56180677`
+  - `recent_raw_replacement_rows_remaining_to_current_source=10088536`
+  - `recent_raw_replacement_estimated_attempts_to_current_source=129`
+  - `recent_raw_replacement_candidate_promotable_now=false`
+- Interpretation:
+  - Stage 3 is still blocked.
+  - The fixed staged replacement is advancing, not ready to promote yet.
+  - Continue watching for `state=written`, `archive_promoted=true`, and a newer
+    promoted `latest.sqlite` frontier.
 
 ### Live Server
 
