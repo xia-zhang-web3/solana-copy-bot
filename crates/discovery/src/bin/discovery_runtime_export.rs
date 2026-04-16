@@ -8,12 +8,14 @@ use copybot_discovery::runtime_restore_ops::{
 };
 use copybot_discovery::{
     DiscoveryService, RecentRawCatchUpDiagnostic,
+    PersistedReplayCheckpointInspection,
     RecentRawPromotedRetentionContractDiagnostic, RecentRawPromotionBlockerDiagnostic,
     RecentRawReplacementArtifactHistoryContractDiagnostic,
     RecentRawReplacementAttemptTelemetryDiagnostic, RecentRawReplacementConvergenceDiagnostic,
     RecentRawReplacementProgressContractDiagnostic,
     RecentRawReplacementPromotionContractDiagnostic, RecentRawSourceWindowContractDiagnostic,
     RecentRawStagedBirthDiagnostic, RecentRawStagedLineageDiagnostic,
+    ReplaySolLegSourceVsCheckpointDiagnostic,
     RecentRawStagedRegressionDiagnostic, RecentRawStagedWindowSeedingDiagnostic,
     ReplaySolLegIncompleteDiagnostic, ReplaySolLegIncompleteReasonClass,
 };
@@ -27,6 +29,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+#[cfg(test)]
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 
@@ -43,6 +47,7 @@ const USAGE: &str = "usage:
   discovery_runtime_export --explain-recent-raw-replacement-convergence --state-root <path> [--json]
   discovery_runtime_export --explain-publication-truth-export-blocker --config <path> [--json]
   discovery_runtime_export --explain-replay-sol-leg-blocker --config <path> [--json]
+  discovery_runtime_export --trace-replay-sol-leg-deep-proof --config <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-window-seeding --state-root <path> [--json]
@@ -156,6 +161,12 @@ struct ExplainReplaySolLegBlockerConfig {
 }
 
 #[derive(Debug, Clone)]
+struct TraceReplaySolLegDeepProofConfig {
+    config_path: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 struct ExplainRecentRawStagedLineageConfig {
     state_root: PathBuf,
     json: bool,
@@ -197,6 +208,7 @@ enum Command {
     ExplainRecentRawReplacementConvergence(ExplainRecentRawReplacementConvergenceConfig),
     ExplainPublicationTruthExportBlocker(ExplainPublicationTruthExportBlockerConfig),
     ExplainReplaySolLegBlocker(ExplainReplaySolLegBlockerConfig),
+    TraceReplaySolLegDeepProof(TraceReplaySolLegDeepProofConfig),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
     ExplainRecentRawStagedBirth(ExplainRecentRawStagedBirthConfig),
@@ -392,6 +404,15 @@ enum ReplaySolLegBlockerReasonClass {
     ReplaySolLegBlockerUnprovenDueToMissingEvidence,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ReplaySolLegDeepTraceReasonClass {
+    ReplaySolLegDeepTraceProven,
+    ReplaySolLegDeepTraceNotCurrentBlocker,
+    ReplaySolLegDeepTraceUnprovenDueToMissingEvidence,
+    ReplaySolLegDeepTraceBudgetExhausted,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct ReplaySolLegBlockerDiagnostic {
     replay_sol_leg_blocker_observed: bool,
@@ -445,6 +466,50 @@ struct ReplaySolLegBlockerDiagnostic {
     replay_sol_leg_blocker_deep_reason_elapsed_ms: u64,
     replay_sol_leg_blocker_budget_exhausted: bool,
     replay_sol_leg_blocker_budget_exhausted_stage: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct ReplaySolLegDeepTraceDiagnostic {
+    replay_sol_leg_deep_trace_observed: bool,
+    replay_sol_leg_deep_trace_reason_class: ReplaySolLegDeepTraceReasonClass,
+    replay_sol_leg_deep_trace_explanation: String,
+    config_path: String,
+    runtime_db_path: Option<String>,
+    recent_raw_db_path: Option<String>,
+    deep_trace_prerequisite_reason_class: PublicationTruthExportBlockerReasonClass,
+    deep_trace_prerequisite_completed: bool,
+    deep_trace_total_elapsed_ms: u64,
+    deep_trace_budget_ms: u64,
+    deep_trace_budget_source: String,
+    deep_trace_budget_exhausted: bool,
+    deep_trace_budget_exhausted_stage: Option<String>,
+    deep_trace_runtime_db_open_elapsed_ms: u64,
+    deep_trace_recent_raw_open_elapsed_ms: u64,
+    deep_trace_checkpoint_inspect_started: bool,
+    deep_trace_checkpoint_inspect_completed: bool,
+    deep_trace_checkpoint_inspect_elapsed_ms: u64,
+    deep_trace_checkpoint_publishable_blocker: Option<String>,
+    deep_trace_checkpoint_rebuild_phase: Option<String>,
+    deep_trace_checkpoint_rebuild_replay_subphase: Option<String>,
+    deep_trace_checkpoint_exact_target_surface_exists: Option<bool>,
+    deep_trace_checkpoint_exact_target_surface_repairable_for_resume: Option<bool>,
+    deep_trace_checkpoint_replay_candidate_activity_backfill_required: Option<bool>,
+    deep_trace_checkpoint_replay_candidate_activity_backfill_pending: Option<bool>,
+    deep_trace_source_compare_started: bool,
+    deep_trace_source_compare_completed: bool,
+    deep_trace_source_compare_elapsed_ms: u64,
+    deep_trace_source_comparison_applicable: Option<bool>,
+    deep_trace_source_scan_target_buy_mint_filter_active: Option<bool>,
+    deep_trace_source_scan_target_buy_mint_count: Option<usize>,
+    deep_trace_source_rows_exist_beyond_stored_replay_checkpoint: Option<bool>,
+    deep_trace_source_rows_ahead_count: Option<usize>,
+    deep_trace_source_rows_ahead_pages_scanned: Option<usize>,
+    deep_trace_source_rows_ahead_first_cursor: Option<copybot_storage::DiscoveryRuntimeCursor>,
+    deep_trace_source_rows_ahead_last_cursor: Option<copybot_storage::DiscoveryRuntimeCursor>,
+    deep_trace_source_scan_access_path: Option<String>,
+    deep_trace_source_scan_time_budget_exhausted: Option<bool>,
+    deep_trace_final_reason_class: Option<ReplaySolLegIncompleteReasonClass>,
+    deep_trace_final_explanation: Option<String>,
 }
 
 impl ReplaySolLegBlockerDiagnostic {
@@ -514,6 +579,59 @@ impl ReplaySolLegBlockerDiagnostic {
             replay_sol_leg_blocker_deep_reason_elapsed_ms: 0,
             replay_sol_leg_blocker_budget_exhausted: false,
             replay_sol_leg_blocker_budget_exhausted_stage: None,
+        }
+    }
+}
+
+impl ReplaySolLegDeepTraceDiagnostic {
+    fn from_publication_truth_export_blocker(
+        diagnostic: &PublicationTruthExportBlockerDiagnostic,
+    ) -> Self {
+        Self {
+            replay_sol_leg_deep_trace_observed: diagnostic.publication_truth_export_blocker_observed,
+            replay_sol_leg_deep_trace_reason_class:
+                ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence,
+            replay_sol_leg_deep_trace_explanation: diagnostic
+                .publication_truth_export_blocker_explanation
+                .clone(),
+            config_path: diagnostic.config_path.clone(),
+            runtime_db_path: diagnostic.runtime_db_path.clone(),
+            recent_raw_db_path: diagnostic.recent_raw_db_path.clone(),
+            deep_trace_prerequisite_reason_class: diagnostic
+                .publication_truth_export_blocker_reason_class,
+            deep_trace_prerequisite_completed: false,
+            deep_trace_total_elapsed_ms: 0,
+            deep_trace_budget_ms: DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_MS,
+            deep_trace_budget_source: DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_SOURCE.to_string(),
+            deep_trace_budget_exhausted: false,
+            deep_trace_budget_exhausted_stage: None,
+            deep_trace_runtime_db_open_elapsed_ms: 0,
+            deep_trace_recent_raw_open_elapsed_ms: 0,
+            deep_trace_checkpoint_inspect_started: false,
+            deep_trace_checkpoint_inspect_completed: false,
+            deep_trace_checkpoint_inspect_elapsed_ms: 0,
+            deep_trace_checkpoint_publishable_blocker: None,
+            deep_trace_checkpoint_rebuild_phase: None,
+            deep_trace_checkpoint_rebuild_replay_subphase: None,
+            deep_trace_checkpoint_exact_target_surface_exists: None,
+            deep_trace_checkpoint_exact_target_surface_repairable_for_resume: None,
+            deep_trace_checkpoint_replay_candidate_activity_backfill_required: None,
+            deep_trace_checkpoint_replay_candidate_activity_backfill_pending: None,
+            deep_trace_source_compare_started: false,
+            deep_trace_source_compare_completed: false,
+            deep_trace_source_compare_elapsed_ms: 0,
+            deep_trace_source_comparison_applicable: None,
+            deep_trace_source_scan_target_buy_mint_filter_active: None,
+            deep_trace_source_scan_target_buy_mint_count: None,
+            deep_trace_source_rows_exist_beyond_stored_replay_checkpoint: None,
+            deep_trace_source_rows_ahead_count: None,
+            deep_trace_source_rows_ahead_pages_scanned: None,
+            deep_trace_source_rows_ahead_first_cursor: None,
+            deep_trace_source_rows_ahead_last_cursor: None,
+            deep_trace_source_scan_access_path: None,
+            deep_trace_source_scan_time_budget_exhausted: None,
+            deep_trace_final_reason_class: None,
+            deep_trace_final_explanation: None,
         }
     }
 }
@@ -1060,6 +1178,13 @@ static TEST_FORCE_REPLAY_SOL_LEG_BLOCKER_DEEP_REASON_BUDGET_EXHAUSTED: AtomicBoo
     AtomicBool::new(false);
 
 #[cfg(test)]
+static TEST_FORCE_REPLAY_SOL_LEG_DEEP_TRACE_SOURCE_COMPARE_BUDGET_EXHAUSTED: AtomicBool =
+    AtomicBool::new(false);
+
+#[cfg(test)]
+static TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
 fn arm_test_force_replay_sol_leg_blocker_deep_reason_budget_exhausted() {
     TEST_FORCE_REPLAY_SOL_LEG_BLOCKER_DEEP_REASON_BUDGET_EXHAUSTED
         .store(true, AtomicOrdering::SeqCst);
@@ -1068,6 +1193,18 @@ fn arm_test_force_replay_sol_leg_blocker_deep_reason_budget_exhausted() {
 #[cfg(test)]
 fn take_test_force_replay_sol_leg_blocker_deep_reason_budget_exhausted() -> bool {
     TEST_FORCE_REPLAY_SOL_LEG_BLOCKER_DEEP_REASON_BUDGET_EXHAUSTED
+        .swap(false, AtomicOrdering::SeqCst)
+}
+
+#[cfg(test)]
+fn arm_test_force_replay_sol_leg_deep_trace_source_compare_budget_exhausted() {
+    TEST_FORCE_REPLAY_SOL_LEG_DEEP_TRACE_SOURCE_COMPARE_BUDGET_EXHAUSTED
+        .store(true, AtomicOrdering::SeqCst);
+}
+
+#[cfg(test)]
+fn take_test_force_replay_sol_leg_deep_trace_source_compare_budget_exhausted() -> bool {
+    TEST_FORCE_REPLAY_SOL_LEG_DEEP_TRACE_SOURCE_COMPARE_BUDGET_EXHAUSTED
         .swap(false, AtomicOrdering::SeqCst)
 }
 
@@ -1126,6 +1263,539 @@ fn explain_replay_sol_leg_blocker_deep_reason_from_paths_read_only(
     explain_replay_sol_leg_blocker_deep_reason_read_only(&runtime_store, &recent_raw_store)
 }
 
+fn inspect_replay_sol_leg_checkpoint_from_path_read_only(
+    runtime_db_path: &Path,
+) -> Result<PersistedReplayCheckpointInspection> {
+    let runtime_store = SqliteStore::open_read_only(runtime_db_path).with_context(|| {
+        format!(
+            "failed opening runtime db {} for replay_sol_leg deep trace checkpoint inspect",
+            runtime_db_path.display()
+        )
+    })?;
+    DiscoveryService::inspect_persisted_rebuild_state_read_only(&runtime_store)
+}
+
+fn compare_replay_sol_leg_source_vs_checkpoint_from_paths_read_only(
+    runtime_db_path: &Path,
+    recent_raw_db_path: &Path,
+) -> Result<ReplaySolLegSourceVsCheckpointDiagnostic> {
+    let runtime_store = SqliteStore::open_read_only(runtime_db_path).with_context(|| {
+        format!(
+            "failed opening runtime db {} for replay_sol_leg deep trace source compare",
+            runtime_db_path.display()
+        )
+    })?;
+    let recent_raw_store = SqliteStore::open_read_only(recent_raw_db_path).with_context(|| {
+        format!(
+            "failed opening promoted recent_raw latest db {} for replay_sol_leg deep trace source compare",
+            recent_raw_db_path.display()
+        )
+    })?;
+    DiscoveryService::compare_sol_leg_source_vs_checkpoint_read_only(&runtime_store, &recent_raw_store)
+}
+
+fn classify_replay_sol_leg_deep_trace_final_reason(
+    checkpoint: &PersistedReplayCheckpointInspection,
+    source_vs_checkpoint: &ReplaySolLegSourceVsCheckpointDiagnostic,
+) -> (ReplaySolLegIncompleteReasonClass, String) {
+    let blocker = checkpoint.publishable_checkpoint_blocker.as_deref();
+    if !checkpoint.persisted_rebuild_checkpoint_exists {
+        (
+            ReplaySolLegIncompleteReasonClass::MissingPersistedCheckpoint,
+            "no persisted rebuild checkpoint is stored in the runtime db, so replay_sol_leg_incomplete cannot currently be explained from a persisted replay checkpoint".to_string(),
+        )
+    } else if blocker.is_none() {
+        (
+            ReplaySolLegIncompleteReasonClass::PublishableCheckpointClear,
+            "persisted rebuild checkpoint exists without a publishable checkpoint blocker"
+                .to_string(),
+        )
+    } else if blocker != Some("replay_sol_leg_incomplete") {
+        (
+            ReplaySolLegIncompleteReasonClass::PublishableCheckpointNotReplaySolLegIncomplete,
+            format!(
+                "persisted rebuild checkpoint is currently blocked on {} instead of replay_sol_leg_incomplete",
+                blocker.unwrap_or("unknown")
+            ),
+        )
+    } else if checkpoint.exact_target_surface_repairable_for_resume == Some(true) {
+        (
+            ReplaySolLegIncompleteReasonClass::ExactTargetSurfaceAbsentRepairableForResume,
+            "persisted replay checkpoint is still on replay_sol_leg_incomplete because replay candidate activity backfill is required but discovery_critical_target_buy_mints is empty even though the buffered wallet surface is still sufficient to reconstruct it".to_string(),
+        )
+    } else if checkpoint.exact_target_surface_exists == Some(false) {
+        (
+            ReplaySolLegIncompleteReasonClass::ExactTargetSurfaceAbsentWithoutRepairPath,
+            "persisted replay checkpoint is still on replay_sol_leg_incomplete because discovery_critical_target_buy_mints is empty and the current persisted wallet surface no longer satisfies the resume repair contract".to_string(),
+        )
+    } else if source_vs_checkpoint
+        .source_rows_exist_beyond_stored_replay_checkpoint
+        .unwrap_or(false)
+    {
+        let count = source_vs_checkpoint.source_rows_ahead_count.unwrap_or(0);
+        let first = source_vs_checkpoint
+            .source_rows_ahead_first_cursor
+            .as_ref()
+            .map(|cursor| cursor.ts_utc.to_rfc3339())
+            .unwrap_or_else(|| "unknown".to_string());
+        let last = source_vs_checkpoint
+            .source_rows_ahead_last_cursor
+            .as_ref()
+            .map(|cursor| cursor.ts_utc.to_rfc3339())
+            .unwrap_or_else(|| "unknown".to_string());
+        if source_vs_checkpoint
+            .source_scan_target_buy_mint_filter_active
+            .unwrap_or(false)
+        {
+            (
+                ReplaySolLegIncompleteReasonClass::SourceFrontierStillAheadExactTargetFiltered,
+                format!(
+                    "persisted replay checkpoint already has an exact target surface, but the source still has {count} exact-target SOL-leg rows beyond the stored replay cursor within the frozen replay horizon (first={first}, last={last})"
+                ),
+            )
+        } else {
+            (
+                ReplaySolLegIncompleteReasonClass::SourceFrontierStillAheadBroadSource,
+                format!(
+                    "persisted replay checkpoint is still replaying against the broad SOL-leg source and the source still has {count} rows beyond the stored replay cursor within the frozen replay horizon (first={first}, last={last})"
+                ),
+            )
+        }
+    } else if checkpoint.replay_candidate_activity_backfill_required == Some(true) {
+        (
+            ReplaySolLegIncompleteReasonClass::SourceFrontierDrainedAwaitingCandidateActivityBackfillTransition,
+            "persisted replay checkpoint shows no remaining SOL-leg source beyond the stored replay cursor inside the frozen replay horizon, but replay_candidate_activity_backfill_required is still true while the checkpoint has not yet transitioned into candidate activity backfill".to_string(),
+        )
+    } else {
+        (
+            ReplaySolLegIncompleteReasonClass::SourceFrontierDrainedButCheckpointStillReplaySolLegIncomplete,
+            "persisted replay checkpoint still reports replay_sol_leg_incomplete even though the diagnostic source scan found no remaining SOL-leg rows beyond the stored replay cursor and no exact-target-surface repairable gap was detected".to_string(),
+        )
+    }
+}
+
+fn remaining_budget_duration(budget: StdDuration, started_at: Instant) -> StdDuration {
+    budget.saturating_sub(started_at.elapsed())
+}
+
+fn trace_replay_sol_leg_deep_proof_read_only(
+    config_path: &Path,
+    now: DateTime<Utc>,
+) -> ReplaySolLegDeepTraceDiagnostic {
+    trace_replay_sol_leg_deep_proof_read_only_with_budget(
+        config_path,
+        now,
+        StdDuration::from_millis(DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_MS),
+    )
+}
+
+fn trace_replay_sol_leg_deep_proof_read_only_with_budget(
+    config_path: &Path,
+    now: DateTime<Utc>,
+    budget: StdDuration,
+) -> ReplaySolLegDeepTraceDiagnostic {
+    #[cfg(test)]
+    let _trace_guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX.lock().expect("trace mutex");
+    let total_started_at = Instant::now();
+    let publication_diagnostic = explain_publication_truth_export_blocker_read_only(config_path, now);
+    let mut diagnostic =
+        ReplaySolLegDeepTraceDiagnostic::from_publication_truth_export_blocker(&publication_diagnostic);
+    diagnostic.deep_trace_budget_ms = budget.as_millis().min(u64::MAX as u128) as u64;
+
+    let top_level_reason = publication_diagnostic.publication_truth_export_blocker_reason_class;
+    if top_level_reason
+        == PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockerUnprovenDueToMissingEvidence
+    {
+        diagnostic.replay_sol_leg_deep_trace_observed = false;
+        diagnostic.replay_sol_leg_deep_trace_reason_class =
+            ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence;
+        diagnostic.replay_sol_leg_deep_trace_explanation = format!(
+            "replay_sol_leg deep trace is unproven because the publication-state prerequisite proof is missing or unreadable: {}",
+            publication_diagnostic.publication_truth_export_blocker_explanation
+        );
+        diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+        return diagnostic;
+    }
+
+    if top_level_reason
+        != PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnReplaySolLegIncomplete
+    {
+        diagnostic.replay_sol_leg_deep_trace_reason_class =
+            ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceNotCurrentBlocker;
+        diagnostic.replay_sol_leg_deep_trace_explanation = format!(
+            "replay_sol_leg_incomplete is not the current export blocker under persisted publication state: publication_truth_export_blocker_reason_class={}, export_gate_reason={}",
+            serde_json::to_string(&top_level_reason)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"'),
+            publication_diagnostic
+                .export_gate_reason
+                .as_deref()
+                .unwrap_or("unknown")
+        );
+        diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+        return diagnostic;
+    }
+
+    if !publication_diagnostic.publication_truth_export_blocker_top_level_proven_from_publication_state
+    {
+        diagnostic.replay_sol_leg_deep_trace_reason_class =
+            ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence;
+        diagnostic.replay_sol_leg_deep_trace_explanation =
+            "replay_sol_leg deep trace is unproven because persisted publication state did not complete top-level blocker proof"
+                .to_string();
+        diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+        return diagnostic;
+    }
+
+    if !publication_diagnostic.publication_truth_export_checkpoint_headline_completed {
+        diagnostic.replay_sol_leg_deep_trace_reason_class =
+            ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence;
+        diagnostic.replay_sol_leg_deep_trace_explanation = format!(
+            "replay_sol_leg deep trace is unproven because the cheap checkpoint-headline prerequisite path did not complete: stage={}, explanation={}",
+            publication_diagnostic
+                .publication_truth_export_checkpoint_headline_stage
+                .as_deref()
+                .unwrap_or("unknown"),
+            publication_diagnostic
+                .publication_truth_export_checkpoint_headline_explanation
+                .as_deref()
+                .unwrap_or("unknown")
+        );
+        diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+        return diagnostic;
+    }
+
+    if publication_diagnostic.persisted_rebuild_checkpoint_exists != Some(true)
+        || publication_diagnostic.rebuild_phase.as_deref() != Some("replay")
+        || publication_diagnostic.rebuild_replay_subphase.as_deref() != Some("sol_leg")
+    {
+        diagnostic.replay_sol_leg_deep_trace_reason_class =
+            ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence;
+        diagnostic.replay_sol_leg_deep_trace_explanation = format!(
+            "replay_sol_leg deep trace is unproven because the cheap checkpoint prerequisites are not all proven current: persisted_rebuild_checkpoint_exists={}, rebuild_phase={}, rebuild_replay_subphase={}",
+            format_optional_bool(publication_diagnostic.persisted_rebuild_checkpoint_exists),
+            publication_diagnostic.rebuild_phase.as_deref().unwrap_or("null"),
+            publication_diagnostic
+                .rebuild_replay_subphase
+                .as_deref()
+                .unwrap_or("null"),
+        );
+        diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+        return diagnostic;
+    }
+    diagnostic.deep_trace_prerequisite_completed = true;
+
+    let Some(runtime_db_path_raw) = publication_diagnostic.runtime_db_path.as_ref() else {
+        diagnostic.replay_sol_leg_deep_trace_reason_class =
+            ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence;
+        diagnostic.replay_sol_leg_deep_trace_explanation =
+            "replay_sol_leg deep trace is unproven because the prerequisite proof did not resolve a runtime db path"
+                .to_string();
+        diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+        return diagnostic;
+    };
+    let Some(recent_raw_db_path_raw) = publication_diagnostic.recent_raw_db_path.as_ref() else {
+        diagnostic.replay_sol_leg_deep_trace_reason_class =
+            ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence;
+        diagnostic.replay_sol_leg_deep_trace_explanation =
+            "replay_sol_leg deep trace is unproven because the prerequisite proof did not resolve a promoted recent_raw latest db path"
+                .to_string();
+        diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+        return diagnostic;
+    };
+    let runtime_db_path = PathBuf::from(runtime_db_path_raw);
+    let recent_raw_db_path = PathBuf::from(recent_raw_db_path_raw);
+
+    let runtime_db_open_started_at = Instant::now();
+    let runtime_store = match SqliteStore::open_read_only(&runtime_db_path).with_context(|| {
+        format!(
+            "failed opening runtime db {} for replay_sol_leg deep trace",
+            runtime_db_path.display()
+        )
+    }) {
+        Ok(store) => store,
+        Err(error) => {
+            diagnostic.deep_trace_runtime_db_open_elapsed_ms = elapsed_ms(runtime_db_open_started_at);
+            diagnostic.replay_sol_leg_deep_trace_reason_class =
+                ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence;
+            diagnostic.replay_sol_leg_deep_trace_explanation = format!(
+                "replay_sol_leg deep trace is unproven because runtime db {} could not be opened read-only: {error:#}",
+                runtime_db_path.display()
+            );
+            diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+            return diagnostic;
+        }
+    };
+    diagnostic.deep_trace_runtime_db_open_elapsed_ms = elapsed_ms(runtime_db_open_started_at);
+    drop(runtime_store);
+    if total_started_at.elapsed() >= budget {
+        diagnostic.replay_sol_leg_deep_trace_reason_class =
+            ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceBudgetExhausted;
+        diagnostic.deep_trace_budget_exhausted = true;
+        diagnostic.deep_trace_budget_exhausted_stage =
+            Some("deep_trace_open_runtime_db_budget_exhausted".to_string());
+        diagnostic.replay_sol_leg_deep_trace_explanation =
+            "replay_sol_leg deep trace exhausted its budget immediately after reopening the runtime db"
+                .to_string();
+        diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+        return diagnostic;
+    }
+
+    let recent_raw_open_started_at = Instant::now();
+    let recent_raw_store = match SqliteStore::open_read_only(&recent_raw_db_path).with_context(
+        || {
+            format!(
+                "failed opening promoted recent_raw latest db {} for replay_sol_leg deep trace",
+                recent_raw_db_path.display()
+            )
+        },
+    ) {
+        Ok(store) => store,
+        Err(error) => {
+            diagnostic.deep_trace_recent_raw_open_elapsed_ms =
+                elapsed_ms(recent_raw_open_started_at);
+            diagnostic.replay_sol_leg_deep_trace_reason_class =
+                ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence;
+            diagnostic.replay_sol_leg_deep_trace_explanation = format!(
+                "replay_sol_leg deep trace is unproven because promoted recent_raw latest db {} could not be opened read-only: {error:#}",
+                recent_raw_db_path.display()
+            );
+            diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+            return diagnostic;
+        }
+    };
+    diagnostic.deep_trace_recent_raw_open_elapsed_ms = elapsed_ms(recent_raw_open_started_at);
+    drop(recent_raw_store);
+    if total_started_at.elapsed() >= budget {
+        diagnostic.replay_sol_leg_deep_trace_reason_class =
+            ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceBudgetExhausted;
+        diagnostic.deep_trace_budget_exhausted = true;
+        diagnostic.deep_trace_budget_exhausted_stage =
+            Some("deep_trace_open_recent_raw_budget_exhausted".to_string());
+        diagnostic.replay_sol_leg_deep_trace_explanation =
+            "replay_sol_leg deep trace exhausted its budget immediately after opening the promoted recent_raw latest db"
+                .to_string();
+        diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+        return diagnostic;
+    }
+
+    diagnostic.deep_trace_checkpoint_inspect_started = true;
+    let checkpoint_started_at = Instant::now();
+    let (checkpoint_tx, checkpoint_rx) = mpsc::channel();
+    let runtime_db_path_for_worker = runtime_db_path.clone();
+    thread::spawn(move || {
+        let result =
+            inspect_replay_sol_leg_checkpoint_from_path_read_only(&runtime_db_path_for_worker);
+        let _ = checkpoint_tx.send(result);
+    });
+    let checkpoint_result = match checkpoint_rx
+        .recv_timeout(remaining_budget_duration(budget, total_started_at))
+    {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            diagnostic.deep_trace_checkpoint_inspect_elapsed_ms = elapsed_ms(checkpoint_started_at);
+            diagnostic.replay_sol_leg_deep_trace_reason_class =
+                ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceBudgetExhausted;
+            diagnostic.deep_trace_budget_exhausted = true;
+            diagnostic.deep_trace_budget_exhausted_stage =
+                Some("deep_trace_checkpoint_inspect_wait_timeout".to_string());
+            diagnostic.replay_sol_leg_deep_trace_explanation =
+                "replay_sol_leg deep trace exhausted its budget while waiting for persisted checkpoint inspect to complete"
+                    .to_string();
+            diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+            return diagnostic;
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            diagnostic.deep_trace_checkpoint_inspect_elapsed_ms = elapsed_ms(checkpoint_started_at);
+            diagnostic.replay_sol_leg_deep_trace_reason_class =
+                ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence;
+            diagnostic.replay_sol_leg_deep_trace_explanation =
+                "replay_sol_leg deep trace is unproven because the persisted checkpoint inspect worker disconnected before returning a result"
+                    .to_string();
+            diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+            return diagnostic;
+        }
+    };
+    diagnostic.deep_trace_checkpoint_inspect_elapsed_ms = elapsed_ms(checkpoint_started_at);
+    let checkpoint = match checkpoint_result {
+        Ok(checkpoint) => checkpoint,
+        Err(error) => {
+            diagnostic.replay_sol_leg_deep_trace_reason_class =
+                ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence;
+            diagnostic.replay_sol_leg_deep_trace_explanation = format!(
+                "replay_sol_leg deep trace is unproven because persisted checkpoint inspect failed against runtime db {}: {error:#}",
+                runtime_db_path.display()
+            );
+            diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+            return diagnostic;
+        }
+    };
+    diagnostic.deep_trace_checkpoint_inspect_completed = true;
+    diagnostic.deep_trace_checkpoint_publishable_blocker =
+        checkpoint.publishable_checkpoint_blocker.clone();
+    diagnostic.deep_trace_checkpoint_rebuild_phase = checkpoint.rebuild_phase.clone();
+    diagnostic.deep_trace_checkpoint_rebuild_replay_subphase =
+        checkpoint.rebuild_replay_subphase.clone();
+    diagnostic.deep_trace_checkpoint_exact_target_surface_exists =
+        checkpoint.exact_target_surface_exists;
+    diagnostic.deep_trace_checkpoint_exact_target_surface_repairable_for_resume =
+        checkpoint.exact_target_surface_repairable_for_resume;
+    diagnostic.deep_trace_checkpoint_replay_candidate_activity_backfill_required =
+        checkpoint.replay_candidate_activity_backfill_required;
+    diagnostic.deep_trace_checkpoint_replay_candidate_activity_backfill_pending =
+        checkpoint.replay_candidate_activity_backfill_pending;
+
+    if checkpoint.publishable_checkpoint_blocker.as_deref() != Some("replay_sol_leg_incomplete")
+        || checkpoint.rebuild_phase.as_deref() != Some("replay")
+        || checkpoint.rebuild_replay_subphase.as_deref() != Some("sol_leg")
+    {
+        diagnostic.replay_sol_leg_deep_trace_reason_class =
+            ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence;
+        diagnostic.replay_sol_leg_deep_trace_explanation = format!(
+            "replay_sol_leg deep trace is unproven because persisted checkpoint inspect contradicted the proven prerequisites: publishable_checkpoint_blocker={}, rebuild_phase={}, rebuild_replay_subphase={}",
+            checkpoint
+                .publishable_checkpoint_blocker
+                .as_deref()
+                .unwrap_or("null"),
+            checkpoint.rebuild_phase.as_deref().unwrap_or("null"),
+            checkpoint
+                .rebuild_replay_subphase
+                .as_deref()
+                .unwrap_or("null"),
+        );
+        diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+        return diagnostic;
+    }
+
+    diagnostic.deep_trace_source_compare_started = true;
+    #[cfg(test)]
+    if take_test_force_replay_sol_leg_deep_trace_source_compare_budget_exhausted() {
+        diagnostic.replay_sol_leg_deep_trace_reason_class =
+            ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceBudgetExhausted;
+        diagnostic.deep_trace_budget_exhausted = true;
+        diagnostic.deep_trace_budget_exhausted_stage =
+            Some("deep_trace_source_compare_forced_budget_exhausted".to_string());
+        diagnostic.replay_sol_leg_deep_trace_explanation =
+            "replay_sol_leg deep trace hit a forced test-only budget exhaustion before source-vs-checkpoint comparison completed"
+                .to_string();
+        diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+        return diagnostic;
+    }
+    let source_compare_started_at = Instant::now();
+    let (source_compare_tx, source_compare_rx) = mpsc::channel();
+    let runtime_db_path_for_worker = runtime_db_path.clone();
+    let recent_raw_db_path_for_worker = recent_raw_db_path.clone();
+    thread::spawn(move || {
+        let result = compare_replay_sol_leg_source_vs_checkpoint_from_paths_read_only(
+            &runtime_db_path_for_worker,
+            &recent_raw_db_path_for_worker,
+        );
+        let _ = source_compare_tx.send(result);
+    });
+    let source_compare_result = match source_compare_rx
+        .recv_timeout(remaining_budget_duration(budget, total_started_at))
+    {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            diagnostic.deep_trace_source_compare_elapsed_ms =
+                elapsed_ms(source_compare_started_at);
+            diagnostic.replay_sol_leg_deep_trace_reason_class =
+                ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceBudgetExhausted;
+            diagnostic.deep_trace_budget_exhausted = true;
+            diagnostic.deep_trace_budget_exhausted_stage =
+                Some("deep_trace_source_compare_wait_timeout".to_string());
+            diagnostic.replay_sol_leg_deep_trace_explanation =
+                "replay_sol_leg deep trace exhausted its budget while waiting for source-vs-checkpoint comparison to complete"
+                    .to_string();
+            diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+            return diagnostic;
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            diagnostic.deep_trace_source_compare_elapsed_ms =
+                elapsed_ms(source_compare_started_at);
+            diagnostic.replay_sol_leg_deep_trace_reason_class =
+                ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence;
+            diagnostic.replay_sol_leg_deep_trace_explanation =
+                "replay_sol_leg deep trace is unproven because the source-vs-checkpoint comparison worker disconnected before returning a result"
+                    .to_string();
+            diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+            return diagnostic;
+        }
+    };
+    diagnostic.deep_trace_source_compare_elapsed_ms = elapsed_ms(source_compare_started_at);
+    let source_vs_checkpoint = match source_compare_result {
+        Ok(source_vs_checkpoint) => source_vs_checkpoint,
+        Err(error) => {
+            diagnostic.replay_sol_leg_deep_trace_reason_class =
+                ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence;
+            diagnostic.replay_sol_leg_deep_trace_explanation = format!(
+                "replay_sol_leg deep trace is unproven because source-vs-checkpoint comparison failed against runtime db {} and recent_raw db {}: {error:#}",
+                runtime_db_path.display(),
+                recent_raw_db_path.display()
+            );
+            diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+            return diagnostic;
+        }
+    };
+    diagnostic.deep_trace_source_compare_completed = true;
+    diagnostic.deep_trace_source_comparison_applicable =
+        Some(source_vs_checkpoint.source_comparison_applicable);
+    diagnostic.deep_trace_source_scan_target_buy_mint_filter_active =
+        source_vs_checkpoint.source_scan_target_buy_mint_filter_active;
+    diagnostic.deep_trace_source_scan_target_buy_mint_count =
+        source_vs_checkpoint.source_scan_target_buy_mint_count;
+    diagnostic.deep_trace_source_rows_exist_beyond_stored_replay_checkpoint =
+        source_vs_checkpoint.source_rows_exist_beyond_stored_replay_checkpoint;
+    diagnostic.deep_trace_source_rows_ahead_count = source_vs_checkpoint.source_rows_ahead_count;
+    diagnostic.deep_trace_source_rows_ahead_pages_scanned =
+        source_vs_checkpoint.source_rows_ahead_pages_scanned;
+    diagnostic.deep_trace_source_rows_ahead_first_cursor =
+        source_vs_checkpoint.source_rows_ahead_first_cursor.clone();
+    diagnostic.deep_trace_source_rows_ahead_last_cursor =
+        source_vs_checkpoint.source_rows_ahead_last_cursor.clone();
+    diagnostic.deep_trace_source_scan_access_path =
+        source_vs_checkpoint.source_scan_access_path.clone();
+    diagnostic.deep_trace_source_scan_time_budget_exhausted =
+        source_vs_checkpoint.source_scan_time_budget_exhausted;
+
+    if source_vs_checkpoint
+        .source_scan_time_budget_exhausted
+        .unwrap_or(false)
+    {
+        diagnostic.replay_sol_leg_deep_trace_reason_class =
+            ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceBudgetExhausted;
+        diagnostic.deep_trace_budget_exhausted = true;
+        diagnostic.deep_trace_budget_exhausted_stage =
+            Some("deep_trace_source_compare_source_scan_budget_exhausted".to_string());
+        diagnostic.replay_sol_leg_deep_trace_explanation = format!(
+            "replay_sol_leg deep trace reached source-vs-checkpoint comparison, but the bounded source scan exhausted its budget before a final deep replay reason could be proven (pages_scanned={}, access_path={})",
+            source_vs_checkpoint.source_rows_ahead_pages_scanned.unwrap_or(0),
+            source_vs_checkpoint
+                .source_scan_access_path
+                .as_deref()
+                .unwrap_or("unknown")
+        );
+        diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+        return diagnostic;
+    }
+
+    let (reason_class, explanation) =
+        classify_replay_sol_leg_deep_trace_final_reason(&checkpoint, &source_vs_checkpoint);
+    diagnostic.deep_trace_final_reason_class = Some(reason_class);
+    diagnostic.deep_trace_final_explanation = Some(explanation.clone());
+    diagnostic.replay_sol_leg_deep_trace_reason_class =
+        ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceProven;
+    diagnostic.replay_sol_leg_deep_trace_explanation = format!(
+        "replay_sol_leg deep trace completed and resolved the current deep replay reason: replay_sol_leg_incomplete_reason_class={}, explanation={}",
+        serde_json::to_string(&diagnostic.deep_trace_final_reason_class)
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"'),
+        explanation
+    );
+    diagnostic.deep_trace_total_elapsed_ms = elapsed_ms(total_started_at);
+    diagnostic
+}
+
 fn remaining_budget_ms(budget: StdDuration, started_at: Instant) -> u64 {
     budget
         .saturating_sub(started_at.elapsed())
@@ -1158,6 +1828,7 @@ where
     let mut explain_recent_raw_replacement_convergence = false;
     let mut explain_publication_truth_export_blocker = false;
     let mut explain_replay_sol_leg_blocker = false;
+    let mut trace_replay_sol_leg_deep_proof = false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
@@ -1205,6 +1876,9 @@ where
             }
             "--explain-replay-sol-leg-blocker" => {
                 explain_replay_sol_leg_blocker = true;
+            }
+            "--trace-replay-sol-leg-deep-proof" => {
+                trace_replay_sol_leg_deep_proof = true;
             }
             "--deep-attempt-telemetry-scan" => {
                 deep_attempt_telemetry_scan = true;
@@ -1256,13 +1930,14 @@ where
         + usize::from(explain_recent_raw_replacement_convergence)
         + usize::from(explain_publication_truth_export_blocker)
         + usize::from(explain_replay_sol_leg_blocker)
+        + usize::from(trace_replay_sol_leg_deep_proof)
         + usize::from(explain_recent_raw_staged_lineage)
         + usize::from(explain_recent_raw_staged_regression)
         + usize::from(explain_recent_raw_staged_birth)
         + usize::from(explain_recent_raw_staged_window_seeding);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
     if deep_attempt_telemetry_scan && !explain_recent_raw_replacement_attempt_telemetry {
@@ -1475,6 +2150,27 @@ where
         }
         return Ok(Some(Command::ExplainReplaySolLegBlocker(
             ExplainReplaySolLegBlockerConfig {
+                config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
+                json,
+            },
+        )));
+    }
+
+    if trace_replay_sol_leg_deep_proof {
+        if state_root.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+            || deep_attempt_telemetry_scan
+        {
+            bail!(
+                "--trace-replay-sol-leg-deep-proof only accepts --config and optional --json"
+            );
+        }
+        return Ok(Some(Command::TraceReplaySolLegDeepProof(
+            TraceReplaySolLegDeepProofConfig {
                 config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
                 json,
             },
@@ -1726,6 +2422,16 @@ fn run_command(command: Command) -> Result<String> {
                     .context("failed serializing replay_sol_leg blocker json")
             } else {
                 Ok(render_replay_sol_leg_blocker_human(&diagnostic))
+            }
+        }
+        Command::TraceReplaySolLegDeepProof(config) => {
+            let diagnostic =
+                trace_replay_sol_leg_deep_proof_read_only(&config.config_path, Utc::now());
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic)
+                    .context("failed serializing replay_sol_leg deep trace json")
+            } else {
+                Ok(render_replay_sol_leg_deep_trace_human(&diagnostic))
             }
         }
         Command::ExplainRecentRawStagedLineage(config) => {
@@ -3272,6 +3978,192 @@ fn render_replay_sol_leg_blocker_human(diagnostic: &ReplaySolLegBlockerDiagnosti
     .join("\n")
 }
 
+fn render_replay_sol_leg_deep_trace_human(diagnostic: &ReplaySolLegDeepTraceDiagnostic) -> String {
+    [
+        "event=discovery_replay_sol_leg_deep_trace".to_string(),
+        format!(
+            "replay_sol_leg_deep_trace_observed={}",
+            diagnostic.replay_sol_leg_deep_trace_observed
+        ),
+        format!(
+            "replay_sol_leg_deep_trace_reason_class={}",
+            serde_json::to_string(&diagnostic.replay_sol_leg_deep_trace_reason_class)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "replay_sol_leg_deep_trace_explanation={}",
+            diagnostic.replay_sol_leg_deep_trace_explanation
+        ),
+        format!("config_path={}", diagnostic.config_path),
+        format!(
+            "runtime_db_path={}",
+            diagnostic.runtime_db_path.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "recent_raw_db_path={}",
+            diagnostic.recent_raw_db_path.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "deep_trace_prerequisite_reason_class={}",
+            serde_json::to_string(&diagnostic.deep_trace_prerequisite_reason_class)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "deep_trace_prerequisite_completed={}",
+            diagnostic.deep_trace_prerequisite_completed
+        ),
+        format!(
+            "deep_trace_total_elapsed_ms={}",
+            diagnostic.deep_trace_total_elapsed_ms
+        ),
+        format!("deep_trace_budget_ms={}", diagnostic.deep_trace_budget_ms),
+        format!(
+            "deep_trace_budget_source={}",
+            diagnostic.deep_trace_budget_source
+        ),
+        format!(
+            "deep_trace_budget_exhausted={}",
+            diagnostic.deep_trace_budget_exhausted
+        ),
+        format!(
+            "deep_trace_budget_exhausted_stage={}",
+            diagnostic
+                .deep_trace_budget_exhausted_stage
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "deep_trace_runtime_db_open_elapsed_ms={}",
+            diagnostic.deep_trace_runtime_db_open_elapsed_ms
+        ),
+        format!(
+            "deep_trace_recent_raw_open_elapsed_ms={}",
+            diagnostic.deep_trace_recent_raw_open_elapsed_ms
+        ),
+        format!(
+            "deep_trace_checkpoint_inspect_started={}",
+            diagnostic.deep_trace_checkpoint_inspect_started
+        ),
+        format!(
+            "deep_trace_checkpoint_inspect_completed={}",
+            diagnostic.deep_trace_checkpoint_inspect_completed
+        ),
+        format!(
+            "deep_trace_checkpoint_inspect_elapsed_ms={}",
+            diagnostic.deep_trace_checkpoint_inspect_elapsed_ms
+        ),
+        format!(
+            "deep_trace_checkpoint_publishable_blocker={}",
+            diagnostic
+                .deep_trace_checkpoint_publishable_blocker
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "deep_trace_checkpoint_rebuild_phase={}",
+            diagnostic
+                .deep_trace_checkpoint_rebuild_phase
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "deep_trace_checkpoint_rebuild_replay_subphase={}",
+            diagnostic
+                .deep_trace_checkpoint_rebuild_replay_subphase
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "deep_trace_checkpoint_exact_target_surface_exists={}",
+            format_optional_bool(diagnostic.deep_trace_checkpoint_exact_target_surface_exists)
+        ),
+        format!(
+            "deep_trace_checkpoint_exact_target_surface_repairable_for_resume={}",
+            format_optional_bool(
+                diagnostic.deep_trace_checkpoint_exact_target_surface_repairable_for_resume
+            )
+        ),
+        format!(
+            "deep_trace_checkpoint_replay_candidate_activity_backfill_required={}",
+            format_optional_bool(
+                diagnostic.deep_trace_checkpoint_replay_candidate_activity_backfill_required
+            )
+        ),
+        format!(
+            "deep_trace_checkpoint_replay_candidate_activity_backfill_pending={}",
+            format_optional_bool(
+                diagnostic.deep_trace_checkpoint_replay_candidate_activity_backfill_pending
+            )
+        ),
+        format!(
+            "deep_trace_source_compare_started={}",
+            diagnostic.deep_trace_source_compare_started
+        ),
+        format!(
+            "deep_trace_source_compare_completed={}",
+            diagnostic.deep_trace_source_compare_completed
+        ),
+        format!(
+            "deep_trace_source_compare_elapsed_ms={}",
+            diagnostic.deep_trace_source_compare_elapsed_ms
+        ),
+        format!(
+            "deep_trace_source_comparison_applicable={}",
+            format_optional_bool(diagnostic.deep_trace_source_comparison_applicable)
+        ),
+        format!(
+            "deep_trace_source_scan_target_buy_mint_filter_active={}",
+            format_optional_bool(diagnostic.deep_trace_source_scan_target_buy_mint_filter_active)
+        ),
+        format!(
+            "deep_trace_source_scan_target_buy_mint_count={}",
+            format_optional_usize(diagnostic.deep_trace_source_scan_target_buy_mint_count)
+        ),
+        format!(
+            "deep_trace_source_rows_exist_beyond_stored_replay_checkpoint={}",
+            format_optional_bool(diagnostic.deep_trace_source_rows_exist_beyond_stored_replay_checkpoint)
+        ),
+        format!(
+            "deep_trace_source_rows_ahead_count={}",
+            format_optional_usize(diagnostic.deep_trace_source_rows_ahead_count)
+        ),
+        format!(
+            "deep_trace_source_rows_ahead_pages_scanned={}",
+            format_optional_usize(diagnostic.deep_trace_source_rows_ahead_pages_scanned)
+        ),
+        format!(
+            "deep_trace_source_rows_ahead_first_cursor={}",
+            format_optional_json(&diagnostic.deep_trace_source_rows_ahead_first_cursor)
+        ),
+        format!(
+            "deep_trace_source_rows_ahead_last_cursor={}",
+            format_optional_json(&diagnostic.deep_trace_source_rows_ahead_last_cursor)
+        ),
+        format!(
+            "deep_trace_source_scan_access_path={}",
+            diagnostic
+                .deep_trace_source_scan_access_path
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "deep_trace_source_scan_time_budget_exhausted={}",
+            format_optional_bool(diagnostic.deep_trace_source_scan_time_budget_exhausted)
+        ),
+        format!(
+            "deep_trace_final_reason_class={}",
+            format_optional_enum_json(&diagnostic.deep_trace_final_reason_class)
+        ),
+        format!(
+            "deep_trace_final_explanation={}",
+            diagnostic.deep_trace_final_explanation.as_deref().unwrap_or("null")
+        ),
+    ]
+    .join("\n")
+}
+
 fn format_optional_bool(value: Option<bool>) -> String {
     value
         .map(|value| value.to_string())
@@ -4474,12 +5366,16 @@ fn render_recent_raw_replacement_convergence_human(
 mod tests {
     use super::{
         arm_test_force_replay_sol_leg_blocker_deep_reason_budget_exhausted,
+        arm_test_force_replay_sol_leg_deep_trace_source_compare_budget_exhausted,
         explain_replay_sol_leg_blocker_read_only,
         explain_replay_sol_leg_blocker_read_only_with_prerequisite_budget,
         explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget,
+        trace_replay_sol_leg_deep_proof_read_only,
+        trace_replay_sol_leg_deep_proof_read_only_with_budget,
         load_json, parse_args_from, run, run_command, write_json_atomic, Command, Config,
         ExplainPublicationTruthExportBlockerConfig, ExplainRecentRawCatchUpStatusConfig,
         ExplainReplaySolLegBlockerConfig,
+        TraceReplaySolLegDeepProofConfig,
         ExplainRecentRawPromotedRetentionContractConfig, ExplainRecentRawPromotionBlockerConfig,
         ExplainRecentRawReplacementArtifactHistoryContractConfig,
         ExplainRecentRawReplacementAttemptTelemetryConfig,
@@ -4489,7 +5385,7 @@ mod tests {
         ExplainRecentRawSourceWindowContractConfig, ExplainRecentRawStagedBirthConfig,
         ExplainRecentRawStagedLineageConfig, ExplainRecentRawStagedRegressionConfig,
         ExplainRecentRawStagedWindowSeedingConfig, PublicationTruthExportBlockerReasonClass,
-        ReplaySolLegBlockerReasonClass,
+        ReplaySolLegBlockerReasonClass, ReplaySolLegDeepTraceReasonClass,
     };
     use anyhow::{Context, Result};
     use chrono::{DateTime, Duration, Utc};
@@ -4801,6 +5697,23 @@ mod tests {
         .expect("command should be present");
         let Command::ExplainReplaySolLegBlocker(parsed) = parsed else {
             panic!("expected replay sol leg blocker command");
+        };
+        assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_trace_replay_sol_leg_deep_proof_mode() {
+        let parsed = parse_args_from(vec![
+            "--trace-replay-sol-leg-deep-proof".to_string(),
+            "--config".to_string(),
+            "/tmp/live.server.toml".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::TraceReplaySolLegDeepProof(parsed) = parsed else {
+            panic!("expected replay sol leg deep trace command");
         };
         assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
         assert!(parsed.json);
@@ -6299,6 +7212,313 @@ mod tests {
         assert!(diagnostic
             .replay_sol_leg_blocker_explanation
             .contains("cheap checkpoint-headline prerequisite path did not complete"));
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_trace_replay_sol_leg_deep_proof_current_fixture_with_successful_completion_returns_proven(
+    ) -> Result<()> {
+        let fixture = make_fixture("runtime-export-replay-sol-leg-deep-trace-success")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        seed_runtime_export_source(&fixture.store, now)?;
+        fixture
+            .store
+            .set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::FailClosed,
+                reason: "publication_truth_withheld_while_replay_sol_leg_incomplete".to_string(),
+                last_published_at: Some(now - Duration::hours(2)),
+                last_published_window_start: Some(metrics_window_start(now) - Duration::hours(1)),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(Vec::new()),
+            })?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-replay-sol-leg-deep-trace".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: replay_sol_leg_exact_target_checkpoint_state_json(true, false)?,
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        let recent_raw_dir = fixture
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("state/discovery_restore/recent_raw");
+        fs::create_dir_all(&recent_raw_dir)?;
+        let recent_raw_latest = recent_raw_dir.join("latest.sqlite");
+        write_recent_raw_snapshot_sqlite_content(
+            &recent_raw_latest,
+            &[recent_raw_swap(
+                "raw-wallet",
+                "sig-replay-sol-leg-deep-trace-ahead",
+                parse_ts("2026-04-16T09:45:00Z")?,
+            )],
+            parse_ts("2026-04-16T09:46:00Z")?,
+        )?;
+        let recent_raw_store = SqliteStore::open(&recent_raw_latest)?;
+        recent_raw_store.upsert_discovery_runtime_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: parse_ts("2026-04-16T09:45:00Z")?,
+            slot: 101,
+            signature: "sig-replay-sol-leg-deep-trace-ahead".to_string(),
+        })?;
+
+        let rendered = run_command(Command::TraceReplaySolLegDeepProof(
+            TraceReplaySolLegDeepProofConfig {
+                config_path: fixture.config_path.clone(),
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["replay_sol_leg_deep_trace_reason_class"],
+            "replay_sol_leg_deep_trace_proven"
+        );
+        assert_eq!(
+            parsed["deep_trace_prerequisite_reason_class"],
+            "publication_truth_export_blocked_on_replay_sol_leg_incomplete"
+        );
+        assert_eq!(parsed["deep_trace_prerequisite_completed"], true);
+        assert_eq!(parsed["deep_trace_checkpoint_inspect_started"], true);
+        assert_eq!(parsed["deep_trace_checkpoint_inspect_completed"], true);
+        assert_eq!(parsed["deep_trace_source_compare_started"], true);
+        assert_eq!(parsed["deep_trace_source_compare_completed"], true);
+        assert_eq!(parsed["deep_trace_checkpoint_publishable_blocker"], "replay_sol_leg_incomplete");
+        assert_eq!(parsed["deep_trace_checkpoint_rebuild_phase"], "replay");
+        assert_eq!(parsed["deep_trace_checkpoint_rebuild_replay_subphase"], "sol_leg");
+        assert_eq!(parsed["deep_trace_source_comparison_applicable"], true);
+        assert_eq!(parsed["deep_trace_source_scan_target_buy_mint_filter_active"], true);
+        assert_eq!(
+            parsed["deep_trace_final_reason_class"],
+            "source_frontier_still_ahead_exact_target_filtered"
+        );
+        assert!(parsed["deep_trace_final_explanation"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("exact-target SOL-leg rows"));
+        assert_eq!(parsed["deep_trace_budget_exhausted"], false);
+        assert_eq!(parsed["deep_trace_budget_exhausted_stage"], Value::Null);
+        for key in [
+            "replay_sol_leg_deep_trace_observed",
+            "replay_sol_leg_deep_trace_reason_class",
+            "replay_sol_leg_deep_trace_explanation",
+            "config_path",
+            "runtime_db_path",
+            "recent_raw_db_path",
+            "deep_trace_prerequisite_reason_class",
+            "deep_trace_prerequisite_completed",
+            "deep_trace_total_elapsed_ms",
+            "deep_trace_budget_ms",
+            "deep_trace_budget_source",
+            "deep_trace_budget_exhausted",
+            "deep_trace_budget_exhausted_stage",
+            "deep_trace_runtime_db_open_elapsed_ms",
+            "deep_trace_recent_raw_open_elapsed_ms",
+            "deep_trace_checkpoint_inspect_started",
+            "deep_trace_checkpoint_inspect_completed",
+            "deep_trace_checkpoint_inspect_elapsed_ms",
+            "deep_trace_checkpoint_publishable_blocker",
+            "deep_trace_checkpoint_rebuild_phase",
+            "deep_trace_checkpoint_rebuild_replay_subphase",
+            "deep_trace_checkpoint_exact_target_surface_exists",
+            "deep_trace_checkpoint_exact_target_surface_repairable_for_resume",
+            "deep_trace_checkpoint_replay_candidate_activity_backfill_required",
+            "deep_trace_checkpoint_replay_candidate_activity_backfill_pending",
+            "deep_trace_source_compare_started",
+            "deep_trace_source_compare_completed",
+            "deep_trace_source_compare_elapsed_ms",
+            "deep_trace_source_comparison_applicable",
+            "deep_trace_source_scan_target_buy_mint_filter_active",
+            "deep_trace_source_scan_target_buy_mint_count",
+            "deep_trace_source_rows_exist_beyond_stored_replay_checkpoint",
+            "deep_trace_source_rows_ahead_count",
+            "deep_trace_source_rows_ahead_pages_scanned",
+            "deep_trace_source_rows_ahead_first_cursor",
+            "deep_trace_source_rows_ahead_last_cursor",
+            "deep_trace_source_scan_access_path",
+            "deep_trace_source_scan_time_budget_exhausted",
+            "deep_trace_final_reason_class",
+            "deep_trace_final_explanation",
+        ] {
+            assert!(parsed.get(key).is_some(), "missing key {key}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_trace_replay_sol_leg_deep_proof_non_replay_current_blocker_skips_deep_trace(
+    ) -> Result<()> {
+        let fixture = make_fixture("runtime-export-replay-sol-leg-deep-trace-not-current")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        seed_runtime_export_source(&fixture.store, now)?;
+        fixture
+            .store
+            .set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::FailClosed,
+                reason:
+                    "publication_truth_withheld_while_replay_candidate_activity_backfill_incomplete"
+                        .to_string(),
+                last_published_at: Some(now - Duration::hours(2)),
+                last_published_window_start: Some(metrics_window_start(now) - Duration::hours(1)),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(Vec::new()),
+            })?;
+
+        let diagnostic = trace_replay_sol_leg_deep_proof_read_only(&fixture.config_path, now);
+        assert_eq!(
+            diagnostic.replay_sol_leg_deep_trace_reason_class,
+            ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceNotCurrentBlocker
+        );
+        assert_eq!(
+            diagnostic.deep_trace_prerequisite_reason_class,
+            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnOtherPublishableCheckpointReason
+        );
+        assert!(!diagnostic.deep_trace_prerequisite_completed);
+        assert!(!diagnostic.deep_trace_checkpoint_inspect_started);
+        assert!(!diagnostic.deep_trace_source_compare_started);
+        assert_eq!(diagnostic.deep_trace_final_reason_class, None);
+        Ok(())
+    }
+
+    #[test]
+    fn trace_replay_sol_leg_deep_proof_missing_recent_raw_returns_unproven() -> Result<()> {
+        let fixture = make_fixture("runtime-export-replay-sol-leg-deep-trace-missing-recent-raw")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        seed_runtime_export_source(&fixture.store, now)?;
+        fixture
+            .store
+            .set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::FailClosed,
+                reason: "publication_truth_withheld_while_replay_sol_leg_incomplete".to_string(),
+                last_published_at: Some(now - Duration::hours(2)),
+                last_published_window_start: Some(metrics_window_start(now) - Duration::hours(1)),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(Vec::new()),
+            })?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-replay-sol-leg-deep-trace-missing-raw".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: replay_sol_leg_exact_target_checkpoint_state_json(true, false)?,
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let diagnostic = trace_replay_sol_leg_deep_proof_read_only(&fixture.config_path, now);
+        assert_eq!(
+            diagnostic.replay_sol_leg_deep_trace_reason_class,
+            ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence
+        );
+        assert!(diagnostic.deep_trace_prerequisite_completed);
+        assert!(diagnostic.deep_trace_runtime_db_open_elapsed_ms <= diagnostic.deep_trace_total_elapsed_ms);
+        assert!(diagnostic.deep_trace_recent_raw_open_elapsed_ms <= diagnostic.deep_trace_total_elapsed_ms);
+        assert!(!diagnostic.deep_trace_checkpoint_inspect_started);
+        assert!(!diagnostic.deep_trace_source_compare_started);
+        assert_eq!(diagnostic.deep_trace_final_reason_class, None);
+        Ok(())
+    }
+
+    #[test]
+    fn trace_replay_sol_leg_deep_proof_forced_source_compare_budget_exhaustion_returns_budget_exhausted(
+    ) -> Result<()> {
+        let fixture = make_fixture("runtime-export-replay-sol-leg-deep-trace-budget-exhausted")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        seed_runtime_export_source(&fixture.store, now)?;
+        fixture
+            .store
+            .set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::FailClosed,
+                reason: "publication_truth_withheld_while_replay_sol_leg_incomplete".to_string(),
+                last_published_at: Some(now - Duration::hours(2)),
+                last_published_window_start: Some(metrics_window_start(now) - Duration::hours(1)),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(Vec::new()),
+            })?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-replay-sol-leg-deep-trace-budget".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: replay_sol_leg_exact_target_checkpoint_state_json(true, false)?,
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        let recent_raw_dir = fixture
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("state/discovery_restore/recent_raw");
+        fs::create_dir_all(&recent_raw_dir)?;
+        let recent_raw_latest = recent_raw_dir.join("latest.sqlite");
+        write_recent_raw_snapshot_sqlite_content(
+            &recent_raw_latest,
+            &[recent_raw_swap(
+                "raw-wallet",
+                "sig-replay-sol-leg-deep-trace-budget-ahead",
+                parse_ts("2026-04-16T09:45:00Z")?,
+            )],
+            parse_ts("2026-04-16T09:46:00Z")?,
+        )?;
+
+        arm_test_force_replay_sol_leg_deep_trace_source_compare_budget_exhausted();
+        let diagnostic = trace_replay_sol_leg_deep_proof_read_only_with_budget(
+            &fixture.config_path,
+            now,
+            StdDuration::from_millis(150),
+        );
+        assert_eq!(
+            diagnostic.replay_sol_leg_deep_trace_reason_class,
+            ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceBudgetExhausted
+        );
+        assert!(diagnostic.deep_trace_prerequisite_completed);
+        assert!(diagnostic.deep_trace_checkpoint_inspect_started);
+        assert!(diagnostic.deep_trace_checkpoint_inspect_completed);
+        assert!(diagnostic.deep_trace_source_compare_started);
+        assert!(!diagnostic.deep_trace_source_compare_completed);
+        assert!(diagnostic.deep_trace_budget_exhausted);
+        assert_eq!(
+            diagnostic.deep_trace_budget_exhausted_stage.as_deref(),
+            Some("deep_trace_source_compare_forced_budget_exhausted")
+        );
+        assert_eq!(diagnostic.deep_trace_final_reason_class, None);
+        assert_eq!(diagnostic.deep_trace_final_explanation, None);
         Ok(())
     }
 

@@ -14504,3 +14504,59 @@ Current interpretation:
      replay proof reaches its internal wait timeout before returning a result
    - the next bounded Stage 3 step must target the deep replay reason path
      itself, not prerequisite proof or output rendering
+
+### Stage 3 replay-sol-leg deep-proof trace operator (`2026-04-16`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a new bounded read-only trace mode:
+   `--trace-replay-sol-leg-deep-proof --config <path> --json`
+2. The new mode reuses the already-proven cheap prerequisite contract first:
+   - current top-level blocker must be `replay_sol_leg_incomplete`
+   - cheap checkpoint headline must be completed
+   - persisted checkpoint must still be `phase = replay`,
+     `subphase = sol_leg`
+3. Only after prerequisite proof succeeds does the new mode trace:
+   - runtime DB reopen
+   - promoted `recent_raw` latest DB open
+   - persisted checkpoint inspect
+   - source-vs-checkpoint comparison
+4. The new mode always returns structured JSON and does not invent a final
+   reason when the deep trace budget exhausts.
+5. It emits explicit trace fields for:
+   - prerequisite result
+   - total and per-stage elapsed timings
+   - checkpoint-inspect fields
+   - source-vs-checkpoint fields
+   - final deep reason when proven
+6. It implements the bounded top-level reason classes:
+   - `replay_sol_leg_deep_trace_proven`
+   - `replay_sol_leg_deep_trace_not_current_blocker`
+   - `replay_sol_leg_deep_trace_unproven_due_to_missing_evidence`
+   - `replay_sol_leg_deep_trace_budget_exhausted`
+7. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+8. It does not change:
+   - `--explain-publication-truth-export-blocker`
+   - `--explain-replay-sol-leg-blocker`
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Current interpretation:
+
+1. The repository now has a dedicated operator for proving where the deep
+   replay-sol-leg path spends or exhausts its bounded budget.
+2. Live rollout must still verify whether the deep trace can finish on
+   production data or whether it immediately narrows the remaining blocker to a
+   specific deep stage such as checkpoint inspect or source comparison.
