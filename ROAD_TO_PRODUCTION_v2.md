@@ -13562,3 +13562,55 @@ Current interpretation:
    reducing statement count alone did not materially improve live throughput.
 3. The next performance decision should therefore be driven by these emitted
    staged-write subphase timings, not by another blind write-path tweak.
+
+### Stage 3 primary publication-truth export blocker surface (`2026-04-16`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now has one bounded primary read-only operator
+   for the current live blocker:
+   - `discovery_runtime_export --explain-publication-truth-export-blocker --config <path> --json`
+2. The new primary operator resolves config-relative paths itself:
+   - runtime DB from `sqlite.path`
+   - promoted recent-raw latest sqlite from
+     `runtime_restore_ops.journal_snapshot_dir/latest.sqlite`
+3. It reuses the existing read-only checkpoint / replay-sol-leg diagnostic
+   logic and lifts the current blocker onto the primary runtime-export family
+   without requiring manual `--runtime-db` or `--recent-raw-db` flags.
+4. It emits bounded top-level export-gate fields plus checkpoint and
+   source-vs-checkpoint fields, and uses these top-level reason classes:
+   - `publication_truth_export_gate_satisfied`
+   - `publication_truth_export_blocked_on_replay_sol_leg_incomplete`
+   - `publication_truth_export_blocked_on_other_publishable_checkpoint_reason`
+   - `publication_truth_export_blocked_on_incomplete_or_stale_truth_without_checkpoint_explanation`
+   - `publication_truth_export_blocker_unproven_due_to_missing_evidence`
+5. The batch is read-only and does not change:
+   - replay behavior
+   - publication/export gate semantics
+   - recent-raw snapshot behavior
+   - scoring/fail-closed policy
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+4. `cargo test -j 1 -p copybot-discovery --lib replay_sol_leg` is currently
+   red on an untouched existing test:
+   - [crates/discovery/src/lib.rs](/Users/blacktower/Documents/solana-copy-bot/crates/discovery/src/lib.rs):40328
+   - `carried_sol_leg_budget_floor_moves_reentered_target_window_replay_beyond_replay_sol_leg_incomplete_stage1`
+   - the new batch does not touch `crates/discovery/src/lib.rs`, and the new
+     primary operator bin/tests remain green
+
+Current interpretation:
+
+1. The old `recent_raw` convergence blocker is now closed on live.
+2. The current live Stage 3 blocker moved to
+   `publication_truth_withheld_while_replay_sol_leg_incomplete`.
+3. This new primary operator is accepted because it lets operators prove that
+   blocker from config-relative paths without log archaeology or manual DB-path
+   discovery.
