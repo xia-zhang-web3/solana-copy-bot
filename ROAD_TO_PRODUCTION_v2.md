@@ -14269,3 +14269,65 @@ Current interpretation:
 2. This batch is accepted because it adds direct timing proof from the primary
    operator's own cheap checkpoint-headline path, so the next fix can target
    measured internal latency rather than inferred discrepancies.
+
+### Stage 3 replay-sol-leg blocker proof operator (`2026-04-16`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a new bounded read-only mode:
+   `--explain-replay-sol-leg-blocker --config <path> --json`
+2. The new operator reuses the already-accepted publication-state-first
+   top-level blocker proof and cheap checkpoint-headline proof before it will
+   attempt any deeper replay-sol-leg diagnosis.
+3. If the current export blocker is not `replay_sol_leg_incomplete`, the new
+   operator returns `replay_sol_leg_blocker_not_current_export_blocker` and
+   does not run deep proof.
+4. If the current export blocker is proven current and the cheap checkpoint
+   prerequisites are proven current:
+   - persisted checkpoint exists
+   - `rebuild_phase = replay`
+   - `rebuild_replay_subphase = sol_leg`
+   then the operator opens the promoted `recent_raw` latest DB read-only and
+   runs bounded deep replay-sol-leg proof.
+5. On successful deep proof, the operator fills:
+   - `replay_sol_leg_incomplete_reason_class`
+   - `replay_sol_leg_incomplete_explanation`
+   - checkpoint exact-target-surface fields
+   - source-vs-checkpoint comparison fields
+6. On bounded deep-proof budget exhaustion, the operator preserves
+   `replay_sol_leg_blocker_proven_current`, sets
+   `replay_sol_leg_blocker_budget_exhausted = true`, reports the exact
+   exhausted stage, and leaves unresolved deep fields null.
+7. The operator also emits explicit bounded budget telemetry:
+   - `replay_sol_leg_blocker_budget_ms = 30000`
+   - `replay_sol_leg_blocker_budget_source = copybot_discovery_default_replay_sol_leg_read_only_source_scan_budget`
+   - `replay_sol_leg_blocker_total_elapsed_ms`
+   - `replay_sol_leg_blocker_checkpoint_headline_elapsed_ms`
+   - `replay_sol_leg_blocker_deep_reason_elapsed_ms`
+8. This batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+9. It does not change:
+   - existing `--explain-publication-truth-export-blocker` semantics
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Current interpretation:
+
+1. The primary runtime-export family can now prove not only the current
+   top-level blocker but also run a bounded deep replay-sol-leg proof path
+   under an explicit dedicated operator surface.
+2. The remaining live unknown is no longer whether the operator family can
+   reach replay-sol-leg diagnosis at all, but what exact deep reason the new
+   live operator returns against production runtime DB and promoted
+   `recent_raw` evidence.
