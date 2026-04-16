@@ -13669,6 +13669,51 @@ Live rollout result (`2026-04-16`, commit `29c07b4`):
 6. The next corrective batch must target the `rows.next()?` / SQLite step seam
    itself, not broader row-meta or publication-blocker plumbing.
 
+Live rollout result (`2026-04-16`, commit `fb735b9`):
+
+1. The server was fast-forwarded to `fb735b9` and only
+   `discovery_runtime_export` was rebuilt.
+2. On this host, bounded operator checks against
+   `/etc/solana-copy-bot/live.server.toml` must be run under `sudo -n`; a
+   direct `ubuntu` invocation returns:
+   - `publication_truth_export_blocker_unproven_due_to_missing_evidence`
+   - explanation = config load failed with
+     `Permission denied (os error 13)`
+3. A clean `sudo -n` live run of:
+   `discovery_runtime_export --explain-publication-truth-export-blocker --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `publication_truth_export_blocked_on_replay_sol_leg_incomplete`
+   - `publication_truth_export_checkpoint_headline_completed = false`
+   - `publication_truth_export_checkpoint_headline_budget_exhausted = true`
+   - `publication_truth_export_checkpoint_headline_stage = load_persisted_rebuild_row_meta_step_primary_key_lookup`
+   - `publication_truth_export_checkpoint_headline_total_elapsed_ms = 1000`
+4. The new row-fetch wait proof fields showed:
+   - `publication_truth_export_checkpoint_headline_worker_last_event = step_query_started`
+   - `publication_truth_export_checkpoint_headline_worker_event_count = 12`
+   - `publication_truth_export_checkpoint_headline_worker_sqlite_busy_timeout_ms = 5000`
+   - `publication_truth_export_checkpoint_headline_worker_query_readonly_mode = true`
+   - `publication_truth_export_checkpoint_headline_worker_connection_journal_mode = wal`
+   - `publication_truth_export_checkpoint_headline_worker_connection_locking_mode = normal`
+   - `publication_truth_export_checkpoint_headline_worker_connection_query_only = false`
+   - `publication_truth_export_checkpoint_headline_worker_row_fetch_access_path = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `publication_truth_export_checkpoint_headline_worker_explain_query_plan_rows = ["SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)"]`
+   - `publication_truth_export_checkpoint_headline_worker_row_fetch_wait_kind = waiting_inside_rows_next_before_first_row_or_eof`
+   - `publication_truth_export_checkpoint_headline_worker_step_query_started_received = true`
+   - `publication_truth_export_checkpoint_headline_worker_step_row_fetch_completed_received = false`
+   - `publication_truth_export_checkpoint_headline_worker_step_phase_decoded_received = false`
+   - `publication_truth_export_checkpoint_headline_worker_step_updated_at_decoded_received = false`
+   - `publication_truth_export_checkpoint_headline_worker_finished_send_attempted = false`
+   - `publication_truth_export_checkpoint_headline_worker_finished_received = false`
+   - `publication_truth_export_checkpoint_headline_worker_disconnected = false`
+5. Therefore the live seam is now narrower still:
+   - the query plan is the intended primary-key lookup
+   - the worker is not stalling in decode or finish-send
+   - the remaining seam is inside `rows.next()?` on the read-only runtime-DB
+     worker connection before first row or EOF returns
+6. The next proof-first Stage 3 batch must target that exact SQLite row-fetch
+   wait seam, not planner selection, checkpoint decode, or source-compare
+   plumbing.
+
 Corrective repository batch accepted (`2026-04-16`):
 
 1. The publication-blocker checkpoint-headline worker no longer treats the
