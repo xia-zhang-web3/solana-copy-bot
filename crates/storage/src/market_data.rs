@@ -407,6 +407,10 @@ fn recent_raw_journal_sqlite_variable_limit(conn: &Connection) -> usize {
     .max(0) as usize
 }
 
+fn recent_raw_elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u64::MAX as u128) as u64
+}
+
 fn push_recent_raw_journal_bulk_insert_values(values: &mut Vec<SqlValue>, swap: &SwapEvent) {
     values.push(SqlValue::Text(swap.signature.clone()));
     values.push(SqlValue::Text(swap.wallet.clone()));
@@ -805,6 +809,7 @@ impl SqliteStore {
             return Ok((recent_raw_journal_write_summary(&state, 0, 0), false));
         }
 
+        let transaction_started = Instant::now();
         let write_result = self.with_immediate_transaction_retry(
             "recent raw journal bulk batch write",
             |conn| {
@@ -814,12 +819,21 @@ impl SqliteStore {
                     requested_chunk_rows,
                     sqlite_variable_limit,
                 );
+                let mut statement_count = 0usize;
                 let mut inserted_rows = 0usize;
                 let mut processed_rows = 0usize;
+                let mut value_build_duration_ms = 0u64;
+                let mut prepare_duration_ms = 0u64;
+                let mut execute_duration_ms = 0u64;
+                let mut state_refresh_duration_ms = 0u64;
+                let mut state_upsert_duration_ms = 0u64;
+                let mut deadline_exhausted_before_statement = false;
+                let mut deadline_exhausted_during_execute = false;
                 let mut time_budget_exhausted = false;
 
                 for chunk in swaps.chunks(chunk_rows) {
                     if Instant::now() >= deadline {
+                        deadline_exhausted_before_statement = true;
                         time_budget_exhausted = true;
                         break;
                     }
@@ -833,6 +847,7 @@ impl SqliteStore {
                     }
 
                     let sql = recent_raw_journal_bulk_insert_sql(chunk.len());
+                    let value_build_started = Instant::now();
                     let mut values = Vec::with_capacity(
                         chunk
                             .len()
@@ -841,11 +856,17 @@ impl SqliteStore {
                     for swap in chunk {
                         push_recent_raw_journal_bulk_insert_values(&mut values, swap);
                     }
+                    value_build_duration_ms =
+                        value_build_duration_ms.saturating_add(recent_raw_elapsed_ms(value_build_started));
+                    let prepare_started = Instant::now();
                     let mut stmt = match conn.prepare_cached(&sql) {
                         Ok(stmt) => stmt,
                         Err(error)
                             if recent_raw_journal_sqlite_error_is_operation_interrupted(&error) =>
                         {
+                            prepare_duration_ms =
+                                prepare_duration_ms.saturating_add(recent_raw_elapsed_ms(prepare_started));
+                            deadline_exhausted_before_statement = true;
                             time_budget_exhausted = true;
                             break;
                         }
@@ -855,20 +876,28 @@ impl SqliteStore {
                             );
                         }
                     };
+                    prepare_duration_ms =
+                        prepare_duration_ms.saturating_add(recent_raw_elapsed_ms(prepare_started));
                     if Instant::now() >= deadline {
+                        deadline_exhausted_before_statement = true;
                         time_budget_exhausted = true;
                         break;
                     }
 
+                    statement_count = statement_count.saturating_add(1);
+                    let execute_started = Instant::now();
                     let execute_result = {
                         let _progress_guard = ProgressHandlerGuard::install(conn, deadline);
                         stmt.execute(params_from_iter(values))
                     };
+                    execute_duration_ms =
+                        execute_duration_ms.saturating_add(recent_raw_elapsed_ms(execute_started));
                     let changed = match execute_result {
                         Ok(changed) => changed,
                         Err(error)
                             if recent_raw_journal_sqlite_error_is_operation_interrupted(&error) =>
                         {
+                            deadline_exhausted_during_execute = true;
                             time_budget_exhausted = true;
                             break;
                         }
@@ -889,7 +918,10 @@ impl SqliteStore {
                     }
                 }
 
+                let state_refresh_started = Instant::now();
                 let mut state = recent_raw_journal_state_cached_query(conn)?;
+                state_refresh_duration_ms = state_refresh_duration_ms
+                    .saturating_add(recent_raw_elapsed_ms(state_refresh_started));
                 advance_recent_raw_journal_state_for_batch(
                     &mut state,
                     &swaps[..processed_rows],
@@ -897,16 +929,43 @@ impl SqliteStore {
                     completed_at,
                 );
                 if processed_rows > 0 {
+                    let state_upsert_started = Instant::now();
                     upsert_recent_raw_journal_state_on_conn(conn, &state)?;
+                    state_upsert_duration_ms = state_upsert_duration_ms
+                        .saturating_add(recent_raw_elapsed_ms(state_upsert_started));
                 }
+                let mut summary =
+                    recent_raw_journal_write_summary(&state, processed_rows, inserted_rows);
+                summary.recent_raw_bulk_sqlite_variable_limit = sqlite_variable_limit;
+                summary.recent_raw_bulk_statement_params_per_row =
+                    RECENT_RAW_JOURNAL_BULK_INSERT_PARAMS_PER_ROW;
+                summary.recent_raw_bulk_statement_chunk_row_cap =
+                    RECENT_RAW_JOURNAL_BULK_INSERT_HARD_CAP_ROWS;
+                summary.recent_raw_bulk_effective_statement_chunk_rows = chunk_rows;
+                summary.recent_raw_bulk_statement_count = statement_count;
+                summary.recent_raw_bulk_rows_processed = processed_rows;
+                summary.recent_raw_bulk_rows_inserted = inserted_rows;
+                summary.recent_raw_bulk_value_build_duration_ms = value_build_duration_ms;
+                summary.recent_raw_bulk_prepare_duration_ms = prepare_duration_ms;
+                summary.recent_raw_bulk_execute_duration_ms = execute_duration_ms;
+                summary.recent_raw_bulk_state_refresh_duration_ms = state_refresh_duration_ms;
+                summary.recent_raw_bulk_state_upsert_duration_ms = state_upsert_duration_ms;
+                summary.recent_raw_bulk_deadline_exhausted_before_statement =
+                    deadline_exhausted_before_statement;
+                summary.recent_raw_bulk_deadline_exhausted_during_execute =
+                    deadline_exhausted_during_execute;
                 Ok((
-                    recent_raw_journal_write_summary(&state, processed_rows, inserted_rows),
+                    summary,
                     time_budget_exhausted,
                 ))
             },
         );
         match write_result {
-            Ok(result) => Ok(result),
+            Ok((mut summary, time_budget_exhausted)) => {
+                summary.recent_raw_bulk_transaction_duration_ms =
+                    recent_raw_elapsed_ms(transaction_started);
+                Ok((summary, time_budget_exhausted))
+            }
             Err(error) if recent_raw_journal_anyhow_error_is_operation_interrupted(&error) => {
                 let state = self.recent_raw_journal_state_cached()?;
                 Ok((recent_raw_journal_write_summary(&state, 0, 0), true))
@@ -6768,6 +6827,7 @@ fn recent_raw_journal_write_summary(
         covered_through_cursor: state.covered_through_cursor.clone(),
         row_count: state.row_count,
         last_batch_completed_at: state.last_batch_completed_at,
+        ..RecentRawJournalWriteSummary::default()
     }
 }
 
@@ -7886,6 +7946,12 @@ mod tests {
         assert!(!time_budget_exhausted);
         assert_eq!(summary.batch_rows, swaps.len());
         assert_eq!(summary.inserted_rows, swaps.len() - 1);
+        assert_eq!(summary.recent_raw_bulk_effective_statement_chunk_rows, 16);
+        assert_eq!(summary.recent_raw_bulk_statement_count, 9);
+        assert_eq!(summary.recent_raw_bulk_rows_processed, swaps.len());
+        assert_eq!(summary.recent_raw_bulk_rows_inserted, swaps.len() - 1);
+        assert!(!summary.recent_raw_bulk_deadline_exhausted_before_statement);
+        assert!(!summary.recent_raw_bulk_deadline_exhausted_during_execute);
 
         let cached_state = store.recent_raw_journal_state_cached()?;
         let scanned_state = store.recent_raw_journal_state()?;
@@ -7950,6 +8016,22 @@ mod tests {
         assert!(time_budget_exhausted);
         assert_eq!(summary.batch_rows, expected_chunk_rows);
         assert_eq!(summary.inserted_rows, expected_chunk_rows);
+        assert_eq!(
+            summary.recent_raw_bulk_effective_statement_chunk_rows,
+            expected_chunk_rows
+        );
+        assert_eq!(summary.recent_raw_bulk_statement_count, 1);
+        assert_eq!(
+            summary.recent_raw_bulk_statement_params_per_row,
+            RECENT_RAW_JOURNAL_BULK_INSERT_PARAMS_PER_ROW
+        );
+        assert_eq!(
+            summary.recent_raw_bulk_statement_chunk_row_cap,
+            RECENT_RAW_JOURNAL_BULK_INSERT_HARD_CAP_ROWS
+        );
+        assert_eq!(summary.recent_raw_bulk_rows_processed, expected_chunk_rows);
+        assert_eq!(summary.recent_raw_bulk_rows_inserted, expected_chunk_rows);
+        assert!(summary.recent_raw_bulk_sqlite_variable_limit >= expected_chunk_rows * 13);
         let cached_state = store.recent_raw_journal_state_cached()?;
         let scanned_state = store.recent_raw_journal_state()?;
         assert_eq!(cached_state, scanned_state);
@@ -7993,6 +8075,12 @@ mod tests {
         assert!(time_budget_exhausted);
         assert_eq!(summary.batch_rows, 16);
         assert_eq!(summary.inserted_rows, 16);
+        assert_eq!(summary.recent_raw_bulk_effective_statement_chunk_rows, 16);
+        assert_eq!(summary.recent_raw_bulk_statement_count, 1);
+        assert_eq!(summary.recent_raw_bulk_rows_processed, 16);
+        assert_eq!(summary.recent_raw_bulk_rows_inserted, 16);
+        assert!(!summary.recent_raw_bulk_deadline_exhausted_before_statement);
+        assert!(!summary.recent_raw_bulk_deadline_exhausted_during_execute);
 
         let cached_state = store.recent_raw_journal_state_cached()?;
         let scanned_state = store.recent_raw_journal_state()?;
@@ -8042,6 +8130,9 @@ mod tests {
             "expired deadline must return a bounded outcome instead of hanging in optimized recent_raw write path"
         );
         assert_eq!(summary.batch_rows, 0);
+        assert_eq!(summary.recent_raw_bulk_statement_count, 0);
+        assert!(summary.recent_raw_bulk_deadline_exhausted_before_statement);
+        assert!(!summary.recent_raw_bulk_deadline_exhausted_during_execute);
 
         let cached_state = store.recent_raw_journal_state_cached()?;
         let scanned_state = store.recent_raw_journal_state()?;

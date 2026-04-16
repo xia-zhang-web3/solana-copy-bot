@@ -13511,3 +13511,54 @@ Live validation note:
    - the next engineering step should measure or reduce the actual SQLite
      staged-write bottleneck rather than assuming statement count was the main
      limiter
+
+### Stage 3 recent-raw staged-write subphase telemetry (`2026-04-16`)
+
+Accepted repository change:
+
+1. The bounded staged-write path now emits factual subphase telemetry without
+   changing write behavior.
+2. `RecentRawJournalWriteSummary` now carries bounded `recent_raw_bulk_*`
+   fields for:
+   - SQLite variable limit
+   - params per row
+   - statement chunk cap
+   - effective statement chunk rows
+   - statement count
+   - processed/inserted rows
+   - wall-clock durations for value build, prepare, execute, state refresh,
+     state upsert, and whole transaction
+   - whether deadline exhaustion happened before a statement or during execute
+3. `discovery_recent_raw_snapshot` now threads those exact bounded storage
+   facts through JSON / attempt telemetry as `staged_write_*`.
+4. Unreached subphases stay explicit by using `0` / `false`; the batch does
+   not infer speedup or mutate any runtime contract.
+5. The batch does not change:
+   - chunk sizing
+   - `INSERT OR IGNORE`
+   - transaction mode
+   - deadline semantics
+   - promotion / retention behavior
+   - runtime-export or fail-closed policy
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-storage --lib recent_raw_journal` passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+   passed.
+3. `cargo test -j 1 -p copybot-discovery --lib recent_raw_replacement_convergence`
+   passed.
+4. `cargo check -j 1 -p copybot-storage` passed with existing
+   `backfill_discovery_scoring` warnings.
+5. `cargo check -j 1 -p copybot-discovery --bin discovery_recent_raw_snapshot`
+   passed.
+6. `git diff --check -- crates/storage/src/lib.rs crates/storage/src/market_data.rs crates/discovery/src/bin/discovery_recent_raw_snapshot.rs`
+   passed.
+
+Current interpretation:
+
+1. This batch is accepted as bounded instrumentation.
+2. It is useful because the first adaptive chunking rollout already proved that
+   reducing statement count alone did not materially improve live throughput.
+3. The next performance decision should therefore be driven by these emitted
+   staged-write subphase timings, not by another blind write-path tweak.

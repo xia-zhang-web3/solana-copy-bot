@@ -9,8 +9,8 @@ use copybot_discovery::runtime_restore_ops::{
 };
 use copybot_storage::{
     is_fatal_sqlite_anyhow_error, DiscoveryRuntimeCursor, RecentRawJournalStateRow,
-    SqliteSnapshotOutcome, SqliteSnapshotPolicy, SqliteSnapshotSourceMetrics,
-    SqliteSnapshotSummary, SqliteStore,
+    RecentRawJournalWriteSummary, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
+    SqliteSnapshotSourceMetrics, SqliteSnapshotSummary, SqliteStore,
 };
 use rusqlite::ErrorCode;
 use serde::{Deserialize, Serialize};
@@ -120,6 +120,21 @@ struct SnapshotOutput {
     staged_write_rows_per_second: Option<f64>,
     staged_write_batch_count: usize,
     staged_write_batch_rows: usize,
+    staged_write_sqlite_variable_limit: usize,
+    staged_write_statement_params_per_row: usize,
+    staged_write_statement_chunk_row_cap: usize,
+    staged_write_effective_statement_chunk_rows: usize,
+    staged_write_statement_count: usize,
+    staged_write_rows_processed: usize,
+    staged_write_rows_inserted: usize,
+    staged_write_value_build_duration_ms: u64,
+    staged_write_prepare_duration_ms: u64,
+    staged_write_execute_duration_ms: u64,
+    staged_write_state_refresh_duration_ms: u64,
+    staged_write_state_upsert_duration_ms: u64,
+    staged_write_transaction_duration_ms: u64,
+    staged_write_deadline_exhausted_before_statement: bool,
+    staged_write_deadline_exhausted_during_execute: bool,
     source_db_bytes: u64,
     source_wal_bytes: u64,
     source_total_bytes: u64,
@@ -325,6 +340,21 @@ struct StagedSnapshotProgress {
     source_read_duration_ms: u64,
     staged_write_duration_ms: u64,
     write_batch_rows: usize,
+    staged_write_sqlite_variable_limit: usize,
+    staged_write_statement_params_per_row: usize,
+    staged_write_statement_chunk_row_cap: usize,
+    staged_write_effective_statement_chunk_rows: usize,
+    staged_write_statement_count: usize,
+    staged_write_rows_processed: usize,
+    staged_write_rows_inserted: usize,
+    staged_write_value_build_duration_ms: u64,
+    staged_write_prepare_duration_ms: u64,
+    staged_write_execute_duration_ms: u64,
+    staged_write_state_refresh_duration_ms: u64,
+    staged_write_state_upsert_duration_ms: u64,
+    staged_write_transaction_duration_ms: u64,
+    staged_write_deadline_exhausted_before_statement: bool,
+    staged_write_deadline_exhausted_during_execute: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -564,6 +594,58 @@ fn staged_write_rows_per_second(progress: &StagedSnapshotProgress) -> Option<f64
     }
     let duration_ms = progress.staged_write_duration_ms.max(1);
     Some(progress.rows_inserted_during_attempt as f64 * 1_000.0 / duration_ms as f64)
+}
+
+fn record_staged_write_summary(
+    progress: &mut StagedSnapshotProgress,
+    summary: &RecentRawJournalWriteSummary,
+) {
+    if summary.recent_raw_bulk_sqlite_variable_limit > 0 {
+        progress.staged_write_sqlite_variable_limit = summary.recent_raw_bulk_sqlite_variable_limit;
+    }
+    if summary.recent_raw_bulk_statement_params_per_row > 0 {
+        progress.staged_write_statement_params_per_row =
+            summary.recent_raw_bulk_statement_params_per_row;
+    }
+    if summary.recent_raw_bulk_statement_chunk_row_cap > 0 {
+        progress.staged_write_statement_chunk_row_cap =
+            summary.recent_raw_bulk_statement_chunk_row_cap;
+    }
+    if summary.recent_raw_bulk_effective_statement_chunk_rows > 0 {
+        progress.staged_write_effective_statement_chunk_rows =
+            summary.recent_raw_bulk_effective_statement_chunk_rows;
+    }
+    progress.staged_write_statement_count = progress
+        .staged_write_statement_count
+        .saturating_add(summary.recent_raw_bulk_statement_count);
+    progress.staged_write_rows_processed = progress
+        .staged_write_rows_processed
+        .saturating_add(summary.recent_raw_bulk_rows_processed);
+    progress.staged_write_rows_inserted = progress
+        .staged_write_rows_inserted
+        .saturating_add(summary.recent_raw_bulk_rows_inserted);
+    progress.staged_write_value_build_duration_ms = progress
+        .staged_write_value_build_duration_ms
+        .saturating_add(summary.recent_raw_bulk_value_build_duration_ms);
+    progress.staged_write_prepare_duration_ms = progress
+        .staged_write_prepare_duration_ms
+        .saturating_add(summary.recent_raw_bulk_prepare_duration_ms);
+    progress.staged_write_execute_duration_ms = progress
+        .staged_write_execute_duration_ms
+        .saturating_add(summary.recent_raw_bulk_execute_duration_ms);
+    progress.staged_write_state_refresh_duration_ms = progress
+        .staged_write_state_refresh_duration_ms
+        .saturating_add(summary.recent_raw_bulk_state_refresh_duration_ms);
+    progress.staged_write_state_upsert_duration_ms = progress
+        .staged_write_state_upsert_duration_ms
+        .saturating_add(summary.recent_raw_bulk_state_upsert_duration_ms);
+    progress.staged_write_transaction_duration_ms = progress
+        .staged_write_transaction_duration_ms
+        .saturating_add(summary.recent_raw_bulk_transaction_duration_ms);
+    progress.staged_write_deadline_exhausted_before_statement |=
+        summary.recent_raw_bulk_deadline_exhausted_before_statement;
+    progress.staged_write_deadline_exhausted_during_execute |=
+        summary.recent_raw_bulk_deadline_exhausted_during_execute;
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -2563,6 +2645,7 @@ fn resume_staged_snapshot_with_policy(
         };
         completed_batches = completed_batches.saturating_add(1);
         progress.completed_batches = completed_batches;
+        record_staged_write_summary(&mut progress, &write_summary);
         progress.rows_processed_during_attempt = progress
             .rows_processed_during_attempt
             .saturating_add(write_summary.batch_rows);
@@ -2862,6 +2945,45 @@ fn render_output(
         staged_write_rows_per_second: staged_write_rows_per_second(&output_context.staged_progress),
         staged_write_batch_count: output_context.staged_progress.completed_batches,
         staged_write_batch_rows: output_context.staged_progress.write_batch_rows,
+        staged_write_sqlite_variable_limit: output_context
+            .staged_progress
+            .staged_write_sqlite_variable_limit,
+        staged_write_statement_params_per_row: output_context
+            .staged_progress
+            .staged_write_statement_params_per_row,
+        staged_write_statement_chunk_row_cap: output_context
+            .staged_progress
+            .staged_write_statement_chunk_row_cap,
+        staged_write_effective_statement_chunk_rows: output_context
+            .staged_progress
+            .staged_write_effective_statement_chunk_rows,
+        staged_write_statement_count: output_context.staged_progress.staged_write_statement_count,
+        staged_write_rows_processed: output_context.staged_progress.staged_write_rows_processed,
+        staged_write_rows_inserted: output_context.staged_progress.staged_write_rows_inserted,
+        staged_write_value_build_duration_ms: output_context
+            .staged_progress
+            .staged_write_value_build_duration_ms,
+        staged_write_prepare_duration_ms: output_context
+            .staged_progress
+            .staged_write_prepare_duration_ms,
+        staged_write_execute_duration_ms: output_context
+            .staged_progress
+            .staged_write_execute_duration_ms,
+        staged_write_state_refresh_duration_ms: output_context
+            .staged_progress
+            .staged_write_state_refresh_duration_ms,
+        staged_write_state_upsert_duration_ms: output_context
+            .staged_progress
+            .staged_write_state_upsert_duration_ms,
+        staged_write_transaction_duration_ms: output_context
+            .staged_progress
+            .staged_write_transaction_duration_ms,
+        staged_write_deadline_exhausted_before_statement: output_context
+            .staged_progress
+            .staged_write_deadline_exhausted_before_statement,
+        staged_write_deadline_exhausted_during_execute: output_context
+            .staged_progress
+            .staged_write_deadline_exhausted_during_execute,
         source_db_bytes: snapshot_context.source_stats.source_db_bytes,
         source_wal_bytes: snapshot_context.source_stats.source_wal_bytes,
         source_total_bytes: snapshot_context.source_stats.source_total_bytes(),
@@ -3054,6 +3176,66 @@ fn render_human(output: &SnapshotOutput) -> String {
             output.staged_write_batch_count
         ),
         format!("staged_write_batch_rows={}", output.staged_write_batch_rows),
+        format!(
+            "staged_write_sqlite_variable_limit={}",
+            output.staged_write_sqlite_variable_limit
+        ),
+        format!(
+            "staged_write_statement_params_per_row={}",
+            output.staged_write_statement_params_per_row
+        ),
+        format!(
+            "staged_write_statement_chunk_row_cap={}",
+            output.staged_write_statement_chunk_row_cap
+        ),
+        format!(
+            "staged_write_effective_statement_chunk_rows={}",
+            output.staged_write_effective_statement_chunk_rows
+        ),
+        format!(
+            "staged_write_statement_count={}",
+            output.staged_write_statement_count
+        ),
+        format!(
+            "staged_write_rows_processed={}",
+            output.staged_write_rows_processed
+        ),
+        format!(
+            "staged_write_rows_inserted={}",
+            output.staged_write_rows_inserted
+        ),
+        format!(
+            "staged_write_value_build_duration_ms={}",
+            output.staged_write_value_build_duration_ms
+        ),
+        format!(
+            "staged_write_prepare_duration_ms={}",
+            output.staged_write_prepare_duration_ms
+        ),
+        format!(
+            "staged_write_execute_duration_ms={}",
+            output.staged_write_execute_duration_ms
+        ),
+        format!(
+            "staged_write_state_refresh_duration_ms={}",
+            output.staged_write_state_refresh_duration_ms
+        ),
+        format!(
+            "staged_write_state_upsert_duration_ms={}",
+            output.staged_write_state_upsert_duration_ms
+        ),
+        format!(
+            "staged_write_transaction_duration_ms={}",
+            output.staged_write_transaction_duration_ms
+        ),
+        format!(
+            "staged_write_deadline_exhausted_before_statement={}",
+            output.staged_write_deadline_exhausted_before_statement
+        ),
+        format!(
+            "staged_write_deadline_exhausted_during_execute={}",
+            output.staged_write_deadline_exhausted_during_execute
+        ),
         format!("source_db_bytes={}", output.source_db_bytes),
         format!("source_wal_bytes={}", output.source_wal_bytes),
         format!("source_total_bytes={}", output.source_total_bytes),
@@ -3419,6 +3601,53 @@ mod tests {
                     .min(super::SNAPSHOT_RESUME_ROW_BATCH_MAX_ROWS) as u64
             )
         );
+        for field in [
+            "staged_write_sqlite_variable_limit",
+            "staged_write_statement_params_per_row",
+            "staged_write_statement_chunk_row_cap",
+            "staged_write_effective_statement_chunk_rows",
+            "staged_write_statement_count",
+            "staged_write_rows_processed",
+            "staged_write_rows_inserted",
+            "staged_write_value_build_duration_ms",
+            "staged_write_prepare_duration_ms",
+            "staged_write_execute_duration_ms",
+            "staged_write_state_refresh_duration_ms",
+            "staged_write_state_upsert_duration_ms",
+            "staged_write_transaction_duration_ms",
+            "staged_write_deadline_exhausted_before_statement",
+            "staged_write_deadline_exhausted_during_execute",
+        ] {
+            assert!(output.get(field).is_some(), "missing output field {field}");
+        }
+        assert_eq!(output["staged_write_statement_params_per_row"], 13);
+        assert_eq!(output["staged_write_statement_chunk_row_cap"], 512);
+        assert!(
+            output["staged_write_sqlite_variable_limit"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 999
+        );
+        assert!(
+            output["staged_write_effective_statement_chunk_rows"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
+        assert!(
+            output["staged_write_statement_count"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
+        assert_eq!(
+            output["staged_write_rows_processed"],
+            output["staged_rows_processed"]
+        );
+        assert_eq!(
+            output["staged_write_rows_inserted"],
+            output["staged_rows_inserted"]
+        );
         assert!(
             output["staged_write_rows_per_second"].as_f64().is_some(),
             "deferred progress must expose write-throughput telemetry"
@@ -3481,6 +3710,28 @@ mod tests {
             telemetry["staged_write_batch_rows"],
             output["staged_write_batch_rows"]
         );
+        for field in [
+            "staged_write_sqlite_variable_limit",
+            "staged_write_statement_params_per_row",
+            "staged_write_statement_chunk_row_cap",
+            "staged_write_effective_statement_chunk_rows",
+            "staged_write_statement_count",
+            "staged_write_rows_processed",
+            "staged_write_rows_inserted",
+            "staged_write_value_build_duration_ms",
+            "staged_write_prepare_duration_ms",
+            "staged_write_execute_duration_ms",
+            "staged_write_state_refresh_duration_ms",
+            "staged_write_state_upsert_duration_ms",
+            "staged_write_transaction_duration_ms",
+            "staged_write_deadline_exhausted_before_statement",
+            "staged_write_deadline_exhausted_during_execute",
+        ] {
+            assert_eq!(
+                telemetry[field], output[field],
+                "attempt telemetry must mirror output field {field}"
+            );
+        }
         assert!(telemetry.get("created_at").is_some());
         assert!(telemetry.get("last_batch_completed_at").is_some());
 
