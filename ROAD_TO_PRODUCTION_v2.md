@@ -13600,6 +13600,39 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+Live rollout result (`2026-04-16`, commit `a529f5d`):
+
+1. The server was fast-forwarded to `a529f5d` and only
+   `discovery_runtime_export` was rebuilt.
+2. A clean `sudo -n` live run of:
+   `discovery_runtime_export --probe-checkpoint-row-fetch-copied-snapshot --config /etc/solana-copy-bot/live.server.toml --json`
+   now returns bounded structured JSON.
+3. The returned live result was:
+   - `checkpoint_row_fetch_copied_snapshot_probe_reason_class = checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted`
+   - `checkpoint_row_fetch_copied_snapshot_probe_explanation = copied-snapshot checkpoint row-fetch probe exhausted its bounded budget while executing stage=copy_main_db`
+   - `checkpoint_row_fetch_copied_snapshot_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted = true`
+   - `checkpoint_row_fetch_copied_snapshot_probe_stage = copy_main_db`
+4. The new staging telemetry proved the exact copied-snapshot seam:
+   - `checkpoint_row_fetch_copied_snapshot_probe_temp_dir_created = true`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_main_started = true`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_main_completed = false`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes = 0`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_wal_started = false`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_wal_completed = false`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_shm_started = false`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_shm_completed = false`
+   - `checkpoint_row_fetch_copied_snapshot_probe_handoff_to_zero_timeout_probe_started = false`
+   - `checkpoint_row_fetch_copied_snapshot_probe_runtime_db_opened_read_only = false`
+5. Therefore the copied-snapshot operator is now operationally bounded, and the
+   remaining live seam is specifically the main runtime DB copy itself before
+   any WAL/SHM copy or zero-timeout row-fetch handoff begins.
+6. This means the next proof-first batch must target the main DB copy stage:
+   - whether the copy is inherently too large/slow for a 1000ms contract
+   - whether the operator should emit file-size / copy-rate proof
+   - whether the copy phase should be narrowed or replaced by a lighter-weight
+     snapshotting proof path
+
 Live rollout result (`2026-04-16`, commit `1b95c6e`):
 
 1. The server was fast-forwarded to `1b95c6e` and only
