@@ -13600,6 +13600,40 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+Live rollout result (`2026-04-16`, commit `3fc70d3`):
+
+1. The server was fast-forwarded to `3fc70d3` and only
+   `discovery_runtime_export` was rebuilt.
+2. A clean live run of:
+   `discovery_runtime_export --trace-replay-sol-leg-source-compare --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `replay_sol_leg_source_compare_trace_reason_class = replay_sol_leg_source_compare_trace_unproven_due_to_missing_evidence`
+   - `source_compare_trace_prerequisite_source = explain_publication_truth_export_blocker_read_only`
+   - `source_compare_trace_prerequisite_reused_publication_diagnostic = true`
+   - `source_compare_trace_prerequisite_reason_class = publication_truth_export_blocked_on_replay_sol_leg_incomplete`
+   - `source_compare_trace_prerequisite_completed = false`
+   - `source_compare_trace_prerequisite_checkpoint_headline_completed = false`
+   - `source_compare_trace_prerequisite_checkpoint_headline_budget_exhausted = true`
+   - `source_compare_trace_prerequisite_checkpoint_headline_stage = load_persisted_rebuild_row_meta_step_primary_key_lookup`
+   - `source_compare_trace_total_elapsed_ms = 30817`
+   - `source_compare_trace_compare_started = false`
+3. A clean live run of:
+   `discovery_runtime_export --explain-publication-truth-export-blocker --config /etc/solana-copy-bot/live.server.toml --json`
+   first timed out at `60s` with `0` output bytes, then under `120s` returned:
+   - `publication_truth_export_blocked_on_replay_sol_leg_incomplete`
+   - `publication_truth_export_checkpoint_headline_completed = false`
+   - `publication_truth_export_checkpoint_headline_budget_exhausted = true`
+   - `publication_truth_export_checkpoint_headline_stage = load_persisted_rebuild_row_meta_step_primary_key_lookup`
+   - `publication_truth_export_checkpoint_headline_total_elapsed_ms = 52249`
+   - `rebuild_phase = replay`
+   - `rebuild_replay_subphase = sol_leg`
+4. Therefore this corrective batch did not fix the source-compare mode, and live
+   evidence shows a broader regression: the established publication operator
+   path also now falls into the same checkpoint-headline budget-exhausted seam
+   on production data.
+5. The next corrective batch must target the publication-blocker checkpoint
+   headline regression itself before any more source-compare work continues.
+
 Live rollout result (`2026-04-16`, commit `8d622a9`):
 
 1. The server was fast-forwarded to `8d622a9` and only
