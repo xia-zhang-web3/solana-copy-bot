@@ -24,6 +24,10 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::Serialize;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 
 const USAGE: &str = "usage:
@@ -53,6 +57,7 @@ const DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_SOURCE: &str =
     "copybot_discovery_default_replay_sol_leg_read_only_source_scan_budget";
 const REPLAY_SOL_LEG_BLOCKER_BUDGET_EXHAUSTED_STAGE: &str =
     "deep_replay_sol_leg_reason_source_scan_budget_exhausted";
+const REPLAY_SOL_LEG_BLOCKER_WAIT_TIMEOUT_STAGE: &str = "deep_replay_sol_leg_reason_wait_timeout";
 const CHECKPOINT_HEADLINE_ROW_META_TABLE_EXISTS_SQL: &str = "SELECT EXISTS(
     SELECT 1
     FROM sqlite_master
@@ -397,6 +402,14 @@ struct ReplaySolLegBlockerDiagnostic {
     replay_sol_leg_blocker_prerequisite_checkpoint_headline_budget_exhausted: bool,
     replay_sol_leg_blocker_prerequisite_checkpoint_headline_stage: Option<String>,
     replay_sol_leg_blocker_prerequisite_total_elapsed_ms: u64,
+    replay_sol_leg_blocker_post_prerequisite_started: bool,
+    replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms: u64,
+    replay_sol_leg_blocker_recent_raw_open_elapsed_ms: u64,
+    replay_sol_leg_blocker_deep_reason_started: bool,
+    replay_sol_leg_blocker_deep_reason_completed: bool,
+    replay_sol_leg_blocker_deep_reason_budget_exhausted: bool,
+    replay_sol_leg_blocker_deep_reason_stage: Option<String>,
+    replay_sol_leg_blocker_deep_reason_explanation: Option<String>,
     config_path: String,
     runtime_db_path: Option<String>,
     recent_raw_db_path: Option<String>,
@@ -455,6 +468,14 @@ impl ReplaySolLegBlockerDiagnostic {
                 .publication_truth_export_checkpoint_headline_stage
                 .clone(),
             replay_sol_leg_blocker_prerequisite_total_elapsed_ms: 0,
+            replay_sol_leg_blocker_post_prerequisite_started: false,
+            replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms: 0,
+            replay_sol_leg_blocker_recent_raw_open_elapsed_ms: 0,
+            replay_sol_leg_blocker_deep_reason_started: false,
+            replay_sol_leg_blocker_deep_reason_completed: false,
+            replay_sol_leg_blocker_deep_reason_budget_exhausted: false,
+            replay_sol_leg_blocker_deep_reason_stage: None,
+            replay_sol_leg_blocker_deep_reason_explanation: None,
             config_path: diagnostic.config_path.clone(),
             runtime_db_path: diagnostic.runtime_db_path.clone(),
             recent_raw_db_path: diagnostic.recent_raw_db_path.clone(),
@@ -1035,21 +1056,19 @@ fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
 }
 
 #[cfg(test)]
-thread_local! {
-    static TEST_FORCE_REPLAY_SOL_LEG_BLOCKER_DEEP_REASON_BUDGET_EXHAUSTED: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
-}
+static TEST_FORCE_REPLAY_SOL_LEG_BLOCKER_DEEP_REASON_BUDGET_EXHAUSTED: AtomicBool =
+    AtomicBool::new(false);
 
 #[cfg(test)]
 fn arm_test_force_replay_sol_leg_blocker_deep_reason_budget_exhausted() {
     TEST_FORCE_REPLAY_SOL_LEG_BLOCKER_DEEP_REASON_BUDGET_EXHAUSTED
-        .with(|flag| flag.set(true));
+        .store(true, AtomicOrdering::SeqCst);
 }
 
 #[cfg(test)]
 fn take_test_force_replay_sol_leg_blocker_deep_reason_budget_exhausted() -> bool {
     TEST_FORCE_REPLAY_SOL_LEG_BLOCKER_DEEP_REASON_BUDGET_EXHAUSTED
-        .with(|flag| flag.replace(false))
+        .swap(false, AtomicOrdering::SeqCst)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1086,6 +1105,25 @@ fn explain_replay_sol_leg_blocker_deep_reason_read_only(
         });
     }
     Ok(ReplaySolLegBlockerDeepReasonOutcome::Completed(diagnostic))
+}
+
+fn explain_replay_sol_leg_blocker_deep_reason_from_paths_read_only(
+    runtime_db_path: &Path,
+    recent_raw_db_path: &Path,
+) -> Result<ReplaySolLegBlockerDeepReasonOutcome> {
+    let runtime_store = SqliteStore::open_read_only(runtime_db_path).with_context(|| {
+        format!(
+            "failed opening runtime db {} inside replay_sol_leg blocker deep proof worker",
+            runtime_db_path.display()
+        )
+    })?;
+    let recent_raw_store = SqliteStore::open_read_only(recent_raw_db_path).with_context(|| {
+        format!(
+            "failed opening promoted recent_raw latest db {} inside replay_sol_leg blocker deep proof worker",
+            recent_raw_db_path.display()
+        )
+    })?;
+    explain_replay_sol_leg_blocker_deep_reason_read_only(&runtime_store, &recent_raw_store)
 }
 
 fn remaining_budget_ms(budget: StdDuration, started_at: Instant) -> u64 {
@@ -2436,8 +2474,10 @@ fn explain_replay_sol_leg_blocker_from_prerequisite_diagnostic(
         return diagnostic;
     };
 
+    diagnostic.replay_sol_leg_blocker_post_prerequisite_started = true;
     let runtime_db_path = PathBuf::from(&runtime_db_path_raw);
     let recent_raw_db_path = PathBuf::from(&recent_raw_db_path_raw);
+    let runtime_db_open_started_at = Instant::now();
     let runtime_store = match SqliteStore::open_read_only(&runtime_db_path).with_context(|| {
         format!(
             "failed opening runtime db {} for replay_sol_leg blocker deep proof",
@@ -2446,16 +2486,29 @@ fn explain_replay_sol_leg_blocker_from_prerequisite_diagnostic(
     }) {
         Ok(store) => store,
         Err(error) => {
+            diagnostic.replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms =
+                elapsed_ms(runtime_db_open_started_at);
             diagnostic.replay_sol_leg_blocker_reason_class =
                 ReplaySolLegBlockerReasonClass::ReplaySolLegBlockerUnprovenDueToMissingEvidence;
             diagnostic.replay_sol_leg_blocker_explanation = format!(
                 "replay_sol_leg blocker is unproven because runtime db {} could not be reopened read-only for bounded deep replay proof: {error:#}",
                 runtime_db_path.display()
             );
+            diagnostic.replay_sol_leg_blocker_deep_reason_stage =
+                Some("open_runtime_db_post_prerequisite".to_string());
+            diagnostic.replay_sol_leg_blocker_deep_reason_explanation = Some(
+                "post-prerequisite replay_sol_leg blocker path could not reopen the runtime db read-only"
+                    .to_string(),
+            );
             diagnostic.replay_sol_leg_blocker_total_elapsed_ms = elapsed_ms(started_at);
             return diagnostic;
         }
     };
+    diagnostic.replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms =
+        elapsed_ms(runtime_db_open_started_at);
+    drop(runtime_store);
+
+    let recent_raw_open_started_at = Instant::now();
     let recent_raw_store = match SqliteStore::open_read_only(&recent_raw_db_path).with_context(
         || {
             format!(
@@ -2466,24 +2519,95 @@ fn explain_replay_sol_leg_blocker_from_prerequisite_diagnostic(
     ) {
         Ok(store) => store,
         Err(error) => {
+            diagnostic.replay_sol_leg_blocker_recent_raw_open_elapsed_ms =
+                elapsed_ms(recent_raw_open_started_at);
             diagnostic.replay_sol_leg_blocker_reason_class =
                 ReplaySolLegBlockerReasonClass::ReplaySolLegBlockerUnprovenDueToMissingEvidence;
             diagnostic.replay_sol_leg_blocker_explanation = format!(
                 "replay_sol_leg blocker is unproven because promoted recent_raw latest db {} could not be opened read-only for bounded deep replay proof: {error:#}",
                 recent_raw_db_path.display()
             );
+            diagnostic.replay_sol_leg_blocker_deep_reason_stage =
+                Some("open_recent_raw_db_post_prerequisite".to_string());
+            diagnostic.replay_sol_leg_blocker_deep_reason_explanation = Some(
+                "post-prerequisite replay_sol_leg blocker path could not open the promoted recent_raw latest db read-only"
+                    .to_string(),
+            );
             diagnostic.replay_sol_leg_blocker_total_elapsed_ms = elapsed_ms(started_at);
             return diagnostic;
         }
     };
+    diagnostic.replay_sol_leg_blocker_recent_raw_open_elapsed_ms =
+        elapsed_ms(recent_raw_open_started_at);
+    drop(recent_raw_store);
+
+    diagnostic.replay_sol_leg_blocker_deep_reason_started = true;
+    diagnostic.replay_sol_leg_blocker_deep_reason_stage =
+        Some("deep_replay_sol_leg_reason".to_string());
 
     let deep_started_at = Instant::now();
-    let deep_outcome =
-        explain_replay_sol_leg_blocker_deep_reason_read_only(&runtime_store, &recent_raw_store);
+    let (deep_tx, deep_rx) = mpsc::channel();
+    let runtime_db_path_for_worker = runtime_db_path.clone();
+    let recent_raw_db_path_for_worker = recent_raw_db_path.clone();
+    thread::spawn(move || {
+        let result = explain_replay_sol_leg_blocker_deep_reason_from_paths_read_only(
+            &runtime_db_path_for_worker,
+            &recent_raw_db_path_for_worker,
+        );
+        let _ = deep_tx.send(result);
+    });
+
+    let deep_outcome = match deep_rx.recv_timeout(StdDuration::from_millis(
+        DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_MS,
+    )) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            diagnostic.replay_sol_leg_blocker_deep_reason_elapsed_ms = elapsed_ms(deep_started_at);
+            diagnostic.replay_sol_leg_blocker_reason_class =
+                ReplaySolLegBlockerReasonClass::ReplaySolLegBlockerProvenCurrent;
+            diagnostic.replay_sol_leg_blocker_budget_exhausted = true;
+            diagnostic.replay_sol_leg_blocker_budget_exhausted_stage =
+                Some(REPLAY_SOL_LEG_BLOCKER_WAIT_TIMEOUT_STAGE.to_string());
+            diagnostic.replay_sol_leg_blocker_deep_reason_budget_exhausted = true;
+            diagnostic.replay_sol_leg_blocker_deep_reason_stage =
+                Some(REPLAY_SOL_LEG_BLOCKER_WAIT_TIMEOUT_STAGE.to_string());
+            diagnostic.replay_sol_leg_blocker_deep_reason_explanation = Some(
+                "bounded replay_sol_leg deep proof exceeded the operator wait budget after prerequisite completion"
+                    .to_string(),
+            );
+            diagnostic.replay_sol_leg_blocker_explanation = format!(
+                "replay_sol_leg_incomplete is the current export blocker and the cheap checkpoint prerequisites are proven current, but bounded deep replay proof did not complete within the operator budget (stage={})",
+                REPLAY_SOL_LEG_BLOCKER_WAIT_TIMEOUT_STAGE
+            );
+            diagnostic.replay_sol_leg_blocker_total_elapsed_ms = elapsed_ms(started_at);
+            return diagnostic;
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            diagnostic.replay_sol_leg_blocker_deep_reason_elapsed_ms = elapsed_ms(deep_started_at);
+            diagnostic.replay_sol_leg_blocker_reason_class =
+                ReplaySolLegBlockerReasonClass::ReplaySolLegBlockerUnprovenDueToMissingEvidence;
+            diagnostic.replay_sol_leg_blocker_deep_reason_stage =
+                Some("deep_replay_sol_leg_reason_worker_disconnected".to_string());
+            diagnostic.replay_sol_leg_blocker_deep_reason_explanation = Some(
+                "bounded replay_sol_leg deep proof worker disconnected before returning a result"
+                    .to_string(),
+            );
+            diagnostic.replay_sol_leg_blocker_explanation =
+                "replay_sol_leg blocker is unproven because the bounded deep replay worker disconnected before returning a result".to_string();
+            diagnostic.replay_sol_leg_blocker_total_elapsed_ms = elapsed_ms(started_at);
+            return diagnostic;
+        }
+    };
     diagnostic.replay_sol_leg_blocker_deep_reason_elapsed_ms = elapsed_ms(deep_started_at);
 
     match deep_outcome {
         Ok(ReplaySolLegBlockerDeepReasonOutcome::Completed(replay_diagnostic)) => {
+            diagnostic.replay_sol_leg_blocker_deep_reason_completed = true;
+            diagnostic.replay_sol_leg_blocker_deep_reason_stage =
+                Some("complete".to_string());
+            diagnostic.replay_sol_leg_blocker_deep_reason_explanation = Some(
+                "bounded replay_sol_leg deep proof completed".to_string(),
+            );
             if replay_diagnostic.publishable_checkpoint_blocker.as_deref()
                 != Some("replay_sol_leg_incomplete")
                 || replay_diagnostic.rebuild_phase.as_deref() != Some("replay")
@@ -2581,6 +2705,10 @@ fn explain_replay_sol_leg_blocker_from_prerequisite_diagnostic(
                 ReplaySolLegBlockerReasonClass::ReplaySolLegBlockerProvenCurrent;
             diagnostic.replay_sol_leg_blocker_budget_exhausted = true;
             diagnostic.replay_sol_leg_blocker_budget_exhausted_stage = Some(stage.clone());
+            diagnostic.replay_sol_leg_blocker_deep_reason_budget_exhausted = true;
+            diagnostic.replay_sol_leg_blocker_deep_reason_stage = Some(stage.clone());
+            diagnostic.replay_sol_leg_blocker_deep_reason_explanation =
+                Some(explanation.clone());
             diagnostic.replay_sol_leg_blocker_explanation = format!(
                 "replay_sol_leg_incomplete is the current export blocker and the cheap checkpoint prerequisites are proven current, but bounded deep replay proof exhausted its budget before resolving an exact deep reason (stage={stage}): {explanation}"
             );
@@ -2588,6 +2716,11 @@ fn explain_replay_sol_leg_blocker_from_prerequisite_diagnostic(
         Err(error) => {
             diagnostic.replay_sol_leg_blocker_reason_class =
                 ReplaySolLegBlockerReasonClass::ReplaySolLegBlockerUnprovenDueToMissingEvidence;
+            diagnostic.replay_sol_leg_blocker_deep_reason_stage =
+                Some("deep_replay_sol_leg_reason".to_string());
+            diagnostic.replay_sol_leg_blocker_deep_reason_explanation = Some(
+                "bounded replay_sol_leg deep proof returned an error".to_string(),
+            );
             diagnostic.replay_sol_leg_blocker_explanation = format!(
                 "replay_sol_leg blocker is unproven because bounded deep replay proof failed against runtime db {} and recent_raw db {}: {error:#}",
                 runtime_db_path.display(),
@@ -2947,6 +3080,44 @@ fn render_replay_sol_leg_blocker_human(diagnostic: &ReplaySolLegBlockerDiagnosti
         format!(
             "replay_sol_leg_blocker_prerequisite_total_elapsed_ms={}",
             diagnostic.replay_sol_leg_blocker_prerequisite_total_elapsed_ms
+        ),
+        format!(
+            "replay_sol_leg_blocker_post_prerequisite_started={}",
+            diagnostic.replay_sol_leg_blocker_post_prerequisite_started
+        ),
+        format!(
+            "replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms={}",
+            diagnostic.replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms
+        ),
+        format!(
+            "replay_sol_leg_blocker_recent_raw_open_elapsed_ms={}",
+            diagnostic.replay_sol_leg_blocker_recent_raw_open_elapsed_ms
+        ),
+        format!(
+            "replay_sol_leg_blocker_deep_reason_started={}",
+            diagnostic.replay_sol_leg_blocker_deep_reason_started
+        ),
+        format!(
+            "replay_sol_leg_blocker_deep_reason_completed={}",
+            diagnostic.replay_sol_leg_blocker_deep_reason_completed
+        ),
+        format!(
+            "replay_sol_leg_blocker_deep_reason_budget_exhausted={}",
+            diagnostic.replay_sol_leg_blocker_deep_reason_budget_exhausted
+        ),
+        format!(
+            "replay_sol_leg_blocker_deep_reason_stage={}",
+            diagnostic
+                .replay_sol_leg_blocker_deep_reason_stage
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "replay_sol_leg_blocker_deep_reason_explanation={}",
+            diagnostic
+                .replay_sol_leg_blocker_deep_reason_explanation
+                .as_deref()
+                .unwrap_or("null")
         ),
         format!("config_path={}", diagnostic.config_path),
         format!(
@@ -5704,6 +5875,17 @@ mod tests {
         assert!(parsed["replay_sol_leg_blocker_prerequisite_total_elapsed_ms"]
             .as_u64()
             .is_some());
+        assert_eq!(parsed["replay_sol_leg_blocker_post_prerequisite_started"], true);
+        assert!(parsed["replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms"]
+            .as_u64()
+            .is_some());
+        assert!(parsed["replay_sol_leg_blocker_recent_raw_open_elapsed_ms"]
+            .as_u64()
+            .is_some());
+        assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_started"], true);
+        assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_completed"], true);
+        assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_budget_exhausted"], false);
+        assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_stage"], "complete");
         assert_eq!(
             parsed["export_gate_reason"],
             "publication_truth_withheld_while_replay_sol_leg_incomplete"
@@ -5754,6 +5936,14 @@ mod tests {
             "replay_sol_leg_blocker_prerequisite_checkpoint_headline_budget_exhausted",
             "replay_sol_leg_blocker_prerequisite_checkpoint_headline_stage",
             "replay_sol_leg_blocker_prerequisite_total_elapsed_ms",
+            "replay_sol_leg_blocker_post_prerequisite_started",
+            "replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms",
+            "replay_sol_leg_blocker_recent_raw_open_elapsed_ms",
+            "replay_sol_leg_blocker_deep_reason_started",
+            "replay_sol_leg_blocker_deep_reason_completed",
+            "replay_sol_leg_blocker_deep_reason_budget_exhausted",
+            "replay_sol_leg_blocker_deep_reason_stage",
+            "replay_sol_leg_blocker_deep_reason_explanation",
             "config_path",
             "runtime_db_path",
             "recent_raw_db_path",
@@ -5850,6 +6040,11 @@ mod tests {
             parsed["replay_sol_leg_blocker_prerequisite_reason_class"],
             "publication_truth_export_blocked_on_other_publishable_checkpoint_reason"
         );
+        assert_eq!(parsed["replay_sol_leg_blocker_post_prerequisite_started"], false);
+        assert_eq!(parsed["replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms"], 0);
+        assert_eq!(parsed["replay_sol_leg_blocker_recent_raw_open_elapsed_ms"], 0);
+        assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_started"], false);
+        assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_completed"], false);
         assert_eq!(
             parsed["export_gate_reason"],
             "publication_truth_withheld_while_replay_candidate_activity_backfill_incomplete"
@@ -5919,9 +6114,20 @@ mod tests {
                 .as_deref(),
             Some("complete")
         );
+        assert!(diagnostic.replay_sol_leg_blocker_post_prerequisite_started);
+        assert!(diagnostic.replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms <= diagnostic.replay_sol_leg_blocker_total_elapsed_ms);
+        assert!(diagnostic.replay_sol_leg_blocker_recent_raw_open_elapsed_ms <= diagnostic.replay_sol_leg_blocker_total_elapsed_ms);
+        assert!(!diagnostic.replay_sol_leg_blocker_deep_reason_started);
+        assert!(!diagnostic.replay_sol_leg_blocker_deep_reason_completed);
         assert!(diagnostic.replay_sol_leg_blocker_explanation.contains(
             "promoted recent_raw latest db"
         ));
+        assert_eq!(
+            diagnostic
+                .replay_sol_leg_blocker_deep_reason_stage
+                .as_deref(),
+            Some("open_recent_raw_db_post_prerequisite")
+        );
         assert_eq!(diagnostic.replay_sol_leg_blocker_deep_reason_elapsed_ms, 0);
         assert_eq!(diagnostic.replay_sol_leg_incomplete_reason_class, None);
         Ok(())
@@ -5982,25 +6188,40 @@ mod tests {
         )?;
 
         arm_test_force_replay_sol_leg_blocker_deep_reason_budget_exhausted();
-        let diagnostic = explain_replay_sol_leg_blocker_read_only(&fixture.config_path, now);
+        let rendered = run_command(Command::ExplainReplaySolLegBlocker(
+            ExplainReplaySolLegBlockerConfig {
+                config_path: fixture.config_path.clone(),
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
         assert_eq!(
-            diagnostic.replay_sol_leg_blocker_reason_class,
-            ReplaySolLegBlockerReasonClass::ReplaySolLegBlockerProvenCurrent
+            parsed["replay_sol_leg_blocker_reason_class"],
+            "replay_sol_leg_blocker_proven_current"
         );
-        assert!(diagnostic.replay_sol_leg_blocker_budget_exhausted);
+        assert_eq!(parsed["replay_sol_leg_blocker_post_prerequisite_started"], true);
+        assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_started"], true);
+        assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_completed"], false);
+        assert_eq!(parsed["replay_sol_leg_blocker_budget_exhausted"], true);
         assert_eq!(
-            diagnostic
-                .replay_sol_leg_blocker_budget_exhausted_stage
-                .as_deref(),
-            Some("deep_replay_sol_leg_reason_source_scan_budget_exhausted")
+            parsed["replay_sol_leg_blocker_budget_exhausted_stage"],
+            "deep_replay_sol_leg_reason_source_scan_budget_exhausted"
         );
-        assert_eq!(diagnostic.persisted_rebuild_checkpoint_exists, Some(true));
-        assert_eq!(diagnostic.rebuild_phase.as_deref(), Some("replay"));
-        assert_eq!(diagnostic.rebuild_replay_subphase.as_deref(), Some("sol_leg"));
-        assert_eq!(diagnostic.replay_sol_leg_incomplete_reason_class, None);
-        assert_eq!(diagnostic.replay_sol_leg_incomplete_explanation, None);
-        assert_eq!(diagnostic.source_comparison_applicable, None);
-        assert_eq!(diagnostic.source_scan_time_budget_exhausted, None);
+        assert_eq!(
+            parsed["replay_sol_leg_blocker_deep_reason_budget_exhausted"],
+            true
+        );
+        assert_eq!(
+            parsed["replay_sol_leg_blocker_deep_reason_stage"],
+            "deep_replay_sol_leg_reason_source_scan_budget_exhausted"
+        );
+        assert_eq!(parsed["persisted_rebuild_checkpoint_exists"], true);
+        assert_eq!(parsed["rebuild_phase"], "replay");
+        assert_eq!(parsed["rebuild_replay_subphase"], "sol_leg");
+        assert_eq!(parsed["replay_sol_leg_incomplete_reason_class"], Value::Null);
+        assert_eq!(parsed["replay_sol_leg_incomplete_explanation"], Value::Null);
+        assert_eq!(parsed["source_comparison_applicable"], Value::Null);
+        assert_eq!(parsed["source_scan_time_budget_exhausted"], Value::Null);
         Ok(())
     }
 
@@ -6068,6 +6289,8 @@ mod tests {
                 .as_deref(),
             Some("load_persisted_rebuild_row_meta_schema_lookup")
         );
+        assert!(!diagnostic.replay_sol_leg_blocker_post_prerequisite_started);
+        assert!(!diagnostic.replay_sol_leg_blocker_deep_reason_started);
         assert_eq!(diagnostic.replay_sol_leg_blocker_deep_reason_elapsed_ms, 0);
         assert!(
             diagnostic.replay_sol_leg_blocker_total_elapsed_ms

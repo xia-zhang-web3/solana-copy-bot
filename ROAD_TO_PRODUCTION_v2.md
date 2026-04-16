@@ -14423,3 +14423,55 @@ Current interpretation:
    - the remaining defect is now inside the new mode's post-prerequisite or
      deep-proof execution path, not in the established publication-blocker
      prerequisite contract
+
+### Stage 3 replay-sol-leg blocker bounded deep-path return contract (`2026-04-16`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export --explain-replay-sol-leg-blocker --config <path> --json`
+   now keeps the same prerequisite contract but makes the post-prerequisite
+   deep path operationally bounded inside the operator.
+2. After prerequisite success, the operator now emits explicit post-prerequisite
+   and deep-path telemetry:
+   - `replay_sol_leg_blocker_post_prerequisite_started`
+   - `replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms`
+   - `replay_sol_leg_blocker_recent_raw_open_elapsed_ms`
+   - `replay_sol_leg_blocker_deep_reason_started`
+   - `replay_sol_leg_blocker_deep_reason_completed`
+   - `replay_sol_leg_blocker_deep_reason_budget_exhausted`
+   - `replay_sol_leg_blocker_deep_reason_stage`
+   - `replay_sol_leg_blocker_deep_reason_explanation`
+3. The new mode now runs deep proof in a worker thread and enforces the bounded
+   wait timeout inside the operator rather than relying on an external shell
+   timeout to cut off the process.
+4. If deep proof does not complete within the operator budget, the operator is
+   now required to return structured JSON with:
+   - `replay_sol_leg_blocker_reason_class = replay_sol_leg_blocker_proven_current`
+   - `replay_sol_leg_blocker_budget_exhausted = true`
+   - exact deep stage reporting
+   - unresolved deep fields left null
+5. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+6. It does not change:
+   - `--explain-publication-truth-export-blocker` semantics
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Current interpretation:
+
+1. The replay-sol-leg blocker mode no longer relies on an external shell
+   timeout to enforce boundedness once prerequisite proof has completed.
+2. Live rollout still must verify whether the worker-thread timeout now returns
+   structured JSON under production data volume, or whether another deep-path
+   defect remains.
