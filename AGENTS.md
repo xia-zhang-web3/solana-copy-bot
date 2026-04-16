@@ -62,6 +62,32 @@ This is the standard loop.
    - reviewer pushes to `main`
    - reviewer deploys to the server only if the batch actually needs rollout
 
+## Proof-First Rule
+
+This repository is operated proof-first, not guess-first.
+
+That means:
+
+1. The auditor / reviewer does not ask for speculative fixes when the failing
+   seam is still unclear.
+2. If the current blocker is not yet proven tightly enough, the next batch
+   should add or refine a bounded read-only operator / trace / diagnostic
+   surface first.
+3. Only after the blocker is proven from code and live evidence should the next
+   coding batch attempt a corrective fix.
+4. After a fix is accepted and rolled out, the same operator family should be
+   rerun on live to verify whether the fix actually changed the proven seam.
+5. If live falsifies the fix, record the exact result in docs and write the
+   next prompt against that newly proven seam. Do not jump back to broad
+   speculative rewrites.
+
+In short:
+
+- first prove the blocker
+- then make the smallest corrective change that matches that proof
+- then rerun proof on live
+- then move to the next seam
+
 ## Prompt Style For Coding Batches
 
 Batch prompts should be large enough to move the roadmap, but still bounded.

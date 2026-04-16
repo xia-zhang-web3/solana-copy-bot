@@ -7,30 +7,27 @@ use copybot_discovery::runtime_restore_ops::{
     write_json_atomic, ARTIFACT_ARCHIVE_PREFIX, ARTIFACT_ARCHIVE_SUFFIX,
 };
 use copybot_discovery::{
-    DiscoveryService, RecentRawCatchUpDiagnostic,
-    PersistedReplayCheckpointInspection,
+    DiscoveryService, PersistedReplayCheckpointInspection, RecentRawCatchUpDiagnostic,
     RecentRawPromotedRetentionContractDiagnostic, RecentRawPromotionBlockerDiagnostic,
     RecentRawReplacementArtifactHistoryContractDiagnostic,
     RecentRawReplacementAttemptTelemetryDiagnostic, RecentRawReplacementConvergenceDiagnostic,
     RecentRawReplacementProgressContractDiagnostic,
     RecentRawReplacementPromotionContractDiagnostic, RecentRawSourceWindowContractDiagnostic,
     RecentRawStagedBirthDiagnostic, RecentRawStagedLineageDiagnostic,
-    ReplaySolLegSourceVsCheckpointDiagnostic,
     RecentRawStagedRegressionDiagnostic, RecentRawStagedWindowSeedingDiagnostic,
     ReplaySolLegIncompleteDiagnostic, ReplaySolLegIncompleteReasonClass,
+    ReplaySolLegSourceVsCheckpointDiagnostic,
 };
-use copybot_storage::{
-    DiscoveryPersistedRebuildPhase, DiscoveryRuntimeArtifact, SqliteStore,
-};
+use copybot_storage::{DiscoveryPersistedRebuildPhase, DiscoveryRuntimeArtifact, SqliteStore};
 use rusqlite::{Connection, ErrorCode, OpenFlags};
 use serde::Serialize;
 use std::env;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::mpsc;
 #[cfg(test)]
 use std::sync::Mutex;
 use std::thread;
@@ -56,6 +53,7 @@ const USAGE: &str = "usage:
   discovery_runtime_export --probe-checkpoint-row-fetch-minimal-snapshot --config <path> [--json]
   discovery_runtime_export --probe-checkpoint-row-fetch-materialization-busy-wait --config <path> [--json]
   discovery_runtime_export --probe-checkpoint-row-fetch-materialization-immutable-source --config <path> [--json]
+  discovery_runtime_export --probe-checkpoint-row-fetch-immutable-source-select --config <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-window-seeding --state-root <path> [--json]
@@ -80,17 +78,25 @@ const DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_BUDGET_SOURCE: &st
 const DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_BUDGET_MS: u64 = 1_000;
 const DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_BUDGET_SOURCE: &str =
     "fixed_constant_immutable_source_materialization_insert_select_probe";
+const DEFAULT_CHECKPOINT_ROW_FETCH_IMMUTABLE_SOURCE_SELECT_PROBE_BUDGET_MS: u64 = 1_000;
+const DEFAULT_CHECKPOINT_ROW_FETCH_IMMUTABLE_SOURCE_SELECT_PROBE_BUDGET_SOURCE: &str =
+    "fixed_constant_immutable_source_statement_shape_select_probe";
 const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY: &str =
     "temp_sqlite_row_meta_only_table_materialized_via_attach_insert_select";
 const CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_STRATEGY: &str =
     "temp_sqlite_row_meta_only_table_materialized_via_attach_insert_select_zero_busy_timeout_execute_probe";
 const CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_STRATEGY: &str =
     "temp_sqlite_row_meta_only_table_materialized_via_attach_insert_select_immutable_read_only_source_uri";
+const CHECKPOINT_ROW_FETCH_IMMUTABLE_SOURCE_SELECT_PROBE_STRATEGY: &str =
+    "temp_db_open_with_immutable_read_only_source_attach_pure_select_statement_shape_probe";
 const CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_SOURCE_ATTACH_MODE: &str =
     "sqlite_uri_mode_ro_immutable_1";
 const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL: &str =
     "INSERT INTO discovery_persisted_rebuild_state (id, phase, updated_at)
 SELECT id, phase, updated_at
+FROM source.discovery_persisted_rebuild_state
+WHERE id = 1";
+const CHECKPOINT_ROW_FETCH_IMMUTABLE_SOURCE_SELECT_SQL: &str = "SELECT phase, updated_at
 FROM source.discovery_persisted_rebuild_state
 WHERE id = 1";
 const DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_MS: u64 = 30_000;
@@ -239,6 +245,12 @@ struct ProbeCheckpointRowFetchMaterializationImmutableSourceConfig {
 }
 
 #[derive(Debug, Clone)]
+struct ProbeCheckpointRowFetchImmutableSourceSelectConfig {
+    config_path: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 struct ExplainRecentRawStagedLineageConfig {
     state_root: PathBuf,
     json: bool,
@@ -290,6 +302,9 @@ enum Command {
     ),
     ProbeCheckpointRowFetchMaterializationImmutableSource(
         ProbeCheckpointRowFetchMaterializationImmutableSourceConfig,
+    ),
+    ProbeCheckpointRowFetchImmutableSourceSelect(
+        ProbeCheckpointRowFetchImmutableSourceSelectConfig,
     ),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
@@ -367,7 +382,8 @@ struct PublicationTruthExportBlockerDiagnostic {
     publication_truth_export_checkpoint_headline_worker_sqlite_busy_timeout_ms: Option<u64>,
     publication_truth_export_checkpoint_headline_worker_query_sql: Option<String>,
     publication_truth_export_checkpoint_headline_worker_explain_query_plan: Option<String>,
-    publication_truth_export_checkpoint_headline_worker_explain_query_plan_rows: Option<Vec<String>>,
+    publication_truth_export_checkpoint_headline_worker_explain_query_plan_rows:
+        Option<Vec<String>>,
     publication_truth_export_checkpoint_headline_worker_query_readonly_mode: Option<bool>,
     publication_truth_export_checkpoint_headline_worker_connection_journal_mode: Option<String>,
     publication_truth_export_checkpoint_headline_worker_connection_locking_mode: Option<String>,
@@ -644,6 +660,26 @@ enum CheckpointRowFetchMaterializationImmutableProbeResultKind {
     OtherError,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchImmutableSourceSelectProbeReasonClass {
+    CheckpointRowFetchImmutableSourceSelectProbeProvenChangedByStatementShape,
+    CheckpointRowFetchImmutableSourceSelectProbeProvenNotChangedByStatementShape,
+    CheckpointRowFetchImmutableSourceSelectProbeBudgetExhausted,
+    CheckpointRowFetchImmutableSourceSelectProbeUnprovenDueToMissingEvidence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchImmutableSourceSelectProbeResultKind {
+    Row,
+    Eof,
+    SqliteBusy,
+    SqliteLocked,
+    OtherSqliteError,
+    OtherError,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -906,8 +942,7 @@ struct CheckpointRowFetchMinimalSnapshotProbeDiagnostic {
         Option<bool>,
     checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_busy_timeout_ms:
         Option<u64>,
-    checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_started:
-        bool,
+    checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_started: bool,
     checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_completed:
         bool,
     checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_elapsed_ms:
@@ -1284,6 +1319,104 @@ impl CheckpointRowFetchMaterializationImmutableProbeDiagnostic {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct CheckpointRowFetchImmutableSourceSelectProbeDiagnostic {
+    checkpoint_row_fetch_immutable_source_select_probe_observed: bool,
+    checkpoint_row_fetch_immutable_source_select_probe_reason_class:
+        CheckpointRowFetchImmutableSourceSelectProbeReasonClass,
+    checkpoint_row_fetch_immutable_source_select_probe_explanation: String,
+    config_path: String,
+    runtime_db_path: Option<String>,
+    checkpoint_row_fetch_immutable_source_select_probe_strategy: String,
+    checkpoint_row_fetch_immutable_source_select_probe_temp_dir: Option<String>,
+    checkpoint_row_fetch_immutable_source_select_probe_budget_ms: u64,
+    checkpoint_row_fetch_immutable_source_select_probe_budget_source: String,
+    checkpoint_row_fetch_immutable_source_select_probe_total_elapsed_ms: u64,
+    checkpoint_row_fetch_immutable_source_select_probe_budget_exhausted: bool,
+    checkpoint_row_fetch_immutable_source_select_probe_stage: Option<String>,
+    checkpoint_row_fetch_immutable_source_select_probe_source_attach_uri: Option<String>,
+    checkpoint_row_fetch_immutable_source_select_probe_source_attach_mode: String,
+    checkpoint_row_fetch_immutable_source_select_probe_source_attach_immutable: bool,
+    checkpoint_row_fetch_immutable_source_select_probe_source_attach_readonly: bool,
+    checkpoint_row_fetch_immutable_source_select_probe_source_select_sql: String,
+    checkpoint_row_fetch_immutable_source_select_probe_source_select_explain_query_plan:
+        Option<String>,
+    checkpoint_row_fetch_immutable_source_select_probe_source_select_explain_query_plan_rows:
+        Option<Vec<String>>,
+    checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_journal_mode:
+        Option<String>,
+    checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_locking_mode:
+        Option<String>,
+    checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_query_only:
+        Option<bool>,
+    checkpoint_row_fetch_immutable_source_select_probe_source_select_busy_timeout_ms: Option<u64>,
+    checkpoint_row_fetch_immutable_source_select_probe_source_select_query_started: bool,
+    checkpoint_row_fetch_immutable_source_select_probe_source_select_row_fetch_completed: bool,
+    checkpoint_row_fetch_immutable_source_select_probe_source_select_row_fetch_elapsed_ms: u64,
+    checkpoint_row_fetch_immutable_source_select_probe_source_select_row_returned: Option<bool>,
+    checkpoint_row_fetch_immutable_source_select_probe_source_select_phase: Option<String>,
+    checkpoint_row_fetch_immutable_source_select_probe_source_select_updated_at: Option<String>,
+    checkpoint_row_fetch_immutable_source_select_probe_result_kind:
+        Option<CheckpointRowFetchImmutableSourceSelectProbeResultKind>,
+    checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_code: Option<String>,
+    checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_message: Option<String>,
+}
+
+impl CheckpointRowFetchImmutableSourceSelectProbeDiagnostic {
+    fn unproven(config_path: &Path, explanation: String) -> Self {
+        Self {
+            checkpoint_row_fetch_immutable_source_select_probe_observed: false,
+            checkpoint_row_fetch_immutable_source_select_probe_reason_class:
+                CheckpointRowFetchImmutableSourceSelectProbeReasonClass::CheckpointRowFetchImmutableSourceSelectProbeUnprovenDueToMissingEvidence,
+            checkpoint_row_fetch_immutable_source_select_probe_explanation: explanation,
+            config_path: config_path.display().to_string(),
+            runtime_db_path: None,
+            checkpoint_row_fetch_immutable_source_select_probe_strategy:
+                CHECKPOINT_ROW_FETCH_IMMUTABLE_SOURCE_SELECT_PROBE_STRATEGY.to_string(),
+            checkpoint_row_fetch_immutable_source_select_probe_temp_dir: None,
+            checkpoint_row_fetch_immutable_source_select_probe_budget_ms:
+                DEFAULT_CHECKPOINT_ROW_FETCH_IMMUTABLE_SOURCE_SELECT_PROBE_BUDGET_MS,
+            checkpoint_row_fetch_immutable_source_select_probe_budget_source:
+                DEFAULT_CHECKPOINT_ROW_FETCH_IMMUTABLE_SOURCE_SELECT_PROBE_BUDGET_SOURCE
+                    .to_string(),
+            checkpoint_row_fetch_immutable_source_select_probe_total_elapsed_ms: 0,
+            checkpoint_row_fetch_immutable_source_select_probe_budget_exhausted: false,
+            checkpoint_row_fetch_immutable_source_select_probe_stage: None,
+            checkpoint_row_fetch_immutable_source_select_probe_source_attach_uri: None,
+            checkpoint_row_fetch_immutable_source_select_probe_source_attach_mode:
+                CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_SOURCE_ATTACH_MODE
+                    .to_string(),
+            checkpoint_row_fetch_immutable_source_select_probe_source_attach_immutable: true,
+            checkpoint_row_fetch_immutable_source_select_probe_source_attach_readonly: true,
+            checkpoint_row_fetch_immutable_source_select_probe_source_select_sql:
+                CHECKPOINT_ROW_FETCH_IMMUTABLE_SOURCE_SELECT_SQL.to_string(),
+            checkpoint_row_fetch_immutable_source_select_probe_source_select_explain_query_plan:
+                None,
+            checkpoint_row_fetch_immutable_source_select_probe_source_select_explain_query_plan_rows:
+                None,
+            checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_journal_mode:
+                None,
+            checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_locking_mode:
+                None,
+            checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_query_only:
+                None,
+            checkpoint_row_fetch_immutable_source_select_probe_source_select_busy_timeout_ms:
+                None,
+            checkpoint_row_fetch_immutable_source_select_probe_source_select_query_started: false,
+            checkpoint_row_fetch_immutable_source_select_probe_source_select_row_fetch_completed:
+                false,
+            checkpoint_row_fetch_immutable_source_select_probe_source_select_row_fetch_elapsed_ms:
+                0,
+            checkpoint_row_fetch_immutable_source_select_probe_source_select_row_returned: None,
+            checkpoint_row_fetch_immutable_source_select_probe_source_select_phase: None,
+            checkpoint_row_fetch_immutable_source_select_probe_source_select_updated_at: None,
+            checkpoint_row_fetch_immutable_source_select_probe_result_kind: None,
+            checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_code: None,
+            checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_message: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct ReplaySolLegBlockerDiagnostic {
     replay_sol_leg_blocker_observed: bool,
     replay_sol_leg_blocker_reason_class: ReplaySolLegBlockerReasonClass,
@@ -1483,8 +1616,8 @@ impl ReplaySolLegBlockerDiagnostic {
             source_scan_access_path: None,
             source_scan_time_budget_exhausted: None,
             replay_sol_leg_blocker_budget_ms: DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_MS,
-            replay_sol_leg_blocker_budget_source:
-                DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_SOURCE.to_string(),
+            replay_sol_leg_blocker_budget_source: DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_SOURCE
+                .to_string(),
             replay_sol_leg_blocker_total_elapsed_ms: 0,
             replay_sol_leg_blocker_checkpoint_headline_elapsed_ms: diagnostic
                 .publication_truth_export_checkpoint_headline_total_elapsed_ms,
@@ -1500,7 +1633,8 @@ impl ReplaySolLegDeepTraceDiagnostic {
         diagnostic: &PublicationTruthExportBlockerDiagnostic,
     ) -> Self {
         Self {
-            replay_sol_leg_deep_trace_observed: diagnostic.publication_truth_export_blocker_observed,
+            replay_sol_leg_deep_trace_observed: diagnostic
+                .publication_truth_export_blocker_observed,
             replay_sol_leg_deep_trace_reason_class:
                 ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence,
             replay_sol_leg_deep_trace_explanation: diagnostic
@@ -1855,7 +1989,8 @@ fn sync_publication_truth_export_checkpoint_headline_timing(
         timing.step_elapsed_ms;
     diagnostic.publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open =
         timing.budget_remaining_ms_after_open;
-    diagnostic.publication_truth_export_checkpoint_headline_budget_remaining_ms_after_schema_lookup =
+    diagnostic
+        .publication_truth_export_checkpoint_headline_budget_remaining_ms_after_schema_lookup =
         timing.budget_remaining_ms_after_schema_lookup;
     diagnostic.publication_truth_export_checkpoint_headline_budget_remaining_ms_after_row_count =
         timing.budget_remaining_ms_after_row_count;
@@ -1872,8 +2007,7 @@ fn sync_publication_truth_export_checkpoint_headline_worker_telemetry(
     diagnostic.publication_truth_export_checkpoint_headline_worker_started = worker.started;
     diagnostic.publication_truth_export_checkpoint_headline_worker_last_event =
         worker.last_event.clone();
-    diagnostic.publication_truth_export_checkpoint_headline_worker_event_count =
-        worker.event_count;
+    diagnostic.publication_truth_export_checkpoint_headline_worker_event_count = worker.event_count;
     diagnostic.publication_truth_export_checkpoint_headline_worker_opened_read_only_received =
         worker.opened_read_only_received;
     diagnostic
@@ -2087,10 +2221,7 @@ fn apply_publication_truth_export_checkpoint_headline_enrichment(
         #[cfg(test)]
         test_row_fetch_delay,
     );
-    sync_publication_truth_export_checkpoint_headline_timing(
-        diagnostic,
-        &row_meta_load.timing,
-    );
+    sync_publication_truth_export_checkpoint_headline_timing(diagnostic, &row_meta_load.timing);
     sync_publication_truth_export_checkpoint_headline_worker_telemetry(
         diagnostic,
         &row_meta_load.worker,
@@ -2366,9 +2497,11 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
         )
     })?;
     if tx
-        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::OpenedReadOnly(
-            elapsed_ms(open_started_at),
-        ))
+        .send(
+            PublicationTruthExportCheckpointRowMetaWorkerMessage::OpenedReadOnly(elapsed_ms(
+                open_started_at,
+            )),
+        )
         .is_err()
     {
         return Ok(());
@@ -2397,20 +2530,24 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
         .context("failed reading sqlite query_only for cheap checkpoint row-meta path")?
         != 0;
     if tx
-        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::ConnectionReadMode {
-            journal_mode: connection_journal_mode,
-            locking_mode: connection_locking_mode,
-            query_only: connection_query_only,
-        })
+        .send(
+            PublicationTruthExportCheckpointRowMetaWorkerMessage::ConnectionReadMode {
+                journal_mode: connection_journal_mode,
+                locking_mode: connection_locking_mode,
+                query_only: connection_query_only,
+            },
+        )
         .is_err()
     {
         return Ok(());
     }
 
     if tx
-        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Entered(
-            PublicationTruthExportCheckpointRowMetaStage::SchemaLookup,
-        ))
+        .send(
+            PublicationTruthExportCheckpointRowMetaWorkerMessage::Entered(
+                PublicationTruthExportCheckpointRowMetaStage::SchemaLookup,
+            ),
+        )
         .is_err()
     {
         return Ok(());
@@ -2423,9 +2560,11 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
         .context("failed checking discovery_persisted_rebuild_state table existence")?
         != 0;
     if tx
-        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::SchemaLookupCompleted(
-            elapsed_ms(schema_lookup_started_at),
-        ))
+        .send(
+            PublicationTruthExportCheckpointRowMetaWorkerMessage::SchemaLookupCompleted(
+                elapsed_ms(schema_lookup_started_at),
+            ),
+        )
         .is_err()
     {
         return Ok(());
@@ -2437,20 +2576,24 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
         {
             return Ok(());
         }
-        let _ = tx.send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Finished(Ok(
-            PublicationTruthExportCheckpointRowMeta {
-                checkpoint_exists: false,
-                rebuild_phase: None,
-                updated_at: None,
-            },
-        )));
+        let _ = tx.send(
+            PublicationTruthExportCheckpointRowMetaWorkerMessage::Finished(Ok(
+                PublicationTruthExportCheckpointRowMeta {
+                    checkpoint_exists: false,
+                    rebuild_phase: None,
+                    updated_at: None,
+                },
+            )),
+        );
         return Ok(());
     }
 
     if tx
-        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Entered(
-            PublicationTruthExportCheckpointRowMetaStage::RowCount,
-        ))
+        .send(
+            PublicationTruthExportCheckpointRowMetaWorkerMessage::Entered(
+                PublicationTruthExportCheckpointRowMetaStage::RowCount,
+            ),
+        )
         .is_err()
     {
         return Ok(());
@@ -2463,9 +2606,11 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
         .context("failed counting persisted rebuild checkpoint row id=1")?
         .max(0);
     if tx
-        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::RowCountCompleted(
-            elapsed_ms(row_count_started_at),
-        ))
+        .send(
+            PublicationTruthExportCheckpointRowMetaWorkerMessage::RowCountCompleted(elapsed_ms(
+                row_count_started_at,
+            )),
+        )
         .is_err()
     {
         return Ok(());
@@ -2477,20 +2622,24 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
         {
             return Ok(());
         }
-        let _ = tx.send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Finished(Ok(
-            PublicationTruthExportCheckpointRowMeta {
-                checkpoint_exists: false,
-                rebuild_phase: None,
-                updated_at: None,
-            },
-        )));
+        let _ = tx.send(
+            PublicationTruthExportCheckpointRowMetaWorkerMessage::Finished(Ok(
+                PublicationTruthExportCheckpointRowMeta {
+                    checkpoint_exists: false,
+                    rebuild_phase: None,
+                    updated_at: None,
+                },
+            )),
+        );
         return Ok(());
     }
 
     if tx
-        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Entered(
-            PublicationTruthExportCheckpointRowMetaStage::PreparePrimaryKeyLookup,
-        ))
+        .send(
+            PublicationTruthExportCheckpointRowMetaWorkerMessage::Entered(
+                PublicationTruthExportCheckpointRowMetaStage::PreparePrimaryKeyLookup,
+            ),
+        )
         .is_err()
     {
         return Ok(());
@@ -2512,22 +2661,26 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
     let explain_query_plan = load_checkpoint_headline_row_meta_explain_query_plan(&conn)?;
     let query_readonly_mode = stmt.readonly();
     if tx
-        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::QueryPlan {
-            query_sql: CHECKPOINT_HEADLINE_ROW_META_SQL.to_string(),
-            explain_query_plan_rows: explain_query_plan.explain_query_plan_rows.clone(),
-            query_readonly_mode,
-            row_fetch_access_path: explain_query_plan.row_fetch_access_path.clone(),
-            explain_query_plan: explain_query_plan.explain_query_plan,
-        })
+        .send(
+            PublicationTruthExportCheckpointRowMetaWorkerMessage::QueryPlan {
+                query_sql: CHECKPOINT_HEADLINE_ROW_META_SQL.to_string(),
+                explain_query_plan_rows: explain_query_plan.explain_query_plan_rows.clone(),
+                query_readonly_mode,
+                row_fetch_access_path: explain_query_plan.row_fetch_access_path.clone(),
+                explain_query_plan: explain_query_plan.explain_query_plan,
+            },
+        )
         .is_err()
     {
         return Ok(());
     }
 
     if tx
-        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Entered(
-            PublicationTruthExportCheckpointRowMetaStage::StepPrimaryKeyLookup,
-        ))
+        .send(
+            PublicationTruthExportCheckpointRowMetaWorkerMessage::Entered(
+                PublicationTruthExportCheckpointRowMetaStage::StepPrimaryKeyLookup,
+            ),
+        )
         .is_err()
     {
         return Ok(());
@@ -2538,9 +2691,11 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
         .context("failed starting persisted rebuild checkpoint row-meta query")?;
     let row_fetch_started_at_unix_ms = Utc::now().timestamp_millis();
     if tx
-        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::StepQueryStarted(
-            row_fetch_started_at_unix_ms,
-        ))
+        .send(
+            PublicationTruthExportCheckpointRowMetaWorkerMessage::StepQueryStarted(
+                row_fetch_started_at_unix_ms,
+            ),
+        )
         .is_err()
     {
         return Ok(());
@@ -2604,9 +2759,11 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
         }
     };
     if tx
-        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::StepCompleted(
-            elapsed_ms(step_started_at),
-        ))
+        .send(
+            PublicationTruthExportCheckpointRowMetaWorkerMessage::StepCompleted(elapsed_ms(
+                step_started_at,
+            )),
+        )
         .is_err()
     {
         return Ok(());
@@ -2660,14 +2817,16 @@ fn load_explain_query_plan_for_sql(
     context_label: &str,
 ) -> Result<CheckpointHeadlineExplainQueryPlan> {
     let explain_sql = format!("EXPLAIN QUERY PLAN {sql}");
-    let mut stmt = conn.prepare(&explain_sql).with_context(|| {
-        format!("failed preparing EXPLAIN QUERY PLAN for {context_label}")
-    })?;
+    let mut stmt = conn
+        .prepare(&explain_sql)
+        .with_context(|| format!("failed preparing EXPLAIN QUERY PLAN for {context_label}"))?;
     let details = stmt
         .query_map([], |row| row.get::<_, String>(3))
         .with_context(|| format!("failed executing EXPLAIN QUERY PLAN for {context_label}"))?
         .collect::<rusqlite::Result<Vec<_>>>()
-        .with_context(|| format!("failed collecting EXPLAIN QUERY PLAN rows for {context_label}"))?;
+        .with_context(|| {
+            format!("failed collecting EXPLAIN QUERY PLAN rows for {context_label}")
+        })?;
     let explain_query_plan = if details.is_empty() {
         "no_query_plan_rows".to_string()
     } else {
@@ -2860,6 +3019,37 @@ impl CheckpointRowFetchMaterializationImmutableProbeStage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointRowFetchImmutableSourceSelectProbeStage {
+    CreateTempDir,
+    TempDbOpen,
+    SchemaCreate,
+    AttachSource,
+    LoadBusyTimeout,
+    LoadConnectionMetadata,
+    LoadExplainQueryPlan,
+    PrepareSourceSelect,
+    QuerySourceSelect,
+    RowFetchSourceSelect,
+}
+
+impl CheckpointRowFetchImmutableSourceSelectProbeStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::CreateTempDir => "create_temp_dir",
+            Self::TempDbOpen => "temp_db_open",
+            Self::SchemaCreate => "schema_create",
+            Self::AttachSource => "attach_source",
+            Self::LoadBusyTimeout => "load_busy_timeout",
+            Self::LoadConnectionMetadata => "load_connection_metadata",
+            Self::LoadExplainQueryPlan => "load_explain_query_plan",
+            Self::PrepareSourceSelect => "prepare_source_select",
+            Self::QuerySourceSelect => "query_source_select",
+            Self::RowFetchSourceSelect => "row_fetch_source_select",
+        }
+    }
+}
+
 #[derive(Debug)]
 enum CheckpointRowFetchCopiedSnapshotProbeWorkerMessage {
     TempDirCreated {
@@ -3002,6 +3192,46 @@ enum CheckpointRowFetchMaterializationImmutableProbeWorkerMessage {
     Finished(Result<(), String>),
 }
 
+#[derive(Debug)]
+enum CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage {
+    TempDirCreated {
+        path: String,
+    },
+    Entered(CheckpointRowFetchImmutableSourceSelectProbeStage),
+    SourceAttachInfo {
+        uri: String,
+        mode: String,
+        immutable: bool,
+        readonly: bool,
+    },
+    BusyTimeout(u64),
+    ConnectionReadMode {
+        journal_mode: String,
+        locking_mode: String,
+        query_only: bool,
+    },
+    QueryPlan {
+        explain_query_plan: String,
+        explain_query_plan_rows: Vec<String>,
+    },
+    SourceSelectQueryStarted,
+    SourceSelectFailed {
+        result_kind: CheckpointRowFetchImmutableSourceSelectProbeResultKind,
+        sqlite_error_code: Option<String>,
+        sqlite_error_message: Option<String>,
+    },
+    SourceSelectRowFetchCompleted {
+        elapsed_ms: u64,
+        row_returned: bool,
+        phase: Option<String>,
+        updated_at: Option<String>,
+        result_kind: CheckpointRowFetchImmutableSourceSelectProbeResultKind,
+        sqlite_error_code: Option<String>,
+        sqlite_error_message: Option<String>,
+    },
+    Finished(Result<(), String>),
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 enum CheckpointRowFetchCopiedSnapshotProbeTestBehavior {
@@ -3044,6 +3274,16 @@ enum CheckpointRowFetchMaterializationImmutableProbeTestBehavior {
     DelayBeforePostcheck(StdDuration),
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+enum CheckpointRowFetchImmutableSourceSelectProbeTestBehavior {
+    ForceBusy,
+    ForceLocked,
+    ForceOtherSqliteError,
+    DelayBeforeRowFetch(StdDuration),
+}
+
 #[derive(Debug, Clone, Copy)]
 enum CheckpointRowFetchMinimalSnapshotProbeMaterializationEvent {
     TempDbOpenStarted,
@@ -3073,9 +3313,7 @@ impl CheckpointRowFetchMinimalSnapshotProbeMaterializationEvent {
             Self::InsertSelectStarted => "materialization_insert_select_started",
             Self::InsertSelectExecuteStarted => "materialization_insert_select_execute_started",
             Self::InsertSelectCompleted => "materialization_insert_select_completed",
-            Self::InsertSelectPostcheckStarted => {
-                "materialization_insert_select_postcheck_started"
-            }
+            Self::InsertSelectPostcheckStarted => "materialization_insert_select_postcheck_started",
             Self::InsertSelectPostcheckCompleted => {
                 "materialization_insert_select_postcheck_completed"
             }
@@ -3204,8 +3442,7 @@ fn probe_checkpoint_row_fetch_busy_wait_against_db_path_with_budget(
                     Some(journal_mode);
                 diagnostic.checkpoint_row_fetch_busy_probe_connection_locking_mode =
                     Some(locking_mode);
-                diagnostic.checkpoint_row_fetch_busy_probe_connection_query_only =
-                    Some(query_only);
+                diagnostic.checkpoint_row_fetch_busy_probe_connection_query_only = Some(query_only);
             }
             Ok(CheckpointRowFetchBusyProbeWorkerMessage::QueryPlan {
                 query_sql,
@@ -3226,8 +3463,7 @@ fn probe_checkpoint_row_fetch_busy_wait_against_db_path_with_budget(
             }
             Ok(CheckpointRowFetchBusyProbeWorkerMessage::Entered(stage)) => {
                 current_stage = stage;
-                diagnostic.checkpoint_row_fetch_busy_probe_stage =
-                    Some(stage.as_str().to_string());
+                diagnostic.checkpoint_row_fetch_busy_probe_stage = Some(stage.as_str().to_string());
             }
             Ok(CheckpointRowFetchBusyProbeWorkerMessage::StepStarted) => {
                 current_stage = CheckpointRowFetchBusyProbeStage::StepPrimaryKeyLookup;
@@ -3440,7 +3676,8 @@ fn probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_impl(
                 diagnostic
                     .checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_modified_at =
                     source_modified_at;
-                diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_started_at_unix_ms =
+                diagnostic
+                    .checkpoint_row_fetch_copied_snapshot_probe_copy_main_started_at_unix_ms =
                     Some(started_at_unix_ms);
             }
             Ok(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyMainProgress {
@@ -4023,6 +4260,344 @@ fn probe_checkpoint_row_fetch_materialization_immutable_source_read_only_with_bu
     }
 }
 
+fn probe_checkpoint_row_fetch_immutable_source_select_read_only(
+    config_path: &Path,
+) -> CheckpointRowFetchImmutableSourceSelectProbeDiagnostic {
+    probe_checkpoint_row_fetch_immutable_source_select_read_only_with_budget_impl(
+        config_path,
+        StdDuration::from_millis(
+            DEFAULT_CHECKPOINT_ROW_FETCH_IMMUTABLE_SOURCE_SELECT_PROBE_BUDGET_MS,
+        ),
+        #[cfg(test)]
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_immutable_source_select_read_only_with_budget(
+    config_path: &Path,
+    budget: StdDuration,
+) -> CheckpointRowFetchImmutableSourceSelectProbeDiagnostic {
+    probe_checkpoint_row_fetch_immutable_source_select_read_only_with_budget_impl(
+        config_path,
+        budget,
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_immutable_source_select_read_only_with_budget_and_test_behavior(
+    config_path: &Path,
+    budget: StdDuration,
+    test_behavior: Option<CheckpointRowFetchImmutableSourceSelectProbeTestBehavior>,
+) -> CheckpointRowFetchImmutableSourceSelectProbeDiagnostic {
+    probe_checkpoint_row_fetch_immutable_source_select_read_only_with_budget_impl(
+        config_path,
+        budget,
+        test_behavior,
+    )
+}
+
+fn probe_checkpoint_row_fetch_immutable_source_select_read_only_with_budget_impl(
+    config_path: &Path,
+    budget: StdDuration,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchImmutableSourceSelectProbeTestBehavior>,
+) -> CheckpointRowFetchImmutableSourceSelectProbeDiagnostic {
+    let mut diagnostic = CheckpointRowFetchImmutableSourceSelectProbeDiagnostic::unproven(
+        config_path,
+        "checkpoint row-fetch immutable-source select probe did not run".to_string(),
+    );
+    diagnostic.checkpoint_row_fetch_immutable_source_select_probe_budget_ms =
+        budget.as_millis().min(u64::MAX as u128) as u64;
+    diagnostic.checkpoint_row_fetch_immutable_source_select_probe_budget_source =
+        DEFAULT_CHECKPOINT_ROW_FETCH_IMMUTABLE_SOURCE_SELECT_PROBE_BUDGET_SOURCE.to_string();
+
+    let total_started_at = Instant::now();
+    let loaded_config = match load_from_path(config_path)
+        .with_context(|| format!("failed loading config {}", config_path.display()))
+    {
+        Ok(config) => config,
+        Err(error) => {
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_explanation =
+                format!("{error:#}");
+            return diagnostic;
+        }
+    };
+    let runtime_db_path = resolve_db_path(config_path, None, &loaded_config.sqlite.path);
+    diagnostic.runtime_db_path = Some(runtime_db_path.display().to_string());
+    diagnostic.checkpoint_row_fetch_immutable_source_select_probe_observed = true;
+
+    let (tx, rx) = mpsc::sync_channel(32);
+    let config_path_for_worker = config_path.to_path_buf();
+    let runtime_db_path_for_worker = runtime_db_path.clone();
+    thread::spawn(move || {
+        let _ = probe_checkpoint_row_fetch_immutable_source_select_worker(
+            &config_path_for_worker,
+            &runtime_db_path_for_worker,
+            tx,
+            #[cfg(test)]
+            test_behavior,
+        );
+    });
+
+    let mut current_stage = CheckpointRowFetchImmutableSourceSelectProbeStage::CreateTempDir;
+    loop {
+        match rx.recv_timeout(remaining_budget_duration(budget, total_started_at)) {
+            Ok(CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::TempDirCreated {
+                path,
+            }) => {
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_temp_dir =
+                    Some(path);
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_stage =
+                    Some(current_stage.as_str().to_string());
+            }
+            Ok(CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Entered(stage)) => {
+                current_stage = stage;
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_stage =
+                    Some(stage.as_str().to_string());
+            }
+            Ok(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceAttachInfo {
+                    uri,
+                    mode,
+                    immutable,
+                    readonly,
+                },
+            ) => {
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_source_attach_uri =
+                    Some(uri);
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_source_attach_mode =
+                    mode;
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_source_attach_immutable =
+                    immutable;
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_source_attach_readonly =
+                    readonly;
+            }
+            Ok(CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::BusyTimeout(value)) => {
+                current_stage = CheckpointRowFetchImmutableSourceSelectProbeStage::LoadBusyTimeout;
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_source_select_busy_timeout_ms =
+                    Some(value);
+            }
+            Ok(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::ConnectionReadMode {
+                    journal_mode,
+                    locking_mode,
+                    query_only,
+                },
+            ) => {
+                current_stage =
+                    CheckpointRowFetchImmutableSourceSelectProbeStage::LoadConnectionMetadata;
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_journal_mode =
+                    Some(journal_mode);
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_locking_mode =
+                    Some(locking_mode);
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_query_only =
+                    Some(query_only);
+            }
+            Ok(CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::QueryPlan {
+                explain_query_plan,
+                explain_query_plan_rows,
+            }) => {
+                current_stage =
+                    CheckpointRowFetchImmutableSourceSelectProbeStage::LoadExplainQueryPlan;
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_source_select_explain_query_plan =
+                    Some(explain_query_plan);
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_source_select_explain_query_plan_rows =
+                    Some(explain_query_plan_rows);
+            }
+            Ok(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectQueryStarted,
+            ) => {
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_source_select_query_started =
+                    true;
+            }
+            Ok(CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectFailed {
+                result_kind,
+                sqlite_error_code,
+                sqlite_error_message,
+            }) => {
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_result_kind =
+                    Some(result_kind);
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_code =
+                    sqlite_error_code;
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_message =
+                    sqlite_error_message;
+            }
+            Ok(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectRowFetchCompleted {
+                    elapsed_ms,
+                    row_returned,
+                    phase,
+                    updated_at,
+                    result_kind,
+                    sqlite_error_code,
+                    sqlite_error_message,
+                },
+            ) => {
+                current_stage =
+                    CheckpointRowFetchImmutableSourceSelectProbeStage::RowFetchSourceSelect;
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_source_select_row_fetch_completed =
+                    true;
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_source_select_row_fetch_elapsed_ms =
+                    elapsed_ms;
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_source_select_row_returned =
+                    Some(row_returned);
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_source_select_phase =
+                    phase;
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_source_select_updated_at =
+                    updated_at;
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_result_kind =
+                    Some(result_kind);
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_code =
+                    sqlite_error_code;
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_message =
+                    sqlite_error_message;
+            }
+            Ok(CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Finished(result)) => {
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                match result {
+                    Ok(()) => {
+                        diagnostic.checkpoint_row_fetch_immutable_source_select_probe_reason_class =
+                            match diagnostic
+                                .checkpoint_row_fetch_immutable_source_select_probe_result_kind
+                            {
+                                Some(
+                                    CheckpointRowFetchImmutableSourceSelectProbeResultKind::Row
+                                    | CheckpointRowFetchImmutableSourceSelectProbeResultKind::Eof
+                                    | CheckpointRowFetchImmutableSourceSelectProbeResultKind::SqliteBusy
+                                    | CheckpointRowFetchImmutableSourceSelectProbeResultKind::SqliteLocked
+                                    | CheckpointRowFetchImmutableSourceSelectProbeResultKind::OtherSqliteError
+                                    | CheckpointRowFetchImmutableSourceSelectProbeResultKind::OtherError,
+                                ) => CheckpointRowFetchImmutableSourceSelectProbeReasonClass::CheckpointRowFetchImmutableSourceSelectProbeProvenChangedByStatementShape,
+                                None => CheckpointRowFetchImmutableSourceSelectProbeReasonClass::CheckpointRowFetchImmutableSourceSelectProbeUnprovenDueToMissingEvidence,
+                            };
+                        diagnostic.checkpoint_row_fetch_immutable_source_select_probe_explanation =
+                            match diagnostic
+                                .checkpoint_row_fetch_immutable_source_select_probe_reason_class
+                            {
+                                CheckpointRowFetchImmutableSourceSelectProbeReasonClass::CheckpointRowFetchImmutableSourceSelectProbeProvenChangedByStatementShape => {
+                                    match diagnostic
+                                        .checkpoint_row_fetch_immutable_source_select_probe_result_kind
+                                    {
+                                        Some(CheckpointRowFetchImmutableSourceSelectProbeResultKind::Row) => format!(
+                                            "immutable attached-source pure SELECT changed the statement-shape outcome: rows.next() returned a row using source_attach_mode={}",
+                                            diagnostic
+                                                .checkpoint_row_fetch_immutable_source_select_probe_source_attach_mode
+                                        ),
+                                        Some(CheckpointRowFetchImmutableSourceSelectProbeResultKind::Eof) => format!(
+                                            "immutable attached-source pure SELECT changed the statement-shape outcome: rows.next() returned eof using source_attach_mode={}",
+                                            diagnostic
+                                                .checkpoint_row_fetch_immutable_source_select_probe_source_attach_mode
+                                        ),
+                                        Some(result_kind) => format!(
+                                            "immutable attached-source pure SELECT changed the statement-shape outcome: result_kind={} sqlite_error_code={} sqlite_error_message={} using source_attach_mode={}",
+                                            serde_json::to_string(&result_kind)
+                                                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                                                .trim_matches('\"'),
+                                            diagnostic
+                                                .checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_code
+                                                .as_deref()
+                                                .unwrap_or("null"),
+                                            diagnostic
+                                                .checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_message
+                                                .as_deref()
+                                                .unwrap_or("null"),
+                                            diagnostic
+                                                .checkpoint_row_fetch_immutable_source_select_probe_source_attach_mode
+                                        ),
+                                        None => "immutable attached-source SELECT probe ended without a conclusive statement-shape result".to_string(),
+                                    }
+                                }
+                                CheckpointRowFetchImmutableSourceSelectProbeReasonClass::CheckpointRowFetchImmutableSourceSelectProbeProvenNotChangedByStatementShape => unreachable!(),
+                                CheckpointRowFetchImmutableSourceSelectProbeReasonClass::CheckpointRowFetchImmutableSourceSelectProbeBudgetExhausted => unreachable!(),
+                                CheckpointRowFetchImmutableSourceSelectProbeReasonClass::CheckpointRowFetchImmutableSourceSelectProbeUnprovenDueToMissingEvidence => {
+                                    "immutable attached-source SELECT probe ended without a conclusive statement-shape result".to_string()
+                                }
+                            };
+                    }
+                    Err(error) => {
+                        diagnostic.checkpoint_row_fetch_immutable_source_select_probe_reason_class =
+                            CheckpointRowFetchImmutableSourceSelectProbeReasonClass::CheckpointRowFetchImmutableSourceSelectProbeUnprovenDueToMissingEvidence;
+                        diagnostic.checkpoint_row_fetch_immutable_source_select_probe_explanation =
+                            error;
+                    }
+                }
+                return diagnostic;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_budget_exhausted =
+                    true;
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                if current_stage
+                    == CheckpointRowFetchImmutableSourceSelectProbeStage::RowFetchSourceSelect
+                    && diagnostic
+                        .checkpoint_row_fetch_immutable_source_select_probe_source_select_query_started
+                    && !diagnostic
+                        .checkpoint_row_fetch_immutable_source_select_probe_source_select_row_fetch_completed
+                {
+                    diagnostic
+                        .checkpoint_row_fetch_immutable_source_select_probe_reason_class =
+                        CheckpointRowFetchImmutableSourceSelectProbeReasonClass::CheckpointRowFetchImmutableSourceSelectProbeProvenNotChangedByStatementShape;
+                    diagnostic
+                        .checkpoint_row_fetch_immutable_source_select_probe_explanation = format!(
+                        "immutable attached-source pure SELECT did not change the exact statement-shape seam: the probe still exhausted its bounded budget after query start and before row-fetch completion at stage={}",
+                        current_stage.as_str()
+                    );
+                } else {
+                    diagnostic
+                        .checkpoint_row_fetch_immutable_source_select_probe_reason_class =
+                        CheckpointRowFetchImmutableSourceSelectProbeReasonClass::CheckpointRowFetchImmutableSourceSelectProbeBudgetExhausted;
+                    diagnostic
+                        .checkpoint_row_fetch_immutable_source_select_probe_explanation = format!(
+                        "checkpoint row-fetch immutable-source SELECT probe exhausted its bounded budget while executing stage={}",
+                        current_stage.as_str()
+                    );
+                }
+                return diagnostic;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_reason_class =
+                    CheckpointRowFetchImmutableSourceSelectProbeReasonClass::CheckpointRowFetchImmutableSourceSelectProbeUnprovenDueToMissingEvidence;
+                diagnostic.checkpoint_row_fetch_immutable_source_select_probe_explanation =
+                    "checkpoint row-fetch immutable-source SELECT probe worker disconnected before returning a result"
+                        .to_string();
+                return diagnostic;
+            }
+        }
+    }
+}
+
 fn probe_checkpoint_row_fetch_minimal_snapshot_read_only(
     config_path: &Path,
 ) -> CheckpointRowFetchMinimalSnapshotProbeDiagnostic {
@@ -4039,7 +4614,11 @@ fn probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget(
     config_path: &Path,
     budget: StdDuration,
 ) -> CheckpointRowFetchMinimalSnapshotProbeDiagnostic {
-    probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_impl(config_path, budget, None)
+    probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_impl(
+        config_path,
+        budget,
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -4457,9 +5036,7 @@ fn probe_checkpoint_row_fetch_materialization_busy_wait_read_only(
 ) -> CheckpointRowFetchMaterializationBusyProbeDiagnostic {
     probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget_impl(
         config_path,
-        StdDuration::from_millis(
-            DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_BUDGET_MS,
-        ),
+        StdDuration::from_millis(DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_BUDGET_MS),
         #[cfg(test)]
         None,
     )
@@ -4764,10 +5341,9 @@ fn apply_minimal_snapshot_materialization_event(
     event: CheckpointRowFetchMinimalSnapshotProbeMaterializationEvent,
     elapsed_ms: u64,
 ) {
-    diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_materialization_event_count =
-        diagnostic
-            .checkpoint_row_fetch_minimal_snapshot_probe_materialization_event_count
-            .saturating_add(1);
+    diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_materialization_event_count = diagnostic
+        .checkpoint_row_fetch_minimal_snapshot_probe_materialization_event_count
+        .saturating_add(1);
     diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_materialization_last_event =
         Some(event.as_str().to_string());
     match event {
@@ -4895,12 +5471,9 @@ fn compute_bytes_per_second(bytes: u64, elapsed_ms: u64) -> u64 {
 fn finalize_copy_main_progress_kind(
     diagnostic: &mut CheckpointRowFetchCopiedSnapshotProbeDiagnostic,
 ) {
-    if diagnostic
-        .checkpoint_row_fetch_copied_snapshot_probe_copy_main_completed
-    {
-        diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_progress_kind = Some(
-            CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind::FullCopyCompleted,
-        );
+    if diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_completed {
+        diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_progress_kind =
+            Some(CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind::FullCopyCompleted);
         if diagnostic
             .checkpoint_row_fetch_copied_snapshot_probe_copy_main_effective_bytes_per_sec
             .is_none()
@@ -5004,10 +5577,12 @@ fn copy_checkpoint_row_fetch_probe_main_file_with_progress(
             )
         })?;
         total_bytes = total_bytes.saturating_add(read_len as u64);
-        let _ = tx.try_send(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyMainProgress {
-            bytes_copied: total_bytes,
-            elapsed_ms: elapsed_ms(copy_started_at),
-        });
+        let _ = tx.try_send(
+            CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyMainProgress {
+                bytes_copied: total_bytes,
+                elapsed_ms: elapsed_ms(copy_started_at),
+            },
+        );
         #[cfg(test)]
         if !delayed_after_first_chunk {
             if let Some(
@@ -5042,10 +5617,12 @@ fn probe_checkpoint_row_fetch_copied_snapshot_worker(
         let temp_dir_started_at = Instant::now();
         let temp_dir_path = create_checkpoint_row_fetch_probe_temp_dir()?;
         if tx
-            .send(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::TempDirCreated {
-                path: temp_dir_path.display().to_string(),
-                elapsed_ms: elapsed_ms(temp_dir_started_at),
-            })
+            .send(
+                CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::TempDirCreated {
+                    path: temp_dir_path.display().to_string(),
+                    elapsed_ms: elapsed_ms(temp_dir_started_at),
+                },
+            )
             .is_err()
         {
             return Ok(());
@@ -5064,36 +5641,41 @@ fn probe_checkpoint_row_fetch_copied_snapshot_worker(
             )
         })?;
         if tx
-            .send(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyMainStarted {
-                source_size_bytes: runtime_db_meta.len(),
-                source_modified_at: runtime_db_meta.modified().ok().map(DateTime::<Utc>::from),
-                started_at_unix_ms: Utc::now().timestamp_millis().max(0) as u64,
-            })
+            .send(
+                CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyMainStarted {
+                    source_size_bytes: runtime_db_meta.len(),
+                    source_modified_at: runtime_db_meta.modified().ok().map(DateTime::<Utc>::from),
+                    started_at_unix_ms: Utc::now().timestamp_millis().max(0) as u64,
+                },
+            )
             .is_err()
         {
             return Ok(());
         }
-        let (main_copy_bytes, copy_main_elapsed_ms) = match copy_checkpoint_row_fetch_probe_main_file_with_progress(
-            runtime_db_path,
-            &copied_main_db_path,
-            &tx,
-            #[cfg(test)]
-            test_behavior,
-        ) {
-            Ok(result) => result,
-            Err(_error) if !runtime_db_path.exists() => {
-                bail!(
+        let (main_copy_bytes, copy_main_elapsed_ms) =
+            match copy_checkpoint_row_fetch_probe_main_file_with_progress(
+                runtime_db_path,
+                &copied_main_db_path,
+                &tx,
+                #[cfg(test)]
+                test_behavior,
+            ) {
+                Ok(result) => result,
+                Err(_error) if !runtime_db_path.exists() => {
+                    bail!(
                     "runtime db {} did not exist for copied-snapshot checkpoint row-fetch probe",
                     runtime_db_path.display()
                 );
-            }
-            Err(error) => return Err(error),
-        };
+                }
+                Err(error) => return Err(error),
+            };
         if tx
-            .send(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyMainCompleted {
-                bytes: main_copy_bytes,
-                elapsed_ms: copy_main_elapsed_ms,
-            })
+            .send(
+                CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyMainCompleted {
+                    bytes: main_copy_bytes,
+                    elapsed_ms: copy_main_elapsed_ms,
+                },
+            )
             .is_err()
         {
             return Ok(());
@@ -5114,13 +5696,16 @@ fn probe_checkpoint_row_fetch_copied_snapshot_worker(
             thread::sleep(delay);
         }
         let copy_wal_started_at = Instant::now();
-        let wal_copy = copy_checkpoint_row_fetch_probe_file(&runtime_db_wal_path, &copied_wal_path)?;
+        let wal_copy =
+            copy_checkpoint_row_fetch_probe_file(&runtime_db_wal_path, &copied_wal_path)?;
         if tx
-            .send(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyWalCompleted {
-                copied: wal_copy.is_some(),
-                bytes: wal_copy.unwrap_or(0),
-                elapsed_ms: elapsed_ms(copy_wal_started_at),
-            })
+            .send(
+                CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyWalCompleted {
+                    copied: wal_copy.is_some(),
+                    bytes: wal_copy.unwrap_or(0),
+                    elapsed_ms: elapsed_ms(copy_wal_started_at),
+                },
+            )
             .is_err()
         {
             return Ok(());
@@ -5135,13 +5720,16 @@ fn probe_checkpoint_row_fetch_copied_snapshot_worker(
             return Ok(());
         }
         let copy_shm_started_at = Instant::now();
-        let shm_copy = copy_checkpoint_row_fetch_probe_file(&runtime_db_shm_path, &copied_shm_path)?;
+        let shm_copy =
+            copy_checkpoint_row_fetch_probe_file(&runtime_db_shm_path, &copied_shm_path)?;
         if tx
-            .send(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyShmCompleted {
-                copied: shm_copy.is_some(),
-                bytes: shm_copy.unwrap_or(0),
-                elapsed_ms: elapsed_ms(copy_shm_started_at),
-            })
+            .send(
+                CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyShmCompleted {
+                    copied: shm_copy.is_some(),
+                    bytes: shm_copy.unwrap_or(0),
+                    elapsed_ms: elapsed_ms(copy_shm_started_at),
+                },
+            )
             .is_err()
         {
             return Ok(());
@@ -5163,7 +5751,9 @@ fn probe_checkpoint_row_fetch_copied_snapshot_worker(
         let remaining_budget = remaining_budget_duration(budget, total_started_at);
         #[cfg(test)]
         let busy_probe_test_behavior = match test_behavior {
-            Some(CheckpointRowFetchCopiedSnapshotProbeTestBehavior::BusyProbe(inner)) => Some(inner),
+            Some(CheckpointRowFetchCopiedSnapshotProbeTestBehavior::BusyProbe(inner)) => {
+                Some(inner)
+            }
             _ => None,
         };
         let base = probe_checkpoint_row_fetch_busy_wait_against_db_path_with_budget(
@@ -5174,23 +5764,23 @@ fn probe_checkpoint_row_fetch_copied_snapshot_worker(
             busy_probe_test_behavior,
         );
         if tx
-            .send(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::HandoffCompleted {
-                elapsed_ms: elapsed_ms(handoff_started_at),
-            })
+            .send(
+                CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::HandoffCompleted {
+                    elapsed_ms: elapsed_ms(handoff_started_at),
+                },
+            )
             .is_err()
         {
             return Ok(());
         }
-        let _ = tx.send(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::Finished(Ok(
-            base,
-        )));
+        let _ = tx.send(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::Finished(Ok(base)));
         Ok(())
     };
 
     if let Err(error) = run() {
-        let _ = tx.send(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::Finished(Err(
-            format!("{error:#}"),
-        )));
+        let _ = tx.send(
+            CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::Finished(Err(format!("{error:#}"))),
+        );
     }
     Ok(())
 }
@@ -5288,20 +5878,23 @@ fn create_checkpoint_row_fetch_minimal_snapshot_db_via_sqlite_materialization(
         return Ok((0, 0));
     }
     #[cfg(test)]
-    if let Some(CheckpointRowFetchMinimalSnapshotProbeTestBehavior::DelayBeforeMaterializationAttach(
-        delay,
-    )) = test_behavior
+    if let Some(
+        CheckpointRowFetchMinimalSnapshotProbeTestBehavior::DelayBeforeMaterializationAttach(delay),
+    ) = test_behavior
     {
         thread::sleep(delay);
     }
     let attach_started_at = Instant::now();
-    conn.execute("ATTACH DATABASE ?1 AS source", [runtime_db_path.display().to_string()])
-        .with_context(|| {
-            format!(
-                "failed attaching source runtime db {} for minimal snapshot materialization",
-                runtime_db_path.display()
-            )
-        })?;
+    conn.execute(
+        "ATTACH DATABASE ?1 AS source",
+        [runtime_db_path.display().to_string()],
+    )
+    .with_context(|| {
+        format!(
+            "failed attaching source runtime db {} for minimal snapshot materialization",
+            runtime_db_path.display()
+        )
+    })?;
     if tx
         .send(
             CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::MaterializationEvent {
@@ -5327,16 +5920,24 @@ fn create_checkpoint_row_fetch_minimal_snapshot_db_via_sqlite_materialization(
     }
     let insert_select_busy_timeout_ms = conn
         .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
-        .context("failed reading sqlite busy_timeout for minimal snapshot insert-select materialization")?;
+        .context(
+            "failed reading sqlite busy_timeout for minimal snapshot insert-select materialization",
+        )?;
     let insert_select_connection_journal_mode = conn
         .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
-        .context("failed reading sqlite journal_mode for minimal snapshot insert-select materialization")?;
+        .context(
+            "failed reading sqlite journal_mode for minimal snapshot insert-select materialization",
+        )?;
     let insert_select_connection_locking_mode = conn
         .query_row("PRAGMA locking_mode", [], |row| row.get::<_, String>(0))
-        .context("failed reading sqlite locking_mode for minimal snapshot insert-select materialization")?;
+        .context(
+            "failed reading sqlite locking_mode for minimal snapshot insert-select materialization",
+        )?;
     let insert_select_connection_query_only = conn
         .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
-        .context("failed reading sqlite query_only for minimal snapshot insert-select materialization")?
+        .context(
+            "failed reading sqlite query_only for minimal snapshot insert-select materialization",
+        )?
         != 0;
     let insert_select_explain_query_plan = load_explain_query_plan_for_sql(
         &conn,
@@ -5380,8 +5981,11 @@ fn create_checkpoint_row_fetch_minimal_snapshot_db_via_sqlite_materialization(
         thread::sleep(delay);
     }
     let insert_select_started_at = Instant::now();
-    conn.execute(CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL, [])
-        .context("failed sqlite-side materialization of minimal snapshot row-meta")?;
+    conn.execute(
+        CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL,
+        [],
+    )
+    .context("failed sqlite-side materialization of minimal snapshot row-meta")?;
     let insert_select_rows_changed = conn.changes();
     if tx
         .send(
@@ -5428,11 +6032,9 @@ fn create_checkpoint_row_fetch_minimal_snapshot_db_via_sqlite_materialization(
         thread::sleep(delay);
     }
     let postcheck_row_count = conn
-        .query_row(
-            CHECKPOINT_HEADLINE_ROW_META_ROW_COUNT_SQL,
-            [],
-            |row| row.get::<_, i64>(0),
-        )
+        .query_row(CHECKPOINT_HEADLINE_ROW_META_ROW_COUNT_SQL, [], |row| {
+            row.get::<_, i64>(0)
+        })
         .context("failed postcheck row count after minimal snapshot insert-select materialization")?
         .max(0) as u64;
     if tx
@@ -5505,9 +6107,11 @@ fn probe_checkpoint_row_fetch_minimal_snapshot_worker(
     let run = || -> Result<()> {
         let temp_dir_path = create_checkpoint_row_fetch_probe_temp_dir()?;
         if tx
-            .send(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::TempDirCreated {
-                path: temp_dir_path.display().to_string(),
-            })
+            .send(
+                CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::TempDirCreated {
+                    path: temp_dir_path.display().to_string(),
+                },
+            )
             .is_err()
         {
             return Ok(());
@@ -5564,9 +6168,8 @@ fn probe_checkpoint_row_fetch_minimal_snapshot_worker(
             return Ok(());
         }
         #[cfg(test)]
-        if let Some(CheckpointRowFetchMinimalSnapshotProbeTestBehavior::DelayBeforeHandoff(
-            delay,
-        )) = test_behavior
+        if let Some(CheckpointRowFetchMinimalSnapshotProbeTestBehavior::DelayBeforeHandoff(delay)) =
+            test_behavior
         {
             thread::sleep(delay);
         }
@@ -5574,7 +6177,9 @@ fn probe_checkpoint_row_fetch_minimal_snapshot_worker(
         let remaining_budget = remaining_budget_duration(budget, total_started_at);
         #[cfg(test)]
         let busy_probe_test_behavior = match test_behavior {
-            Some(CheckpointRowFetchMinimalSnapshotProbeTestBehavior::BusyProbe(inner)) => Some(inner),
+            Some(CheckpointRowFetchMinimalSnapshotProbeTestBehavior::BusyProbe(inner)) => {
+                Some(inner)
+            }
             _ => None,
         };
         let base = probe_checkpoint_row_fetch_busy_wait_against_db_path_with_budget(
@@ -5584,16 +6189,16 @@ fn probe_checkpoint_row_fetch_minimal_snapshot_worker(
             #[cfg(test)]
             busy_probe_test_behavior,
         );
-        let _ = tx.send(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::Finished(Ok(
-            base,
-        )));
+        let _ = tx.send(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::Finished(Ok(base)));
         Ok(())
     };
 
     if let Err(error) = run() {
-        let _ = tx.send(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::Finished(Err(
-            format!("{error:#}"),
-        )));
+        let _ = tx.send(
+            CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::Finished(Err(format!(
+                "{error:#}"
+            ))),
+        );
     }
     Ok(())
 }
@@ -5607,9 +6212,11 @@ fn probe_checkpoint_row_fetch_materialization_busy_wait_worker(
     let run = || -> Result<()> {
         let temp_dir_path = create_checkpoint_row_fetch_probe_temp_dir()?;
         if tx
-            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::TempDirCreated {
-                path: temp_dir_path.display().to_string(),
-            })
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::TempDirCreated {
+                    path: temp_dir_path.display().to_string(),
+                },
+            )
             .is_err()
         {
             return Ok(());
@@ -5622,9 +6229,11 @@ fn probe_checkpoint_row_fetch_materialization_busy_wait_worker(
         );
 
         if tx
-            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
-                CheckpointRowFetchMaterializationBusyProbeStage::TempDbOpen,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationBusyProbeStage::TempDbOpen,
+                ),
+            )
             .is_err()
         {
             return Ok(());
@@ -5637,9 +6246,11 @@ fn probe_checkpoint_row_fetch_materialization_busy_wait_worker(
         })?;
 
         if tx
-            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
-                CheckpointRowFetchMaterializationBusyProbeStage::SchemaCreate,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationBusyProbeStage::SchemaCreate,
+                ),
+            )
             .is_err()
         {
             return Ok(());
@@ -5655,25 +6266,32 @@ fn probe_checkpoint_row_fetch_materialization_busy_wait_worker(
         .context("failed creating materialization busy probe temp sqlite schema")?;
 
         if tx
-            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
-                CheckpointRowFetchMaterializationBusyProbeStage::AttachSource,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationBusyProbeStage::AttachSource,
+                ),
+            )
             .is_err()
         {
             return Ok(());
         }
-        conn.execute("ATTACH DATABASE ?1 AS source", [runtime_db_path.display().to_string()])
-            .with_context(|| {
-                format!(
-                    "failed attaching source runtime db {} for materialization busy probe",
-                    runtime_db_path.display()
-                )
-            })?;
+        conn.execute(
+            "ATTACH DATABASE ?1 AS source",
+            [runtime_db_path.display().to_string()],
+        )
+        .with_context(|| {
+            format!(
+                "failed attaching source runtime db {} for materialization busy probe",
+                runtime_db_path.display()
+            )
+        })?;
 
         if tx
-            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
-                CheckpointRowFetchMaterializationBusyProbeStage::LoadBusyTimeoutBefore,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationBusyProbeStage::LoadBusyTimeoutBefore,
+                ),
+            )
             .is_err()
         {
             return Ok(());
@@ -5682,41 +6300,48 @@ fn probe_checkpoint_row_fetch_materialization_busy_wait_worker(
             .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
             .context("failed reading sqlite busy_timeout before materialization busy probe")?;
         if tx
-            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::BusyTimeoutBefore(
-                busy_timeout_ms_before,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::BusyTimeoutBefore(
+                    busy_timeout_ms_before,
+                ),
+            )
             .is_err()
         {
             return Ok(());
         }
 
         if tx
-            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
-                CheckpointRowFetchMaterializationBusyProbeStage::ApplyBusyTimeoutZero,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationBusyProbeStage::ApplyBusyTimeoutZero,
+                ),
+            )
             .is_err()
         {
             return Ok(());
         }
-        conn.execute_batch("PRAGMA busy_timeout = 0").context(
-            "failed applying PRAGMA busy_timeout = 0 for materialization busy probe",
-        )?;
+        conn.execute_batch("PRAGMA busy_timeout = 0")
+            .context("failed applying PRAGMA busy_timeout = 0 for materialization busy probe")?;
         let busy_timeout_ms_applied = conn
             .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
             .context("failed reading sqlite busy_timeout after applying zero-timeout materialization busy probe")?;
         if tx
-            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::BusyTimeoutApplied(
-                busy_timeout_ms_applied,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::BusyTimeoutApplied(
+                    busy_timeout_ms_applied,
+                ),
+            )
             .is_err()
         {
             return Ok(());
         }
 
         if tx
-            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
-                CheckpointRowFetchMaterializationBusyProbeStage::LoadConnectionMetadata,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationBusyProbeStage::LoadConnectionMetadata,
+                ),
+            )
             .is_err()
         {
             return Ok(());
@@ -5732,20 +6357,24 @@ fn probe_checkpoint_row_fetch_materialization_busy_wait_worker(
             .context("failed reading sqlite query_only for materialization busy probe")?
             != 0;
         if tx
-            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::ConnectionReadMode {
-                journal_mode,
-                locking_mode,
-                query_only,
-            })
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::ConnectionReadMode {
+                    journal_mode,
+                    locking_mode,
+                    query_only,
+                },
+            )
             .is_err()
         {
             return Ok(());
         }
 
         if tx
-            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
-                CheckpointRowFetchMaterializationBusyProbeStage::LoadExplainQueryPlan,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationBusyProbeStage::LoadExplainQueryPlan,
+                ),
+            )
             .is_err()
         {
             return Ok(());
@@ -5756,19 +6385,23 @@ fn probe_checkpoint_row_fetch_materialization_busy_wait_worker(
             "materialization busy probe insert-select",
         )?;
         if tx
-            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::QueryPlan {
-                explain_query_plan: explain_query_plan.explain_query_plan,
-                explain_query_plan_rows: explain_query_plan.explain_query_plan_rows,
-            })
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::QueryPlan {
+                    explain_query_plan: explain_query_plan.explain_query_plan,
+                    explain_query_plan_rows: explain_query_plan.explain_query_plan_rows,
+                },
+            )
             .is_err()
         {
             return Ok(());
         }
 
         if tx
-            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
-                CheckpointRowFetchMaterializationBusyProbeStage::InsertSelectExecute,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationBusyProbeStage::InsertSelectExecute,
+                ),
+            )
             .is_err()
         {
             return Ok(());
@@ -5797,9 +6430,9 @@ fn probe_checkpoint_row_fetch_materialization_busy_wait_worker(
                         ),
                     },
                 );
-                let _ = tx.send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Finished(
-                    Ok(()),
-                ));
+                let _ = tx.send(
+                    CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Finished(Ok(())),
+                );
                 return Ok(());
             }
             Some(CheckpointRowFetchMaterializationBusyProbeTestBehavior::ForceLocked) => {
@@ -5816,9 +6449,9 @@ fn probe_checkpoint_row_fetch_materialization_busy_wait_worker(
                         ),
                     },
                 );
-                let _ = tx.send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Finished(
-                    Ok(()),
-                ));
+                let _ = tx.send(
+                    CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Finished(Ok(())),
+                );
                 return Ok(());
             }
             Some(CheckpointRowFetchMaterializationBusyProbeTestBehavior::DelayBeforeExecute(
@@ -5826,7 +6459,9 @@ fn probe_checkpoint_row_fetch_materialization_busy_wait_worker(
             )) => {
                 thread::sleep(delay);
             }
-            Some(CheckpointRowFetchMaterializationBusyProbeTestBehavior::DelayBeforePostcheck(_))
+            Some(CheckpointRowFetchMaterializationBusyProbeTestBehavior::DelayBeforePostcheck(
+                _,
+            ))
             | None => {}
         }
         let execute_started_at = Instant::now();
@@ -5854,12 +6489,9 @@ fn probe_checkpoint_row_fetch_materialization_busy_wait_worker(
                     result_kind,
                     0,
                     Some(sqlite_error_code_name(error.code)),
-                    Some(
-                        message.unwrap_or_else(|| {
-                            "sqlite failure at materialization INSERT ... SELECT boundary"
-                                .to_string()
-                        }),
-                    ),
+                    Some(message.unwrap_or_else(|| {
+                        "sqlite failure at materialization INSERT ... SELECT boundary".to_string()
+                    })),
                 )
             }
             Err(error) => (
@@ -5937,9 +6569,11 @@ fn probe_checkpoint_row_fetch_materialization_busy_wait_worker(
     };
 
     if let Err(error) = run() {
-        let _ = tx.send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Finished(
-            Err(format!("{error:#}")),
-        ));
+        let _ = tx.send(
+            CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Finished(Err(format!(
+                "{error:#}"
+            ))),
+        );
     }
     Ok(())
 }
@@ -5953,9 +6587,11 @@ fn probe_checkpoint_row_fetch_materialization_immutable_source_worker(
     let run = || -> Result<()> {
         let temp_dir_path = create_checkpoint_row_fetch_probe_temp_dir()?;
         if tx
-            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::TempDirCreated {
-                path: temp_dir_path.display().to_string(),
-            })
+            .send(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::TempDirCreated {
+                    path: temp_dir_path.display().to_string(),
+                },
+            )
             .is_err()
         {
             return Ok(());
@@ -5973,9 +6609,11 @@ fn probe_checkpoint_row_fetch_materialization_immutable_source_worker(
         };
 
         if tx
-            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
-                CheckpointRowFetchMaterializationImmutableProbeStage::TempDbOpen,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationImmutableProbeStage::TempDbOpen,
+                ),
+            )
             .is_err()
         {
             return Ok(());
@@ -5995,9 +6633,11 @@ fn probe_checkpoint_row_fetch_materialization_immutable_source_worker(
         })?;
 
         if tx
-            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
-                CheckpointRowFetchMaterializationImmutableProbeStage::SchemaCreate,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationImmutableProbeStage::SchemaCreate,
+                ),
+            )
             .is_err()
         {
             return Ok(());
@@ -6013,9 +6653,11 @@ fn probe_checkpoint_row_fetch_materialization_immutable_source_worker(
         .context("failed creating materialization immutable-source probe temp sqlite schema")?;
 
         if tx
-            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
-                CheckpointRowFetchMaterializationImmutableProbeStage::AttachSource,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationImmutableProbeStage::AttachSource,
+                ),
+            )
             .is_err()
         {
             return Ok(());
@@ -6047,42 +6689,56 @@ fn probe_checkpoint_row_fetch_materialization_immutable_source_worker(
         })?;
 
         if tx
-            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
-                CheckpointRowFetchMaterializationImmutableProbeStage::LoadBusyTimeout,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationImmutableProbeStage::LoadBusyTimeout,
+                ),
+            )
             .is_err()
         {
             return Ok(());
         }
         let busy_timeout_ms = conn
             .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
-            .context("failed reading sqlite busy_timeout for materialization immutable-source probe")?;
+            .context(
+                "failed reading sqlite busy_timeout for materialization immutable-source probe",
+            )?;
         if tx
-            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::BusyTimeout(
-                busy_timeout_ms,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::BusyTimeout(
+                    busy_timeout_ms,
+                ),
+            )
             .is_err()
         {
             return Ok(());
         }
 
         if tx
-            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
-                CheckpointRowFetchMaterializationImmutableProbeStage::LoadConnectionMetadata,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationImmutableProbeStage::LoadConnectionMetadata,
+                ),
+            )
             .is_err()
         {
             return Ok(());
         }
         let journal_mode = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
-            .context("failed reading sqlite journal_mode for materialization immutable-source probe")?;
+            .context(
+                "failed reading sqlite journal_mode for materialization immutable-source probe",
+            )?;
         let locking_mode = conn
             .query_row("PRAGMA locking_mode", [], |row| row.get::<_, String>(0))
-            .context("failed reading sqlite locking_mode for materialization immutable-source probe")?;
+            .context(
+                "failed reading sqlite locking_mode for materialization immutable-source probe",
+            )?;
         let query_only = conn
             .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
-            .context("failed reading sqlite query_only for materialization immutable-source probe")?
+            .context(
+                "failed reading sqlite query_only for materialization immutable-source probe",
+            )?
             != 0;
         if tx
             .send(
@@ -6098,9 +6754,11 @@ fn probe_checkpoint_row_fetch_materialization_immutable_source_worker(
         }
 
         if tx
-            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
-                CheckpointRowFetchMaterializationImmutableProbeStage::LoadExplainQueryPlan,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationImmutableProbeStage::LoadExplainQueryPlan,
+                ),
+            )
             .is_err()
         {
             return Ok(());
@@ -6111,10 +6769,12 @@ fn probe_checkpoint_row_fetch_materialization_immutable_source_worker(
             "materialization immutable-source probe insert-select",
         ) {
             if tx
-                .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::QueryPlan {
-                    explain_query_plan: explain_query_plan.explain_query_plan,
-                    explain_query_plan_rows: explain_query_plan.explain_query_plan_rows,
-                })
+                .send(
+                    CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::QueryPlan {
+                        explain_query_plan: explain_query_plan.explain_query_plan,
+                        explain_query_plan_rows: explain_query_plan.explain_query_plan_rows,
+                    },
+                )
                 .is_err()
             {
                 return Ok(());
@@ -6122,9 +6782,11 @@ fn probe_checkpoint_row_fetch_materialization_immutable_source_worker(
         }
 
         if tx
-            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
-                CheckpointRowFetchMaterializationImmutableProbeStage::InsertSelectExecute,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationImmutableProbeStage::InsertSelectExecute,
+                ),
+            )
             .is_err()
         {
             return Ok(());
@@ -6270,17 +6932,18 @@ fn probe_checkpoint_row_fetch_materialization_immutable_source_worker(
         if execute_outcome.0
             != CheckpointRowFetchMaterializationImmutableProbeResultKind::InsertSelectSucceeded
         {
-            let _ = tx
-                .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Finished(
-                    Ok(()),
-                ));
+            let _ = tx.send(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Finished(Ok(())),
+            );
             return Ok(());
         }
 
         if tx
-            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
-                CheckpointRowFetchMaterializationImmutableProbeStage::Postcheck,
-            ))
+            .send(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationImmutableProbeStage::Postcheck,
+                ),
+            )
             .is_err()
         {
             return Ok(());
@@ -6317,16 +6980,17 @@ fn probe_checkpoint_row_fetch_materialization_immutable_source_worker(
             return Ok(());
         }
 
-        let _ = tx.send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Finished(
-            Ok(()),
-        ));
+        let _ =
+            tx.send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Finished(Ok(())));
         Ok(())
     };
 
     if let Err(error) = run() {
-        let _ = tx.send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Finished(
-            Err(format!("{error:#}")),
-        ));
+        let _ = tx.send(
+            CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Finished(Err(format!(
+                "{error:#}"
+            ))),
+        );
     }
     Ok(())
 }
@@ -6385,15 +7049,18 @@ fn probe_checkpoint_row_fetch_busy_wait_worker(
         {
             return Ok(());
         }
-        conn.execute_batch("PRAGMA busy_timeout = 0")
-            .context("failed applying PRAGMA busy_timeout = 0 for checkpoint row-fetch busy probe")?;
+        conn.execute_batch("PRAGMA busy_timeout = 0").context(
+            "failed applying PRAGMA busy_timeout = 0 for checkpoint row-fetch busy probe",
+        )?;
         let busy_timeout_ms_applied = conn
             .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
             .context("failed reading sqlite busy_timeout after applying zero-timeout busy probe")?;
         if tx
-            .send(CheckpointRowFetchBusyProbeWorkerMessage::BusyTimeoutApplied(
-                busy_timeout_ms_applied,
-            ))
+            .send(
+                CheckpointRowFetchBusyProbeWorkerMessage::BusyTimeoutApplied(
+                    busy_timeout_ms_applied,
+                ),
+            )
             .is_err()
         {
             return Ok(());
@@ -6418,11 +7085,13 @@ fn probe_checkpoint_row_fetch_busy_wait_worker(
             .context("failed reading sqlite query_only for checkpoint row-fetch busy probe")?
             != 0;
         if tx
-            .send(CheckpointRowFetchBusyProbeWorkerMessage::ConnectionReadMode {
-                journal_mode,
-                locking_mode,
-                query_only,
-            })
+            .send(
+                CheckpointRowFetchBusyProbeWorkerMessage::ConnectionReadMode {
+                    journal_mode,
+                    locking_mode,
+                    query_only,
+                },
+            )
             .is_err()
         {
             return Ok(());
@@ -6492,7 +7161,8 @@ fn probe_checkpoint_row_fetch_busy_wait_worker(
                             row_returned: None,
                             sqlite_error_code: Some("SQLITE_BUSY".to_string()),
                             sqlite_error_message: Some(
-                                "forced SQLITE_BUSY at checkpoint row-fetch step boundary".to_string(),
+                                "forced SQLITE_BUSY at checkpoint row-fetch step boundary"
+                                    .to_string(),
                             ),
                         },
                     });
@@ -6507,7 +7177,8 @@ fn probe_checkpoint_row_fetch_busy_wait_worker(
                             row_returned: None,
                             sqlite_error_code: Some("SQLITE_LOCKED".to_string()),
                             sqlite_error_message: Some(
-                                "forced SQLITE_LOCKED at checkpoint row-fetch step boundary".to_string(),
+                                "forced SQLITE_LOCKED at checkpoint row-fetch step boundary"
+                                    .to_string(),
                             ),
                         },
                     });
@@ -6569,9 +7240,9 @@ fn probe_checkpoint_row_fetch_busy_wait_worker(
     };
 
     if let Err(error) = run() {
-        let _ = tx.send(CheckpointRowFetchBusyProbeWorkerMessage::Finished(Err(format!(
-            "{error:#}"
-        ))));
+        let _ = tx.send(CheckpointRowFetchBusyProbeWorkerMessage::Finished(Err(
+            format!("{error:#}"),
+        )));
     }
     Ok(())
 }
@@ -6582,6 +7253,535 @@ fn sqlite_error_code_name(code: ErrorCode) -> String {
         ErrorCode::DatabaseLocked => "SQLITE_LOCKED".to_string(),
         _ => format!("{code:?}"),
     }
+}
+
+fn probe_checkpoint_row_fetch_immutable_source_select_worker(
+    _config_path: &Path,
+    runtime_db_path: &Path,
+    tx: mpsc::SyncSender<CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage>,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchImmutableSourceSelectProbeTestBehavior>,
+) -> Result<()> {
+    let run = || -> Result<()> {
+        let temp_dir_path = create_checkpoint_row_fetch_probe_temp_dir()?;
+        if tx
+            .send(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::TempDirCreated {
+                    path: temp_dir_path.display().to_string(),
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        let temp_db_path = temp_dir_path.join(
+            runtime_db_path
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("runtime.db")),
+        );
+        let temp_db_uri = if temp_db_path.is_absolute() {
+            format!("file://{}?mode=rwc", temp_db_path.to_string_lossy())
+        } else {
+            format!("file:{}?mode=rwc", temp_db_path.to_string_lossy())
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Entered(
+                    CheckpointRowFetchImmutableSourceSelectProbeStage::TempDbOpen,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let conn = Connection::open_with_flags(
+            &temp_db_uri,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| {
+            format!(
+                "failed opening immutable-source SELECT probe temp sqlite db {}",
+                temp_db_path.display()
+            )
+        })?;
+
+        if tx
+            .send(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Entered(
+                    CheckpointRowFetchImmutableSourceSelectProbeStage::SchemaCreate,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        conn.execute_batch(
+            "PRAGMA journal_mode = DELETE;
+             CREATE TABLE discovery_persisted_rebuild_state (
+                 id INTEGER PRIMARY KEY,
+                 phase TEXT,
+                 updated_at TEXT
+             );",
+        )
+        .context("failed creating immutable-source SELECT probe temp sqlite schema")?;
+
+        if tx
+            .send(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Entered(
+                    CheckpointRowFetchImmutableSourceSelectProbeStage::AttachSource,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let source_attach_uri = build_sqlite_immutable_read_only_uri(runtime_db_path);
+        if tx
+            .send(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceAttachInfo {
+                    uri: source_attach_uri.clone(),
+                    mode: CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_SOURCE_ATTACH_MODE
+                        .to_string(),
+                    immutable: true,
+                    readonly: true,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let attach_sql = format!(
+            "ATTACH DATABASE '{}' AS source",
+            escape_sqlite_string_literal(&source_attach_uri)
+        );
+        conn.execute_batch(&attach_sql).with_context(|| {
+            format!(
+                "failed attaching immutable read-only source runtime db {} for immutable-source SELECT probe",
+                runtime_db_path.display()
+            )
+        })?;
+
+        if tx
+            .send(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Entered(
+                    CheckpointRowFetchImmutableSourceSelectProbeStage::LoadBusyTimeout,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let busy_timeout_ms = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
+            .context("failed reading sqlite busy_timeout for immutable-source SELECT probe")?;
+        if tx
+            .send(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::BusyTimeout(
+                    busy_timeout_ms,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Entered(
+                    CheckpointRowFetchImmutableSourceSelectProbeStage::LoadConnectionMetadata,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let journal_mode = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+            .context("failed reading sqlite journal_mode for immutable-source SELECT probe")?;
+        let locking_mode = conn
+            .query_row("PRAGMA locking_mode", [], |row| row.get::<_, String>(0))
+            .context("failed reading sqlite locking_mode for immutable-source SELECT probe")?;
+        let query_only = conn
+            .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+            .context("failed reading sqlite query_only for immutable-source SELECT probe")?
+            != 0;
+        if tx
+            .send(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::ConnectionReadMode {
+                    journal_mode,
+                    locking_mode,
+                    query_only,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Entered(
+                    CheckpointRowFetchImmutableSourceSelectProbeStage::LoadExplainQueryPlan,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        if let Ok(explain_query_plan) = load_explain_query_plan_for_sql(
+            &conn,
+            CHECKPOINT_ROW_FETCH_IMMUTABLE_SOURCE_SELECT_SQL,
+            "immutable-source SELECT probe source-select",
+        ) {
+            if tx
+                .send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::QueryPlan {
+                        explain_query_plan: explain_query_plan.explain_query_plan,
+                        explain_query_plan_rows: explain_query_plan.explain_query_plan_rows,
+                    },
+                )
+                .is_err()
+            {
+                return Ok(());
+            }
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Entered(
+                    CheckpointRowFetchImmutableSourceSelectProbeStage::PrepareSourceSelect,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let mut stmt = match conn.prepare(CHECKPOINT_ROW_FETCH_IMMUTABLE_SOURCE_SELECT_SQL) {
+            Ok(stmt) => stmt,
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectFailed {
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => {
+                                CheckpointRowFetchImmutableSourceSelectProbeResultKind::SqliteBusy
+                            }
+                            ErrorCode::DatabaseLocked => {
+                                CheckpointRowFetchImmutableSourceSelectProbeResultKind::SqliteLocked
+                            }
+                            _ => {
+                                CheckpointRowFetchImmutableSourceSelectProbeResultKind::OtherSqliteError
+                            }
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            "sqlite failure while preparing immutable-source SELECT probe statement"
+                                .to_string()
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectFailed {
+                        result_kind:
+                            CheckpointRowFetchImmutableSourceSelectProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Entered(
+                    CheckpointRowFetchImmutableSourceSelectProbeStage::QuerySourceSelect,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let mut rows = match stmt.query([]) {
+            Ok(rows) => rows,
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectFailed {
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => {
+                                CheckpointRowFetchImmutableSourceSelectProbeResultKind::SqliteBusy
+                            }
+                            ErrorCode::DatabaseLocked => {
+                                CheckpointRowFetchImmutableSourceSelectProbeResultKind::SqliteLocked
+                            }
+                            _ => {
+                                CheckpointRowFetchImmutableSourceSelectProbeResultKind::OtherSqliteError
+                            }
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            "sqlite failure while starting immutable-source SELECT probe query"
+                                .to_string()
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectFailed {
+                        result_kind:
+                            CheckpointRowFetchImmutableSourceSelectProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Entered(
+                    CheckpointRowFetchImmutableSourceSelectProbeStage::RowFetchSourceSelect,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        if tx
+            .send(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectQueryStarted,
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        #[cfg(test)]
+        match test_behavior {
+            Some(CheckpointRowFetchImmutableSourceSelectProbeTestBehavior::ForceBusy) => {
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectFailed {
+                        result_kind:
+                            CheckpointRowFetchImmutableSourceSelectProbeResultKind::SqliteBusy,
+                        sqlite_error_code: Some("SQLITE_BUSY".to_string()),
+                        sqlite_error_message: Some(
+                            "forced SQLITE_BUSY at immutable-source SELECT rows.next() boundary"
+                                .to_string(),
+                        ),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+            Some(CheckpointRowFetchImmutableSourceSelectProbeTestBehavior::ForceLocked) => {
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectFailed {
+                        result_kind:
+                            CheckpointRowFetchImmutableSourceSelectProbeResultKind::SqliteLocked,
+                        sqlite_error_code: Some("SQLITE_LOCKED".to_string()),
+                        sqlite_error_message: Some(
+                            "forced SQLITE_LOCKED at immutable-source SELECT rows.next() boundary"
+                                .to_string(),
+                        ),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+            Some(
+                CheckpointRowFetchImmutableSourceSelectProbeTestBehavior::ForceOtherSqliteError,
+            ) => {
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectFailed {
+                        result_kind:
+                            CheckpointRowFetchImmutableSourceSelectProbeResultKind::OtherSqliteError,
+                        sqlite_error_code: Some("SQLITE_CORRUPT".to_string()),
+                        sqlite_error_message: Some(
+                            "forced other sqlite error at immutable-source SELECT rows.next() boundary"
+                                .to_string(),
+                        ),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+            Some(
+                CheckpointRowFetchImmutableSourceSelectProbeTestBehavior::DelayBeforeRowFetch(
+                    delay,
+                ),
+            ) => {
+                thread::sleep(delay);
+            }
+            None => {}
+        }
+
+        let row_fetch_started_at = Instant::now();
+        let row = match rows.next() {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                if tx
+                    .send(
+                        CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectRowFetchCompleted {
+                            elapsed_ms: elapsed_ms(row_fetch_started_at),
+                            row_returned: false,
+                            phase: None,
+                            updated_at: None,
+                            result_kind:
+                                CheckpointRowFetchImmutableSourceSelectProbeResultKind::Eof,
+                            sqlite_error_code: None,
+                            sqlite_error_message: None,
+                        },
+                    )
+                    .is_err()
+                {
+                    return Ok(());
+                }
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectFailed {
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => {
+                                CheckpointRowFetchImmutableSourceSelectProbeResultKind::SqliteBusy
+                            }
+                            ErrorCode::DatabaseLocked => {
+                                CheckpointRowFetchImmutableSourceSelectProbeResultKind::SqliteLocked
+                            }
+                            _ => {
+                                CheckpointRowFetchImmutableSourceSelectProbeResultKind::OtherSqliteError
+                            }
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            "sqlite failure at immutable-source SELECT rows.next() boundary"
+                                .to_string()
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectFailed {
+                        result_kind:
+                            CheckpointRowFetchImmutableSourceSelectProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+        };
+
+        let phase = match row.get::<_, String>(0) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectRowFetchCompleted {
+                        elapsed_ms: elapsed_ms(row_fetch_started_at),
+                        row_returned: true,
+                        phase: None,
+                        updated_at: None,
+                        result_kind:
+                            CheckpointRowFetchImmutableSourceSelectProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+        };
+        let updated_at = match row.get::<_, String>(1) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectRowFetchCompleted {
+                        elapsed_ms: elapsed_ms(row_fetch_started_at),
+                        row_returned: true,
+                        phase,
+                        updated_at: None,
+                        result_kind:
+                            CheckpointRowFetchImmutableSourceSelectProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::SourceSelectRowFetchCompleted {
+                    elapsed_ms: elapsed_ms(row_fetch_started_at),
+                    row_returned: true,
+                    phase,
+                    updated_at,
+                    result_kind: CheckpointRowFetchImmutableSourceSelectProbeResultKind::Row,
+                    sqlite_error_code: None,
+                    sqlite_error_message: None,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        let _ =
+            tx.send(CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Finished(Ok(())));
+        Ok(())
+    };
+
+    if let Err(error) = run() {
+        let _ = tx.send(
+            CheckpointRowFetchImmutableSourceSelectProbeWorkerMessage::Finished(Err(format!(
+                "{error:#}"
+            ))),
+        );
+    }
+    Ok(())
 }
 
 fn build_sqlite_immutable_read_only_uri(path: &Path) -> String {
@@ -6610,8 +7810,8 @@ static TEST_FORCE_REPLAY_SOL_LEG_SOURCE_COMPARE_TRACE_WAIT_DELAY_MS: std::sync::
     std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(test)]
-static TEST_FORCE_REPLAY_SOL_LEG_SOURCE_COMPARE_TRACE_INTERNAL_SCAN_BUDGET_EXHAUSTED:
-    AtomicBool = AtomicBool::new(false);
+static TEST_FORCE_REPLAY_SOL_LEG_SOURCE_COMPARE_TRACE_INTERNAL_SCAN_BUDGET_EXHAUSTED: AtomicBool =
+    AtomicBool::new(false);
 
 #[cfg(test)]
 static TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX: Mutex<()> = Mutex::new(());
@@ -6648,8 +7848,7 @@ fn arm_test_force_replay_sol_leg_source_compare_trace_wait_delay_ms(delay_ms: u6
 
 #[cfg(test)]
 fn take_test_force_replay_sol_leg_source_compare_trace_wait_delay_ms() -> u64 {
-    TEST_FORCE_REPLAY_SOL_LEG_SOURCE_COMPARE_TRACE_WAIT_DELAY_MS
-        .swap(0, AtomicOrdering::SeqCst)
+    TEST_FORCE_REPLAY_SOL_LEG_SOURCE_COMPARE_TRACE_WAIT_DELAY_MS.swap(0, AtomicOrdering::SeqCst)
 }
 
 #[cfg(test)]
@@ -6667,10 +7866,7 @@ fn take_test_force_replay_sol_leg_source_compare_trace_internal_scan_budget_exha
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ReplaySolLegBlockerDeepReasonOutcome {
     Completed(ReplaySolLegIncompleteDiagnostic),
-    BudgetExhausted {
-        stage: String,
-        explanation: String,
-    },
+    BudgetExhausted { stage: String, explanation: String },
 }
 
 fn explain_replay_sol_leg_blocker_deep_reason_read_only(
@@ -6687,8 +7883,10 @@ fn explain_replay_sol_leg_blocker_deep_reason_read_only(
         });
     }
 
-    let diagnostic =
-        DiscoveryService::explain_replay_sol_leg_incomplete_read_only(runtime_store, recent_raw_store)?;
+    let diagnostic = DiscoveryService::explain_replay_sol_leg_incomplete_read_only(
+        runtime_store,
+        recent_raw_store,
+    )?;
     if diagnostic.replay_sol_leg_incomplete_reason_class
         == ReplaySolLegIncompleteReasonClass::SourceFrontierUnprovenDiagnosticScanBudgetExhausted
     {
@@ -6747,7 +7945,10 @@ fn compare_replay_sol_leg_source_vs_checkpoint_from_paths_read_only(
             recent_raw_db_path.display()
         )
     })?;
-    DiscoveryService::compare_sol_leg_source_vs_checkpoint_read_only(&runtime_store, &recent_raw_store)
+    DiscoveryService::compare_sol_leg_source_vs_checkpoint_read_only(
+        &runtime_store,
+        &recent_raw_store,
+    )
 }
 
 fn trace_replay_sol_leg_source_compare_from_paths_read_only(
@@ -6892,9 +8093,11 @@ fn trace_replay_sol_leg_deep_proof_read_only_with_budget(
     budget: StdDuration,
 ) -> ReplaySolLegDeepTraceDiagnostic {
     let total_started_at = Instant::now();
-    let publication_diagnostic = explain_publication_truth_export_blocker_read_only(config_path, now);
-    let mut diagnostic =
-        ReplaySolLegDeepTraceDiagnostic::from_publication_truth_export_blocker(&publication_diagnostic);
+    let publication_diagnostic =
+        explain_publication_truth_export_blocker_read_only(config_path, now);
+    let mut diagnostic = ReplaySolLegDeepTraceDiagnostic::from_publication_truth_export_blocker(
+        &publication_diagnostic,
+    );
     diagnostic.deep_trace_budget_ms = budget.as_millis().min(u64::MAX as u128) as u64;
 
     let top_level_reason = publication_diagnostic.publication_truth_export_blocker_reason_class;
@@ -6931,7 +8134,8 @@ fn trace_replay_sol_leg_deep_proof_read_only_with_budget(
         return diagnostic;
     }
 
-    if !publication_diagnostic.publication_truth_export_blocker_top_level_proven_from_publication_state
+    if !publication_diagnostic
+        .publication_truth_export_blocker_top_level_proven_from_publication_state
     {
         diagnostic.replay_sol_leg_deep_trace_reason_class =
             ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence;
@@ -7010,7 +8214,8 @@ fn trace_replay_sol_leg_deep_proof_read_only_with_budget(
     }) {
         Ok(store) => store,
         Err(error) => {
-            diagnostic.deep_trace_runtime_db_open_elapsed_ms = elapsed_ms(runtime_db_open_started_at);
+            diagnostic.deep_trace_runtime_db_open_elapsed_ms =
+                elapsed_ms(runtime_db_open_started_at);
             diagnostic.replay_sol_leg_deep_trace_reason_class =
                 ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence;
             diagnostic.replay_sol_leg_deep_trace_explanation = format!(
@@ -7192,8 +8397,7 @@ fn trace_replay_sol_leg_deep_proof_read_only_with_budget(
     {
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            diagnostic.deep_trace_source_compare_elapsed_ms =
-                elapsed_ms(source_compare_started_at);
+            diagnostic.deep_trace_source_compare_elapsed_ms = elapsed_ms(source_compare_started_at);
             diagnostic.replay_sol_leg_deep_trace_reason_class =
                 ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceBudgetExhausted;
             diagnostic.deep_trace_budget_exhausted = true;
@@ -7206,8 +8410,7 @@ fn trace_replay_sol_leg_deep_proof_read_only_with_budget(
             return diagnostic;
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            diagnostic.deep_trace_source_compare_elapsed_ms =
-                elapsed_ms(source_compare_started_at);
+            diagnostic.deep_trace_source_compare_elapsed_ms = elapsed_ms(source_compare_started_at);
             diagnostic.replay_sol_leg_deep_trace_reason_class =
                 ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence;
             diagnostic.replay_sol_leg_deep_trace_explanation =
@@ -7297,7 +8500,8 @@ fn trace_replay_sol_leg_source_compare_read_only(
 ) -> ReplaySolLegSourceCompareTraceDiagnostic {
     let total_started_at = Instant::now();
     let prerequisite_started_at = Instant::now();
-    let publication_diagnostic = explain_publication_truth_export_blocker_read_only(config_path, now);
+    let publication_diagnostic =
+        explain_publication_truth_export_blocker_read_only(config_path, now);
     let prerequisite_total_elapsed_ms = elapsed_ms(prerequisite_started_at);
     trace_replay_sol_leg_source_compare_from_publication_diagnostic(
         total_started_at,
@@ -7317,7 +8521,8 @@ fn trace_replay_sol_leg_source_compare_read_only_with_budget(
 ) -> ReplaySolLegSourceCompareTraceDiagnostic {
     let total_started_at = Instant::now();
     let prerequisite_started_at = Instant::now();
-    let publication_diagnostic = explain_publication_truth_export_blocker_read_only(config_path, now);
+    let publication_diagnostic =
+        explain_publication_truth_export_blocker_read_only(config_path, now);
     let prerequisite_total_elapsed_ms = elapsed_ms(prerequisite_started_at);
     trace_replay_sol_leg_source_compare_from_publication_diagnostic(
         total_started_at,
@@ -7363,10 +8568,11 @@ fn trace_replay_sol_leg_source_compare_from_publication_diagnostic(
     publication_diagnostic: PublicationTruthExportBlockerDiagnostic,
     budget: StdDuration,
 ) -> ReplaySolLegSourceCompareTraceDiagnostic {
-    let prerequisite_diagnostic = explain_replay_sol_leg_blocker_prerequisite_from_publication_diagnostic(
-        prerequisite_total_elapsed_ms,
-        publication_diagnostic,
-    );
+    let prerequisite_diagnostic =
+        explain_replay_sol_leg_blocker_prerequisite_from_publication_diagnostic(
+            prerequisite_total_elapsed_ms,
+            publication_diagnostic,
+        );
     let mut diagnostic =
         ReplaySolLegSourceCompareTraceDiagnostic::from_replay_sol_leg_blocker_prerequisite(
             &prerequisite_diagnostic,
@@ -7395,8 +8601,9 @@ fn trace_replay_sol_leg_source_compare_from_publication_diagnostic(
     {
         diagnostic.replay_sol_leg_source_compare_trace_reason_class =
             ReplaySolLegSourceCompareTraceReasonClass::ReplaySolLegSourceCompareTraceNotCurrentBlocker;
-        diagnostic.replay_sol_leg_source_compare_trace_explanation =
-            diagnostic.source_compare_trace_prerequisite_explanation.clone();
+        diagnostic.replay_sol_leg_source_compare_trace_explanation = diagnostic
+            .source_compare_trace_prerequisite_explanation
+            .clone();
         diagnostic.source_compare_trace_total_elapsed_ms = elapsed_ms(total_started_at);
         return diagnostic;
     }
@@ -7490,7 +8697,9 @@ fn trace_replay_sol_leg_source_compare_from_publication_diagnostic(
         let _ = compare_tx.send(result);
     });
 
-    let compare_result = match compare_rx.recv_timeout(remaining_budget_duration(budget, total_started_at)) {
+    let compare_result = match compare_rx
+        .recv_timeout(remaining_budget_duration(budget, total_started_at))
+    {
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => {
             diagnostic.source_compare_trace_compare_elapsed_ms = elapsed_ms(compare_started_at);
@@ -7624,6 +8833,7 @@ where
     let mut probe_checkpoint_row_fetch_minimal_snapshot = false;
     let mut probe_checkpoint_row_fetch_materialization_busy_wait = false;
     let mut probe_checkpoint_row_fetch_materialization_immutable_source = false;
+    let mut probe_checkpoint_row_fetch_immutable_source_select = false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
@@ -7693,6 +8903,9 @@ where
             "--probe-checkpoint-row-fetch-materialization-immutable-source" => {
                 probe_checkpoint_row_fetch_materialization_immutable_source = true;
             }
+            "--probe-checkpoint-row-fetch-immutable-source-select" => {
+                probe_checkpoint_row_fetch_immutable_source_select = true;
+            }
             "--deep-attempt-telemetry-scan" => {
                 deep_attempt_telemetry_scan = true;
             }
@@ -7750,13 +8963,14 @@ where
         + usize::from(probe_checkpoint_row_fetch_minimal_snapshot)
         + usize::from(probe_checkpoint_row_fetch_materialization_busy_wait)
         + usize::from(probe_checkpoint_row_fetch_materialization_immutable_source)
+        + usize::from(probe_checkpoint_row_fetch_immutable_source_select)
         + usize::from(explain_recent_raw_staged_lineage)
         + usize::from(explain_recent_raw_staged_regression)
         + usize::from(explain_recent_raw_staged_birth)
         + usize::from(explain_recent_raw_staged_window_seeding);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --probe-checkpoint-row-fetch-materialization-busy-wait, --probe-checkpoint-row-fetch-materialization-immutable-source, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --probe-checkpoint-row-fetch-materialization-busy-wait, --probe-checkpoint-row-fetch-materialization-immutable-source, --probe-checkpoint-row-fetch-immutable-source-select, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
     if deep_attempt_telemetry_scan && !explain_recent_raw_replacement_attempt_telemetry {
@@ -7963,9 +9177,7 @@ where
             || now.is_some()
             || deep_attempt_telemetry_scan
         {
-            bail!(
-                "--explain-replay-sol-leg-blocker only accepts --config and optional --json"
-            );
+            bail!("--explain-replay-sol-leg-blocker only accepts --config and optional --json");
         }
         return Ok(Some(Command::ExplainReplaySolLegBlocker(
             ExplainReplaySolLegBlockerConfig {
@@ -7984,9 +9196,7 @@ where
             || now.is_some()
             || deep_attempt_telemetry_scan
         {
-            bail!(
-                "--trace-replay-sol-leg-deep-proof only accepts --config and optional --json"
-            );
+            bail!("--trace-replay-sol-leg-deep-proof only accepts --config and optional --json");
         }
         return Ok(Some(Command::TraceReplaySolLegDeepProof(
             TraceReplaySolLegDeepProofConfig {
@@ -8096,8 +9306,7 @@ where
         return Ok(Some(
             Command::ProbeCheckpointRowFetchMaterializationBusyWait(
                 ProbeCheckpointRowFetchMaterializationBusyWaitConfig {
-                    config_path: config_path
-                        .ok_or_else(|| anyhow!("missing required --config"))?,
+                    config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
                     json,
                 },
             ),
@@ -8120,12 +9329,32 @@ where
         return Ok(Some(
             Command::ProbeCheckpointRowFetchMaterializationImmutableSource(
                 ProbeCheckpointRowFetchMaterializationImmutableSourceConfig {
-                    config_path: config_path
-                        .ok_or_else(|| anyhow!("missing required --config"))?,
+                    config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
                     json,
                 },
             ),
         ));
+    }
+
+    if probe_checkpoint_row_fetch_immutable_source_select {
+        if state_root.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+            || deep_attempt_telemetry_scan
+        {
+            bail!(
+                "--probe-checkpoint-row-fetch-immutable-source-select only accepts --config and optional --json"
+            );
+        }
+        return Ok(Some(Command::ProbeCheckpointRowFetchImmutableSourceSelect(
+            ProbeCheckpointRowFetchImmutableSourceSelectConfig {
+                config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
+                json,
+            },
+        )));
     }
 
     if explain_recent_raw_staged_lineage {
@@ -8367,7 +9596,8 @@ fn run_command(command: Command) -> Result<String> {
             }
         }
         Command::ExplainReplaySolLegBlocker(config) => {
-            let diagnostic = explain_replay_sol_leg_blocker_read_only(&config.config_path, Utc::now());
+            let diagnostic =
+                explain_replay_sol_leg_blocker_read_only(&config.config_path, Utc::now());
             if config.json {
                 serde_json::to_string_pretty(&diagnostic)
                     .context("failed serializing replay_sol_leg blocker json")
@@ -8392,7 +9622,9 @@ fn run_command(command: Command) -> Result<String> {
                 serde_json::to_string_pretty(&diagnostic)
                     .context("failed serializing replay_sol_leg source compare trace json")
             } else {
-                Ok(render_replay_sol_leg_source_compare_trace_human(&diagnostic))
+                Ok(render_replay_sol_leg_source_compare_trace_human(
+                    &diagnostic,
+                ))
             }
         }
         Command::ProbeCheckpointRowFetchBusyWait(config) => {
@@ -8430,34 +9662,36 @@ fn run_command(command: Command) -> Result<String> {
         }
         Command::ProbeCheckpointRowFetchMaterializationBusyWait(config) => {
             let diagnostic =
-                probe_checkpoint_row_fetch_materialization_busy_wait_read_only(
-                    &config.config_path,
-                );
+                probe_checkpoint_row_fetch_materialization_busy_wait_read_only(&config.config_path);
             if config.json {
                 serde_json::to_string_pretty(&diagnostic).context(
                     "failed serializing checkpoint row-fetch materialization busy probe json",
                 )
             } else {
-                Ok(render_checkpoint_row_fetch_materialization_busy_probe_human(
-                    &diagnostic,
-                ))
+                Ok(render_checkpoint_row_fetch_materialization_busy_probe_human(&diagnostic))
             }
         }
         Command::ProbeCheckpointRowFetchMaterializationImmutableSource(config) => {
-            let diagnostic =
-                probe_checkpoint_row_fetch_materialization_immutable_source_read_only(
-                    &config.config_path,
-                );
+            let diagnostic = probe_checkpoint_row_fetch_materialization_immutable_source_read_only(
+                &config.config_path,
+            );
             if config.json {
                 serde_json::to_string_pretty(&diagnostic).context(
                     "failed serializing checkpoint row-fetch materialization immutable-source probe json",
                 )
             } else {
-                Ok(
-                    render_checkpoint_row_fetch_materialization_immutable_probe_human(
-                        &diagnostic,
-                    ),
+                Ok(render_checkpoint_row_fetch_materialization_immutable_probe_human(&diagnostic))
+            }
+        }
+        Command::ProbeCheckpointRowFetchImmutableSourceSelect(config) => {
+            let diagnostic =
+                probe_checkpoint_row_fetch_immutable_source_select_read_only(&config.config_path);
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic).context(
+                    "failed serializing checkpoint row-fetch immutable-source select probe json",
                 )
+            } else {
+                Ok(render_checkpoint_row_fetch_immutable_source_select_probe_human(&diagnostic))
             }
         }
         Command::ExplainRecentRawStagedLineage(config) => {
@@ -9122,11 +10356,12 @@ fn explain_replay_sol_leg_blocker_read_only_with_prerequisite_budget(
     checkpoint_headline_budget: StdDuration,
 ) -> ReplaySolLegBlockerDiagnostic {
     let started_at = Instant::now();
-    let mut diagnostic = explain_replay_sol_leg_blocker_prerequisite_read_only_with_checkpoint_headline_budget(
-        config_path,
-        now,
-        checkpoint_headline_budget,
-    );
+    let mut diagnostic =
+        explain_replay_sol_leg_blocker_prerequisite_read_only_with_checkpoint_headline_budget(
+            config_path,
+            now,
+            checkpoint_headline_budget,
+        );
     if diagnostic.replay_sol_leg_blocker_reason_class
         != ReplaySolLegBlockerReasonClass::ReplaySolLegBlockerProvenCurrent
     {
@@ -9141,7 +10376,8 @@ fn explain_replay_sol_leg_blocker_prerequisite_read_only(
     now: DateTime<Utc>,
 ) -> ReplaySolLegBlockerDiagnostic {
     let prerequisite_started_at = Instant::now();
-    let publication_diagnostic = explain_publication_truth_export_blocker_read_only(config_path, now);
+    let publication_diagnostic =
+        explain_publication_truth_export_blocker_read_only(config_path, now);
     let prerequisite_total_elapsed_ms = elapsed_ms(prerequisite_started_at);
     explain_replay_sol_leg_blocker_prerequisite_from_publication_diagnostic(
         prerequisite_total_elapsed_ms,
@@ -9176,11 +10412,9 @@ fn explain_replay_sol_leg_blocker_prerequisite_from_publication_diagnostic(
     let mut diagnostic = ReplaySolLegBlockerDiagnostic::from_publication_truth_export_blocker(
         &publication_diagnostic,
     );
-    diagnostic.replay_sol_leg_blocker_prerequisite_total_elapsed_ms =
-        prerequisite_total_elapsed_ms;
+    diagnostic.replay_sol_leg_blocker_prerequisite_total_elapsed_ms = prerequisite_total_elapsed_ms;
 
-    let top_level_reason =
-        &publication_diagnostic.publication_truth_export_blocker_reason_class;
+    let top_level_reason = &publication_diagnostic.publication_truth_export_blocker_reason_class;
     if *top_level_reason
         == PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockerUnprovenDueToMissingEvidence
     {
@@ -9209,7 +10443,8 @@ fn explain_replay_sol_leg_blocker_prerequisite_from_publication_diagnostic(
         return diagnostic;
     }
 
-    if !publication_diagnostic.publication_truth_export_blocker_top_level_proven_from_publication_state
+    if !publication_diagnostic
+        .publication_truth_export_blocker_top_level_proven_from_publication_state
     {
         diagnostic.replay_sol_leg_blocker_reason_class =
             ReplaySolLegBlockerReasonClass::ReplaySolLegBlockerUnprovenDueToMissingEvidence;
@@ -9410,11 +10645,9 @@ fn explain_replay_sol_leg_blocker_after_prerequisite(
     match deep_outcome {
         Ok(ReplaySolLegBlockerDeepReasonOutcome::Completed(replay_diagnostic)) => {
             diagnostic.replay_sol_leg_blocker_deep_reason_completed = true;
-            diagnostic.replay_sol_leg_blocker_deep_reason_stage =
-                Some("complete".to_string());
-            diagnostic.replay_sol_leg_blocker_deep_reason_explanation = Some(
-                "bounded replay_sol_leg deep proof completed".to_string(),
-            );
+            diagnostic.replay_sol_leg_blocker_deep_reason_stage = Some("complete".to_string());
+            diagnostic.replay_sol_leg_blocker_deep_reason_explanation =
+                Some("bounded replay_sol_leg deep proof completed".to_string());
             if replay_diagnostic.publishable_checkpoint_blocker.as_deref()
                 != Some("replay_sol_leg_incomplete")
                 || replay_diagnostic.rebuild_phase.as_deref() != Some("replay")
@@ -9441,13 +10674,15 @@ fn explain_replay_sol_leg_blocker_after_prerequisite(
             diagnostic.persisted_rebuild_checkpoint_exists =
                 Some(replay_diagnostic.persisted_rebuild_checkpoint_exists);
             diagnostic.rebuild_phase = replay_diagnostic.rebuild_phase.clone();
-            diagnostic.rebuild_replay_subphase =
-                replay_diagnostic.rebuild_replay_subphase.clone();
+            diagnostic.rebuild_replay_subphase = replay_diagnostic.rebuild_replay_subphase.clone();
             diagnostic.replay_incomplete = Some(replay_diagnostic.replay_incomplete);
             diagnostic.replay_sol_leg_incomplete_reason_class =
                 Some(replay_diagnostic.replay_sol_leg_incomplete_reason_class);
-            diagnostic.replay_sol_leg_incomplete_explanation =
-                Some(replay_diagnostic.replay_sol_leg_incomplete_explanation.clone());
+            diagnostic.replay_sol_leg_incomplete_explanation = Some(
+                replay_diagnostic
+                    .replay_sol_leg_incomplete_explanation
+                    .clone(),
+            );
             diagnostic.checkpoint_exact_target_surface_exists =
                 replay_diagnostic.checkpoint.exact_target_surface_exists;
             diagnostic.checkpoint_exact_target_surface_repairable_for_resume = replay_diagnostic
@@ -9514,8 +10749,7 @@ fn explain_replay_sol_leg_blocker_after_prerequisite(
             diagnostic.replay_sol_leg_blocker_budget_exhausted_stage = Some(stage.clone());
             diagnostic.replay_sol_leg_blocker_deep_reason_budget_exhausted = true;
             diagnostic.replay_sol_leg_blocker_deep_reason_stage = Some(stage.clone());
-            diagnostic.replay_sol_leg_blocker_deep_reason_explanation =
-                Some(explanation.clone());
+            diagnostic.replay_sol_leg_blocker_deep_reason_explanation = Some(explanation.clone());
             diagnostic.replay_sol_leg_blocker_explanation = format!(
                 "replay_sol_leg_incomplete is the current export blocker and the cheap checkpoint prerequisites are proven current, but bounded deep replay proof exhausted its budget before resolving an exact deep reason (stage={stage}): {explanation}"
             );
@@ -9525,9 +10759,8 @@ fn explain_replay_sol_leg_blocker_after_prerequisite(
                 ReplaySolLegBlockerReasonClass::ReplaySolLegBlockerUnprovenDueToMissingEvidence;
             diagnostic.replay_sol_leg_blocker_deep_reason_stage =
                 Some("deep_replay_sol_leg_reason".to_string());
-            diagnostic.replay_sol_leg_blocker_deep_reason_explanation = Some(
-                "bounded replay_sol_leg deep proof returned an error".to_string(),
-            );
+            diagnostic.replay_sol_leg_blocker_deep_reason_explanation =
+                Some("bounded replay_sol_leg deep proof returned an error".to_string());
             diagnostic.replay_sol_leg_blocker_explanation = format!(
                 "replay_sol_leg blocker is unproven because bounded deep replay proof failed against runtime db {} and recent_raw db {}: {error:#}",
                 runtime_db_path.display(),
@@ -10200,7 +11433,10 @@ fn render_replay_sol_leg_blocker_human(diagnostic: &ReplaySolLegBlockerDiagnosti
         ),
         format!(
             "source_scan_access_path={}",
-            diagnostic.source_scan_access_path.as_deref().unwrap_or("null")
+            diagnostic
+                .source_scan_access_path
+                .as_deref()
+                .unwrap_or("null")
         ),
         format!(
             "source_scan_time_budget_exhausted={}",
@@ -10386,7 +11622,9 @@ fn render_replay_sol_leg_deep_trace_human(diagnostic: &ReplaySolLegDeepTraceDiag
         ),
         format!(
             "deep_trace_source_rows_exist_beyond_stored_replay_checkpoint={}",
-            format_optional_bool(diagnostic.deep_trace_source_rows_exist_beyond_stored_replay_checkpoint)
+            format_optional_bool(
+                diagnostic.deep_trace_source_rows_exist_beyond_stored_replay_checkpoint
+            )
         ),
         format!(
             "deep_trace_source_rows_ahead_count={}",
@@ -10421,7 +11659,10 @@ fn render_replay_sol_leg_deep_trace_human(diagnostic: &ReplaySolLegDeepTraceDiag
         ),
         format!(
             "deep_trace_final_explanation={}",
-            diagnostic.deep_trace_final_explanation.as_deref().unwrap_or("null")
+            diagnostic
+                .deep_trace_final_explanation
+                .as_deref()
+                .unwrap_or("null")
         ),
     ]
     .join("\n")
@@ -10545,7 +11786,9 @@ fn render_replay_sol_leg_source_compare_trace_human(
         ),
         format!(
             "source_compare_trace_result_source_comparison_applicable={}",
-            format_optional_bool(diagnostic.source_compare_trace_result_source_comparison_applicable)
+            format_optional_bool(
+                diagnostic.source_compare_trace_result_source_comparison_applicable
+            )
         ),
         format!(
             "source_compare_trace_result_source_scan_target_buy_mint_filter_active={}",
@@ -10568,9 +11811,7 @@ fn render_replay_sol_leg_source_compare_trace_human(
         ),
         format!(
             "source_compare_trace_result_source_rows_ahead_count={}",
-            format_optional_usize(
-                diagnostic.source_compare_trace_result_source_rows_ahead_count
-            )
+            format_optional_usize(diagnostic.source_compare_trace_result_source_rows_ahead_count)
         ),
         format!(
             "source_compare_trace_result_source_rows_ahead_pages_scanned={}",
@@ -10674,9 +11915,7 @@ fn render_checkpoint_row_fetch_busy_probe_human(
         ),
         format!(
             "checkpoint_row_fetch_busy_probe_connection_query_only={}",
-            format_optional_bool(
-                diagnostic.checkpoint_row_fetch_busy_probe_connection_query_only
-            )
+            format_optional_bool(diagnostic.checkpoint_row_fetch_busy_probe_connection_query_only)
         ),
         format!(
             "checkpoint_row_fetch_busy_probe_query_readonly_mode={}",
@@ -11829,6 +13068,191 @@ fn render_checkpoint_row_fetch_materialization_immutable_probe_human(
             "checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_message={}",
             diagnostic
                 .checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_message
+                .as_deref()
+                .unwrap_or("null")
+        ),
+    ]
+    .join("\n")
+}
+
+fn render_checkpoint_row_fetch_immutable_source_select_probe_human(
+    diagnostic: &CheckpointRowFetchImmutableSourceSelectProbeDiagnostic,
+) -> String {
+    [
+        "event=discovery_checkpoint_row_fetch_immutable_source_select_probe".to_string(),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_observed={}",
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_observed
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_reason_class={}",
+            serde_json::to_string(
+                &diagnostic.checkpoint_row_fetch_immutable_source_select_probe_reason_class
+            )
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_explanation={}",
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_explanation
+        ),
+        format!("config_path={}", diagnostic.config_path),
+        format!(
+            "runtime_db_path={}",
+            diagnostic.runtime_db_path.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_strategy={}",
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_strategy
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_temp_dir={}",
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_temp_dir
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_budget_ms={}",
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_budget_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_budget_source={}",
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_budget_source
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_total_elapsed_ms={}",
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_total_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_budget_exhausted={}",
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_budget_exhausted
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_stage={}",
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_stage
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_attach_uri={}",
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_attach_uri
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_attach_mode={}",
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_source_attach_mode
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_attach_immutable={}",
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_source_attach_immutable
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_attach_readonly={}",
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_source_attach_readonly
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_sql={}",
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_source_select_sql
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_explain_query_plan={}",
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_select_explain_query_plan
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_explain_query_plan_rows={}",
+            format_optional_json(
+                &diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_source_select_explain_query_plan_rows
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_journal_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_journal_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_locking_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_locking_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_query_only={}",
+            format_optional_bool(
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_query_only
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_busy_timeout_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_select_busy_timeout_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_query_started={}",
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_select_query_started
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_row_fetch_completed={}",
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_select_row_fetch_completed
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_row_fetch_elapsed_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_select_row_fetch_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_row_returned={}",
+            format_optional_bool(
+                diagnostic
+                    .checkpoint_row_fetch_immutable_source_select_probe_source_select_row_returned
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_phase={}",
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_select_phase
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_updated_at={}",
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_select_updated_at
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_result_kind={}",
+            format_optional_enum_json(
+                &diagnostic.checkpoint_row_fetch_immutable_source_select_probe_result_kind
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_code={}",
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_code
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_message={}",
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_message
                 .as_deref()
                 .unwrap_or("null")
         ),
@@ -13041,49 +14465,44 @@ mod tests {
         arm_test_force_replay_sol_leg_deep_trace_source_compare_budget_exhausted,
         arm_test_force_replay_sol_leg_source_compare_trace_internal_scan_budget_exhausted,
         arm_test_force_replay_sol_leg_source_compare_trace_wait_delay_ms,
-        explain_replay_sol_leg_blocker_read_only,
-        explain_replay_sol_leg_blocker_read_only_with_prerequisite_budget,
         explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget,
         explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget_impl,
-        probe_checkpoint_row_fetch_busy_wait_read_only_with_budget,
+        explain_replay_sol_leg_blocker_read_only,
+        explain_replay_sol_leg_blocker_read_only_with_prerequisite_budget, load_json,
+        parse_args_from, probe_checkpoint_row_fetch_busy_wait_read_only_with_budget,
         probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget,
         probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_and_test_behavior,
-        probe_checkpoint_row_fetch_materialization_immutable_source_read_only_with_budget,
-        probe_checkpoint_row_fetch_materialization_immutable_source_read_only_with_budget_and_test_behavior,
+        probe_checkpoint_row_fetch_immutable_source_select_read_only_with_budget,
+        probe_checkpoint_row_fetch_immutable_source_select_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget,
         probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget_and_test_behavior,
+        probe_checkpoint_row_fetch_materialization_immutable_source_read_only_with_budget,
+        probe_checkpoint_row_fetch_materialization_immutable_source_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget,
-        probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_and_test_behavior,
-        trace_replay_sol_leg_deep_proof_read_only,
+        probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_and_test_behavior, run,
+        run_command, trace_replay_sol_leg_deep_proof_read_only,
         trace_replay_sol_leg_deep_proof_read_only_with_budget,
         trace_replay_sol_leg_source_compare_read_only,
         trace_replay_sol_leg_source_compare_read_only_with_budget,
-        trace_replay_sol_leg_source_compare_read_only_with_prerequisite_budget,
+        trace_replay_sol_leg_source_compare_read_only_with_prerequisite_budget, write_json_atomic,
         CheckpointRowFetchBusyProbeReasonClass, CheckpointRowFetchBusyProbeResultKind,
-        CheckpointRowFetchMaterializationImmutableProbeReasonClass,
-        CheckpointRowFetchMaterializationImmutableProbeResultKind,
-        CheckpointRowFetchMaterializationImmutableProbeTestBehavior,
+        CheckpointRowFetchBusyProbeTestBehavior,
+        CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind,
+        CheckpointRowFetchCopiedSnapshotProbeReasonClass,
+        CheckpointRowFetchCopiedSnapshotProbeTestBehavior,
+        CheckpointRowFetchImmutableSourceSelectProbeReasonClass,
+        CheckpointRowFetchImmutableSourceSelectProbeResultKind,
+        CheckpointRowFetchImmutableSourceSelectProbeTestBehavior,
         CheckpointRowFetchMaterializationBusyProbeReasonClass,
         CheckpointRowFetchMaterializationBusyProbeResultKind,
         CheckpointRowFetchMaterializationBusyProbeTestBehavior,
+        CheckpointRowFetchMaterializationImmutableProbeReasonClass,
+        CheckpointRowFetchMaterializationImmutableProbeResultKind,
+        CheckpointRowFetchMaterializationImmutableProbeTestBehavior,
         CheckpointRowFetchMinimalSnapshotProbeReasonClass,
-        CheckpointRowFetchMinimalSnapshotProbeTestBehavior,
-        CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind,
-        CheckpointRowFetchCopiedSnapshotProbeTestBehavior,
-        CheckpointRowFetchCopiedSnapshotProbeReasonClass,
-        CheckpointRowFetchBusyProbeTestBehavior,
-        DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_MS,
-        load_json, parse_args_from, run, run_command, write_json_atomic, Command, Config,
+        CheckpointRowFetchMinimalSnapshotProbeTestBehavior, Command, Config,
         ExplainPublicationTruthExportBlockerConfig, ExplainRecentRawCatchUpStatusConfig,
-        ExplainReplaySolLegBlockerConfig,
-        ProbeCheckpointRowFetchCopiedSnapshotConfig,
-        ProbeCheckpointRowFetchMaterializationImmutableSourceConfig,
-        ProbeCheckpointRowFetchMaterializationBusyWaitConfig,
-        ProbeCheckpointRowFetchMinimalSnapshotConfig,
-        ProbeCheckpointRowFetchBusyWaitConfig,
-        TraceReplaySolLegDeepProofConfig,
-        TraceReplaySolLegSourceCompareConfig,
         ExplainRecentRawPromotedRetentionContractConfig, ExplainRecentRawPromotionBlockerConfig,
         ExplainRecentRawReplacementArtifactHistoryContractConfig,
         ExplainRecentRawReplacementAttemptTelemetryConfig,
@@ -13092,9 +14511,16 @@ mod tests {
         ExplainRecentRawReplacementPromotionContractConfig,
         ExplainRecentRawSourceWindowContractConfig, ExplainRecentRawStagedBirthConfig,
         ExplainRecentRawStagedLineageConfig, ExplainRecentRawStagedRegressionConfig,
-        ExplainRecentRawStagedWindowSeedingConfig, PublicationTruthExportBlockerReasonClass,
+        ExplainRecentRawStagedWindowSeedingConfig, ExplainReplaySolLegBlockerConfig,
+        ProbeCheckpointRowFetchBusyWaitConfig, ProbeCheckpointRowFetchCopiedSnapshotConfig,
+        ProbeCheckpointRowFetchImmutableSourceSelectConfig,
+        ProbeCheckpointRowFetchMaterializationBusyWaitConfig,
+        ProbeCheckpointRowFetchMaterializationImmutableSourceConfig,
+        ProbeCheckpointRowFetchMinimalSnapshotConfig, PublicationTruthExportBlockerReasonClass,
         ReplaySolLegBlockerReasonClass, ReplaySolLegDeepTraceReasonClass,
-        ReplaySolLegSourceCompareTraceReasonClass, TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX,
+        ReplaySolLegSourceCompareTraceReasonClass, TraceReplaySolLegDeepProofConfig,
+        TraceReplaySolLegSourceCompareConfig, DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_MS,
+        TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX,
     };
     use anyhow::{Context, Result};
     use chrono::{DateTime, Duration, Utc};
@@ -13537,6 +14963,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_from_accepts_probe_checkpoint_row_fetch_immutable_source_select_mode() {
+        let parsed = parse_args_from(vec![
+            "--probe-checkpoint-row-fetch-immutable-source-select".to_string(),
+            "--config".to_string(),
+            "/tmp/live.server.toml".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ProbeCheckpointRowFetchImmutableSourceSelect(parsed) = parsed else {
+            panic!("expected checkpoint row-fetch immutable-source select probe command");
+        };
+        assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
+        assert!(parsed.json);
+    }
+
+    #[test]
     fn run_command_probe_checkpoint_row_fetch_busy_wait_row_returns_proven_non_busy_wait_json(
     ) -> Result<()> {
         let fixture = make_fixture("runtime-export-checkpoint-row-fetch-busy-probe-row")?;
@@ -13588,11 +15031,16 @@ mod tests {
             parsed["checkpoint_row_fetch_busy_probe_query_sql"],
             super::CHECKPOINT_HEADLINE_ROW_META_SQL
         );
-        assert!(parsed["checkpoint_row_fetch_busy_probe_explain_query_plan_rows"]
-            .as_array()
-            .is_some_and(|rows| !rows.is_empty()));
+        assert!(
+            parsed["checkpoint_row_fetch_busy_probe_explain_query_plan_rows"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty())
+        );
         assert_eq!(parsed["checkpoint_row_fetch_busy_probe_step_started"], true);
-        assert_eq!(parsed["checkpoint_row_fetch_busy_probe_step_completed"], true);
+        assert_eq!(
+            parsed["checkpoint_row_fetch_busy_probe_step_completed"],
+            true
+        );
         for key in [
             "checkpoint_row_fetch_busy_probe_observed",
             "checkpoint_row_fetch_busy_probe_reason_class",
@@ -13655,7 +15103,10 @@ mod tests {
             },
         )?;
         let conn = rusqlite::Connection::open(&fixture.db_path)?;
-        conn.execute("DELETE FROM discovery_persisted_rebuild_state WHERE id = 1", [])?;
+        conn.execute(
+            "DELETE FROM discovery_persisted_rebuild_state WHERE id = 1",
+            [],
+        )?;
 
         let diagnostic = probe_checkpoint_row_fetch_busy_wait_read_only_with_budget(
             &fixture.config_path,
@@ -13749,11 +15200,12 @@ mod tests {
             },
         )?;
 
-        let diagnostic = probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_and_test_behavior(
-            &fixture.config_path,
-            StdDuration::from_secs(1),
-            Some(CheckpointRowFetchBusyProbeTestBehavior::ForceBusy),
-        );
+        let diagnostic =
+            probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+                Some(CheckpointRowFetchBusyProbeTestBehavior::ForceBusy),
+            );
         assert_eq!(
             diagnostic.checkpoint_row_fetch_busy_probe_reason_class,
             CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeProvenBusyWait
@@ -13799,13 +15251,14 @@ mod tests {
             },
         )?;
 
-        let diagnostic = probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_and_test_behavior(
-            &fixture.config_path,
-            StdDuration::from_millis(50),
-            Some(CheckpointRowFetchBusyProbeTestBehavior::DelayBeforeStep(
-                StdDuration::from_millis(200),
-            )),
-        );
+        let diagnostic =
+            probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_millis(50),
+                Some(CheckpointRowFetchBusyProbeTestBehavior::DelayBeforeStep(
+                    StdDuration::from_millis(200),
+                )),
+            );
         assert_eq!(
             diagnostic.checkpoint_row_fetch_busy_probe_reason_class,
             CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeBudgetExhausted
@@ -13907,9 +15360,11 @@ mod tests {
             parsed["checkpoint_row_fetch_copied_snapshot_probe_handoff_to_zero_timeout_probe_completed"],
             true
         );
-        assert!(parsed["checkpoint_row_fetch_copied_snapshot_probe_temp_dir"]
-            .as_str()
-            .is_some_and(|value| !value.is_empty()));
+        assert!(
+            parsed["checkpoint_row_fetch_copied_snapshot_probe_temp_dir"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
         for key in [
             "checkpoint_row_fetch_copied_snapshot_probe_observed",
             "checkpoint_row_fetch_copied_snapshot_probe_reason_class",
@@ -14000,7 +15455,10 @@ mod tests {
             },
         )?;
         let conn = rusqlite::Connection::open(&fixture.db_path)?;
-        conn.execute("DELETE FROM discovery_persisted_rebuild_state WHERE id = 1", [])?;
+        conn.execute(
+            "DELETE FROM discovery_persisted_rebuild_state WHERE id = 1",
+            [],
+        )?;
 
         let diagnostic = probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget(
             &fixture.config_path,
@@ -14063,15 +15521,10 @@ mod tests {
             diagnostic.runtime_db_path.as_deref(),
             Some(expected_runtime_db_path.as_str())
         );
-        assert!(
-            diagnostic
-                .checkpoint_row_fetch_copied_snapshot_probe_temp_dir
-                .is_some()
-        );
-        assert!(
-            !diagnostic
-                .checkpoint_row_fetch_copied_snapshot_probe_runtime_db_opened_read_only
-        );
+        assert!(diagnostic
+            .checkpoint_row_fetch_copied_snapshot_probe_temp_dir
+            .is_some());
+        assert!(!diagnostic.checkpoint_row_fetch_copied_snapshot_probe_runtime_db_opened_read_only);
         Ok(())
     }
 
@@ -14107,9 +15560,11 @@ mod tests {
             probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_and_test_behavior(
                 &fixture.config_path,
                 StdDuration::from_secs(1),
-                Some(CheckpointRowFetchCopiedSnapshotProbeTestBehavior::BusyProbe(
-                    CheckpointRowFetchBusyProbeTestBehavior::ForceBusy,
-                )),
+                Some(
+                    CheckpointRowFetchCopiedSnapshotProbeTestBehavior::BusyProbe(
+                        CheckpointRowFetchBusyProbeTestBehavior::ForceBusy,
+                    ),
+                ),
             );
         assert_eq!(
             diagnostic.checkpoint_row_fetch_copied_snapshot_probe_reason_class,
@@ -14161,44 +15616,32 @@ mod tests {
             probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_and_test_behavior(
                 &fixture.config_path,
                 StdDuration::from_millis(50),
-                Some(CheckpointRowFetchCopiedSnapshotProbeTestBehavior::DelayBeforeCopyMain(
-                    StdDuration::from_millis(200),
-                )),
+                Some(
+                    CheckpointRowFetchCopiedSnapshotProbeTestBehavior::DelayBeforeCopyMain(
+                        StdDuration::from_millis(200),
+                    ),
+                ),
             );
         assert_eq!(
             diagnostic.checkpoint_row_fetch_copied_snapshot_probe_reason_class,
             CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeBudgetExhausted
         );
-        assert!(
-            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted
-        );
+        assert!(diagnostic.checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted);
         assert_eq!(
             diagnostic
                 .checkpoint_row_fetch_copied_snapshot_probe_stage
                 .as_deref(),
             Some("copy_main_db")
         );
-        assert!(
-            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_temp_dir_created
-        );
-        assert!(
-            diagnostic
-                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_started
-        );
-        assert!(
-            !diagnostic
-                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_completed
-        );
-        assert!(
-            diagnostic
-                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_size_bytes
-                .is_some()
-        );
-        assert!(
-            diagnostic
-                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_started_at_unix_ms
-                .is_some()
-        );
+        assert!(diagnostic.checkpoint_row_fetch_copied_snapshot_probe_temp_dir_created);
+        assert!(diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_started);
+        assert!(!diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_completed);
+        assert!(diagnostic
+            .checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_size_bytes
+            .is_some());
+        assert!(diagnostic
+            .checkpoint_row_fetch_copied_snapshot_probe_copy_main_started_at_unix_ms
+            .is_some());
         assert_eq!(
             diagnostic
                 .checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes_observed_before_timeout,
@@ -14263,14 +15706,8 @@ mod tests {
                 .as_deref(),
             Some("copy_main_db")
         );
-        assert!(
-            diagnostic
-                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_started
-        );
-        assert!(
-            !diagnostic
-                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_completed
-        );
+        assert!(diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_started);
+        assert!(!diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_completed);
         assert!(
             diagnostic
                 .checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes_observed_before_timeout
@@ -14289,8 +15726,9 @@ mod tests {
     #[test]
     fn checkpoint_row_fetch_copied_snapshot_probe_copy_wal_timeout_returns_budget_exhausted(
     ) -> Result<()> {
-        let fixture =
-            make_fixture("runtime-export-checkpoint-row-fetch-copied-snapshot-probe-copy-wal-timeout")?;
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-copied-snapshot-probe-copy-wal-timeout",
+        )?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         fixture.store.upsert_discovery_persisted_rebuild_state(
             &DiscoveryPersistedRebuildStateRow {
@@ -14319,42 +15757,35 @@ mod tests {
             probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_and_test_behavior(
                 &fixture.config_path,
                 StdDuration::from_millis(50),
-                Some(CheckpointRowFetchCopiedSnapshotProbeTestBehavior::DelayBeforeCopyWal(
-                    StdDuration::from_millis(200),
-                )),
+                Some(
+                    CheckpointRowFetchCopiedSnapshotProbeTestBehavior::DelayBeforeCopyWal(
+                        StdDuration::from_millis(200),
+                    ),
+                ),
             );
         assert_eq!(
             diagnostic.checkpoint_row_fetch_copied_snapshot_probe_reason_class,
             CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeBudgetExhausted
         );
-        assert!(
-            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted
-        );
+        assert!(diagnostic.checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted);
         assert_eq!(
             diagnostic
                 .checkpoint_row_fetch_copied_snapshot_probe_stage
                 .as_deref(),
             Some("copy_wal")
         );
-        assert!(
-            diagnostic
-                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_completed
-        );
-        assert!(
-            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_wal_started
-        );
-        assert!(
-            !diagnostic
-                .checkpoint_row_fetch_copied_snapshot_probe_copy_wal_completed
-        );
+        assert!(diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_completed);
+        assert!(diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_wal_started);
+        assert!(!diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_wal_completed);
         Ok(())
     }
 
     #[test]
     fn checkpoint_row_fetch_copied_snapshot_probe_handoff_timeout_returns_budget_exhausted(
     ) -> Result<()> {
-        let fixture =
-            make_fixture("runtime-export-checkpoint-row-fetch-copied-snapshot-probe-handoff-timeout")?;
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-copied-snapshot-probe-handoff-timeout",
+        )?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         fixture.store.upsert_discovery_persisted_rebuild_state(
             &DiscoveryPersistedRebuildStateRow {
@@ -14382,17 +15813,17 @@ mod tests {
             probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_and_test_behavior(
                 &fixture.config_path,
                 StdDuration::from_millis(50),
-                Some(CheckpointRowFetchCopiedSnapshotProbeTestBehavior::DelayBeforeHandoff(
-                    StdDuration::from_millis(200),
-                )),
+                Some(
+                    CheckpointRowFetchCopiedSnapshotProbeTestBehavior::DelayBeforeHandoff(
+                        StdDuration::from_millis(200),
+                    ),
+                ),
             );
         assert_eq!(
             diagnostic.checkpoint_row_fetch_copied_snapshot_probe_reason_class,
             CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeBudgetExhausted
         );
-        assert!(
-            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted
-        );
+        assert!(diagnostic.checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted);
         assert_eq!(
             diagnostic
                 .checkpoint_row_fetch_copied_snapshot_probe_stage
@@ -14661,7 +16092,10 @@ mod tests {
             },
         )?;
         let conn = rusqlite::Connection::open(&fixture.db_path)?;
-        conn.execute("DELETE FROM discovery_persisted_rebuild_state WHERE id = 1", [])?;
+        conn.execute(
+            "DELETE FROM discovery_persisted_rebuild_state WHERE id = 1",
+            [],
+        )?;
 
         let diagnostic = probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget(
             &fixture.config_path,
@@ -14684,12 +16118,8 @@ mod tests {
             diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependency_kind,
             super::CheckpointRowFetchMinimalSnapshotProbeSourceRowFetchDependencyKind::SqliteEngineSideMaterialization
         );
-        assert!(
-            !diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted
-        );
-        assert!(
-            !diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed
-        );
+        assert!(!diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted);
+        assert!(!diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed);
         assert!(
             diagnostic
                 .checkpoint_row_fetch_minimal_snapshot_probe_sqlite_side_materialization_attempted
@@ -14744,8 +16174,7 @@ mod tests {
             Some(expected_runtime_db_path.as_str())
         );
         assert!(
-            !diagnostic
-                .checkpoint_row_fetch_minimal_snapshot_probe_runtime_db_opened_read_only
+            !diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_runtime_db_opened_read_only
         );
         Ok(())
     }
@@ -14782,10 +16211,12 @@ mod tests {
             probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_and_test_behavior(
                 &fixture.config_path,
                 StdDuration::from_secs(1),
-                Some(CheckpointRowFetchMinimalSnapshotProbeTestBehavior::BusyProbe(
-                    CheckpointRowFetchBusyProbeTestBehavior::ForceBusy,
-                )),
-        );
+                Some(
+                    CheckpointRowFetchMinimalSnapshotProbeTestBehavior::BusyProbe(
+                        CheckpointRowFetchBusyProbeTestBehavior::ForceBusy,
+                    ),
+                ),
+            );
         assert_eq!(
             diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_reason_class,
             CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeProvenBusyWait
@@ -14804,12 +16235,8 @@ mod tests {
             diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependency_kind,
             super::CheckpointRowFetchMinimalSnapshotProbeSourceRowFetchDependencyKind::SqliteEngineSideMaterialization
         );
-        assert!(
-            !diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted
-        );
-        assert!(
-            !diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed
-        );
+        assert!(!diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted);
+        assert!(!diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed);
         assert!(
             diagnostic
                 .checkpoint_row_fetch_minimal_snapshot_probe_sqlite_side_materialization_attempted
@@ -14824,8 +16251,9 @@ mod tests {
     #[test]
     fn checkpoint_row_fetch_minimal_snapshot_probe_materialization_attach_timeout_returns_budget_exhausted(
     ) -> Result<()> {
-        let fixture =
-            make_fixture("runtime-export-checkpoint-row-fetch-minimal-snapshot-probe-attach-timeout")?;
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-minimal-snapshot-probe-attach-timeout",
+        )?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         fixture.store.upsert_discovery_persisted_rebuild_state(
             &DiscoveryPersistedRebuildStateRow {
@@ -14863,9 +16291,7 @@ mod tests {
             diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_reason_class,
             CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeBudgetExhausted
         );
-        assert!(
-            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted
-        );
+        assert!(diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted);
         assert_eq!(
             diagnostic
                 .checkpoint_row_fetch_minimal_snapshot_probe_stage
@@ -14876,12 +16302,8 @@ mod tests {
             diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependency_kind,
             super::CheckpointRowFetchMinimalSnapshotProbeSourceRowFetchDependencyKind::SqliteEngineSideMaterialization
         );
-        assert!(
-            !diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted
-        );
-        assert!(
-            !diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed
-        );
+        assert!(!diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted);
+        assert!(!diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed);
         assert!(
             diagnostic
                 .checkpoint_row_fetch_minimal_snapshot_probe_sqlite_side_materialization_attempted
@@ -14901,8 +16323,7 @@ mod tests {
                 .checkpoint_row_fetch_minimal_snapshot_probe_materialization_schema_create_completed
         );
         assert!(
-            diagnostic
-                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_attach_started
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_materialization_attach_started
         );
         assert!(
             !diagnostic
@@ -14914,8 +16335,9 @@ mod tests {
     #[test]
     fn checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_timeout_returns_budget_exhausted(
     ) -> Result<()> {
-        let fixture =
-            make_fixture("runtime-export-checkpoint-row-fetch-minimal-snapshot-probe-insert-select-timeout")?;
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-minimal-snapshot-probe-insert-select-timeout",
+        )?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         fixture.store.upsert_discovery_persisted_rebuild_state(
             &DiscoveryPersistedRebuildStateRow {
@@ -14953,9 +16375,7 @@ mod tests {
             diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_reason_class,
             CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeBudgetExhausted
         );
-        assert!(
-            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted
-        );
+        assert!(diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted);
         assert_eq!(
             diagnostic
                 .checkpoint_row_fetch_minimal_snapshot_probe_stage
@@ -14969,8 +16389,7 @@ mod tests {
             Some("materialization_insert_select_execute_started")
         );
         assert!(
-            diagnostic
-                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_attach_completed
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_materialization_attach_completed
         );
         assert!(
             diagnostic
@@ -14994,8 +16413,9 @@ mod tests {
     #[test]
     fn checkpoint_row_fetch_minimal_snapshot_probe_materialization_postcheck_timeout_returns_budget_exhausted(
     ) -> Result<()> {
-        let fixture =
-            make_fixture("runtime-export-checkpoint-row-fetch-minimal-snapshot-probe-postcheck-timeout")?;
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-minimal-snapshot-probe-postcheck-timeout",
+        )?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         fixture.store.upsert_discovery_persisted_rebuild_state(
             &DiscoveryPersistedRebuildStateRow {
@@ -15033,9 +16453,7 @@ mod tests {
             diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_reason_class,
             CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeBudgetExhausted
         );
-        assert!(
-            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted
-        );
+        assert!(diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted);
         assert_eq!(
             diagnostic
                 .checkpoint_row_fetch_minimal_snapshot_probe_stage
@@ -15101,9 +16519,7 @@ mod tests {
         );
         assert_eq!(
             diagnostic.checkpoint_row_fetch_materialization_busy_probe_result_kind,
-            Some(
-                CheckpointRowFetchMaterializationBusyProbeResultKind::InsertSelectSucceeded
-            )
+            Some(CheckpointRowFetchMaterializationBusyProbeResultKind::InsertSelectSucceeded)
         );
         assert!(
             diagnostic
@@ -15465,21 +16881,21 @@ mod tests {
         );
         assert_eq!(
             diagnostic.checkpoint_row_fetch_materialization_immutable_probe_result_kind,
-            Some(
-                CheckpointRowFetchMaterializationImmutableProbeResultKind::InsertSelectSucceeded
-            )
+            Some(CheckpointRowFetchMaterializationImmutableProbeResultKind::InsertSelectSucceeded)
         );
         assert!(
             diagnostic
                 .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_completed
         );
 
-        let rendered = run_command(Command::ProbeCheckpointRowFetchMaterializationImmutableSource(
-            ProbeCheckpointRowFetchMaterializationImmutableSourceConfig {
-                config_path: fixture.config_path.clone(),
-                json: true,
-            },
-        ))?;
+        let rendered = run_command(
+            Command::ProbeCheckpointRowFetchMaterializationImmutableSource(
+                ProbeCheckpointRowFetchMaterializationImmutableSourceConfig {
+                    config_path: fixture.config_path.clone(),
+                    json: true,
+                },
+            ),
+        )?;
         let parsed: Value = serde_json::from_str(&rendered)?;
         assert_eq!(
             parsed["checkpoint_row_fetch_materialization_immutable_probe_reason_class"],
@@ -15593,9 +17009,7 @@ mod tests {
             diagnostic.checkpoint_row_fetch_materialization_immutable_probe_reason_class,
             CheckpointRowFetchMaterializationImmutableProbeReasonClass::CheckpointRowFetchMaterializationImmutableProbeProvenNotChangedByAttachMode
         );
-        assert!(
-            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_budget_exhausted
-        );
+        assert!(diagnostic.checkpoint_row_fetch_materialization_immutable_probe_budget_exhausted);
         assert_eq!(
             diagnostic
                 .checkpoint_row_fetch_materialization_immutable_probe_stage
@@ -15657,9 +17071,7 @@ mod tests {
         );
         assert_eq!(
             diagnostic.checkpoint_row_fetch_materialization_immutable_probe_result_kind,
-            Some(
-                CheckpointRowFetchMaterializationImmutableProbeResultKind::OtherSqliteError
-            )
+            Some(CheckpointRowFetchMaterializationImmutableProbeResultKind::OtherSqliteError)
         );
         assert_eq!(
             diagnostic
@@ -15679,25 +17091,337 @@ mod tests {
     }
 
     #[test]
+    fn run_command_probe_checkpoint_row_fetch_immutable_source_select_returns_success_json(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-immutable-source-select-row")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-immutable-source-select-row".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic = probe_checkpoint_row_fetch_immutable_source_select_read_only_with_budget(
+            &fixture.config_path,
+            StdDuration::from_secs(1),
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_reason_class,
+            CheckpointRowFetchImmutableSourceSelectProbeReasonClass::CheckpointRowFetchImmutableSourceSelectProbeProvenChangedByStatementShape,
+            "{diagnostic:#?}"
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_result_kind,
+            Some(CheckpointRowFetchImmutableSourceSelectProbeResultKind::Row)
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_select_query_started
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_select_row_fetch_completed
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_select_row_returned,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_select_phase
+                .as_deref(),
+            Some("replay")
+        );
+        assert!(diagnostic
+            .checkpoint_row_fetch_immutable_source_select_probe_source_select_updated_at
+            .is_some());
+
+        let rendered = run_command(Command::ProbeCheckpointRowFetchImmutableSourceSelect(
+            ProbeCheckpointRowFetchImmutableSourceSelectConfig {
+                config_path: fixture.config_path.clone(),
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["checkpoint_row_fetch_immutable_source_select_probe_reason_class"],
+            "checkpoint_row_fetch_immutable_source_select_probe_proven_changed_by_statement_shape"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_immutable_source_select_probe_result_kind"],
+            "row"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_immutable_source_select_probe_source_select_row_returned"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_immutable_source_select_probe_source_select_phase"],
+            "replay"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_immutable_source_select_probe_source_attach_mode"],
+            super::CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_SOURCE_ATTACH_MODE
+        );
+        for key in [
+            "checkpoint_row_fetch_immutable_source_select_probe_observed",
+            "checkpoint_row_fetch_immutable_source_select_probe_reason_class",
+            "checkpoint_row_fetch_immutable_source_select_probe_explanation",
+            "config_path",
+            "runtime_db_path",
+            "checkpoint_row_fetch_immutable_source_select_probe_strategy",
+            "checkpoint_row_fetch_immutable_source_select_probe_temp_dir",
+            "checkpoint_row_fetch_immutable_source_select_probe_budget_ms",
+            "checkpoint_row_fetch_immutable_source_select_probe_budget_source",
+            "checkpoint_row_fetch_immutable_source_select_probe_total_elapsed_ms",
+            "checkpoint_row_fetch_immutable_source_select_probe_budget_exhausted",
+            "checkpoint_row_fetch_immutable_source_select_probe_stage",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_attach_uri",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_attach_mode",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_attach_immutable",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_attach_readonly",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_sql",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_explain_query_plan",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_explain_query_plan_rows",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_journal_mode",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_locking_mode",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_connection_query_only",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_busy_timeout_ms",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_query_started",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_row_fetch_completed",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_row_fetch_elapsed_ms",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_row_returned",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_phase",
+            "checkpoint_row_fetch_immutable_source_select_probe_source_select_updated_at",
+            "checkpoint_row_fetch_immutable_source_select_probe_result_kind",
+            "checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_code",
+            "checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_message",
+        ] {
+            assert!(parsed.get(key).is_some(), "missing key {key}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_immutable_source_select_probe_missing_row_returns_proven_changed_by_statement_shape(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-immutable-source-select-eof")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-immutable-source-select-eof".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        let conn = rusqlite::Connection::open(&fixture.db_path)?;
+        conn.execute(
+            "DELETE FROM discovery_persisted_rebuild_state WHERE id = 1",
+            [],
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic = probe_checkpoint_row_fetch_immutable_source_select_read_only_with_budget(
+            &fixture.config_path,
+            StdDuration::from_secs(1),
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_reason_class,
+            CheckpointRowFetchImmutableSourceSelectProbeReasonClass::CheckpointRowFetchImmutableSourceSelectProbeProvenChangedByStatementShape
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_result_kind,
+            Some(CheckpointRowFetchImmutableSourceSelectProbeResultKind::Eof)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_select_row_returned,
+            Some(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_immutable_source_select_probe_row_fetch_timeout_returns_proven_not_changed_by_statement_shape(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-immutable-source-select-timeout")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-immutable-source-select-timeout".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_immutable_source_select_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_millis(50),
+                Some(
+                    CheckpointRowFetchImmutableSourceSelectProbeTestBehavior::DelayBeforeRowFetch(
+                        StdDuration::from_millis(200),
+                    ),
+                ),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_reason_class,
+            CheckpointRowFetchImmutableSourceSelectProbeReasonClass::CheckpointRowFetchImmutableSourceSelectProbeProvenNotChangedByStatementShape
+        );
+        assert!(diagnostic.checkpoint_row_fetch_immutable_source_select_probe_budget_exhausted);
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_stage
+                .as_deref(),
+            Some("row_fetch_source_select")
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_select_query_started
+        );
+        assert!(
+            !diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_source_select_row_fetch_completed
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_immutable_source_select_probe_forced_sqlite_error_reports_exact_fields(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-immutable-source-select-error")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-immutable-source-select-error".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_immutable_source_select_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+                Some(
+                    CheckpointRowFetchImmutableSourceSelectProbeTestBehavior::ForceOtherSqliteError,
+                ),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_reason_class,
+            CheckpointRowFetchImmutableSourceSelectProbeReasonClass::CheckpointRowFetchImmutableSourceSelectProbeProvenChangedByStatementShape
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_immutable_source_select_probe_result_kind,
+            Some(CheckpointRowFetchImmutableSourceSelectProbeResultKind::OtherSqliteError)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_code
+                .as_deref(),
+            Some("SQLITE_CORRUPT")
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_message
+                .as_deref(),
+            Some("forced other sqlite error at immutable-source SELECT rows.next() boundary")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn run_command_publication_truth_export_blocker_green_fixture_short_circuits_before_recent_raw_open(
     ) -> Result<()> {
         let fixture = make_fixture("runtime-export-publication-truth-green")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         seed_runtime_export_source(&fixture.store, now)?;
-        let diagnostic = explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget(
-            &fixture.config_path,
-            now,
-            StdDuration::from_secs(1),
-        );
+        let diagnostic =
+            explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget(
+                &fixture.config_path,
+                now,
+                StdDuration::from_secs(1),
+            );
         assert_eq!(
             diagnostic.publication_truth_export_blocker_reason_class,
             PublicationTruthExportBlockerReasonClass::PublicationTruthExportGateSatisfied
         );
         assert!(diagnostic.publication_truth_export_blocker_observed);
-        assert_eq!(diagnostic.export_gate_runtime_mode.as_deref(), Some("healthy"));
+        assert_eq!(
+            diagnostic.export_gate_runtime_mode.as_deref(),
+            Some("healthy")
+        );
         assert_eq!(diagnostic.publication_truth_complete, Some(true));
         assert_eq!(diagnostic.fresh_under_export_gate, Some(true));
-        assert!(diagnostic.publication_truth_export_blocker_top_level_proven_from_publication_state);
+        assert!(
+            diagnostic.publication_truth_export_blocker_top_level_proven_from_publication_state
+        );
         assert!(!diagnostic.publication_truth_export_checkpoint_headline_attempted);
         assert!(!diagnostic.publication_truth_export_blocker_enrichment_attempted);
         assert_eq!(diagnostic.persisted_rebuild_checkpoint_exists, None);
@@ -15738,17 +17462,21 @@ mod tests {
             parse_ts("2026-04-16T09:56:00Z")?,
         )?;
 
-        let diagnostic = explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget(
-            &fixture.config_path,
-            now,
-            StdDuration::from_secs(1),
-        );
+        let diagnostic =
+            explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget(
+                &fixture.config_path,
+                now,
+                StdDuration::from_secs(1),
+            );
         assert_eq!(
             diagnostic.publication_truth_export_blocker_reason_class,
             PublicationTruthExportBlockerReasonClass::PublicationTruthExportGateSatisfied
         );
         assert!(diagnostic.publication_truth_export_blocker_observed);
-        assert_eq!(diagnostic.export_gate_runtime_mode.as_deref(), Some("fail_closed"));
+        assert_eq!(
+            diagnostic.export_gate_runtime_mode.as_deref(),
+            Some("fail_closed")
+        );
         assert_eq!(diagnostic.publication_truth_complete, Some(true));
         assert_eq!(diagnostic.fresh_under_export_gate, Some(true));
         Ok(())
@@ -15858,24 +17586,36 @@ mod tests {
             parsed["publication_truth_export_checkpoint_headline_budget_source"],
             "fixed_constant_default_primary_operator"
         );
-        assert!(parsed["publication_truth_export_checkpoint_headline_total_elapsed_ms"]
-            .as_u64()
-            .is_some());
-        assert!(parsed["publication_truth_export_checkpoint_headline_runtime_db_open_elapsed_ms"]
-            .as_u64()
-            .is_some());
-        assert!(parsed["publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms"]
-            .as_u64()
-            .is_some());
-        assert!(parsed["publication_truth_export_checkpoint_headline_row_count_elapsed_ms"]
-            .as_u64()
-            .is_some());
-        assert!(parsed["publication_truth_export_checkpoint_headline_prepare_elapsed_ms"]
-            .as_u64()
-            .is_some());
-        assert!(parsed["publication_truth_export_checkpoint_headline_step_elapsed_ms"]
-            .as_u64()
-            .is_some());
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_total_elapsed_ms"]
+                .as_u64()
+                .is_some()
+        );
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_runtime_db_open_elapsed_ms"]
+                .as_u64()
+                .is_some()
+        );
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms"]
+                .as_u64()
+                .is_some()
+        );
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_row_count_elapsed_ms"]
+                .as_u64()
+                .is_some()
+        );
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_prepare_elapsed_ms"]
+                .as_u64()
+                .is_some()
+        );
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_step_elapsed_ms"]
+                .as_u64()
+                .is_some()
+        );
         assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_worker_started"],
             true
@@ -15899,11 +17639,13 @@ mod tests {
             true
         );
         assert_eq!(
-            parsed["publication_truth_export_checkpoint_headline_worker_prepare_completed_received"],
+            parsed
+                ["publication_truth_export_checkpoint_headline_worker_prepare_completed_received"],
             true
         );
         assert_eq!(
-            parsed["publication_truth_export_checkpoint_headline_worker_step_query_started_received"],
+            parsed
+                ["publication_truth_export_checkpoint_headline_worker_step_query_started_received"],
             true
         );
         assert_eq!(
@@ -15911,7 +17653,8 @@ mod tests {
             true
         );
         assert_eq!(
-            parsed["publication_truth_export_checkpoint_headline_worker_step_phase_decoded_received"],
+            parsed
+                ["publication_truth_export_checkpoint_headline_worker_step_phase_decoded_received"],
             true
         );
         assert_eq!(
@@ -15934,43 +17677,45 @@ mod tests {
             parsed["publication_truth_export_checkpoint_headline_worker_disconnected"],
             false
         );
-        assert!(
-            parsed["publication_truth_export_checkpoint_headline_worker_sqlite_busy_timeout_ms"]
-                .as_u64()
-                .is_some()
-        );
+        assert!(parsed
+            ["publication_truth_export_checkpoint_headline_worker_sqlite_busy_timeout_ms"]
+            .as_u64()
+            .is_some());
         assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_worker_query_sql"],
             super::CHECKPOINT_HEADLINE_ROW_META_SQL
         );
-        assert!(parsed["publication_truth_export_checkpoint_headline_worker_explain_query_plan"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("discovery_persisted_rebuild_state"));
         assert!(
-            parsed["publication_truth_export_checkpoint_headline_worker_explain_query_plan_rows"]
-                .as_array()
-                .map(|rows| !rows.is_empty())
-                .unwrap_or(false)
+            parsed["publication_truth_export_checkpoint_headline_worker_explain_query_plan"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("discovery_persisted_rebuild_state")
         );
+        assert!(parsed
+            ["publication_truth_export_checkpoint_headline_worker_explain_query_plan_rows"]
+            .as_array()
+            .map(|rows| !rows.is_empty())
+            .unwrap_or(false));
         assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_worker_query_readonly_mode"],
             true
         );
-        assert!(parsed["publication_truth_export_checkpoint_headline_worker_connection_journal_mode"]
+        assert!(parsed
+            ["publication_truth_export_checkpoint_headline_worker_connection_journal_mode"]
             .as_str()
             .map(|value| !value.is_empty())
             .unwrap_or(false));
-        assert!(parsed["publication_truth_export_checkpoint_headline_worker_connection_locking_mode"]
+        assert!(parsed
+            ["publication_truth_export_checkpoint_headline_worker_connection_locking_mode"]
             .as_str()
             .map(|value| !value.is_empty())
             .unwrap_or(false));
-        assert!(
-            parsed["publication_truth_export_checkpoint_headline_worker_connection_query_only"]
-                .as_bool()
-                .is_some()
-        );
-        assert!(parsed["publication_truth_export_checkpoint_headline_worker_row_fetch_access_path"]
+        assert!(parsed
+            ["publication_truth_export_checkpoint_headline_worker_connection_query_only"]
+            .as_bool()
+            .is_some());
+        assert!(parsed
+            ["publication_truth_export_checkpoint_headline_worker_row_fetch_access_path"]
             .as_str()
             .unwrap_or_default()
             .contains("discovery_persisted_rebuild_state"));
@@ -15978,11 +17723,10 @@ mod tests {
             parsed["publication_truth_export_checkpoint_headline_worker_row_fetch_wait_kind"],
             "rows_next_returned_row"
         );
-        assert!(
-            parsed["publication_truth_export_checkpoint_headline_worker_row_fetch_started_at_unix_ms"]
-                .as_i64()
-                .is_some()
-        );
+        assert!(parsed
+            ["publication_truth_export_checkpoint_headline_worker_row_fetch_started_at_unix_ms"]
+            .as_i64()
+            .is_some());
         assert!(
             parsed["publication_truth_export_checkpoint_headline_worker_row_fetch_elapsed_ms_observed_by_worker"]
                 .as_u64()
@@ -15992,31 +17736,27 @@ mod tests {
             parsed["publication_truth_export_checkpoint_headline_worker_last_event"],
             "finished"
         );
-        assert!(
-            parsed["publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open"]
-                .as_u64()
-                .is_some()
-        );
+        assert!(parsed
+            ["publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open"]
+            .as_u64()
+            .is_some());
         assert!(
             parsed["publication_truth_export_checkpoint_headline_budget_remaining_ms_after_schema_lookup"]
                 .as_u64()
                 .is_some()
         );
-        assert!(
-            parsed["publication_truth_export_checkpoint_headline_budget_remaining_ms_after_row_count"]
-                .as_u64()
-                .is_some()
-        );
-        assert!(
-            parsed["publication_truth_export_checkpoint_headline_budget_remaining_ms_after_prepare"]
-                .as_u64()
-                .is_some()
-        );
-        assert!(
-            parsed["publication_truth_export_checkpoint_headline_budget_remaining_ms_after_step"]
-                .as_u64()
-                .is_some()
-        );
+        assert!(parsed
+            ["publication_truth_export_checkpoint_headline_budget_remaining_ms_after_row_count"]
+            .as_u64()
+            .is_some());
+        assert!(parsed
+            ["publication_truth_export_checkpoint_headline_budget_remaining_ms_after_prepare"]
+            .as_u64()
+            .is_some());
+        assert!(parsed
+            ["publication_truth_export_checkpoint_headline_budget_remaining_ms_after_step"]
+            .as_u64()
+            .is_some());
         assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_budget_exhausted"],
             false
@@ -16455,11 +18195,12 @@ mod tests {
             },
         )?;
 
-        let diagnostic = explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget(
-            &fixture.config_path,
-            now,
-            StdDuration::from_secs(1),
-        );
+        let diagnostic =
+            explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget(
+                &fixture.config_path,
+                now,
+                StdDuration::from_secs(1),
+            );
 
         assert_eq!(
             diagnostic.publication_truth_export_blocker_reason_class,
@@ -16482,7 +18223,10 @@ mod tests {
             diagnostic.persisted_rebuild_checkpoint_updated_at,
             Some(now - Duration::minutes(1))
         );
-        assert_eq!(diagnostic.persisted_rebuild_checkpoint_state_json_bytes, None);
+        assert_eq!(
+            diagnostic.persisted_rebuild_checkpoint_state_json_bytes,
+            None
+        );
         assert!(!diagnostic.persisted_rebuild_checkpoint_state_json_bytes_probe_attempted);
         assert_eq!(diagnostic.rebuild_phase.as_deref(), Some("replay"));
         assert_eq!(
@@ -16563,8 +18307,7 @@ mod tests {
             "fixed_constant_default_primary_operator"
         );
         assert!(
-            diagnostic
-                .publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open
+            diagnostic.publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open
                 <= 50
         );
         assert!(
@@ -16573,110 +18316,82 @@ mod tests {
                 <= 50
         );
         assert!(
-            diagnostic
-                .publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms
-                <= 50
+            diagnostic.publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms <= 50
         );
-        assert!(
-            diagnostic
-                .publication_truth_export_checkpoint_headline_row_count_elapsed_ms
-                <= 50
-        );
-        assert!(
-            diagnostic
-                .publication_truth_export_checkpoint_headline_prepare_elapsed_ms
-                <= 50
-        );
+        assert!(diagnostic.publication_truth_export_checkpoint_headline_row_count_elapsed_ms <= 50);
+        assert!(diagnostic.publication_truth_export_checkpoint_headline_prepare_elapsed_ms <= 50);
         assert_eq!(
             diagnostic.publication_truth_export_checkpoint_headline_step_elapsed_ms,
             0
         );
+        assert!(diagnostic.publication_truth_export_checkpoint_headline_worker_started);
         assert!(
-            diagnostic.publication_truth_export_checkpoint_headline_worker_started
-        );
-        assert!(
-            diagnostic.publication_truth_export_checkpoint_headline_worker_step_query_started_received
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_step_query_started_received
         );
         assert!(
             !diagnostic.publication_truth_export_checkpoint_headline_worker_step_row_fetch_completed_received
         );
         assert!(
-            !diagnostic.publication_truth_export_checkpoint_headline_worker_step_phase_decoded_received
+            !diagnostic
+                .publication_truth_export_checkpoint_headline_worker_step_phase_decoded_received
         );
         assert!(
             !diagnostic
                 .publication_truth_export_checkpoint_headline_worker_step_updated_at_decoded_received
         );
-        assert!(
-            !diagnostic.publication_truth_export_checkpoint_headline_worker_finished_received
-        );
+        assert!(!diagnostic.publication_truth_export_checkpoint_headline_worker_finished_received);
         assert!(
             !diagnostic.publication_truth_export_checkpoint_headline_worker_finished_send_attempted
         );
-        assert!(
-            !diagnostic.publication_truth_export_checkpoint_headline_worker_disconnected
-        );
-        assert!(
-            diagnostic
-                .publication_truth_export_checkpoint_headline_worker_sqlite_busy_timeout_ms
-                .is_some()
-        );
+        assert!(!diagnostic.publication_truth_export_checkpoint_headline_worker_disconnected);
+        assert!(diagnostic
+            .publication_truth_export_checkpoint_headline_worker_sqlite_busy_timeout_ms
+            .is_some());
         assert_eq!(
-            diagnostic.publication_truth_export_checkpoint_headline_worker_query_sql.as_deref(),
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_query_sql
+                .as_deref(),
             Some(super::CHECKPOINT_HEADLINE_ROW_META_SQL)
         );
-        assert!(
-            diagnostic
-                .publication_truth_export_checkpoint_headline_worker_explain_query_plan
-                .as_deref()
-                .unwrap_or_default()
-                .contains("discovery_persisted_rebuild_state")
-        );
-        assert!(
-            diagnostic
-                .publication_truth_export_checkpoint_headline_worker_explain_query_plan_rows
-                .as_ref()
-                .map(|rows| !rows.is_empty())
-                .unwrap_or(false)
-        );
+        assert!(diagnostic
+            .publication_truth_export_checkpoint_headline_worker_explain_query_plan
+            .as_deref()
+            .unwrap_or_default()
+            .contains("discovery_persisted_rebuild_state"));
+        assert!(diagnostic
+            .publication_truth_export_checkpoint_headline_worker_explain_query_plan_rows
+            .as_ref()
+            .map(|rows| !rows.is_empty())
+            .unwrap_or(false));
         assert_eq!(
             diagnostic.publication_truth_export_checkpoint_headline_worker_query_readonly_mode,
             Some(true)
         );
-        assert!(
-            diagnostic
-                .publication_truth_export_checkpoint_headline_worker_connection_journal_mode
-                .as_deref()
-                .is_some()
-        );
-        assert!(
-            diagnostic
-                .publication_truth_export_checkpoint_headline_worker_connection_locking_mode
-                .as_deref()
-                .is_some()
-        );
-        assert!(
-            diagnostic
-                .publication_truth_export_checkpoint_headline_worker_connection_query_only
-                .is_some()
-        );
-        assert!(
-            diagnostic
-                .publication_truth_export_checkpoint_headline_worker_row_fetch_access_path
-                .as_deref()
-                .is_some()
-        );
+        assert!(diagnostic
+            .publication_truth_export_checkpoint_headline_worker_connection_journal_mode
+            .as_deref()
+            .is_some());
+        assert!(diagnostic
+            .publication_truth_export_checkpoint_headline_worker_connection_locking_mode
+            .as_deref()
+            .is_some());
+        assert!(diagnostic
+            .publication_truth_export_checkpoint_headline_worker_connection_query_only
+            .is_some());
+        assert!(diagnostic
+            .publication_truth_export_checkpoint_headline_worker_row_fetch_access_path
+            .as_deref()
+            .is_some());
         assert_eq!(
             diagnostic
                 .publication_truth_export_checkpoint_headline_worker_row_fetch_wait_kind
                 .as_deref(),
             Some("waiting_inside_rows_next_before_first_row_or_eof")
         );
-        assert!(
-            diagnostic
-                .publication_truth_export_checkpoint_headline_worker_row_fetch_started_at_unix_ms
-                .is_some()
-        );
+        assert!(diagnostic
+            .publication_truth_export_checkpoint_headline_worker_row_fetch_started_at_unix_ms
+            .is_some());
         assert_eq!(
             diagnostic
                 .publication_truth_export_checkpoint_headline_worker_row_fetch_elapsed_ms_observed_by_worker,
@@ -16697,7 +18412,8 @@ mod tests {
     #[test]
     fn run_command_publication_truth_export_blocker_replay_missing_checkpoint_row_preserves_top_level(
     ) -> Result<()> {
-        let fixture = make_fixture("runtime-export-publication-truth-replay-missing-checkpoint-row")?;
+        let fixture =
+            make_fixture("runtime-export-publication-truth-replay-missing-checkpoint-row")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         seed_runtime_export_source(&fixture.store, now)?;
         fixture
@@ -16742,18 +18458,26 @@ mod tests {
             parsed["publication_truth_export_checkpoint_headline_budget_source"],
             "fixed_constant_default_primary_operator"
         );
-        assert!(parsed["publication_truth_export_checkpoint_headline_total_elapsed_ms"]
-            .as_u64()
-            .is_some());
-        assert!(parsed["publication_truth_export_checkpoint_headline_runtime_db_open_elapsed_ms"]
-            .as_u64()
-            .is_some());
-        assert!(parsed["publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms"]
-            .as_u64()
-            .is_some());
-        assert!(parsed["publication_truth_export_checkpoint_headline_row_count_elapsed_ms"]
-            .as_u64()
-            .is_some());
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_total_elapsed_ms"]
+                .as_u64()
+                .is_some()
+        );
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_runtime_db_open_elapsed_ms"]
+                .as_u64()
+                .is_some()
+        );
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms"]
+                .as_u64()
+                .is_some()
+        );
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_row_count_elapsed_ms"]
+                .as_u64()
+                .is_some()
+        );
         assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_worker_started"],
             true
@@ -16771,7 +18495,8 @@ mod tests {
             false
         );
         assert_eq!(
-            parsed["publication_truth_export_checkpoint_headline_worker_prepare_completed_received"],
+            parsed
+                ["publication_truth_export_checkpoint_headline_worker_prepare_completed_received"],
             false
         );
         assert_eq!(
@@ -16794,12 +18519,18 @@ mod tests {
             parsed["publication_truth_export_checkpoint_headline_prepare_elapsed_ms"],
             0
         );
-        assert_eq!(parsed["publication_truth_export_checkpoint_headline_step_elapsed_ms"], 0);
+        assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_step_elapsed_ms"],
+            0
+        );
         assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_budget_exhausted"],
             false
         );
-        assert_eq!(parsed["publication_truth_export_checkpoint_headline_stage"], "complete");
+        assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_stage"],
+            "complete"
+        );
         assert_eq!(parsed["persisted_rebuild_checkpoint_exists"], false);
         assert_eq!(
             parsed["persisted_rebuild_checkpoint_updated_at"],
@@ -16809,7 +18540,10 @@ mod tests {
             parsed["persisted_rebuild_checkpoint_state_json_bytes_probe_attempted"],
             false
         );
-        assert_eq!(parsed["replay_sol_leg_incomplete_reason_class"], Value::Null);
+        assert_eq!(
+            parsed["replay_sol_leg_incomplete_reason_class"],
+            Value::Null
+        );
         assert_eq!(parsed["source_comparison_applicable"], Value::Null);
         Ok(())
     }
@@ -16905,10 +18639,12 @@ mod tests {
             parsed["publication_truth_export_blocker_enrichment_stage"],
             "checkpoint_headline"
         );
-        assert!(parsed["publication_truth_export_checkpoint_headline_explanation"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("proven cheap persisted rebuild row-meta path"));
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_explanation"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("proven cheap persisted rebuild row-meta path")
+        );
         Ok(())
     }
 
@@ -16943,7 +18679,9 @@ mod tests {
     #[test]
     fn run_command_replay_sol_leg_blocker_current_fixture_with_successful_deep_proof_fills_reason(
     ) -> Result<()> {
-        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX.lock().expect("trace mutex");
+        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX
+            .lock()
+            .expect("trace mutex");
         let fixture = make_fixture("runtime-export-replay-sol-leg-blocker-success")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         seed_runtime_export_source(&fixture.store, now)?;
@@ -17029,20 +18767,33 @@ mod tests {
             parsed["replay_sol_leg_blocker_prerequisite_checkpoint_headline_stage"],
             "complete"
         );
-        assert!(parsed["replay_sol_leg_blocker_prerequisite_total_elapsed_ms"]
-            .as_u64()
-            .is_some());
-        assert_eq!(parsed["replay_sol_leg_blocker_post_prerequisite_started"], true);
-        assert!(parsed["replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms"]
-            .as_u64()
-            .is_some());
+        assert!(
+            parsed["replay_sol_leg_blocker_prerequisite_total_elapsed_ms"]
+                .as_u64()
+                .is_some()
+        );
+        assert_eq!(
+            parsed["replay_sol_leg_blocker_post_prerequisite_started"],
+            true
+        );
+        assert!(
+            parsed["replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms"]
+                .as_u64()
+                .is_some()
+        );
         assert!(parsed["replay_sol_leg_blocker_recent_raw_open_elapsed_ms"]
             .as_u64()
             .is_some());
         assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_started"], true);
         assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_completed"], true);
-        assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_budget_exhausted"], false);
-        assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_stage"], "complete");
+        assert_eq!(
+            parsed["replay_sol_leg_blocker_deep_reason_budget_exhausted"],
+            false
+        );
+        assert_eq!(
+            parsed["replay_sol_leg_blocker_deep_reason_stage"],
+            "complete"
+        );
         assert_eq!(
             parsed["export_gate_reason"],
             "publication_truth_withheld_while_replay_sol_leg_incomplete"
@@ -17076,14 +18827,19 @@ mod tests {
         assert!(parsed["replay_sol_leg_blocker_total_elapsed_ms"]
             .as_u64()
             .is_some());
-        assert!(parsed["replay_sol_leg_blocker_checkpoint_headline_elapsed_ms"]
-            .as_u64()
-            .is_some());
+        assert!(
+            parsed["replay_sol_leg_blocker_checkpoint_headline_elapsed_ms"]
+                .as_u64()
+                .is_some()
+        );
         assert!(parsed["replay_sol_leg_blocker_deep_reason_elapsed_ms"]
             .as_u64()
             .is_some());
         assert_eq!(parsed["replay_sol_leg_blocker_budget_exhausted"], false);
-        assert_eq!(parsed["replay_sol_leg_blocker_budget_exhausted_stage"], Value::Null);
+        assert_eq!(
+            parsed["replay_sol_leg_blocker_budget_exhausted_stage"],
+            Value::Null
+        );
         for key in [
             "replay_sol_leg_blocker_observed",
             "replay_sol_leg_blocker_reason_class",
@@ -17143,8 +18899,8 @@ mod tests {
     }
 
     #[test]
-    fn run_command_replay_sol_leg_blocker_non_replay_current_blocker_skips_deep_proof(
-    ) -> Result<()> {
+    fn run_command_replay_sol_leg_blocker_non_replay_current_blocker_skips_deep_proof() -> Result<()>
+    {
         let fixture = make_fixture("runtime-export-replay-sol-leg-blocker-not-current")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         seed_runtime_export_source(&fixture.store, now)?;
@@ -17197,16 +18953,31 @@ mod tests {
             parsed["replay_sol_leg_blocker_prerequisite_reason_class"],
             "publication_truth_export_blocked_on_other_publishable_checkpoint_reason"
         );
-        assert_eq!(parsed["replay_sol_leg_blocker_post_prerequisite_started"], false);
-        assert_eq!(parsed["replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms"], 0);
-        assert_eq!(parsed["replay_sol_leg_blocker_recent_raw_open_elapsed_ms"], 0);
+        assert_eq!(
+            parsed["replay_sol_leg_blocker_post_prerequisite_started"],
+            false
+        );
+        assert_eq!(
+            parsed["replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms"],
+            0
+        );
+        assert_eq!(
+            parsed["replay_sol_leg_blocker_recent_raw_open_elapsed_ms"],
+            0
+        );
         assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_started"], false);
-        assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_completed"], false);
+        assert_eq!(
+            parsed["replay_sol_leg_blocker_deep_reason_completed"],
+            false
+        );
         assert_eq!(
             parsed["export_gate_reason"],
             "publication_truth_withheld_while_replay_candidate_activity_backfill_incomplete"
         );
-        assert_eq!(parsed["replay_sol_leg_incomplete_reason_class"], Value::Null);
+        assert_eq!(
+            parsed["replay_sol_leg_incomplete_reason_class"],
+            Value::Null
+        );
         assert_eq!(parsed["source_comparison_applicable"], Value::Null);
         assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_elapsed_ms"], 0);
         assert_eq!(parsed["replay_sol_leg_blocker_budget_exhausted"], false);
@@ -17259,9 +19030,7 @@ mod tests {
             diagnostic.replay_sol_leg_blocker_prerequisite_reason_class,
             PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnReplaySolLegIncomplete
         );
-        assert!(
-            diagnostic.replay_sol_leg_blocker_prerequisite_checkpoint_headline_completed
-        );
+        assert!(diagnostic.replay_sol_leg_blocker_prerequisite_checkpoint_headline_completed);
         assert!(
             !diagnostic.replay_sol_leg_blocker_prerequisite_checkpoint_headline_budget_exhausted
         );
@@ -17272,13 +19041,19 @@ mod tests {
             Some("complete")
         );
         assert!(diagnostic.replay_sol_leg_blocker_post_prerequisite_started);
-        assert!(diagnostic.replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms <= diagnostic.replay_sol_leg_blocker_total_elapsed_ms);
-        assert!(diagnostic.replay_sol_leg_blocker_recent_raw_open_elapsed_ms <= diagnostic.replay_sol_leg_blocker_total_elapsed_ms);
+        assert!(
+            diagnostic.replay_sol_leg_blocker_runtime_db_reopen_elapsed_ms
+                <= diagnostic.replay_sol_leg_blocker_total_elapsed_ms
+        );
+        assert!(
+            diagnostic.replay_sol_leg_blocker_recent_raw_open_elapsed_ms
+                <= diagnostic.replay_sol_leg_blocker_total_elapsed_ms
+        );
         assert!(!diagnostic.replay_sol_leg_blocker_deep_reason_started);
         assert!(!diagnostic.replay_sol_leg_blocker_deep_reason_completed);
-        assert!(diagnostic.replay_sol_leg_blocker_explanation.contains(
-            "promoted recent_raw latest db"
-        ));
+        assert!(diagnostic
+            .replay_sol_leg_blocker_explanation
+            .contains("promoted recent_raw latest db"));
         assert_eq!(
             diagnostic
                 .replay_sol_leg_blocker_deep_reason_stage
@@ -17293,7 +19068,9 @@ mod tests {
     #[test]
     fn replay_sol_leg_blocker_forced_deep_budget_exhaustion_preserves_current_blocker_proof(
     ) -> Result<()> {
-        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX.lock().expect("trace mutex");
+        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX
+            .lock()
+            .expect("trace mutex");
         let fixture = make_fixture("runtime-export-replay-sol-leg-blocker-budget-exhausted")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         seed_runtime_export_source(&fixture.store, now)?;
@@ -17357,9 +19134,15 @@ mod tests {
             parsed["replay_sol_leg_blocker_reason_class"],
             "replay_sol_leg_blocker_proven_current"
         );
-        assert_eq!(parsed["replay_sol_leg_blocker_post_prerequisite_started"], true);
+        assert_eq!(
+            parsed["replay_sol_leg_blocker_post_prerequisite_started"],
+            true
+        );
         assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_started"], true);
-        assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_completed"], false);
+        assert_eq!(
+            parsed["replay_sol_leg_blocker_deep_reason_completed"],
+            false
+        );
         assert_eq!(parsed["replay_sol_leg_blocker_budget_exhausted"], true);
         assert_eq!(
             parsed["replay_sol_leg_blocker_budget_exhausted_stage"],
@@ -17376,7 +19159,10 @@ mod tests {
         assert_eq!(parsed["persisted_rebuild_checkpoint_exists"], true);
         assert_eq!(parsed["rebuild_phase"], "replay");
         assert_eq!(parsed["rebuild_replay_subphase"], "sol_leg");
-        assert_eq!(parsed["replay_sol_leg_incomplete_reason_class"], Value::Null);
+        assert_eq!(
+            parsed["replay_sol_leg_incomplete_reason_class"],
+            Value::Null
+        );
         assert_eq!(parsed["replay_sol_leg_incomplete_explanation"], Value::Null);
         assert_eq!(parsed["source_comparison_applicable"], Value::Null);
         assert_eq!(parsed["source_scan_time_budget_exhausted"], Value::Null);
@@ -17435,9 +19221,7 @@ mod tests {
             diagnostic.replay_sol_leg_blocker_prerequisite_reason_class,
             PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnReplaySolLegIncomplete
         );
-        assert!(
-            !diagnostic.replay_sol_leg_blocker_prerequisite_checkpoint_headline_completed
-        );
+        assert!(!diagnostic.replay_sol_leg_blocker_prerequisite_checkpoint_headline_completed);
         assert!(
             diagnostic.replay_sol_leg_blocker_prerequisite_checkpoint_headline_budget_exhausted
         );
@@ -17463,7 +19247,9 @@ mod tests {
     #[test]
     fn run_command_trace_replay_sol_leg_deep_proof_current_fixture_with_successful_completion_returns_proven(
     ) -> Result<()> {
-        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX.lock().expect("trace mutex");
+        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX
+            .lock()
+            .expect("trace mutex");
         let fixture = make_fixture("runtime-export-replay-sol-leg-deep-trace-success")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         seed_runtime_export_source(&fixture.store, now)?;
@@ -17541,11 +19327,20 @@ mod tests {
         assert_eq!(parsed["deep_trace_checkpoint_inspect_completed"], true);
         assert_eq!(parsed["deep_trace_source_compare_started"], true);
         assert_eq!(parsed["deep_trace_source_compare_completed"], true);
-        assert_eq!(parsed["deep_trace_checkpoint_publishable_blocker"], "replay_sol_leg_incomplete");
+        assert_eq!(
+            parsed["deep_trace_checkpoint_publishable_blocker"],
+            "replay_sol_leg_incomplete"
+        );
         assert_eq!(parsed["deep_trace_checkpoint_rebuild_phase"], "replay");
-        assert_eq!(parsed["deep_trace_checkpoint_rebuild_replay_subphase"], "sol_leg");
+        assert_eq!(
+            parsed["deep_trace_checkpoint_rebuild_replay_subphase"],
+            "sol_leg"
+        );
         assert_eq!(parsed["deep_trace_source_comparison_applicable"], true);
-        assert_eq!(parsed["deep_trace_source_scan_target_buy_mint_filter_active"], true);
+        assert_eq!(
+            parsed["deep_trace_source_scan_target_buy_mint_filter_active"],
+            true
+        );
         assert_eq!(
             parsed["deep_trace_final_reason_class"],
             "source_frontier_still_ahead_exact_target_filtered"
@@ -17606,7 +19401,9 @@ mod tests {
     #[test]
     fn run_command_trace_replay_sol_leg_deep_proof_non_replay_current_blocker_skips_deep_trace(
     ) -> Result<()> {
-        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX.lock().expect("trace mutex");
+        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX
+            .lock()
+            .expect("trace mutex");
         let fixture = make_fixture("runtime-export-replay-sol-leg-deep-trace-not-current")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         seed_runtime_export_source(&fixture.store, now)?;
@@ -17641,7 +19438,9 @@ mod tests {
 
     #[test]
     fn trace_replay_sol_leg_deep_proof_missing_recent_raw_returns_unproven() -> Result<()> {
-        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX.lock().expect("trace mutex");
+        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX
+            .lock()
+            .expect("trace mutex");
         let fixture = make_fixture("runtime-export-replay-sol-leg-deep-trace-missing-recent-raw")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         seed_runtime_export_source(&fixture.store, now)?;
@@ -17683,8 +19482,14 @@ mod tests {
             ReplaySolLegDeepTraceReasonClass::ReplaySolLegDeepTraceUnprovenDueToMissingEvidence
         );
         assert!(diagnostic.deep_trace_prerequisite_completed);
-        assert!(diagnostic.deep_trace_runtime_db_open_elapsed_ms <= diagnostic.deep_trace_total_elapsed_ms);
-        assert!(diagnostic.deep_trace_recent_raw_open_elapsed_ms <= diagnostic.deep_trace_total_elapsed_ms);
+        assert!(
+            diagnostic.deep_trace_runtime_db_open_elapsed_ms
+                <= diagnostic.deep_trace_total_elapsed_ms
+        );
+        assert!(
+            diagnostic.deep_trace_recent_raw_open_elapsed_ms
+                <= diagnostic.deep_trace_total_elapsed_ms
+        );
         assert!(!diagnostic.deep_trace_checkpoint_inspect_started);
         assert!(!diagnostic.deep_trace_source_compare_started);
         assert_eq!(diagnostic.deep_trace_final_reason_class, None);
@@ -17694,7 +19499,9 @@ mod tests {
     #[test]
     fn trace_replay_sol_leg_deep_proof_forced_source_compare_budget_exhaustion_returns_budget_exhausted(
     ) -> Result<()> {
-        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX.lock().expect("trace mutex");
+        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX
+            .lock()
+            .expect("trace mutex");
         let fixture = make_fixture("runtime-export-replay-sol-leg-deep-trace-budget-exhausted")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         seed_runtime_export_source(&fixture.store, now)?;
@@ -17774,7 +19581,9 @@ mod tests {
     #[test]
     fn run_command_trace_replay_sol_leg_source_compare_current_fixture_with_successful_completion_returns_proven(
     ) -> Result<()> {
-        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX.lock().expect("trace mutex");
+        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX
+            .lock()
+            .expect("trace mutex");
         let fixture = make_fixture("runtime-export-replay-sol-leg-source-compare-success")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         seed_runtime_export_source(&fixture.store, now)?;
@@ -17944,7 +19753,9 @@ mod tests {
     #[test]
     fn run_command_trace_replay_sol_leg_source_compare_non_replay_current_blocker_skips_compare(
     ) -> Result<()> {
-        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX.lock().expect("trace mutex");
+        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX
+            .lock()
+            .expect("trace mutex");
         let fixture = make_fixture("runtime-export-replay-sol-leg-source-compare-not-current")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         seed_runtime_export_source(&fixture.store, now)?;
@@ -17984,7 +19795,9 @@ mod tests {
     #[test]
     fn trace_replay_sol_leg_source_compare_forced_prerequisite_failure_returns_unproven_with_prerequisite_telemetry(
     ) -> Result<()> {
-        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX.lock().expect("trace mutex");
+        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX
+            .lock()
+            .expect("trace mutex");
         let fixture =
             make_fixture("runtime-export-replay-sol-leg-source-compare-prerequisite-failure")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
@@ -18044,11 +19857,12 @@ mod tests {
         assert!(diagnostic
             .source_compare_trace_prerequisite_explanation
             .contains("cheap checkpoint-headline prerequisite path did not complete"));
-        assert!(diagnostic.source_compare_trace_prerequisite_total_elapsed_ms
-            <= diagnostic.source_compare_trace_total_elapsed_ms);
+        assert!(
+            diagnostic.source_compare_trace_prerequisite_total_elapsed_ms
+                <= diagnostic.source_compare_trace_total_elapsed_ms
+        );
         assert!(!diagnostic.source_compare_trace_prerequisite_checkpoint_headline_completed);
-        assert!(diagnostic
-            .source_compare_trace_prerequisite_checkpoint_headline_budget_exhausted);
+        assert!(diagnostic.source_compare_trace_prerequisite_checkpoint_headline_budget_exhausted);
         assert_eq!(
             diagnostic
                 .source_compare_trace_prerequisite_checkpoint_headline_stage
@@ -18062,7 +19876,9 @@ mod tests {
 
     #[test]
     fn trace_replay_sol_leg_source_compare_missing_recent_raw_returns_unproven() -> Result<()> {
-        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX.lock().expect("trace mutex");
+        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX
+            .lock()
+            .expect("trace mutex");
         let fixture =
             make_fixture("runtime-export-replay-sol-leg-source-compare-missing-recent-raw")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
@@ -18110,20 +19926,22 @@ mod tests {
         );
         assert!(diagnostic.source_compare_trace_prerequisite_reused_publication_diagnostic);
         assert!(diagnostic.source_compare_trace_prerequisite_completed);
-        assert!(diagnostic
-            .source_compare_trace_prerequisite_checkpoint_headline_completed);
-        assert!(!diagnostic
-            .source_compare_trace_prerequisite_checkpoint_headline_budget_exhausted);
+        assert!(diagnostic.source_compare_trace_prerequisite_checkpoint_headline_completed);
+        assert!(!diagnostic.source_compare_trace_prerequisite_checkpoint_headline_budget_exhausted);
         assert_eq!(
             diagnostic
                 .source_compare_trace_prerequisite_checkpoint_headline_stage
                 .as_deref(),
             Some("complete")
         );
-        assert!(diagnostic.source_compare_trace_runtime_db_open_elapsed_ms
-            <= diagnostic.source_compare_trace_total_elapsed_ms);
-        assert!(diagnostic.source_compare_trace_recent_raw_open_elapsed_ms
-            <= diagnostic.source_compare_trace_total_elapsed_ms);
+        assert!(
+            diagnostic.source_compare_trace_runtime_db_open_elapsed_ms
+                <= diagnostic.source_compare_trace_total_elapsed_ms
+        );
+        assert!(
+            diagnostic.source_compare_trace_recent_raw_open_elapsed_ms
+                <= diagnostic.source_compare_trace_total_elapsed_ms
+        );
         assert!(!diagnostic.source_compare_trace_compare_started);
         Ok(())
     }
@@ -18131,7 +19949,9 @@ mod tests {
     #[test]
     fn trace_replay_sol_leg_source_compare_forced_wait_timeout_returns_budget_exhausted(
     ) -> Result<()> {
-        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX.lock().expect("trace mutex");
+        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX
+            .lock()
+            .expect("trace mutex");
         let fixture = make_fixture("runtime-export-replay-sol-leg-source-compare-wait-timeout")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         seed_runtime_export_source(&fixture.store, now)?;
@@ -18199,7 +20019,9 @@ mod tests {
         assert!(diagnostic.source_compare_trace_wait_timeout_hit);
         assert!(diagnostic.source_compare_trace_budget_exhausted);
         assert_eq!(
-            diagnostic.source_compare_trace_budget_exhausted_stage.as_deref(),
+            diagnostic
+                .source_compare_trace_budget_exhausted_stage
+                .as_deref(),
             Some("source_compare_trace_wait_timeout")
         );
         assert_eq!(
@@ -18212,9 +20034,10 @@ mod tests {
     #[test]
     fn trace_replay_sol_leg_source_compare_forced_internal_scan_budget_exhaustion_returns_budget_exhausted(
     ) -> Result<()> {
-        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX.lock().expect("trace mutex");
-        let fixture =
-            make_fixture("runtime-export-replay-sol-leg-source-compare-internal-budget")?;
+        let _guard = TEST_REPLAY_SOL_LEG_DEEP_TRACE_MUTEX
+            .lock()
+            .expect("trace mutex");
+        let fixture = make_fixture("runtime-export-replay-sol-leg-source-compare-internal-budget")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         seed_runtime_export_source(&fixture.store, now)?;
         fixture
@@ -18277,7 +20100,9 @@ mod tests {
         assert!(!diagnostic.source_compare_trace_wait_timeout_hit);
         assert!(diagnostic.source_compare_trace_budget_exhausted);
         assert_eq!(
-            diagnostic.source_compare_trace_budget_exhausted_stage.as_deref(),
+            diagnostic
+                .source_compare_trace_budget_exhausted_stage
+                .as_deref(),
             Some("source_compare_trace_internal_source_scan_budget_exhausted")
         );
         assert_eq!(
