@@ -13600,6 +13600,93 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+### Stage 3 materialization immutable-source probe (`2026-04-16`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a new bounded proof mode:
+   `--probe-checkpoint-row-fetch-materialization-immutable-source --config <path> --json`
+2. The new mode keeps the minimal-snapshot materialization path but changes the
+   source attach contract:
+   - temp DB and schema are still created locally
+   - the source runtime DB is attached through an explicit SQLite URI in
+     `mode=ro&immutable=1`
+   - the exact same `INSERT ... SELECT` materialization statement is then
+     executed against that attached source
+3. The operator stays:
+   - runtime-DB-only
+   - free of application-level live source row fetch
+   - free of `recent_raw` open
+   - free of `state_json` parsing and `length(state_json)`
+4. The operator always returns structured JSON and emits explicit fields for:
+   - source attach URI, mode, immutable flag, and readonly flag
+   - exact materialization SQL
+   - `EXPLAIN QUERY PLAN`
+   - materialization connection journal mode, locking mode, query-only flag,
+     and busy timeout
+   - execute started/completed/elapsed
+   - rows changed
+   - postcheck start/completion and temp row count
+5. The operator implements the bounded top-level reason classes:
+   - `checkpoint_row_fetch_materialization_immutable_probe_proven_changed_by_attach_mode`
+   - `checkpoint_row_fetch_materialization_immutable_probe_proven_not_changed_by_attach_mode`
+   - `checkpoint_row_fetch_materialization_immutable_probe_budget_exhausted`
+   - `checkpoint_row_fetch_materialization_immutable_probe_unproven_due_to_missing_evidence`
+6. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+7. It does not change:
+   - `--explain-publication-truth-export-blocker`
+   - `--explain-replay-sol-leg-blocker`
+   - `--trace-replay-sol-leg-deep-proof`
+   - `--trace-replay-sol-leg-source-compare`
+   - `--probe-checkpoint-row-fetch-busy-wait`
+   - `--probe-checkpoint-row-fetch-copied-snapshot`
+   - `--probe-checkpoint-row-fetch-minimal-snapshot`
+   - `--probe-checkpoint-row-fetch-materialization-busy-wait`
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Live rollout result (`2026-04-16`, commit `2d66892`):
+
+1. The production host was fast-forwarded to `2d66892`.
+2. Only `discovery_runtime_export` was rebuilt.
+3. `solana-copy-bot.service` stayed `active`.
+4. `copybot-discovery-runtime-export.timer` stayed `active`.
+5. A clean live run of:
+   `sudo -n target/release/discovery_runtime_export --probe-checkpoint-row-fetch-materialization-immutable-source --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_materialization_immutable_probe_reason_class = checkpoint_row_fetch_materialization_immutable_probe_proven_not_changed_by_attach_mode`
+   - `checkpoint_row_fetch_materialization_immutable_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_materialization_immutable_probe_budget_exhausted = true`
+   - `checkpoint_row_fetch_materialization_immutable_probe_stage = insert_select_execute`
+   - `checkpoint_row_fetch_materialization_immutable_probe_source_attach_uri = file:///var/www/solana-copy-bot/state/live_runtime_20260324T134339Z.db?mode=ro&immutable=1`
+   - `checkpoint_row_fetch_materialization_immutable_probe_source_attach_mode = sqlite_uri_mode_ro_immutable_1`
+   - `checkpoint_row_fetch_materialization_immutable_probe_source_attach_immutable = true`
+   - `checkpoint_row_fetch_materialization_immutable_probe_source_attach_readonly = true`
+   - `checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_started = true`
+   - `checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_completed = false`
+   - `checkpoint_row_fetch_materialization_immutable_probe_result_kind = null`
+   - `checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_code = null`
+   - `checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_explain_query_plan = SEARCH source.discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+6. Current interpretation after rollout:
+   - switching the source attach path to immutable read-only SQLite URI did not
+     change the exact seam
+   - the planner/access path still looks correct
+   - the remaining exact blocker is still inside the
+     `conn.execute(INSERT ... SELECT ...)` boundary itself, not in live source
+     attach mode participation
+
 ### Stage 3 materialization busy-wait probe (`2026-04-16`)
 
 Accepted repository change:
