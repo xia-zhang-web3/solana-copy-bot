@@ -13634,6 +13634,47 @@ Live rollout result (`2026-04-16`, commit `6eb5c32`):
 
 Corrective repository batch accepted (`2026-04-16`):
 
+1. The publication-blocker checkpoint-headline controller now records the
+   actual row-meta worker message sequence it received.
+2. The primary operator now emits explicit worker-event telemetry:
+   - `publication_truth_export_checkpoint_headline_worker_started`
+   - `publication_truth_export_checkpoint_headline_worker_last_event`
+   - `publication_truth_export_checkpoint_headline_worker_event_count`
+   - `publication_truth_export_checkpoint_headline_worker_opened_read_only_received`
+   - `publication_truth_export_checkpoint_headline_worker_schema_lookup_completed_received`
+   - `publication_truth_export_checkpoint_headline_worker_row_count_completed_received`
+   - `publication_truth_export_checkpoint_headline_worker_prepare_completed_received`
+   - `publication_truth_export_checkpoint_headline_worker_step_completed_received`
+   - `publication_truth_export_checkpoint_headline_worker_finished_received`
+   - `publication_truth_export_checkpoint_headline_worker_disconnected`
+3. The controller now preserves those facts on both success and timeout instead
+   of reconstructing them after the fact.
+4. The checkpoint-headline path remains:
+   - runtime-DB-only
+   - no recent_raw open
+   - no state_json parsing
+   - no `length(state_json)` probing
+5. Source-compare mode still reuses the publication diagnostic object/path
+   unchanged.
+6. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+7. It does not change:
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Corrective repository batch accepted (`2026-04-16`):
+
 1. The primary publication-blocker checkpoint-headline path no longer performs
    the cheap persisted rebuild row-meta lookup inline on the hot path.
 2. The checkpoint-headline path now uses an explicitly bounded
