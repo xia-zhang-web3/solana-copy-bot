@@ -13599,6 +13599,38 @@ Acceptance checks:
    passed.
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
+
+Live rollout result (`2026-04-16`, commit `8d622a9`):
+
+1. The server was fast-forwarded to `8d622a9` and only
+   `discovery_runtime_export` was rebuilt.
+2. A clean live run of:
+   `discovery_runtime_export --trace-replay-sol-leg-source-compare --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `replay_sol_leg_source_compare_trace_reason_class = replay_sol_leg_source_compare_trace_unproven_due_to_missing_evidence`
+   - `source_compare_trace_prerequisite_reason_class = publication_truth_export_blocked_on_replay_sol_leg_incomplete`
+   - `source_compare_trace_prerequisite_completed = false`
+   - `source_compare_trace_prerequisite_checkpoint_headline_completed = false`
+   - `source_compare_trace_prerequisite_checkpoint_headline_budget_exhausted = true`
+   - `source_compare_trace_prerequisite_checkpoint_headline_stage = load_persisted_rebuild_row_meta_step_primary_key_lookup`
+   - `source_compare_trace_total_elapsed_ms = 45070`
+   - `source_compare_trace_compare_started = false`
+   - `source_compare_trace_compare_completed = false`
+3. On the same live binary, a clean run of:
+   `discovery_runtime_export --explain-publication-truth-export-blocker --config /etc/solana-copy-bot/live.server.toml --json`
+   still returned successfully with:
+   - `publication_truth_export_blocked_on_replay_sol_leg_incomplete`
+   - `publication_truth_export_checkpoint_headline_completed = true`
+   - `publication_truth_export_checkpoint_headline_budget_exhausted = false`
+   - `publication_truth_export_checkpoint_headline_stage = complete`
+   - `publication_truth_export_checkpoint_headline_total_elapsed_ms = 363`
+   - `rebuild_phase = replay`
+   - `rebuild_replay_subphase = sol_leg`
+4. Therefore the source-compare mode still does not stand on the same effective
+   prerequisite execution path as the established publication operator, even
+   after the repository-level prerequisite-helper reuse refactor.
+5. The next corrective batch must target this exact divergence inside the
+   source-compare mode itself before more source-comparison tracing is added.
 4. `cargo test -j 1 -p copybot-discovery --lib replay_sol_leg` is currently
    red on an untouched existing test:
    - [crates/discovery/src/lib.rs](/Users/blacktower/Documents/solana-copy-bot/crates/discovery/src/lib.rs):40328
