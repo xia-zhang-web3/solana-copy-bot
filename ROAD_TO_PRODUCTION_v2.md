@@ -13631,6 +13631,46 @@ Live rollout result (`2026-04-16`, commit `8d622a9`):
    after the repository-level prerequisite-helper reuse refactor.
 5. The next corrective batch must target this exact divergence inside the
    source-compare mode itself before more source-comparison tracing is added.
+
+Corrective repository batch accepted (`2026-04-16`):
+
+1. `discovery_runtime_export --trace-replay-sol-leg-source-compare` no longer
+   routes prerequisite proof through a separate source-compare wrapper stack.
+2. The mode now loads one direct
+   `PublicationTruthExportBlockerDiagnostic` via the established publication
+   operator path and derives prerequisite truth from that already-loaded object.
+3. The mode now emits explicit proof of which prerequisite source it used:
+   - `source_compare_trace_prerequisite_source`
+   - `source_compare_trace_prerequisite_reused_publication_diagnostic`
+4. Existing prerequisite telemetry is preserved:
+   - `source_compare_trace_prerequisite_explanation`
+   - `source_compare_trace_prerequisite_total_elapsed_ms`
+   - `source_compare_trace_prerequisite_checkpoint_headline_completed`
+   - `source_compare_trace_prerequisite_checkpoint_headline_budget_exhausted`
+   - `source_compare_trace_prerequisite_checkpoint_headline_stage`
+5. If prerequisite proof succeeds, the mode proceeds to runtime-db open,
+   recent-raw open, and source-compare start.
+6. If prerequisite proof fails, it still returns bounded JSON with explicit
+   prerequisite telemetry.
+7. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+8. It does not change:
+   - `--explain-publication-truth-export-blocker`
+   - `--explain-replay-sol-leg-blocker`
+   - `--trace-replay-sol-leg-deep-proof`
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
 4. `cargo test -j 1 -p copybot-discovery --lib replay_sol_leg` is currently
    red on an untouched existing test:
    - [crates/discovery/src/lib.rs](/Users/blacktower/Documents/solana-copy-bot/crates/discovery/src/lib.rs):40328
