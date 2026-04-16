@@ -44,7 +44,9 @@ const USAGE: &str = "usage:
   discovery_runtime_export --explain-recent-raw-staged-birth --state-root <path> [--json]";
 
 const PUBLICATION_TRUTH_WITHHELD_PREFIX: &str = "publication_truth_withheld_while_";
-const DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_MS: u64 = 250;
+const DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_MS: u64 = 1_000;
+const DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_SOURCE: &str =
+    "fixed_constant_default_primary_operator";
 const CHECKPOINT_HEADLINE_ROW_META_TABLE_EXISTS_SQL: &str = "SELECT EXISTS(
     SELECT 1
     FROM sqlite_master
@@ -225,6 +227,8 @@ struct PublicationTruthExportBlockerDiagnostic {
     publication_truth_export_blocker_reason_class: PublicationTruthExportBlockerReasonClass,
     publication_truth_export_blocker_explanation: String,
     publication_truth_export_blocker_top_level_proven_from_publication_state: bool,
+    publication_truth_export_checkpoint_headline_budget_ms: u64,
+    publication_truth_export_checkpoint_headline_budget_source: String,
     publication_truth_export_checkpoint_headline_attempted: bool,
     publication_truth_export_checkpoint_headline_completed: bool,
     publication_truth_export_checkpoint_headline_budget_exhausted: bool,
@@ -283,6 +287,10 @@ impl PublicationTruthExportBlockerDiagnostic {
                 PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockerUnprovenDueToMissingEvidence,
             publication_truth_export_blocker_explanation: explanation,
             publication_truth_export_blocker_top_level_proven_from_publication_state: false,
+            publication_truth_export_checkpoint_headline_budget_ms:
+                DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_MS,
+            publication_truth_export_checkpoint_headline_budget_source:
+                DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_SOURCE.to_string(),
             publication_truth_export_checkpoint_headline_attempted: false,
             publication_truth_export_checkpoint_headline_completed: false,
             publication_truth_export_checkpoint_headline_budget_exhausted: false,
@@ -1949,6 +1957,14 @@ fn render_publication_truth_export_blocker_human(
         format!(
             "publication_truth_export_blocker_top_level_proven_from_publication_state={}",
             diagnostic.publication_truth_export_blocker_top_level_proven_from_publication_state
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_budget_ms={}",
+            diagnostic.publication_truth_export_checkpoint_headline_budget_ms
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_budget_source={}",
+            diagnostic.publication_truth_export_checkpoint_headline_budget_source
         ),
         format!(
             "publication_truth_export_checkpoint_headline_attempted={}",
@@ -3860,6 +3876,14 @@ mod tests {
             true
         );
         assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_budget_ms"],
+            1000
+        );
+        assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_budget_source"],
+            "fixed_constant_default_primary_operator"
+        );
+        assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_budget_exhausted"],
             false
         );
@@ -3897,6 +3921,8 @@ mod tests {
             "publication_truth_export_blocker_reason_class",
             "publication_truth_export_blocker_explanation",
             "publication_truth_export_blocker_top_level_proven_from_publication_state",
+            "publication_truth_export_checkpoint_headline_budget_ms",
+            "publication_truth_export_checkpoint_headline_budget_source",
             "publication_truth_export_checkpoint_headline_attempted",
             "publication_truth_export_checkpoint_headline_completed",
             "publication_truth_export_checkpoint_headline_budget_exhausted",
@@ -4350,6 +4376,14 @@ mod tests {
         );
         assert!(diagnostic.publication_truth_export_checkpoint_headline_attempted);
         assert!(!diagnostic.publication_truth_export_checkpoint_headline_completed);
+        assert_eq!(
+            diagnostic.publication_truth_export_checkpoint_headline_budget_ms,
+            1000
+        );
+        assert_eq!(
+            diagnostic.publication_truth_export_checkpoint_headline_budget_source,
+            "fixed_constant_default_primary_operator"
+        );
         assert!(diagnostic.publication_truth_export_checkpoint_headline_budget_exhausted);
         assert_eq!(
             diagnostic
@@ -4397,6 +4431,14 @@ mod tests {
         assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_completed"],
             true
+        );
+        assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_budget_ms"],
+            1000
+        );
+        assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_budget_source"],
+            "fixed_constant_default_primary_operator"
         );
         assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_budget_exhausted"],

@@ -14165,3 +14165,52 @@ Current interpretation:
    blocker operator use that same proven cheap runtime-DB-only row-meta path
    instead of budget-exhausting on a divergent checkpoint-headline
    implementation.
+
+### Stage 3 primary export-blocker checkpoint-headline budget correction (`2026-04-16`)
+
+Accepted repository change:
+
+1. The primary operator
+   `discovery_runtime_export --explain-publication-truth-export-blocker --config <path> --json`
+   now uses a larger but still bounded checkpoint-headline budget.
+2. The fixed constant changed from:
+   - `DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_MS = 250`
+   to:
+   - `DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_MS = 1000`
+3. The operator now emits the budget contract explicitly:
+   - `publication_truth_export_checkpoint_headline_budget_ms = 1000`
+   - `publication_truth_export_checkpoint_headline_budget_source = fixed_constant_default_primary_operator`
+4. This batch does not change:
+   - top-level publication-state-first proof
+   - cheap checkpoint-headline semantics
+   - recent-raw avoidance on the cheap headline path
+   - state_json parsing / `length(state_json)` avoidance
+   - replay/source comparison policy
+5. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+6. It still does not change:
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Current interpretation:
+
+1. The previous corrective batch fixed the primary operator's data path, but
+   live falsified the result because the checkpoint-headline budget stayed at
+   `250ms`.
+2. Separate live proof operators had already shown:
+   - cheap row-meta path around `297ms`
+   - cheap publication-state + row-meta trace around `257ms`
+3. This batch is accepted because it corrects the remaining issue for what it
+   actually was: not a hidden heavy query anymore, but a too-tight bounded
+   budget below already-proven live latency.
