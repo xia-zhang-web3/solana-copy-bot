@@ -293,7 +293,13 @@ struct PublicationTruthExportBlockerDiagnostic {
     publication_truth_export_checkpoint_headline_worker_sqlite_busy_timeout_ms: Option<u64>,
     publication_truth_export_checkpoint_headline_worker_query_sql: Option<String>,
     publication_truth_export_checkpoint_headline_worker_explain_query_plan: Option<String>,
+    publication_truth_export_checkpoint_headline_worker_explain_query_plan_rows: Option<Vec<String>>,
+    publication_truth_export_checkpoint_headline_worker_query_readonly_mode: Option<bool>,
+    publication_truth_export_checkpoint_headline_worker_connection_journal_mode: Option<String>,
+    publication_truth_export_checkpoint_headline_worker_connection_locking_mode: Option<String>,
+    publication_truth_export_checkpoint_headline_worker_connection_query_only: Option<bool>,
     publication_truth_export_checkpoint_headline_worker_row_fetch_access_path: Option<String>,
+    publication_truth_export_checkpoint_headline_worker_row_fetch_wait_kind: Option<String>,
     publication_truth_export_checkpoint_headline_worker_row_fetch_started_at_unix_ms: Option<i64>,
     publication_truth_export_checkpoint_headline_worker_row_fetch_elapsed_ms_observed_by_worker:
         Option<u64>,
@@ -394,7 +400,13 @@ impl PublicationTruthExportBlockerDiagnostic {
             publication_truth_export_checkpoint_headline_worker_sqlite_busy_timeout_ms: None,
             publication_truth_export_checkpoint_headline_worker_query_sql: None,
             publication_truth_export_checkpoint_headline_worker_explain_query_plan: None,
+            publication_truth_export_checkpoint_headline_worker_explain_query_plan_rows: None,
+            publication_truth_export_checkpoint_headline_worker_query_readonly_mode: None,
+            publication_truth_export_checkpoint_headline_worker_connection_journal_mode: None,
+            publication_truth_export_checkpoint_headline_worker_connection_locking_mode: None,
+            publication_truth_export_checkpoint_headline_worker_connection_query_only: None,
             publication_truth_export_checkpoint_headline_worker_row_fetch_access_path: None,
+            publication_truth_export_checkpoint_headline_worker_row_fetch_wait_kind: None,
             publication_truth_export_checkpoint_headline_worker_row_fetch_started_at_unix_ms: None,
             publication_truth_export_checkpoint_headline_worker_row_fetch_elapsed_ms_observed_by_worker:
                 None,
@@ -894,7 +906,13 @@ struct PublicationTruthExportCheckpointHeadlineWorkerTelemetry {
     sqlite_busy_timeout_ms: Option<u64>,
     query_sql: Option<String>,
     explain_query_plan: Option<String>,
+    explain_query_plan_rows: Option<Vec<String>>,
+    query_readonly_mode: Option<bool>,
+    connection_journal_mode: Option<String>,
+    connection_locking_mode: Option<String>,
+    connection_query_only: Option<bool>,
     row_fetch_access_path: Option<String>,
+    row_fetch_wait_kind: Option<String>,
     row_fetch_started_at_unix_ms: Option<i64>,
     row_fetch_elapsed_ms_observed_by_worker: Option<u64>,
 }
@@ -903,9 +921,16 @@ struct PublicationTruthExportCheckpointHeadlineWorkerTelemetry {
 enum PublicationTruthExportCheckpointRowMetaWorkerMessage {
     OpenedReadOnly(u64),
     SqliteBusyTimeoutMs(u64),
+    ConnectionReadMode {
+        journal_mode: String,
+        locking_mode: String,
+        query_only: bool,
+    },
     QueryPlan {
         query_sql: String,
         explain_query_plan: String,
+        explain_query_plan_rows: Vec<String>,
+        query_readonly_mode: bool,
         row_fetch_access_path: String,
     },
     Entered(PublicationTruthExportCheckpointRowMetaStage),
@@ -913,7 +938,10 @@ enum PublicationTruthExportCheckpointRowMetaWorkerMessage {
     RowCountCompleted(u64),
     PrepareCompleted(u64),
     StepQueryStarted(i64),
-    StepRowFetchCompleted(u64),
+    StepRowFetchCompleted {
+        elapsed_ms: u64,
+        row_returned: bool,
+    },
     StepPhaseDecoded,
     StepUpdatedAtDecoded,
     StepCompleted(u64),
@@ -926,6 +954,7 @@ impl PublicationTruthExportCheckpointRowMetaWorkerMessage {
         match self {
             Self::OpenedReadOnly(_) => "opened_read_only",
             Self::SqliteBusyTimeoutMs(_) => "sqlite_busy_timeout_ms",
+            Self::ConnectionReadMode { .. } => "connection_read_mode_loaded",
             Self::QueryPlan { .. } => "query_plan_loaded",
             Self::Entered(PublicationTruthExportCheckpointRowMetaStage::SchemaLookup) => {
                 "entered_schema_lookup"
@@ -943,7 +972,7 @@ impl PublicationTruthExportCheckpointRowMetaWorkerMessage {
             Self::RowCountCompleted(_) => "row_count_completed",
             Self::PrepareCompleted(_) => "prepare_completed",
             Self::StepQueryStarted(_) => "step_query_started",
-            Self::StepRowFetchCompleted(_) => "step_row_fetch_completed",
+            Self::StepRowFetchCompleted { .. } => "step_row_fetch_completed",
             Self::StepPhaseDecoded => "step_phase_decoded",
             Self::StepUpdatedAtDecoded => "step_updated_at_decoded",
             Self::StepCompleted(_) => "step_completed",
@@ -1088,8 +1117,20 @@ fn sync_publication_truth_export_checkpoint_headline_worker_telemetry(
         worker.query_sql.clone();
     diagnostic.publication_truth_export_checkpoint_headline_worker_explain_query_plan =
         worker.explain_query_plan.clone();
+    diagnostic.publication_truth_export_checkpoint_headline_worker_explain_query_plan_rows =
+        worker.explain_query_plan_rows.clone();
+    diagnostic.publication_truth_export_checkpoint_headline_worker_query_readonly_mode =
+        worker.query_readonly_mode;
+    diagnostic.publication_truth_export_checkpoint_headline_worker_connection_journal_mode =
+        worker.connection_journal_mode.clone();
+    diagnostic.publication_truth_export_checkpoint_headline_worker_connection_locking_mode =
+        worker.connection_locking_mode.clone();
+    diagnostic.publication_truth_export_checkpoint_headline_worker_connection_query_only =
+        worker.connection_query_only;
     diagnostic.publication_truth_export_checkpoint_headline_worker_row_fetch_access_path =
         worker.row_fetch_access_path.clone();
+    diagnostic.publication_truth_export_checkpoint_headline_worker_row_fetch_wait_kind =
+        worker.row_fetch_wait_kind.clone();
     diagnostic.publication_truth_export_checkpoint_headline_worker_row_fetch_started_at_unix_ms =
         worker.row_fetch_started_at_unix_ms;
     diagnostic
@@ -1241,6 +1282,7 @@ fn apply_publication_truth_export_checkpoint_headline_enrichment(
     _top_level_state: &PublicationTruthExportBlockerTopLevelState,
     runtime_db_path: &Path,
     budget: StdDuration,
+    #[cfg(test)] test_row_fetch_delay: Option<StdDuration>,
 ) -> PublicationTruthExportCheckpointHeadlineOutcome {
     diagnostic.publication_truth_export_checkpoint_headline_prerequisite_source =
         "direct_runtime_db_row_meta_worker_timeout_path".to_string();
@@ -1252,6 +1294,8 @@ fn apply_publication_truth_export_checkpoint_headline_enrichment(
     let row_meta_load = load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
         runtime_db_path,
         budget,
+        #[cfg(test)]
+        test_row_fetch_delay,
     );
     sync_publication_truth_export_checkpoint_headline_timing(
         diagnostic,
@@ -1317,6 +1361,7 @@ fn apply_publication_truth_export_checkpoint_headline_enrichment(
 fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
     runtime_db_path: &Path,
     budget: StdDuration,
+    #[cfg(test)] test_row_fetch_delay: Option<StdDuration>,
 ) -> PublicationTruthExportCheckpointRowMetaLoadResult {
     let total_started_at = Instant::now();
     let mut timing = PublicationTruthExportCheckpointHeadlineTiming::default();
@@ -1327,7 +1372,12 @@ fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
     let (tx, rx) = mpsc::sync_channel(16);
     let runtime_db_path = runtime_db_path.to_path_buf();
     thread::spawn(move || {
-        let _ = load_publication_truth_export_checkpoint_row_meta_worker(&runtime_db_path, tx);
+        let _ = load_publication_truth_export_checkpoint_row_meta_worker(
+            &runtime_db_path,
+            tx,
+            #[cfg(test)]
+            test_row_fetch_delay,
+        );
     });
 
     let mut current_stage = PublicationTruthExportCheckpointRowMetaStage::SchemaLookup;
@@ -1349,15 +1399,30 @@ fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
                 worker.last_event = Some(message.event_name().to_string());
                 worker.sqlite_busy_timeout_ms = Some(busy_timeout_ms);
             }
+            Ok(PublicationTruthExportCheckpointRowMetaWorkerMessage::ConnectionReadMode {
+                journal_mode,
+                locking_mode,
+                query_only,
+            }) => {
+                worker.event_count += 1;
+                worker.last_event = Some("connection_read_mode_loaded".to_string());
+                worker.connection_journal_mode = Some(journal_mode);
+                worker.connection_locking_mode = Some(locking_mode);
+                worker.connection_query_only = Some(query_only);
+            }
             Ok(PublicationTruthExportCheckpointRowMetaWorkerMessage::QueryPlan {
                 query_sql,
                 explain_query_plan,
+                explain_query_plan_rows,
+                query_readonly_mode,
                 row_fetch_access_path,
             }) => {
                 worker.event_count += 1;
                 worker.last_event = Some("query_plan_loaded".to_string());
                 worker.query_sql = Some(query_sql);
                 worker.explain_query_plan = Some(explain_query_plan);
+                worker.explain_query_plan_rows = Some(explain_query_plan_rows);
+                worker.query_readonly_mode = Some(query_readonly_mode);
                 worker.row_fetch_access_path = Some(row_fetch_access_path);
             }
             Ok(message @ PublicationTruthExportCheckpointRowMetaWorkerMessage::Entered(stage)) => {
@@ -1402,17 +1467,25 @@ fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
                 worker.last_event = Some(message.event_name().to_string());
                 worker.step_query_started_received = true;
                 worker.row_fetch_started_at_unix_ms = Some(row_fetch_started_at_unix_ms);
+                worker.row_fetch_wait_kind =
+                    Some("waiting_inside_rows_next_before_first_row_or_eof".to_string());
             }
             Ok(
                 message
-                @ PublicationTruthExportCheckpointRowMetaWorkerMessage::StepRowFetchCompleted(
-                    row_fetch_elapsed_ms,
-                ),
+                @ PublicationTruthExportCheckpointRowMetaWorkerMessage::StepRowFetchCompleted {
+                    elapsed_ms,
+                    row_returned,
+                },
             ) => {
                 worker.event_count += 1;
                 worker.last_event = Some(message.event_name().to_string());
                 worker.step_row_fetch_completed_received = true;
-                worker.row_fetch_elapsed_ms_observed_by_worker = Some(row_fetch_elapsed_ms);
+                worker.row_fetch_elapsed_ms_observed_by_worker = Some(elapsed_ms);
+                worker.row_fetch_wait_kind = Some(if row_returned {
+                    "rows_next_returned_row".to_string()
+                } else {
+                    "rows_next_returned_eof".to_string()
+                });
             }
             Ok(message @ PublicationTruthExportCheckpointRowMetaWorkerMessage::StepPhaseDecoded) => {
                 worker.event_count += 1;
@@ -1489,6 +1562,7 @@ fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
 fn load_publication_truth_export_checkpoint_row_meta_worker(
     runtime_db_path: &Path,
     tx: mpsc::SyncSender<PublicationTruthExportCheckpointRowMetaWorkerMessage>,
+    #[cfg(test)] test_row_fetch_delay: Option<StdDuration>,
 ) -> Result<()> {
     let open_started_at = Instant::now();
     let conn = Connection::open_with_flags(
@@ -1518,6 +1592,26 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
                 sqlite_busy_timeout_ms,
             ),
         )
+        .is_err()
+    {
+        return Ok(());
+    }
+    let connection_journal_mode = conn
+        .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+        .context("failed reading sqlite journal_mode for cheap checkpoint row-meta path")?;
+    let connection_locking_mode = conn
+        .query_row("PRAGMA locking_mode", [], |row| row.get::<_, String>(0))
+        .context("failed reading sqlite locking_mode for cheap checkpoint row-meta path")?;
+    let connection_query_only = conn
+        .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+        .context("failed reading sqlite query_only for cheap checkpoint row-meta path")?
+        != 0;
+    if tx
+        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::ConnectionReadMode {
+            journal_mode: connection_journal_mode,
+            locking_mode: connection_locking_mode,
+            query_only: connection_query_only,
+        })
         .is_err()
     {
         return Ok(());
@@ -1626,9 +1720,12 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
         return Ok(());
     }
     let explain_query_plan = load_checkpoint_headline_row_meta_explain_query_plan(&conn)?;
+    let query_readonly_mode = stmt.readonly();
     if tx
         .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::QueryPlan {
             query_sql: CHECKPOINT_HEADLINE_ROW_META_SQL.to_string(),
+            explain_query_plan_rows: explain_query_plan.explain_query_plan_rows.clone(),
+            query_readonly_mode,
             row_fetch_access_path: explain_query_plan.row_fetch_access_path.clone(),
             explain_query_plan: explain_query_plan.explain_query_plan,
         })
@@ -1659,6 +1756,12 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
         return Ok(());
     }
     let row_fetch_started_at = Instant::now();
+    #[cfg(test)]
+    {
+        if let Some(row_fetch_delay) = test_row_fetch_delay {
+            thread::sleep(row_fetch_delay);
+        }
+    }
     let raw = match rows
         .next()
         .context("failed stepping persisted rebuild checkpoint row-meta query")?
@@ -1666,9 +1769,10 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
         Some(row) => {
             if tx
                 .send(
-                    PublicationTruthExportCheckpointRowMetaWorkerMessage::StepRowFetchCompleted(
-                        elapsed_ms(row_fetch_started_at),
-                    ),
+                    PublicationTruthExportCheckpointRowMetaWorkerMessage::StepRowFetchCompleted {
+                        elapsed_ms: elapsed_ms(row_fetch_started_at),
+                        row_returned: true,
+                    },
                 )
                 .is_err()
             {
@@ -1697,9 +1801,10 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
         None => {
             if tx
                 .send(
-                    PublicationTruthExportCheckpointRowMetaWorkerMessage::StepRowFetchCompleted(
-                        elapsed_ms(row_fetch_started_at),
-                    ),
+                    PublicationTruthExportCheckpointRowMetaWorkerMessage::StepRowFetchCompleted {
+                        elapsed_ms: elapsed_ms(row_fetch_started_at),
+                        row_returned: false,
+                    },
                 )
                 .is_err()
             {
@@ -1755,6 +1860,7 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
 
 struct CheckpointHeadlineExplainQueryPlan {
     explain_query_plan: String,
+    explain_query_plan_rows: Vec<String>,
     row_fetch_access_path: String,
 }
 
@@ -1781,6 +1887,7 @@ fn load_checkpoint_headline_row_meta_explain_query_plan(
         .unwrap_or_else(|| "no_query_plan_rows".to_string());
     Ok(CheckpointHeadlineExplainQueryPlan {
         explain_query_plan,
+        explain_query_plan_rows: details,
         row_fetch_access_path,
     })
 }
@@ -3762,6 +3869,21 @@ fn explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_b
     now: DateTime<Utc>,
     checkpoint_headline_budget: StdDuration,
 ) -> PublicationTruthExportBlockerDiagnostic {
+    explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget_impl(
+        config_path,
+        now,
+        checkpoint_headline_budget,
+        #[cfg(test)]
+        None,
+    )
+}
+
+fn explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget_impl(
+    config_path: &Path,
+    now: DateTime<Utc>,
+    checkpoint_headline_budget: StdDuration,
+    #[cfg(test)] test_row_fetch_delay: Option<StdDuration>,
+) -> PublicationTruthExportBlockerDiagnostic {
     let loaded_config = match load_from_path(config_path) {
         Ok(config) => config,
         Err(error) => {
@@ -3864,6 +3986,8 @@ fn explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_b
         &top_level_state,
         &runtime_db_path,
         checkpoint_headline_budget,
+        #[cfg(test)]
+        test_row_fetch_delay,
     );
     match checkpoint_headline_outcome {
         PublicationTruthExportCheckpointHeadlineOutcome::Failed => {
@@ -4664,9 +4788,52 @@ fn render_publication_truth_export_blocker_human(
                 .unwrap_or("null")
         ),
         format!(
+            "publication_truth_export_checkpoint_headline_worker_explain_query_plan_rows={}",
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_explain_query_plan_rows
+                .as_ref()
+                .map(|rows| rows.join(" | "))
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_worker_query_readonly_mode={}",
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_query_readonly_mode
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_worker_connection_journal_mode={}",
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_connection_journal_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_worker_connection_locking_mode={}",
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_connection_locking_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_worker_connection_query_only={}",
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_connection_query_only
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
             "publication_truth_export_checkpoint_headline_worker_row_fetch_access_path={}",
             diagnostic
                 .publication_truth_export_checkpoint_headline_worker_row_fetch_access_path
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_worker_row_fetch_wait_kind={}",
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_row_fetch_wait_kind
                 .as_deref()
                 .unwrap_or("null")
         ),
@@ -6742,6 +6909,7 @@ mod tests {
         explain_replay_sol_leg_blocker_read_only,
         explain_replay_sol_leg_blocker_read_only_with_prerequisite_budget,
         explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget,
+        explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget_impl,
         trace_replay_sol_leg_deep_proof_read_only,
         trace_replay_sol_leg_deep_proof_read_only_with_budget,
         trace_replay_sol_leg_source_compare_read_only,
@@ -7383,10 +7551,37 @@ mod tests {
             .as_str()
             .unwrap_or_default()
             .contains("discovery_persisted_rebuild_state"));
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_worker_explain_query_plan_rows"]
+                .as_array()
+                .map(|rows| !rows.is_empty())
+                .unwrap_or(false)
+        );
+        assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_worker_query_readonly_mode"],
+            true
+        );
+        assert!(parsed["publication_truth_export_checkpoint_headline_worker_connection_journal_mode"]
+            .as_str()
+            .map(|value| !value.is_empty())
+            .unwrap_or(false));
+        assert!(parsed["publication_truth_export_checkpoint_headline_worker_connection_locking_mode"]
+            .as_str()
+            .map(|value| !value.is_empty())
+            .unwrap_or(false));
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_worker_connection_query_only"]
+                .as_bool()
+                .is_some()
+        );
         assert!(parsed["publication_truth_export_checkpoint_headline_worker_row_fetch_access_path"]
             .as_str()
             .unwrap_or_default()
             .contains("discovery_persisted_rebuild_state"));
+        assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_worker_row_fetch_wait_kind"],
+            "rows_next_returned_row"
+        );
         assert!(
             parsed["publication_truth_export_checkpoint_headline_worker_row_fetch_started_at_unix_ms"]
                 .as_i64()
@@ -7491,7 +7686,13 @@ mod tests {
             "publication_truth_export_checkpoint_headline_worker_sqlite_busy_timeout_ms",
             "publication_truth_export_checkpoint_headline_worker_query_sql",
             "publication_truth_export_checkpoint_headline_worker_explain_query_plan",
+            "publication_truth_export_checkpoint_headline_worker_explain_query_plan_rows",
+            "publication_truth_export_checkpoint_headline_worker_query_readonly_mode",
+            "publication_truth_export_checkpoint_headline_worker_connection_journal_mode",
+            "publication_truth_export_checkpoint_headline_worker_connection_locking_mode",
+            "publication_truth_export_checkpoint_headline_worker_connection_query_only",
             "publication_truth_export_checkpoint_headline_worker_row_fetch_access_path",
+            "publication_truth_export_checkpoint_headline_worker_row_fetch_wait_kind",
             "publication_truth_export_checkpoint_headline_worker_row_fetch_started_at_unix_ms",
             "publication_truth_export_checkpoint_headline_worker_row_fetch_elapsed_ms_observed_by_worker",
             "publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open",
@@ -7936,12 +8137,13 @@ mod tests {
                 updated_at: now - Duration::minutes(1),
             },
         )?;
-
-        let diagnostic = explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget(
-            &fixture.config_path,
-            now,
-            StdDuration::ZERO,
-        );
+        let diagnostic =
+            explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget_impl(
+                &fixture.config_path,
+                now,
+                StdDuration::from_millis(50),
+                Some(StdDuration::from_millis(200)),
+            );
 
         assert_eq!(
             diagnostic.publication_truth_export_blocker_reason_class,
@@ -7964,30 +8166,30 @@ mod tests {
             diagnostic.publication_truth_export_checkpoint_headline_budget_source,
             "fixed_constant_default_primary_operator"
         );
-        assert_eq!(
+        assert!(
             diagnostic
-                .publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open,
-            0
+                .publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open
+                <= 50
         );
-        assert_eq!(
+        assert!(
             diagnostic
-                .publication_truth_export_checkpoint_headline_budget_remaining_ms_after_schema_lookup,
-            0
+                .publication_truth_export_checkpoint_headline_budget_remaining_ms_after_schema_lookup
+                <= 50
         );
-        assert_eq!(
+        assert!(
             diagnostic
-                .publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms,
-            0
+                .publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms
+                <= 50
         );
-        assert_eq!(
+        assert!(
             diagnostic
-                .publication_truth_export_checkpoint_headline_row_count_elapsed_ms,
-            0
+                .publication_truth_export_checkpoint_headline_row_count_elapsed_ms
+                <= 50
         );
-        assert_eq!(
+        assert!(
             diagnostic
-                .publication_truth_export_checkpoint_headline_prepare_elapsed_ms,
-            0
+                .publication_truth_export_checkpoint_headline_prepare_elapsed_ms
+                <= 50
         );
         assert_eq!(
             diagnostic.publication_truth_export_checkpoint_headline_step_elapsed_ms,
@@ -7997,7 +8199,7 @@ mod tests {
             diagnostic.publication_truth_export_checkpoint_headline_worker_started
         );
         assert!(
-            !diagnostic.publication_truth_export_checkpoint_headline_worker_step_query_started_received
+            diagnostic.publication_truth_export_checkpoint_headline_worker_step_query_started_received
         );
         assert!(
             !diagnostic.publication_truth_export_checkpoint_headline_worker_step_row_fetch_completed_received
@@ -8018,26 +8220,66 @@ mod tests {
         assert!(
             !diagnostic.publication_truth_export_checkpoint_headline_worker_disconnected
         );
-        assert_eq!(
-            diagnostic.publication_truth_export_checkpoint_headline_worker_sqlite_busy_timeout_ms,
-            None
+        assert!(
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_sqlite_busy_timeout_ms
+                .is_some()
         );
         assert_eq!(
-            diagnostic.publication_truth_export_checkpoint_headline_worker_query_sql,
-            None
+            diagnostic.publication_truth_export_checkpoint_headline_worker_query_sql.as_deref(),
+            Some(super::CHECKPOINT_HEADLINE_ROW_META_SQL)
+        );
+        assert!(
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_explain_query_plan
+                .as_deref()
+                .unwrap_or_default()
+                .contains("discovery_persisted_rebuild_state")
+        );
+        assert!(
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_explain_query_plan_rows
+                .as_ref()
+                .map(|rows| !rows.is_empty())
+                .unwrap_or(false)
         );
         assert_eq!(
-            diagnostic.publication_truth_export_checkpoint_headline_worker_explain_query_plan,
-            None
+            diagnostic.publication_truth_export_checkpoint_headline_worker_query_readonly_mode,
+            Some(true)
         );
-        assert_eq!(
-            diagnostic.publication_truth_export_checkpoint_headline_worker_row_fetch_access_path,
-            None
+        assert!(
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_connection_journal_mode
+                .as_deref()
+                .is_some()
+        );
+        assert!(
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_connection_locking_mode
+                .as_deref()
+                .is_some()
+        );
+        assert!(
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_connection_query_only
+                .is_some()
+        );
+        assert!(
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_row_fetch_access_path
+                .as_deref()
+                .is_some()
         );
         assert_eq!(
             diagnostic
-                .publication_truth_export_checkpoint_headline_worker_row_fetch_started_at_unix_ms,
-            None
+                .publication_truth_export_checkpoint_headline_worker_row_fetch_wait_kind
+                .as_deref(),
+            Some("waiting_inside_rows_next_before_first_row_or_eof")
+        );
+        assert!(
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_row_fetch_started_at_unix_ms
+                .is_some()
         );
         assert_eq!(
             diagnostic
@@ -8049,7 +8291,7 @@ mod tests {
             diagnostic
                 .publication_truth_export_checkpoint_headline_stage
                 .as_deref(),
-            Some("load_persisted_rebuild_row_meta_schema_lookup")
+            Some("load_persisted_rebuild_row_meta_step_primary_key_lookup")
         );
         assert_eq!(diagnostic.replay_sol_leg_incomplete_reason_class, None);
         assert_eq!(diagnostic.source_comparison_applicable, None);
