@@ -54,6 +54,7 @@ const USAGE: &str = "usage:
   discovery_runtime_export --probe-checkpoint-row-fetch-busy-wait --config <path> [--json]
   discovery_runtime_export --probe-checkpoint-row-fetch-copied-snapshot --config <path> [--json]
   discovery_runtime_export --probe-checkpoint-row-fetch-minimal-snapshot --config <path> [--json]
+  discovery_runtime_export --probe-checkpoint-row-fetch-materialization-busy-wait --config <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-window-seeding --state-root <path> [--json]
@@ -72,8 +73,13 @@ const DEFAULT_CHECKPOINT_ROW_FETCH_COPIED_SNAPSHOT_PROBE_BUDGET_SOURCE: &str =
 const DEFAULT_CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_BUDGET_MS: u64 = 1_000;
 const DEFAULT_CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_BUDGET_SOURCE: &str =
     "fixed_constant_minimal_snapshot_zero_busy_timeout_checkpoint_row_fetch_probe";
+const DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_BUDGET_MS: u64 = 1_000;
+const DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_BUDGET_SOURCE: &str =
+    "fixed_constant_zero_busy_timeout_materialization_insert_select_probe";
 const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY: &str =
     "temp_sqlite_row_meta_only_table_materialized_via_attach_insert_select";
+const CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_STRATEGY: &str =
+    "temp_sqlite_row_meta_only_table_materialized_via_attach_insert_select_zero_busy_timeout_execute_probe";
 const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL: &str =
     "INSERT INTO discovery_persisted_rebuild_state (id, phase, updated_at)
 SELECT id, phase, updated_at
@@ -213,6 +219,12 @@ struct ProbeCheckpointRowFetchMinimalSnapshotConfig {
 }
 
 #[derive(Debug, Clone)]
+struct ProbeCheckpointRowFetchMaterializationBusyWaitConfig {
+    config_path: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 struct ExplainRecentRawStagedLineageConfig {
     state_root: PathBuf,
     json: bool,
@@ -259,6 +271,9 @@ enum Command {
     ProbeCheckpointRowFetchBusyWait(ProbeCheckpointRowFetchBusyWaitConfig),
     ProbeCheckpointRowFetchCopiedSnapshot(ProbeCheckpointRowFetchCopiedSnapshotConfig),
     ProbeCheckpointRowFetchMinimalSnapshot(ProbeCheckpointRowFetchMinimalSnapshotConfig),
+    ProbeCheckpointRowFetchMaterializationBusyWait(
+        ProbeCheckpointRowFetchMaterializationBusyWaitConfig,
+    ),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
     ExplainRecentRawStagedBirth(ExplainRecentRawStagedBirthConfig),
@@ -572,6 +587,25 @@ enum CheckpointRowFetchMinimalSnapshotProbeReasonClass {
     CheckpointRowFetchMinimalSnapshotProbeBudgetExhausted,
     CheckpointRowFetchMinimalSnapshotProbeUnprovenDueToMissingEvidence,
     CheckpointRowFetchMinimalSnapshotProbeStrategyStillSourceRowFetchDependent,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchMaterializationBusyProbeReasonClass {
+    CheckpointRowFetchMaterializationBusyProbeProvenBusyWait,
+    CheckpointRowFetchMaterializationBusyProbeProvenNonBusyWait,
+    CheckpointRowFetchMaterializationBusyProbeBudgetExhausted,
+    CheckpointRowFetchMaterializationBusyProbeUnprovenDueToMissingEvidence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchMaterializationBusyProbeResultKind {
+    InsertSelectSucceeded,
+    SqliteBusy,
+    SqliteLocked,
+    OtherSqliteError,
+    OtherError,
 }
 
 #[allow(dead_code)]
@@ -986,6 +1020,116 @@ impl CheckpointRowFetchMinimalSnapshotProbeDiagnostic {
             checkpoint_row_fetch_minimal_snapshot_probe_sqlite_error_code: None,
             checkpoint_row_fetch_minimal_snapshot_probe_sqlite_error_message: None,
             checkpoint_row_fetch_minimal_snapshot_probe_row_returned: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct CheckpointRowFetchMaterializationBusyProbeDiagnostic {
+    checkpoint_row_fetch_materialization_busy_probe_observed: bool,
+    checkpoint_row_fetch_materialization_busy_probe_reason_class:
+        CheckpointRowFetchMaterializationBusyProbeReasonClass,
+    checkpoint_row_fetch_materialization_busy_probe_explanation: String,
+    config_path: String,
+    runtime_db_path: Option<String>,
+    checkpoint_row_fetch_materialization_busy_probe_strategy: String,
+    checkpoint_row_fetch_materialization_busy_probe_temp_dir: Option<String>,
+    checkpoint_row_fetch_materialization_busy_probe_budget_ms: u64,
+    checkpoint_row_fetch_materialization_busy_probe_budget_source: String,
+    checkpoint_row_fetch_materialization_busy_probe_total_elapsed_ms: u64,
+    checkpoint_row_fetch_materialization_busy_probe_budget_exhausted: bool,
+    checkpoint_row_fetch_materialization_busy_probe_stage: Option<String>,
+    checkpoint_row_fetch_materialization_busy_probe_source_row_fetch_dependency_kind:
+        CheckpointRowFetchMinimalSnapshotProbeSourceRowFetchDependencyKind,
+    checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_sql: String,
+    checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_explain_query_plan:
+        Option<String>,
+    checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_explain_query_plan_rows:
+        Option<Vec<String>>,
+    checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_journal_mode:
+        Option<String>,
+    checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_locking_mode:
+        Option<String>,
+    checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_query_only:
+        Option<bool>,
+    checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_busy_timeout_ms_before:
+        Option<u64>,
+    checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_busy_timeout_ms_applied:
+        Option<u64>,
+    checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_started:
+        bool,
+    checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_completed:
+        bool,
+    checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_elapsed_ms:
+        u64,
+    checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_rows_changed:
+        Option<u64>,
+    checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_started:
+        bool,
+    checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_completed:
+        bool,
+    checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_row_count:
+        Option<u64>,
+    checkpoint_row_fetch_materialization_busy_probe_result_kind:
+        Option<CheckpointRowFetchMaterializationBusyProbeResultKind>,
+    checkpoint_row_fetch_materialization_busy_probe_sqlite_error_code: Option<String>,
+    checkpoint_row_fetch_materialization_busy_probe_sqlite_error_message: Option<String>,
+}
+
+impl CheckpointRowFetchMaterializationBusyProbeDiagnostic {
+    fn unproven(config_path: &Path, explanation: String) -> Self {
+        Self {
+            checkpoint_row_fetch_materialization_busy_probe_observed: false,
+            checkpoint_row_fetch_materialization_busy_probe_reason_class:
+                CheckpointRowFetchMaterializationBusyProbeReasonClass::CheckpointRowFetchMaterializationBusyProbeUnprovenDueToMissingEvidence,
+            checkpoint_row_fetch_materialization_busy_probe_explanation: explanation,
+            config_path: config_path.display().to_string(),
+            runtime_db_path: None,
+            checkpoint_row_fetch_materialization_busy_probe_strategy:
+                CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_STRATEGY.to_string(),
+            checkpoint_row_fetch_materialization_busy_probe_temp_dir: None,
+            checkpoint_row_fetch_materialization_busy_probe_budget_ms:
+                DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_BUDGET_MS,
+            checkpoint_row_fetch_materialization_busy_probe_budget_source:
+                DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_BUDGET_SOURCE.to_string(),
+            checkpoint_row_fetch_materialization_busy_probe_total_elapsed_ms: 0,
+            checkpoint_row_fetch_materialization_busy_probe_budget_exhausted: false,
+            checkpoint_row_fetch_materialization_busy_probe_stage: None,
+            checkpoint_row_fetch_materialization_busy_probe_source_row_fetch_dependency_kind:
+                CheckpointRowFetchMinimalSnapshotProbeSourceRowFetchDependencyKind::SqliteEngineSideMaterialization,
+            checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_sql:
+                CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL.to_string(),
+            checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_explain_query_plan:
+                None,
+            checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_explain_query_plan_rows:
+                None,
+            checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_journal_mode:
+                None,
+            checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_locking_mode:
+                None,
+            checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_query_only:
+                None,
+            checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_busy_timeout_ms_before:
+                None,
+            checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_busy_timeout_ms_applied:
+                None,
+            checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_started:
+                false,
+            checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_completed:
+                false,
+            checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_elapsed_ms:
+                0,
+            checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_rows_changed:
+                None,
+            checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_started:
+                false,
+            checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_completed:
+                false,
+            checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_row_count:
+                None,
+            checkpoint_row_fetch_materialization_busy_probe_result_kind: None,
+            checkpoint_row_fetch_materialization_busy_probe_sqlite_error_code: None,
+            checkpoint_row_fetch_materialization_busy_probe_sqlite_error_message: None,
         }
     }
 }
@@ -2507,6 +2651,37 @@ impl CheckpointRowFetchMinimalSnapshotProbeStage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointRowFetchMaterializationBusyProbeStage {
+    CreateTempDir,
+    TempDbOpen,
+    SchemaCreate,
+    AttachSource,
+    LoadBusyTimeoutBefore,
+    ApplyBusyTimeoutZero,
+    LoadConnectionMetadata,
+    LoadExplainQueryPlan,
+    InsertSelectExecute,
+    Postcheck,
+}
+
+impl CheckpointRowFetchMaterializationBusyProbeStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::CreateTempDir => "create_temp_dir",
+            Self::TempDbOpen => "temp_db_open",
+            Self::SchemaCreate => "schema_create",
+            Self::AttachSource => "attach_source",
+            Self::LoadBusyTimeoutBefore => "load_busy_timeout_before",
+            Self::ApplyBusyTimeoutZero => "apply_busy_timeout_zero",
+            Self::LoadConnectionMetadata => "load_connection_metadata",
+            Self::LoadExplainQueryPlan => "load_explain_query_plan",
+            Self::InsertSelectExecute => "insert_select_execute",
+            Self::Postcheck => "postcheck",
+        }
+    }
+}
+
 #[derive(Debug)]
 enum CheckpointRowFetchCopiedSnapshotProbeWorkerMessage {
     TempDirCreated {
@@ -2580,6 +2755,38 @@ enum CheckpointRowFetchMinimalSnapshotProbeWorkerMessage {
     Finished(Result<CheckpointRowFetchBusyProbeDiagnostic, String>),
 }
 
+#[derive(Debug)]
+enum CheckpointRowFetchMaterializationBusyProbeWorkerMessage {
+    TempDirCreated {
+        path: String,
+    },
+    Entered(CheckpointRowFetchMaterializationBusyProbeStage),
+    BusyTimeoutBefore(u64),
+    BusyTimeoutApplied(u64),
+    ConnectionReadMode {
+        journal_mode: String,
+        locking_mode: String,
+        query_only: bool,
+    },
+    QueryPlan {
+        explain_query_plan: String,
+        explain_query_plan_rows: Vec<String>,
+    },
+    InsertSelectExecuteStarted,
+    InsertSelectExecuteCompleted {
+        elapsed_ms: u64,
+        rows_changed: u64,
+        result_kind: CheckpointRowFetchMaterializationBusyProbeResultKind,
+        sqlite_error_code: Option<String>,
+        sqlite_error_message: Option<String>,
+    },
+    InsertSelectPostcheckStarted,
+    InsertSelectPostcheckCompleted {
+        row_count: u64,
+    },
+    Finished(Result<(), String>),
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 enum CheckpointRowFetchCopiedSnapshotProbeTestBehavior {
@@ -2600,6 +2807,15 @@ enum CheckpointRowFetchMinimalSnapshotProbeTestBehavior {
     DelayBeforeMaterializationPostcheck(StdDuration),
     DelayBeforeHandoff(StdDuration),
     BusyProbe(CheckpointRowFetchBusyProbeTestBehavior),
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+enum CheckpointRowFetchMaterializationBusyProbeTestBehavior {
+    ForceBusy,
+    ForceLocked,
+    DelayBeforeExecute(StdDuration),
+    DelayBeforePostcheck(StdDuration),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3661,6 +3877,313 @@ fn probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_impl(
     }
 }
 
+fn probe_checkpoint_row_fetch_materialization_busy_wait_read_only(
+    config_path: &Path,
+) -> CheckpointRowFetchMaterializationBusyProbeDiagnostic {
+    probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget_impl(
+        config_path,
+        StdDuration::from_millis(
+            DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_BUDGET_MS,
+        ),
+        #[cfg(test)]
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget(
+    config_path: &Path,
+    budget: StdDuration,
+) -> CheckpointRowFetchMaterializationBusyProbeDiagnostic {
+    probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget_impl(
+        config_path,
+        budget,
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget_and_test_behavior(
+    config_path: &Path,
+    budget: StdDuration,
+    test_behavior: Option<CheckpointRowFetchMaterializationBusyProbeTestBehavior>,
+) -> CheckpointRowFetchMaterializationBusyProbeDiagnostic {
+    probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget_impl(
+        config_path,
+        budget,
+        test_behavior,
+    )
+}
+
+fn probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget_impl(
+    config_path: &Path,
+    budget: StdDuration,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchMaterializationBusyProbeTestBehavior>,
+) -> CheckpointRowFetchMaterializationBusyProbeDiagnostic {
+    let mut diagnostic = CheckpointRowFetchMaterializationBusyProbeDiagnostic::unproven(
+        config_path,
+        "checkpoint row-fetch materialization busy probe did not run".to_string(),
+    );
+    diagnostic.checkpoint_row_fetch_materialization_busy_probe_budget_ms =
+        budget.as_millis().min(u64::MAX as u128) as u64;
+    diagnostic.checkpoint_row_fetch_materialization_busy_probe_budget_source =
+        DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_BUDGET_SOURCE.to_string();
+
+    let total_started_at = Instant::now();
+    let loaded_config = match load_from_path(config_path)
+        .with_context(|| format!("failed loading config {}", config_path.display()))
+    {
+        Ok(config) => config,
+        Err(error) => {
+            diagnostic.checkpoint_row_fetch_materialization_busy_probe_explanation =
+                format!("{error:#}");
+            return diagnostic;
+        }
+    };
+    let runtime_db_path = resolve_db_path(config_path, None, &loaded_config.sqlite.path);
+    diagnostic.runtime_db_path = Some(runtime_db_path.display().to_string());
+    diagnostic.checkpoint_row_fetch_materialization_busy_probe_observed = true;
+
+    let (tx, rx) = mpsc::sync_channel(32);
+    let config_path_for_worker = config_path.to_path_buf();
+    let runtime_db_path_for_worker = runtime_db_path.clone();
+    thread::spawn(move || {
+        let _ = probe_checkpoint_row_fetch_materialization_busy_wait_worker(
+            &config_path_for_worker,
+            &runtime_db_path_for_worker,
+            tx,
+            #[cfg(test)]
+            test_behavior,
+        );
+    });
+
+    let mut current_stage = CheckpointRowFetchMaterializationBusyProbeStage::CreateTempDir;
+    loop {
+        match rx.recv_timeout(remaining_budget_duration(budget, total_started_at)) {
+            Ok(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::TempDirCreated {
+                path,
+            }) => {
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_temp_dir = Some(path);
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_stage =
+                    Some(current_stage.as_str().to_string());
+            }
+            Ok(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(stage)) => {
+                current_stage = stage;
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_stage =
+                    Some(stage.as_str().to_string());
+                if stage == CheckpointRowFetchMaterializationBusyProbeStage::InsertSelectExecute {
+                    diagnostic
+                        .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_started =
+                        true;
+                }
+                if stage == CheckpointRowFetchMaterializationBusyProbeStage::Postcheck {
+                    diagnostic
+                        .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_started =
+                        true;
+                }
+            }
+            Ok(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::BusyTimeoutBefore(value)) => {
+                current_stage = CheckpointRowFetchMaterializationBusyProbeStage::LoadBusyTimeoutBefore;
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_busy_timeout_ms_before =
+                    Some(value);
+            }
+            Ok(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::BusyTimeoutApplied(value)) => {
+                current_stage = CheckpointRowFetchMaterializationBusyProbeStage::ApplyBusyTimeoutZero;
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_busy_timeout_ms_applied =
+                    Some(value);
+            }
+            Ok(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::ConnectionReadMode {
+                journal_mode,
+                locking_mode,
+                query_only,
+            }) => {
+                current_stage =
+                    CheckpointRowFetchMaterializationBusyProbeStage::LoadConnectionMetadata;
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_journal_mode =
+                    Some(journal_mode);
+                diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_locking_mode =
+                    Some(locking_mode);
+                diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_query_only =
+                    Some(query_only);
+            }
+            Ok(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::QueryPlan {
+                explain_query_plan,
+                explain_query_plan_rows,
+            }) => {
+                current_stage = CheckpointRowFetchMaterializationBusyProbeStage::LoadExplainQueryPlan;
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_explain_query_plan =
+                    Some(explain_query_plan);
+                diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_explain_query_plan_rows =
+                    Some(explain_query_plan_rows);
+            }
+            Ok(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::InsertSelectExecuteStarted,
+            ) => {
+                current_stage = CheckpointRowFetchMaterializationBusyProbeStage::InsertSelectExecute;
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_started =
+                    true;
+            }
+            Ok(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::InsertSelectExecuteCompleted {
+                    elapsed_ms,
+                    rows_changed,
+                    result_kind,
+                    sqlite_error_code,
+                    sqlite_error_message,
+                },
+            ) => {
+                current_stage = CheckpointRowFetchMaterializationBusyProbeStage::InsertSelectExecute;
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_completed =
+                    true;
+                diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_elapsed_ms =
+                    elapsed_ms;
+                diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_rows_changed =
+                    Some(rows_changed);
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_result_kind =
+                    Some(result_kind);
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_sqlite_error_code =
+                    sqlite_error_code;
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_sqlite_error_message =
+                    sqlite_error_message;
+            }
+            Ok(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::InsertSelectPostcheckStarted,
+            ) => {
+                current_stage = CheckpointRowFetchMaterializationBusyProbeStage::Postcheck;
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_started =
+                    true;
+            }
+            Ok(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::InsertSelectPostcheckCompleted {
+                    row_count,
+                },
+            ) => {
+                current_stage = CheckpointRowFetchMaterializationBusyProbeStage::Postcheck;
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_completed =
+                    true;
+                diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_row_count =
+                    Some(row_count);
+            }
+            Ok(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Finished(result)) => {
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                match result {
+                    Ok(()) => {
+                        diagnostic.checkpoint_row_fetch_materialization_busy_probe_reason_class =
+                            match diagnostic
+                                .checkpoint_row_fetch_materialization_busy_probe_result_kind
+                            {
+                                Some(
+                                    CheckpointRowFetchMaterializationBusyProbeResultKind::InsertSelectSucceeded,
+                                ) => CheckpointRowFetchMaterializationBusyProbeReasonClass::CheckpointRowFetchMaterializationBusyProbeProvenNonBusyWait,
+                                Some(
+                                    CheckpointRowFetchMaterializationBusyProbeResultKind::SqliteBusy
+                                    | CheckpointRowFetchMaterializationBusyProbeResultKind::SqliteLocked,
+                                ) => CheckpointRowFetchMaterializationBusyProbeReasonClass::CheckpointRowFetchMaterializationBusyProbeProvenBusyWait,
+                                Some(
+                                    CheckpointRowFetchMaterializationBusyProbeResultKind::OtherSqliteError
+                                    | CheckpointRowFetchMaterializationBusyProbeResultKind::OtherError,
+                                )
+                                | None => CheckpointRowFetchMaterializationBusyProbeReasonClass::CheckpointRowFetchMaterializationBusyProbeUnprovenDueToMissingEvidence,
+                            };
+                        diagnostic.checkpoint_row_fetch_materialization_busy_probe_explanation =
+                            match diagnostic
+                                .checkpoint_row_fetch_materialization_busy_probe_reason_class
+                            {
+                                CheckpointRowFetchMaterializationBusyProbeReasonClass::CheckpointRowFetchMaterializationBusyProbeProvenNonBusyWait => {
+                                    format!(
+                                        "zero-busy-timeout materialization INSERT ... SELECT completed without SQLITE_BUSY or SQLITE_LOCKED using strategy={}",
+                                        CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_STRATEGY
+                                    )
+                                }
+                                CheckpointRowFetchMaterializationBusyProbeReasonClass::CheckpointRowFetchMaterializationBusyProbeProvenBusyWait => {
+                                    format!(
+                                        "zero-busy-timeout materialization INSERT ... SELECT returned {} using strategy={}",
+                                        diagnostic
+                                            .checkpoint_row_fetch_materialization_busy_probe_sqlite_error_code
+                                            .as_deref()
+                                            .unwrap_or("SQLITE_BUSY_OR_LOCKED"),
+                                        CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_STRATEGY
+                                    )
+                                }
+                                CheckpointRowFetchMaterializationBusyProbeReasonClass::CheckpointRowFetchMaterializationBusyProbeBudgetExhausted => unreachable!(),
+                                CheckpointRowFetchMaterializationBusyProbeReasonClass::CheckpointRowFetchMaterializationBusyProbeUnprovenDueToMissingEvidence => {
+                                    diagnostic
+                                        .checkpoint_row_fetch_materialization_busy_probe_sqlite_error_message
+                                        .clone()
+                                        .unwrap_or_else(|| {
+                                            "materialization busy probe ended without a conclusive result".to_string()
+                                        })
+                                }
+                            };
+                    }
+                    Err(error) => {
+                        diagnostic.checkpoint_row_fetch_materialization_busy_probe_reason_class =
+                            CheckpointRowFetchMaterializationBusyProbeReasonClass::CheckpointRowFetchMaterializationBusyProbeUnprovenDueToMissingEvidence;
+                        diagnostic.checkpoint_row_fetch_materialization_busy_probe_explanation =
+                            error;
+                    }
+                }
+                return diagnostic;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_budget_exhausted = true;
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_reason_class =
+                    CheckpointRowFetchMaterializationBusyProbeReasonClass::CheckpointRowFetchMaterializationBusyProbeBudgetExhausted;
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_explanation = format!(
+                    "checkpoint row-fetch materialization busy probe exhausted its bounded budget while executing stage={}",
+                    current_stage.as_str()
+                );
+                return diagnostic;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_reason_class =
+                    CheckpointRowFetchMaterializationBusyProbeReasonClass::CheckpointRowFetchMaterializationBusyProbeUnprovenDueToMissingEvidence;
+                diagnostic.checkpoint_row_fetch_materialization_busy_probe_explanation =
+                    "checkpoint row-fetch materialization busy probe worker disconnected before returning a result"
+                        .to_string();
+                return diagnostic;
+            }
+        }
+    }
+}
+
 fn apply_minimal_snapshot_materialization_event(
     diagnostic: &mut CheckpointRowFetchMinimalSnapshotProbeDiagnostic,
     event: CheckpointRowFetchMinimalSnapshotProbeMaterializationEvent,
@@ -4496,6 +5019,352 @@ fn probe_checkpoint_row_fetch_minimal_snapshot_worker(
         let _ = tx.send(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::Finished(Err(
             format!("{error:#}"),
         )));
+    }
+    Ok(())
+}
+
+fn probe_checkpoint_row_fetch_materialization_busy_wait_worker(
+    _config_path: &Path,
+    runtime_db_path: &Path,
+    tx: mpsc::SyncSender<CheckpointRowFetchMaterializationBusyProbeWorkerMessage>,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchMaterializationBusyProbeTestBehavior>,
+) -> Result<()> {
+    let run = || -> Result<()> {
+        let temp_dir_path = create_checkpoint_row_fetch_probe_temp_dir()?;
+        if tx
+            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::TempDirCreated {
+                path: temp_dir_path.display().to_string(),
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        let minimal_db_path = temp_dir_path.join(
+            runtime_db_path
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("runtime.db")),
+        );
+
+        if tx
+            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                CheckpointRowFetchMaterializationBusyProbeStage::TempDbOpen,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        let conn = Connection::open(&minimal_db_path).with_context(|| {
+            format!(
+                "failed opening materialization busy probe temp sqlite db {}",
+                minimal_db_path.display()
+            )
+        })?;
+
+        if tx
+            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                CheckpointRowFetchMaterializationBusyProbeStage::SchemaCreate,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        conn.execute_batch(
+            "PRAGMA journal_mode = DELETE;
+             CREATE TABLE discovery_persisted_rebuild_state (
+                 id INTEGER PRIMARY KEY,
+                 phase TEXT,
+                 updated_at TEXT
+             );",
+        )
+        .context("failed creating materialization busy probe temp sqlite schema")?;
+
+        if tx
+            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                CheckpointRowFetchMaterializationBusyProbeStage::AttachSource,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        conn.execute("ATTACH DATABASE ?1 AS source", [runtime_db_path.display().to_string()])
+            .with_context(|| {
+                format!(
+                    "failed attaching source runtime db {} for materialization busy probe",
+                    runtime_db_path.display()
+                )
+            })?;
+
+        if tx
+            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                CheckpointRowFetchMaterializationBusyProbeStage::LoadBusyTimeoutBefore,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        let busy_timeout_ms_before = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
+            .context("failed reading sqlite busy_timeout before materialization busy probe")?;
+        if tx
+            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::BusyTimeoutBefore(
+                busy_timeout_ms_before,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                CheckpointRowFetchMaterializationBusyProbeStage::ApplyBusyTimeoutZero,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        conn.execute_batch("PRAGMA busy_timeout = 0").context(
+            "failed applying PRAGMA busy_timeout = 0 for materialization busy probe",
+        )?;
+        let busy_timeout_ms_applied = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
+            .context("failed reading sqlite busy_timeout after applying zero-timeout materialization busy probe")?;
+        if tx
+            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::BusyTimeoutApplied(
+                busy_timeout_ms_applied,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                CheckpointRowFetchMaterializationBusyProbeStage::LoadConnectionMetadata,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        let journal_mode = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+            .context("failed reading sqlite journal_mode for materialization busy probe")?;
+        let locking_mode = conn
+            .query_row("PRAGMA locking_mode", [], |row| row.get::<_, String>(0))
+            .context("failed reading sqlite locking_mode for materialization busy probe")?;
+        let query_only = conn
+            .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+            .context("failed reading sqlite query_only for materialization busy probe")?
+            != 0;
+        if tx
+            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::ConnectionReadMode {
+                journal_mode,
+                locking_mode,
+                query_only,
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                CheckpointRowFetchMaterializationBusyProbeStage::LoadExplainQueryPlan,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        let explain_query_plan = load_explain_query_plan_for_sql(
+            &conn,
+            CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL,
+            "materialization busy probe insert-select",
+        )?;
+        if tx
+            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::QueryPlan {
+                explain_query_plan: explain_query_plan.explain_query_plan,
+                explain_query_plan_rows: explain_query_plan.explain_query_plan_rows,
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                CheckpointRowFetchMaterializationBusyProbeStage::InsertSelectExecute,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        if tx
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::InsertSelectExecuteStarted,
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        #[cfg(test)]
+        match test_behavior {
+            Some(CheckpointRowFetchMaterializationBusyProbeTestBehavior::ForceBusy) => {
+                let _ = tx.send(
+                    CheckpointRowFetchMaterializationBusyProbeWorkerMessage::InsertSelectExecuteCompleted {
+                        elapsed_ms: 0,
+                        rows_changed: 0,
+                        result_kind:
+                            CheckpointRowFetchMaterializationBusyProbeResultKind::SqliteBusy,
+                        sqlite_error_code: Some("SQLITE_BUSY".to_string()),
+                        sqlite_error_message: Some(
+                            "forced SQLITE_BUSY at materialization INSERT ... SELECT boundary"
+                                .to_string(),
+                        ),
+                    },
+                );
+                let _ = tx.send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Finished(
+                    Ok(()),
+                ));
+                return Ok(());
+            }
+            Some(CheckpointRowFetchMaterializationBusyProbeTestBehavior::ForceLocked) => {
+                let _ = tx.send(
+                    CheckpointRowFetchMaterializationBusyProbeWorkerMessage::InsertSelectExecuteCompleted {
+                        elapsed_ms: 0,
+                        rows_changed: 0,
+                        result_kind:
+                            CheckpointRowFetchMaterializationBusyProbeResultKind::SqliteLocked,
+                        sqlite_error_code: Some("SQLITE_LOCKED".to_string()),
+                        sqlite_error_message: Some(
+                            "forced SQLITE_LOCKED at materialization INSERT ... SELECT boundary"
+                                .to_string(),
+                        ),
+                    },
+                );
+                let _ = tx.send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Finished(
+                    Ok(()),
+                ));
+                return Ok(());
+            }
+            Some(CheckpointRowFetchMaterializationBusyProbeTestBehavior::DelayBeforeExecute(
+                delay,
+            )) => {
+                thread::sleep(delay);
+            }
+            Some(CheckpointRowFetchMaterializationBusyProbeTestBehavior::DelayBeforePostcheck(_))
+            | None => {}
+        }
+        let execute_started_at = Instant::now();
+        let execute_outcome = match conn.execute(
+            CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL,
+            [],
+        ) {
+            Ok(_) => (
+                CheckpointRowFetchMaterializationBusyProbeResultKind::InsertSelectSucceeded,
+                conn.changes(),
+                None,
+                None,
+            ),
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                let result_kind = match error.code {
+                    ErrorCode::DatabaseBusy => {
+                        CheckpointRowFetchMaterializationBusyProbeResultKind::SqliteBusy
+                    }
+                    ErrorCode::DatabaseLocked => {
+                        CheckpointRowFetchMaterializationBusyProbeResultKind::SqliteLocked
+                    }
+                    _ => CheckpointRowFetchMaterializationBusyProbeResultKind::OtherSqliteError,
+                };
+                (
+                    result_kind,
+                    0,
+                    Some(sqlite_error_code_name(error.code)),
+                    Some(
+                        message.unwrap_or_else(|| {
+                            "sqlite failure at materialization INSERT ... SELECT boundary"
+                                .to_string()
+                        }),
+                    ),
+                )
+            }
+            Err(error) => (
+                CheckpointRowFetchMaterializationBusyProbeResultKind::OtherError,
+                0,
+                None,
+                Some(error.to_string()),
+            ),
+        };
+        if tx
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::InsertSelectExecuteCompleted {
+                    elapsed_ms: elapsed_ms(execute_started_at),
+                    rows_changed: execute_outcome.1,
+                    result_kind: execute_outcome.0,
+                    sqlite_error_code: execute_outcome.2,
+                    sqlite_error_message: execute_outcome.3,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        if execute_outcome.0
+            != CheckpointRowFetchMaterializationBusyProbeResultKind::InsertSelectSucceeded
+        {
+            let _ =
+                tx.send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Finished(Ok(())));
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Entered(
+                    CheckpointRowFetchMaterializationBusyProbeStage::Postcheck,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        if tx
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::InsertSelectPostcheckStarted,
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if let Some(CheckpointRowFetchMaterializationBusyProbeTestBehavior::DelayBeforePostcheck(
+            delay,
+        )) = test_behavior
+        {
+            thread::sleep(delay);
+        }
+        let postcheck_row_count = conn
+            .query_row(CHECKPOINT_HEADLINE_ROW_META_ROW_COUNT_SQL, [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .context("failed postcheck row count after zero-timeout materialization busy probe")?
+            .max(0) as u64;
+        if tx
+            .send(
+                CheckpointRowFetchMaterializationBusyProbeWorkerMessage::InsertSelectPostcheckCompleted {
+                    row_count: postcheck_row_count,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let _ = tx.send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Finished(Ok(())));
+        Ok(())
+    };
+
+    if let Err(error) = run() {
+        let _ = tx.send(CheckpointRowFetchMaterializationBusyProbeWorkerMessage::Finished(
+            Err(format!("{error:#}")),
+        ));
     }
     Ok(())
 }
@@ -5778,6 +6647,7 @@ where
     let mut probe_checkpoint_row_fetch_busy_wait = false;
     let mut probe_checkpoint_row_fetch_copied_snapshot = false;
     let mut probe_checkpoint_row_fetch_minimal_snapshot = false;
+    let mut probe_checkpoint_row_fetch_materialization_busy_wait = false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
@@ -5841,6 +6711,9 @@ where
             "--probe-checkpoint-row-fetch-minimal-snapshot" => {
                 probe_checkpoint_row_fetch_minimal_snapshot = true;
             }
+            "--probe-checkpoint-row-fetch-materialization-busy-wait" => {
+                probe_checkpoint_row_fetch_materialization_busy_wait = true;
+            }
             "--deep-attempt-telemetry-scan" => {
                 deep_attempt_telemetry_scan = true;
             }
@@ -5896,13 +6769,14 @@ where
         + usize::from(probe_checkpoint_row_fetch_busy_wait)
         + usize::from(probe_checkpoint_row_fetch_copied_snapshot)
         + usize::from(probe_checkpoint_row_fetch_minimal_snapshot)
+        + usize::from(probe_checkpoint_row_fetch_materialization_busy_wait)
         + usize::from(explain_recent_raw_staged_lineage)
         + usize::from(explain_recent_raw_staged_regression)
         + usize::from(explain_recent_raw_staged_birth)
         + usize::from(explain_recent_raw_staged_window_seeding);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --probe-checkpoint-row-fetch-materialization-busy-wait, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
     if deep_attempt_telemetry_scan && !explain_recent_raw_replacement_attempt_telemetry {
@@ -6226,6 +7100,30 @@ where
         )));
     }
 
+    if probe_checkpoint_row_fetch_materialization_busy_wait {
+        if state_root.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+            || deep_attempt_telemetry_scan
+        {
+            bail!(
+                "--probe-checkpoint-row-fetch-materialization-busy-wait only accepts --config and optional --json"
+            );
+        }
+        return Ok(Some(
+            Command::ProbeCheckpointRowFetchMaterializationBusyWait(
+                ProbeCheckpointRowFetchMaterializationBusyWaitConfig {
+                    config_path: config_path
+                        .ok_or_else(|| anyhow!("missing required --config"))?,
+                    json,
+                },
+            ),
+        ));
+    }
+
     if explain_recent_raw_staged_lineage {
         if config_path.is_some()
             || db_path.is_some()
@@ -6522,6 +7420,21 @@ fn run_command(command: Command) -> Result<String> {
                     .context("failed serializing checkpoint row fetch minimal snapshot probe json")
             } else {
                 Ok(render_checkpoint_row_fetch_minimal_snapshot_probe_human(
+                    &diagnostic,
+                ))
+            }
+        }
+        Command::ProbeCheckpointRowFetchMaterializationBusyWait(config) => {
+            let diagnostic =
+                probe_checkpoint_row_fetch_materialization_busy_wait_read_only(
+                    &config.config_path,
+                );
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic).context(
+                    "failed serializing checkpoint row-fetch materialization busy probe json",
+                )
+            } else {
+                Ok(render_checkpoint_row_fetch_materialization_busy_probe_human(
                     &diagnostic,
                 ))
             }
@@ -9527,6 +10440,192 @@ fn render_checkpoint_row_fetch_minimal_snapshot_probe_human(
     .join("\n")
 }
 
+fn render_checkpoint_row_fetch_materialization_busy_probe_human(
+    diagnostic: &CheckpointRowFetchMaterializationBusyProbeDiagnostic,
+) -> String {
+    [
+        "event=discovery_checkpoint_row_fetch_materialization_busy_probe".to_string(),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_observed={}",
+            diagnostic.checkpoint_row_fetch_materialization_busy_probe_observed
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_reason_class={}",
+            serde_json::to_string(
+                &diagnostic.checkpoint_row_fetch_materialization_busy_probe_reason_class
+            )
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_explanation={}",
+            diagnostic.checkpoint_row_fetch_materialization_busy_probe_explanation
+        ),
+        format!("config_path={}", diagnostic.config_path),
+        format!(
+            "runtime_db_path={}",
+            diagnostic.runtime_db_path.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_strategy={}",
+            diagnostic.checkpoint_row_fetch_materialization_busy_probe_strategy
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_temp_dir={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_temp_dir
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_budget_ms={}",
+            diagnostic.checkpoint_row_fetch_materialization_busy_probe_budget_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_budget_source={}",
+            diagnostic.checkpoint_row_fetch_materialization_busy_probe_budget_source
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_total_elapsed_ms={}",
+            diagnostic.checkpoint_row_fetch_materialization_busy_probe_total_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_budget_exhausted={}",
+            diagnostic.checkpoint_row_fetch_materialization_busy_probe_budget_exhausted
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_stage={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_stage
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_source_row_fetch_dependency_kind={}",
+            serde_json::to_string(
+                &diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_source_row_fetch_dependency_kind
+            )
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_sql={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_sql
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_explain_query_plan={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_explain_query_plan
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_explain_query_plan_rows={}",
+            format_optional_json(
+                &diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_explain_query_plan_rows
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_journal_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_journal_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_locking_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_locking_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_query_only={}",
+            format_optional_bool(
+                diagnostic
+                    .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_query_only
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_busy_timeout_ms_before={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_busy_timeout_ms_before
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_busy_timeout_ms_applied={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_busy_timeout_ms_applied
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_started={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_started
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_completed={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_completed
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_elapsed_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_rows_changed={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_rows_changed
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_started={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_started
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_completed={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_completed
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_row_count={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_row_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_result_kind={}",
+            format_optional_enum_json(
+                &diagnostic.checkpoint_row_fetch_materialization_busy_probe_result_kind
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_sqlite_error_code={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_sqlite_error_code
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_busy_probe_sqlite_error_message={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_sqlite_error_message
+                .as_deref()
+                .unwrap_or("null")
+        ),
+    ]
+    .join("\n")
+}
+
 fn format_optional_bool(value: Option<bool>) -> String {
     value
         .map(|value| value.to_string())
@@ -10740,6 +11839,8 @@ mod tests {
         probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget,
         probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_and_test_behavior,
+        probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget,
+        probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget,
         probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_and_test_behavior,
         trace_replay_sol_leg_deep_proof_read_only,
@@ -10748,6 +11849,9 @@ mod tests {
         trace_replay_sol_leg_source_compare_read_only_with_budget,
         trace_replay_sol_leg_source_compare_read_only_with_prerequisite_budget,
         CheckpointRowFetchBusyProbeReasonClass, CheckpointRowFetchBusyProbeResultKind,
+        CheckpointRowFetchMaterializationBusyProbeReasonClass,
+        CheckpointRowFetchMaterializationBusyProbeResultKind,
+        CheckpointRowFetchMaterializationBusyProbeTestBehavior,
         CheckpointRowFetchMinimalSnapshotProbeReasonClass,
         CheckpointRowFetchMinimalSnapshotProbeTestBehavior,
         CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind,
@@ -10759,6 +11863,7 @@ mod tests {
         ExplainPublicationTruthExportBlockerConfig, ExplainRecentRawCatchUpStatusConfig,
         ExplainReplaySolLegBlockerConfig,
         ProbeCheckpointRowFetchCopiedSnapshotConfig,
+        ProbeCheckpointRowFetchMaterializationBusyWaitConfig,
         ProbeCheckpointRowFetchMinimalSnapshotConfig,
         ProbeCheckpointRowFetchBusyWaitConfig,
         TraceReplaySolLegDeepProofConfig,
@@ -11170,6 +12275,23 @@ mod tests {
         .expect("command should be present");
         let Command::ProbeCheckpointRowFetchMinimalSnapshot(parsed) = parsed else {
             panic!("expected checkpoint row fetch minimal snapshot probe command");
+        };
+        assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_probe_checkpoint_row_fetch_materialization_busy_wait_mode() {
+        let parsed = parse_args_from(vec![
+            "--probe-checkpoint-row-fetch-materialization-busy-wait".to_string(),
+            "--config".to_string(),
+            "/tmp/live.server.toml".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ProbeCheckpointRowFetchMaterializationBusyWait(parsed) = parsed else {
+            panic!("expected checkpoint row-fetch materialization busy probe command");
         };
         assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
         assert!(parsed.json);
@@ -12698,6 +13820,366 @@ mod tests {
         assert!(
             !diagnostic
                 .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_completed
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_probe_checkpoint_row_fetch_materialization_busy_wait_returns_success_json(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-materialization-busy-probe-row")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-materialization-busy-probe-row".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let diagnostic = probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget(
+            &fixture.config_path,
+            StdDuration::from_secs(1),
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_materialization_busy_probe_reason_class,
+            CheckpointRowFetchMaterializationBusyProbeReasonClass::CheckpointRowFetchMaterializationBusyProbeProvenNonBusyWait
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_materialization_busy_probe_result_kind,
+            Some(
+                CheckpointRowFetchMaterializationBusyProbeResultKind::InsertSelectSucceeded
+            )
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_completed
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_completed
+        );
+
+        let rendered = run_command(Command::ProbeCheckpointRowFetchMaterializationBusyWait(
+            ProbeCheckpointRowFetchMaterializationBusyWaitConfig {
+                config_path: fixture.config_path.clone(),
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["checkpoint_row_fetch_materialization_busy_probe_reason_class"],
+            "checkpoint_row_fetch_materialization_busy_probe_proven_non_busy_wait"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_materialization_busy_probe_source_row_fetch_dependency_kind"],
+            "sqlite_engine_side_materialization"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_busy_timeout_ms_applied"],
+            0
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_started"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_completed"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_started"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_completed"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_row_count"],
+            1
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_materialization_busy_probe_result_kind"],
+            "insert_select_succeeded"
+        );
+        for key in [
+            "checkpoint_row_fetch_materialization_busy_probe_observed",
+            "checkpoint_row_fetch_materialization_busy_probe_reason_class",
+            "checkpoint_row_fetch_materialization_busy_probe_explanation",
+            "config_path",
+            "runtime_db_path",
+            "checkpoint_row_fetch_materialization_busy_probe_strategy",
+            "checkpoint_row_fetch_materialization_busy_probe_temp_dir",
+            "checkpoint_row_fetch_materialization_busy_probe_budget_ms",
+            "checkpoint_row_fetch_materialization_busy_probe_budget_source",
+            "checkpoint_row_fetch_materialization_busy_probe_total_elapsed_ms",
+            "checkpoint_row_fetch_materialization_busy_probe_budget_exhausted",
+            "checkpoint_row_fetch_materialization_busy_probe_stage",
+            "checkpoint_row_fetch_materialization_busy_probe_source_row_fetch_dependency_kind",
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_sql",
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_explain_query_plan",
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_explain_query_plan_rows",
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_journal_mode",
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_locking_mode",
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_connection_query_only",
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_busy_timeout_ms_before",
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_busy_timeout_ms_applied",
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_started",
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_completed",
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_elapsed_ms",
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_rows_changed",
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_started",
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_completed",
+            "checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_row_count",
+            "checkpoint_row_fetch_materialization_busy_probe_result_kind",
+            "checkpoint_row_fetch_materialization_busy_probe_sqlite_error_code",
+            "checkpoint_row_fetch_materialization_busy_probe_sqlite_error_message",
+        ] {
+            assert!(parsed.get(key).is_some(), "missing key {key}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_materialization_busy_probe_forced_busy_returns_proven_busy_wait(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-materialization-busy-probe-busy")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-materialization-busy-probe-busy".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+                Some(CheckpointRowFetchMaterializationBusyProbeTestBehavior::ForceBusy),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_materialization_busy_probe_reason_class,
+            CheckpointRowFetchMaterializationBusyProbeReasonClass::CheckpointRowFetchMaterializationBusyProbeProvenBusyWait
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_materialization_busy_probe_result_kind,
+            Some(CheckpointRowFetchMaterializationBusyProbeResultKind::SqliteBusy)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_sqlite_error_code
+                .as_deref(),
+            Some("SQLITE_BUSY")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_materialization_busy_probe_forced_locked_returns_proven_busy_wait(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-materialization-busy-probe-locked")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-materialization-busy-probe-locked".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+                Some(CheckpointRowFetchMaterializationBusyProbeTestBehavior::ForceLocked),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_materialization_busy_probe_reason_class,
+            CheckpointRowFetchMaterializationBusyProbeReasonClass::CheckpointRowFetchMaterializationBusyProbeProvenBusyWait
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_materialization_busy_probe_result_kind,
+            Some(CheckpointRowFetchMaterializationBusyProbeResultKind::SqliteLocked)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_sqlite_error_code
+                .as_deref(),
+            Some("SQLITE_LOCKED")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_materialization_busy_probe_execute_timeout_returns_budget_exhausted(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-materialization-busy-probe-execute-timeout",
+        )?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-materialization-busy-probe-execute-timeout".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_millis(50),
+                Some(
+                    CheckpointRowFetchMaterializationBusyProbeTestBehavior::DelayBeforeExecute(
+                        StdDuration::from_millis(200),
+                    ),
+                ),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_materialization_busy_probe_reason_class,
+            CheckpointRowFetchMaterializationBusyProbeReasonClass::CheckpointRowFetchMaterializationBusyProbeBudgetExhausted
+        );
+        assert!(diagnostic.checkpoint_row_fetch_materialization_busy_probe_budget_exhausted);
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_stage
+                .as_deref(),
+            Some("insert_select_execute")
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_started
+        );
+        assert!(
+            !diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_completed
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_materialization_busy_probe_postcheck_timeout_returns_budget_exhausted(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-materialization-busy-probe-postcheck-timeout",
+        )?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-materialization-busy-probe-postcheck-timeout".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_millis(50),
+                Some(
+                    CheckpointRowFetchMaterializationBusyProbeTestBehavior::DelayBeforePostcheck(
+                        StdDuration::from_millis(200),
+                    ),
+                ),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_materialization_busy_probe_reason_class,
+            CheckpointRowFetchMaterializationBusyProbeReasonClass::CheckpointRowFetchMaterializationBusyProbeBudgetExhausted
+        );
+        assert!(diagnostic.checkpoint_row_fetch_materialization_busy_probe_budget_exhausted);
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_stage
+                .as_deref(),
+            Some("postcheck")
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_execute_completed
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_started
+        );
+        assert!(
+            !diagnostic
+                .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_completed
         );
         Ok(())
     }
