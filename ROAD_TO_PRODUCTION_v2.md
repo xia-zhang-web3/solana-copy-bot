@@ -13791,6 +13791,67 @@ Current interpretation:
    and how far the persisted counters/cursor have advanced, without reentering
    the heavier `discovery_runtime_export` enrichment path.
 
+### Stage 3 cheap-by-default replay-checkpoint headline operator (`2026-04-16`)
+
+Accepted repository change:
+
+1. The existing operator
+   `discovery_replay_checkpoint_headline --config <path> --json`
+   is now cheap by default.
+2. Default mode now:
+   - parses config
+   - resolves runtime DB path
+   - opens runtime DB read-only
+   - proves row existence, phase, updated_at, and the other persisted headline
+     columns already present in the table
+   - does not call `length(state_json)`
+   - leaves `persisted_rebuild_checkpoint_state_json_bytes = null`
+   - emits explicit probe-status fields explaining that byte probing was skipped
+3. The operator now has one explicit opt-in expensive flag:
+   - `--probe-state-json-bytes`
+4. Only when `--probe-state-json-bytes` is passed does the operator run a
+   second bounded read-only `length(state_json)` probe.
+5. If that explicit probe succeeds:
+   - `persisted_rebuild_checkpoint_state_json_bytes` is filled
+   - the row-present/row-missing result is preserved
+6. If that explicit probe fails or budget-exhausts:
+   - the row-present/row-missing result is still preserved
+   - probe outcome is surfaced through:
+     - `replay_checkpoint_headline_state_json_bytes_probe_attempted`
+     - `replay_checkpoint_headline_state_json_bytes_probe_completed`
+     - `replay_checkpoint_headline_state_json_bytes_probe_budget_exhausted`
+     - `replay_checkpoint_headline_state_json_bytes_probe_stage`
+     - `replay_checkpoint_headline_state_json_bytes_probe_explanation`
+7. `replay_checkpoint_headline_budget_exhausted` now refers only to the core
+   headline path, not the optional byte-length probe.
+8. The batch touches only:
+   - `crates/discovery/src/bin/discovery_replay_checkpoint_headline.rs`
+9. It still does not change:
+   - `discovery_runtime_export`
+   - `discovery_replay_checkpoint_diagnose`
+   - replay behavior
+   - publication/export gate semantics
+   - recent-raw behavior
+   - configs, templates, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_replay_checkpoint_headline`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_replay_checkpoint_headline`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_replay_checkpoint_headline.rs`
+   passed.
+
+Current interpretation:
+
+1. The original headline operator was useful, but its default path was still
+   operationally too expensive because it implicitly included
+   `length(state_json)`.
+2. This corrective batch is accepted because it makes the default headline path
+   truly cheap and bounded on runtime DB evidence alone, while keeping the old
+   byte-size proof available only as an explicit opt-in probe.
+
 ### Stage 3 runtime-db-only checkpoint-headline enrichment for primary export blocker (`2026-04-16`)
 
 Accepted repository change:
