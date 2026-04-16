@@ -13600,6 +13600,34 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+Live rollout result (`2026-04-16`, commit `1b95c6e`):
+
+1. The server was fast-forwarded to `1b95c6e` and only
+   `discovery_runtime_export` was rebuilt.
+2. A clean `sudo -n` live run of:
+   `discovery_runtime_export --probe-checkpoint-row-fetch-copied-snapshot --config /etc/solana-copy-bot/live.server.toml --json`
+   did not return structured JSON under external `timeout 30s`:
+   - `rc = 124`
+   - output file remained `0` bytes
+3. A controlled repeat with external `timeout 120s` also failed the same way:
+   - `rc = 124`
+   - output file remained `0` bytes
+4. Therefore the copied-snapshot operator is not yet operationally bounded on
+   the production host.
+5. The current live blocker is no longer the low-level copied SQLite fetch
+   result itself; it is the copied-snapshot operator's own staging path before
+   it can return bounded JSON.
+6. The next proof-first corrective batch must target that copied-snapshot
+   staging path directly:
+   - temp-dir creation
+   - main DB copy
+   - `-wal` copy
+   - `-shm` copy
+   - handoff into the reused zero-timeout row-fetch core
+7. No production conclusion should be drawn yet about live-concurrency versus
+   file-content behavior from this operator, because the operator did not reach
+   a bounded result on live.
+
 Live rollout result (`2026-04-16`, commit `fb6edd5`):
 
 1. The server was fast-forwarded to `fb6edd5` and only
