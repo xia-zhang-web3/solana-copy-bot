@@ -14674,3 +14674,44 @@ Live rollout result (`2026-04-16`, commit `96de092`):
 5. The next corrective batch must target prerequisite reuse inside the
    source-compare mode itself before more source-comparison instrumentation is
    added.
+
+Corrective repository batch accepted (`2026-04-16`):
+
+1. `discovery_runtime_export --trace-replay-sol-leg-source-compare` no longer
+   runs its own divergent prerequisite logic.
+2. The mode now stands on the same shared replay-sol-leg prerequisite helper as
+   the working `--explain-replay-sol-leg-blocker` path.
+3. The shared prerequisite contract now feeds both modes with the same bounded
+   proof of:
+   - current blocker = `replay_sol_leg_incomplete`
+   - cheap checkpoint headline completed
+   - current persisted checkpoint = `replay/sol_leg`
+4. The source-compare trace mode now emits explicit prerequisite telemetry:
+   - `source_compare_trace_prerequisite_explanation`
+   - `source_compare_trace_prerequisite_total_elapsed_ms`
+   - `source_compare_trace_prerequisite_checkpoint_headline_completed`
+   - `source_compare_trace_prerequisite_checkpoint_headline_budget_exhausted`
+   - `source_compare_trace_prerequisite_checkpoint_headline_stage`
+5. If prerequisite proof succeeds, the source-compare trace mode proceeds to
+   runtime-db open, recent-raw open, and source-compare start.
+6. If prerequisite proof fails, it returns bounded JSON with explicit
+   prerequisite telemetry instead of collapsing into a vague unproven result.
+7. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+8. It does not change:
+   - `--explain-publication-truth-export-blocker`
+   - `--explain-replay-sol-leg-blocker`
+   - `--trace-replay-sol-leg-deep-proof`
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
