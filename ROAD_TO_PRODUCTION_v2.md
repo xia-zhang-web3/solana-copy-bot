@@ -13797,6 +13797,50 @@ Live rollout result (`2026-04-16`, commit `3c5e60e`):
    - the next proof-first batch must target the SQLite-side materialization seam
      itself, not the old application-level source-row-fetch circularity
 
+Corrective repository batch accepted (`2026-04-16`):
+
+1. The `--probe-checkpoint-row-fetch-minimal-snapshot` operator now exposes
+   controller-observed SQLite-side materialization micro-stages instead of only
+   the coarse `sqlite_side_materialization` stage.
+2. New materialization event summary fields:
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_event_count`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_last_event`
+3. New explicit micro-stage booleans and elapsed fields:
+   - temp DB open started/completed + elapsed
+   - schema create started/completed + elapsed
+   - ATTACH started/completed + elapsed
+   - INSERT ... SELECT started/completed + elapsed
+   - DETACH started/completed + elapsed
+4. The worker now emits explicit started/completed events around the actual
+   SQLite calls in the materialization helper.
+5. On timeout, the bounded JSON now reports:
+   - exact last observed materialization event
+   - exact event count
+   - all reached micro-stages
+   - exact per-stage elapsed values reached before timeout
+6. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+7. It does not change:
+   - `--explain-publication-truth-export-blocker`
+   - `--explain-replay-sol-leg-blocker`
+   - `--trace-replay-sol-leg-deep-proof`
+   - `--trace-replay-sol-leg-source-compare`
+   - `--probe-checkpoint-row-fetch-busy-wait`
+   - `--probe-checkpoint-row-fetch-copied-snapshot`
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
 Live rollout result (`2026-04-16`, commit `a529f5d`):
 
 1. The server was fast-forwarded to `a529f5d` and only
