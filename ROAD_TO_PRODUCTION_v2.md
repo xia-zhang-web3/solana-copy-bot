@@ -14475,3 +14475,32 @@ Current interpretation:
 2. Live rollout still must verify whether the worker-thread timeout now returns
    structured JSON under production data volume, or whether another deep-path
    defect remains.
+3. Live rollout to the production host validated the intended operational fix:
+   - server commit moved to `3b5daaf`
+   - only `discovery_runtime_export` was rebuilt
+   - `solana-copy-bot.service` stayed `active`
+   - `copybot-discovery-runtime-export.timer` stayed `active`
+4. A first live run still returned structured JSON with prerequisite failure,
+   which proved the batch had already fixed the earlier `0-byte timeout`
+   failure mode.
+5. A repeated live run on the same deployed binary then returned the expected
+   bounded deep-path result:
+   - `replay_sol_leg_blocker_reason_class = replay_sol_leg_blocker_proven_current`
+   - `replay_sol_leg_blocker_prerequisite_reason_class = publication_truth_export_blocked_on_replay_sol_leg_incomplete`
+   - `replay_sol_leg_blocker_prerequisite_checkpoint_headline_completed = true`
+   - `replay_sol_leg_blocker_prerequisite_total_elapsed_ms = 229`
+   - `replay_sol_leg_blocker_post_prerequisite_started = true`
+   - `replay_sol_leg_blocker_deep_reason_started = true`
+   - `replay_sol_leg_blocker_deep_reason_completed = false`
+   - `replay_sol_leg_blocker_deep_reason_budget_exhausted = true`
+   - `replay_sol_leg_blocker_deep_reason_stage = deep_replay_sol_leg_reason_wait_timeout`
+   - `replay_sol_leg_blocker_budget_exhausted = true`
+   - `replay_sol_leg_blocker_budget_exhausted_stage = deep_replay_sol_leg_reason_wait_timeout`
+   - `replay_sol_leg_blocker_total_elapsed_ms = 30232`
+   - `replay_sol_leg_blocker_deep_reason_elapsed_ms = 30002`
+6. Current interpretation after rollout:
+   - the replay-sol-leg blocker mode is now operationally bounded on live
+   - the exact deep reason is still unresolved on production because the deep
+     replay proof reaches its internal wait timeout before returning a result
+   - the next bounded Stage 3 step must target the deep replay reason path
+     itself, not prerequisite proof or output rendering
