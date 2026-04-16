@@ -13841,6 +13841,44 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+Live rollout result (`2026-04-16`, commit `cc311fa`):
+
+1. The server was fast-forwarded from `d62c19a` to `cc311fa` and only
+   `discovery_runtime_export` was rebuilt.
+2. Service state remained healthy after rollout:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+3. A clean `sudo -n` live run of:
+   `discovery_runtime_export --probe-checkpoint-row-fetch-minimal-snapshot --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_minimal_snapshot_probe_reason_class = checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_stage = sqlite_side_materialization`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_total_elapsed_ms = 1000`
+4. The new insert-select boundary telemetry narrowed the seam one level deeper:
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_last_event = materialization_insert_select_execute_started`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_started = true`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_started = true`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_completed = false`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_started = false`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_completed = false`
+5. The exact call-boundary metadata on that seam was:
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_sql = INSERT INTO discovery_persisted_rebuild_state (id, phase, updated_at) SELECT id, phase, updated_at FROM source.discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_explain_query_plan = SEARCH source.discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_journal_mode = delete`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_locking_mode = normal`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_query_only = false`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_busy_timeout_ms = 5000`
+6. Therefore the exact current live seam is now:
+   - not temp DB open
+   - not schema create
+   - not ATTACH
+   - not generic insert-select setup
+   - specifically the SQLite `conn.execute(INSERT ... SELECT ...)` call boundary,
+     because the worker emits `materialization_insert_select_execute_started`
+     and then no completion event arrives before the `1000ms` budget expires
+7. The next proof-first batch must target that exact `conn.execute(...)`
+   seam, not broader materialization plumbing.
+
 Corrective repository batch accepted (`2026-04-16`):
 
 1. The `--probe-checkpoint-row-fetch-minimal-snapshot` operator now exposes
