@@ -13600,6 +13600,45 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+Live rollout result (`2026-04-16`, commit `a6cdb4e`):
+
+1. The server was fast-forwarded to `a6cdb4e` and only
+   `discovery_runtime_export` was rebuilt.
+2. A clean live run of:
+   `discovery_runtime_export --explain-publication-truth-export-blocker --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `publication_truth_export_blocked_on_replay_sol_leg_incomplete`
+   - `publication_truth_export_checkpoint_headline_prerequisite_source = direct_runtime_db_row_meta_worker_timeout_path`
+   - `publication_truth_export_checkpoint_headline_completed = false`
+   - `publication_truth_export_checkpoint_headline_budget_exhausted = true`
+   - `publication_truth_export_checkpoint_headline_stage = load_persisted_rebuild_row_meta_step_primary_key_lookup`
+   - `publication_truth_export_checkpoint_headline_total_elapsed_ms = 1000`
+3. The new worker-event fields proved the exact controller-side sequence:
+   - `publication_truth_export_checkpoint_headline_worker_started = true`
+   - `publication_truth_export_checkpoint_headline_worker_last_event = entered_step_primary_key_lookup`
+   - `publication_truth_export_checkpoint_headline_worker_event_count = 8`
+   - `publication_truth_export_checkpoint_headline_worker_opened_read_only_received = true`
+   - `publication_truth_export_checkpoint_headline_worker_schema_lookup_completed_received = true`
+   - `publication_truth_export_checkpoint_headline_worker_row_count_completed_received = true`
+   - `publication_truth_export_checkpoint_headline_worker_prepare_completed_received = true`
+   - `publication_truth_export_checkpoint_headline_worker_step_completed_received = false`
+   - `publication_truth_export_checkpoint_headline_worker_finished_received = false`
+   - `publication_truth_export_checkpoint_headline_worker_disconnected = false`
+4. The controller also reported:
+   - `publication_truth_export_checkpoint_headline_runtime_db_open_elapsed_ms = 0`
+   - `publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms = 0`
+   - `publication_truth_export_checkpoint_headline_row_count_elapsed_ms = 0`
+   - `publication_truth_export_checkpoint_headline_prepare_elapsed_ms = 0`
+   - `publication_truth_export_checkpoint_headline_step_elapsed_ms = 0`
+   - budget remaining after open/schema/rowcount/prepare ≈ `999/999/998/998 ms`
+   - budget remaining after step = `0 ms`
+5. Therefore the bounded worker path is now proven up to the exact seam:
+   the worker reaches `entered_step_primary_key_lookup`, but no
+   `step_completed` or `finished` message is received before the `1000ms`
+   controller budget expires.
+6. The next corrective batch must target the `step_primary_key_lookup` worker
+   seam itself, not the broader publication-blocker or source-compare plumbing.
+
 Live rollout result (`2026-04-16`, commit `6eb5c32`):
 
 1. The server was fast-forwarded to `6eb5c32` and only
