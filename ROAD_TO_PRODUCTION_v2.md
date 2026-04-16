@@ -14214,3 +14214,58 @@ Current interpretation:
 3. This batch is accepted because it corrects the remaining issue for what it
    actually was: not a hidden heavy query anymore, but a too-tight bounded
    budget below already-proven live latency.
+
+### Stage 3 primary export-blocker checkpoint-headline timing telemetry (`2026-04-16`)
+
+Accepted repository change:
+
+1. The primary operator
+   `discovery_runtime_export --explain-publication-truth-export-blocker --config <path> --json`
+   now emits factual timing telemetry from its own cheap checkpoint-headline
+   execution path.
+2. New fields now expose the primary operator's own measured timings:
+   - `publication_truth_export_checkpoint_headline_total_elapsed_ms`
+   - `publication_truth_export_checkpoint_headline_runtime_db_open_elapsed_ms`
+   - `publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms`
+   - `publication_truth_export_checkpoint_headline_row_count_elapsed_ms`
+   - `publication_truth_export_checkpoint_headline_prepare_elapsed_ms`
+   - `publication_truth_export_checkpoint_headline_step_elapsed_ms`
+3. It also now emits factual budget-remaining fields after each reached stage:
+   - `publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open`
+   - `publication_truth_export_checkpoint_headline_budget_remaining_ms_after_schema_lookup`
+   - `publication_truth_export_checkpoint_headline_budget_remaining_ms_after_row_count`
+   - `publication_truth_export_checkpoint_headline_budget_remaining_ms_after_prepare`
+   - `publication_truth_export_checkpoint_headline_budget_remaining_ms_after_step`
+4. Unreached checkpoint-headline stages keep their timing/budget-remaining
+   telemetry at `0`.
+5. This batch does not change:
+   - top-level publication-state-first blocker proof
+   - checkpoint-headline budget
+   - state_json probing policy
+   - recent-raw avoidance on the cheap headline path
+   - replay/source comparison policy
+6. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+7. It still does not change:
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Current interpretation:
+
+1. Raising the checkpoint-headline budget to `1000ms` still did not make the
+   primary operator complete on live, even though standalone cheap-path tools
+   remained faster than that bound.
+2. This batch is accepted because it adds direct timing proof from the primary
+   operator's own cheap checkpoint-headline path, so the next fix can target
+   measured internal latency rather than inferred discrepancies.

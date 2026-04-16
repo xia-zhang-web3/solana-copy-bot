@@ -229,6 +229,18 @@ struct PublicationTruthExportBlockerDiagnostic {
     publication_truth_export_blocker_top_level_proven_from_publication_state: bool,
     publication_truth_export_checkpoint_headline_budget_ms: u64,
     publication_truth_export_checkpoint_headline_budget_source: String,
+    // Unreached checkpoint-headline stages keep their elapsed/budget-remaining telemetry at 0.
+    publication_truth_export_checkpoint_headline_total_elapsed_ms: u64,
+    publication_truth_export_checkpoint_headline_runtime_db_open_elapsed_ms: u64,
+    publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms: u64,
+    publication_truth_export_checkpoint_headline_row_count_elapsed_ms: u64,
+    publication_truth_export_checkpoint_headline_prepare_elapsed_ms: u64,
+    publication_truth_export_checkpoint_headline_step_elapsed_ms: u64,
+    publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open: u64,
+    publication_truth_export_checkpoint_headline_budget_remaining_ms_after_schema_lookup: u64,
+    publication_truth_export_checkpoint_headline_budget_remaining_ms_after_row_count: u64,
+    publication_truth_export_checkpoint_headline_budget_remaining_ms_after_prepare: u64,
+    publication_truth_export_checkpoint_headline_budget_remaining_ms_after_step: u64,
     publication_truth_export_checkpoint_headline_attempted: bool,
     publication_truth_export_checkpoint_headline_completed: bool,
     publication_truth_export_checkpoint_headline_budget_exhausted: bool,
@@ -291,6 +303,17 @@ impl PublicationTruthExportBlockerDiagnostic {
                 DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_MS,
             publication_truth_export_checkpoint_headline_budget_source:
                 DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_SOURCE.to_string(),
+            publication_truth_export_checkpoint_headline_total_elapsed_ms: 0,
+            publication_truth_export_checkpoint_headline_runtime_db_open_elapsed_ms: 0,
+            publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms: 0,
+            publication_truth_export_checkpoint_headline_row_count_elapsed_ms: 0,
+            publication_truth_export_checkpoint_headline_prepare_elapsed_ms: 0,
+            publication_truth_export_checkpoint_headline_step_elapsed_ms: 0,
+            publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open: 0,
+            publication_truth_export_checkpoint_headline_budget_remaining_ms_after_schema_lookup: 0,
+            publication_truth_export_checkpoint_headline_budget_remaining_ms_after_row_count: 0,
+            publication_truth_export_checkpoint_headline_budget_remaining_ms_after_prepare: 0,
+            publication_truth_export_checkpoint_headline_budget_remaining_ms_after_step: 0,
             publication_truth_export_checkpoint_headline_attempted: false,
             publication_truth_export_checkpoint_headline_completed: false,
             publication_truth_export_checkpoint_headline_budget_exhausted: false,
@@ -385,10 +408,31 @@ struct PublicationTruthExportCheckpointRowMeta {
     updated_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PublicationTruthExportCheckpointHeadlineTiming {
+    total_elapsed_ms: u64,
+    runtime_db_open_elapsed_ms: u64,
+    schema_lookup_elapsed_ms: u64,
+    row_count_elapsed_ms: u64,
+    prepare_elapsed_ms: u64,
+    step_elapsed_ms: u64,
+    budget_remaining_ms_after_open: u64,
+    budget_remaining_ms_after_schema_lookup: u64,
+    budget_remaining_ms_after_row_count: u64,
+    budget_remaining_ms_after_prepare: u64,
+    budget_remaining_ms_after_step: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PublicationTruthExportCheckpointRowMetaLoadOutcome {
     Completed(PublicationTruthExportCheckpointRowMeta),
     BudgetExhausted(PublicationTruthExportCheckpointRowMetaStage),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublicationTruthExportCheckpointRowMetaLoadResult {
+    outcome: PublicationTruthExportCheckpointRowMetaLoadOutcome,
+    timing: PublicationTruthExportCheckpointHeadlineTiming,
 }
 
 fn export_gate_reason_publishable_checkpoint_blocker(reason: &str) -> Option<&str> {
@@ -454,6 +498,34 @@ fn set_publication_truth_export_checkpoint_headline_completed(
     diagnostic.publication_truth_export_checkpoint_headline_budget_exhausted = false;
     diagnostic.publication_truth_export_checkpoint_headline_stage = stage;
     diagnostic.publication_truth_export_checkpoint_headline_explanation = Some(explanation.into());
+}
+
+fn sync_publication_truth_export_checkpoint_headline_timing(
+    diagnostic: &mut PublicationTruthExportBlockerDiagnostic,
+    timing: &PublicationTruthExportCheckpointHeadlineTiming,
+) {
+    diagnostic.publication_truth_export_checkpoint_headline_total_elapsed_ms =
+        timing.total_elapsed_ms;
+    diagnostic.publication_truth_export_checkpoint_headline_runtime_db_open_elapsed_ms =
+        timing.runtime_db_open_elapsed_ms;
+    diagnostic.publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms =
+        timing.schema_lookup_elapsed_ms;
+    diagnostic.publication_truth_export_checkpoint_headline_row_count_elapsed_ms =
+        timing.row_count_elapsed_ms;
+    diagnostic.publication_truth_export_checkpoint_headline_prepare_elapsed_ms =
+        timing.prepare_elapsed_ms;
+    diagnostic.publication_truth_export_checkpoint_headline_step_elapsed_ms =
+        timing.step_elapsed_ms;
+    diagnostic.publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open =
+        timing.budget_remaining_ms_after_open;
+    diagnostic.publication_truth_export_checkpoint_headline_budget_remaining_ms_after_schema_lookup =
+        timing.budget_remaining_ms_after_schema_lookup;
+    diagnostic.publication_truth_export_checkpoint_headline_budget_remaining_ms_after_row_count =
+        timing.budget_remaining_ms_after_row_count;
+    diagnostic.publication_truth_export_checkpoint_headline_budget_remaining_ms_after_prepare =
+        timing.budget_remaining_ms_after_prepare;
+    diagnostic.publication_truth_export_checkpoint_headline_budget_remaining_ms_after_step =
+        timing.budget_remaining_ms_after_step;
 }
 
 fn set_publication_truth_export_state_json_bytes_probe_not_attempted(
@@ -610,18 +682,26 @@ fn apply_publication_truth_export_checkpoint_headline_enrichment(
         runtime_db_path,
         budget,
     ) {
-        Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(row_meta)) => row_meta,
-        Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(stage)) => {
-            set_publication_truth_export_checkpoint_headline_failed(
+        Ok(load_result) => {
+            sync_publication_truth_export_checkpoint_headline_timing(
                 diagnostic,
-                Some(stage.as_str().to_string()),
-                true,
-                format!(
-                    "runtime-db-only checkpoint headline enrichment exhausted its budget while running the cheap persisted rebuild row-meta path (stage={})",
-                    stage.as_str()
-                ),
+                &load_result.timing,
             );
-            return PublicationTruthExportCheckpointHeadlineOutcome::Failed;
+            match load_result.outcome {
+                PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(row_meta) => row_meta,
+                PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(stage) => {
+                    set_publication_truth_export_checkpoint_headline_failed(
+                        diagnostic,
+                        Some(stage.as_str().to_string()),
+                        true,
+                        format!(
+                            "runtime-db-only checkpoint headline enrichment exhausted its budget while running the cheap persisted rebuild row-meta path (stage={})",
+                            stage.as_str()
+                        ),
+                    );
+                    return PublicationTruthExportCheckpointHeadlineOutcome::Failed;
+                }
+            }
         }
         Err(error) => {
             set_publication_truth_export_checkpoint_headline_failed(
@@ -665,7 +745,9 @@ fn apply_publication_truth_export_checkpoint_headline_enrichment(
 fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
     runtime_db_path: &Path,
     budget: StdDuration,
-) -> Result<PublicationTruthExportCheckpointRowMetaLoadOutcome> {
+) -> Result<PublicationTruthExportCheckpointRowMetaLoadResult> {
+    let total_started_at = Instant::now();
+    let open_started_at = Instant::now();
     let conn = Connection::open_with_flags(
         runtime_db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -676,77 +758,119 @@ fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
             runtime_db_path.display()
         )
     })?;
-    let started_at = Instant::now();
-    if started_at.elapsed() >= budget {
-        return Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
-            PublicationTruthExportCheckpointRowMetaStage::SchemaLookup,
-        ));
+    let mut timing = PublicationTruthExportCheckpointHeadlineTiming::default();
+    timing.runtime_db_open_elapsed_ms = elapsed_ms(open_started_at);
+    timing.budget_remaining_ms_after_open = remaining_budget_ms(budget, total_started_at);
+    if total_started_at.elapsed() >= budget {
+        timing.total_elapsed_ms = elapsed_ms(total_started_at);
+        return Ok(PublicationTruthExportCheckpointRowMetaLoadResult {
+            outcome: PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
+                PublicationTruthExportCheckpointRowMetaStage::SchemaLookup,
+            ),
+            timing,
+        });
     }
 
+    let schema_lookup_started_at = Instant::now();
     let table_exists = conn
         .query_row(CHECKPOINT_HEADLINE_ROW_META_TABLE_EXISTS_SQL, [], |row| {
             row.get::<_, i64>(0)
         })
         .context("failed checking discovery_persisted_rebuild_state table existence")?
         != 0;
-    if started_at.elapsed() >= budget {
-        return Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
-            PublicationTruthExportCheckpointRowMetaStage::SchemaLookup,
-        ));
+    timing.schema_lookup_elapsed_ms = elapsed_ms(schema_lookup_started_at);
+    timing.budget_remaining_ms_after_schema_lookup = remaining_budget_ms(budget, total_started_at);
+    if total_started_at.elapsed() >= budget {
+        timing.total_elapsed_ms = elapsed_ms(total_started_at);
+        return Ok(PublicationTruthExportCheckpointRowMetaLoadResult {
+            outcome: PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
+                PublicationTruthExportCheckpointRowMetaStage::SchemaLookup,
+            ),
+            timing,
+        });
     }
     if !table_exists {
-        return Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(
-            PublicationTruthExportCheckpointRowMeta {
-                checkpoint_exists: false,
-                rebuild_phase: None,
-                updated_at: None,
-            },
-        ));
+        timing.total_elapsed_ms = elapsed_ms(total_started_at);
+        return Ok(PublicationTruthExportCheckpointRowMetaLoadResult {
+            outcome: PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(
+                PublicationTruthExportCheckpointRowMeta {
+                    checkpoint_exists: false,
+                    rebuild_phase: None,
+                    updated_at: None,
+                },
+            ),
+            timing,
+        });
     }
 
+    let row_count_started_at = Instant::now();
     let row_count = conn
         .query_row(CHECKPOINT_HEADLINE_ROW_META_ROW_COUNT_SQL, [], |row| {
             row.get::<_, i64>(0)
         })
         .context("failed counting persisted rebuild checkpoint row id=1")?
         .max(0);
-    if started_at.elapsed() >= budget {
-        return Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
-            PublicationTruthExportCheckpointRowMetaStage::RowCount,
-        ));
+    timing.row_count_elapsed_ms = elapsed_ms(row_count_started_at);
+    timing.budget_remaining_ms_after_row_count = remaining_budget_ms(budget, total_started_at);
+    if total_started_at.elapsed() >= budget {
+        timing.total_elapsed_ms = elapsed_ms(total_started_at);
+        return Ok(PublicationTruthExportCheckpointRowMetaLoadResult {
+            outcome: PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
+                PublicationTruthExportCheckpointRowMetaStage::RowCount,
+            ),
+            timing,
+        });
     }
     if row_count == 0 {
-        return Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(
-            PublicationTruthExportCheckpointRowMeta {
-                checkpoint_exists: false,
-                rebuild_phase: None,
-                updated_at: None,
-            },
-        ));
+        timing.total_elapsed_ms = elapsed_ms(total_started_at);
+        return Ok(PublicationTruthExportCheckpointRowMetaLoadResult {
+            outcome: PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(
+                PublicationTruthExportCheckpointRowMeta {
+                    checkpoint_exists: false,
+                    rebuild_phase: None,
+                    updated_at: None,
+                },
+            ),
+            timing,
+        });
     }
 
+    let prepare_started_at = Instant::now();
     let mut stmt = conn
         .prepare(CHECKPOINT_HEADLINE_ROW_META_SQL)
         .context("failed preparing persisted rebuild checkpoint row-meta query")?;
-    if started_at.elapsed() >= budget {
-        return Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
-            PublicationTruthExportCheckpointRowMetaStage::PreparePrimaryKeyLookup,
-        ));
+    timing.prepare_elapsed_ms = elapsed_ms(prepare_started_at);
+    timing.budget_remaining_ms_after_prepare = remaining_budget_ms(budget, total_started_at);
+    if total_started_at.elapsed() >= budget {
+        timing.total_elapsed_ms = elapsed_ms(total_started_at);
+        return Ok(PublicationTruthExportCheckpointRowMetaLoadResult {
+            outcome: PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
+                PublicationTruthExportCheckpointRowMetaStage::PreparePrimaryKeyLookup,
+            ),
+            timing,
+        });
     }
 
+    let step_started_at = Instant::now();
     let raw = stmt
         .query_row([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .optional()
         .context("failed stepping persisted rebuild checkpoint row-meta query")?;
-    if started_at.elapsed() >= budget {
-        return Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
-            PublicationTruthExportCheckpointRowMetaStage::StepPrimaryKeyLookup,
-        ));
+    timing.step_elapsed_ms = elapsed_ms(step_started_at);
+    timing.budget_remaining_ms_after_step = remaining_budget_ms(budget, total_started_at);
+    if total_started_at.elapsed() >= budget {
+        timing.total_elapsed_ms = elapsed_ms(total_started_at);
+        return Ok(PublicationTruthExportCheckpointRowMetaLoadResult {
+            outcome: PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
+                PublicationTruthExportCheckpointRowMetaStage::StepPrimaryKeyLookup,
+            ),
+            timing,
+        });
     }
 
-    Ok(match raw {
+    let outcome = match raw {
         Some((phase_raw, updated_at_raw)) => {
             let phase = DiscoveryPersistedRebuildPhase::parse(&phase_raw)
                 .map(|phase| phase.as_str().to_string())
@@ -761,9 +885,9 @@ fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
                 })?;
             PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(
                 PublicationTruthExportCheckpointRowMeta {
-                checkpoint_exists: true,
-                rebuild_phase: Some(phase),
-                updated_at: Some(updated_at),
+                    checkpoint_exists: true,
+                    rebuild_phase: Some(phase),
+                    updated_at: Some(updated_at),
                 },
             )
         }
@@ -774,7 +898,20 @@ fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
                 updated_at: None,
             },
         ),
-    })
+    };
+    timing.total_elapsed_ms = elapsed_ms(total_started_at);
+    Ok(PublicationTruthExportCheckpointRowMetaLoadResult { outcome, timing })
+}
+
+fn remaining_budget_ms(budget: StdDuration, started_at: Instant) -> u64 {
+    budget
+        .saturating_sub(started_at.elapsed())
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
+fn elapsed_ms(started_at: Instant) -> u64 {
+    started_at.elapsed().as_millis().min(u64::MAX as u128) as u64
 }
 
 fn parse_args() -> Result<Option<Command>> {
@@ -1965,6 +2102,52 @@ fn render_publication_truth_export_blocker_human(
         format!(
             "publication_truth_export_checkpoint_headline_budget_source={}",
             diagnostic.publication_truth_export_checkpoint_headline_budget_source
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_total_elapsed_ms={}",
+            diagnostic.publication_truth_export_checkpoint_headline_total_elapsed_ms
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_runtime_db_open_elapsed_ms={}",
+            diagnostic.publication_truth_export_checkpoint_headline_runtime_db_open_elapsed_ms
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms={}",
+            diagnostic.publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_row_count_elapsed_ms={}",
+            diagnostic.publication_truth_export_checkpoint_headline_row_count_elapsed_ms
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_prepare_elapsed_ms={}",
+            diagnostic.publication_truth_export_checkpoint_headline_prepare_elapsed_ms
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_step_elapsed_ms={}",
+            diagnostic.publication_truth_export_checkpoint_headline_step_elapsed_ms
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open={}",
+            diagnostic.publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_budget_remaining_ms_after_schema_lookup={}",
+            diagnostic
+                .publication_truth_export_checkpoint_headline_budget_remaining_ms_after_schema_lookup
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_budget_remaining_ms_after_row_count={}",
+            diagnostic
+                .publication_truth_export_checkpoint_headline_budget_remaining_ms_after_row_count
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_budget_remaining_ms_after_prepare={}",
+            diagnostic.publication_truth_export_checkpoint_headline_budget_remaining_ms_after_prepare
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_budget_remaining_ms_after_step={}",
+            diagnostic.publication_truth_export_checkpoint_headline_budget_remaining_ms_after_step
         ),
         format!(
             "publication_truth_export_checkpoint_headline_attempted={}",
@@ -3883,6 +4066,49 @@ mod tests {
             parsed["publication_truth_export_checkpoint_headline_budget_source"],
             "fixed_constant_default_primary_operator"
         );
+        assert!(parsed["publication_truth_export_checkpoint_headline_total_elapsed_ms"]
+            .as_u64()
+            .is_some());
+        assert!(parsed["publication_truth_export_checkpoint_headline_runtime_db_open_elapsed_ms"]
+            .as_u64()
+            .is_some());
+        assert!(parsed["publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms"]
+            .as_u64()
+            .is_some());
+        assert!(parsed["publication_truth_export_checkpoint_headline_row_count_elapsed_ms"]
+            .as_u64()
+            .is_some());
+        assert!(parsed["publication_truth_export_checkpoint_headline_prepare_elapsed_ms"]
+            .as_u64()
+            .is_some());
+        assert!(parsed["publication_truth_export_checkpoint_headline_step_elapsed_ms"]
+            .as_u64()
+            .is_some());
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open"]
+                .as_u64()
+                .is_some()
+        );
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_budget_remaining_ms_after_schema_lookup"]
+                .as_u64()
+                .is_some()
+        );
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_budget_remaining_ms_after_row_count"]
+                .as_u64()
+                .is_some()
+        );
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_budget_remaining_ms_after_prepare"]
+                .as_u64()
+                .is_some()
+        );
+        assert!(
+            parsed["publication_truth_export_checkpoint_headline_budget_remaining_ms_after_step"]
+                .as_u64()
+                .is_some()
+        );
         assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_budget_exhausted"],
             false
@@ -3923,6 +4149,17 @@ mod tests {
             "publication_truth_export_blocker_top_level_proven_from_publication_state",
             "publication_truth_export_checkpoint_headline_budget_ms",
             "publication_truth_export_checkpoint_headline_budget_source",
+            "publication_truth_export_checkpoint_headline_total_elapsed_ms",
+            "publication_truth_export_checkpoint_headline_runtime_db_open_elapsed_ms",
+            "publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms",
+            "publication_truth_export_checkpoint_headline_row_count_elapsed_ms",
+            "publication_truth_export_checkpoint_headline_prepare_elapsed_ms",
+            "publication_truth_export_checkpoint_headline_step_elapsed_ms",
+            "publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open",
+            "publication_truth_export_checkpoint_headline_budget_remaining_ms_after_schema_lookup",
+            "publication_truth_export_checkpoint_headline_budget_remaining_ms_after_row_count",
+            "publication_truth_export_checkpoint_headline_budget_remaining_ms_after_prepare",
+            "publication_truth_export_checkpoint_headline_budget_remaining_ms_after_step",
             "publication_truth_export_checkpoint_headline_attempted",
             "publication_truth_export_checkpoint_headline_completed",
             "publication_truth_export_checkpoint_headline_budget_exhausted",
@@ -4384,6 +4621,35 @@ mod tests {
             diagnostic.publication_truth_export_checkpoint_headline_budget_source,
             "fixed_constant_default_primary_operator"
         );
+        assert_eq!(
+            diagnostic
+                .publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open,
+            0
+        );
+        assert_eq!(
+            diagnostic
+                .publication_truth_export_checkpoint_headline_budget_remaining_ms_after_schema_lookup,
+            0
+        );
+        assert_eq!(
+            diagnostic
+                .publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms,
+            0
+        );
+        assert_eq!(
+            diagnostic
+                .publication_truth_export_checkpoint_headline_row_count_elapsed_ms,
+            0
+        );
+        assert_eq!(
+            diagnostic
+                .publication_truth_export_checkpoint_headline_prepare_elapsed_ms,
+            0
+        );
+        assert_eq!(
+            diagnostic.publication_truth_export_checkpoint_headline_step_elapsed_ms,
+            0
+        );
         assert!(diagnostic.publication_truth_export_checkpoint_headline_budget_exhausted);
         assert_eq!(
             diagnostic
@@ -4440,6 +4706,23 @@ mod tests {
             parsed["publication_truth_export_checkpoint_headline_budget_source"],
             "fixed_constant_default_primary_operator"
         );
+        assert!(parsed["publication_truth_export_checkpoint_headline_total_elapsed_ms"]
+            .as_u64()
+            .is_some());
+        assert!(parsed["publication_truth_export_checkpoint_headline_runtime_db_open_elapsed_ms"]
+            .as_u64()
+            .is_some());
+        assert!(parsed["publication_truth_export_checkpoint_headline_schema_lookup_elapsed_ms"]
+            .as_u64()
+            .is_some());
+        assert!(parsed["publication_truth_export_checkpoint_headline_row_count_elapsed_ms"]
+            .as_u64()
+            .is_some());
+        assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_prepare_elapsed_ms"],
+            0
+        );
+        assert_eq!(parsed["publication_truth_export_checkpoint_headline_step_elapsed_ms"], 0);
         assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_budget_exhausted"],
             false
