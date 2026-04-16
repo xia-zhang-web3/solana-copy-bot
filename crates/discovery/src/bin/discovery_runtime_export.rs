@@ -55,6 +55,7 @@ const USAGE: &str = "usage:
   discovery_runtime_export --probe-checkpoint-row-fetch-materialization-immutable-source --config <path> [--json]
   discovery_runtime_export --probe-checkpoint-row-fetch-immutable-source-select --config <path> [--json]
   discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-select --config <path> [--json]
+  discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-id-only-select --config <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-window-seeding --state-root <path> [--json]
@@ -85,6 +86,9 @@ const DEFAULT_CHECKPOINT_ROW_FETCH_IMMUTABLE_SOURCE_SELECT_PROBE_BUDGET_SOURCE: 
 const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_SELECT_PROBE_BUDGET_MS: u64 = 1_000;
 const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_SELECT_PROBE_BUDGET_SOURCE: &str =
     "fixed_constant_direct_immutable_runtime_db_select_connection_shape_probe";
+const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_PROBE_BUDGET_MS: u64 = 1_000;
+const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_PROBE_BUDGET_SOURCE: &str =
+    "fixed_constant_direct_immutable_runtime_db_id_only_select_projection_shape_probe";
 const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY: &str =
     "temp_sqlite_row_meta_only_table_materialized_via_attach_insert_select";
 const CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_STRATEGY: &str =
@@ -95,9 +99,13 @@ const CHECKPOINT_ROW_FETCH_IMMUTABLE_SOURCE_SELECT_PROBE_STRATEGY: &str =
     "temp_db_open_with_immutable_read_only_source_attach_pure_select_statement_shape_probe";
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_SELECT_PROBE_STRATEGY: &str =
     "direct_runtime_db_open_via_immutable_read_only_uri_pure_select_connection_shape_probe";
+const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_PROBE_STRATEGY: &str =
+    "direct_runtime_db_open_via_immutable_read_only_uri_pk_only_select_projection_shape_probe";
 const CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_SOURCE_ATTACH_MODE: &str =
     "sqlite_uri_mode_ro_immutable_1";
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_SELECT_PROBE_RUNTIME_DB_MODE: &str =
+    "sqlite_uri_mode_ro_immutable_1";
+const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_PROBE_RUNTIME_DB_MODE: &str =
     "sqlite_uri_mode_ro_immutable_1";
 const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL: &str =
     "INSERT INTO discovery_persisted_rebuild_state (id, phase, updated_at)
@@ -109,6 +117,8 @@ FROM source.discovery_persisted_rebuild_state
 WHERE id = 1";
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_SELECT_SQL: &str =
     "SELECT phase, updated_at FROM discovery_persisted_rebuild_state WHERE id = 1";
+const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_SELECT_SQL: &str =
+    "SELECT id FROM discovery_persisted_rebuild_state WHERE id = 1";
 const DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_MS: u64 = 30_000;
 const DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_SOURCE: &str =
     "copybot_discovery_default_replay_sol_leg_read_only_source_scan_budget";
@@ -267,6 +277,12 @@ struct ProbeCheckpointRowFetchDirectImmutableSelectConfig {
 }
 
 #[derive(Debug, Clone)]
+struct ProbeCheckpointRowFetchDirectImmutableIdOnlySelectConfig {
+    config_path: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 struct ExplainRecentRawStagedLineageConfig {
     state_root: PathBuf,
     json: bool,
@@ -324,6 +340,9 @@ enum Command {
     ),
     ProbeCheckpointRowFetchDirectImmutableSelect(
         ProbeCheckpointRowFetchDirectImmutableSelectConfig,
+    ),
+    ProbeCheckpointRowFetchDirectImmutableIdOnlySelect(
+        ProbeCheckpointRowFetchDirectImmutableIdOnlySelectConfig,
     ),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
@@ -711,6 +730,26 @@ enum CheckpointRowFetchDirectImmutableSelectProbeReasonClass {
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum CheckpointRowFetchDirectImmutableSelectProbeResultKind {
+    Row,
+    Eof,
+    SqliteBusy,
+    SqliteLocked,
+    OtherSqliteError,
+    OtherError,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass {
+    CheckpointRowFetchDirectImmutableIdOnlyProbeProvenChangedByProjectionShape,
+    CheckpointRowFetchDirectImmutableIdOnlyProbeProvenNotChangedByProjectionShape,
+    CheckpointRowFetchDirectImmutableIdOnlyProbeBudgetExhausted,
+    CheckpointRowFetchDirectImmutableIdOnlyProbeUnprovenDueToMissingEvidence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind {
     Row,
     Eof,
     SqliteBusy,
@@ -1540,6 +1579,93 @@ impl CheckpointRowFetchDirectImmutableSelectProbeDiagnostic {
             checkpoint_row_fetch_direct_immutable_select_probe_result_kind: None,
             checkpoint_row_fetch_direct_immutable_select_probe_sqlite_error_code: None,
             checkpoint_row_fetch_direct_immutable_select_probe_sqlite_error_message: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct CheckpointRowFetchDirectImmutableIdOnlyProbeDiagnostic {
+    checkpoint_row_fetch_direct_immutable_id_only_probe_observed: bool,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_reason_class:
+        CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_explanation: String,
+    config_path: String,
+    runtime_db_path: Option<String>,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_strategy: String,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_uri: Option<String>,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_mode: String,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_immutable: bool,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_readonly: bool,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_budget_ms: u64,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_budget_source: String,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_total_elapsed_ms: u64,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_budget_exhausted: bool,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_stage: Option<String>,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_select_sql: String,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_select_explain_query_plan: Option<String>,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_select_explain_query_plan_rows:
+        Option<Vec<String>>,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_journal_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_locking_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_query_only: Option<bool>,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_select_busy_timeout_ms: Option<u64>,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_select_query_started: bool,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_fetch_completed: bool,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_fetch_elapsed_ms: u64,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_returned: Option<bool>,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_select_id: Option<u64>,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_result_kind:
+        Option<CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind>,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_code: Option<String>,
+    checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_message: Option<String>,
+}
+
+impl CheckpointRowFetchDirectImmutableIdOnlyProbeDiagnostic {
+    fn unproven(config_path: &Path, explanation: String) -> Self {
+        Self {
+            checkpoint_row_fetch_direct_immutable_id_only_probe_observed: false,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_reason_class:
+                CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass::CheckpointRowFetchDirectImmutableIdOnlyProbeUnprovenDueToMissingEvidence,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_explanation: explanation,
+            config_path: config_path.display().to_string(),
+            runtime_db_path: None,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_strategy:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_PROBE_STRATEGY.to_string(),
+            checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_uri: None,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_mode:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_PROBE_RUNTIME_DB_MODE.to_string(),
+            checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_immutable: true,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_readonly: true,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_budget_ms:
+                DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_PROBE_BUDGET_MS,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_budget_source:
+                DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_PROBE_BUDGET_SOURCE
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_id_only_probe_total_elapsed_ms: 0,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_budget_exhausted: false,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_stage: None,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_select_sql:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_SELECT_SQL.to_string(),
+            checkpoint_row_fetch_direct_immutable_id_only_probe_select_explain_query_plan: None,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_select_explain_query_plan_rows:
+                None,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_journal_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_locking_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_query_only:
+                None,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_select_busy_timeout_ms: None,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_select_query_started: false,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_fetch_completed: false,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_fetch_elapsed_ms: 0,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_returned: None,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_select_id: None,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_result_kind: None,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_code: None,
+            checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_message: None,
         }
     }
 }
@@ -3203,6 +3329,31 @@ impl CheckpointRowFetchDirectImmutableSelectProbeStage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointRowFetchDirectImmutableIdOnlyProbeStage {
+    OpenRuntimeDb,
+    LoadBusyTimeout,
+    LoadConnectionMetadata,
+    LoadExplainQueryPlan,
+    PrepareDirectIdOnlySelect,
+    QueryDirectIdOnlySelect,
+    RowFetchDirectIdOnlySelect,
+}
+
+impl CheckpointRowFetchDirectImmutableIdOnlyProbeStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenRuntimeDb => "open_runtime_db",
+            Self::LoadBusyTimeout => "load_busy_timeout",
+            Self::LoadConnectionMetadata => "load_connection_metadata",
+            Self::LoadExplainQueryPlan => "load_explain_query_plan",
+            Self::PrepareDirectIdOnlySelect => "prepare_direct_id_only_select",
+            Self::QueryDirectIdOnlySelect => "query_direct_id_only_select",
+            Self::RowFetchDirectIdOnlySelect => "row_fetch_direct_id_only_select",
+        }
+    }
+}
+
 #[derive(Debug)]
 enum CheckpointRowFetchCopiedSnapshotProbeWorkerMessage {
     TempDirCreated {
@@ -3422,6 +3573,42 @@ enum CheckpointRowFetchDirectImmutableSelectProbeWorkerMessage {
     Finished(Result<(), String>),
 }
 
+#[derive(Debug)]
+enum CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage {
+    RuntimeDbInfo {
+        uri: String,
+        mode: String,
+        immutable: bool,
+        readonly: bool,
+    },
+    Entered(CheckpointRowFetchDirectImmutableIdOnlyProbeStage),
+    BusyTimeout(u64),
+    ConnectionReadMode {
+        journal_mode: String,
+        locking_mode: String,
+        query_only: bool,
+    },
+    QueryPlan {
+        explain_query_plan: String,
+        explain_query_plan_rows: Vec<String>,
+    },
+    SelectQueryStarted,
+    SelectFailed {
+        result_kind: CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind,
+        sqlite_error_code: Option<String>,
+        sqlite_error_message: Option<String>,
+    },
+    SelectRowFetchCompleted {
+        elapsed_ms: u64,
+        row_returned: bool,
+        id: Option<u64>,
+        result_kind: CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind,
+        sqlite_error_code: Option<String>,
+        sqlite_error_message: Option<String>,
+    },
+    Finished(Result<(), String>),
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 enum CheckpointRowFetchCopiedSnapshotProbeTestBehavior {
@@ -3477,6 +3664,13 @@ enum CheckpointRowFetchImmutableSourceSelectProbeTestBehavior {
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 enum CheckpointRowFetchDirectImmutableSelectProbeTestBehavior {
+    ForceOtherSqliteError,
+    DelayBeforeRowFetch(StdDuration),
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+enum CheckpointRowFetchDirectImmutableIdOnlyProbeTestBehavior {
     ForceOtherSqliteError,
     DelayBeforeRowFetch(StdDuration),
 }
@@ -5093,6 +5287,321 @@ fn probe_checkpoint_row_fetch_direct_immutable_select_read_only_with_budget_impl
                     CheckpointRowFetchDirectImmutableSelectProbeReasonClass::CheckpointRowFetchDirectImmutableSelectProbeUnprovenDueToMissingEvidence;
                 diagnostic.checkpoint_row_fetch_direct_immutable_select_probe_explanation =
                     "checkpoint row-fetch direct immutable SELECT probe worker disconnected before returning a result"
+                        .to_string();
+                return diagnostic;
+            }
+        }
+    }
+}
+
+fn probe_checkpoint_row_fetch_direct_immutable_id_only_select_read_only(
+    config_path: &Path,
+) -> CheckpointRowFetchDirectImmutableIdOnlyProbeDiagnostic {
+    probe_checkpoint_row_fetch_direct_immutable_id_only_select_read_only_with_budget_impl(
+        config_path,
+        StdDuration::from_millis(
+            DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_PROBE_BUDGET_MS,
+        ),
+        #[cfg(test)]
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_direct_immutable_id_only_select_read_only_with_budget(
+    config_path: &Path,
+    budget: StdDuration,
+) -> CheckpointRowFetchDirectImmutableIdOnlyProbeDiagnostic {
+    probe_checkpoint_row_fetch_direct_immutable_id_only_select_read_only_with_budget_impl(
+        config_path,
+        budget,
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_direct_immutable_id_only_select_read_only_with_budget_and_test_behavior(
+    config_path: &Path,
+    budget: StdDuration,
+    test_behavior: Option<CheckpointRowFetchDirectImmutableIdOnlyProbeTestBehavior>,
+) -> CheckpointRowFetchDirectImmutableIdOnlyProbeDiagnostic {
+    probe_checkpoint_row_fetch_direct_immutable_id_only_select_read_only_with_budget_impl(
+        config_path,
+        budget,
+        test_behavior,
+    )
+}
+
+fn probe_checkpoint_row_fetch_direct_immutable_id_only_select_read_only_with_budget_impl(
+    config_path: &Path,
+    budget: StdDuration,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchDirectImmutableIdOnlyProbeTestBehavior>,
+) -> CheckpointRowFetchDirectImmutableIdOnlyProbeDiagnostic {
+    let mut diagnostic = CheckpointRowFetchDirectImmutableIdOnlyProbeDiagnostic::unproven(
+        config_path,
+        "checkpoint row-fetch direct immutable id-only select probe did not run".to_string(),
+    );
+    diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_budget_ms =
+        budget.as_millis().min(u64::MAX as u128) as u64;
+    diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_budget_source =
+        DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_PROBE_BUDGET_SOURCE.to_string();
+
+    let total_started_at = Instant::now();
+    let loaded_config = match load_from_path(config_path)
+        .with_context(|| format!("failed loading config {}", config_path.display()))
+    {
+        Ok(config) => config,
+        Err(error) => {
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_explanation =
+                format!("{error:#}");
+            return diagnostic;
+        }
+    };
+    let runtime_db_path = resolve_db_path(config_path, None, &loaded_config.sqlite.path);
+    diagnostic.runtime_db_path = Some(runtime_db_path.display().to_string());
+    diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_observed = true;
+
+    let (tx, rx) = mpsc::sync_channel(32);
+    let config_path_for_worker = config_path.to_path_buf();
+    let runtime_db_path_for_worker = runtime_db_path.clone();
+    thread::spawn(move || {
+        let _ = probe_checkpoint_row_fetch_direct_immutable_id_only_select_worker(
+            &config_path_for_worker,
+            &runtime_db_path_for_worker,
+            tx,
+            #[cfg(test)]
+            test_behavior,
+        );
+    });
+
+    let mut current_stage = CheckpointRowFetchDirectImmutableIdOnlyProbeStage::OpenRuntimeDb;
+    loop {
+        match rx.recv_timeout(remaining_budget_duration(budget, total_started_at)) {
+            Ok(CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::RuntimeDbInfo {
+                uri,
+                mode,
+                immutable,
+                readonly,
+            }) => {
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_uri =
+                    Some(uri);
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_mode =
+                    mode;
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_immutable =
+                    immutable;
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_readonly =
+                    readonly;
+            }
+            Ok(CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Entered(stage)) => {
+                current_stage = stage;
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_stage =
+                    Some(stage.as_str().to_string());
+            }
+            Ok(CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::BusyTimeout(value)) => {
+                current_stage = CheckpointRowFetchDirectImmutableIdOnlyProbeStage::LoadBusyTimeout;
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_select_busy_timeout_ms =
+                    Some(value);
+            }
+            Ok(CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::ConnectionReadMode {
+                journal_mode,
+                locking_mode,
+                query_only,
+            }) => {
+                current_stage =
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeStage::LoadConnectionMetadata;
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_journal_mode =
+                    Some(journal_mode);
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_locking_mode =
+                    Some(locking_mode);
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_query_only =
+                    Some(query_only);
+            }
+            Ok(CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::QueryPlan {
+                explain_query_plan,
+                explain_query_plan_rows,
+            }) => {
+                current_stage =
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeStage::LoadExplainQueryPlan;
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_select_explain_query_plan =
+                    Some(explain_query_plan);
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_select_explain_query_plan_rows =
+                    Some(explain_query_plan_rows);
+            }
+            Ok(CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::SelectQueryStarted) => {
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_select_query_started =
+                    true;
+            }
+            Ok(CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::SelectFailed {
+                result_kind,
+                sqlite_error_code,
+                sqlite_error_message,
+            }) => {
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_result_kind =
+                    Some(result_kind);
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_code =
+                    sqlite_error_code;
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_message =
+                    sqlite_error_message;
+            }
+            Ok(
+                CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::SelectRowFetchCompleted {
+                    elapsed_ms,
+                    row_returned,
+                    id,
+                    result_kind,
+                    sqlite_error_code,
+                    sqlite_error_message,
+                },
+            ) => {
+                current_stage =
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeStage::RowFetchDirectIdOnlySelect;
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_fetch_completed =
+                    true;
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_fetch_elapsed_ms =
+                    elapsed_ms;
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_returned =
+                    Some(row_returned);
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_select_id = id;
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_result_kind =
+                    Some(result_kind);
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_code =
+                    sqlite_error_code;
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_message =
+                    sqlite_error_message;
+            }
+            Ok(CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Finished(result)) => {
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                match result {
+                    Ok(()) => {
+                        diagnostic
+                            .checkpoint_row_fetch_direct_immutable_id_only_probe_reason_class =
+                            match diagnostic
+                                .checkpoint_row_fetch_direct_immutable_id_only_probe_result_kind
+                            {
+                                Some(
+                                    CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::Row
+                                    | CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::Eof
+                                    | CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::SqliteBusy
+                                    | CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::SqliteLocked
+                                    | CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::OtherSqliteError
+                                    | CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::OtherError,
+                                ) => CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass::CheckpointRowFetchDirectImmutableIdOnlyProbeProvenChangedByProjectionShape,
+                                None => CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass::CheckpointRowFetchDirectImmutableIdOnlyProbeUnprovenDueToMissingEvidence,
+                            };
+                        diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_explanation =
+                            match diagnostic
+                                .checkpoint_row_fetch_direct_immutable_id_only_probe_reason_class
+                            {
+                                CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass::CheckpointRowFetchDirectImmutableIdOnlyProbeProvenChangedByProjectionShape => {
+                                    match diagnostic
+                                        .checkpoint_row_fetch_direct_immutable_id_only_probe_result_kind
+                                    {
+                                        Some(CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::Row) => {
+                                            "direct immutable runtime-db id-only SELECT changed the projection-shape outcome: rows.next() returned a row".to_string()
+                                        }
+                                        Some(CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::Eof) => {
+                                            "direct immutable runtime-db id-only SELECT changed the projection-shape outcome: rows.next() returned eof".to_string()
+                                        }
+                                        Some(result_kind) => format!(
+                                            "direct immutable runtime-db id-only SELECT changed the projection-shape outcome: result_kind={} sqlite_error_code={} sqlite_error_message={}",
+                                            serde_json::to_string(&result_kind)
+                                                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                                                .trim_matches('\"'),
+                                            diagnostic
+                                                .checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_code
+                                                .as_deref()
+                                                .unwrap_or("null"),
+                                            diagnostic
+                                                .checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_message
+                                                .as_deref()
+                                                .unwrap_or("null"),
+                                        ),
+                                        None => "direct immutable runtime-db id-only SELECT probe ended without a conclusive projection-shape result".to_string(),
+                                    }
+                                }
+                                CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass::CheckpointRowFetchDirectImmutableIdOnlyProbeProvenNotChangedByProjectionShape => unreachable!(),
+                                CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass::CheckpointRowFetchDirectImmutableIdOnlyProbeBudgetExhausted => unreachable!(),
+                                CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass::CheckpointRowFetchDirectImmutableIdOnlyProbeUnprovenDueToMissingEvidence => {
+                                    "direct immutable runtime-db id-only SELECT probe ended without a conclusive projection-shape result".to_string()
+                                }
+                            };
+                    }
+                    Err(error) => {
+                        diagnostic
+                            .checkpoint_row_fetch_direct_immutable_id_only_probe_reason_class =
+                            CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass::CheckpointRowFetchDirectImmutableIdOnlyProbeUnprovenDueToMissingEvidence;
+                        diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_explanation =
+                            error;
+                    }
+                }
+                return diagnostic;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_budget_exhausted =
+                    true;
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                if current_stage
+                    == CheckpointRowFetchDirectImmutableIdOnlyProbeStage::RowFetchDirectIdOnlySelect
+                    && diagnostic
+                        .checkpoint_row_fetch_direct_immutable_id_only_probe_select_query_started
+                    && !diagnostic
+                        .checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_fetch_completed
+                {
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_id_only_probe_reason_class =
+                        CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass::CheckpointRowFetchDirectImmutableIdOnlyProbeProvenNotChangedByProjectionShape;
+                    diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_explanation =
+                        format!(
+                            "direct immutable runtime-db id-only SELECT did not change the exact projection-shape seam: the probe still exhausted its bounded budget after query start and before row-fetch completion at stage={}",
+                            current_stage.as_str()
+                        );
+                } else {
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_id_only_probe_reason_class =
+                        CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass::CheckpointRowFetchDirectImmutableIdOnlyProbeBudgetExhausted;
+                    diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_explanation =
+                        format!(
+                            "checkpoint row-fetch direct immutable id-only SELECT probe exhausted its bounded budget while executing stage={}",
+                            current_stage.as_str()
+                        );
+                }
+                return diagnostic;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_reason_class =
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass::CheckpointRowFetchDirectImmutableIdOnlyProbeUnprovenDueToMissingEvidence;
+                diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_explanation =
+                    "checkpoint row-fetch direct immutable id-only SELECT probe worker disconnected before returning a result"
                         .to_string();
                 return diagnostic;
             }
@@ -8713,6 +9222,418 @@ fn probe_checkpoint_row_fetch_direct_immutable_select_worker(
     Ok(())
 }
 
+fn probe_checkpoint_row_fetch_direct_immutable_id_only_select_worker(
+    _config_path: &Path,
+    runtime_db_path: &Path,
+    tx: mpsc::SyncSender<CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage>,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchDirectImmutableIdOnlyProbeTestBehavior>,
+) -> Result<()> {
+    let run = || -> Result<()> {
+        let runtime_db_uri = build_sqlite_immutable_read_only_uri(runtime_db_path);
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::RuntimeDbInfo {
+                    uri: runtime_db_uri.clone(),
+                    mode: CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_PROBE_RUNTIME_DB_MODE
+                        .to_string(),
+                    immutable: true,
+                    readonly: true,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Entered(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeStage::OpenRuntimeDb,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let conn = Connection::open_with_flags(
+            &runtime_db_uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| {
+            format!(
+                "failed opening direct immutable runtime db uri {} for direct immutable id-only SELECT probe",
+                runtime_db_uri
+            )
+        })?;
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Entered(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeStage::LoadBusyTimeout,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let busy_timeout_ms = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
+            .context(
+                "failed reading sqlite busy_timeout for direct immutable id-only SELECT probe",
+            )?;
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::BusyTimeout(
+                    busy_timeout_ms,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Entered(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeStage::LoadConnectionMetadata,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let journal_mode = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+            .context(
+                "failed reading sqlite journal_mode for direct immutable id-only SELECT probe",
+            )?;
+        let locking_mode = conn
+            .query_row("PRAGMA locking_mode", [], |row| row.get::<_, String>(0))
+            .context(
+                "failed reading sqlite locking_mode for direct immutable id-only SELECT probe",
+            )?;
+        let query_only = conn
+            .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+            .context(
+                "failed reading sqlite query_only for direct immutable id-only SELECT probe",
+            )?
+            != 0;
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::ConnectionReadMode {
+                    journal_mode,
+                    locking_mode,
+                    query_only,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Entered(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeStage::LoadExplainQueryPlan,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let explain_query_plan = load_explain_query_plan_for_sql(
+            &conn,
+            CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_SELECT_SQL,
+            "direct immutable runtime-db id-only select query",
+        )?;
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::QueryPlan {
+                    explain_query_plan: explain_query_plan.explain_query_plan,
+                    explain_query_plan_rows: explain_query_plan.explain_query_plan_rows,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Entered(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeStage::PrepareDirectIdOnlySelect,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let mut stmt = match conn.prepare(CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_SELECT_SQL)
+        {
+            Ok(stmt) => stmt,
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::SelectFailed {
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => {
+                                CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::SqliteBusy
+                            }
+                            ErrorCode::DatabaseLocked => {
+                                CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::SqliteLocked
+                            }
+                            _ => {
+                                CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::OtherSqliteError
+                            }
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            "sqlite failure while preparing direct immutable id-only SELECT statement"
+                                .to_string()
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::SelectFailed {
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Entered(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeStage::QueryDirectIdOnlySelect,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let mut rows = match stmt.query([]) {
+            Ok(rows) => rows,
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::SelectFailed {
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => {
+                                CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::SqliteBusy
+                            }
+                            ErrorCode::DatabaseLocked => {
+                                CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::SqliteLocked
+                            }
+                            _ => {
+                                CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::OtherSqliteError
+                            }
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            "sqlite failure while starting direct immutable id-only SELECT query"
+                                .to_string()
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::SelectFailed {
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Entered(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeStage::RowFetchDirectIdOnlySelect,
+                ),
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        if tx
+            .send(CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::SelectQueryStarted)
+            .is_err()
+        {
+            return Ok(());
+        }
+        #[cfg(test)]
+        match test_behavior {
+            Some(
+                CheckpointRowFetchDirectImmutableIdOnlyProbeTestBehavior::ForceOtherSqliteError,
+            ) => {
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::SelectFailed {
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::OtherSqliteError,
+                        sqlite_error_code: Some("SQLITE_CORRUPT".to_string()),
+                        sqlite_error_message: Some(
+                            "forced other sqlite error at direct immutable id-only SELECT rows.next() boundary"
+                                .to_string(),
+                        ),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+            Some(
+                CheckpointRowFetchDirectImmutableIdOnlyProbeTestBehavior::DelayBeforeRowFetch(
+                    delay,
+                ),
+            ) => {
+                thread::sleep(delay);
+            }
+            None => {}
+        }
+
+        let row_fetch_started_at = Instant::now();
+        let row = match rows.next() {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                if tx
+                    .send(
+                        CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::SelectRowFetchCompleted {
+                            elapsed_ms: elapsed_ms(row_fetch_started_at),
+                            row_returned: false,
+                            id: None,
+                            result_kind:
+                                CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::Eof,
+                            sqlite_error_code: None,
+                            sqlite_error_message: None,
+                        },
+                    )
+                    .is_err()
+                {
+                    return Ok(());
+                }
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::SelectFailed {
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => {
+                                CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::SqliteBusy
+                            }
+                            ErrorCode::DatabaseLocked => {
+                                CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::SqliteLocked
+                            }
+                            _ => {
+                                CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::OtherSqliteError
+                            }
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            "sqlite failure at direct immutable id-only SELECT rows.next() boundary"
+                                .to_string()
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::SelectFailed {
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+        };
+
+        let id = match row.get::<_, u64>(0) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::SelectRowFetchCompleted {
+                        elapsed_ms: elapsed_ms(row_fetch_started_at),
+                        row_returned: true,
+                        id: None,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::SelectRowFetchCompleted {
+                    elapsed_ms: elapsed_ms(row_fetch_started_at),
+                    row_returned: true,
+                    id,
+                    result_kind: CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::Row,
+                    sqlite_error_code: None,
+                    sqlite_error_message: None,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let _ =
+            tx.send(CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Finished(Ok(())));
+        Ok(())
+    };
+
+    if let Err(error) = run() {
+        let _ = tx.send(
+            CheckpointRowFetchDirectImmutableIdOnlyProbeWorkerMessage::Finished(Err(format!(
+                "{error:#}"
+            ))),
+        );
+    }
+    Ok(())
+}
+
 fn build_sqlite_immutable_read_only_uri(path: &Path) -> String {
     let path = path.to_string_lossy();
     if path.starts_with('/') {
@@ -9764,6 +10685,7 @@ where
     let mut probe_checkpoint_row_fetch_materialization_immutable_source = false;
     let mut probe_checkpoint_row_fetch_immutable_source_select = false;
     let mut probe_checkpoint_row_fetch_direct_immutable_select = false;
+    let mut probe_checkpoint_row_fetch_direct_immutable_id_only_select = false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
@@ -9839,6 +10761,9 @@ where
             "--probe-checkpoint-row-fetch-direct-immutable-select" => {
                 probe_checkpoint_row_fetch_direct_immutable_select = true;
             }
+            "--probe-checkpoint-row-fetch-direct-immutable-id-only-select" => {
+                probe_checkpoint_row_fetch_direct_immutable_id_only_select = true;
+            }
             "--deep-attempt-telemetry-scan" => {
                 deep_attempt_telemetry_scan = true;
             }
@@ -9898,13 +10823,14 @@ where
         + usize::from(probe_checkpoint_row_fetch_materialization_immutable_source)
         + usize::from(probe_checkpoint_row_fetch_immutable_source_select)
         + usize::from(probe_checkpoint_row_fetch_direct_immutable_select)
+        + usize::from(probe_checkpoint_row_fetch_direct_immutable_id_only_select)
         + usize::from(explain_recent_raw_staged_lineage)
         + usize::from(explain_recent_raw_staged_regression)
         + usize::from(explain_recent_raw_staged_birth)
         + usize::from(explain_recent_raw_staged_window_seeding);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --probe-checkpoint-row-fetch-materialization-busy-wait, --probe-checkpoint-row-fetch-materialization-immutable-source, --probe-checkpoint-row-fetch-immutable-source-select, --probe-checkpoint-row-fetch-direct-immutable-select, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --probe-checkpoint-row-fetch-materialization-busy-wait, --probe-checkpoint-row-fetch-materialization-immutable-source, --probe-checkpoint-row-fetch-immutable-source-select, --probe-checkpoint-row-fetch-direct-immutable-select, --probe-checkpoint-row-fetch-direct-immutable-id-only-select, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
     if deep_attempt_telemetry_scan && !explain_recent_raw_replacement_attempt_telemetry {
@@ -10312,6 +11238,29 @@ where
         )));
     }
 
+    if probe_checkpoint_row_fetch_direct_immutable_id_only_select {
+        if state_root.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+            || deep_attempt_telemetry_scan
+        {
+            bail!(
+                "--probe-checkpoint-row-fetch-direct-immutable-id-only-select only accepts --config and optional --json"
+            );
+        }
+        return Ok(Some(
+            Command::ProbeCheckpointRowFetchDirectImmutableIdOnlySelect(
+                ProbeCheckpointRowFetchDirectImmutableIdOnlySelectConfig {
+                    config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
+                    json,
+                },
+            ),
+        ));
+    }
+
     if explain_recent_raw_staged_lineage {
         if config_path.is_some()
             || db_path.is_some()
@@ -10658,6 +11607,18 @@ fn run_command(command: Command) -> Result<String> {
                 )
             } else {
                 Ok(render_checkpoint_row_fetch_direct_immutable_select_probe_human(&diagnostic))
+            }
+        }
+        Command::ProbeCheckpointRowFetchDirectImmutableIdOnlySelect(config) => {
+            let diagnostic = probe_checkpoint_row_fetch_direct_immutable_id_only_select_read_only(
+                &config.config_path,
+            );
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic).context(
+                    "failed serializing checkpoint row-fetch direct immutable id-only select probe json",
+                )
+            } else {
+                Ok(render_checkpoint_row_fetch_direct_immutable_id_only_probe_human(&diagnostic))
             }
         }
         Command::ExplainRecentRawStagedLineage(config) => {
@@ -15601,6 +16562,176 @@ fn render_recent_raw_replacement_convergence_human(
     .join("\n")
 }
 
+fn render_checkpoint_row_fetch_direct_immutable_id_only_probe_human(
+    diagnostic: &CheckpointRowFetchDirectImmutableIdOnlyProbeDiagnostic,
+) -> String {
+    [
+        "event=discovery_checkpoint_row_fetch_direct_immutable_id_only_probe".to_string(),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_observed={}",
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_observed
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_reason_class={}",
+            serde_json::to_string(
+                &diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_reason_class
+            )
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_explanation={}",
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_explanation
+        ),
+        format!("config_path={}", diagnostic.config_path),
+        format!(
+            "runtime_db_path={}",
+            diagnostic.runtime_db_path.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_strategy={}",
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_strategy
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_uri={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_uri
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_mode={}",
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_mode
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_immutable={}",
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_immutable
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_readonly={}",
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_readonly
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_budget_ms={}",
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_budget_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_budget_source={}",
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_budget_source
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_total_elapsed_ms={}",
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_total_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_budget_exhausted={}",
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_budget_exhausted
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_stage={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_id_only_probe_stage
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_sql={}",
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_select_sql
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_explain_query_plan={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_id_only_probe_select_explain_query_plan
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_explain_query_plan_rows={}",
+            format_optional_json(
+                &diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_select_explain_query_plan_rows
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_journal_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_journal_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_locking_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_locking_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_query_only={}",
+            format_optional_bool(
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_query_only
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_busy_timeout_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_id_only_probe_select_busy_timeout_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_query_started={}",
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_select_query_started
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_fetch_completed={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_fetch_completed
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_fetch_elapsed_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_fetch_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_returned={}",
+            format_optional_bool(
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_returned
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_id={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_id_only_probe_select_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_result_kind={}",
+            format_optional_enum_json(
+                &diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_result_kind
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_code={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_code
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_message={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_message
+                .as_deref()
+                .unwrap_or("null")
+        ),
+    ]
+    .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -15616,6 +16747,8 @@ mod tests {
         probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget,
         probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_and_test_behavior,
+        probe_checkpoint_row_fetch_direct_immutable_id_only_select_read_only_with_budget,
+        probe_checkpoint_row_fetch_direct_immutable_id_only_select_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_direct_immutable_select_read_only_with_budget,
         probe_checkpoint_row_fetch_direct_immutable_select_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_immutable_source_select_read_only_with_budget,
@@ -15636,6 +16769,9 @@ mod tests {
         CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind,
         CheckpointRowFetchCopiedSnapshotProbeReasonClass,
         CheckpointRowFetchCopiedSnapshotProbeTestBehavior,
+        CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass,
+        CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind,
+        CheckpointRowFetchDirectImmutableIdOnlyProbeTestBehavior,
         CheckpointRowFetchDirectImmutableSelectProbeReasonClass,
         CheckpointRowFetchDirectImmutableSelectProbeResultKind,
         CheckpointRowFetchDirectImmutableSelectProbeTestBehavior,
@@ -15661,6 +16797,7 @@ mod tests {
         ExplainRecentRawStagedLineageConfig, ExplainRecentRawStagedRegressionConfig,
         ExplainRecentRawStagedWindowSeedingConfig, ExplainReplaySolLegBlockerConfig,
         ProbeCheckpointRowFetchBusyWaitConfig, ProbeCheckpointRowFetchCopiedSnapshotConfig,
+        ProbeCheckpointRowFetchDirectImmutableIdOnlySelectConfig,
         ProbeCheckpointRowFetchDirectImmutableSelectConfig,
         ProbeCheckpointRowFetchImmutableSourceSelectConfig,
         ProbeCheckpointRowFetchMaterializationBusyWaitConfig,
@@ -16140,6 +17277,23 @@ mod tests {
         .expect("command should be present");
         let Command::ProbeCheckpointRowFetchDirectImmutableSelect(parsed) = parsed else {
             panic!("expected checkpoint row-fetch direct immutable select probe command");
+        };
+        assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_probe_checkpoint_row_fetch_direct_immutable_id_only_select_mode() {
+        let parsed = parse_args_from(vec![
+            "--probe-checkpoint-row-fetch-direct-immutable-id-only-select".to_string(),
+            "--config".to_string(),
+            "/tmp/live.server.toml".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ProbeCheckpointRowFetchDirectImmutableIdOnlySelect(parsed) = parsed else {
+            panic!("expected checkpoint row-fetch direct immutable id-only select probe command");
         };
         assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
         assert!(parsed.json);
@@ -18870,6 +20024,323 @@ mod tests {
                 .checkpoint_row_fetch_direct_immutable_select_probe_sqlite_error_message
                 .as_deref(),
             Some("forced other sqlite error at direct immutable SELECT rows.next() boundary")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_probe_checkpoint_row_fetch_direct_immutable_id_only_select_returns_success_json(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-direct-immutable-id-only-row")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-direct-immutable-id-only-row".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_id_only_select_read_only_with_budget(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_reason_class,
+            CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass::CheckpointRowFetchDirectImmutableIdOnlyProbeProvenChangedByProjectionShape,
+            "{diagnostic:#?}"
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_result_kind,
+            Some(CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::Row)
+        );
+        assert!(
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_select_query_started
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_fetch_completed
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_returned,
+            Some(true)
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_select_id,
+            Some(1)
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_select_sql,
+            super::CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_SELECT_SQL
+        );
+        assert!(diagnostic
+            .checkpoint_row_fetch_direct_immutable_id_only_probe_select_explain_query_plan
+            .as_deref()
+            .unwrap_or_default()
+            .contains("discovery_persisted_rebuild_state"));
+        assert!(!diagnostic
+            .checkpoint_row_fetch_direct_immutable_id_only_probe_select_explain_query_plan
+            .as_deref()
+            .unwrap_or_default()
+            .contains("source."));
+
+        let rendered = run_command(Command::ProbeCheckpointRowFetchDirectImmutableIdOnlySelect(
+            ProbeCheckpointRowFetchDirectImmutableIdOnlySelectConfig {
+                config_path: fixture.config_path.clone(),
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_id_only_probe_reason_class"],
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_proven_changed_by_projection_shape"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_id_only_probe_result_kind"],
+            "row"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_returned"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_id_only_probe_select_id"],
+            1
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_mode"],
+            super::CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_PROBE_RUNTIME_DB_MODE
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_id_only_probe_select_sql"],
+            super::CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_SELECT_SQL
+        );
+        for key in [
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_observed",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_reason_class",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_explanation",
+            "config_path",
+            "runtime_db_path",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_strategy",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_uri",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_mode",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_immutable",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_runtime_db_readonly",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_budget_ms",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_budget_source",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_total_elapsed_ms",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_budget_exhausted",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_stage",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_sql",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_explain_query_plan",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_explain_query_plan_rows",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_journal_mode",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_locking_mode",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_connection_query_only",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_busy_timeout_ms",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_query_started",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_fetch_completed",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_fetch_elapsed_ms",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_returned",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_select_id",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_result_kind",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_code",
+            "checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_message",
+        ] {
+            assert!(parsed.get(key).is_some(), "missing key {key}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_id_only_probe_missing_row_returns_proven_changed_by_projection_shape(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-direct-immutable-id-only-eof")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-direct-immutable-id-only-eof".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        let conn = rusqlite::Connection::open(&fixture.db_path)?;
+        conn.execute(
+            "DELETE FROM discovery_persisted_rebuild_state WHERE id = 1",
+            [],
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_id_only_select_read_only_with_budget(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_reason_class,
+            CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass::CheckpointRowFetchDirectImmutableIdOnlyProbeProvenChangedByProjectionShape
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_result_kind,
+            Some(CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::Eof)
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_returned,
+            Some(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_id_only_probe_row_fetch_timeout_returns_proven_not_changed_by_projection_shape(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-direct-immutable-id-only-timeout")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-direct-immutable-id-only-timeout".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_id_only_select_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_millis(50),
+                Some(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeTestBehavior::DelayBeforeRowFetch(
+                        StdDuration::from_millis(200),
+                    ),
+                ),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_reason_class,
+            CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass::CheckpointRowFetchDirectImmutableIdOnlyProbeProvenNotChangedByProjectionShape
+        );
+        assert!(diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_budget_exhausted);
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_id_only_probe_stage
+                .as_deref(),
+            Some("row_fetch_direct_id_only_select")
+        );
+        assert!(
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_select_query_started
+        );
+        assert!(
+            !diagnostic
+                .checkpoint_row_fetch_direct_immutable_id_only_probe_select_row_fetch_completed
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_id_only_probe_forced_sqlite_error_reports_exact_fields(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-direct-immutable-id-only-error")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-direct-immutable-id-only-error".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_id_only_select_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+                Some(
+                    CheckpointRowFetchDirectImmutableIdOnlyProbeTestBehavior::ForceOtherSqliteError,
+                ),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_reason_class,
+            CheckpointRowFetchDirectImmutableIdOnlyProbeReasonClass::CheckpointRowFetchDirectImmutableIdOnlyProbeProvenChangedByProjectionShape
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_direct_immutable_id_only_probe_result_kind,
+            Some(CheckpointRowFetchDirectImmutableIdOnlyProbeResultKind::OtherSqliteError)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_code
+                .as_deref(),
+            Some("SQLITE_CORRUPT")
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_id_only_probe_sqlite_error_message
+                .as_deref(),
+            Some(
+                "forced other sqlite error at direct immutable id-only SELECT rows.next() boundary"
+            )
         );
         Ok(())
     }
