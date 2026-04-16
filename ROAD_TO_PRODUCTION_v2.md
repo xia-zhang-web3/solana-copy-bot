@@ -13600,6 +13600,44 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+Live rollout result (`2026-04-16`, commit `6344553`):
+
+1. The server was fast-forwarded from `a529f5d` to `6344553` and only
+   `discovery_runtime_export` was rebuilt.
+2. Service state remained healthy after rollout:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+3. A clean `sudo -n` live run of:
+   `discovery_runtime_export --probe-checkpoint-row-fetch-copied-snapshot --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_copied_snapshot_probe_reason_class = checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted`
+   - `checkpoint_row_fetch_copied_snapshot_probe_explanation = copied-snapshot checkpoint row-fetch probe exhausted its bounded budget while executing stage=copy_main_db`
+   - `checkpoint_row_fetch_copied_snapshot_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_copied_snapshot_probe_stage = copy_main_db`
+4. The new copy-main proof fields narrowed the seam further:
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_size_bytes = 83896565760`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_modified_at = 2026-04-16T17:47:47.700579647Z`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_main_started_at_unix_ms = 1776361713347`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes_observed_before_timeout = 270270464`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_main_effective_bytes_per_sec = 271355887`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_main_progress_kind = partial_copy_observed_before_timeout`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_main_elapsed_ms = 996`
+5. The probe still did not reach:
+   - WAL copy
+   - SHM copy
+   - handoff to the zero-timeout row-fetch probe
+   - copied-db open / SQLite step execution
+6. Therefore the exact live seam is now no longer “copy_main_db did not start” or
+   “copy_main_db observed zero progress”. It is:
+   - the copied main runtime DB is about `83.9 GB`
+   - the operator copies about `270 MB` in about `996ms`
+   - the current `1000ms` copied-snapshot budget is far below what a full-copy
+     proof path would require on the live artifact
+7. The next proof-first batch must target that contract mismatch directly:
+   - either prove a lighter copied-snapshot path than full main-DB copy
+   - or prove, with bounded evidence, that full-copy is structurally too large
+     to be the right operator contract for this live artifact
+
 Live rollout result (`2026-04-16`, commit `a529f5d`):
 
 1. The server was fast-forwarded to `a529f5d` and only
