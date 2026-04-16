@@ -13600,6 +13600,45 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+Live rollout result (`2026-04-16`, commit `fb6edd5`):
+
+1. The server was fast-forwarded to `fb6edd5` and only
+   `discovery_runtime_export` was rebuilt.
+2. A clean `sudo -n` live run of:
+   `discovery_runtime_export --probe-checkpoint-row-fetch-busy-wait --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_busy_probe_reason_class = checkpoint_row_fetch_busy_probe_budget_exhausted`
+   - `checkpoint_row_fetch_busy_probe_explanation = zero-busy-timeout checkpoint row-fetch probe exhausted its bounded budget while executing stage=step_primary_key_lookup`
+   - `checkpoint_row_fetch_busy_probe_runtime_db_opened_read_only = true`
+   - `checkpoint_row_fetch_busy_probe_budget_ms = 1000`
+   - `checkpoint_row_fetch_busy_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_busy_probe_budget_exhausted = true`
+   - `checkpoint_row_fetch_busy_probe_stage = step_primary_key_lookup`
+3. The probe also proved the worker connection/query metadata on the zero-timeout
+   path:
+   - `checkpoint_row_fetch_busy_probe_connection_journal_mode = wal`
+   - `checkpoint_row_fetch_busy_probe_connection_locking_mode = normal`
+   - `checkpoint_row_fetch_busy_probe_connection_query_only = false`
+   - `checkpoint_row_fetch_busy_probe_query_readonly_mode = true`
+   - `checkpoint_row_fetch_busy_probe_busy_timeout_ms_before = 5000`
+   - `checkpoint_row_fetch_busy_probe_busy_timeout_ms_applied = 0`
+   - `checkpoint_row_fetch_busy_probe_access_path = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_busy_probe_step_started = true`
+   - `checkpoint_row_fetch_busy_probe_step_completed = false`
+   - `checkpoint_row_fetch_busy_probe_result_kind = null`
+   - `checkpoint_row_fetch_busy_probe_sqlite_error_code = null`
+   - `checkpoint_row_fetch_busy_probe_sqlite_error_message = null`
+4. Therefore the live seam narrowed again:
+   - this is not a simple `busy_timeout=5000` wait that collapses immediately to
+     `SQLITE_BUSY` under `busy_timeout = 0`
+   - planner/access path still looks correct
+   - the remaining seam is still inside the SQLite step boundary itself, now
+     specifically on the zero-timeout probe path before any row / EOF / busy /
+     locked result is returned
+5. The next proof-first batch must target the exact low-level SQLite stepping
+   behavior on that primary-key row fetch, not publication-gate plumbing or
+   query-plan selection.
+
 Corrective repository batch accepted (`2026-04-16`):
 
 1. The publication-blocker checkpoint-headline worker now emits row-fetch proof
