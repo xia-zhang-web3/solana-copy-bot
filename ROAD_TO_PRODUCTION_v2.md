@@ -13800,6 +13800,50 @@ Live rollout result (`2026-04-16`, commit `3c5e60e`):
 Corrective repository batch accepted (`2026-04-16`):
 
 1. The `--probe-checkpoint-row-fetch-minimal-snapshot` operator now exposes
+   controller-observed micro-stage telemetry inside
+   `sqlite_side_materialization`, not just the coarse stage name.
+2. New event summary fields:
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_event_count`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_last_event`
+3. New explicit started/completed booleans and elapsed timings exist for:
+   - temp DB open
+   - schema create
+   - ATTACH DATABASE
+   - INSERT ... SELECT
+   - DETACH DATABASE
+4. The worker now emits explicit events around the real SQLite calls, and the
+   controller persists those events into the bounded JSON contract.
+5. This makes live timeout proofs actionable:
+   - exact last observed materialization event
+   - exact materialization event count
+   - exact per-substage completion state
+   - exact elapsed timings for completed substages
+6. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+7. It does not change:
+   - `--explain-publication-truth-export-blocker`
+   - `--explain-replay-sol-leg-blocker`
+   - `--trace-replay-sol-leg-deep-proof`
+   - `--trace-replay-sol-leg-source-compare`
+   - `--probe-checkpoint-row-fetch-busy-wait`
+   - `--probe-checkpoint-row-fetch-copied-snapshot`
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Corrective repository batch accepted (`2026-04-16`):
+
+1. The `--probe-checkpoint-row-fetch-minimal-snapshot` operator now exposes
    controller-observed SQLite-side materialization micro-stages instead of only
    the coarse `sqlite_side_materialization` stage.
 2. New materialization event summary fields:

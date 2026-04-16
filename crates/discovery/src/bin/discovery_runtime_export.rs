@@ -823,6 +823,33 @@ struct CheckpointRowFetchMinimalSnapshotProbeDiagnostic {
     checkpoint_row_fetch_minimal_snapshot_probe_materialization_attach_elapsed_ms: u64,
     checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_elapsed_ms: u64,
     checkpoint_row_fetch_minimal_snapshot_probe_materialization_detach_elapsed_ms: u64,
+    checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_sql: String,
+    checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_explain_query_plan:
+        Option<String>,
+    checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_explain_query_plan_rows:
+        Option<Vec<String>>,
+    checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_journal_mode:
+        Option<String>,
+    checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_locking_mode:
+        Option<String>,
+    checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_query_only:
+        Option<bool>,
+    checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_busy_timeout_ms:
+        Option<u64>,
+    checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_started:
+        bool,
+    checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_completed:
+        bool,
+    checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_elapsed_ms:
+        u64,
+    checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_rows_changed:
+        Option<u64>,
+    checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_started:
+        bool,
+    checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_completed:
+        bool,
+    checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_row_count:
+        Option<u64>,
     checkpoint_row_fetch_minimal_snapshot_probe_temp_dir: Option<String>,
     checkpoint_row_fetch_minimal_snapshot_probe_budget_ms: u64,
     checkpoint_row_fetch_minimal_snapshot_probe_budget_source: String,
@@ -901,6 +928,34 @@ impl CheckpointRowFetchMinimalSnapshotProbeDiagnostic {
             checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_elapsed_ms:
                 0,
             checkpoint_row_fetch_minimal_snapshot_probe_materialization_detach_elapsed_ms: 0,
+            checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_sql:
+                CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL.to_string(),
+            checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_explain_query_plan:
+                None,
+            checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_explain_query_plan_rows:
+                None,
+            checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_journal_mode:
+                None,
+            checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_locking_mode:
+                None,
+            checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_query_only:
+                None,
+            checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_busy_timeout_ms:
+                None,
+            checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_started:
+                false,
+            checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_completed:
+                false,
+            checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_elapsed_ms:
+                0,
+            checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_rows_changed:
+                None,
+            checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_started:
+                false,
+            checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_completed:
+                false,
+            checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_row_count:
+                None,
             checkpoint_row_fetch_minimal_snapshot_probe_temp_dir: None,
             checkpoint_row_fetch_minimal_snapshot_probe_budget_ms:
                 DEFAULT_CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_BUDGET_MS,
@@ -2306,18 +2361,20 @@ struct CheckpointHeadlineExplainQueryPlan {
     row_fetch_access_path: String,
 }
 
-fn load_checkpoint_headline_row_meta_explain_query_plan(
+fn load_explain_query_plan_for_sql(
     conn: &Connection,
+    sql: &str,
+    context_label: &str,
 ) -> Result<CheckpointHeadlineExplainQueryPlan> {
-    let explain_sql = format!("EXPLAIN QUERY PLAN {CHECKPOINT_HEADLINE_ROW_META_SQL}");
-    let mut stmt = conn
-        .prepare(&explain_sql)
-        .context("failed preparing EXPLAIN QUERY PLAN for checkpoint row-meta query")?;
+    let explain_sql = format!("EXPLAIN QUERY PLAN {sql}");
+    let mut stmt = conn.prepare(&explain_sql).with_context(|| {
+        format!("failed preparing EXPLAIN QUERY PLAN for {context_label}")
+    })?;
     let details = stmt
         .query_map([], |row| row.get::<_, String>(3))
-        .context("failed executing EXPLAIN QUERY PLAN for checkpoint row-meta query")?
+        .with_context(|| format!("failed executing EXPLAIN QUERY PLAN for {context_label}"))?
         .collect::<rusqlite::Result<Vec<_>>>()
-        .context("failed collecting EXPLAIN QUERY PLAN rows for checkpoint row-meta query")?;
+        .with_context(|| format!("failed collecting EXPLAIN QUERY PLAN rows for {context_label}"))?;
     let explain_query_plan = if details.is_empty() {
         "no_query_plan_rows".to_string()
     } else {
@@ -2332,6 +2389,16 @@ fn load_checkpoint_headline_row_meta_explain_query_plan(
         explain_query_plan_rows: details,
         row_fetch_access_path,
     })
+}
+
+fn load_checkpoint_headline_row_meta_explain_query_plan(
+    conn: &Connection,
+) -> Result<CheckpointHeadlineExplainQueryPlan> {
+    load_explain_query_plan_for_sql(
+        conn,
+        CHECKPOINT_HEADLINE_ROW_META_SQL,
+        "checkpoint row-meta query",
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2490,6 +2557,21 @@ enum CheckpointRowFetchMinimalSnapshotProbeWorkerMessage {
         event: CheckpointRowFetchMinimalSnapshotProbeMaterializationEvent,
         elapsed_ms: u64,
     },
+    MaterializationInsertSelectMetadata {
+        explain_query_plan: String,
+        explain_query_plan_rows: Vec<String>,
+        connection_journal_mode: String,
+        connection_locking_mode: String,
+        connection_query_only: bool,
+        busy_timeout_ms: u64,
+    },
+    MaterializationInsertSelectExecuteCompleted {
+        elapsed_ms: u64,
+        rows_changed: u64,
+    },
+    MaterializationInsertSelectPostcheckCompleted {
+        row_count: u64,
+    },
     SqliteSideMaterializationCompleted {
         bytes_copied: u64,
         elapsed_ms: u64,
@@ -2515,6 +2597,7 @@ enum CheckpointRowFetchMinimalSnapshotProbeTestBehavior {
     DelayBeforeSqliteSideMaterialization(StdDuration),
     DelayBeforeMaterializationAttach(StdDuration),
     DelayBeforeMaterializationInsertSelect(StdDuration),
+    DelayBeforeMaterializationPostcheck(StdDuration),
     DelayBeforeHandoff(StdDuration),
     BusyProbe(CheckpointRowFetchBusyProbeTestBehavior),
 }
@@ -2528,7 +2611,10 @@ enum CheckpointRowFetchMinimalSnapshotProbeMaterializationEvent {
     AttachStarted,
     AttachCompleted,
     InsertSelectStarted,
+    InsertSelectExecuteStarted,
     InsertSelectCompleted,
+    InsertSelectPostcheckStarted,
+    InsertSelectPostcheckCompleted,
     DetachStarted,
     DetachCompleted,
 }
@@ -2543,7 +2629,14 @@ impl CheckpointRowFetchMinimalSnapshotProbeMaterializationEvent {
             Self::AttachStarted => "materialization_attach_started",
             Self::AttachCompleted => "materialization_attach_completed",
             Self::InsertSelectStarted => "materialization_insert_select_started",
+            Self::InsertSelectExecuteStarted => "materialization_insert_select_execute_started",
             Self::InsertSelectCompleted => "materialization_insert_select_completed",
+            Self::InsertSelectPostcheckStarted => {
+                "materialization_insert_select_postcheck_started"
+            }
+            Self::InsertSelectPostcheckCompleted => {
+                "materialization_insert_select_postcheck_completed"
+            }
             Self::DetachStarted => "materialization_detach_started",
             Self::DetachCompleted => "materialization_detach_completed",
         }
@@ -3254,6 +3347,72 @@ fn probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_impl(
                 );
             }
             Ok(
+                CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::MaterializationInsertSelectMetadata {
+                    explain_query_plan,
+                    explain_query_plan_rows,
+                    connection_journal_mode,
+                    connection_locking_mode,
+                    connection_query_only,
+                    busy_timeout_ms,
+                },
+            ) => {
+                current_stage =
+                    CheckpointRowFetchMinimalSnapshotProbeStage::SqliteSideMaterialization;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_explain_query_plan =
+                    Some(explain_query_plan);
+                diagnostic
+                    .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_explain_query_plan_rows =
+                    Some(explain_query_plan_rows);
+                diagnostic
+                    .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_journal_mode =
+                    Some(connection_journal_mode);
+                diagnostic
+                    .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_locking_mode =
+                    Some(connection_locking_mode);
+                diagnostic
+                    .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_query_only =
+                    Some(connection_query_only);
+                diagnostic
+                    .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_busy_timeout_ms =
+                    Some(busy_timeout_ms);
+            }
+            Ok(
+                CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::MaterializationInsertSelectExecuteCompleted {
+                    elapsed_ms,
+                    rows_changed,
+                },
+            ) => {
+                current_stage =
+                    CheckpointRowFetchMinimalSnapshotProbeStage::SqliteSideMaterialization;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_completed =
+                    true;
+                diagnostic
+                    .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_elapsed_ms =
+                    elapsed_ms;
+                diagnostic
+                    .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_rows_changed =
+                    Some(rows_changed);
+            }
+            Ok(
+                CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::MaterializationInsertSelectPostcheckCompleted {
+                    row_count,
+                },
+            ) => {
+                current_stage =
+                    CheckpointRowFetchMinimalSnapshotProbeStage::SqliteSideMaterialization;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_row_count =
+                    Some(row_count);
+            }
+            Ok(
                 CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::SqliteSideMaterializationCompleted {
                     bytes_copied,
                     elapsed_ms,
@@ -3557,6 +3716,11 @@ fn apply_minimal_snapshot_materialization_event(
                 .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_started =
                 true;
         }
+        CheckpointRowFetchMinimalSnapshotProbeMaterializationEvent::InsertSelectExecuteStarted => {
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_started =
+                true;
+        }
         CheckpointRowFetchMinimalSnapshotProbeMaterializationEvent::InsertSelectCompleted => {
             diagnostic
                 .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_completed =
@@ -3564,6 +3728,16 @@ fn apply_minimal_snapshot_materialization_event(
             diagnostic
                 .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_elapsed_ms =
                 elapsed_ms;
+        }
+        CheckpointRowFetchMinimalSnapshotProbeMaterializationEvent::InsertSelectPostcheckStarted => {
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_started =
+                true;
+        }
+        CheckpointRowFetchMinimalSnapshotProbeMaterializationEvent::InsertSelectPostcheckCompleted => {
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_completed =
+                true;
         }
         CheckpointRowFetchMinimalSnapshotProbeMaterializationEvent::DetachStarted => {
             diagnostic
@@ -4053,6 +4227,51 @@ fn create_checkpoint_row_fetch_minimal_snapshot_db_via_sqlite_materialization(
     {
         return Ok((0, 0));
     }
+    let insert_select_busy_timeout_ms = conn
+        .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
+        .context("failed reading sqlite busy_timeout for minimal snapshot insert-select materialization")?;
+    let insert_select_connection_journal_mode = conn
+        .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+        .context("failed reading sqlite journal_mode for minimal snapshot insert-select materialization")?;
+    let insert_select_connection_locking_mode = conn
+        .query_row("PRAGMA locking_mode", [], |row| row.get::<_, String>(0))
+        .context("failed reading sqlite locking_mode for minimal snapshot insert-select materialization")?;
+    let insert_select_connection_query_only = conn
+        .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+        .context("failed reading sqlite query_only for minimal snapshot insert-select materialization")?
+        != 0;
+    let insert_select_explain_query_plan = load_explain_query_plan_for_sql(
+        &conn,
+        CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL,
+        "minimal snapshot insert-select materialization",
+    )?;
+    if tx
+        .send(
+            CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::MaterializationInsertSelectMetadata {
+                explain_query_plan: insert_select_explain_query_plan.explain_query_plan,
+                explain_query_plan_rows: insert_select_explain_query_plan.explain_query_plan_rows,
+                connection_journal_mode: insert_select_connection_journal_mode,
+                connection_locking_mode: insert_select_connection_locking_mode,
+                connection_query_only: insert_select_connection_query_only,
+                busy_timeout_ms: insert_select_busy_timeout_ms,
+            },
+        )
+        .is_err()
+    {
+        return Ok((0, 0));
+    }
+    if tx
+        .send(
+            CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::MaterializationEvent {
+                event:
+                    CheckpointRowFetchMinimalSnapshotProbeMaterializationEvent::InsertSelectExecuteStarted,
+                elapsed_ms: 0,
+            },
+        )
+        .is_err()
+    {
+        return Ok((0, 0));
+    }
     #[cfg(test)]
     if let Some(
         CheckpointRowFetchMinimalSnapshotProbeTestBehavior::DelayBeforeMaterializationInsertSelect(
@@ -4065,12 +4284,75 @@ fn create_checkpoint_row_fetch_minimal_snapshot_db_via_sqlite_materialization(
     let insert_select_started_at = Instant::now();
     conn.execute(CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL, [])
         .context("failed sqlite-side materialization of minimal snapshot row-meta")?;
+    let insert_select_rows_changed = conn.changes();
+    if tx
+        .send(
+            CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::MaterializationInsertSelectExecuteCompleted {
+                elapsed_ms: elapsed_ms(insert_select_started_at),
+                rows_changed: insert_select_rows_changed,
+            },
+        )
+        .is_err()
+    {
+        return Ok((0, 0));
+    }
     if tx
         .send(
             CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::MaterializationEvent {
                 event:
                     CheckpointRowFetchMinimalSnapshotProbeMaterializationEvent::InsertSelectCompleted,
                 elapsed_ms: elapsed_ms(insert_select_started_at),
+            },
+        )
+        .is_err()
+    {
+        return Ok((0, 0));
+    }
+    if tx
+        .send(
+            CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::MaterializationEvent {
+                event:
+                    CheckpointRowFetchMinimalSnapshotProbeMaterializationEvent::InsertSelectPostcheckStarted,
+                elapsed_ms: 0,
+            },
+        )
+        .is_err()
+    {
+        return Ok((0, 0));
+    }
+    #[cfg(test)]
+    if let Some(
+        CheckpointRowFetchMinimalSnapshotProbeTestBehavior::DelayBeforeMaterializationPostcheck(
+            delay,
+        ),
+    ) = test_behavior
+    {
+        thread::sleep(delay);
+    }
+    let postcheck_row_count = conn
+        .query_row(
+            CHECKPOINT_HEADLINE_ROW_META_ROW_COUNT_SQL,
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .context("failed postcheck row count after minimal snapshot insert-select materialization")?
+        .max(0) as u64;
+    if tx
+        .send(
+            CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::MaterializationInsertSelectPostcheckCompleted {
+                row_count: postcheck_row_count,
+            },
+        )
+        .is_err()
+    {
+        return Ok((0, 0));
+    }
+    if tx
+        .send(
+            CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::MaterializationEvent {
+                event:
+                    CheckpointRowFetchMinimalSnapshotProbeMaterializationEvent::InsertSelectPostcheckCompleted,
+                elapsed_ms: 0,
             },
         )
         .is_err()
@@ -8991,6 +9273,92 @@ fn render_checkpoint_row_fetch_minimal_snapshot_probe_human(
                 .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_elapsed_ms
         ),
         format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_sql={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_sql
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_explain_query_plan={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_explain_query_plan
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_explain_query_plan_rows={}",
+            format_optional_json(
+                &diagnostic
+                    .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_explain_query_plan_rows
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_journal_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_journal_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_locking_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_locking_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_query_only={}",
+            format_optional_bool(
+                diagnostic
+                    .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_query_only
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_busy_timeout_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_busy_timeout_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_started={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_started
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_completed={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_completed
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_elapsed_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_rows_changed={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_rows_changed
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_started={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_started
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_completed={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_completed
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_row_count={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_row_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
             "checkpoint_row_fetch_minimal_snapshot_probe_materialization_detach_elapsed_ms={}",
             diagnostic
                 .checkpoint_row_fetch_minimal_snapshot_probe_materialization_detach_elapsed_ms
@@ -11762,7 +12130,7 @@ mod tests {
         );
         assert_eq!(
             parsed["checkpoint_row_fetch_minimal_snapshot_probe_materialization_event_count"],
-            10
+            13
         );
         assert_eq!(
             parsed["checkpoint_row_fetch_minimal_snapshot_probe_materialization_temp_db_open_started"],
@@ -11795,6 +12163,26 @@ mod tests {
         assert_eq!(
             parsed["checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_completed"],
             true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_started"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_completed"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_started"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_completed"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_row_count"],
+            1
         );
         assert_eq!(
             parsed["checkpoint_row_fetch_minimal_snapshot_probe_materialization_detach_started"],
@@ -11835,6 +12223,20 @@ mod tests {
             "checkpoint_row_fetch_minimal_snapshot_probe_materialization_schema_create_elapsed_ms",
             "checkpoint_row_fetch_minimal_snapshot_probe_materialization_attach_elapsed_ms",
             "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_elapsed_ms",
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_sql",
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_explain_query_plan",
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_explain_query_plan_rows",
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_journal_mode",
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_locking_mode",
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_connection_query_only",
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_busy_timeout_ms",
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_started",
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_completed",
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_elapsed_ms",
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_rows_changed",
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_started",
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_completed",
+            "checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_row_count",
             "checkpoint_row_fetch_minimal_snapshot_probe_materialization_detach_elapsed_ms",
             "checkpoint_row_fetch_minimal_snapshot_probe_temp_dir",
             "checkpoint_row_fetch_minimal_snapshot_probe_budget_ms",
@@ -12203,7 +12605,7 @@ mod tests {
             diagnostic
                 .checkpoint_row_fetch_minimal_snapshot_probe_materialization_last_event
                 .as_deref(),
-            Some("materialization_insert_select_started")
+            Some("materialization_insert_select_execute_started")
         );
         assert!(
             diagnostic
@@ -12214,8 +12616,88 @@ mod tests {
                 .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_started
         );
         assert!(
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_started
+        );
+        assert!(
+            !diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_completed
+        );
+        assert!(
             !diagnostic
                 .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_completed
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_minimal_snapshot_probe_materialization_postcheck_timeout_returns_budget_exhausted(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-minimal-snapshot-probe-postcheck-timeout")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-minimal-snapshot-probe-postcheck-timeout".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_millis(50),
+                Some(
+                    CheckpointRowFetchMinimalSnapshotProbeTestBehavior::DelayBeforeMaterializationPostcheck(
+                        StdDuration::from_millis(200),
+                    ),
+                ),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_reason_class,
+            CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeBudgetExhausted
+        );
+        assert!(
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_stage
+                .as_deref(),
+            Some("sqlite_side_materialization")
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_last_event
+                .as_deref(),
+            Some("materialization_insert_select_postcheck_started")
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_execute_completed
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_started
+        );
+        assert!(
+            !diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_postcheck_completed
         );
         Ok(())
     }
