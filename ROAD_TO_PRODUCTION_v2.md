@@ -14560,3 +14560,30 @@ Current interpretation:
 2. Live rollout must still verify whether the deep trace can finish on
    production data or whether it immediately narrows the remaining blocker to a
    specific deep stage such as checkpoint inspect or source comparison.
+3. Live rollout to the production host validated the new operator:
+   - server commit moved to `bdd1ba5`
+   - only `discovery_runtime_export` was rebuilt
+   - `solana-copy-bot.service` stayed `active`
+   - `copybot-discovery-runtime-export.timer` stayed `active`
+4. The first standalone live run returned bounded JSON but did not complete the
+   prerequisite path because the cheap checkpoint-headline step transiently
+   budget-exhausted again on that slice.
+5. A controlled sequential live run then proved the operator's real value:
+   - first, `--explain-publication-truth-export-blocker` completed with
+     checkpoint-headline `complete` in about `228ms`
+   - then, `--trace-replay-sol-leg-deep-proof` returned:
+     - `replay_sol_leg_deep_trace_reason_class = replay_sol_leg_deep_trace_budget_exhausted`
+     - `deep_trace_prerequisite_completed = true`
+     - `deep_trace_budget_exhausted = true`
+     - `deep_trace_budget_exhausted_stage = deep_trace_source_compare_wait_timeout`
+     - `deep_trace_total_elapsed_ms = 30000`
+     - `deep_trace_checkpoint_inspect_started = true`
+     - `deep_trace_checkpoint_inspect_completed = true`
+     - `deep_trace_source_compare_started = true`
+     - `deep_trace_source_compare_completed = false`
+     - `deep_trace_final_reason_class = null`
+6. Current interpretation after rollout:
+   - the deep replay-sol-leg trace operator is operationally bounded on live
+   - the remaining exact blocker is no longer “somewhere in deep replay”
+   - the remaining exact blocker is now narrowed to the source-vs-checkpoint
+     comparison wait path itself
