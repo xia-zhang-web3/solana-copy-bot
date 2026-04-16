@@ -14648,3 +14648,29 @@ Current interpretation:
    source-scan-budget problem.
 2. Live rollout still must confirm which of those two source-compare failure
    classes actually occurs on production data.
+
+Live rollout result (`2026-04-16`, commit `96de092`):
+
+1. The server was fast-forwarded to `96de092` and only
+   `discovery_runtime_export` was rebuilt.
+2. A clean live run of:
+   `discovery_runtime_export --trace-replay-sol-leg-source-compare --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `replay_sol_leg_source_compare_trace_reason_class = replay_sol_leg_source_compare_trace_unproven_due_to_missing_evidence`
+   - `source_compare_trace_prerequisite_reason_class = publication_truth_export_blocked_on_replay_sol_leg_incomplete`
+   - `source_compare_trace_prerequisite_completed = false`
+   - `source_compare_trace_compare_started = false`
+   - `source_compare_trace_compare_completed = false`
+   - `source_compare_trace_total_elapsed_ms = 51095`
+3. The live explanation was explicit:
+   - the source-compare mode did not reach source comparison
+   - it failed earlier because its cheap checkpoint-headline prerequisite path
+     did not complete
+   - the failing prerequisite stage was:
+     `load_persisted_rebuild_row_meta_step_primary_key_lookup`
+4. This means the new source-compare mode does not yet stand on the same proven
+   prerequisite contract as the established publication-truth export blocker
+   operator.
+5. The next corrective batch must target prerequisite reuse inside the
+   source-compare mode itself before more source-comparison instrumentation is
+   added.
