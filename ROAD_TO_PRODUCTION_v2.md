@@ -13600,6 +13600,38 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+Live rollout result (`2026-04-16`, commit `29c07b4`):
+
+1. The server was fast-forwarded to `29c07b4` and only
+   `discovery_runtime_export` was rebuilt.
+2. A clean live run of:
+   `discovery_runtime_export --explain-publication-truth-export-blocker --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `publication_truth_export_blocked_on_replay_sol_leg_incomplete`
+   - `publication_truth_export_checkpoint_headline_completed = false`
+   - `publication_truth_export_checkpoint_headline_budget_exhausted = true`
+   - `publication_truth_export_checkpoint_headline_stage = load_persisted_rebuild_row_meta_step_primary_key_lookup`
+   - `publication_truth_export_checkpoint_headline_total_elapsed_ms = 1000`
+3. The new micro-stage worker fields proved the exact seam more tightly:
+   - `publication_truth_export_checkpoint_headline_worker_last_event = step_query_started`
+   - `publication_truth_export_checkpoint_headline_worker_event_count = 9`
+   - `publication_truth_export_checkpoint_headline_worker_step_query_started_received = true`
+   - `publication_truth_export_checkpoint_headline_worker_step_row_fetch_completed_received = false`
+   - `publication_truth_export_checkpoint_headline_worker_step_phase_decoded_received = false`
+   - `publication_truth_export_checkpoint_headline_worker_step_updated_at_decoded_received = false`
+   - `publication_truth_export_checkpoint_headline_worker_step_completed_received = false`
+   - `publication_truth_export_checkpoint_headline_worker_finished_send_attempted = false`
+   - `publication_truth_export_checkpoint_headline_worker_finished_received = false`
+   - `publication_truth_export_checkpoint_headline_worker_disconnected = false`
+4. Budget-remaining telemetry stayed consistent with that sequence:
+   - after open/schema/rowcount/prepare ≈ `999/998/997/997 ms`
+   - after step = `0 ms`
+5. Therefore the bounded worker path is now proven down to the exact live seam:
+   the worker emits `step_query_started`, then no `step_row_fetch_completed`
+   arrives before the `1000ms` controller budget expires.
+6. The next corrective batch must target the `rows.next()?` / SQLite step seam
+   itself, not broader row-meta or publication-blocker plumbing.
+
 Corrective repository batch accepted (`2026-04-16`):
 
 1. The publication-blocker checkpoint-headline worker no longer treats the
