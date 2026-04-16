@@ -13600,6 +13600,88 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+### Stage 3 immutable-source pure-select probe (`2026-04-16`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a new bounded proof mode:
+   `--probe-checkpoint-row-fetch-immutable-source-select --config <path> --json`
+2. The new mode reuses the temp DB plus immutable read-only source `ATTACH`
+   path, but replaces the materialization `INSERT ... SELECT` with a pure
+   attached-source statement:
+   - `SELECT phase, updated_at`
+   - `FROM source.discovery_persisted_rebuild_state`
+   - `WHERE id = 1`
+3. The worker is instrumented at the exact low-level boundary:
+   - prepare statement
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The operator always returns structured JSON and classifies:
+   - row / eof / explicit SQLite error as
+     `checkpoint_row_fetch_immutable_source_select_probe_proven_changed_by_statement_shape`
+   - timeout after query start and before row-fetch completion as
+     `checkpoint_row_fetch_immutable_source_select_probe_proven_not_changed_by_statement_shape`
+   - timeout before that boundary as
+     `checkpoint_row_fetch_immutable_source_select_probe_budget_exhausted`
+   - missing config/runtime DB evidence as
+     `checkpoint_row_fetch_immutable_source_select_probe_unproven_due_to_missing_evidence`
+5. The operator stays:
+   - runtime-DB-only
+   - free of application-level source row fetch outside the attached-source
+     connection
+   - free of `recent_raw` open
+   - free of `state_json` parsing and `length(state_json)`
+6. The batch touches:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+   - `AGENTS.md`
+7. It does not change:
+   - publication blocker semantics
+   - replay blocker semantics
+   - deep trace semantics
+   - source-compare semantics
+   - existing busy/copy/minimal/materialization probe semantics
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Live rollout result (`2026-04-16`, commit `3473418`):
+
+1. The production host was fast-forwarded to `3473418`.
+2. Only `discovery_runtime_export` was rebuilt.
+3. `solana-copy-bot.service` stayed `active`.
+4. `copybot-discovery-runtime-export.timer` stayed `active`.
+5. A clean live run of:
+   `sudo -n target/release/discovery_runtime_export --probe-checkpoint-row-fetch-immutable-source-select --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_immutable_source_select_probe_reason_class = checkpoint_row_fetch_immutable_source_select_probe_proven_not_changed_by_statement_shape`
+   - `checkpoint_row_fetch_immutable_source_select_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_immutable_source_select_probe_budget_exhausted = true`
+   - `checkpoint_row_fetch_immutable_source_select_probe_stage = row_fetch_source_select`
+   - `checkpoint_row_fetch_immutable_source_select_probe_source_attach_uri = file:///var/www/solana-copy-bot/state/live_runtime_20260324T134339Z.db?mode=ro&immutable=1`
+   - `checkpoint_row_fetch_immutable_source_select_probe_source_attach_mode = sqlite_uri_mode_ro_immutable_1`
+   - `checkpoint_row_fetch_immutable_source_select_probe_source_select_sql = SELECT phase, updated_at FROM source.discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_immutable_source_select_probe_source_select_explain_query_plan = SEARCH source.discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_immutable_source_select_probe_source_select_query_started = true`
+   - `checkpoint_row_fetch_immutable_source_select_probe_source_select_row_fetch_completed = false`
+   - `checkpoint_row_fetch_immutable_source_select_probe_result_kind = null`
+   - `checkpoint_row_fetch_immutable_source_select_probe_sqlite_error_code = null`
+6. Current interpretation after rollout:
+   - changing statement shape from `INSERT ... SELECT` to pure attached-source
+     `SELECT` did not remove the seam
+   - the remaining exact blocker is no longer “materialization statement shape”
+   - the remaining exact blocker is now the immutable attached-source row-fetch
+     boundary itself: after `stmt.query([])` and before `rows.next()?`
+
 ### Stage 3 materialization immutable-source probe (`2026-04-16`)
 
 Accepted repository change:
