@@ -22,7 +22,7 @@ use copybot_discovery::{
 use copybot_storage::{
     DiscoveryPersistedRebuildPhase, DiscoveryRuntimeArtifact, SqliteStore,
 };
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, ErrorCode, OpenFlags};
 use serde::Serialize;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -49,6 +49,7 @@ const USAGE: &str = "usage:
   discovery_runtime_export --explain-replay-sol-leg-blocker --config <path> [--json]
   discovery_runtime_export --trace-replay-sol-leg-deep-proof --config <path> [--json]
   discovery_runtime_export --trace-replay-sol-leg-source-compare --config <path> [--json]
+  discovery_runtime_export --probe-checkpoint-row-fetch-busy-wait --config <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-window-seeding --state-root <path> [--json]
@@ -58,6 +59,9 @@ const PUBLICATION_TRUTH_WITHHELD_PREFIX: &str = "publication_truth_withheld_whil
 const DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_MS: u64 = 1_000;
 const DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_SOURCE: &str =
     "fixed_constant_default_primary_operator";
+const DEFAULT_CHECKPOINT_ROW_FETCH_BUSY_PROBE_BUDGET_MS: u64 = 1_000;
+const DEFAULT_CHECKPOINT_ROW_FETCH_BUSY_PROBE_BUDGET_SOURCE: &str =
+    "fixed_constant_zero_busy_timeout_checkpoint_row_fetch_probe";
 const DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_MS: u64 = 30_000;
 const DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_SOURCE: &str =
     "copybot_discovery_default_replay_sol_leg_read_only_source_scan_budget";
@@ -174,6 +178,12 @@ struct TraceReplaySolLegSourceCompareConfig {
 }
 
 #[derive(Debug, Clone)]
+struct ProbeCheckpointRowFetchBusyWaitConfig {
+    config_path: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 struct ExplainRecentRawStagedLineageConfig {
     state_root: PathBuf,
     json: bool,
@@ -217,6 +227,7 @@ enum Command {
     ExplainReplaySolLegBlocker(ExplainReplaySolLegBlockerConfig),
     TraceReplaySolLegDeepProof(TraceReplaySolLegDeepProofConfig),
     TraceReplaySolLegSourceCompare(TraceReplaySolLegSourceCompareConfig),
+    ProbeCheckpointRowFetchBusyWait(ProbeCheckpointRowFetchBusyWaitConfig),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
     ExplainRecentRawStagedBirth(ExplainRecentRawStagedBirthConfig),
@@ -491,6 +502,96 @@ enum ReplaySolLegSourceCompareTraceReasonClass {
     ReplaySolLegSourceCompareTraceNotCurrentBlocker,
     ReplaySolLegSourceCompareTraceUnprovenDueToMissingEvidence,
     ReplaySolLegSourceCompareTraceBudgetExhausted,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchBusyProbeReasonClass {
+    CheckpointRowFetchBusyProbeProvenBusyWait,
+    CheckpointRowFetchBusyProbeProvenNonBusyWait,
+    CheckpointRowFetchBusyProbeBudgetExhausted,
+    CheckpointRowFetchBusyProbeUnprovenDueToMissingEvidence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchBusyProbeResultKind {
+    Row,
+    Eof,
+    SqliteBusy,
+    SqliteLocked,
+    SqliteOtherError,
+    NonSqliteError,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct CheckpointRowFetchBusyProbeDiagnostic {
+    checkpoint_row_fetch_busy_probe_observed: bool,
+    checkpoint_row_fetch_busy_probe_reason_class: CheckpointRowFetchBusyProbeReasonClass,
+    checkpoint_row_fetch_busy_probe_explanation: String,
+    config_path: String,
+    runtime_db_path: Option<String>,
+    checkpoint_row_fetch_busy_probe_runtime_db_opened_read_only: bool,
+    checkpoint_row_fetch_busy_probe_budget_ms: u64,
+    checkpoint_row_fetch_busy_probe_budget_source: String,
+    checkpoint_row_fetch_busy_probe_total_elapsed_ms: u64,
+    checkpoint_row_fetch_busy_probe_budget_exhausted: bool,
+    checkpoint_row_fetch_busy_probe_stage: Option<String>,
+    checkpoint_row_fetch_busy_probe_connection_journal_mode: Option<String>,
+    checkpoint_row_fetch_busy_probe_connection_locking_mode: Option<String>,
+    checkpoint_row_fetch_busy_probe_connection_query_only: Option<bool>,
+    checkpoint_row_fetch_busy_probe_query_readonly_mode: Option<bool>,
+    checkpoint_row_fetch_busy_probe_busy_timeout_ms_before: Option<u64>,
+    checkpoint_row_fetch_busy_probe_busy_timeout_ms_applied: Option<u64>,
+    checkpoint_row_fetch_busy_probe_query_sql: Option<String>,
+    checkpoint_row_fetch_busy_probe_explain_query_plan: Option<String>,
+    checkpoint_row_fetch_busy_probe_explain_query_plan_rows: Option<Vec<String>>,
+    checkpoint_row_fetch_busy_probe_access_path: Option<String>,
+    checkpoint_row_fetch_busy_probe_step_started: bool,
+    checkpoint_row_fetch_busy_probe_step_completed: bool,
+    checkpoint_row_fetch_busy_probe_step_elapsed_ms: u64,
+    checkpoint_row_fetch_busy_probe_result_kind: Option<CheckpointRowFetchBusyProbeResultKind>,
+    checkpoint_row_fetch_busy_probe_sqlite_error_code: Option<String>,
+    checkpoint_row_fetch_busy_probe_sqlite_error_message: Option<String>,
+    checkpoint_row_fetch_busy_probe_row_returned: Option<bool>,
+}
+
+impl CheckpointRowFetchBusyProbeDiagnostic {
+    fn unproven(config_path: &Path, explanation: String) -> Self {
+        Self {
+            checkpoint_row_fetch_busy_probe_observed: false,
+            checkpoint_row_fetch_busy_probe_reason_class:
+                CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeUnprovenDueToMissingEvidence,
+            checkpoint_row_fetch_busy_probe_explanation: explanation,
+            config_path: config_path.display().to_string(),
+            runtime_db_path: None,
+            checkpoint_row_fetch_busy_probe_runtime_db_opened_read_only: false,
+            checkpoint_row_fetch_busy_probe_budget_ms:
+                DEFAULT_CHECKPOINT_ROW_FETCH_BUSY_PROBE_BUDGET_MS,
+            checkpoint_row_fetch_busy_probe_budget_source:
+                DEFAULT_CHECKPOINT_ROW_FETCH_BUSY_PROBE_BUDGET_SOURCE.to_string(),
+            checkpoint_row_fetch_busy_probe_total_elapsed_ms: 0,
+            checkpoint_row_fetch_busy_probe_budget_exhausted: false,
+            checkpoint_row_fetch_busy_probe_stage: None,
+            checkpoint_row_fetch_busy_probe_connection_journal_mode: None,
+            checkpoint_row_fetch_busy_probe_connection_locking_mode: None,
+            checkpoint_row_fetch_busy_probe_connection_query_only: None,
+            checkpoint_row_fetch_busy_probe_query_readonly_mode: None,
+            checkpoint_row_fetch_busy_probe_busy_timeout_ms_before: None,
+            checkpoint_row_fetch_busy_probe_busy_timeout_ms_applied: None,
+            checkpoint_row_fetch_busy_probe_query_sql: None,
+            checkpoint_row_fetch_busy_probe_explain_query_plan: None,
+            checkpoint_row_fetch_busy_probe_explain_query_plan_rows: None,
+            checkpoint_row_fetch_busy_probe_access_path: None,
+            checkpoint_row_fetch_busy_probe_step_started: false,
+            checkpoint_row_fetch_busy_probe_step_completed: false,
+            checkpoint_row_fetch_busy_probe_step_elapsed_ms: 0,
+            checkpoint_row_fetch_busy_probe_result_kind: None,
+            checkpoint_row_fetch_busy_probe_sqlite_error_code: None,
+            checkpoint_row_fetch_busy_probe_sqlite_error_message: None,
+            checkpoint_row_fetch_busy_probe_row_returned: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1892,6 +1993,562 @@ fn load_checkpoint_headline_row_meta_explain_query_plan(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointRowFetchBusyProbeStage {
+    OpenReadOnly,
+    LoadBusyTimeoutBefore,
+    ApplyBusyTimeoutZero,
+    LoadConnectionMetadata,
+    PreparePrimaryKeyLookup,
+    LoadExplainQueryPlan,
+    StepPrimaryKeyLookup,
+}
+
+impl CheckpointRowFetchBusyProbeStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenReadOnly => "open_read_only",
+            Self::LoadBusyTimeoutBefore => "load_busy_timeout_before",
+            Self::ApplyBusyTimeoutZero => "apply_busy_timeout_zero",
+            Self::LoadConnectionMetadata => "load_connection_metadata",
+            Self::PreparePrimaryKeyLookup => "prepare_primary_key_lookup",
+            Self::LoadExplainQueryPlan => "load_explain_query_plan",
+            Self::StepPrimaryKeyLookup => "step_primary_key_lookup",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CheckpointRowFetchBusyProbeStepOutcome {
+    result_kind: CheckpointRowFetchBusyProbeResultKind,
+    row_returned: Option<bool>,
+    sqlite_error_code: Option<String>,
+    sqlite_error_message: Option<String>,
+}
+
+#[derive(Debug)]
+enum CheckpointRowFetchBusyProbeWorkerMessage {
+    OpenedReadOnly(u64),
+    BusyTimeoutBefore(u64),
+    BusyTimeoutApplied(u64),
+    ConnectionReadMode {
+        journal_mode: String,
+        locking_mode: String,
+        query_only: bool,
+    },
+    QueryPlan {
+        query_sql: String,
+        explain_query_plan: String,
+        explain_query_plan_rows: Vec<String>,
+        query_readonly_mode: bool,
+        access_path: String,
+    },
+    Entered(CheckpointRowFetchBusyProbeStage),
+    StepStarted,
+    StepCompleted {
+        elapsed_ms: u64,
+        outcome: CheckpointRowFetchBusyProbeStepOutcome,
+    },
+    Finished(Result<(), String>),
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+enum CheckpointRowFetchBusyProbeTestBehavior {
+    ForceBusy,
+    ForceLocked,
+    DelayBeforeStep(StdDuration),
+}
+
+fn probe_checkpoint_row_fetch_busy_wait_read_only(
+    config_path: &Path,
+) -> CheckpointRowFetchBusyProbeDiagnostic {
+    probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_impl(
+        config_path,
+        StdDuration::from_millis(DEFAULT_CHECKPOINT_ROW_FETCH_BUSY_PROBE_BUDGET_MS),
+        #[cfg(test)]
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_busy_wait_read_only_with_budget(
+    config_path: &Path,
+    budget: StdDuration,
+) -> CheckpointRowFetchBusyProbeDiagnostic {
+    probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_impl(config_path, budget, None)
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_and_test_behavior(
+    config_path: &Path,
+    budget: StdDuration,
+    test_behavior: Option<CheckpointRowFetchBusyProbeTestBehavior>,
+) -> CheckpointRowFetchBusyProbeDiagnostic {
+    probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_impl(
+        config_path,
+        budget,
+        test_behavior,
+    )
+}
+
+fn probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_impl(
+    config_path: &Path,
+    budget: StdDuration,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchBusyProbeTestBehavior>,
+) -> CheckpointRowFetchBusyProbeDiagnostic {
+    let mut diagnostic = CheckpointRowFetchBusyProbeDiagnostic::unproven(
+        config_path,
+        "checkpoint row-fetch busy-wait probe did not run".to_string(),
+    );
+    diagnostic.checkpoint_row_fetch_busy_probe_budget_ms =
+        budget.as_millis().min(u64::MAX as u128) as u64;
+    diagnostic.checkpoint_row_fetch_busy_probe_budget_source =
+        DEFAULT_CHECKPOINT_ROW_FETCH_BUSY_PROBE_BUDGET_SOURCE.to_string();
+
+    let loaded_config = match load_from_path(config_path)
+        .with_context(|| format!("failed loading config {}", config_path.display()))
+    {
+        Ok(config) => config,
+        Err(error) => {
+            diagnostic.checkpoint_row_fetch_busy_probe_explanation = format!("{error:#}");
+            return diagnostic;
+        }
+    };
+    let runtime_db_path = resolve_db_path(config_path, None, &loaded_config.sqlite.path);
+    diagnostic.runtime_db_path = Some(runtime_db_path.display().to_string());
+    diagnostic.checkpoint_row_fetch_busy_probe_observed = true;
+
+    let total_started_at = Instant::now();
+    let (tx, rx) = mpsc::sync_channel(16);
+    let runtime_db_path_for_worker = runtime_db_path.clone();
+    thread::spawn(move || {
+        let _ = probe_checkpoint_row_fetch_busy_wait_worker(
+            &runtime_db_path_for_worker,
+            tx,
+            #[cfg(test)]
+            test_behavior,
+        );
+    });
+
+    let mut current_stage = CheckpointRowFetchBusyProbeStage::OpenReadOnly;
+    let mut last_step_outcome: Option<CheckpointRowFetchBusyProbeStepOutcome> = None;
+    loop {
+        match rx.recv_timeout(remaining_budget_duration(budget, total_started_at)) {
+            Ok(CheckpointRowFetchBusyProbeWorkerMessage::OpenedReadOnly(open_elapsed_ms)) => {
+                diagnostic.checkpoint_row_fetch_busy_probe_runtime_db_opened_read_only = true;
+                diagnostic.checkpoint_row_fetch_busy_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                if diagnostic.checkpoint_row_fetch_busy_probe_total_elapsed_ms == 0 {
+                    diagnostic.checkpoint_row_fetch_busy_probe_total_elapsed_ms = open_elapsed_ms;
+                }
+            }
+            Ok(CheckpointRowFetchBusyProbeWorkerMessage::BusyTimeoutBefore(busy_timeout_ms)) => {
+                current_stage = CheckpointRowFetchBusyProbeStage::LoadBusyTimeoutBefore;
+                diagnostic.checkpoint_row_fetch_busy_probe_busy_timeout_ms_before =
+                    Some(busy_timeout_ms);
+            }
+            Ok(CheckpointRowFetchBusyProbeWorkerMessage::BusyTimeoutApplied(busy_timeout_ms)) => {
+                current_stage = CheckpointRowFetchBusyProbeStage::ApplyBusyTimeoutZero;
+                diagnostic.checkpoint_row_fetch_busy_probe_busy_timeout_ms_applied =
+                    Some(busy_timeout_ms);
+            }
+            Ok(CheckpointRowFetchBusyProbeWorkerMessage::ConnectionReadMode {
+                journal_mode,
+                locking_mode,
+                query_only,
+            }) => {
+                current_stage = CheckpointRowFetchBusyProbeStage::LoadConnectionMetadata;
+                diagnostic.checkpoint_row_fetch_busy_probe_connection_journal_mode =
+                    Some(journal_mode);
+                diagnostic.checkpoint_row_fetch_busy_probe_connection_locking_mode =
+                    Some(locking_mode);
+                diagnostic.checkpoint_row_fetch_busy_probe_connection_query_only =
+                    Some(query_only);
+            }
+            Ok(CheckpointRowFetchBusyProbeWorkerMessage::QueryPlan {
+                query_sql,
+                explain_query_plan,
+                explain_query_plan_rows,
+                query_readonly_mode,
+                access_path,
+            }) => {
+                current_stage = CheckpointRowFetchBusyProbeStage::LoadExplainQueryPlan;
+                diagnostic.checkpoint_row_fetch_busy_probe_query_sql = Some(query_sql);
+                diagnostic.checkpoint_row_fetch_busy_probe_explain_query_plan =
+                    Some(explain_query_plan);
+                diagnostic.checkpoint_row_fetch_busy_probe_explain_query_plan_rows =
+                    Some(explain_query_plan_rows);
+                diagnostic.checkpoint_row_fetch_busy_probe_query_readonly_mode =
+                    Some(query_readonly_mode);
+                diagnostic.checkpoint_row_fetch_busy_probe_access_path = Some(access_path);
+            }
+            Ok(CheckpointRowFetchBusyProbeWorkerMessage::Entered(stage)) => {
+                current_stage = stage;
+                diagnostic.checkpoint_row_fetch_busy_probe_stage =
+                    Some(stage.as_str().to_string());
+            }
+            Ok(CheckpointRowFetchBusyProbeWorkerMessage::StepStarted) => {
+                current_stage = CheckpointRowFetchBusyProbeStage::StepPrimaryKeyLookup;
+                diagnostic.checkpoint_row_fetch_busy_probe_step_started = true;
+            }
+            Ok(CheckpointRowFetchBusyProbeWorkerMessage::StepCompleted {
+                elapsed_ms,
+                outcome,
+            }) => {
+                current_stage = CheckpointRowFetchBusyProbeStage::StepPrimaryKeyLookup;
+                diagnostic.checkpoint_row_fetch_busy_probe_step_completed = true;
+                diagnostic.checkpoint_row_fetch_busy_probe_step_elapsed_ms = elapsed_ms;
+                diagnostic.checkpoint_row_fetch_busy_probe_result_kind = Some(outcome.result_kind);
+                diagnostic.checkpoint_row_fetch_busy_probe_sqlite_error_code =
+                    outcome.sqlite_error_code.clone();
+                diagnostic.checkpoint_row_fetch_busy_probe_sqlite_error_message =
+                    outcome.sqlite_error_message.clone();
+                diagnostic.checkpoint_row_fetch_busy_probe_row_returned = outcome.row_returned;
+                last_step_outcome = Some(outcome);
+            }
+            Ok(CheckpointRowFetchBusyProbeWorkerMessage::Finished(Ok(()))) => {
+                diagnostic.checkpoint_row_fetch_busy_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_busy_probe_stage = Some("complete".to_string());
+                let Some(outcome) = last_step_outcome.as_ref() else {
+                    diagnostic.checkpoint_row_fetch_busy_probe_reason_class =
+                        CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeUnprovenDueToMissingEvidence;
+                    diagnostic.checkpoint_row_fetch_busy_probe_explanation =
+                        "checkpoint row-fetch busy-wait probe finished without returning a row-fetch outcome"
+                            .to_string();
+                    return diagnostic;
+                };
+                match outcome.result_kind {
+                    CheckpointRowFetchBusyProbeResultKind::Row => {
+                        diagnostic.checkpoint_row_fetch_busy_probe_reason_class =
+                            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeProvenNonBusyWait;
+                        diagnostic.checkpoint_row_fetch_busy_probe_explanation =
+                            "zero-busy-timeout checkpoint row fetch returned a row without SQLITE_BUSY or SQLITE_LOCKED at the SQLite step boundary".to_string();
+                    }
+                    CheckpointRowFetchBusyProbeResultKind::Eof => {
+                        diagnostic.checkpoint_row_fetch_busy_probe_reason_class =
+                            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeProvenNonBusyWait;
+                        diagnostic.checkpoint_row_fetch_busy_probe_explanation =
+                            "zero-busy-timeout checkpoint row fetch returned EOF without SQLITE_BUSY or SQLITE_LOCKED at the SQLite step boundary".to_string();
+                    }
+                    CheckpointRowFetchBusyProbeResultKind::SqliteBusy
+                    | CheckpointRowFetchBusyProbeResultKind::SqliteLocked => {
+                        diagnostic.checkpoint_row_fetch_busy_probe_reason_class =
+                            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeProvenBusyWait;
+                        diagnostic.checkpoint_row_fetch_busy_probe_explanation = format!(
+                            "zero-busy-timeout checkpoint row fetch returned {} at the SQLite step boundary, proving the stall is a busy/locking wait",
+                            diagnostic
+                                .checkpoint_row_fetch_busy_probe_sqlite_error_code
+                                .as_deref()
+                                .unwrap_or("SQLITE_BUSY_OR_LOCKED")
+                        );
+                    }
+                    CheckpointRowFetchBusyProbeResultKind::SqliteOtherError
+                    | CheckpointRowFetchBusyProbeResultKind::NonSqliteError => {
+                        diagnostic.checkpoint_row_fetch_busy_probe_reason_class =
+                            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeUnprovenDueToMissingEvidence;
+                        diagnostic.checkpoint_row_fetch_busy_probe_explanation = format!(
+                            "zero-busy-timeout checkpoint row fetch returned a non-busy error at the SQLite step boundary: {}",
+                            diagnostic
+                                .checkpoint_row_fetch_busy_probe_sqlite_error_message
+                                .as_deref()
+                                .unwrap_or("unknown error")
+                        );
+                    }
+                }
+                return diagnostic;
+            }
+            Ok(CheckpointRowFetchBusyProbeWorkerMessage::Finished(Err(error))) => {
+                diagnostic.checkpoint_row_fetch_busy_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_busy_probe_reason_class =
+                    CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeUnprovenDueToMissingEvidence;
+                diagnostic.checkpoint_row_fetch_busy_probe_explanation = error;
+                return diagnostic;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                diagnostic.checkpoint_row_fetch_busy_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_busy_probe_budget_exhausted = true;
+                diagnostic.checkpoint_row_fetch_busy_probe_reason_class =
+                    CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeBudgetExhausted;
+                diagnostic.checkpoint_row_fetch_busy_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic.checkpoint_row_fetch_busy_probe_explanation = format!(
+                    "zero-busy-timeout checkpoint row-fetch probe exhausted its bounded budget while executing stage={}",
+                    current_stage.as_str()
+                );
+                return diagnostic;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                diagnostic.checkpoint_row_fetch_busy_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_busy_probe_reason_class =
+                    CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeUnprovenDueToMissingEvidence;
+                diagnostic.checkpoint_row_fetch_busy_probe_explanation =
+                    "checkpoint row-fetch busy-wait worker disconnected before returning a result"
+                        .to_string();
+                return diagnostic;
+            }
+        }
+    }
+}
+
+fn probe_checkpoint_row_fetch_busy_wait_worker(
+    runtime_db_path: &Path,
+    tx: mpsc::SyncSender<CheckpointRowFetchBusyProbeWorkerMessage>,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchBusyProbeTestBehavior>,
+) -> Result<()> {
+    let run = || -> Result<()> {
+        let open_started_at = Instant::now();
+        let conn = Connection::open_with_flags(
+            runtime_db_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| {
+            format!(
+                "failed opening runtime sqlite db read-only for checkpoint row-fetch busy probe {}",
+                runtime_db_path.display()
+            )
+        })?;
+        if tx
+            .send(CheckpointRowFetchBusyProbeWorkerMessage::OpenedReadOnly(
+                elapsed_ms(open_started_at),
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(CheckpointRowFetchBusyProbeWorkerMessage::Entered(
+                CheckpointRowFetchBusyProbeStage::LoadBusyTimeoutBefore,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        let busy_timeout_ms_before = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
+            .context("failed reading sqlite busy_timeout before zero-timeout busy probe")?;
+        if tx
+            .send(CheckpointRowFetchBusyProbeWorkerMessage::BusyTimeoutBefore(
+                busy_timeout_ms_before,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(CheckpointRowFetchBusyProbeWorkerMessage::Entered(
+                CheckpointRowFetchBusyProbeStage::ApplyBusyTimeoutZero,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        conn.execute_batch("PRAGMA busy_timeout = 0")
+            .context("failed applying PRAGMA busy_timeout = 0 for checkpoint row-fetch busy probe")?;
+        let busy_timeout_ms_applied = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
+            .context("failed reading sqlite busy_timeout after applying zero-timeout busy probe")?;
+        if tx
+            .send(CheckpointRowFetchBusyProbeWorkerMessage::BusyTimeoutApplied(
+                busy_timeout_ms_applied,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(CheckpointRowFetchBusyProbeWorkerMessage::Entered(
+                CheckpointRowFetchBusyProbeStage::LoadConnectionMetadata,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        let journal_mode = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+            .context("failed reading sqlite journal_mode for checkpoint row-fetch busy probe")?;
+        let locking_mode = conn
+            .query_row("PRAGMA locking_mode", [], |row| row.get::<_, String>(0))
+            .context("failed reading sqlite locking_mode for checkpoint row-fetch busy probe")?;
+        let query_only = conn
+            .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+            .context("failed reading sqlite query_only for checkpoint row-fetch busy probe")?
+            != 0;
+        if tx
+            .send(CheckpointRowFetchBusyProbeWorkerMessage::ConnectionReadMode {
+                journal_mode,
+                locking_mode,
+                query_only,
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(CheckpointRowFetchBusyProbeWorkerMessage::Entered(
+                CheckpointRowFetchBusyProbeStage::PreparePrimaryKeyLookup,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        let mut stmt = conn
+            .prepare(CHECKPOINT_HEADLINE_ROW_META_SQL)
+            .context("failed preparing checkpoint row-fetch busy probe primary-key query")?;
+        let query_readonly_mode = stmt.readonly();
+
+        if tx
+            .send(CheckpointRowFetchBusyProbeWorkerMessage::Entered(
+                CheckpointRowFetchBusyProbeStage::LoadExplainQueryPlan,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        let explain_query_plan = load_checkpoint_headline_row_meta_explain_query_plan(&conn)?;
+        if tx
+            .send(CheckpointRowFetchBusyProbeWorkerMessage::QueryPlan {
+                query_sql: CHECKPOINT_HEADLINE_ROW_META_SQL.to_string(),
+                explain_query_plan: explain_query_plan.explain_query_plan,
+                explain_query_plan_rows: explain_query_plan.explain_query_plan_rows,
+                query_readonly_mode,
+                access_path: explain_query_plan.row_fetch_access_path,
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(CheckpointRowFetchBusyProbeWorkerMessage::Entered(
+                CheckpointRowFetchBusyProbeStage::StepPrimaryKeyLookup,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        let mut rows = stmt
+            .query([])
+            .context("failed starting checkpoint row-fetch busy probe primary-key query")?;
+        if tx
+            .send(CheckpointRowFetchBusyProbeWorkerMessage::StepStarted)
+            .is_err()
+        {
+            return Ok(());
+        }
+        let step_started_at = Instant::now();
+        #[cfg(test)]
+        {
+            match test_behavior {
+                Some(CheckpointRowFetchBusyProbeTestBehavior::ForceBusy) => {
+                    let _ = tx.send(CheckpointRowFetchBusyProbeWorkerMessage::StepCompleted {
+                        elapsed_ms: elapsed_ms(step_started_at),
+                        outcome: CheckpointRowFetchBusyProbeStepOutcome {
+                            result_kind: CheckpointRowFetchBusyProbeResultKind::SqliteBusy,
+                            row_returned: None,
+                            sqlite_error_code: Some("SQLITE_BUSY".to_string()),
+                            sqlite_error_message: Some(
+                                "forced SQLITE_BUSY at checkpoint row-fetch step boundary".to_string(),
+                            ),
+                        },
+                    });
+                    let _ = tx.send(CheckpointRowFetchBusyProbeWorkerMessage::Finished(Ok(())));
+                    return Ok(());
+                }
+                Some(CheckpointRowFetchBusyProbeTestBehavior::ForceLocked) => {
+                    let _ = tx.send(CheckpointRowFetchBusyProbeWorkerMessage::StepCompleted {
+                        elapsed_ms: elapsed_ms(step_started_at),
+                        outcome: CheckpointRowFetchBusyProbeStepOutcome {
+                            result_kind: CheckpointRowFetchBusyProbeResultKind::SqliteLocked,
+                            row_returned: None,
+                            sqlite_error_code: Some("SQLITE_LOCKED".to_string()),
+                            sqlite_error_message: Some(
+                                "forced SQLITE_LOCKED at checkpoint row-fetch step boundary".to_string(),
+                            ),
+                        },
+                    });
+                    let _ = tx.send(CheckpointRowFetchBusyProbeWorkerMessage::Finished(Ok(())));
+                    return Ok(());
+                }
+                Some(CheckpointRowFetchBusyProbeTestBehavior::DelayBeforeStep(delay)) => {
+                    thread::sleep(delay);
+                }
+                None => {}
+            }
+        }
+        let outcome = match rows.next() {
+            Ok(Some(_row)) => CheckpointRowFetchBusyProbeStepOutcome {
+                result_kind: CheckpointRowFetchBusyProbeResultKind::Row,
+                row_returned: Some(true),
+                sqlite_error_code: None,
+                sqlite_error_message: None,
+            },
+            Ok(None) => CheckpointRowFetchBusyProbeStepOutcome {
+                result_kind: CheckpointRowFetchBusyProbeResultKind::Eof,
+                row_returned: Some(false),
+                sqlite_error_code: None,
+                sqlite_error_message: None,
+            },
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                let result_kind = match error.code {
+                    ErrorCode::DatabaseBusy => CheckpointRowFetchBusyProbeResultKind::SqliteBusy,
+                    ErrorCode::DatabaseLocked => {
+                        CheckpointRowFetchBusyProbeResultKind::SqliteLocked
+                    }
+                    _ => CheckpointRowFetchBusyProbeResultKind::SqliteOtherError,
+                };
+                CheckpointRowFetchBusyProbeStepOutcome {
+                    result_kind,
+                    row_returned: None,
+                    sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                    sqlite_error_message: message,
+                }
+            }
+            Err(error) => CheckpointRowFetchBusyProbeStepOutcome {
+                result_kind: CheckpointRowFetchBusyProbeResultKind::NonSqliteError,
+                row_returned: None,
+                sqlite_error_code: None,
+                sqlite_error_message: Some(error.to_string()),
+            },
+        };
+        if tx
+            .send(CheckpointRowFetchBusyProbeWorkerMessage::StepCompleted {
+                elapsed_ms: elapsed_ms(step_started_at),
+                outcome,
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+        let _ = tx.send(CheckpointRowFetchBusyProbeWorkerMessage::Finished(Ok(())));
+        Ok(())
+    };
+
+    if let Err(error) = run() {
+        let _ = tx.send(CheckpointRowFetchBusyProbeWorkerMessage::Finished(Err(format!(
+            "{error:#}"
+        ))));
+    }
+    Ok(())
+}
+
+fn sqlite_error_code_name(code: ErrorCode) -> String {
+    match code {
+        ErrorCode::DatabaseBusy => "SQLITE_BUSY".to_string(),
+        ErrorCode::DatabaseLocked => "SQLITE_LOCKED".to_string(),
+        _ => format!("{code:?}"),
+    }
+}
+
 #[cfg(test)]
 static TEST_FORCE_REPLAY_SOL_LEG_BLOCKER_DEEP_REASON_BUDGET_EXHAUSTED: AtomicBool =
     AtomicBool::new(false);
@@ -2914,6 +3571,7 @@ where
     let mut explain_replay_sol_leg_blocker = false;
     let mut trace_replay_sol_leg_deep_proof = false;
     let mut trace_replay_sol_leg_source_compare = false;
+    let mut probe_checkpoint_row_fetch_busy_wait = false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
@@ -2968,6 +3626,9 @@ where
             "--trace-replay-sol-leg-source-compare" => {
                 trace_replay_sol_leg_source_compare = true;
             }
+            "--probe-checkpoint-row-fetch-busy-wait" => {
+                probe_checkpoint_row_fetch_busy_wait = true;
+            }
             "--deep-attempt-telemetry-scan" => {
                 deep_attempt_telemetry_scan = true;
             }
@@ -3020,13 +3681,14 @@ where
         + usize::from(explain_replay_sol_leg_blocker)
         + usize::from(trace_replay_sol_leg_deep_proof)
         + usize::from(trace_replay_sol_leg_source_compare)
+        + usize::from(probe_checkpoint_row_fetch_busy_wait)
         + usize::from(explain_recent_raw_staged_lineage)
         + usize::from(explain_recent_raw_staged_regression)
         + usize::from(explain_recent_raw_staged_birth)
         + usize::from(explain_recent_raw_staged_window_seeding);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
     if deep_attempt_telemetry_scan && !explain_recent_raw_replacement_attempt_telemetry {
@@ -3281,6 +3943,27 @@ where
         }
         return Ok(Some(Command::TraceReplaySolLegSourceCompare(
             TraceReplaySolLegSourceCompareConfig {
+                config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
+                json,
+            },
+        )));
+    }
+
+    if probe_checkpoint_row_fetch_busy_wait {
+        if state_root.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+            || deep_attempt_telemetry_scan
+        {
+            bail!(
+                "--probe-checkpoint-row-fetch-busy-wait only accepts --config and optional --json"
+            );
+        }
+        return Ok(Some(Command::ProbeCheckpointRowFetchBusyWait(
+            ProbeCheckpointRowFetchBusyWaitConfig {
                 config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
                 json,
             },
@@ -3552,6 +4235,15 @@ fn run_command(command: Command) -> Result<String> {
                     .context("failed serializing replay_sol_leg source compare trace json")
             } else {
                 Ok(render_replay_sol_leg_source_compare_trace_human(&diagnostic))
+            }
+        }
+        Command::ProbeCheckpointRowFetchBusyWait(config) => {
+            let diagnostic = probe_checkpoint_row_fetch_busy_wait_read_only(&config.config_path);
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic)
+                    .context("failed serializing checkpoint row fetch busy probe json")
+            } else {
+                Ok(render_checkpoint_row_fetch_busy_probe_human(&diagnostic))
             }
         }
         Command::ExplainRecentRawStagedLineage(config) => {
@@ -5701,6 +6393,162 @@ fn render_replay_sol_leg_source_compare_trace_human(
     .join("\n")
 }
 
+fn render_checkpoint_row_fetch_busy_probe_human(
+    diagnostic: &CheckpointRowFetchBusyProbeDiagnostic,
+) -> String {
+    [
+        "event=discovery_checkpoint_row_fetch_busy_probe".to_string(),
+        format!(
+            "checkpoint_row_fetch_busy_probe_observed={}",
+            diagnostic.checkpoint_row_fetch_busy_probe_observed
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_reason_class={}",
+            serde_json::to_string(&diagnostic.checkpoint_row_fetch_busy_probe_reason_class)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_explanation={}",
+            diagnostic.checkpoint_row_fetch_busy_probe_explanation
+        ),
+        format!("config_path={}", diagnostic.config_path),
+        format!(
+            "runtime_db_path={}",
+            diagnostic.runtime_db_path.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_runtime_db_opened_read_only={}",
+            diagnostic.checkpoint_row_fetch_busy_probe_runtime_db_opened_read_only
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_budget_ms={}",
+            diagnostic.checkpoint_row_fetch_busy_probe_budget_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_budget_source={}",
+            diagnostic.checkpoint_row_fetch_busy_probe_budget_source
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_total_elapsed_ms={}",
+            diagnostic.checkpoint_row_fetch_busy_probe_total_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_budget_exhausted={}",
+            diagnostic.checkpoint_row_fetch_busy_probe_budget_exhausted
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_stage={}",
+            diagnostic
+                .checkpoint_row_fetch_busy_probe_stage
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_connection_journal_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_busy_probe_connection_journal_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_connection_locking_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_busy_probe_connection_locking_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_connection_query_only={}",
+            format_optional_bool(
+                diagnostic.checkpoint_row_fetch_busy_probe_connection_query_only
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_query_readonly_mode={}",
+            format_optional_bool(diagnostic.checkpoint_row_fetch_busy_probe_query_readonly_mode)
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_busy_timeout_ms_before={}",
+            diagnostic
+                .checkpoint_row_fetch_busy_probe_busy_timeout_ms_before
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_busy_timeout_ms_applied={}",
+            diagnostic
+                .checkpoint_row_fetch_busy_probe_busy_timeout_ms_applied
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_query_sql={}",
+            diagnostic
+                .checkpoint_row_fetch_busy_probe_query_sql
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_explain_query_plan={}",
+            diagnostic
+                .checkpoint_row_fetch_busy_probe_explain_query_plan
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_explain_query_plan_rows={}",
+            diagnostic
+                .checkpoint_row_fetch_busy_probe_explain_query_plan_rows
+                .as_ref()
+                .map(|rows| rows.join(" | "))
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_access_path={}",
+            diagnostic
+                .checkpoint_row_fetch_busy_probe_access_path
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_step_started={}",
+            diagnostic.checkpoint_row_fetch_busy_probe_step_started
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_step_completed={}",
+            diagnostic.checkpoint_row_fetch_busy_probe_step_completed
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_step_elapsed_ms={}",
+            diagnostic.checkpoint_row_fetch_busy_probe_step_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_result_kind={}",
+            format_optional_enum_json(&diagnostic.checkpoint_row_fetch_busy_probe_result_kind)
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_sqlite_error_code={}",
+            diagnostic
+                .checkpoint_row_fetch_busy_probe_sqlite_error_code
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_sqlite_error_message={}",
+            diagnostic
+                .checkpoint_row_fetch_busy_probe_sqlite_error_message
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_busy_probe_row_returned={}",
+            format_optional_bool(diagnostic.checkpoint_row_fetch_busy_probe_row_returned)
+        ),
+    ]
+    .join("\n")
+}
+
 fn format_optional_bool(value: Option<bool>) -> String {
     value
         .map(|value| value.to_string())
@@ -6910,15 +7758,20 @@ mod tests {
         explain_replay_sol_leg_blocker_read_only_with_prerequisite_budget,
         explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget,
         explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget_impl,
+        probe_checkpoint_row_fetch_busy_wait_read_only_with_budget,
+        probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_and_test_behavior,
         trace_replay_sol_leg_deep_proof_read_only,
         trace_replay_sol_leg_deep_proof_read_only_with_budget,
         trace_replay_sol_leg_source_compare_read_only,
         trace_replay_sol_leg_source_compare_read_only_with_budget,
         trace_replay_sol_leg_source_compare_read_only_with_prerequisite_budget,
+        CheckpointRowFetchBusyProbeReasonClass, CheckpointRowFetchBusyProbeResultKind,
+        CheckpointRowFetchBusyProbeTestBehavior,
         DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_MS,
         load_json, parse_args_from, run, run_command, write_json_atomic, Command, Config,
         ExplainPublicationTruthExportBlockerConfig, ExplainRecentRawCatchUpStatusConfig,
         ExplainReplaySolLegBlockerConfig,
+        ProbeCheckpointRowFetchBusyWaitConfig,
         TraceReplaySolLegDeepProofConfig,
         TraceReplaySolLegSourceCompareConfig,
         ExplainRecentRawPromotedRetentionContractConfig, ExplainRecentRawPromotionBlockerConfig,
@@ -7280,6 +8133,307 @@ mod tests {
         };
         assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
         assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_probe_checkpoint_row_fetch_busy_wait_mode() {
+        let parsed = parse_args_from(vec![
+            "--probe-checkpoint-row-fetch-busy-wait".to_string(),
+            "--config".to_string(),
+            "/tmp/live.server.toml".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ProbeCheckpointRowFetchBusyWait(parsed) = parsed else {
+            panic!("expected checkpoint row fetch busy probe command");
+        };
+        assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn run_command_probe_checkpoint_row_fetch_busy_wait_row_returns_proven_non_busy_wait_json(
+    ) -> Result<()> {
+        let fixture = make_fixture("runtime-export-checkpoint-row-fetch-busy-probe-row")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-busy-probe-row".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let rendered = run_command(Command::ProbeCheckpointRowFetchBusyWait(
+            ProbeCheckpointRowFetchBusyWaitConfig {
+                config_path: fixture.config_path.clone(),
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["checkpoint_row_fetch_busy_probe_reason_class"],
+            "checkpoint_row_fetch_busy_probe_proven_non_busy_wait"
+        );
+        assert_eq!(parsed["checkpoint_row_fetch_busy_probe_result_kind"], "row");
+        assert_eq!(parsed["checkpoint_row_fetch_busy_probe_row_returned"], true);
+        assert_eq!(
+            parsed["checkpoint_row_fetch_busy_probe_runtime_db_opened_read_only"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_busy_probe_busy_timeout_ms_applied"],
+            0
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_busy_probe_query_sql"],
+            super::CHECKPOINT_HEADLINE_ROW_META_SQL
+        );
+        assert!(parsed["checkpoint_row_fetch_busy_probe_explain_query_plan_rows"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty()));
+        assert_eq!(parsed["checkpoint_row_fetch_busy_probe_step_started"], true);
+        assert_eq!(parsed["checkpoint_row_fetch_busy_probe_step_completed"], true);
+        for key in [
+            "checkpoint_row_fetch_busy_probe_observed",
+            "checkpoint_row_fetch_busy_probe_reason_class",
+            "checkpoint_row_fetch_busy_probe_explanation",
+            "config_path",
+            "runtime_db_path",
+            "checkpoint_row_fetch_busy_probe_runtime_db_opened_read_only",
+            "checkpoint_row_fetch_busy_probe_budget_ms",
+            "checkpoint_row_fetch_busy_probe_budget_source",
+            "checkpoint_row_fetch_busy_probe_total_elapsed_ms",
+            "checkpoint_row_fetch_busy_probe_budget_exhausted",
+            "checkpoint_row_fetch_busy_probe_stage",
+            "checkpoint_row_fetch_busy_probe_connection_journal_mode",
+            "checkpoint_row_fetch_busy_probe_connection_locking_mode",
+            "checkpoint_row_fetch_busy_probe_connection_query_only",
+            "checkpoint_row_fetch_busy_probe_query_readonly_mode",
+            "checkpoint_row_fetch_busy_probe_busy_timeout_ms_before",
+            "checkpoint_row_fetch_busy_probe_busy_timeout_ms_applied",
+            "checkpoint_row_fetch_busy_probe_query_sql",
+            "checkpoint_row_fetch_busy_probe_explain_query_plan",
+            "checkpoint_row_fetch_busy_probe_explain_query_plan_rows",
+            "checkpoint_row_fetch_busy_probe_access_path",
+            "checkpoint_row_fetch_busy_probe_step_started",
+            "checkpoint_row_fetch_busy_probe_step_completed",
+            "checkpoint_row_fetch_busy_probe_step_elapsed_ms",
+            "checkpoint_row_fetch_busy_probe_result_kind",
+            "checkpoint_row_fetch_busy_probe_sqlite_error_code",
+            "checkpoint_row_fetch_busy_probe_sqlite_error_message",
+            "checkpoint_row_fetch_busy_probe_row_returned",
+        ] {
+            assert!(parsed.get(key).is_some(), "missing key {key}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_busy_probe_missing_row_returns_proven_non_busy_wait_eof() -> Result<()>
+    {
+        let fixture = make_fixture("runtime-export-checkpoint-row-fetch-busy-probe-eof")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-busy-probe-eof".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        let conn = rusqlite::Connection::open(&fixture.db_path)?;
+        conn.execute("DELETE FROM discovery_persisted_rebuild_state WHERE id = 1", [])?;
+
+        let diagnostic = probe_checkpoint_row_fetch_busy_wait_read_only_with_budget(
+            &fixture.config_path,
+            StdDuration::from_secs(1),
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_busy_probe_reason_class,
+            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeProvenNonBusyWait
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_busy_probe_result_kind,
+            Some(CheckpointRowFetchBusyProbeResultKind::Eof)
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_busy_probe_row_returned,
+            Some(false)
+        );
+        assert!(diagnostic.checkpoint_row_fetch_busy_probe_step_completed);
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_busy_probe_missing_config_returns_unproven() -> Result<()> {
+        let temp = tempdir()?;
+        let missing_config = temp.path().join("missing.toml");
+        let diagnostic = probe_checkpoint_row_fetch_busy_wait_read_only_with_budget(
+            &missing_config,
+            StdDuration::from_secs(1),
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_busy_probe_reason_class,
+            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeUnprovenDueToMissingEvidence
+        );
+        assert!(!diagnostic.checkpoint_row_fetch_busy_probe_observed);
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_busy_probe_unreadable_runtime_db_returns_unproven() -> Result<()> {
+        let temp = tempdir()?;
+        let missing_db_path = temp.path().join("missing-runtime.db");
+        let config_path = temp.path().join("missing-runtime.toml");
+        fs::write(
+            &config_path,
+            format!(
+                "[sqlite]\npath = \"{}\"\n\n[runtime_restore_ops]\nartifact_retention = 2\nartifact_cadence_minutes = 10\n\n[discovery]\nscoring_window_days = 7\nrefresh_seconds = 600\nmetric_snapshot_interval_seconds = 1800\nmax_window_swaps_in_memory = 8\nmax_fetch_swaps_per_cycle = 8\nmax_fetch_pages_per_cycle = 5\nfetch_time_budget_ms = 1000\nobserved_swaps_retention_days = 14\n",
+                missing_db_path.display()
+            ),
+        )?;
+
+        let diagnostic = probe_checkpoint_row_fetch_busy_wait_read_only_with_budget(
+            &config_path,
+            StdDuration::from_secs(1),
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_busy_probe_reason_class,
+            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeUnprovenDueToMissingEvidence
+        );
+        let expected_runtime_db_path = missing_db_path.display().to_string();
+        assert_eq!(
+            diagnostic.runtime_db_path.as_deref(),
+            Some(expected_runtime_db_path.as_str())
+        );
+        assert!(!diagnostic.checkpoint_row_fetch_busy_probe_runtime_db_opened_read_only);
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_busy_probe_forced_busy_returns_proven_busy_wait() -> Result<()> {
+        let fixture = make_fixture("runtime-export-checkpoint-row-fetch-busy-probe-busy")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-busy-probe-force-busy".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let diagnostic = probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_and_test_behavior(
+            &fixture.config_path,
+            StdDuration::from_secs(1),
+            Some(CheckpointRowFetchBusyProbeTestBehavior::ForceBusy),
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_busy_probe_reason_class,
+            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeProvenBusyWait
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_busy_probe_result_kind,
+            Some(CheckpointRowFetchBusyProbeResultKind::SqliteBusy)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_busy_probe_sqlite_error_code
+                .as_deref(),
+            Some("SQLITE_BUSY")
+        );
+        assert!(diagnostic.checkpoint_row_fetch_busy_probe_step_completed);
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_busy_probe_budget_exhaustion_returns_budget_exhausted() -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-busy-probe-budget-exhausted")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-busy-probe-budget-exhausted".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let diagnostic = probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_and_test_behavior(
+            &fixture.config_path,
+            StdDuration::from_millis(50),
+            Some(CheckpointRowFetchBusyProbeTestBehavior::DelayBeforeStep(
+                StdDuration::from_millis(200),
+            )),
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_busy_probe_reason_class,
+            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeBudgetExhausted
+        );
+        assert!(diagnostic.checkpoint_row_fetch_busy_probe_budget_exhausted);
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_busy_probe_stage.as_deref(),
+            Some("step_primary_key_lookup")
+        );
+        assert!(diagnostic.checkpoint_row_fetch_busy_probe_step_started);
+        assert!(!diagnostic.checkpoint_row_fetch_busy_probe_step_completed);
+        Ok(())
     }
 
     #[test]

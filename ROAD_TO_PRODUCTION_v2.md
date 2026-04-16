@@ -13716,6 +13716,63 @@ Live rollout result (`2026-04-16`, commit `fb735b9`):
 
 Corrective repository batch accepted (`2026-04-16`):
 
+1. `discovery_runtime_export` now exposes a new bounded read-only operator:
+   `--probe-checkpoint-row-fetch-busy-wait`.
+2. The new mode reuses the same checkpoint row-meta primary-key query surface as
+   the publication-blocker checkpoint-headline path:
+   - same runtime DB
+   - same selected columns
+   - same primary-key row id
+   - same `EXPLAIN QUERY PLAN` capture
+   - same low-level `stmt.query([])` then `rows.next()?` step boundary
+3. Before the step boundary, the new probe explicitly applies:
+   - `PRAGMA busy_timeout = 0`
+4. The new mode returns structured JSON for:
+   - row
+   - EOF
+   - `SQLITE_BUSY`
+   - `SQLITE_LOCKED`
+   - other SQLite / non-SQLite errors
+   - bounded operator timeout
+5. New proof fields include:
+   - connection metadata
+   - busy-timeout before / applied values
+   - query readonly mode
+   - exact query SQL
+   - exact `EXPLAIN QUERY PLAN` string and rows
+   - access path
+   - step start / completion
+   - result kind
+   - SQLite error code / message
+   - row-returned boolean
+6. The mode remains:
+   - runtime-DB-only
+   - no recent_raw
+   - no state_json parsing
+   - no `length(state_json)`
+7. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+8. It does not change:
+   - `--explain-publication-truth-export-blocker`
+   - `--explain-replay-sol-leg-blocker`
+   - `--trace-replay-sol-leg-deep-proof`
+   - `--trace-replay-sol-leg-source-compare`
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Corrective repository batch accepted (`2026-04-16`):
+
 1. The publication-blocker checkpoint-headline worker no longer treats the
    whole primary-key step as one opaque `query_row(...).optional()` region.
 2. The worker now emits explicit micro-stage events around that seam:
