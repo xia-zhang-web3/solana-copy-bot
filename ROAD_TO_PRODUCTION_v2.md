@@ -13765,6 +13765,38 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+Live rollout result (`2026-04-16`, commit `3c5e60e`):
+
+1. The server was fast-forwarded from `b7f70e6` to `3c5e60e` and only
+   `discovery_runtime_export` was rebuilt.
+2. Service state remained healthy after rollout:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+3. A clean `sudo -n` live run of:
+   `discovery_runtime_export --probe-checkpoint-row-fetch-minimal-snapshot --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_minimal_snapshot_probe_reason_class = checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted = true`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_stage = sqlite_side_materialization`
+4. The new contract proved the circularity is gone:
+   - `checkpoint_row_fetch_minimal_snapshot_probe_strategy = temp_sqlite_row_meta_only_table_materialized_via_attach_insert_select`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependency_kind = sqlite_engine_side_materialization`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependent = true`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted = false`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed = false`
+5. The exact remaining seam is now inside SQLite-side materialization itself:
+   - `checkpoint_row_fetch_minimal_snapshot_probe_sqlite_side_materialization_attempted = true`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_sqlite_side_materialization_completed = false`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_sqlite_side_materialization_sql = INSERT INTO discovery_persisted_rebuild_state (id, phase, updated_at) SELECT id, phase, updated_at FROM source.discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_sqlite_side_materialization_elapsed_ms = 0`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_main_db_source_size_bytes = 83896565760`
+6. Therefore:
+   - the operator no longer depends on application-level live source row fetch
+   - it still does not reach the downstream zero-timeout probe on live
+   - the next proof-first batch must target the SQLite-side materialization seam
+     itself, not the old application-level source-row-fetch circularity
+
 Live rollout result (`2026-04-16`, commit `a529f5d`):
 
 1. The server was fast-forwarded to `a529f5d` and only
