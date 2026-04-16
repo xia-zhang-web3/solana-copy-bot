@@ -13638,6 +13638,52 @@ Live rollout result (`2026-04-16`, commit `6344553`):
    - or prove, with bounded evidence, that full-copy is structurally too large
      to be the right operator contract for this live artifact
 
+Corrective repository batch accepted (`2026-04-16`):
+
+1. `discovery_runtime_export` now exposes a new bounded read-only operator:
+   `--probe-checkpoint-row-fetch-minimal-snapshot`.
+2. The new mode uses an explicit strategy string:
+   `temp_sqlite_row_meta_only_table_copy_no_wal_or_shm`.
+3. It builds a temp minimal SQLite database containing only the minimum row-meta
+   surface needed by the checkpoint probe:
+   - table `discovery_persisted_rebuild_state`
+   - row `id = 1`
+   - columns `phase`, `updated_at`
+4. It then reuses the same zero-timeout row-fetch probe core against that temp
+   DB rather than introducing a separate fetch implementation.
+5. The operator now explicitly states whether its current strategy still depends
+   on traversing the live source row-fetch seam before temp DB handoff.
+6. New explicit fields:
+   - `checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependent`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed`
+7. If the strategy is still source-row-fetch dependent, the operator now returns:
+   - `checkpoint_row_fetch_minimal_snapshot_probe_strategy_still_source_row_fetch_dependent`
+   instead of implying concurrency-isolated proof.
+8. Existing failure paths remain bounded and structured.
+9. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+10. It does not change:
+   - `--explain-publication-truth-export-blocker`
+   - `--explain-replay-sol-leg-blocker`
+   - `--trace-replay-sol-leg-deep-proof`
+   - `--trace-replay-sol-leg-source-compare`
+   - `--probe-checkpoint-row-fetch-busy-wait`
+   - `--probe-checkpoint-row-fetch-copied-snapshot`
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
 Live rollout result (`2026-04-16`, commit `a529f5d`):
 
 1. The server was fast-forwarded to `a529f5d` and only

@@ -53,6 +53,7 @@ const USAGE: &str = "usage:
   discovery_runtime_export --trace-replay-sol-leg-source-compare --config <path> [--json]
   discovery_runtime_export --probe-checkpoint-row-fetch-busy-wait --config <path> [--json]
   discovery_runtime_export --probe-checkpoint-row-fetch-copied-snapshot --config <path> [--json]
+  discovery_runtime_export --probe-checkpoint-row-fetch-minimal-snapshot --config <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-window-seeding --state-root <path> [--json]
@@ -68,6 +69,11 @@ const DEFAULT_CHECKPOINT_ROW_FETCH_BUSY_PROBE_BUDGET_SOURCE: &str =
 const DEFAULT_CHECKPOINT_ROW_FETCH_COPIED_SNAPSHOT_PROBE_BUDGET_MS: u64 = 1_000;
 const DEFAULT_CHECKPOINT_ROW_FETCH_COPIED_SNAPSHOT_PROBE_BUDGET_SOURCE: &str =
     "fixed_constant_copied_snapshot_zero_busy_timeout_checkpoint_row_fetch_probe";
+const DEFAULT_CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_BUDGET_MS: u64 = 1_000;
+const DEFAULT_CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_BUDGET_SOURCE: &str =
+    "fixed_constant_minimal_snapshot_zero_busy_timeout_checkpoint_row_fetch_probe";
+const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY: &str =
+    "temp_sqlite_row_meta_only_table_copy_after_live_source_row_fetch";
 const DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_MS: u64 = 30_000;
 const DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_SOURCE: &str =
     "copybot_discovery_default_replay_sol_leg_read_only_source_scan_budget";
@@ -196,6 +202,12 @@ struct ProbeCheckpointRowFetchCopiedSnapshotConfig {
 }
 
 #[derive(Debug, Clone)]
+struct ProbeCheckpointRowFetchMinimalSnapshotConfig {
+    config_path: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 struct ExplainRecentRawStagedLineageConfig {
     state_root: PathBuf,
     json: bool,
@@ -241,6 +253,7 @@ enum Command {
     TraceReplaySolLegSourceCompare(TraceReplaySolLegSourceCompareConfig),
     ProbeCheckpointRowFetchBusyWait(ProbeCheckpointRowFetchBusyWaitConfig),
     ProbeCheckpointRowFetchCopiedSnapshot(ProbeCheckpointRowFetchCopiedSnapshotConfig),
+    ProbeCheckpointRowFetchMinimalSnapshot(ProbeCheckpointRowFetchMinimalSnapshotConfig),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
     ExplainRecentRawStagedBirth(ExplainRecentRawStagedBirthConfig),
@@ -548,6 +561,16 @@ enum CheckpointRowFetchCopiedSnapshotProbeReasonClass {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchMinimalSnapshotProbeReasonClass {
+    CheckpointRowFetchMinimalSnapshotProbeProvenNonBusyWait,
+    CheckpointRowFetchMinimalSnapshotProbeProvenBusyWait,
+    CheckpointRowFetchMinimalSnapshotProbeBudgetExhausted,
+    CheckpointRowFetchMinimalSnapshotProbeUnprovenDueToMissingEvidence,
+    CheckpointRowFetchMinimalSnapshotProbeStrategyStillSourceRowFetchDependent,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 enum CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind {
     NoBytesObservedBeforeTimeout,
     PartialCopyObservedBeforeTimeout,
@@ -747,6 +770,97 @@ impl CheckpointRowFetchCopiedSnapshotProbeDiagnostic {
             checkpoint_row_fetch_copied_snapshot_probe_sqlite_error_code: None,
             checkpoint_row_fetch_copied_snapshot_probe_sqlite_error_message: None,
             checkpoint_row_fetch_copied_snapshot_probe_row_returned: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct CheckpointRowFetchMinimalSnapshotProbeDiagnostic {
+    checkpoint_row_fetch_minimal_snapshot_probe_observed: bool,
+    checkpoint_row_fetch_minimal_snapshot_probe_reason_class:
+        CheckpointRowFetchMinimalSnapshotProbeReasonClass,
+    checkpoint_row_fetch_minimal_snapshot_probe_explanation: String,
+    config_path: String,
+    runtime_db_path: Option<String>,
+    checkpoint_row_fetch_minimal_snapshot_probe_strategy: String,
+    checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependent: bool,
+    checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted: bool,
+    checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed: bool,
+    checkpoint_row_fetch_minimal_snapshot_probe_temp_dir: Option<String>,
+    checkpoint_row_fetch_minimal_snapshot_probe_budget_ms: u64,
+    checkpoint_row_fetch_minimal_snapshot_probe_budget_source: String,
+    checkpoint_row_fetch_minimal_snapshot_probe_total_elapsed_ms: u64,
+    checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted: bool,
+    checkpoint_row_fetch_minimal_snapshot_probe_stage: Option<String>,
+    checkpoint_row_fetch_minimal_snapshot_probe_main_db_source_size_bytes: Option<u64>,
+    checkpoint_row_fetch_minimal_snapshot_probe_main_db_bytes_copied: u64,
+    checkpoint_row_fetch_minimal_snapshot_probe_wal_copied: bool,
+    checkpoint_row_fetch_minimal_snapshot_probe_shm_copied: bool,
+    checkpoint_row_fetch_minimal_snapshot_probe_runtime_db_opened_read_only: bool,
+    checkpoint_row_fetch_minimal_snapshot_probe_connection_journal_mode: Option<String>,
+    checkpoint_row_fetch_minimal_snapshot_probe_connection_locking_mode: Option<String>,
+    checkpoint_row_fetch_minimal_snapshot_probe_connection_query_only: Option<bool>,
+    checkpoint_row_fetch_minimal_snapshot_probe_query_readonly_mode: Option<bool>,
+    checkpoint_row_fetch_minimal_snapshot_probe_busy_timeout_ms_before: Option<u64>,
+    checkpoint_row_fetch_minimal_snapshot_probe_busy_timeout_ms_applied: Option<u64>,
+    checkpoint_row_fetch_minimal_snapshot_probe_query_sql: Option<String>,
+    checkpoint_row_fetch_minimal_snapshot_probe_explain_query_plan: Option<String>,
+    checkpoint_row_fetch_minimal_snapshot_probe_explain_query_plan_rows: Option<Vec<String>>,
+    checkpoint_row_fetch_minimal_snapshot_probe_access_path: Option<String>,
+    checkpoint_row_fetch_minimal_snapshot_probe_step_started: bool,
+    checkpoint_row_fetch_minimal_snapshot_probe_step_completed: bool,
+    checkpoint_row_fetch_minimal_snapshot_probe_step_elapsed_ms: u64,
+    checkpoint_row_fetch_minimal_snapshot_probe_result_kind:
+        Option<CheckpointRowFetchBusyProbeResultKind>,
+    checkpoint_row_fetch_minimal_snapshot_probe_sqlite_error_code: Option<String>,
+    checkpoint_row_fetch_minimal_snapshot_probe_sqlite_error_message: Option<String>,
+    checkpoint_row_fetch_minimal_snapshot_probe_row_returned: Option<bool>,
+}
+
+impl CheckpointRowFetchMinimalSnapshotProbeDiagnostic {
+    fn unproven(config_path: &Path, explanation: String) -> Self {
+        Self {
+            checkpoint_row_fetch_minimal_snapshot_probe_observed: false,
+            checkpoint_row_fetch_minimal_snapshot_probe_reason_class:
+                CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeUnprovenDueToMissingEvidence,
+            checkpoint_row_fetch_minimal_snapshot_probe_explanation: explanation,
+            config_path: config_path.display().to_string(),
+            runtime_db_path: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_strategy:
+                CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY.to_string(),
+            checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependent: true,
+            checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted: false,
+            checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed: false,
+            checkpoint_row_fetch_minimal_snapshot_probe_temp_dir: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_budget_ms:
+                DEFAULT_CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_BUDGET_MS,
+            checkpoint_row_fetch_minimal_snapshot_probe_budget_source:
+                DEFAULT_CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_BUDGET_SOURCE.to_string(),
+            checkpoint_row_fetch_minimal_snapshot_probe_total_elapsed_ms: 0,
+            checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted: false,
+            checkpoint_row_fetch_minimal_snapshot_probe_stage: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_main_db_source_size_bytes: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_main_db_bytes_copied: 0,
+            checkpoint_row_fetch_minimal_snapshot_probe_wal_copied: false,
+            checkpoint_row_fetch_minimal_snapshot_probe_shm_copied: false,
+            checkpoint_row_fetch_minimal_snapshot_probe_runtime_db_opened_read_only: false,
+            checkpoint_row_fetch_minimal_snapshot_probe_connection_journal_mode: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_connection_locking_mode: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_connection_query_only: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_query_readonly_mode: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_busy_timeout_ms_before: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_busy_timeout_ms_applied: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_query_sql: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_explain_query_plan: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_explain_query_plan_rows: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_access_path: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_step_started: false,
+            checkpoint_row_fetch_minimal_snapshot_probe_step_completed: false,
+            checkpoint_row_fetch_minimal_snapshot_probe_step_elapsed_ms: 0,
+            checkpoint_row_fetch_minimal_snapshot_probe_result_kind: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_sqlite_error_code: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_sqlite_error_message: None,
+            checkpoint_row_fetch_minimal_snapshot_probe_row_returned: None,
         }
     }
 }
@@ -2239,6 +2353,25 @@ impl CheckpointRowFetchCopiedSnapshotProbeStage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointRowFetchMinimalSnapshotProbeStage {
+    CreateTempDir,
+    LoadSourceRowMeta,
+    CreateMinimalSnapshotDb,
+    HandoffToZeroTimeoutProbe,
+}
+
+impl CheckpointRowFetchMinimalSnapshotProbeStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::CreateTempDir => "create_temp_dir",
+            Self::LoadSourceRowMeta => "load_source_row_meta",
+            Self::CreateMinimalSnapshotDb => "create_minimal_snapshot_db",
+            Self::HandoffToZeroTimeoutProbe => "handoff_to_zero_timeout_probe",
+        }
+    }
+}
+
 #[derive(Debug)]
 enum CheckpointRowFetchCopiedSnapshotProbeWorkerMessage {
     TempDirCreated {
@@ -2277,12 +2410,38 @@ enum CheckpointRowFetchCopiedSnapshotProbeWorkerMessage {
     Finished(Result<CheckpointRowFetchBusyProbeDiagnostic, String>),
 }
 
+#[derive(Debug)]
+enum CheckpointRowFetchMinimalSnapshotProbeWorkerMessage {
+    TempDirCreated {
+        path: String,
+    },
+    SourceRowMetaStarted,
+    SourceRowMetaLoaded {
+        source_size_bytes: u64,
+    },
+    MinimalSnapshotDbCreated {
+        bytes_copied: u64,
+    },
+    HandoffStarted,
+    Finished(Result<CheckpointRowFetchBusyProbeDiagnostic, String>),
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 enum CheckpointRowFetchCopiedSnapshotProbeTestBehavior {
     DelayBeforeCopyMain(StdDuration),
     DelayAfterCopyMainFirstChunk(StdDuration),
     DelayBeforeCopyWal(StdDuration),
+    DelayBeforeHandoff(StdDuration),
+    BusyProbe(CheckpointRowFetchBusyProbeTestBehavior),
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+enum CheckpointRowFetchMinimalSnapshotProbeTestBehavior {
+    DelayBeforeSourceRowMeta(StdDuration),
+    DelayBeforeCreateMinimalSnapshotDb(StdDuration),
     DelayBeforeHandoff(StdDuration),
     BusyProbe(CheckpointRowFetchBusyProbeTestBehavior),
 }
@@ -2876,6 +3035,311 @@ fn probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_impl(
     }
 }
 
+#[derive(Debug)]
+struct CheckpointHeadlineSourceRowMeta {
+    row_exists: bool,
+    phase: Option<String>,
+    updated_at: Option<String>,
+}
+
+fn probe_checkpoint_row_fetch_minimal_snapshot_read_only(
+    config_path: &Path,
+) -> CheckpointRowFetchMinimalSnapshotProbeDiagnostic {
+    probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_impl(
+        config_path,
+        StdDuration::from_millis(DEFAULT_CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_BUDGET_MS),
+        #[cfg(test)]
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget(
+    config_path: &Path,
+    budget: StdDuration,
+) -> CheckpointRowFetchMinimalSnapshotProbeDiagnostic {
+    probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_impl(config_path, budget, None)
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_and_test_behavior(
+    config_path: &Path,
+    budget: StdDuration,
+    test_behavior: Option<CheckpointRowFetchMinimalSnapshotProbeTestBehavior>,
+) -> CheckpointRowFetchMinimalSnapshotProbeDiagnostic {
+    probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_impl(
+        config_path,
+        budget,
+        test_behavior,
+    )
+}
+
+fn probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_impl(
+    config_path: &Path,
+    budget: StdDuration,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchMinimalSnapshotProbeTestBehavior>,
+) -> CheckpointRowFetchMinimalSnapshotProbeDiagnostic {
+    let mut diagnostic = CheckpointRowFetchMinimalSnapshotProbeDiagnostic::unproven(
+        config_path,
+        "checkpoint row-fetch minimal-snapshot probe did not run".to_string(),
+    );
+    diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_budget_ms =
+        budget.as_millis().min(u64::MAX as u128) as u64;
+    diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_budget_source =
+        DEFAULT_CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_BUDGET_SOURCE.to_string();
+
+    let total_started_at = Instant::now();
+    let loaded_config = match load_from_path(config_path)
+        .with_context(|| format!("failed loading config {}", config_path.display()))
+    {
+        Ok(config) => config,
+        Err(error) => {
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_explanation =
+                format!("{error:#}");
+            return diagnostic;
+        }
+    };
+    let runtime_db_path = resolve_db_path(config_path, None, &loaded_config.sqlite.path);
+    diagnostic.runtime_db_path = Some(runtime_db_path.display().to_string());
+    diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_observed = true;
+
+    let (tx, rx) = mpsc::sync_channel(16);
+    let config_path_for_worker = config_path.to_path_buf();
+    let runtime_db_path_for_worker = runtime_db_path.clone();
+    thread::spawn(move || {
+        let _ = probe_checkpoint_row_fetch_minimal_snapshot_worker(
+            &config_path_for_worker,
+            &runtime_db_path_for_worker,
+            budget,
+            tx,
+            #[cfg(test)]
+            test_behavior,
+        );
+    });
+
+    let mut current_stage = CheckpointRowFetchMinimalSnapshotProbeStage::CreateTempDir;
+    loop {
+        match rx.recv_timeout(remaining_budget_duration(budget, total_started_at)) {
+            Ok(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::TempDirCreated { path }) => {
+                current_stage = CheckpointRowFetchMinimalSnapshotProbeStage::CreateTempDir;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_temp_dir = Some(path);
+            }
+            Ok(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::SourceRowMetaStarted) => {
+                current_stage = CheckpointRowFetchMinimalSnapshotProbeStage::LoadSourceRowMeta;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted =
+                    true;
+            }
+            Ok(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::SourceRowMetaLoaded {
+                source_size_bytes,
+            }) => {
+                current_stage = CheckpointRowFetchMinimalSnapshotProbeStage::LoadSourceRowMeta;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_main_db_source_size_bytes =
+                    Some(source_size_bytes);
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted =
+                    true;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed =
+                    true;
+            }
+            Ok(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::MinimalSnapshotDbCreated {
+                bytes_copied,
+            }) => {
+                current_stage =
+                    CheckpointRowFetchMinimalSnapshotProbeStage::CreateMinimalSnapshotDb;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_main_db_bytes_copied =
+                    bytes_copied;
+            }
+            Ok(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::HandoffStarted) => {
+                current_stage =
+                    CheckpointRowFetchMinimalSnapshotProbeStage::HandoffToZeroTimeoutProbe;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_stage =
+                    Some(current_stage.as_str().to_string());
+            }
+            Ok(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::Finished(Ok(base))) => {
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_runtime_db_opened_read_only =
+                    base.checkpoint_row_fetch_busy_probe_runtime_db_opened_read_only;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted =
+                    base.checkpoint_row_fetch_busy_probe_budget_exhausted;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_stage =
+                    base.checkpoint_row_fetch_busy_probe_stage;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_connection_journal_mode =
+                    base.checkpoint_row_fetch_busy_probe_connection_journal_mode;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_connection_locking_mode =
+                    base.checkpoint_row_fetch_busy_probe_connection_locking_mode;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_connection_query_only =
+                    base.checkpoint_row_fetch_busy_probe_connection_query_only;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_query_readonly_mode =
+                    base.checkpoint_row_fetch_busy_probe_query_readonly_mode;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_busy_timeout_ms_before =
+                    base.checkpoint_row_fetch_busy_probe_busy_timeout_ms_before;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_busy_timeout_ms_applied =
+                    base.checkpoint_row_fetch_busy_probe_busy_timeout_ms_applied;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_query_sql =
+                    base.checkpoint_row_fetch_busy_probe_query_sql;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_explain_query_plan =
+                    base.checkpoint_row_fetch_busy_probe_explain_query_plan;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_explain_query_plan_rows =
+                    base.checkpoint_row_fetch_busy_probe_explain_query_plan_rows;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_access_path =
+                    base.checkpoint_row_fetch_busy_probe_access_path;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_step_started =
+                    base.checkpoint_row_fetch_busy_probe_step_started;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_step_completed =
+                    base.checkpoint_row_fetch_busy_probe_step_completed;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_step_elapsed_ms =
+                    base.checkpoint_row_fetch_busy_probe_step_elapsed_ms;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_result_kind =
+                    base.checkpoint_row_fetch_busy_probe_result_kind;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_sqlite_error_code =
+                    base.checkpoint_row_fetch_busy_probe_sqlite_error_code;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_sqlite_error_message =
+                    base.checkpoint_row_fetch_busy_probe_sqlite_error_message;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_row_returned =
+                    base.checkpoint_row_fetch_busy_probe_row_returned;
+
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_reason_class =
+                    if diagnostic
+                        .checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependent
+                    {
+                        CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeStrategyStillSourceRowFetchDependent
+                    } else {
+                        match base.checkpoint_row_fetch_busy_probe_reason_class {
+                            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeProvenNonBusyWait => {
+                                CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeProvenNonBusyWait
+                            }
+                            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeProvenBusyWait => {
+                                CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeProvenBusyWait
+                            }
+                            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeBudgetExhausted => {
+                                CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeBudgetExhausted
+                            }
+                            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeUnprovenDueToMissingEvidence => {
+                                CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeUnprovenDueToMissingEvidence
+                            }
+                        }
+                    };
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_explanation =
+                    if diagnostic
+                        .checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependent
+                    {
+                        format!(
+                            "minimal-snapshot strategy={} still depends on a live source row fetch before temp snapshot handoff; source_row_fetch_attempted={}, source_row_fetch_completed={}, downstream_probe_reason_class={}",
+                            CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY,
+                            diagnostic
+                                .checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted,
+                            diagnostic
+                                .checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed,
+                            serde_json::to_string(&base.checkpoint_row_fetch_busy_probe_reason_class)
+                                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                                .trim_matches('"')
+                        )
+                    } else {
+                        match diagnostic
+                            .checkpoint_row_fetch_minimal_snapshot_probe_reason_class
+                        {
+                            CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeProvenNonBusyWait => {
+                                format!(
+                                    "minimal-snapshot zero-busy-timeout checkpoint row fetch completed without SQLITE_BUSY or SQLITE_LOCKED ({}) using strategy={}",
+                                    diagnostic
+                                        .checkpoint_row_fetch_minimal_snapshot_probe_result_kind
+                                        .as_ref()
+                                        .map(|kind| serde_json::to_string(kind).unwrap_or_else(|_| "\"unknown\"".to_string()).trim_matches('\"').to_string())
+                                        .unwrap_or_else(|| "unknown".to_string()),
+                                    CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY
+                                )
+                            }
+                            CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeProvenBusyWait => {
+                                format!(
+                                    "minimal-snapshot zero-busy-timeout checkpoint row fetch returned {} at the SQLite step boundary using strategy={}",
+                                    diagnostic
+                                        .checkpoint_row_fetch_minimal_snapshot_probe_sqlite_error_code
+                                        .as_deref()
+                                        .unwrap_or("SQLITE_BUSY_OR_LOCKED"),
+                                    CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY
+                                )
+                            }
+                            CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeBudgetExhausted => {
+                                format!(
+                                    "minimal-snapshot checkpoint row-fetch probe exhausted its bounded budget while executing stage={} using strategy={}",
+                                    diagnostic
+                                        .checkpoint_row_fetch_minimal_snapshot_probe_stage
+                                        .as_deref()
+                                        .unwrap_or("unknown"),
+                                    CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY
+                                )
+                            }
+                            CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeUnprovenDueToMissingEvidence => {
+                                base.checkpoint_row_fetch_busy_probe_explanation
+                            }
+                            CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeStrategyStillSourceRowFetchDependent => {
+                                unreachable!()
+                            }
+                        }
+                    };
+                return diagnostic;
+            }
+            Ok(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::Finished(Err(error))) => {
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_explanation = error;
+                return diagnostic;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted = true;
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_reason_class =
+                    if diagnostic
+                        .checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependent
+                    {
+                        CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeStrategyStillSourceRowFetchDependent
+                    } else {
+                        CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeBudgetExhausted
+                    };
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_explanation =
+                    if diagnostic
+                        .checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependent
+                    {
+                        format!(
+                            "minimal-snapshot strategy={} is still source-row-fetch dependent; operator exhausted its bounded budget while executing stage={}, source_row_fetch_attempted={}, source_row_fetch_completed={}",
+                            CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY,
+                            current_stage.as_str(),
+                            diagnostic
+                                .checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted,
+                            diagnostic
+                                .checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed
+                        )
+                    } else {
+                        format!(
+                            "minimal-snapshot checkpoint row-fetch probe exhausted its bounded budget while executing stage={} using strategy={}",
+                            current_stage.as_str(),
+                            CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY
+                        )
+                    };
+                return diagnostic;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_explanation =
+                    "minimal-snapshot checkpoint row-fetch probe worker disconnected before returning a result".to_string();
+                return diagnostic;
+            }
+        }
+    }
+}
+
 fn create_checkpoint_row_fetch_probe_temp_dir() -> Result<PathBuf> {
     let base = env::temp_dir();
     for attempt in 0..32_u32 {
@@ -3212,6 +3676,232 @@ fn probe_checkpoint_row_fetch_copied_snapshot_worker(
 
     if let Err(error) = run() {
         let _ = tx.send(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::Finished(Err(
+            format!("{error:#}"),
+        )));
+    }
+    Ok(())
+}
+
+fn load_checkpoint_headline_source_row_meta_read_only(
+    runtime_db_path: &Path,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchMinimalSnapshotProbeTestBehavior>,
+) -> Result<CheckpointHeadlineSourceRowMeta> {
+    #[cfg(test)]
+    if let Some(CheckpointRowFetchMinimalSnapshotProbeTestBehavior::DelayBeforeSourceRowMeta(
+        delay,
+    )) = test_behavior
+    {
+        thread::sleep(delay);
+    }
+
+    let conn = Connection::open_with_flags(
+        runtime_db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| {
+        format!(
+            "failed opening runtime sqlite db read-only for minimal-snapshot checkpoint row-fetch probe {}",
+            runtime_db_path.display()
+        )
+    })?;
+
+    let table_exists: bool = conn
+        .query_row(CHECKPOINT_HEADLINE_ROW_META_TABLE_EXISTS_SQL, [], |row| {
+            row.get::<_, bool>(0)
+        })
+        .context("failed checking discovery_persisted_rebuild_state table existence for minimal snapshot probe")?;
+    if !table_exists {
+        bail!(
+            "runtime db {} did not contain discovery_persisted_rebuild_state for minimal-snapshot checkpoint row-fetch probe",
+            runtime_db_path.display()
+        );
+    }
+
+    let mut stmt = conn
+        .prepare(CHECKPOINT_HEADLINE_ROW_META_SQL)
+        .context("failed preparing source row-meta query for minimal snapshot probe")?;
+    let mut rows = stmt
+        .query([])
+        .context("failed starting source row-meta query for minimal snapshot probe")?;
+    let maybe_row = rows
+        .next()
+        .context("failed fetching source row-meta row for minimal snapshot probe")?;
+    let Some(row) = maybe_row else {
+        return Ok(CheckpointHeadlineSourceRowMeta {
+            row_exists: false,
+            phase: None,
+            updated_at: None,
+        });
+    };
+
+    Ok(CheckpointHeadlineSourceRowMeta {
+        row_exists: true,
+        phase: Some(
+            row.get::<_, String>(0)
+                .context("failed decoding source row-meta phase for minimal snapshot probe")?,
+        ),
+        updated_at: Some(
+            row.get::<_, String>(1)
+                .context("failed decoding source row-meta updated_at for minimal snapshot probe")?,
+        ),
+    })
+}
+
+fn create_checkpoint_row_fetch_minimal_snapshot_db(
+    snapshot_db_path: &Path,
+    row_meta: &CheckpointHeadlineSourceRowMeta,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchMinimalSnapshotProbeTestBehavior>,
+) -> Result<u64> {
+    #[cfg(test)]
+    if let Some(
+        CheckpointRowFetchMinimalSnapshotProbeTestBehavior::DelayBeforeCreateMinimalSnapshotDb(
+            delay,
+        ),
+    ) = test_behavior
+    {
+        thread::sleep(delay);
+    }
+
+    let conn = Connection::open(snapshot_db_path).with_context(|| {
+        format!(
+            "failed opening minimal snapshot sqlite db {}",
+            snapshot_db_path.display()
+        )
+    })?;
+    conn.execute_batch(
+        "PRAGMA journal_mode = DELETE;
+         CREATE TABLE discovery_persisted_rebuild_state (
+             id INTEGER PRIMARY KEY,
+             phase TEXT,
+             updated_at TEXT
+         );",
+    )
+    .context("failed creating minimal snapshot row-meta sqlite schema")?;
+    if row_meta.row_exists {
+        conn.execute(
+            "INSERT INTO discovery_persisted_rebuild_state (id, phase, updated_at) VALUES (1, ?1, ?2)",
+            rusqlite::params![
+                row_meta.phase.as_deref(),
+                row_meta.updated_at.as_deref()
+            ],
+        )
+        .context("failed inserting minimal snapshot row-meta row")?;
+    }
+    drop(conn);
+    fs::metadata(snapshot_db_path)
+        .with_context(|| {
+            format!(
+                "failed reading minimal snapshot sqlite db metadata {}",
+                snapshot_db_path.display()
+            )
+        })
+        .map(|meta| meta.len())
+}
+
+fn probe_checkpoint_row_fetch_minimal_snapshot_worker(
+    config_path: &Path,
+    runtime_db_path: &Path,
+    budget: StdDuration,
+    tx: mpsc::SyncSender<CheckpointRowFetchMinimalSnapshotProbeWorkerMessage>,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchMinimalSnapshotProbeTestBehavior>,
+) -> Result<()> {
+    let total_started_at = Instant::now();
+    let run = || -> Result<()> {
+        let temp_dir_path = create_checkpoint_row_fetch_probe_temp_dir()?;
+        if tx
+            .send(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::TempDirCreated {
+                path: temp_dir_path.display().to_string(),
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        let source_size_bytes = fs::metadata(runtime_db_path)
+            .with_context(|| {
+                format!(
+                    "failed reading runtime db metadata for minimal-snapshot checkpoint row-fetch probe {}",
+                    runtime_db_path.display()
+                )
+            })?
+            .len();
+        if tx
+            .send(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::SourceRowMetaStarted)
+            .is_err()
+        {
+            return Ok(());
+        }
+        let row_meta = load_checkpoint_headline_source_row_meta_read_only(
+            runtime_db_path,
+            #[cfg(test)]
+            test_behavior,
+        )?;
+        if tx
+            .send(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::SourceRowMetaLoaded {
+                source_size_bytes,
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        let minimal_db_path = temp_dir_path.join(
+            runtime_db_path
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("runtime.db")),
+        );
+        let minimal_db_bytes = create_checkpoint_row_fetch_minimal_snapshot_db(
+            &minimal_db_path,
+            &row_meta,
+            #[cfg(test)]
+            test_behavior,
+        )?;
+        if tx
+            .send(
+                CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::MinimalSnapshotDbCreated {
+                    bytes_copied: minimal_db_bytes,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::HandoffStarted)
+            .is_err()
+        {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if let Some(CheckpointRowFetchMinimalSnapshotProbeTestBehavior::DelayBeforeHandoff(
+            delay,
+        )) = test_behavior
+        {
+            thread::sleep(delay);
+        }
+
+        let remaining_budget = remaining_budget_duration(budget, total_started_at);
+        #[cfg(test)]
+        let busy_probe_test_behavior = match test_behavior {
+            Some(CheckpointRowFetchMinimalSnapshotProbeTestBehavior::BusyProbe(inner)) => Some(inner),
+            _ => None,
+        };
+        let base = probe_checkpoint_row_fetch_busy_wait_against_db_path_with_budget(
+            config_path,
+            &minimal_db_path,
+            remaining_budget,
+            #[cfg(test)]
+            busy_probe_test_behavior,
+        );
+        let _ = tx.send(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::Finished(Ok(
+            base,
+        )));
+        Ok(())
+    };
+
+    if let Err(error) = run() {
+        let _ = tx.send(CheckpointRowFetchMinimalSnapshotProbeWorkerMessage::Finished(Err(
             format!("{error:#}"),
         )));
     }
@@ -4495,6 +5185,7 @@ where
     let mut trace_replay_sol_leg_source_compare = false;
     let mut probe_checkpoint_row_fetch_busy_wait = false;
     let mut probe_checkpoint_row_fetch_copied_snapshot = false;
+    let mut probe_checkpoint_row_fetch_minimal_snapshot = false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
@@ -4555,6 +5246,9 @@ where
             "--probe-checkpoint-row-fetch-copied-snapshot" => {
                 probe_checkpoint_row_fetch_copied_snapshot = true;
             }
+            "--probe-checkpoint-row-fetch-minimal-snapshot" => {
+                probe_checkpoint_row_fetch_minimal_snapshot = true;
+            }
             "--deep-attempt-telemetry-scan" => {
                 deep_attempt_telemetry_scan = true;
             }
@@ -4609,13 +5303,14 @@ where
         + usize::from(trace_replay_sol_leg_source_compare)
         + usize::from(probe_checkpoint_row_fetch_busy_wait)
         + usize::from(probe_checkpoint_row_fetch_copied_snapshot)
+        + usize::from(probe_checkpoint_row_fetch_minimal_snapshot)
         + usize::from(explain_recent_raw_staged_lineage)
         + usize::from(explain_recent_raw_staged_regression)
         + usize::from(explain_recent_raw_staged_birth)
         + usize::from(explain_recent_raw_staged_window_seeding);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
     if deep_attempt_telemetry_scan && !explain_recent_raw_replacement_attempt_telemetry {
@@ -4918,6 +5613,27 @@ where
         )));
     }
 
+    if probe_checkpoint_row_fetch_minimal_snapshot {
+        if state_root.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+            || deep_attempt_telemetry_scan
+        {
+            bail!(
+                "--probe-checkpoint-row-fetch-minimal-snapshot only accepts --config and optional --json"
+            );
+        }
+        return Ok(Some(Command::ProbeCheckpointRowFetchMinimalSnapshot(
+            ProbeCheckpointRowFetchMinimalSnapshotConfig {
+                config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
+                json,
+            },
+        )));
+    }
+
     if explain_recent_raw_staged_lineage {
         if config_path.is_some()
             || db_path.is_some()
@@ -5202,6 +5918,18 @@ fn run_command(command: Command) -> Result<String> {
                     .context("failed serializing checkpoint row fetch copied snapshot probe json")
             } else {
                 Ok(render_checkpoint_row_fetch_copied_snapshot_probe_human(
+                    &diagnostic,
+                ))
+            }
+        }
+        Command::ProbeCheckpointRowFetchMinimalSnapshot(config) => {
+            let diagnostic =
+                probe_checkpoint_row_fetch_minimal_snapshot_read_only(&config.config_path);
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic)
+                    .context("failed serializing checkpoint row fetch minimal snapshot probe json")
+            } else {
+                Ok(render_checkpoint_row_fetch_minimal_snapshot_probe_human(
                     &diagnostic,
                 ))
             }
@@ -7801,6 +8529,212 @@ fn render_checkpoint_row_fetch_copied_snapshot_probe_human(
     .join("\n")
 }
 
+fn render_checkpoint_row_fetch_minimal_snapshot_probe_human(
+    diagnostic: &CheckpointRowFetchMinimalSnapshotProbeDiagnostic,
+) -> String {
+    [
+        "event=discovery_checkpoint_row_fetch_minimal_snapshot_probe".to_string(),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_observed={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_observed
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_reason_class={}",
+            serde_json::to_string(
+                &diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_reason_class
+            )
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_explanation={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_explanation
+        ),
+        format!("config_path={}", diagnostic.config_path),
+        format!(
+            "runtime_db_path={}",
+            diagnostic.runtime_db_path.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_strategy={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_strategy
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependent={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependent
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_temp_dir={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_temp_dir
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_budget_ms={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_budget_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_budget_source={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_budget_source
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_total_elapsed_ms={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_total_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_stage={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_stage
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_main_db_source_size_bytes={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_main_db_source_size_bytes
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_main_db_bytes_copied={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_main_db_bytes_copied
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_wal_copied={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_wal_copied
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_shm_copied={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_shm_copied
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_runtime_db_opened_read_only={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_runtime_db_opened_read_only
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_connection_journal_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_connection_journal_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_connection_locking_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_connection_locking_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_connection_query_only={}",
+            format_optional_bool(
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_connection_query_only
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_query_readonly_mode={}",
+            format_optional_bool(
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_query_readonly_mode
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_busy_timeout_ms_before={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_busy_timeout_ms_before
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_busy_timeout_ms_applied={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_busy_timeout_ms_applied
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_query_sql={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_query_sql
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_explain_query_plan={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_explain_query_plan
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_explain_query_plan_rows={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_explain_query_plan_rows
+                .as_ref()
+                .map(|rows| rows.join(" | "))
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_access_path={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_access_path
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_step_started={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_step_started
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_step_completed={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_step_completed
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_step_elapsed_ms={}",
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_step_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_result_kind={}",
+            format_optional_enum_json(
+                &diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_result_kind
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_sqlite_error_code={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_sqlite_error_code
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_sqlite_error_message={}",
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_sqlite_error_message
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_minimal_snapshot_probe_row_returned={}",
+            format_optional_bool(
+                diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_row_returned
+            )
+        ),
+    ]
+    .join("\n")
+}
+
 fn format_optional_bool(value: Option<bool>) -> String {
     value
         .map(|value| value.to_string())
@@ -9014,12 +9948,16 @@ mod tests {
         probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget,
         probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_and_test_behavior,
+        probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget,
+        probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_and_test_behavior,
         trace_replay_sol_leg_deep_proof_read_only,
         trace_replay_sol_leg_deep_proof_read_only_with_budget,
         trace_replay_sol_leg_source_compare_read_only,
         trace_replay_sol_leg_source_compare_read_only_with_budget,
         trace_replay_sol_leg_source_compare_read_only_with_prerequisite_budget,
         CheckpointRowFetchBusyProbeReasonClass, CheckpointRowFetchBusyProbeResultKind,
+        CheckpointRowFetchMinimalSnapshotProbeReasonClass,
+        CheckpointRowFetchMinimalSnapshotProbeTestBehavior,
         CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind,
         CheckpointRowFetchCopiedSnapshotProbeTestBehavior,
         CheckpointRowFetchCopiedSnapshotProbeReasonClass,
@@ -9029,6 +9967,7 @@ mod tests {
         ExplainPublicationTruthExportBlockerConfig, ExplainRecentRawCatchUpStatusConfig,
         ExplainReplaySolLegBlockerConfig,
         ProbeCheckpointRowFetchCopiedSnapshotConfig,
+        ProbeCheckpointRowFetchMinimalSnapshotConfig,
         ProbeCheckpointRowFetchBusyWaitConfig,
         TraceReplaySolLegDeepProofConfig,
         TraceReplaySolLegSourceCompareConfig,
@@ -9422,6 +10361,23 @@ mod tests {
         .expect("command should be present");
         let Command::ProbeCheckpointRowFetchCopiedSnapshot(parsed) = parsed else {
             panic!("expected checkpoint row fetch copied snapshot probe command");
+        };
+        assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_probe_checkpoint_row_fetch_minimal_snapshot_mode() {
+        let parsed = parse_args_from(vec![
+            "--probe-checkpoint-row-fetch-minimal-snapshot".to_string(),
+            "--config".to_string(),
+            "/tmp/live.server.toml".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ProbeCheckpointRowFetchMinimalSnapshot(parsed) = parsed else {
+            panic!("expected checkpoint row fetch minimal snapshot probe command");
         };
         assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
         assert!(parsed.json);
@@ -10298,6 +11254,323 @@ mod tests {
             !diagnostic
                 .checkpoint_row_fetch_copied_snapshot_probe_handoff_to_zero_timeout_probe_completed
         );
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_probe_checkpoint_row_fetch_minimal_snapshot_row_returns_proven_non_busy_wait_json(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-minimal-snapshot-probe-row")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-minimal-snapshot-probe-row".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let rendered = run_command(Command::ProbeCheckpointRowFetchMinimalSnapshot(
+            ProbeCheckpointRowFetchMinimalSnapshotConfig {
+                config_path: fixture.config_path.clone(),
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["checkpoint_row_fetch_minimal_snapshot_probe_reason_class"],
+            "checkpoint_row_fetch_minimal_snapshot_probe_strategy_still_source_row_fetch_dependent"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_minimal_snapshot_probe_result_kind"],
+            "row"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_minimal_snapshot_probe_row_returned"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_minimal_snapshot_probe_strategy"],
+            super::CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependent"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed"],
+            true
+        );
+        for key in [
+            "checkpoint_row_fetch_minimal_snapshot_probe_observed",
+            "checkpoint_row_fetch_minimal_snapshot_probe_reason_class",
+            "checkpoint_row_fetch_minimal_snapshot_probe_explanation",
+            "config_path",
+            "runtime_db_path",
+            "checkpoint_row_fetch_minimal_snapshot_probe_strategy",
+            "checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependent",
+            "checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted",
+            "checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed",
+            "checkpoint_row_fetch_minimal_snapshot_probe_temp_dir",
+            "checkpoint_row_fetch_minimal_snapshot_probe_budget_ms",
+            "checkpoint_row_fetch_minimal_snapshot_probe_budget_source",
+            "checkpoint_row_fetch_minimal_snapshot_probe_total_elapsed_ms",
+            "checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted",
+            "checkpoint_row_fetch_minimal_snapshot_probe_stage",
+            "checkpoint_row_fetch_minimal_snapshot_probe_main_db_source_size_bytes",
+            "checkpoint_row_fetch_minimal_snapshot_probe_main_db_bytes_copied",
+            "checkpoint_row_fetch_minimal_snapshot_probe_wal_copied",
+            "checkpoint_row_fetch_minimal_snapshot_probe_shm_copied",
+            "checkpoint_row_fetch_minimal_snapshot_probe_runtime_db_opened_read_only",
+            "checkpoint_row_fetch_minimal_snapshot_probe_connection_journal_mode",
+            "checkpoint_row_fetch_minimal_snapshot_probe_connection_locking_mode",
+            "checkpoint_row_fetch_minimal_snapshot_probe_connection_query_only",
+            "checkpoint_row_fetch_minimal_snapshot_probe_query_readonly_mode",
+            "checkpoint_row_fetch_minimal_snapshot_probe_busy_timeout_ms_before",
+            "checkpoint_row_fetch_minimal_snapshot_probe_busy_timeout_ms_applied",
+            "checkpoint_row_fetch_minimal_snapshot_probe_query_sql",
+            "checkpoint_row_fetch_minimal_snapshot_probe_explain_query_plan",
+            "checkpoint_row_fetch_minimal_snapshot_probe_explain_query_plan_rows",
+            "checkpoint_row_fetch_minimal_snapshot_probe_access_path",
+            "checkpoint_row_fetch_minimal_snapshot_probe_step_started",
+            "checkpoint_row_fetch_minimal_snapshot_probe_step_completed",
+            "checkpoint_row_fetch_minimal_snapshot_probe_step_elapsed_ms",
+            "checkpoint_row_fetch_minimal_snapshot_probe_result_kind",
+            "checkpoint_row_fetch_minimal_snapshot_probe_sqlite_error_code",
+            "checkpoint_row_fetch_minimal_snapshot_probe_sqlite_error_message",
+            "checkpoint_row_fetch_minimal_snapshot_probe_row_returned",
+        ] {
+            assert!(parsed.get(key).is_some(), "missing key {key}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_minimal_snapshot_probe_missing_row_returns_proven_non_busy_wait_eof(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-minimal-snapshot-probe-eof")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-minimal-snapshot-probe-eof".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        let conn = rusqlite::Connection::open(&fixture.db_path)?;
+        conn.execute("DELETE FROM discovery_persisted_rebuild_state WHERE id = 1", [])?;
+
+        let diagnostic = probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget(
+            &fixture.config_path,
+            StdDuration::from_secs(1),
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_reason_class,
+            CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeStrategyStillSourceRowFetchDependent
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_result_kind,
+            Some(CheckpointRowFetchBusyProbeResultKind::Eof)
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_row_returned,
+            Some(false)
+        );
+        assert!(diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependent);
+        assert!(diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted);
+        assert!(diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed);
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_minimal_snapshot_probe_missing_config_returns_unproven() -> Result<()> {
+        let temp = tempdir()?;
+        let missing_config = temp.path().join("missing.toml");
+        let diagnostic = probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget(
+            &missing_config,
+            StdDuration::from_secs(1),
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_reason_class,
+            CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeUnprovenDueToMissingEvidence
+        );
+        assert!(!diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_observed);
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_minimal_snapshot_probe_unreadable_runtime_db_returns_unproven(
+    ) -> Result<()> {
+        let temp = tempdir()?;
+        let missing_db_path = temp.path().join("missing-runtime.db");
+        let config_path = temp.path().join("missing-runtime.toml");
+        fs::write(
+            &config_path,
+            format!(
+                "[sqlite]\npath = \"{}\"\n\n[runtime_restore_ops]\nartifact_retention = 2\nartifact_cadence_minutes = 10\n\n[discovery]\nscoring_window_days = 7\nrefresh_seconds = 600\nmetric_snapshot_interval_seconds = 1800\nmax_window_swaps_in_memory = 8\nmax_fetch_swaps_per_cycle = 8\nmax_fetch_pages_per_cycle = 5\nfetch_time_budget_ms = 1000\nobserved_swaps_retention_days = 14\n",
+                missing_db_path.display()
+            ),
+        )?;
+        let diagnostic = probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget(
+            &config_path,
+            StdDuration::from_secs(1),
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_reason_class,
+            CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeUnprovenDueToMissingEvidence
+        );
+        let expected_runtime_db_path = missing_db_path.display().to_string();
+        assert_eq!(
+            diagnostic.runtime_db_path.as_deref(),
+            Some(expected_runtime_db_path.as_str())
+        );
+        assert!(
+            !diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_runtime_db_opened_read_only
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_minimal_snapshot_probe_forced_busy_returns_proven_busy_wait(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-minimal-snapshot-probe-busy")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-minimal-snapshot-probe-busy".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+                Some(CheckpointRowFetchMinimalSnapshotProbeTestBehavior::BusyProbe(
+                    CheckpointRowFetchBusyProbeTestBehavior::ForceBusy,
+                )),
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_reason_class,
+            CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeStrategyStillSourceRowFetchDependent
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_result_kind,
+            Some(CheckpointRowFetchBusyProbeResultKind::SqliteBusy)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_sqlite_error_code
+                .as_deref(),
+            Some("SQLITE_BUSY")
+        );
+        assert!(diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted);
+        assert!(diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed);
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_minimal_snapshot_probe_budget_exhaustion_returns_budget_exhausted(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-minimal-snapshot-probe-budget-exhausted")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-minimal-snapshot-probe-budget-exhausted".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_millis(50),
+                Some(CheckpointRowFetchMinimalSnapshotProbeTestBehavior::DelayBeforeHandoff(
+                    StdDuration::from_millis(200),
+                )),
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_reason_class,
+            CheckpointRowFetchMinimalSnapshotProbeReasonClass::CheckpointRowFetchMinimalSnapshotProbeStrategyStillSourceRowFetchDependent
+        );
+        assert!(
+            diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_minimal_snapshot_probe_stage
+                .as_deref(),
+            Some("handoff_to_zero_timeout_probe")
+        );
+        assert!(diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted);
+        assert!(diagnostic.checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed);
         Ok(())
     }
 
