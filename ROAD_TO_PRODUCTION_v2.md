@@ -13790,3 +13790,69 @@ Current interpretation:
    checkpoint row exists, what phase it is in, how large the stored JSON is,
    and how far the persisted counters/cursor have advanced, without reentering
    the heavier `discovery_runtime_export` enrichment path.
+
+### Stage 3 runtime-db-only checkpoint-headline enrichment for primary export blocker (`2026-04-16`)
+
+Accepted repository change:
+
+1. The primary operator
+   `discovery_runtime_export --explain-publication-truth-export-blocker --config <path> --json`
+   now has a distinct runtime-DB-only checkpoint-headline enrichment step for
+   checkpoint-family blockers.
+2. The execution order is now:
+   - prove the top-level blocker from persisted publication state first
+   - run a cheap runtime-DB-only headline step:
+     - `load_discovery_persisted_rebuild_state_meta_read_only()`
+     - and only if `state_json_bytes <= 16 MiB` and budget remains, bounded
+       `inspect_persisted_rebuild_state_read_only()`
+   - only then, and only when that headline step completes and confirms
+     `replay_sol_leg_incomplete`, may the operator proceed to recent-raw-backed
+     deep replay enrichment
+3. The primary operator now emits explicit headline-step status fields:
+   - `publication_truth_export_checkpoint_headline_attempted`
+   - `publication_truth_export_checkpoint_headline_completed`
+   - `publication_truth_export_checkpoint_headline_budget_exhausted`
+   - `publication_truth_export_checkpoint_headline_stage`
+   - `publication_truth_export_checkpoint_headline_explanation`
+   - `persisted_rebuild_checkpoint_updated_at`
+   - `persisted_rebuild_checkpoint_state_json_bytes`
+4. For replay-family blockers, this headline step can now populate from runtime
+   DB alone, when the bounded inspection completes:
+   - `persisted_rebuild_checkpoint_exists`
+   - `rebuild_phase`
+   - `rebuild_replay_subphase`
+   - `replay_incomplete`
+   - `checkpoint_exact_target_surface_exists`
+   - `checkpoint_exact_target_surface_repairable_for_resume`
+   - `checkpoint_replay_candidate_activity_backfill_required`
+   - `checkpoint_replay_candidate_activity_backfill_pending`
+5. If the checkpoint-headline step fails or budget-exhausts:
+   - the already-proven top-level blocker is preserved
+   - nested replay/source fields remain null
+   - the operator stops before `open_recent_raw_latest_db`
+6. The corrective batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+7. It still does not change:
+   - scheduled runtime export behavior
+   - replay behavior
+   - publication/export gate semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Current interpretation:
+
+1. The previous primary-operator fix already proved the correct top-level
+   blocker from publication state, but headline enrichment still dropped out
+   too early to expose cheap runtime-DB checkpoint facts.
+2. This corrective batch is accepted because it inserts the missing cheap
+   checkpoint-headline step into the primary operator itself and prevents any
+   fallback to recent-raw-backed deep proof until that step succeeds.
