@@ -13684,6 +13684,36 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+Live rollout result (`2026-04-16`, commit `b7f70e6`):
+
+1. The server was fast-forwarded from `6344553` to `b7f70e6` and only
+   `discovery_runtime_export` was rebuilt.
+2. Service state remained healthy after rollout:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+3. A clean `sudo -n` live run of:
+   `discovery_runtime_export --probe-checkpoint-row-fetch-minimal-snapshot --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_minimal_snapshot_probe_reason_class = checkpoint_row_fetch_minimal_snapshot_probe_strategy_still_source_row_fetch_dependent`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted = true`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_stage = load_source_row_meta`
+4. The new explicit dependency fields proved the current contract honestly:
+   - `checkpoint_row_fetch_minimal_snapshot_probe_strategy = temp_sqlite_row_meta_only_table_copy_after_live_source_row_fetch`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependent = true`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_attempted = true`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_completed = false`
+5. The live explanation now makes the circularity explicit instead of implying
+   concurrency-isolated proof:
+   - `minimal-snapshot strategy=temp_sqlite_row_meta_only_table_copy_after_live_source_row_fetch is still source-row-fetch dependent; operator exhausted its bounded budget while executing stage=load_source_row_meta, source_row_fetch_attempted=true, source_row_fetch_completed=false`
+6. Therefore this batch did not solve the underlying seam, but it removed a
+   misleading contract:
+   - the current minimal-snapshot strategy still hits the live source row-fetch
+     seam before any temp DB handoff
+   - the operator now says so directly
+   - the next proof-first batch must target a truly source-row-fetch-independent
+     preparation path if concurrency isolation is still the goal
+
 Live rollout result (`2026-04-16`, commit `a529f5d`):
 
 1. The server was fast-forwarded to `a529f5d` and only
