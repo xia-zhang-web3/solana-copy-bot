@@ -7,13 +7,15 @@ use copybot_discovery::runtime_restore_ops::{
     write_json_atomic, ARTIFACT_ARCHIVE_PREFIX, ARTIFACT_ARCHIVE_SUFFIX,
 };
 use copybot_discovery::{
-    DiscoveryService, RecentRawCatchUpDiagnostic, RecentRawPromotedRetentionContractDiagnostic,
-    RecentRawPromotionBlockerDiagnostic, RecentRawReplacementArtifactHistoryContractDiagnostic,
+    DiscoveryService, PublishableCheckpointBlockerExplanation, RecentRawCatchUpDiagnostic,
+    RecentRawPromotedRetentionContractDiagnostic, RecentRawPromotionBlockerDiagnostic,
+    RecentRawReplacementArtifactHistoryContractDiagnostic,
     RecentRawReplacementAttemptTelemetryDiagnostic, RecentRawReplacementConvergenceDiagnostic,
     RecentRawReplacementProgressContractDiagnostic,
     RecentRawReplacementPromotionContractDiagnostic, RecentRawSourceWindowContractDiagnostic,
     RecentRawStagedBirthDiagnostic, RecentRawStagedLineageDiagnostic,
     RecentRawStagedRegressionDiagnostic, RecentRawStagedWindowSeedingDiagnostic,
+    ReplayCheckpointRuntimeDbDiagnostic, ReplayCheckpointRuntimeDbDiagnosticStage,
     ReplayCheckpointRuntimeDbOnlyMode, ReplaySolLegIncompleteReasonClass,
 };
 use copybot_storage::{DiscoveryRuntimeArtifact, SqliteStore};
@@ -39,6 +41,7 @@ const USAGE: &str = "usage:
   discovery_runtime_export --explain-recent-raw-staged-birth --state-root <path> [--json]";
 
 const DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS: u64 = 30_000;
+const PUBLICATION_TRUTH_WITHHELD_PREFIX: &str = "publication_truth_withheld_while_";
 
 fn main() -> Result<()> {
     let Some(command) = parse_args()? else {
@@ -209,6 +212,12 @@ struct PublicationTruthExportBlockerDiagnostic {
     publication_truth_export_blocker_observed: bool,
     publication_truth_export_blocker_reason_class: PublicationTruthExportBlockerReasonClass,
     publication_truth_export_blocker_explanation: String,
+    publication_truth_export_blocker_top_level_proven_from_publication_state: bool,
+    publication_truth_export_blocker_enrichment_attempted: bool,
+    publication_truth_export_blocker_enrichment_completed: bool,
+    publication_truth_export_blocker_enrichment_budget_exhausted: bool,
+    publication_truth_export_blocker_enrichment_stage: Option<String>,
+    publication_truth_export_blocker_enrichment_explanation: Option<String>,
     config_path: String,
     runtime_db_path: Option<String>,
     recent_raw_db_path: Option<String>,
@@ -249,6 +258,12 @@ impl PublicationTruthExportBlockerDiagnostic {
             publication_truth_export_blocker_reason_class:
                 PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockerUnprovenDueToMissingEvidence,
             publication_truth_export_blocker_explanation: explanation,
+            publication_truth_export_blocker_top_level_proven_from_publication_state: false,
+            publication_truth_export_blocker_enrichment_attempted: false,
+            publication_truth_export_blocker_enrichment_completed: false,
+            publication_truth_export_blocker_enrichment_budget_exhausted: false,
+            publication_truth_export_blocker_enrichment_stage: None,
+            publication_truth_export_blocker_enrichment_explanation: None,
             config_path: config_path.display().to_string(),
             runtime_db_path: None,
             recent_raw_db_path: None,
@@ -282,6 +297,220 @@ impl PublicationTruthExportBlockerDiagnostic {
             source_scan_time_budget_exhausted: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PublicationTruthExportBlockerTopLevelState {
+    GateSatisfied,
+    ReplaySolLegIncomplete,
+    OtherCheckpoint(String),
+    IncompleteOrStaleWithoutCheckpointExplanation,
+}
+
+fn export_gate_reason_publishable_checkpoint_blocker(reason: &str) -> Option<&str> {
+    reason
+        .strip_prefix(PUBLICATION_TRUTH_WITHHELD_PREFIX)
+        .filter(|blocker| !blocker.is_empty())
+}
+
+fn render_replay_checkpoint_runtime_db_stage(
+    stage: ReplayCheckpointRuntimeDbDiagnosticStage,
+) -> String {
+    serde_json::to_string(&stage)
+        .unwrap_or_else(|_| "\"unknown\"".to_string())
+        .trim_matches('"')
+        .to_string()
+}
+
+fn set_publication_truth_export_enrichment_not_attempted(
+    diagnostic: &mut PublicationTruthExportBlockerDiagnostic,
+    explanation: impl Into<String>,
+) {
+    diagnostic.publication_truth_export_blocker_enrichment_attempted = false;
+    diagnostic.publication_truth_export_blocker_enrichment_completed = false;
+    diagnostic.publication_truth_export_blocker_enrichment_budget_exhausted = false;
+    diagnostic.publication_truth_export_blocker_enrichment_stage = None;
+    diagnostic.publication_truth_export_blocker_enrichment_explanation = Some(explanation.into());
+}
+
+fn set_publication_truth_export_enrichment_failed(
+    diagnostic: &mut PublicationTruthExportBlockerDiagnostic,
+    stage: Option<String>,
+    budget_exhausted: bool,
+    explanation: impl Into<String>,
+) {
+    diagnostic.publication_truth_export_blocker_enrichment_attempted = true;
+    diagnostic.publication_truth_export_blocker_enrichment_completed = false;
+    diagnostic.publication_truth_export_blocker_enrichment_budget_exhausted = budget_exhausted;
+    diagnostic.publication_truth_export_blocker_enrichment_stage = stage;
+    diagnostic.publication_truth_export_blocker_enrichment_explanation = Some(explanation.into());
+}
+
+fn set_publication_truth_export_enrichment_completed(
+    diagnostic: &mut PublicationTruthExportBlockerDiagnostic,
+    stage: Option<String>,
+    explanation: impl Into<String>,
+) {
+    diagnostic.publication_truth_export_blocker_enrichment_attempted = true;
+    diagnostic.publication_truth_export_blocker_enrichment_completed = true;
+    diagnostic.publication_truth_export_blocker_enrichment_budget_exhausted = false;
+    diagnostic.publication_truth_export_blocker_enrichment_stage = stage;
+    diagnostic.publication_truth_export_blocker_enrichment_explanation = Some(explanation.into());
+}
+
+fn classify_publication_truth_export_blocker_from_publication_state(
+    diagnostic: &mut PublicationTruthExportBlockerDiagnostic,
+    publication_truth_complete: bool,
+    fresh_under_export_gate: bool,
+) -> PublicationTruthExportBlockerTopLevelState {
+    diagnostic.publication_truth_export_blocker_observed = true;
+    diagnostic.publication_truth_export_blocker_top_level_proven_from_publication_state = true;
+    let runtime_mode = diagnostic
+        .export_gate_runtime_mode
+        .as_deref()
+        .unwrap_or("unknown");
+    let export_gate_reason = diagnostic
+        .export_gate_reason
+        .as_deref()
+        .unwrap_or("unknown");
+
+    if publication_truth_complete && fresh_under_export_gate {
+        diagnostic.publication_truth_export_blocker_reason_class =
+            PublicationTruthExportBlockerReasonClass::PublicationTruthExportGateSatisfied;
+        diagnostic.publication_truth_export_blocker_explanation = format!(
+            "publication truth export gate is currently satisfied from persisted discovery publication state: runtime_mode={runtime_mode}, reason={export_gate_reason}, publication_truth_complete=true, fresh_under_export_gate=true"
+        );
+        set_publication_truth_export_enrichment_not_attempted(
+            diagnostic,
+            "bounded checkpoint/replay enrichment was not attempted because persisted publication truth already satisfies the export gate",
+        );
+        return PublicationTruthExportBlockerTopLevelState::GateSatisfied;
+    }
+
+    if let Some(blocker) = diagnostic
+        .export_gate_reason
+        .as_deref()
+        .and_then(export_gate_reason_publishable_checkpoint_blocker)
+    {
+        diagnostic.publishable_checkpoint_blocker = Some(blocker.to_string());
+        if blocker == "replay_sol_leg_incomplete" {
+            diagnostic.publication_truth_export_blocker_reason_class =
+                PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnReplaySolLegIncomplete;
+            diagnostic.publication_truth_export_blocker_explanation = format!(
+                "publication truth export is currently blocked on replay_sol_leg_incomplete as already persisted in discovery publication state: runtime_mode={runtime_mode}, reason={export_gate_reason}"
+            );
+            return PublicationTruthExportBlockerTopLevelState::ReplaySolLegIncomplete;
+        }
+
+        diagnostic.publication_truth_export_blocker_reason_class =
+            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnOtherPublishableCheckpointReason;
+        diagnostic.publication_truth_export_blocker_explanation = format!(
+            "publication truth export is currently blocked on publishable checkpoint blocker {blocker} as already persisted in discovery publication state: runtime_mode={runtime_mode}, reason={export_gate_reason}"
+        );
+        return PublicationTruthExportBlockerTopLevelState::OtherCheckpoint(blocker.to_string());
+    }
+
+    diagnostic.publication_truth_export_blocker_reason_class =
+        PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnIncompleteOrStaleTruthWithoutCheckpointExplanation;
+    diagnostic.publication_truth_export_blocker_explanation = format!(
+        "publication truth export is currently unsatisfied without a checkpoint-coded export gate reason in persisted discovery publication state: runtime_mode={runtime_mode}, reason={export_gate_reason}, publication_truth_complete={publication_truth_complete}, fresh_under_export_gate={fresh_under_export_gate}"
+    );
+    set_publication_truth_export_enrichment_not_attempted(
+        diagnostic,
+        "bounded checkpoint/replay enrichment was not attempted because persisted discovery publication state does not encode a publishable-checkpoint blocker family",
+    );
+    PublicationTruthExportBlockerTopLevelState::IncompleteOrStaleWithoutCheckpointExplanation
+}
+
+fn apply_publication_truth_export_checkpoint_enrichment(
+    diagnostic: &mut PublicationTruthExportBlockerDiagnostic,
+    top_level_state: &PublicationTruthExportBlockerTopLevelState,
+    checkpoint_runtime_db_diagnostic_result: Result<ReplayCheckpointRuntimeDbDiagnostic>,
+) -> Option<PublishableCheckpointBlockerExplanation> {
+    let checkpoint_runtime_db_diagnostic = match checkpoint_runtime_db_diagnostic_result {
+        Ok(diagnostic_result) => diagnostic_result,
+        Err(error) => {
+            set_publication_truth_export_enrichment_failed(
+                diagnostic,
+                Some("runtime_replay_checkpoint_diagnostic".to_string()),
+                false,
+                format!(
+                    "bounded runtime replay-checkpoint enrichment could not complete: {error:#}"
+                ),
+            );
+            return None;
+        }
+    };
+
+    if checkpoint_runtime_db_diagnostic.diagnostic_budget_exhausted {
+        let stage = render_replay_checkpoint_runtime_db_stage(
+            checkpoint_runtime_db_diagnostic.diagnostic_stage,
+        );
+        set_publication_truth_export_enrichment_failed(
+            diagnostic,
+            Some(stage.clone()),
+            true,
+            format!(
+                "bounded runtime replay-checkpoint enrichment exhausted its budget before completion (stage={stage})"
+            ),
+        );
+        return None;
+    }
+
+    let Some(checkpoint) = checkpoint_runtime_db_diagnostic.blocker_explanation else {
+        set_publication_truth_export_enrichment_failed(
+            diagnostic,
+            Some("classify_publishable_checkpoint_blocker".to_string()),
+            false,
+            "bounded runtime replay-checkpoint enrichment completed without a blocker explanation payload"
+                .to_string(),
+        );
+        return None;
+    };
+
+    diagnostic.persisted_rebuild_checkpoint_exists =
+        Some(checkpoint.persisted_rebuild_checkpoint_exists);
+    diagnostic.rebuild_phase = checkpoint.rebuild_phase.clone();
+    diagnostic.rebuild_replay_subphase = checkpoint.rebuild_replay_subphase.clone();
+    if checkpoint.publishable_checkpoint_blocker.is_some() {
+        diagnostic.publishable_checkpoint_blocker =
+            checkpoint.publishable_checkpoint_blocker.clone();
+    }
+    diagnostic.replay_incomplete = Some(checkpoint.replay_incomplete);
+
+    let checkpoint_blocker = checkpoint.publishable_checkpoint_blocker.as_deref();
+    if matches!(
+        top_level_state,
+        PublicationTruthExportBlockerTopLevelState::ReplaySolLegIncomplete
+    ) && checkpoint_blocker != Some("replay_sol_leg_incomplete")
+    {
+        set_publication_truth_export_enrichment_completed(
+            diagnostic,
+            Some("classify_publishable_checkpoint_blocker".to_string()),
+            format!(
+                "bounded runtime replay-checkpoint enrichment completed, but the current checkpoint blocker payload was {} while the top-level blocker remains publication-state-driven replay_sol_leg_incomplete",
+                checkpoint_blocker.unwrap_or("null")
+            ),
+        );
+        return None;
+    }
+
+    if matches!(
+        top_level_state,
+        PublicationTruthExportBlockerTopLevelState::OtherCheckpoint(_)
+    ) {
+        let blocker = checkpoint_blocker.unwrap_or("null");
+        set_publication_truth_export_enrichment_completed(
+            diagnostic,
+            Some("classify_publishable_checkpoint_blocker".to_string()),
+            format!(
+                "bounded runtime replay-checkpoint enrichment completed for publishable checkpoint blocker {blocker}"
+            ),
+        );
+        return None;
+    }
+
+    Some(checkpoint)
 }
 
 fn parse_args() -> Result<Option<Command>> {
@@ -1226,210 +1455,159 @@ fn explain_publication_truth_export_blocker_read_only(
 
     let publication_truth_complete = publication_state.has_complete_publication_truth();
     let fresh_under_export_gate = publication_state.is_fresh_under_gate(publication_gate, now);
-    if publication_truth_complete && fresh_under_export_gate {
-        diagnostic.publication_truth_export_blocker_observed = true;
-        diagnostic.publication_truth_export_blocker_reason_class =
-            PublicationTruthExportBlockerReasonClass::PublicationTruthExportGateSatisfied;
-        diagnostic.publication_truth_export_blocker_explanation = format!(
-            "publication truth export gate is currently satisfied from config-relative evidence: runtime_mode={}, reason={}, publication_truth_complete=true, fresh_under_export_gate=true",
-            diagnostic
-                .export_gate_runtime_mode
-                .as_deref()
-                .unwrap_or("unknown"),
-            diagnostic.export_gate_reason.as_deref().unwrap_or("unknown"),
-        );
+    let top_level_state = classify_publication_truth_export_blocker_from_publication_state(
+        &mut diagnostic,
+        publication_truth_complete,
+        fresh_under_export_gate,
+    );
+    if matches!(
+        top_level_state,
+        PublicationTruthExportBlockerTopLevelState::GateSatisfied
+            | PublicationTruthExportBlockerTopLevelState::IncompleteOrStaleWithoutCheckpointExplanation
+    ) {
         return diagnostic;
     }
 
-    let checkpoint_runtime_db_diagnostic =
-        match DiscoveryService::diagnose_runtime_db_replay_checkpoint_read_only(
+    let checkpoint = match apply_publication_truth_export_checkpoint_enrichment(
+        &mut diagnostic,
+        &top_level_state,
+        DiscoveryService::diagnose_runtime_db_replay_checkpoint_read_only(
             &runtime_db_path,
             ReplayCheckpointRuntimeDbOnlyMode::ExplainPublishableCheckpointBlocker,
             DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
-        ) {
-            Ok(diagnostic_result) => diagnostic_result,
-            Err(error) => {
-                diagnostic.publication_truth_export_blocker_observed = true;
-                diagnostic.publication_truth_export_blocker_reason_class =
-                    PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnIncompleteOrStaleTruthWithoutCheckpointExplanation;
-                diagnostic.publication_truth_export_blocker_explanation = format!(
-                    "publication truth export is currently unsatisfied, but the bounded runtime replay-checkpoint blocker diagnostic could not complete against runtime db {}: {error:#}",
-                    runtime_db_path.display()
-                );
-                return diagnostic;
-            }
-        };
+        ),
+    ) {
+        Some(checkpoint) => checkpoint,
+        None => return diagnostic,
+    };
 
-    if checkpoint_runtime_db_diagnostic.diagnostic_budget_exhausted {
-        let stage = serde_json::to_string(&checkpoint_runtime_db_diagnostic.diagnostic_stage)
-            .unwrap_or_else(|_| "\"unknown\"".to_string())
-            .trim_matches('"')
-            .to_string();
-        diagnostic.publication_truth_export_blocker_observed = true;
-        diagnostic.publication_truth_export_blocker_reason_class =
-            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnIncompleteOrStaleTruthWithoutCheckpointExplanation;
-        diagnostic.publication_truth_export_blocker_explanation = format!(
-            "publication truth export is currently unsatisfied, but the bounded runtime replay-checkpoint blocker diagnostic exhausted its budget before completion (stage={stage})"
-        );
+    if matches!(
+        top_level_state,
+        PublicationTruthExportBlockerTopLevelState::OtherCheckpoint(_)
+    ) {
         return diagnostic;
     }
 
-    let Some(checkpoint) = checkpoint_runtime_db_diagnostic.blocker_explanation else {
-        diagnostic.publication_truth_export_blocker_observed = true;
-        diagnostic.publication_truth_export_blocker_reason_class =
-            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnIncompleteOrStaleTruthWithoutCheckpointExplanation;
-        diagnostic.publication_truth_export_blocker_explanation = format!(
-            "publication truth export is currently unsatisfied, but the bounded runtime replay-checkpoint blocker diagnostic completed without a blocker explanation for runtime db {}",
-            runtime_db_path.display()
-        );
-        return diagnostic;
-    };
-    diagnostic.persisted_rebuild_checkpoint_exists =
-        Some(checkpoint.persisted_rebuild_checkpoint_exists);
-    diagnostic.rebuild_phase = checkpoint.rebuild_phase.clone();
-    diagnostic.rebuild_replay_subphase = checkpoint.rebuild_replay_subphase.clone();
-    diagnostic.publishable_checkpoint_blocker = checkpoint.publishable_checkpoint_blocker.clone();
-    diagnostic.replay_incomplete = Some(checkpoint.replay_incomplete);
-
-    let blocker = checkpoint.publishable_checkpoint_blocker.as_deref();
-    if blocker == Some("replay_sol_leg_incomplete") {
-        diagnostic.publication_truth_export_blocker_observed = true;
-        diagnostic.publication_truth_export_blocker_reason_class =
-            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnReplaySolLegIncomplete;
-        let recent_raw_store = match SqliteStore::open_read_only(&recent_raw_db_path).with_context(
-            || {
+    let recent_raw_store = match SqliteStore::open_read_only(&recent_raw_db_path).with_context(
+        || {
+            format!(
+                "failed opening promoted recent_raw latest db {}",
+                recent_raw_db_path.display()
+            )
+        },
+    ) {
+        Ok(store) => store,
+        Err(error) => {
+            set_publication_truth_export_enrichment_failed(
+                &mut diagnostic,
+                Some("open_recent_raw_latest_db".to_string()),
+                false,
                 format!(
-                    "failed opening promoted recent_raw latest db {}",
+                    "bounded replay-sol-leg enrichment could not open promoted recent_raw latest db {} read-only: {error:#}",
                     recent_raw_db_path.display()
-                )
-            },
-        ) {
-            Ok(store) => store,
-            Err(error) => {
-                diagnostic.publication_truth_export_blocker_explanation = format!(
-                    "publication truth export is currently blocked on replay_sol_leg_incomplete under the primary export gate, but the bounded replay-sol-leg deep proof could not open promoted recent_raw latest db {} read-only: {error:#}",
-                    recent_raw_db_path.display()
-                );
-                return diagnostic;
-            }
-        };
-        let replay_diagnostic = match DiscoveryService::explain_replay_sol_leg_incomplete_read_only(
-            &runtime_store,
-            &recent_raw_store,
-        ) {
-            Ok(diagnostic_result) => diagnostic_result,
-            Err(error) => {
-                diagnostic.publication_truth_export_blocker_explanation = format!(
-                    "publication truth export is currently blocked on replay_sol_leg_incomplete under the primary export gate, but the bounded replay-sol-leg deep proof could not complete against runtime db {} and recent_raw db {}: {error:#}",
+                ),
+            );
+            return diagnostic;
+        }
+    };
+    let replay_diagnostic = match DiscoveryService::explain_replay_sol_leg_incomplete_read_only(
+        &runtime_store,
+        &recent_raw_store,
+    ) {
+        Ok(diagnostic_result) => diagnostic_result,
+        Err(error) => {
+            set_publication_truth_export_enrichment_failed(
+                &mut diagnostic,
+                Some("replay_sol_leg_incomplete".to_string()),
+                false,
+                format!(
+                    "bounded replay-sol-leg enrichment could not complete against runtime db {} and recent_raw db {}: {error:#}",
                     runtime_db_path.display(),
                     recent_raw_db_path.display()
-                );
-                return diagnostic;
-            }
-        };
-        diagnostic.replay_sol_leg_incomplete_reason_class =
-            Some(replay_diagnostic.replay_sol_leg_incomplete_reason_class);
-        diagnostic.replay_sol_leg_incomplete_explanation = Some(
-            replay_diagnostic
-                .replay_sol_leg_incomplete_explanation
-                .clone(),
-        );
-        diagnostic.checkpoint_exact_target_surface_exists =
-            replay_diagnostic.checkpoint.exact_target_surface_exists;
-        diagnostic.checkpoint_exact_target_surface_repairable_for_resume = replay_diagnostic
-            .checkpoint
-            .exact_target_surface_repairable_for_resume;
-        diagnostic.checkpoint_replay_candidate_activity_backfill_required = replay_diagnostic
-            .checkpoint
-            .replay_candidate_activity_backfill_required;
-        diagnostic.checkpoint_replay_candidate_activity_backfill_pending = replay_diagnostic
-            .checkpoint
-            .replay_candidate_activity_backfill_pending;
-        diagnostic.source_comparison_applicable = Some(
-            replay_diagnostic
-                .source_vs_checkpoint
-                .source_comparison_applicable,
-        );
-        diagnostic.source_scan_target_buy_mint_filter_active = replay_diagnostic
+                ),
+            );
+            return diagnostic;
+        }
+    };
+    diagnostic.replay_sol_leg_incomplete_reason_class =
+        Some(replay_diagnostic.replay_sol_leg_incomplete_reason_class);
+    diagnostic.replay_sol_leg_incomplete_explanation = Some(
+        replay_diagnostic
+            .replay_sol_leg_incomplete_explanation
+            .clone(),
+    );
+    diagnostic.checkpoint_exact_target_surface_exists =
+        replay_diagnostic.checkpoint.exact_target_surface_exists;
+    diagnostic.checkpoint_exact_target_surface_repairable_for_resume = replay_diagnostic
+        .checkpoint
+        .exact_target_surface_repairable_for_resume;
+    diagnostic.checkpoint_replay_candidate_activity_backfill_required = replay_diagnostic
+        .checkpoint
+        .replay_candidate_activity_backfill_required;
+    diagnostic.checkpoint_replay_candidate_activity_backfill_pending = replay_diagnostic
+        .checkpoint
+        .replay_candidate_activity_backfill_pending;
+    diagnostic.source_comparison_applicable = Some(
+        replay_diagnostic
             .source_vs_checkpoint
-            .source_scan_target_buy_mint_filter_active;
-        diagnostic.source_scan_target_buy_mint_count = replay_diagnostic
-            .source_vs_checkpoint
-            .source_scan_target_buy_mint_count;
-        diagnostic.source_rows_exist_beyond_stored_replay_checkpoint = replay_diagnostic
-            .source_vs_checkpoint
-            .source_rows_exist_beyond_stored_replay_checkpoint;
-        diagnostic.source_rows_ahead_count = replay_diagnostic
-            .source_vs_checkpoint
-            .source_rows_ahead_count;
-        diagnostic.source_rows_ahead_pages_scanned = replay_diagnostic
-            .source_vs_checkpoint
-            .source_rows_ahead_pages_scanned;
-        diagnostic.source_rows_ahead_first_cursor = replay_diagnostic
-            .source_vs_checkpoint
-            .source_rows_ahead_first_cursor
-            .clone();
-        diagnostic.source_rows_ahead_last_cursor = replay_diagnostic
-            .source_vs_checkpoint
-            .source_rows_ahead_last_cursor
-            .clone();
-        diagnostic.source_scan_access_path = replay_diagnostic
-            .source_vs_checkpoint
-            .source_scan_access_path
-            .clone();
-        diagnostic.source_scan_time_budget_exhausted = replay_diagnostic
-            .source_vs_checkpoint
-            .source_scan_time_budget_exhausted;
-        diagnostic.publication_truth_export_blocker_explanation = format!(
-            "publication truth export is currently blocked on replay_sol_leg_incomplete under the primary export gate: runtime_mode={}, reason={}, replay_sol_leg_incomplete_reason_class={}, replay_explanation={}",
-            diagnostic
-                .export_gate_runtime_mode
+            .source_comparison_applicable,
+    );
+    diagnostic.source_scan_target_buy_mint_filter_active = replay_diagnostic
+        .source_vs_checkpoint
+        .source_scan_target_buy_mint_filter_active;
+    diagnostic.source_scan_target_buy_mint_count = replay_diagnostic
+        .source_vs_checkpoint
+        .source_scan_target_buy_mint_count;
+    diagnostic.source_rows_exist_beyond_stored_replay_checkpoint = replay_diagnostic
+        .source_vs_checkpoint
+        .source_rows_exist_beyond_stored_replay_checkpoint;
+    diagnostic.source_rows_ahead_count = replay_diagnostic
+        .source_vs_checkpoint
+        .source_rows_ahead_count;
+    diagnostic.source_rows_ahead_pages_scanned = replay_diagnostic
+        .source_vs_checkpoint
+        .source_rows_ahead_pages_scanned;
+    diagnostic.source_rows_ahead_first_cursor = replay_diagnostic
+        .source_vs_checkpoint
+        .source_rows_ahead_first_cursor
+        .clone();
+    diagnostic.source_rows_ahead_last_cursor = replay_diagnostic
+        .source_vs_checkpoint
+        .source_rows_ahead_last_cursor
+        .clone();
+    diagnostic.source_scan_access_path = replay_diagnostic
+        .source_vs_checkpoint
+        .source_scan_access_path
+        .clone();
+    diagnostic.source_scan_time_budget_exhausted = replay_diagnostic
+        .source_vs_checkpoint
+        .source_scan_time_budget_exhausted;
+    diagnostic.publication_truth_export_blocker_explanation = format!(
+        "publication truth export is currently blocked on replay_sol_leg_incomplete as already persisted in discovery publication state: runtime_mode={}, reason={}, replay_sol_leg_incomplete_reason_class={}, replay_explanation={}",
+        diagnostic
+            .export_gate_runtime_mode
+            .as_deref()
+            .unwrap_or("unknown"),
+        diagnostic.export_gate_reason.as_deref().unwrap_or("unknown"),
+        serde_json::to_string(&diagnostic.replay_sol_leg_incomplete_reason_class)
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"'),
+        diagnostic
+            .replay_sol_leg_incomplete_explanation
+            .as_deref()
+            .unwrap_or("unknown")
+    );
+    set_publication_truth_export_enrichment_completed(
+        &mut diagnostic,
+        Some("replay_sol_leg_incomplete".to_string()),
+        format!(
+            "bounded replay-sol-leg enrichment completed for persisted top-level blocker {}",
+            checkpoint
+                .publishable_checkpoint_blocker
                 .as_deref()
-                .unwrap_or("unknown"),
-            diagnostic.export_gate_reason.as_deref().unwrap_or("unknown"),
-            serde_json::to_string(&diagnostic.replay_sol_leg_incomplete_reason_class)
-                .unwrap_or_else(|_| "\"unknown\"".to_string())
-                .trim_matches('"'),
-            diagnostic
-                .replay_sol_leg_incomplete_explanation
-                .as_deref()
-                .unwrap_or("unknown")
-        );
-    } else if let Some(blocker) = blocker {
-        diagnostic.publication_truth_export_blocker_observed = true;
-        diagnostic.publication_truth_export_blocker_reason_class =
-            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnOtherPublishableCheckpointReason;
-        diagnostic.publication_truth_export_blocker_explanation = format!(
-            "publication truth export is currently blocked on publishable checkpoint blocker {blocker} under the primary export gate: runtime_mode={}, reason={}",
-            diagnostic
-                .export_gate_runtime_mode
-                .as_deref()
-                .unwrap_or("unknown"),
-            diagnostic.export_gate_reason.as_deref().unwrap_or("unknown"),
-        );
-    } else if diagnostic.publication_truth_complete == Some(false)
-        || diagnostic.fresh_under_export_gate == Some(false)
-    {
-        diagnostic.publication_truth_export_blocker_observed = true;
-        diagnostic.publication_truth_export_blocker_reason_class =
-            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnIncompleteOrStaleTruthWithoutCheckpointExplanation;
-        diagnostic.publication_truth_export_blocker_explanation = format!(
-            "publication truth export is currently unsatisfied without a publishable checkpoint blocker explanation: runtime_mode={}, reason={}, publication_truth_complete={}, fresh_under_export_gate={}",
-            diagnostic
-                .export_gate_runtime_mode
-                .as_deref()
-                .unwrap_or("null"),
-            diagnostic.export_gate_reason.as_deref().unwrap_or("null"),
-            diagnostic
-                .publication_truth_complete
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "null".to_string()),
-            diagnostic
-                .fresh_under_export_gate
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "null".to_string()),
-        );
-    }
+                .unwrap_or("replay_sol_leg_incomplete")
+        ),
+    );
 
     diagnostic
 }
@@ -1452,6 +1630,36 @@ fn render_publication_truth_export_blocker_human(
         format!(
             "publication_truth_export_blocker_explanation={}",
             diagnostic.publication_truth_export_blocker_explanation
+        ),
+        format!(
+            "publication_truth_export_blocker_top_level_proven_from_publication_state={}",
+            diagnostic.publication_truth_export_blocker_top_level_proven_from_publication_state
+        ),
+        format!(
+            "publication_truth_export_blocker_enrichment_attempted={}",
+            diagnostic.publication_truth_export_blocker_enrichment_attempted
+        ),
+        format!(
+            "publication_truth_export_blocker_enrichment_completed={}",
+            diagnostic.publication_truth_export_blocker_enrichment_completed
+        ),
+        format!(
+            "publication_truth_export_blocker_enrichment_budget_exhausted={}",
+            diagnostic.publication_truth_export_blocker_enrichment_budget_exhausted
+        ),
+        format!(
+            "publication_truth_export_blocker_enrichment_stage={}",
+            diagnostic
+                .publication_truth_export_blocker_enrichment_stage
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "publication_truth_export_blocker_enrichment_explanation={}",
+            diagnostic
+                .publication_truth_export_blocker_enrichment_explanation
+                .as_deref()
+                .unwrap_or("null")
         ),
         format!("config_path={}", diagnostic.config_path),
         format!(
@@ -2794,7 +3002,9 @@ fn render_recent_raw_replacement_convergence_human(
 #[cfg(test)]
 mod tests {
     use super::{
-        load_json, parse_args_from, run, run_command, write_json_atomic, Command, Config,
+        apply_publication_truth_export_checkpoint_enrichment,
+        classify_publication_truth_export_blocker_from_publication_state, load_json,
+        parse_args_from, run, run_command, write_json_atomic, Command, Config,
         ExplainPublicationTruthExportBlockerConfig, ExplainRecentRawCatchUpStatusConfig,
         ExplainRecentRawPromotedRetentionContractConfig, ExplainRecentRawPromotionBlockerConfig,
         ExplainRecentRawReplacementArtifactHistoryContractConfig,
@@ -2804,10 +3014,15 @@ mod tests {
         ExplainRecentRawReplacementPromotionContractConfig,
         ExplainRecentRawSourceWindowContractConfig, ExplainRecentRawStagedBirthConfig,
         ExplainRecentRawStagedLineageConfig, ExplainRecentRawStagedRegressionConfig,
-        ExplainRecentRawStagedWindowSeedingConfig,
+        ExplainRecentRawStagedWindowSeedingConfig, PublicationTruthExportBlockerDiagnostic,
+        PublicationTruthExportBlockerReasonClass, PublicationTruthExportBlockerTopLevelState,
     };
-    use anyhow::{Context, Result};
+    use anyhow::{anyhow, Context, Result};
     use chrono::{DateTime, Duration, Utc};
+    use copybot_discovery::{
+        PersistedReplayCheckpointRowMeta, ReplayCheckpointRuntimeDbDiagnostic,
+        ReplayCheckpointRuntimeDbDiagnosticStage,
+    };
     use copybot_storage::{
         DiscoveryPersistedRebuildPhase, DiscoveryPersistedRebuildStateRow,
         DiscoveryPublicationStateUpdate, DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor,
@@ -2817,6 +3032,52 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::tempdir;
+
+    fn make_publication_truth_export_blocker_test_diagnostic(
+        config_path: &Path,
+        export_gate_reason: &str,
+    ) -> PublicationTruthExportBlockerDiagnostic {
+        let mut diagnostic =
+            PublicationTruthExportBlockerDiagnostic::unproven(config_path, "test".to_string());
+        diagnostic.export_gate_runtime_mode = Some("fail_closed".to_string());
+        diagnostic.export_gate_reason = Some(export_gate_reason.to_string());
+        diagnostic.publication_truth_complete = Some(false);
+        diagnostic.fresh_under_export_gate = Some(false);
+        diagnostic
+    }
+
+    fn budget_exhausted_checkpoint_diagnostic(
+        stage: ReplayCheckpointRuntimeDbDiagnosticStage,
+    ) -> ReplayCheckpointRuntimeDbDiagnostic {
+        ReplayCheckpointRuntimeDbDiagnostic {
+            diagnostic_stage: stage,
+            diagnostic_meta_substage: None,
+            diagnostic_budget_exhausted: true,
+            diagnostic_skipped_stages: Vec::new(),
+            diagnostic_open_db_elapsed_ms: Some(1),
+            diagnostic_load_row_meta_elapsed_ms: None,
+            diagnostic_load_row_elapsed_ms: None,
+            diagnostic_parse_state_elapsed_ms: None,
+            diagnostic_classify_blocker_elapsed_ms: None,
+            diagnostic_total_elapsed_ms: 1,
+            meta_state_json_bytes_requested: false,
+            meta_open_db_elapsed_ms: Some(1),
+            meta_check_table_exists_elapsed_ms: None,
+            meta_query_elapsed_ms: None,
+            meta_parse_phase_elapsed_ms: None,
+            meta_parse_updated_at_elapsed_ms: None,
+            meta_state_json_bytes_eval_elapsed_ms: None,
+            meta_total_elapsed_ms: Some(1),
+            row_meta: PersistedReplayCheckpointRowMeta {
+                persisted_rebuild_row_exists: None,
+                persisted_rebuild_row_phase: None,
+                persisted_rebuild_row_updated_at: None,
+                persisted_rebuild_state_json_bytes: None,
+            },
+            inspection: None,
+            blocker_explanation: None,
+        }
+    }
 
     #[test]
     fn parse_args_from_accepts_scheduled_force_json_and_now() {
@@ -3125,6 +3386,14 @@ mod tests {
         assert_eq!(parsed["export_gate_runtime_mode"], "healthy");
         assert_eq!(parsed["publication_truth_complete"], true);
         assert_eq!(parsed["fresh_under_export_gate"], true);
+        assert_eq!(
+            parsed["publication_truth_export_blocker_top_level_proven_from_publication_state"],
+            true
+        );
+        assert_eq!(
+            parsed["publication_truth_export_blocker_enrichment_attempted"],
+            false
+        );
         assert_eq!(parsed["persisted_rebuild_checkpoint_exists"], Value::Null);
         assert_eq!(parsed["source_comparison_applicable"], Value::Null);
         Ok(())
@@ -3273,6 +3542,12 @@ mod tests {
             "publication_truth_export_blocker_observed",
             "publication_truth_export_blocker_reason_class",
             "publication_truth_export_blocker_explanation",
+            "publication_truth_export_blocker_top_level_proven_from_publication_state",
+            "publication_truth_export_blocker_enrichment_attempted",
+            "publication_truth_export_blocker_enrichment_completed",
+            "publication_truth_export_blocker_enrichment_budget_exhausted",
+            "publication_truth_export_blocker_enrichment_stage",
+            "publication_truth_export_blocker_enrichment_explanation",
             "config_path",
             "runtime_db_path",
             "recent_raw_db_path",
@@ -3346,13 +3621,21 @@ mod tests {
             parsed["runtime_db_path"],
             fixture.db_path.display().to_string()
         );
-        assert_eq!(parsed["persisted_rebuild_checkpoint_exists"], false);
+        assert_eq!(parsed["persisted_rebuild_checkpoint_exists"], Value::Null);
         assert_eq!(parsed["publishable_checkpoint_blocker"], Value::Null);
         assert_eq!(parsed["source_comparison_applicable"], Value::Null);
+        assert_eq!(
+            parsed["publication_truth_export_blocker_top_level_proven_from_publication_state"],
+            true
+        );
+        assert_eq!(
+            parsed["publication_truth_export_blocker_enrichment_attempted"],
+            false
+        );
         assert!(parsed["publication_truth_export_blocker_explanation"]
             .as_str()
             .unwrap_or_default()
-            .contains("unsatisfied without a publishable checkpoint blocker explanation"));
+            .contains("unsatisfied without a checkpoint-coded export gate reason"));
         Ok(())
     }
 
@@ -3366,8 +3649,9 @@ mod tests {
             .store
             .set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
                 runtime_mode: DiscoveryRuntimeMode::FailClosed,
-                reason: "publication_truth_withheld_while_publishable_checkpoint_blocked"
-                    .to_string(),
+                reason:
+                    "publication_truth_withheld_while_replay_candidate_activity_backfill_incomplete"
+                        .to_string(),
                 last_published_at: Some(now - Duration::hours(2)),
                 last_published_window_start: Some(metrics_window_start(now) - Duration::hours(1)),
                 published_scoring_source: Some("raw_window".to_string()),
@@ -3410,6 +3694,18 @@ mod tests {
         assert_eq!(
             parsed["publishable_checkpoint_blocker"],
             "replay_candidate_activity_backfill_incomplete"
+        );
+        assert_eq!(
+            parsed["publication_truth_export_blocker_top_level_proven_from_publication_state"],
+            true
+        );
+        assert_eq!(
+            parsed["publication_truth_export_blocker_enrichment_attempted"],
+            true
+        );
+        assert_eq!(
+            parsed["publication_truth_export_blocker_enrichment_completed"],
+            true
         );
         assert_eq!(parsed["source_comparison_applicable"], Value::Null);
         assert_eq!(
@@ -3480,17 +3776,163 @@ mod tests {
             "replay_sol_leg_incomplete"
         );
         assert_eq!(
+            parsed["publication_truth_export_blocker_top_level_proven_from_publication_state"],
+            true
+        );
+        assert_eq!(
+            parsed["publication_truth_export_blocker_enrichment_attempted"],
+            true
+        );
+        assert_eq!(
+            parsed["publication_truth_export_blocker_enrichment_completed"],
+            false
+        );
+        assert_eq!(
             parsed["replay_sol_leg_incomplete_reason_class"],
             Value::Null
         );
         assert_eq!(parsed["source_comparison_applicable"], Value::Null);
         assert_eq!(parsed["source_scan_time_budget_exhausted"], Value::Null);
+        assert_eq!(
+            parsed["publication_truth_export_blocker_enrichment_stage"],
+            "open_recent_raw_latest_db"
+        );
         assert!(parsed["publication_truth_export_blocker_explanation"]
             .as_str()
             .unwrap_or_default()
-            .contains(
-                "bounded replay-sol-leg deep proof could not open promoted recent_raw latest db"
-            ));
+            .contains("blocked on replay_sol_leg_incomplete as already persisted in discovery publication state"));
+        assert!(parsed["publication_truth_export_blocker_enrichment_explanation"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("bounded replay-sol-leg enrichment could not open promoted recent_raw latest db"));
+        Ok(())
+    }
+
+    #[test]
+    fn publication_truth_export_blocker_replay_top_level_survives_checkpoint_enrichment_error(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let config_path = temp.path().join("live.server.toml");
+        let mut diagnostic = make_publication_truth_export_blocker_test_diagnostic(
+            &config_path,
+            "publication_truth_withheld_while_replay_sol_leg_incomplete",
+        );
+        let top_level_state = classify_publication_truth_export_blocker_from_publication_state(
+            &mut diagnostic,
+            false,
+            false,
+        );
+
+        assert_eq!(
+            top_level_state,
+            PublicationTruthExportBlockerTopLevelState::ReplaySolLegIncomplete
+        );
+        let outcome = apply_publication_truth_export_checkpoint_enrichment(
+            &mut diagnostic,
+            &top_level_state,
+            Err(anyhow!("synthetic checkpoint enrichment failure")),
+        );
+
+        assert!(outcome.is_none());
+        assert_eq!(
+            diagnostic.publication_truth_export_blocker_reason_class,
+            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnReplaySolLegIncomplete
+        );
+        assert!(
+            diagnostic.publication_truth_export_blocker_top_level_proven_from_publication_state
+        );
+        assert!(diagnostic.publication_truth_export_blocker_enrichment_attempted);
+        assert!(!diagnostic.publication_truth_export_blocker_enrichment_completed);
+        assert!(!diagnostic.publication_truth_export_blocker_enrichment_budget_exhausted);
+        assert_eq!(
+            diagnostic
+                .publication_truth_export_blocker_enrichment_stage
+                .as_deref(),
+            Some("runtime_replay_checkpoint_diagnostic")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn publication_truth_export_blocker_other_checkpoint_top_level_survives_enrichment_error(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let config_path = temp.path().join("live.server.toml");
+        let mut diagnostic = make_publication_truth_export_blocker_test_diagnostic(
+            &config_path,
+            "publication_truth_withheld_while_replay_candidate_activity_backfill_incomplete",
+        );
+        let top_level_state = classify_publication_truth_export_blocker_from_publication_state(
+            &mut diagnostic,
+            false,
+            false,
+        );
+
+        assert_eq!(
+            top_level_state,
+            PublicationTruthExportBlockerTopLevelState::OtherCheckpoint(
+                "replay_candidate_activity_backfill_incomplete".to_string()
+            )
+        );
+        let outcome = apply_publication_truth_export_checkpoint_enrichment(
+            &mut diagnostic,
+            &top_level_state,
+            Err(anyhow!("synthetic checkpoint enrichment failure")),
+        );
+
+        assert!(outcome.is_none());
+        assert_eq!(
+            diagnostic.publication_truth_export_blocker_reason_class,
+            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnOtherPublishableCheckpointReason
+        );
+        assert!(
+            diagnostic.publication_truth_export_blocker_top_level_proven_from_publication_state
+        );
+        assert!(diagnostic.publication_truth_export_blocker_enrichment_attempted);
+        assert!(!diagnostic.publication_truth_export_blocker_enrichment_completed);
+        Ok(())
+    }
+
+    #[test]
+    fn publication_truth_export_blocker_replay_budget_exhausted_enrichment_preserves_top_level(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let config_path = temp.path().join("live.server.toml");
+        let mut diagnostic = make_publication_truth_export_blocker_test_diagnostic(
+            &config_path,
+            "publication_truth_withheld_while_replay_sol_leg_incomplete",
+        );
+        let top_level_state = classify_publication_truth_export_blocker_from_publication_state(
+            &mut diagnostic,
+            false,
+            false,
+        );
+
+        let outcome = apply_publication_truth_export_checkpoint_enrichment(
+            &mut diagnostic,
+            &top_level_state,
+            Ok(budget_exhausted_checkpoint_diagnostic(
+                ReplayCheckpointRuntimeDbDiagnosticStage::LoadPersistedRebuildRowMeta,
+            )),
+        );
+
+        assert!(outcome.is_none());
+        assert_eq!(
+            diagnostic.publication_truth_export_blocker_reason_class,
+            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnReplaySolLegIncomplete
+        );
+        assert!(
+            diagnostic.publication_truth_export_blocker_top_level_proven_from_publication_state
+        );
+        assert!(diagnostic.publication_truth_export_blocker_enrichment_attempted);
+        assert!(!diagnostic.publication_truth_export_blocker_enrichment_completed);
+        assert!(diagnostic.publication_truth_export_blocker_enrichment_budget_exhausted);
+        assert_eq!(
+            diagnostic
+                .publication_truth_export_blocker_enrichment_stage
+                .as_deref(),
+            Some("load_persisted_rebuild_row_meta")
+        );
         Ok(())
     }
 

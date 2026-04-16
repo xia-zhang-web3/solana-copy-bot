@@ -13672,3 +13672,68 @@ Current interpretation:
 2. This corrective batch is accepted because it removes the unconditional deep
    path and restores the intended bounded/operator-safe shape for the primary
    Stage 3 blocker surface.
+
+### Stage 3 corrective top-level proof fix for publication-truth export blocker surface (`2026-04-16`)
+
+Accepted repository change:
+
+1. The same primary operator
+   `discovery_runtime_export --explain-publication-truth-export-blocker --config <path> --json`
+   now proves the top-level blocker directly from persisted discovery
+   publication state before any checkpoint or replay enrichment is attempted.
+2. The top-level classification contract is now:
+   - return `publication_truth_export_gate_satisfied` immediately when
+     publication truth is complete and fresh under gate
+   - return
+     `publication_truth_export_blocked_on_replay_sol_leg_incomplete`
+     immediately when persisted `export_gate_reason` is already
+     `publication_truth_withheld_while_replay_sol_leg_incomplete`
+   - return
+     `publication_truth_export_blocked_on_other_publishable_checkpoint_reason`
+     immediately when persisted `export_gate_reason` already encodes another
+     publishable-checkpoint blocker
+   - return
+     `publication_truth_export_blocked_on_incomplete_or_stale_truth_without_checkpoint_explanation`
+     only when persisted publication state is non-green but does not itself
+     encode a checkpoint blocker family
+3. Bounded checkpoint and replay-sol-leg diagnostics are now optional
+   enrichment only:
+   - they can populate nested checkpoint fields
+   - they can populate
+     `replay_sol_leg_incomplete_reason_class` and source-vs-checkpoint fields
+   - if they fail or budget-exhaust, the already-proven top-level blocker is
+     preserved instead of being downgraded
+4. The operator now emits explicit enrichment status fields:
+   - `publication_truth_export_blocker_top_level_proven_from_publication_state`
+   - `publication_truth_export_blocker_enrichment_attempted`
+   - `publication_truth_export_blocker_enrichment_completed`
+   - `publication_truth_export_blocker_enrichment_budget_exhausted`
+   - `publication_truth_export_blocker_enrichment_stage`
+   - `publication_truth_export_blocker_enrichment_explanation`
+5. The corrective batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+6. It still does not change:
+   - replay behavior
+   - publication/export gate semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Current interpretation:
+
+1. The first boundedness fix restored operator-safe execution on live, but the
+   live command still returned
+   `publication_truth_export_blocked_on_incomplete_or_stale_truth_without_checkpoint_explanation`
+   because bounded checkpoint enrichment exhausted its budget at
+   `load_persisted_rebuild_row_meta`.
+2. This corrective batch is accepted because it removes that false downgrade:
+   top-level export-blocker proof now comes from persisted publication state
+   first, while deeper checkpoint/replay work is advisory enrichment only.
