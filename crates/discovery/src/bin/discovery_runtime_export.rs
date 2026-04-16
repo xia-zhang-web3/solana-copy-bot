@@ -392,6 +392,11 @@ struct ReplaySolLegBlockerDiagnostic {
     replay_sol_leg_blocker_observed: bool,
     replay_sol_leg_blocker_reason_class: ReplaySolLegBlockerReasonClass,
     replay_sol_leg_blocker_explanation: String,
+    replay_sol_leg_blocker_prerequisite_reason_class: PublicationTruthExportBlockerReasonClass,
+    replay_sol_leg_blocker_prerequisite_checkpoint_headline_completed: bool,
+    replay_sol_leg_blocker_prerequisite_checkpoint_headline_budget_exhausted: bool,
+    replay_sol_leg_blocker_prerequisite_checkpoint_headline_stage: Option<String>,
+    replay_sol_leg_blocker_prerequisite_total_elapsed_ms: u64,
     config_path: String,
     runtime_db_path: Option<String>,
     recent_raw_db_path: Option<String>,
@@ -440,6 +445,16 @@ impl ReplaySolLegBlockerDiagnostic {
             replay_sol_leg_blocker_explanation: diagnostic
                 .publication_truth_export_blocker_explanation
                 .clone(),
+            replay_sol_leg_blocker_prerequisite_reason_class: diagnostic
+                .publication_truth_export_blocker_reason_class,
+            replay_sol_leg_blocker_prerequisite_checkpoint_headline_completed: diagnostic
+                .publication_truth_export_checkpoint_headline_completed,
+            replay_sol_leg_blocker_prerequisite_checkpoint_headline_budget_exhausted: diagnostic
+                .publication_truth_export_checkpoint_headline_budget_exhausted,
+            replay_sol_leg_blocker_prerequisite_checkpoint_headline_stage: diagnostic
+                .publication_truth_export_checkpoint_headline_stage
+                .clone(),
+            replay_sol_leg_blocker_prerequisite_total_elapsed_ms: 0,
             config_path: diagnostic.config_path.clone(),
             runtime_db_path: diagnostic.runtime_db_path.clone(),
             recent_raw_db_path: diagnostic.recent_raw_db_path.clone(),
@@ -2282,14 +2297,48 @@ fn explain_replay_sol_leg_blocker_read_only(
     now: DateTime<Utc>,
 ) -> ReplaySolLegBlockerDiagnostic {
     let started_at = Instant::now();
+    let prerequisite_started_at = Instant::now();
+    let publication_diagnostic = explain_publication_truth_export_blocker_read_only(config_path, now);
+    let prerequisite_total_elapsed_ms = elapsed_ms(prerequisite_started_at);
+    explain_replay_sol_leg_blocker_from_prerequisite_diagnostic(
+        started_at,
+        prerequisite_total_elapsed_ms,
+        publication_diagnostic,
+    )
+}
+
+#[cfg(test)]
+fn explain_replay_sol_leg_blocker_read_only_with_prerequisite_budget(
+    config_path: &Path,
+    now: DateTime<Utc>,
+    checkpoint_headline_budget: StdDuration,
+) -> ReplaySolLegBlockerDiagnostic {
+    let started_at = Instant::now();
+    let prerequisite_started_at = Instant::now();
     let publication_diagnostic =
         explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget(
             config_path,
             now,
-            StdDuration::from_millis(DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_MS),
+            checkpoint_headline_budget,
         );
-    let mut diagnostic =
-        ReplaySolLegBlockerDiagnostic::from_publication_truth_export_blocker(&publication_diagnostic);
+    let prerequisite_total_elapsed_ms = elapsed_ms(prerequisite_started_at);
+    explain_replay_sol_leg_blocker_from_prerequisite_diagnostic(
+        started_at,
+        prerequisite_total_elapsed_ms,
+        publication_diagnostic,
+    )
+}
+
+fn explain_replay_sol_leg_blocker_from_prerequisite_diagnostic(
+    started_at: Instant,
+    prerequisite_total_elapsed_ms: u64,
+    publication_diagnostic: PublicationTruthExportBlockerDiagnostic,
+) -> ReplaySolLegBlockerDiagnostic {
+    let mut diagnostic = ReplaySolLegBlockerDiagnostic::from_publication_truth_export_blocker(
+        &publication_diagnostic,
+    );
+    diagnostic.replay_sol_leg_blocker_prerequisite_total_elapsed_ms =
+        prerequisite_total_elapsed_ms;
 
     let top_level_reason =
         &publication_diagnostic.publication_truth_export_blocker_reason_class;
@@ -2873,6 +2922,31 @@ fn render_replay_sol_leg_blocker_human(diagnostic: &ReplaySolLegBlockerDiagnosti
         format!(
             "replay_sol_leg_blocker_explanation={}",
             diagnostic.replay_sol_leg_blocker_explanation
+        ),
+        format!(
+            "replay_sol_leg_blocker_prerequisite_reason_class={}",
+            serde_json::to_string(&diagnostic.replay_sol_leg_blocker_prerequisite_reason_class)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+        ),
+        format!(
+            "replay_sol_leg_blocker_prerequisite_checkpoint_headline_completed={}",
+            diagnostic.replay_sol_leg_blocker_prerequisite_checkpoint_headline_completed
+        ),
+        format!(
+            "replay_sol_leg_blocker_prerequisite_checkpoint_headline_budget_exhausted={}",
+            diagnostic.replay_sol_leg_blocker_prerequisite_checkpoint_headline_budget_exhausted
+        ),
+        format!(
+            "replay_sol_leg_blocker_prerequisite_checkpoint_headline_stage={}",
+            diagnostic
+                .replay_sol_leg_blocker_prerequisite_checkpoint_headline_stage
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "replay_sol_leg_blocker_prerequisite_total_elapsed_ms={}",
+            diagnostic.replay_sol_leg_blocker_prerequisite_total_elapsed_ms
         ),
         format!("config_path={}", diagnostic.config_path),
         format!(
@@ -4230,6 +4304,7 @@ mod tests {
     use super::{
         arm_test_force_replay_sol_leg_blocker_deep_reason_budget_exhausted,
         explain_replay_sol_leg_blocker_read_only,
+        explain_replay_sol_leg_blocker_read_only_with_prerequisite_budget,
         explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget,
         load_json, parse_args_from, run, run_command, write_json_atomic, Command, Config,
         ExplainPublicationTruthExportBlockerConfig, ExplainRecentRawCatchUpStatusConfig,
@@ -5611,6 +5686,25 @@ mod tests {
         );
         assert_eq!(parsed["replay_sol_leg_blocker_observed"], true);
         assert_eq!(
+            parsed["replay_sol_leg_blocker_prerequisite_reason_class"],
+            "publication_truth_export_blocked_on_replay_sol_leg_incomplete"
+        );
+        assert_eq!(
+            parsed["replay_sol_leg_blocker_prerequisite_checkpoint_headline_completed"],
+            true
+        );
+        assert_eq!(
+            parsed["replay_sol_leg_blocker_prerequisite_checkpoint_headline_budget_exhausted"],
+            false
+        );
+        assert_eq!(
+            parsed["replay_sol_leg_blocker_prerequisite_checkpoint_headline_stage"],
+            "complete"
+        );
+        assert!(parsed["replay_sol_leg_blocker_prerequisite_total_elapsed_ms"]
+            .as_u64()
+            .is_some());
+        assert_eq!(
             parsed["export_gate_reason"],
             "publication_truth_withheld_while_replay_sol_leg_incomplete"
         );
@@ -5655,6 +5749,11 @@ mod tests {
             "replay_sol_leg_blocker_observed",
             "replay_sol_leg_blocker_reason_class",
             "replay_sol_leg_blocker_explanation",
+            "replay_sol_leg_blocker_prerequisite_reason_class",
+            "replay_sol_leg_blocker_prerequisite_checkpoint_headline_completed",
+            "replay_sol_leg_blocker_prerequisite_checkpoint_headline_budget_exhausted",
+            "replay_sol_leg_blocker_prerequisite_checkpoint_headline_stage",
+            "replay_sol_leg_blocker_prerequisite_total_elapsed_ms",
             "config_path",
             "runtime_db_path",
             "recent_raw_db_path",
@@ -5748,11 +5847,16 @@ mod tests {
             "replay_sol_leg_blocker_not_current_export_blocker"
         );
         assert_eq!(
+            parsed["replay_sol_leg_blocker_prerequisite_reason_class"],
+            "publication_truth_export_blocked_on_other_publishable_checkpoint_reason"
+        );
+        assert_eq!(
             parsed["export_gate_reason"],
             "publication_truth_withheld_while_replay_candidate_activity_backfill_incomplete"
         );
         assert_eq!(parsed["replay_sol_leg_incomplete_reason_class"], Value::Null);
         assert_eq!(parsed["source_comparison_applicable"], Value::Null);
+        assert_eq!(parsed["replay_sol_leg_blocker_deep_reason_elapsed_ms"], 0);
         assert_eq!(parsed["replay_sol_leg_blocker_budget_exhausted"], false);
         Ok(())
     }
@@ -5799,9 +5903,26 @@ mod tests {
             diagnostic.replay_sol_leg_blocker_reason_class,
             ReplaySolLegBlockerReasonClass::ReplaySolLegBlockerUnprovenDueToMissingEvidence
         );
+        assert_eq!(
+            diagnostic.replay_sol_leg_blocker_prerequisite_reason_class,
+            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnReplaySolLegIncomplete
+        );
+        assert!(
+            diagnostic.replay_sol_leg_blocker_prerequisite_checkpoint_headline_completed
+        );
+        assert!(
+            !diagnostic.replay_sol_leg_blocker_prerequisite_checkpoint_headline_budget_exhausted
+        );
+        assert_eq!(
+            diagnostic
+                .replay_sol_leg_blocker_prerequisite_checkpoint_headline_stage
+                .as_deref(),
+            Some("complete")
+        );
         assert!(diagnostic.replay_sol_leg_blocker_explanation.contains(
             "promoted recent_raw latest db"
         ));
+        assert_eq!(diagnostic.replay_sol_leg_blocker_deep_reason_elapsed_ms, 0);
         assert_eq!(diagnostic.replay_sol_leg_incomplete_reason_class, None);
         Ok(())
     }
@@ -5880,6 +6001,81 @@ mod tests {
         assert_eq!(diagnostic.replay_sol_leg_incomplete_explanation, None);
         assert_eq!(diagnostic.source_comparison_applicable, None);
         assert_eq!(diagnostic.source_scan_time_budget_exhausted, None);
+        Ok(())
+    }
+
+    #[test]
+    fn replay_sol_leg_blocker_forced_prerequisite_failure_reports_prerequisite_telemetry(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-replay-sol-leg-blocker-prerequisite-budget-exhausted")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        seed_runtime_export_source(&fixture.store, now)?;
+        fixture
+            .store
+            .set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::FailClosed,
+                reason: "publication_truth_withheld_while_replay_sol_leg_incomplete".to_string(),
+                last_published_at: Some(now - Duration::hours(2)),
+                last_published_window_start: Some(metrics_window_start(now) - Duration::hours(1)),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(Vec::new()),
+            })?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-replay-sol-leg-prerequisite-budget".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: replay_sol_leg_exact_target_checkpoint_state_json(true, false)?,
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let diagnostic = explain_replay_sol_leg_blocker_read_only_with_prerequisite_budget(
+            &fixture.config_path,
+            now,
+            StdDuration::ZERO,
+        );
+        assert_eq!(
+            diagnostic.replay_sol_leg_blocker_reason_class,
+            ReplaySolLegBlockerReasonClass::ReplaySolLegBlockerUnprovenDueToMissingEvidence
+        );
+        assert_eq!(
+            diagnostic.replay_sol_leg_blocker_prerequisite_reason_class,
+            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnReplaySolLegIncomplete
+        );
+        assert!(
+            !diagnostic.replay_sol_leg_blocker_prerequisite_checkpoint_headline_completed
+        );
+        assert!(
+            diagnostic.replay_sol_leg_blocker_prerequisite_checkpoint_headline_budget_exhausted
+        );
+        assert_eq!(
+            diagnostic
+                .replay_sol_leg_blocker_prerequisite_checkpoint_headline_stage
+                .as_deref(),
+            Some("load_persisted_rebuild_row_meta_schema_lookup")
+        );
+        assert_eq!(diagnostic.replay_sol_leg_blocker_deep_reason_elapsed_ms, 0);
+        assert!(
+            diagnostic.replay_sol_leg_blocker_total_elapsed_ms
+                >= diagnostic.replay_sol_leg_blocker_prerequisite_total_elapsed_ms
+        );
+        assert!(diagnostic
+            .replay_sol_leg_blocker_explanation
+            .contains("cheap checkpoint-headline prerequisite path did not complete"));
         Ok(())
     }
 

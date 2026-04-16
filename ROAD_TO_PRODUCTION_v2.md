@@ -14359,3 +14359,43 @@ Current interpretation:
      cheap checkpoint-headline behavior operationally on live
    - the remaining bug is now inside the new mode's prerequisite execution path
      or timing/accounting, not in the established top-level blocker operator
+
+### Stage 3 replay-sol-leg blocker prerequisite reuse correction (`2026-04-16`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export --explain-replay-sol-leg-blocker --config <path> --json`
+   now builds its prerequisite proof through the same established public path as
+   `--explain-publication-truth-export-blocker`, instead of re-running a
+   divergent lower-level prerequisite handoff.
+2. The replay-sol-leg operator now emits explicit prerequisite telemetry:
+   - `replay_sol_leg_blocker_prerequisite_reason_class`
+   - `replay_sol_leg_blocker_prerequisite_checkpoint_headline_completed`
+   - `replay_sol_leg_blocker_prerequisite_checkpoint_headline_budget_exhausted`
+   - `replay_sol_leg_blocker_prerequisite_checkpoint_headline_stage`
+   - `replay_sol_leg_blocker_prerequisite_total_elapsed_ms`
+3. The corrected contract preserves:
+   - no `recent_raw` open until prerequisite proof completes
+   - `replay_sol_leg_blocker_deep_reason_elapsed_ms = 0` when deep proof never starts
+   - unchanged `--explain-publication-truth-export-blocker` semantics
+   - unchanged replay behavior, publication/export semantics, and recent-raw behavior
+4. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Current interpretation:
+
+1. The replay-sol-leg operator is now required to stand on the same cheap
+   prerequisite contract already proven by the primary publication-blocker
+   operator.
+2. If live still falsifies the operator after this correction, the remaining
+   bug will be in the new mode's prerequisite reuse or post-prerequisite
+   handoff, not in the already-established publication-blocker path itself.
