@@ -13856,3 +13856,126 @@ Current interpretation:
 2. This corrective batch is accepted because it inserts the missing cheap
    checkpoint-headline step into the primary operator itself and prevents any
    fallback to recent-raw-backed deep proof until that step succeeds.
+
+### Stage 3 blob-free primary export-blocker hot path (`2026-04-16`)
+
+Accepted repository change:
+
+1. The primary operator
+   `discovery_runtime_export --explain-publication-truth-export-blocker --config <path> --json`
+   no longer calls `load_discovery_persisted_rebuild_state_meta_read_only()` on
+   its hot path.
+2. The runtime-DB-only checkpoint-headline step now reads only cheap row-meta
+   fields through `load_discovery_persisted_rebuild_state_meta_lite_raw_read_only()`.
+3. The primary path does not:
+   - call `length(state_json)`
+   - probe `state_json` byte length implicitly
+   - open `recent_raw` before cheap headline proof completes
+4. The primary operator now emits explicit byte-probe status fields:
+   - `persisted_rebuild_checkpoint_state_json_bytes_probe_attempted`
+   - `persisted_rebuild_checkpoint_state_json_bytes_probe_completed`
+   - `persisted_rebuild_checkpoint_state_json_bytes_probe_budget_exhausted`
+   - `persisted_rebuild_checkpoint_state_json_bytes_probe_stage`
+   - `persisted_rebuild_checkpoint_state_json_bytes_probe_explanation`
+5. On the primary path:
+   - `persisted_rebuild_checkpoint_exists`
+   - `persisted_rebuild_checkpoint_updated_at`
+   - `rebuild_phase`
+   can now be proven cheaply from runtime DB meta alone
+   while `persisted_rebuild_checkpoint_state_json_bytes` may remain null when
+   byte probing is intentionally skipped.
+6. The corrective batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+7. It still does not change:
+   - replay behavior
+   - publication/export gate semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Current interpretation:
+
+1. The top-level export blocker remains proven from persisted publication
+   state.
+2. The hot path is now explicitly blob-free: the primary operator no longer
+   pays an implicit `state_json` byte-length scan before it can return the
+   correct top-level blocker.
+3. Any remaining budget exhaustion at
+   `load_persisted_rebuild_row_meta` is now a separate runtime-DB row-meta seam
+   that should be proven with a dedicated bounded operator instead of guessed at
+   from the primary path.
+
+### Stage 3 persisted replay-checkpoint row-meta probe operator (`2026-04-16`)
+
+Accepted repository change:
+
+1. A new bounded read-only runtime-DB-only proof operator now exists:
+   - `discovery_replay_checkpoint_row_meta_probe --config <path> --json`
+2. The operator resolves the runtime DB from the supplied config, opens it
+   read-only, and proves only the persisted replay-checkpoint row-meta access
+   path needed for the primary operator headline step.
+3. The operator measures and emits timings for:
+   - schema lookup
+   - row count for `id = 1`
+   - prepared primary-key lookup of `phase, updated_at`
+4. It does not:
+   - open `recent_raw`
+   - parse `state_json`
+   - call `length(state_json)`
+   - run replay/source comparison
+   - classify deeper replay blocker families
+5. It emits the bounded proof/measurement fields:
+   - `replay_checkpoint_row_meta_probe_budget_exhausted`
+   - `replay_checkpoint_row_meta_probe_stage`
+   - `replay_checkpoint_row_meta_probe_total_elapsed_ms`
+   - `replay_checkpoint_row_meta_table_exists`
+   - `replay_checkpoint_row_meta_row_exists`
+   - `replay_checkpoint_row_meta_phase`
+   - `replay_checkpoint_row_meta_updated_at`
+   - `replay_checkpoint_row_meta_query_path`
+   - `replay_checkpoint_row_meta_query_elapsed_ms`
+   - `replay_checkpoint_row_meta_row_count_elapsed_ms`
+   - `replay_checkpoint_row_meta_schema_lookup_elapsed_ms`
+   - `replay_checkpoint_row_meta_prepare_elapsed_ms`
+   - `replay_checkpoint_row_meta_step_elapsed_ms`
+6. It returns these reason classes:
+   - `replay_checkpoint_row_meta_probe_row_present`
+   - `replay_checkpoint_row_meta_probe_row_missing`
+   - `replay_checkpoint_row_meta_probe_unproven_due_to_missing_evidence`
+7. The batch touches only:
+   - `crates/discovery/src/bin/discovery_replay_checkpoint_row_meta_probe.rs`
+8. It does not change:
+   - `discovery_runtime_export`
+   - `discovery_replay_checkpoint_headline`
+   - `discovery_replay_checkpoint_diagnose`
+   - replay behavior
+   - publication/export gate semantics
+   - recent-raw behavior
+   - configs, templates, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_replay_checkpoint_row_meta_probe`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_replay_checkpoint_row_meta_probe`
+   passed.
+3. `git diff --check --no-index -- /dev/null crates/discovery/src/bin/discovery_replay_checkpoint_row_meta_probe.rs`
+   produced no whitespace findings; the nonzero exit is expected for a
+   new-file comparison against `/dev/null`.
+
+Current interpretation:
+
+1. This batch is accepted as the dedicated proof tool for the remaining
+   `load_persisted_rebuild_row_meta` seam on the primary Stage 3 path.
+2. It gives operators a bounded way to prove whether the checkpoint row-meta
+   read itself is cheap enough on live, and which concrete query stage absorbs
+   the time budget, without reentering `state_json`-size probing or any
+   recent-raw-backed deep replay path.
