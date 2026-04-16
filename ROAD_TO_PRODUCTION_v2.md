@@ -13841,6 +13841,49 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+Live rollout result (`2026-04-16`, commit `d62c19a`):
+
+1. The server was fast-forwarded from `3c5e60e` to `d62c19a` and only
+   `discovery_runtime_export` was rebuilt.
+2. Service state remained healthy after rollout:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+3. A clean `sudo -n` live run of:
+   `discovery_runtime_export --probe-checkpoint-row-fetch-minimal-snapshot --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_minimal_snapshot_probe_reason_class = checkpoint_row_fetch_minimal_snapshot_probe_budget_exhausted`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_stage = sqlite_side_materialization`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_total_elapsed_ms = 1000`
+4. The new materialization micro-stage telemetry narrowed the seam exactly:
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_event_count = 7`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_last_event = materialization_insert_select_started`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_temp_db_open_started = true`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_temp_db_open_completed = true`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_schema_create_started = true`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_schema_create_completed = true`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_attach_started = true`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_attach_completed = true`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_started = true`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_insert_select_completed = false`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_detach_started = false`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_materialization_detach_completed = false`
+5. Per-stage elapsed timings were consistent with that sequence:
+   - temp DB open = `0 ms`
+   - schema create = `10 ms`
+   - attach = `0 ms`
+   - insert-select = `0 ms` completed time not reached
+   - detach = `0 ms`
+6. Therefore the current exact live seam is no longer generic
+   `sqlite_side_materialization`; it is specifically the SQLite call boundary:
+   - `INSERT INTO discovery_persisted_rebuild_state (id, phase, updated_at)
+      SELECT id, phase, updated_at
+      FROM source.discovery_persisted_rebuild_state
+      WHERE id = 1`
+   - the operator enters `materialization_insert_select_started`
+   - then no completion event arrives before the `1000ms` budget expires
+7. The next proof-first batch must target that exact `INSERT ... SELECT`
+   materialization seam, not temp DB open, schema create, or ATTACH behavior.
+
 Live rollout result (`2026-04-16`, commit `a529f5d`):
 
 1. The server was fast-forwarded to `a529f5d` and only
