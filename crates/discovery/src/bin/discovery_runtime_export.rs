@@ -265,6 +265,7 @@ struct PublicationTruthExportBlockerDiagnostic {
     publication_truth_export_blocker_reason_class: PublicationTruthExportBlockerReasonClass,
     publication_truth_export_blocker_explanation: String,
     publication_truth_export_blocker_top_level_proven_from_publication_state: bool,
+    publication_truth_export_checkpoint_headline_prerequisite_source: String,
     publication_truth_export_checkpoint_headline_budget_ms: u64,
     publication_truth_export_checkpoint_headline_budget_source: String,
     // Unreached checkpoint-headline stages keep their elapsed/budget-remaining telemetry at 0.
@@ -337,6 +338,8 @@ impl PublicationTruthExportBlockerDiagnostic {
                 PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockerUnprovenDueToMissingEvidence,
             publication_truth_export_blocker_explanation: explanation,
             publication_truth_export_blocker_top_level_proven_from_publication_state: false,
+            publication_truth_export_checkpoint_headline_prerequisite_source:
+                "runtime_db_only_row_meta_path_not_attempted".to_string(),
             publication_truth_export_checkpoint_headline_budget_ms:
                 DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_MS,
             publication_truth_export_checkpoint_headline_budget_source:
@@ -821,6 +824,17 @@ struct PublicationTruthExportCheckpointRowMetaLoadResult {
     timing: PublicationTruthExportCheckpointHeadlineTiming,
 }
 
+#[derive(Debug)]
+enum PublicationTruthExportCheckpointRowMetaWorkerMessage {
+    OpenedReadOnly(u64),
+    Entered(PublicationTruthExportCheckpointRowMetaStage),
+    SchemaLookupCompleted(u64),
+    RowCountCompleted(u64),
+    PrepareCompleted(u64),
+    StepCompleted(u64),
+    Finished(Result<PublicationTruthExportCheckpointRowMeta, String>),
+}
+
 fn export_gate_reason_publishable_checkpoint_blocker(reason: &str) -> Option<&str> {
     reason
         .strip_prefix(PUBLICATION_TRUTH_WITHHELD_PREFIX)
@@ -1059,6 +1073,8 @@ fn apply_publication_truth_export_checkpoint_headline_enrichment(
     runtime_db_path: &Path,
     budget: StdDuration,
 ) -> PublicationTruthExportCheckpointHeadlineOutcome {
+    diagnostic.publication_truth_export_checkpoint_headline_prerequisite_source =
+        "direct_runtime_db_row_meta_worker_timeout_path".to_string();
     set_publication_truth_export_state_json_bytes_probe_not_attempted(
         diagnostic,
         "persisted rebuild state_json byte-length probing was skipped in the primary operator checkpoint headline path to avoid scanning large persisted state blobs before deciding whether deeper work is worthwhile",
@@ -1133,6 +1149,76 @@ fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
     budget: StdDuration,
 ) -> Result<PublicationTruthExportCheckpointRowMetaLoadResult> {
     let total_started_at = Instant::now();
+    let mut timing = PublicationTruthExportCheckpointHeadlineTiming::default();
+    let (tx, rx) = mpsc::sync_channel(16);
+    let runtime_db_path = runtime_db_path.to_path_buf();
+    thread::spawn(move || {
+        let _ = load_publication_truth_export_checkpoint_row_meta_worker(&runtime_db_path, tx);
+    });
+
+    let mut current_stage = PublicationTruthExportCheckpointRowMetaStage::SchemaLookup;
+    loop {
+        match rx.recv_timeout(remaining_budget_duration(budget, total_started_at)) {
+            Ok(PublicationTruthExportCheckpointRowMetaWorkerMessage::OpenedReadOnly(
+                elapsed_ms,
+            )) => {
+                timing.runtime_db_open_elapsed_ms = elapsed_ms;
+                timing.budget_remaining_ms_after_open = remaining_budget_ms(budget, total_started_at);
+            }
+            Ok(PublicationTruthExportCheckpointRowMetaWorkerMessage::Entered(stage)) => {
+                current_stage = stage;
+            }
+            Ok(PublicationTruthExportCheckpointRowMetaWorkerMessage::SchemaLookupCompleted(
+                elapsed_ms,
+            )) => {
+                timing.schema_lookup_elapsed_ms = elapsed_ms;
+                timing.budget_remaining_ms_after_schema_lookup =
+                    remaining_budget_ms(budget, total_started_at);
+            }
+            Ok(PublicationTruthExportCheckpointRowMetaWorkerMessage::RowCountCompleted(
+                elapsed_ms,
+            )) => {
+                timing.row_count_elapsed_ms = elapsed_ms;
+                timing.budget_remaining_ms_after_row_count =
+                    remaining_budget_ms(budget, total_started_at);
+            }
+            Ok(PublicationTruthExportCheckpointRowMetaWorkerMessage::PrepareCompleted(elapsed_ms)) => {
+                timing.prepare_elapsed_ms = elapsed_ms;
+                timing.budget_remaining_ms_after_prepare =
+                    remaining_budget_ms(budget, total_started_at);
+            }
+            Ok(PublicationTruthExportCheckpointRowMetaWorkerMessage::StepCompleted(elapsed_ms)) => {
+                timing.step_elapsed_ms = elapsed_ms;
+                timing.budget_remaining_ms_after_step = remaining_budget_ms(budget, total_started_at);
+            }
+            Ok(PublicationTruthExportCheckpointRowMetaWorkerMessage::Finished(result)) => {
+                timing.total_elapsed_ms = elapsed_ms(total_started_at);
+                let outcome = PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(result
+                    .map_err(|error| anyhow!(error))?);
+                return Ok(PublicationTruthExportCheckpointRowMetaLoadResult { outcome, timing });
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                timing.total_elapsed_ms = elapsed_ms(total_started_at);
+                return Ok(PublicationTruthExportCheckpointRowMetaLoadResult {
+                    outcome: PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
+                        current_stage,
+                    ),
+                    timing,
+                });
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(anyhow!(
+                    "cheap persisted rebuild row-meta worker disconnected before returning a result"
+                ));
+            }
+        }
+    }
+}
+
+fn load_publication_truth_export_checkpoint_row_meta_worker(
+    runtime_db_path: &Path,
+    tx: mpsc::SyncSender<PublicationTruthExportCheckpointRowMetaWorkerMessage>,
+) -> Result<()> {
     let open_started_at = Instant::now();
     let conn = Connection::open_with_flags(
         runtime_db_path,
@@ -1144,19 +1230,23 @@ fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
             runtime_db_path.display()
         )
     })?;
-    let mut timing = PublicationTruthExportCheckpointHeadlineTiming::default();
-    timing.runtime_db_open_elapsed_ms = elapsed_ms(open_started_at);
-    timing.budget_remaining_ms_after_open = remaining_budget_ms(budget, total_started_at);
-    if total_started_at.elapsed() >= budget {
-        timing.total_elapsed_ms = elapsed_ms(total_started_at);
-        return Ok(PublicationTruthExportCheckpointRowMetaLoadResult {
-            outcome: PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
-                PublicationTruthExportCheckpointRowMetaStage::SchemaLookup,
-            ),
-            timing,
-        });
+    if tx
+        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::OpenedReadOnly(
+            elapsed_ms(open_started_at),
+        ))
+        .is_err()
+    {
+        return Ok(());
     }
 
+    if tx
+        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Entered(
+            PublicationTruthExportCheckpointRowMetaStage::SchemaLookup,
+        ))
+        .is_err()
+    {
+        return Ok(());
+    }
     let schema_lookup_started_at = Instant::now();
     let table_exists = conn
         .query_row(CHECKPOINT_HEADLINE_ROW_META_TABLE_EXISTS_SQL, [], |row| {
@@ -1164,31 +1254,33 @@ fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
         })
         .context("failed checking discovery_persisted_rebuild_state table existence")?
         != 0;
-    timing.schema_lookup_elapsed_ms = elapsed_ms(schema_lookup_started_at);
-    timing.budget_remaining_ms_after_schema_lookup = remaining_budget_ms(budget, total_started_at);
-    if total_started_at.elapsed() >= budget {
-        timing.total_elapsed_ms = elapsed_ms(total_started_at);
-        return Ok(PublicationTruthExportCheckpointRowMetaLoadResult {
-            outcome: PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
-                PublicationTruthExportCheckpointRowMetaStage::SchemaLookup,
-            ),
-            timing,
-        });
+    if tx
+        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::SchemaLookupCompleted(
+            elapsed_ms(schema_lookup_started_at),
+        ))
+        .is_err()
+    {
+        return Ok(());
     }
     if !table_exists {
-        timing.total_elapsed_ms = elapsed_ms(total_started_at);
-        return Ok(PublicationTruthExportCheckpointRowMetaLoadResult {
-            outcome: PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(
-                PublicationTruthExportCheckpointRowMeta {
-                    checkpoint_exists: false,
-                    rebuild_phase: None,
-                    updated_at: None,
-                },
-            ),
-            timing,
-        });
+        let _ = tx.send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Finished(Ok(
+            PublicationTruthExportCheckpointRowMeta {
+                checkpoint_exists: false,
+                rebuild_phase: None,
+                updated_at: None,
+            },
+        )));
+        return Ok(());
     }
 
+    if tx
+        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Entered(
+            PublicationTruthExportCheckpointRowMetaStage::RowCount,
+        ))
+        .is_err()
+    {
+        return Ok(());
+    }
     let row_count_started_at = Instant::now();
     let row_count = conn
         .query_row(CHECKPOINT_HEADLINE_ROW_META_ROW_COUNT_SQL, [], |row| {
@@ -1196,47 +1288,56 @@ fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
         })
         .context("failed counting persisted rebuild checkpoint row id=1")?
         .max(0);
-    timing.row_count_elapsed_ms = elapsed_ms(row_count_started_at);
-    timing.budget_remaining_ms_after_row_count = remaining_budget_ms(budget, total_started_at);
-    if total_started_at.elapsed() >= budget {
-        timing.total_elapsed_ms = elapsed_ms(total_started_at);
-        return Ok(PublicationTruthExportCheckpointRowMetaLoadResult {
-            outcome: PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
-                PublicationTruthExportCheckpointRowMetaStage::RowCount,
-            ),
-            timing,
-        });
+    if tx
+        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::RowCountCompleted(
+            elapsed_ms(row_count_started_at),
+        ))
+        .is_err()
+    {
+        return Ok(());
     }
     if row_count == 0 {
-        timing.total_elapsed_ms = elapsed_ms(total_started_at);
-        return Ok(PublicationTruthExportCheckpointRowMetaLoadResult {
-            outcome: PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(
-                PublicationTruthExportCheckpointRowMeta {
-                    checkpoint_exists: false,
-                    rebuild_phase: None,
-                    updated_at: None,
-                },
-            ),
-            timing,
-        });
+        let _ = tx.send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Finished(Ok(
+            PublicationTruthExportCheckpointRowMeta {
+                checkpoint_exists: false,
+                rebuild_phase: None,
+                updated_at: None,
+            },
+        )));
+        return Ok(());
     }
 
+    if tx
+        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Entered(
+            PublicationTruthExportCheckpointRowMetaStage::PreparePrimaryKeyLookup,
+        ))
+        .is_err()
+    {
+        return Ok(());
+    }
     let prepare_started_at = Instant::now();
     let mut stmt = conn
         .prepare(CHECKPOINT_HEADLINE_ROW_META_SQL)
         .context("failed preparing persisted rebuild checkpoint row-meta query")?;
-    timing.prepare_elapsed_ms = elapsed_ms(prepare_started_at);
-    timing.budget_remaining_ms_after_prepare = remaining_budget_ms(budget, total_started_at);
-    if total_started_at.elapsed() >= budget {
-        timing.total_elapsed_ms = elapsed_ms(total_started_at);
-        return Ok(PublicationTruthExportCheckpointRowMetaLoadResult {
-            outcome: PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
-                PublicationTruthExportCheckpointRowMetaStage::PreparePrimaryKeyLookup,
-            ),
-            timing,
-        });
+    if tx
+        .send(
+            PublicationTruthExportCheckpointRowMetaWorkerMessage::PrepareCompleted(elapsed_ms(
+                prepare_started_at,
+            )),
+        )
+        .is_err()
+    {
+        return Ok(());
     }
 
+    if tx
+        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Entered(
+            PublicationTruthExportCheckpointRowMetaStage::StepPrimaryKeyLookup,
+        ))
+        .is_err()
+    {
+        return Ok(());
+    }
     let step_started_at = Instant::now();
     let raw = stmt
         .query_row([], |row| {
@@ -1244,19 +1345,16 @@ fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
         })
         .optional()
         .context("failed stepping persisted rebuild checkpoint row-meta query")?;
-    timing.step_elapsed_ms = elapsed_ms(step_started_at);
-    timing.budget_remaining_ms_after_step = remaining_budget_ms(budget, total_started_at);
-    if total_started_at.elapsed() >= budget {
-        timing.total_elapsed_ms = elapsed_ms(total_started_at);
-        return Ok(PublicationTruthExportCheckpointRowMetaLoadResult {
-            outcome: PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
-                PublicationTruthExportCheckpointRowMetaStage::StepPrimaryKeyLookup,
-            ),
-            timing,
-        });
+    if tx
+        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::StepCompleted(
+            elapsed_ms(step_started_at),
+        ))
+        .is_err()
+    {
+        return Ok(());
     }
 
-    let outcome = match raw {
+    let row_meta = match raw {
         Some((phase_raw, updated_at_raw)) => {
             let phase = DiscoveryPersistedRebuildPhase::parse(&phase_raw)
                 .map(|phase| phase.as_str().to_string())
@@ -1269,24 +1367,23 @@ fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
                         updated_at_raw
                     )
                 })?;
-            PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(
-                PublicationTruthExportCheckpointRowMeta {
-                    checkpoint_exists: true,
-                    rebuild_phase: Some(phase),
-                    updated_at: Some(updated_at),
-                },
-            )
-        }
-        None => PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(
             PublicationTruthExportCheckpointRowMeta {
-                checkpoint_exists: false,
-                rebuild_phase: None,
-                updated_at: None,
-            },
-        ),
+                checkpoint_exists: true,
+                rebuild_phase: Some(phase),
+                updated_at: Some(updated_at),
+            }
+        }
+        None => PublicationTruthExportCheckpointRowMeta {
+            checkpoint_exists: false,
+            rebuild_phase: None,
+            updated_at: None,
+        },
     };
-    timing.total_elapsed_ms = elapsed_ms(total_started_at);
-    Ok(PublicationTruthExportCheckpointRowMetaLoadResult { outcome, timing })
+
+    let _ = tx.send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Finished(Ok(
+        row_meta,
+    )));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3361,6 +3458,7 @@ fn explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_b
     ) {
         return diagnostic;
     }
+    drop(runtime_store);
 
     let checkpoint_headline_outcome = apply_publication_truth_export_checkpoint_headline_enrichment(
         &mut diagnostic,
@@ -3445,6 +3543,26 @@ fn explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_b
                 format!(
                     "bounded replay-sol-leg enrichment could not open promoted recent_raw latest db {} read-only: {error:#}",
                     recent_raw_db_path.display()
+                ),
+            );
+            return diagnostic;
+        }
+    };
+    let runtime_store = match SqliteStore::open_read_only(&runtime_db_path).with_context(|| {
+        format!(
+            "failed reopening runtime db {} read-only for bounded replay-sol-leg enrichment",
+            runtime_db_path.display()
+        )
+    }) {
+        Ok(store) => store,
+        Err(error) => {
+            set_publication_truth_export_enrichment_failed(
+                &mut diagnostic,
+                Some("reopen_runtime_db_for_replay_sol_leg_enrichment".to_string()),
+                false,
+                format!(
+                    "bounded replay-sol-leg enrichment could not reopen runtime db {} read-only after checkpoint headline completion: {error:#}",
+                    runtime_db_path.display()
                 ),
             );
             return diagnostic;
@@ -4015,6 +4133,10 @@ fn render_publication_truth_export_blocker_human(
         format!(
             "publication_truth_export_blocker_top_level_proven_from_publication_state={}",
             diagnostic.publication_truth_export_blocker_top_level_proven_from_publication_state
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_prerequisite_source={}",
+            diagnostic.publication_truth_export_checkpoint_headline_prerequisite_source
         ),
         format!(
             "publication_truth_export_checkpoint_headline_budget_ms={}",
@@ -6647,6 +6769,10 @@ mod tests {
             true
         );
         assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_prerequisite_source"],
+            "direct_runtime_db_row_meta_worker_timeout_path"
+        );
+        assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_budget_ms"],
             1000
         );
@@ -6735,6 +6861,7 @@ mod tests {
             "publication_truth_export_blocker_reason_class",
             "publication_truth_export_blocker_explanation",
             "publication_truth_export_blocker_top_level_proven_from_publication_state",
+            "publication_truth_export_checkpoint_headline_prerequisite_source",
             "publication_truth_export_checkpoint_headline_budget_ms",
             "publication_truth_export_checkpoint_headline_budget_source",
             "publication_truth_export_checkpoint_headline_total_elapsed_ms",
@@ -7202,6 +7329,10 @@ mod tests {
         assert!(diagnostic.publication_truth_export_checkpoint_headline_attempted);
         assert!(!diagnostic.publication_truth_export_checkpoint_headline_completed);
         assert_eq!(
+            diagnostic.publication_truth_export_checkpoint_headline_prerequisite_source,
+            "direct_runtime_db_row_meta_worker_timeout_path"
+        );
+        assert_eq!(
             diagnostic.publication_truth_export_checkpoint_headline_budget_ms,
             1000
         );
@@ -7285,6 +7416,10 @@ mod tests {
         assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_completed"],
             true
+        );
+        assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_prerequisite_source"],
+            "direct_runtime_db_row_meta_worker_timeout_path"
         );
         assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_budget_ms"],

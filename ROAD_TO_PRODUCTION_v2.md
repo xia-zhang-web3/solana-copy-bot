@@ -13600,6 +13600,45 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+Corrective repository batch accepted (`2026-04-16`):
+
+1. The primary publication-blocker checkpoint-headline path no longer performs
+   the cheap persisted rebuild row-meta lookup inline on the hot path.
+2. The checkpoint-headline path now uses an explicitly bounded
+   runtime-DB-only worker/timeout path for:
+   - schema lookup
+   - row count for persisted checkpoint row id `1`
+   - prepare primary-key lookup
+   - step primary-key lookup
+3. When the row-meta path overruns its budget, the primary operator now returns
+   structured bounded evidence instead of waiting tens of seconds on the hot
+   path.
+4. The publication-blocker path now drops the initial `runtime_store` before
+   checkpoint-headline row-meta loading, so the bounded row-meta worker opens
+   its own read-only runtime DB connection without holding the earlier
+   publication-state connection open.
+5. The primary operator now emits:
+   - `publication_truth_export_checkpoint_headline_prerequisite_source = direct_runtime_db_row_meta_worker_timeout_path`
+6. Existing checkpoint-headline timing and budget-remaining fields remain part
+   of the contract.
+7. Source-compare mode still reuses the publication diagnostic object/path.
+8. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+9. It does not change:
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
 Live rollout result (`2026-04-16`, commit `3fc70d3`):
 
 1. The server was fast-forwarded to `3fc70d3` and only
