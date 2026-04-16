@@ -14331,3 +14331,31 @@ Current interpretation:
    reach replay-sol-leg diagnosis at all, but what exact deep reason the new
    live operator returns against production runtime DB and promoted
    `recent_raw` evidence.
+3. Live rollout to the production host falsified the intended operational
+   outcome for this batch:
+   - server commit moved to `0f2fa37`
+   - only `discovery_runtime_export` was rebuilt
+   - `solana-copy-bot.service` stayed `active`
+   - `copybot-discovery-runtime-export.timer` stayed `active`
+4. The new live command:
+   `discovery_runtime_export --explain-replay-sol-leg-blocker --config /etc/solana-copy-bot/live.server.toml --json`
+   did return, but it returned:
+   - `replay_sol_leg_blocker_reason_class = replay_sol_leg_blocker_unproven_due_to_missing_evidence`
+   - explanation = cheap checkpoint-headline prerequisite path did not complete
+   - `replay_sol_leg_blocker_total_elapsed_ms = 41479`
+   - `replay_sol_leg_blocker_checkpoint_headline_elapsed_ms = 41463`
+   - `replay_sol_leg_blocker_deep_reason_elapsed_ms = 0`
+   - `export_gate_reason = publication_truth_withheld_while_replay_sol_leg_incomplete`
+   - `rebuild_phase = replay`
+   - `rebuild_replay_subphase = sol_leg`
+5. On the same deployed binary, the existing primary operator still returned
+   the cheap checkpoint headline successfully on live:
+   - `publication_truth_export_blocker_reason_class = publication_truth_export_blocked_on_replay_sol_leg_incomplete`
+   - `publication_truth_export_checkpoint_headline_completed = true`
+   - `publication_truth_export_checkpoint_headline_budget_exhausted = false`
+   - `publication_truth_export_checkpoint_headline_total_elapsed_ms = 314`
+6. Current interpretation after rollout:
+   - the new replay-sol-leg blocker mode did not yet inherit the already-proven
+     cheap checkpoint-headline behavior operationally on live
+   - the remaining bug is now inside the new mode's prerequisite execution path
+     or timing/accounting, not in the established top-level blocker operator
