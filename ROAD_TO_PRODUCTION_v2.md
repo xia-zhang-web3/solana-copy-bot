@@ -13628,6 +13628,56 @@ Live rollout result (`2026-04-16`, commit `1b95c6e`):
    file-content behavior from this operator, because the operator did not reach
    a bounded result on live.
 
+Corrective repository batch accepted (`2026-04-16`):
+
+1. The copied-snapshot probe is now internally bounded and always returns
+   structured JSON.
+2. Its staging path is now split into explicit controller-observed stages:
+   - temp-dir creation
+   - main DB copy
+   - WAL copy
+   - SHM copy
+   - handoff into the reused zero-timeout row-fetch probe
+3. The copied-snapshot operator now emits explicit staging telemetry:
+   - temp-dir created
+   - copy-main started/completed/bytes
+   - copy-wal started/completed/bytes
+   - copy-shm started/completed/bytes
+   - handoff started/completed
+4. It also emits per-stage elapsed timings for:
+   - temp-dir
+   - copy-main
+   - copy-wal
+   - copy-shm
+   - handoff
+5. On any staging timeout or overrun, it now returns:
+   - `checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted`
+   - exact stage
+   - all reached staging telemetry
+6. The copied-snapshot mode still reuses the same zero-timeout row-fetch core as
+   the busy-wait probe after staging succeeds.
+7. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+8. It does not change:
+   - `--explain-publication-truth-export-blocker`
+   - `--explain-replay-sol-leg-blocker`
+   - `--trace-replay-sol-leg-deep-proof`
+   - `--trace-replay-sol-leg-source-compare`
+   - `--probe-checkpoint-row-fetch-busy-wait`
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
 Live rollout result (`2026-04-16`, commit `fb6edd5`):
 
 1. The server was fast-forwarded to `fb6edd5` and only
