@@ -13714,6 +13714,57 @@ Live rollout result (`2026-04-16`, commit `b7f70e6`):
    - the next proof-first batch must target a truly source-row-fetch-independent
      preparation path if concurrency isolation is still the goal
 
+Corrective repository batch accepted (`2026-04-16`):
+
+1. The `--probe-checkpoint-row-fetch-minimal-snapshot` operator now replaces its
+   application-level live source row-fetch preparation path with a SQLite-side
+   materialization path.
+2. The current explicit strategy string is now:
+   `temp_sqlite_row_meta_only_table_copy_via_sqlite_attach_insert_select_no_wal_or_shm`.
+3. The worker no longer performs application-level:
+   - `prepare(CHECKPOINT_HEADLINE_ROW_META_SQL)`
+   - `query([])`
+   - `rows.next()?`
+   against the live runtime DB before temp handoff.
+4. Instead it now:
+   - opens the temp DB
+   - `ATTACH`es the live runtime DB as a SQLite source
+   - materializes the checkpoint row-meta surface via SQLite-side
+     `INSERT ... SELECT`
+   - then hands the temp DB to the existing zero-timeout row-fetch probe core
+5. New explicit dependency/materialization fields:
+   - `checkpoint_row_fetch_minimal_snapshot_probe_source_row_fetch_dependency_kind`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_sqlite_side_materialization_attempted`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_sqlite_side_materialization_completed`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_sqlite_side_materialization_sql`
+   - `checkpoint_row_fetch_minimal_snapshot_probe_sqlite_side_materialization_elapsed_ms`
+6. The new contract distinguishes:
+   - `application_level_source_row_fetch`
+   - `sqlite_engine_side_materialization`
+   - `source_row_fetch_independent`
+7. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+8. It does not change:
+   - `--explain-publication-truth-export-blocker`
+   - `--explain-replay-sol-leg-blocker`
+   - `--trace-replay-sol-leg-deep-proof`
+   - `--trace-replay-sol-leg-source-compare`
+   - `--probe-checkpoint-row-fetch-busy-wait`
+   - `--probe-checkpoint-row-fetch-copied-snapshot`
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
 Live rollout result (`2026-04-16`, commit `a529f5d`):
 
 1. The server was fast-forwarded to `a529f5d` and only
