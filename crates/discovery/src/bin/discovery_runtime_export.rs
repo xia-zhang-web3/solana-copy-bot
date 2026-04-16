@@ -7,7 +7,7 @@ use copybot_discovery::runtime_restore_ops::{
     write_json_atomic, ARTIFACT_ARCHIVE_PREFIX, ARTIFACT_ARCHIVE_SUFFIX,
 };
 use copybot_discovery::{
-    DiscoveryService, PersistedReplayCheckpointInspection, RecentRawCatchUpDiagnostic,
+    DiscoveryService, RecentRawCatchUpDiagnostic,
     RecentRawPromotedRetentionContractDiagnostic, RecentRawPromotionBlockerDiagnostic,
     RecentRawReplacementArtifactHistoryContractDiagnostic,
     RecentRawReplacementAttemptTelemetryDiagnostic, RecentRawReplacementConvergenceDiagnostic,
@@ -18,9 +18,9 @@ use copybot_discovery::{
     ReplaySolLegIncompleteReasonClass,
 };
 use copybot_storage::{
-    DiscoveryPersistedRebuildPhase, DiscoveryPersistedRebuildStateMetaLiteRawRow,
-    DiscoveryRuntimeArtifact, SqliteStore,
+    DiscoveryPersistedRebuildPhase, DiscoveryRuntimeArtifact, SqliteStore,
 };
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::Serialize;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -45,6 +45,15 @@ const USAGE: &str = "usage:
 
 const PUBLICATION_TRUTH_WITHHELD_PREFIX: &str = "publication_truth_withheld_while_";
 const DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_MS: u64 = 250;
+const CHECKPOINT_HEADLINE_ROW_META_TABLE_EXISTS_SQL: &str = "SELECT EXISTS(
+    SELECT 1
+    FROM sqlite_master
+    WHERE type = 'table' AND name = 'discovery_persisted_rebuild_state'
+)";
+const CHECKPOINT_HEADLINE_ROW_META_ROW_COUNT_SQL: &str =
+    "SELECT COUNT(1) FROM discovery_persisted_rebuild_state WHERE id = 1";
+const CHECKPOINT_HEADLINE_ROW_META_SQL: &str =
+    "SELECT phase, updated_at FROM discovery_persisted_rebuild_state WHERE id = 1";
 
 fn main() -> Result<()> {
     let Some(command) = parse_args()? else {
@@ -340,6 +349,40 @@ enum PublicationTruthExportCheckpointHeadlineOutcome {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicationTruthExportCheckpointRowMetaStage {
+    SchemaLookup,
+    RowCount,
+    PreparePrimaryKeyLookup,
+    StepPrimaryKeyLookup,
+}
+
+impl PublicationTruthExportCheckpointRowMetaStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SchemaLookup => "load_persisted_rebuild_row_meta_schema_lookup",
+            Self::RowCount => "load_persisted_rebuild_row_meta_row_count",
+            Self::PreparePrimaryKeyLookup => {
+                "load_persisted_rebuild_row_meta_prepare_primary_key_lookup"
+            }
+            Self::StepPrimaryKeyLookup => "load_persisted_rebuild_row_meta_step_primary_key_lookup",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublicationTruthExportCheckpointRowMeta {
+    checkpoint_exists: bool,
+    rebuild_phase: Option<String>,
+    updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PublicationTruthExportCheckpointRowMetaLoadOutcome {
+    Completed(PublicationTruthExportCheckpointRowMeta),
+    BudgetExhausted(PublicationTruthExportCheckpointRowMetaStage),
+}
+
 fn export_gate_reason_publishable_checkpoint_blocker(reason: &str) -> Option<&str> {
     reason
         .strip_prefix(PUBLICATION_TRUTH_WITHHELD_PREFIX)
@@ -546,219 +589,184 @@ fn classify_publication_truth_export_blocker_from_publication_state(
 
 fn apply_publication_truth_export_checkpoint_headline_enrichment(
     diagnostic: &mut PublicationTruthExportBlockerDiagnostic,
-    top_level_state: &PublicationTruthExportBlockerTopLevelState,
-    runtime_store: &SqliteStore,
-) -> PublicationTruthExportCheckpointHeadlineOutcome {
-    apply_publication_truth_export_checkpoint_headline_enrichment_with(
-        diagnostic,
-        top_level_state,
-        StdDuration::from_millis(DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_MS),
-        false,
-        || runtime_store.load_discovery_persisted_rebuild_state_meta_lite_raw_read_only(),
-        || DiscoveryService::inspect_persisted_rebuild_state_read_only(runtime_store),
-    )
-}
-
-fn parse_checkpoint_headline_meta_lite_row(
-    raw: &DiscoveryPersistedRebuildStateMetaLiteRawRow,
-) -> Result<(String, DateTime<Utc>)> {
-    let phase = DiscoveryPersistedRebuildPhase::parse(&raw.phase_raw)
-        .map(|phase| phase.as_str().to_string())
-        .context("failed parsing persisted rebuild checkpoint phase")?;
-    let updated_at = DateTime::parse_from_rfc3339(&raw.updated_at_raw)
-        .map(|value| value.with_timezone(&Utc))
-        .with_context(|| {
-            format!(
-                "failed parsing persisted rebuild checkpoint updated_at as RFC3339: {}",
-                raw.updated_at_raw
-            )
-        })?;
-    Ok((phase, updated_at))
-}
-
-fn sync_publication_truth_export_checkpoint_headline_from_inspection(
-    diagnostic: &mut PublicationTruthExportBlockerDiagnostic,
-    inspection: &PersistedReplayCheckpointInspection,
-) {
-    diagnostic.persisted_rebuild_checkpoint_exists =
-        Some(inspection.persisted_rebuild_checkpoint_exists);
-    if let Some(updated_at) = inspection.updated_at {
-        diagnostic.persisted_rebuild_checkpoint_updated_at = Some(updated_at);
-    }
-    if inspection.rebuild_phase.is_some() {
-        diagnostic.rebuild_phase = inspection.rebuild_phase.clone();
-    }
-    if inspection.rebuild_replay_subphase.is_some() {
-        diagnostic.rebuild_replay_subphase = inspection.rebuild_replay_subphase.clone();
-    }
-    if inspection.publishable_checkpoint_blocker.is_some() {
-        diagnostic.publishable_checkpoint_blocker =
-            inspection.publishable_checkpoint_blocker.clone();
-    }
-    diagnostic.replay_incomplete = Some(inspection.replay_incomplete);
-    diagnostic.checkpoint_exact_target_surface_exists = inspection.exact_target_surface_exists;
-    diagnostic.checkpoint_exact_target_surface_repairable_for_resume =
-        inspection.exact_target_surface_repairable_for_resume;
-    diagnostic.checkpoint_replay_candidate_activity_backfill_required =
-        inspection.replay_candidate_activity_backfill_required;
-    diagnostic.checkpoint_replay_candidate_activity_backfill_pending =
-        inspection.replay_candidate_activity_backfill_pending;
-}
-
-fn apply_publication_truth_export_checkpoint_headline_enrichment_with<LoadMeta, InspectState>(
-    diagnostic: &mut PublicationTruthExportBlockerDiagnostic,
-    top_level_state: &PublicationTruthExportBlockerTopLevelState,
+    _top_level_state: &PublicationTruthExportBlockerTopLevelState,
+    runtime_db_path: &Path,
     budget: StdDuration,
-    attempt_deeper_inspection: bool,
-    load_meta: LoadMeta,
-    inspect_state: InspectState,
-) -> PublicationTruthExportCheckpointHeadlineOutcome
-where
-    LoadMeta: FnOnce() -> Result<Option<DiscoveryPersistedRebuildStateMetaLiteRawRow>>,
-    InspectState: FnOnce() -> Result<PersistedReplayCheckpointInspection>,
-{
-    let headline_started_at = Instant::now();
-    let top_level_replay = matches!(
-        top_level_state,
-        PublicationTruthExportBlockerTopLevelState::ReplaySolLegIncomplete
-    );
+) -> PublicationTruthExportCheckpointHeadlineOutcome {
     set_publication_truth_export_state_json_bytes_probe_not_attempted(
         diagnostic,
         "persisted rebuild state_json byte-length probing was skipped in the primary operator checkpoint headline path to avoid scanning large persisted state blobs before deciding whether deeper work is worthwhile",
     );
-    let meta_stage = "load_persisted_rebuild_row_meta".to_string();
-    if budget.is_zero() {
-        set_publication_truth_export_checkpoint_headline_failed(
-            diagnostic,
-            Some(meta_stage),
-            true,
-            "runtime-db-only checkpoint headline enrichment exhausted its budget before reading persisted rebuild row meta"
-                .to_string(),
-        );
-        return PublicationTruthExportCheckpointHeadlineOutcome::Failed;
-    }
 
-    let meta_row = match load_meta() {
-        Ok(meta_row) => meta_row,
+    let row_meta = match load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
+        runtime_db_path,
+        budget,
+    ) {
+        Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(row_meta)) => row_meta,
+        Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(stage)) => {
+            set_publication_truth_export_checkpoint_headline_failed(
+                diagnostic,
+                Some(stage.as_str().to_string()),
+                true,
+                format!(
+                    "runtime-db-only checkpoint headline enrichment exhausted its budget while running the cheap persisted rebuild row-meta path (stage={})",
+                    stage.as_str()
+                ),
+            );
+            return PublicationTruthExportCheckpointHeadlineOutcome::Failed;
+        }
         Err(error) => {
             set_publication_truth_export_checkpoint_headline_failed(
                 diagnostic,
-                Some(meta_stage),
+                Some("load_persisted_rebuild_row_meta_open_read_only".to_string()),
                 false,
                 format!(
-                    "runtime-db-only checkpoint headline enrichment could not load persisted rebuild row meta: {error:#}"
+                    "runtime-db-only checkpoint headline enrichment could not load cheap persisted rebuild row meta: {error:#}"
                 ),
             );
             return PublicationTruthExportCheckpointHeadlineOutcome::Failed;
         }
     };
 
-    if headline_started_at.elapsed() >= budget {
-        set_publication_truth_export_checkpoint_headline_failed(
-            diagnostic,
-            Some("load_persisted_rebuild_row_meta".to_string()),
-            true,
-            "runtime-db-only checkpoint headline enrichment exhausted its budget while loading persisted rebuild row meta"
-                .to_string(),
-        );
-        return PublicationTruthExportCheckpointHeadlineOutcome::Failed;
+    diagnostic.persisted_rebuild_checkpoint_exists = Some(row_meta.checkpoint_exists);
+    if let Some(updated_at) = row_meta.updated_at {
+        diagnostic.persisted_rebuild_checkpoint_updated_at = Some(updated_at);
+    }
+    if let Some(rebuild_phase) = row_meta.rebuild_phase {
+        diagnostic.rebuild_phase = Some(rebuild_phase);
     }
 
-    let Some(meta_row) = meta_row else {
-        diagnostic.persisted_rebuild_checkpoint_exists = Some(false);
-        set_publication_truth_export_checkpoint_headline_completed(
-            diagnostic,
-            Some("load_persisted_rebuild_row_meta".to_string()),
-            "runtime-db-only checkpoint headline enrichment completed without a persisted rebuild checkpoint row"
-                .to_string(),
-        );
-        return PublicationTruthExportCheckpointHeadlineOutcome::Completed {
-            allow_deep_replay: false,
-        };
-    };
-
-    let (phase, updated_at) = match parse_checkpoint_headline_meta_lite_row(&meta_row) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            set_publication_truth_export_checkpoint_headline_failed(
-                diagnostic,
-                Some("parse_persisted_rebuild_row_meta".to_string()),
-                false,
-                format!(
-                    "runtime-db-only checkpoint headline enrichment could not parse persisted rebuild row meta: {error:#}"
-                ),
-            );
-            return PublicationTruthExportCheckpointHeadlineOutcome::Failed;
-        }
-    };
-    diagnostic.persisted_rebuild_checkpoint_exists = Some(true);
-    diagnostic.persisted_rebuild_checkpoint_updated_at = Some(updated_at);
-    diagnostic.rebuild_phase = Some(phase);
-
-    if !attempt_deeper_inspection {
-        set_publication_truth_export_checkpoint_headline_completed(
-            diagnostic,
-            Some("load_persisted_rebuild_row_meta".to_string()),
-            "runtime-db-only checkpoint headline enrichment completed from cheap persisted rebuild row meta only; state_json byte-length probing and deeper persisted-state inspection were skipped to keep the primary operator bounded"
-                .to_string(),
-        );
-        return PublicationTruthExportCheckpointHeadlineOutcome::Completed {
-            allow_deep_replay: false,
-        };
-    }
-
-    let inspection_stage = "inspect_persisted_rebuild_state".to_string();
-    let inspection = match inspect_state() {
-        Ok(inspection) => inspection,
-        Err(error) => {
-            set_publication_truth_export_checkpoint_headline_failed(
-                diagnostic,
-                Some(inspection_stage),
-                false,
-                format!(
-                    "runtime-db-only checkpoint headline enrichment could not inspect persisted rebuild state: {error:#}"
-                ),
-            );
-            return PublicationTruthExportCheckpointHeadlineOutcome::Failed;
-        }
-    };
-
-    if headline_started_at.elapsed() >= budget {
-        set_publication_truth_export_checkpoint_headline_failed(
-            diagnostic,
-            Some("inspect_persisted_rebuild_state".to_string()),
-            true,
-            "runtime-db-only checkpoint headline enrichment exhausted its budget while inspecting persisted rebuild state"
-                .to_string(),
-        );
-        return PublicationTruthExportCheckpointHeadlineOutcome::Failed;
-    }
-
-    sync_publication_truth_export_checkpoint_headline_from_inspection(diagnostic, &inspection);
-
-    let checkpoint_blocker = inspection.publishable_checkpoint_blocker.as_deref();
-    let allow_deep_replay =
-        top_level_replay && checkpoint_blocker == Some("replay_sol_leg_incomplete");
-    let headline_explanation = if allow_deep_replay {
-        "runtime-db-only checkpoint headline enrichment completed and confirmed replay_sol_leg_incomplete before any recent_raw-backed deep replay proof"
+    let checkpoint_exists = row_meta.checkpoint_exists;
+    let explanation = if checkpoint_exists {
+        "runtime-db-only checkpoint headline enrichment completed from the proven cheap persisted rebuild row-meta path; state_json byte-length probing, persisted-state parsing, and recent_raw-backed replay proof were skipped on the primary operator hot path"
             .to_string()
-    } else if top_level_replay {
-        format!(
-            "runtime-db-only checkpoint headline enrichment completed, but the current checkpoint headline blocker was {} while the top-level blocker remains publication-state-driven replay_sol_leg_incomplete; recent_raw-backed deep replay enrichment was skipped",
-            checkpoint_blocker.unwrap_or("null")
-        )
     } else {
-        format!(
-            "runtime-db-only checkpoint headline enrichment completed for publishable checkpoint blocker {} without requiring recent_raw-backed deep replay proof",
-            checkpoint_blocker.unwrap_or("null")
-        )
+        "runtime-db-only checkpoint headline enrichment completed through the proven cheap persisted rebuild row-meta path and confirmed that no persisted rebuild checkpoint row is currently present"
+            .to_string()
     };
     set_publication_truth_export_checkpoint_headline_completed(
         diagnostic,
-        Some("inspect_persisted_rebuild_state".to_string()),
-        headline_explanation,
+        Some("complete".to_string()),
+        explanation,
     );
-    PublicationTruthExportCheckpointHeadlineOutcome::Completed { allow_deep_replay }
+    PublicationTruthExportCheckpointHeadlineOutcome::Completed {
+        allow_deep_replay: false,
+    }
+}
+
+fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
+    runtime_db_path: &Path,
+    budget: StdDuration,
+) -> Result<PublicationTruthExportCheckpointRowMetaLoadOutcome> {
+    let conn = Connection::open_with_flags(
+        runtime_db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| {
+        format!(
+            "failed opening runtime sqlite db read-only for cheap checkpoint row-meta path {}",
+            runtime_db_path.display()
+        )
+    })?;
+    let started_at = Instant::now();
+    if started_at.elapsed() >= budget {
+        return Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
+            PublicationTruthExportCheckpointRowMetaStage::SchemaLookup,
+        ));
+    }
+
+    let table_exists = conn
+        .query_row(CHECKPOINT_HEADLINE_ROW_META_TABLE_EXISTS_SQL, [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .context("failed checking discovery_persisted_rebuild_state table existence")?
+        != 0;
+    if started_at.elapsed() >= budget {
+        return Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
+            PublicationTruthExportCheckpointRowMetaStage::SchemaLookup,
+        ));
+    }
+    if !table_exists {
+        return Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(
+            PublicationTruthExportCheckpointRowMeta {
+                checkpoint_exists: false,
+                rebuild_phase: None,
+                updated_at: None,
+            },
+        ));
+    }
+
+    let row_count = conn
+        .query_row(CHECKPOINT_HEADLINE_ROW_META_ROW_COUNT_SQL, [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .context("failed counting persisted rebuild checkpoint row id=1")?
+        .max(0);
+    if started_at.elapsed() >= budget {
+        return Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
+            PublicationTruthExportCheckpointRowMetaStage::RowCount,
+        ));
+    }
+    if row_count == 0 {
+        return Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(
+            PublicationTruthExportCheckpointRowMeta {
+                checkpoint_exists: false,
+                rebuild_phase: None,
+                updated_at: None,
+            },
+        ));
+    }
+
+    let mut stmt = conn
+        .prepare(CHECKPOINT_HEADLINE_ROW_META_SQL)
+        .context("failed preparing persisted rebuild checkpoint row-meta query")?;
+    if started_at.elapsed() >= budget {
+        return Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
+            PublicationTruthExportCheckpointRowMetaStage::PreparePrimaryKeyLookup,
+        ));
+    }
+
+    let raw = stmt
+        .query_row([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .optional()
+        .context("failed stepping persisted rebuild checkpoint row-meta query")?;
+    if started_at.elapsed() >= budget {
+        return Ok(PublicationTruthExportCheckpointRowMetaLoadOutcome::BudgetExhausted(
+            PublicationTruthExportCheckpointRowMetaStage::StepPrimaryKeyLookup,
+        ));
+    }
+
+    Ok(match raw {
+        Some((phase_raw, updated_at_raw)) => {
+            let phase = DiscoveryPersistedRebuildPhase::parse(&phase_raw)
+                .map(|phase| phase.as_str().to_string())
+                .context("failed parsing persisted rebuild checkpoint phase")?;
+            let updated_at = DateTime::parse_from_rfc3339(&updated_at_raw)
+                .map(|value| value.with_timezone(&Utc))
+                .with_context(|| {
+                    format!(
+                        "failed parsing persisted rebuild checkpoint updated_at as RFC3339: {}",
+                        updated_at_raw
+                    )
+                })?;
+            PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(
+                PublicationTruthExportCheckpointRowMeta {
+                checkpoint_exists: true,
+                rebuild_phase: Some(phase),
+                updated_at: Some(updated_at),
+                },
+            )
+        }
+        None => PublicationTruthExportCheckpointRowMetaLoadOutcome::Completed(
+            PublicationTruthExportCheckpointRowMeta {
+                checkpoint_exists: false,
+                rebuild_phase: None,
+                updated_at: None,
+            },
+        ),
+    })
 }
 
 fn parse_args() -> Result<Option<Command>> {
@@ -1620,6 +1628,18 @@ fn explain_publication_truth_export_blocker_read_only(
     config_path: &Path,
     now: DateTime<Utc>,
 ) -> PublicationTruthExportBlockerDiagnostic {
+    explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget(
+        config_path,
+        now,
+        StdDuration::from_millis(DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_MS),
+    )
+}
+
+fn explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget(
+    config_path: &Path,
+    now: DateTime<Utc>,
+    checkpoint_headline_budget: StdDuration,
+) -> PublicationTruthExportBlockerDiagnostic {
     let loaded_config = match load_from_path(config_path) {
         Ok(config) => config,
         Err(error) => {
@@ -1719,7 +1739,8 @@ fn explain_publication_truth_export_blocker_read_only(
     let checkpoint_headline_outcome = apply_publication_truth_export_checkpoint_headline_enrichment(
         &mut diagnostic,
         &top_level_state,
-        &runtime_store,
+        &runtime_db_path,
+        checkpoint_headline_budget,
     );
     match checkpoint_headline_outcome {
         PublicationTruthExportCheckpointHeadlineOutcome::Failed => {
@@ -3359,9 +3380,8 @@ fn render_recent_raw_replacement_convergence_human(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_publication_truth_export_checkpoint_headline_enrichment_with,
-        classify_publication_truth_export_blocker_from_publication_state, load_json,
-        parse_args_from, run, run_command, write_json_atomic, Command, Config,
+        explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget,
+        load_json, parse_args_from, run, run_command, write_json_atomic, Command, Config,
         ExplainPublicationTruthExportBlockerConfig, ExplainRecentRawCatchUpStatusConfig,
         ExplainRecentRawPromotedRetentionContractConfig, ExplainRecentRawPromotionBlockerConfig,
         ExplainRecentRawReplacementArtifactHistoryContractConfig,
@@ -3371,90 +3391,20 @@ mod tests {
         ExplainRecentRawReplacementPromotionContractConfig,
         ExplainRecentRawSourceWindowContractConfig, ExplainRecentRawStagedBirthConfig,
         ExplainRecentRawStagedLineageConfig, ExplainRecentRawStagedRegressionConfig,
-        ExplainRecentRawStagedWindowSeedingConfig, PublicationTruthExportBlockerDiagnostic,
-        PublicationTruthExportBlockerReasonClass, PublicationTruthExportBlockerTopLevelState,
+        ExplainRecentRawStagedWindowSeedingConfig, PublicationTruthExportBlockerReasonClass,
     };
-    use anyhow::{anyhow, Context, Result};
+    use anyhow::{Context, Result};
     use chrono::{DateTime, Duration, Utc};
-    use copybot_discovery::PersistedReplayCheckpointInspection;
     use copybot_storage::{
-        DiscoveryPersistedRebuildPhase, DiscoveryPersistedRebuildStateMetaLiteRawRow,
-        DiscoveryPersistedRebuildStateRow, DiscoveryPublicationStateUpdate,
-        DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor, DiscoveryRuntimeMode, SqliteStore,
-        WalletMetricRow, WalletUpsertRow,
+        DiscoveryPersistedRebuildPhase, DiscoveryPersistedRebuildStateRow,
+        DiscoveryPublicationStateUpdate, DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor,
+        DiscoveryRuntimeMode, SqliteStore, WalletMetricRow, WalletUpsertRow,
     };
     use serde_json::Value;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::Duration as StdDuration;
     use tempfile::tempdir;
-
-    fn make_publication_truth_export_blocker_test_diagnostic(
-        config_path: &Path,
-        export_gate_reason: &str,
-    ) -> PublicationTruthExportBlockerDiagnostic {
-        let mut diagnostic =
-            PublicationTruthExportBlockerDiagnostic::unproven(config_path, "test".to_string());
-        diagnostic.export_gate_runtime_mode = Some("fail_closed".to_string());
-        diagnostic.export_gate_reason = Some(export_gate_reason.to_string());
-        diagnostic.publication_truth_complete = Some(false);
-        diagnostic.fresh_under_export_gate = Some(false);
-        diagnostic
-    }
-
-    fn make_checkpoint_headline_meta_row(
-        updated_at: DateTime<Utc>,
-    ) -> DiscoveryPersistedRebuildStateMetaLiteRawRow {
-        DiscoveryPersistedRebuildStateMetaLiteRawRow {
-            phase_raw: DiscoveryPersistedRebuildPhase::Replay.as_str().to_string(),
-            updated_at_raw: updated_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        }
-    }
-
-    fn make_checkpoint_headline_inspection(
-        updated_at: DateTime<Utc>,
-        blocker: Option<&str>,
-        replay_subphase: Option<&str>,
-        replay_incomplete: bool,
-        exact_target_surface_exists: Option<bool>,
-        exact_target_surface_repairable_for_resume: Option<bool>,
-        replay_candidate_activity_backfill_required: Option<bool>,
-        replay_candidate_activity_backfill_pending: Option<bool>,
-    ) -> PersistedReplayCheckpointInspection {
-        PersistedReplayCheckpointInspection {
-            persisted_rebuild_checkpoint_exists: true,
-            rebuild_phase: Some("replay".to_string()),
-            rebuild_replay_mode: Some("resume".to_string()),
-            rebuild_replay_subphase: replay_subphase.map(str::to_string),
-            publishable_checkpoint_blocker: blocker.map(str::to_string),
-            replay_incomplete,
-            window_start: None,
-            horizon_end: None,
-            metrics_window_start: None,
-            phase_cursor: None,
-            replay_wallet_stats_wallet_cursor: None,
-            replay_candidate_activity_backfill_wallet_cursor: None,
-            replay_wallet_stats_complete: None,
-            replay_candidate_activity_backfill_required,
-            replay_candidate_activity_backfill_pending,
-            replay_sol_leg_reentry_pending: None,
-            replay_rows_processed: Some(1),
-            replay_pages_processed: Some(1),
-            replay_sol_leg_budget_floor_pages: None,
-            replay_sol_leg_retained_contract_floor_pages: None,
-            replay_sol_leg_last_partial_cycle_rows_processed: None,
-            replay_sol_leg_last_partial_cycle_pages_processed: None,
-            replay_sol_leg_last_partial_cycle_elapsed_ms: None,
-            unique_buy_mint_count: None,
-            exact_target_surface_exists,
-            exact_target_surface_usable_for_sol_leg_replay: None,
-            exact_target_surface_repairable_for_resume,
-            exact_target_buy_mint_count: None,
-            buffered_wallet_count: None,
-            publish_pending_requested_wallet_count: None,
-            updated_at: Some(updated_at),
-        }
-    }
 
     #[test]
     fn parse_args_from_accepts_scheduled_force_json_and_now() {
@@ -3747,36 +3697,24 @@ mod tests {
         let fixture = make_fixture("runtime-export-publication-truth-green")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         seed_runtime_export_source(&fixture.store, now)?;
-
-        let rendered = run_command(Command::ExplainPublicationTruthExportBlocker(
-            ExplainPublicationTruthExportBlockerConfig {
-                config_path: fixture.config_path.clone(),
-                json: true,
-            },
-        ))?;
-        let parsed: Value = serde_json::from_str(&rendered)?;
-        assert_eq!(
-            parsed["publication_truth_export_blocker_reason_class"],
-            "publication_truth_export_gate_satisfied"
-        );
-        assert_eq!(parsed["publication_truth_export_blocker_observed"], true);
-        assert_eq!(parsed["export_gate_runtime_mode"], "healthy");
-        assert_eq!(parsed["publication_truth_complete"], true);
-        assert_eq!(parsed["fresh_under_export_gate"], true);
-        assert_eq!(
-            parsed["publication_truth_export_blocker_top_level_proven_from_publication_state"],
-            true
+        let diagnostic = explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget(
+            &fixture.config_path,
+            now,
+            StdDuration::from_secs(1),
         );
         assert_eq!(
-            parsed["publication_truth_export_checkpoint_headline_attempted"],
-            false
+            diagnostic.publication_truth_export_blocker_reason_class,
+            PublicationTruthExportBlockerReasonClass::PublicationTruthExportGateSatisfied
         );
-        assert_eq!(
-            parsed["publication_truth_export_blocker_enrichment_attempted"],
-            false
-        );
-        assert_eq!(parsed["persisted_rebuild_checkpoint_exists"], Value::Null);
-        assert_eq!(parsed["source_comparison_applicable"], Value::Null);
+        assert!(diagnostic.publication_truth_export_blocker_observed);
+        assert_eq!(diagnostic.export_gate_runtime_mode.as_deref(), Some("healthy"));
+        assert_eq!(diagnostic.publication_truth_complete, Some(true));
+        assert_eq!(diagnostic.fresh_under_export_gate, Some(true));
+        assert!(diagnostic.publication_truth_export_blocker_top_level_proven_from_publication_state);
+        assert!(!diagnostic.publication_truth_export_checkpoint_headline_attempted);
+        assert!(!diagnostic.publication_truth_export_blocker_enrichment_attempted);
+        assert_eq!(diagnostic.persisted_rebuild_checkpoint_exists, None);
+        assert_eq!(diagnostic.source_comparison_applicable, None);
         Ok(())
     }
 
@@ -3813,21 +3751,19 @@ mod tests {
             parse_ts("2026-04-16T09:56:00Z")?,
         )?;
 
-        let rendered = run_command(Command::ExplainPublicationTruthExportBlocker(
-            ExplainPublicationTruthExportBlockerConfig {
-                config_path: fixture.config_path.clone(),
-                json: true,
-            },
-        ))?;
-        let parsed: Value = serde_json::from_str(&rendered)?;
-        assert_eq!(
-            parsed["publication_truth_export_blocker_reason_class"],
-            "publication_truth_export_gate_satisfied"
+        let diagnostic = explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget(
+            &fixture.config_path,
+            now,
+            StdDuration::from_secs(1),
         );
-        assert_eq!(parsed["publication_truth_export_blocker_observed"], true);
-        assert_eq!(parsed["export_gate_runtime_mode"], "fail_closed");
-        assert_eq!(parsed["publication_truth_complete"], true);
-        assert_eq!(parsed["fresh_under_export_gate"], true);
+        assert_eq!(
+            diagnostic.publication_truth_export_blocker_reason_class,
+            PublicationTruthExportBlockerReasonClass::PublicationTruthExportGateSatisfied
+        );
+        assert!(diagnostic.publication_truth_export_blocker_observed);
+        assert_eq!(diagnostic.export_gate_runtime_mode.as_deref(), Some("fail_closed"));
+        assert_eq!(diagnostic.publication_truth_complete, Some(true));
+        assert_eq!(diagnostic.fresh_under_export_gate, Some(true));
         Ok(())
     }
 
@@ -3929,7 +3865,7 @@ mod tests {
         );
         assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_stage"],
-            "load_persisted_rebuild_row_meta"
+            "complete"
         );
         assert_eq!(parsed["rebuild_phase"], "replay");
         assert_eq!(parsed["rebuild_replay_subphase"], "sol_leg");
@@ -4239,7 +4175,7 @@ mod tests {
         );
         assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_stage"],
-            "load_persisted_rebuild_row_meta"
+            "complete"
         );
         assert_eq!(
             parsed["publication_truth_export_blocker_enrichment_attempted"],
@@ -4275,7 +4211,7 @@ mod tests {
             parsed["publication_truth_export_blocker_enrichment_explanation"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("cheap persisted rebuild row meta only")
+                .contains("proven cheap persisted rebuild row-meta path")
         );
         Ok(())
     }
@@ -4283,40 +4219,49 @@ mod tests {
     #[test]
     fn publication_truth_export_checkpoint_headline_other_checkpoint_meta_only_completion_preserves_top_level(
     ) -> Result<()> {
-        let temp = tempdir().context("failed to create tempdir")?;
-        let config_path = temp.path().join("live.server.toml");
-        let mut diagnostic = make_publication_truth_export_blocker_test_diagnostic(
-            &config_path,
-            "publication_truth_withheld_while_replay_candidate_activity_backfill_incomplete",
-        );
-        let top_level_state = classify_publication_truth_export_blocker_from_publication_state(
-            &mut diagnostic,
-            false,
-            false,
-        );
+        let fixture = make_fixture("runtime-export-publication-truth-other-checkpoint-meta-only")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        seed_runtime_export_source(&fixture.store, now)?;
+        fixture
+            .store
+            .set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::FailClosed,
+                reason:
+                    "publication_truth_withheld_while_replay_candidate_activity_backfill_incomplete"
+                        .to_string(),
+                last_published_at: Some(now - Duration::hours(2)),
+                last_published_window_start: Some(metrics_window_start(now) - Duration::hours(1)),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(Vec::new()),
+            })?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-checkpoint-other-meta-only".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{large blob intentionally ignored}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
 
-        assert_eq!(
-            top_level_state,
-            PublicationTruthExportBlockerTopLevelState::OtherCheckpoint(
-                "replay_candidate_activity_backfill_incomplete".to_string()
-            )
-        );
-        let updated_at = parse_ts("2026-04-16T09:59:00Z")?;
-        let outcome = apply_publication_truth_export_checkpoint_headline_enrichment_with(
-            &mut diagnostic,
-            &top_level_state,
+        let diagnostic = explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget(
+            &fixture.config_path,
+            now,
             StdDuration::from_secs(1),
-            false,
-            || Ok(Some(make_checkpoint_headline_meta_row(updated_at))),
-            || unreachable!("deeper inspection should be skipped in the primary hot path"),
         );
 
-        assert_eq!(
-            outcome,
-            super::PublicationTruthExportCheckpointHeadlineOutcome::Completed {
-                allow_deep_replay: false
-            }
-        );
         assert_eq!(
             diagnostic.publication_truth_export_blocker_reason_class,
             PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnOtherPublishableCheckpointReason
@@ -4331,17 +4276,14 @@ mod tests {
             diagnostic
                 .publication_truth_export_checkpoint_headline_stage
                 .as_deref(),
-            Some("load_persisted_rebuild_row_meta")
+            Some("complete")
         );
         assert_eq!(diagnostic.persisted_rebuild_checkpoint_exists, Some(true));
         assert_eq!(
             diagnostic.persisted_rebuild_checkpoint_updated_at,
-            Some(updated_at)
+            Some(now - Duration::minutes(1))
         );
-        assert_eq!(
-            diagnostic.persisted_rebuild_checkpoint_state_json_bytes,
-            None
-        );
+        assert_eq!(diagnostic.persisted_rebuild_checkpoint_state_json_bytes, None);
         assert!(!diagnostic.persisted_rebuild_checkpoint_state_json_bytes_probe_attempted);
         assert_eq!(diagnostic.rebuild_phase.as_deref(), Some("replay"));
         assert_eq!(
@@ -4352,60 +4294,53 @@ mod tests {
             diagnostic.publishable_checkpoint_blocker.as_deref(),
             Some("replay_candidate_activity_backfill_incomplete")
         );
-        assert_eq!(
-            diagnostic.checkpoint_replay_candidate_activity_backfill_required,
-            None
-        );
-        assert_eq!(
-            diagnostic.checkpoint_replay_candidate_activity_backfill_pending,
-            None
-        );
         Ok(())
     }
 
     #[test]
     fn publication_truth_export_checkpoint_headline_replay_budget_exhaustion_preserves_top_level(
     ) -> Result<()> {
-        let temp = tempdir().context("failed to create tempdir")?;
-        let config_path = temp.path().join("live.server.toml");
-        let mut diagnostic = make_publication_truth_export_blocker_test_diagnostic(
-            &config_path,
-            "publication_truth_withheld_while_replay_sol_leg_incomplete",
-        );
-        let top_level_state = classify_publication_truth_export_blocker_from_publication_state(
-            &mut diagnostic,
-            false,
-            false,
-        );
+        let fixture = make_fixture("runtime-export-publication-truth-headline-budget-exhausted")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        seed_runtime_export_source(&fixture.store, now)?;
+        fixture
+            .store
+            .set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::FailClosed,
+                reason: "publication_truth_withheld_while_replay_sol_leg_incomplete".to_string(),
+                last_published_at: Some(now - Duration::hours(2)),
+                last_published_window_start: Some(metrics_window_start(now) - Duration::hours(1)),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(Vec::new()),
+            })?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-checkpoint-budget".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{not touched}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
 
-        let outcome = apply_publication_truth_export_checkpoint_headline_enrichment_with(
-            &mut diagnostic,
-            &top_level_state,
+        let diagnostic = explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget(
+            &fixture.config_path,
+            now,
             StdDuration::ZERO,
-            false,
-            || {
-                Ok(Some(make_checkpoint_headline_meta_row(parse_ts(
-                    "2026-04-16T09:59:00Z",
-                )?)))
-            },
-            || {
-                Ok(make_checkpoint_headline_inspection(
-                    parse_ts("2026-04-16T09:59:00Z")?,
-                    Some("replay_sol_leg_incomplete"),
-                    Some("sol_leg"),
-                    true,
-                    Some(false),
-                    Some(false),
-                    Some(false),
-                    Some(false),
-                ))
-            },
         );
 
-        assert_eq!(
-            outcome,
-            super::PublicationTruthExportCheckpointHeadlineOutcome::Failed
-        );
         assert_eq!(
             diagnostic.publication_truth_export_blocker_reason_class,
             PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnReplaySolLegIncomplete
@@ -4420,63 +4355,65 @@ mod tests {
             diagnostic
                 .publication_truth_export_checkpoint_headline_stage
                 .as_deref(),
-            Some("load_persisted_rebuild_row_meta")
+            Some("load_persisted_rebuild_row_meta_schema_lookup")
         );
+        assert_eq!(diagnostic.replay_sol_leg_incomplete_reason_class, None);
+        assert_eq!(diagnostic.source_comparison_applicable, None);
         Ok(())
     }
 
     #[test]
-    fn publication_truth_export_checkpoint_headline_deeper_inspect_failure_preserves_top_level(
+    fn run_command_publication_truth_export_blocker_replay_missing_checkpoint_row_preserves_top_level(
     ) -> Result<()> {
-        let temp = tempdir().context("failed to create tempdir")?;
-        let config_path = temp.path().join("live.server.toml");
-        let mut diagnostic = make_publication_truth_export_blocker_test_diagnostic(
-            &config_path,
-            "publication_truth_withheld_while_replay_sol_leg_incomplete",
-        );
-        let top_level_state = classify_publication_truth_export_blocker_from_publication_state(
-            &mut diagnostic,
-            false,
-            false,
-        );
-        let updated_at = parse_ts("2026-04-16T09:59:00Z")?;
+        let fixture = make_fixture("runtime-export-publication-truth-replay-missing-checkpoint-row")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        seed_runtime_export_source(&fixture.store, now)?;
+        fixture
+            .store
+            .set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::FailClosed,
+                reason: "publication_truth_withheld_while_replay_sol_leg_incomplete".to_string(),
+                last_published_at: Some(now - Duration::hours(2)),
+                last_published_window_start: Some(metrics_window_start(now) - Duration::hours(1)),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(Vec::new()),
+            })?;
 
-        let outcome = apply_publication_truth_export_checkpoint_headline_enrichment_with(
-            &mut diagnostic,
-            &top_level_state,
-            StdDuration::from_secs(1),
-            true,
-            || Ok(Some(make_checkpoint_headline_meta_row(updated_at))),
-            || Err(anyhow!("synthetic deeper inspect failure")),
-        );
-
+        let rendered = run_command(Command::ExplainPublicationTruthExportBlocker(
+            ExplainPublicationTruthExportBlockerConfig {
+                config_path: fixture.config_path.clone(),
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
         assert_eq!(
-            outcome,
-            super::PublicationTruthExportCheckpointHeadlineOutcome::Failed
+            parsed["publication_truth_export_blocker_reason_class"],
+            "publication_truth_export_blocked_on_replay_sol_leg_incomplete"
         );
         assert_eq!(
-            diagnostic.publication_truth_export_blocker_reason_class,
-            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnReplaySolLegIncomplete
-        );
-        assert!(diagnostic.publication_truth_export_checkpoint_headline_attempted);
-        assert!(!diagnostic.publication_truth_export_checkpoint_headline_completed);
-        assert!(!diagnostic.publication_truth_export_checkpoint_headline_budget_exhausted);
-        assert_eq!(
-            diagnostic
-                .publication_truth_export_checkpoint_headline_stage
-                .as_deref(),
-            Some("inspect_persisted_rebuild_state")
-        );
-        assert_eq!(diagnostic.persisted_rebuild_checkpoint_exists, Some(true));
-        assert_eq!(
-            diagnostic.persisted_rebuild_checkpoint_updated_at,
-            Some(updated_at)
+            parsed["publication_truth_export_checkpoint_headline_attempted"],
+            true
         );
         assert_eq!(
-            diagnostic.persisted_rebuild_checkpoint_state_json_bytes,
-            None
+            parsed["publication_truth_export_checkpoint_headline_completed"],
+            true
         );
-        assert!(!diagnostic.persisted_rebuild_checkpoint_state_json_bytes_probe_attempted);
+        assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_budget_exhausted"],
+            false
+        );
+        assert_eq!(parsed["publication_truth_export_checkpoint_headline_stage"], "complete");
+        assert_eq!(parsed["persisted_rebuild_checkpoint_exists"], false);
+        assert_eq!(
+            parsed["persisted_rebuild_checkpoint_updated_at"],
+            Value::Null
+        );
+        assert_eq!(
+            parsed["persisted_rebuild_checkpoint_state_json_bytes_probe_attempted"],
+            false
+        );
+        assert_eq!(parsed["replay_sol_leg_incomplete_reason_class"], Value::Null);
+        assert_eq!(parsed["source_comparison_applicable"], Value::Null);
         Ok(())
     }
 
@@ -4548,7 +4485,7 @@ mod tests {
         );
         assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_stage"],
-            "load_persisted_rebuild_row_meta"
+            "complete"
         );
         assert_eq!(
             parsed["publication_truth_export_blocker_enrichment_stage"],
@@ -4574,7 +4511,7 @@ mod tests {
         assert!(parsed["publication_truth_export_checkpoint_headline_explanation"]
             .as_str()
             .unwrap_or_default()
-            .contains("state_json byte-length probing and deeper persisted-state inspection were skipped"));
+            .contains("proven cheap persisted rebuild row-meta path"));
         Ok(())
     }
 

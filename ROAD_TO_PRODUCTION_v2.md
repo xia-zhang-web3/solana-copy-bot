@@ -14103,3 +14103,65 @@ Current interpretation:
    bounded trace surface, so future fixes can target the exact cheap stage that
    diverges from the primary operator instead of guessing from top-level budget
    exhaustion labels.
+
+### Stage 3 direct cheap row-meta completion in primary export blocker (`2026-04-16`)
+
+Accepted repository change:
+
+1. The primary operator
+   `discovery_runtime_export --explain-publication-truth-export-blocker --config <path> --json`
+   no longer uses the old persisted-rebuild meta helper chain on its
+   checkpoint-headline hot path.
+2. For checkpoint-family blockers, the primary operator now uses the already
+   proven cheap direct runtime-DB row-meta path:
+   - table existence
+   - row count for `id = 1`
+   - primary-key lookup of `phase, updated_at`
+3. On this cheap checkpoint-headline path, the primary operator does not:
+   - probe `length(state_json)`
+   - parse persisted rebuild state JSON
+   - open `recent_raw`
+4. On cheap row-meta success, the primary operator now completes
+   checkpoint-headline enrichment and fills:
+   - `persisted_rebuild_checkpoint_exists`
+   - `persisted_rebuild_checkpoint_updated_at`
+   - `rebuild_phase`
+5. On that same success path, the primary operator now reports:
+   - `publication_truth_export_checkpoint_headline_attempted = true`
+   - `publication_truth_export_checkpoint_headline_completed = true`
+   - `publication_truth_export_checkpoint_headline_budget_exhausted = false`
+   - `publication_truth_export_checkpoint_headline_stage = complete`
+6. If the checkpoint row is missing:
+   - the top-level blocker remains publication-state-driven
+   - `persisted_rebuild_checkpoint_exists = false`
+   - checkpoint-headline enrichment still completes honestly
+   - no deeper replay/source fields are invented
+7. If the cheap row-meta step genuinely budget-exhausts:
+   - the already-proven top-level blocker is preserved
+   - the exact cheap row-meta stage is surfaced, e.g.
+     `load_persisted_rebuild_row_meta_schema_lookup`
+8. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+9. It still does not change:
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Current interpretation:
+
+1. The cheap publication-state + cheap checkpoint row-meta chain was already
+   proven fast on live by the standalone trace/probe tools.
+2. This corrective batch is accepted because it makes the primary export
+   blocker operator use that same proven cheap runtime-DB-only row-meta path
+   instead of budget-exhausting on a divergent checkpoint-headline
+   implementation.
