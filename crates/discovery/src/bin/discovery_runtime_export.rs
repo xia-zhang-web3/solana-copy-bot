@@ -22,7 +22,7 @@ use copybot_discovery::{
 use copybot_storage::{
     DiscoveryPersistedRebuildPhase, DiscoveryRuntimeArtifact, SqliteStore,
 };
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -282,7 +282,12 @@ struct PublicationTruthExportBlockerDiagnostic {
     publication_truth_export_checkpoint_headline_worker_schema_lookup_completed_received: bool,
     publication_truth_export_checkpoint_headline_worker_row_count_completed_received: bool,
     publication_truth_export_checkpoint_headline_worker_prepare_completed_received: bool,
+    publication_truth_export_checkpoint_headline_worker_step_query_started_received: bool,
+    publication_truth_export_checkpoint_headline_worker_step_row_fetch_completed_received: bool,
+    publication_truth_export_checkpoint_headline_worker_step_phase_decoded_received: bool,
+    publication_truth_export_checkpoint_headline_worker_step_updated_at_decoded_received: bool,
     publication_truth_export_checkpoint_headline_worker_step_completed_received: bool,
+    publication_truth_export_checkpoint_headline_worker_finished_send_attempted: bool,
     publication_truth_export_checkpoint_headline_worker_finished_received: bool,
     publication_truth_export_checkpoint_headline_worker_disconnected: bool,
     publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open: u64,
@@ -369,7 +374,14 @@ impl PublicationTruthExportBlockerDiagnostic {
             publication_truth_export_checkpoint_headline_worker_row_count_completed_received:
                 false,
             publication_truth_export_checkpoint_headline_worker_prepare_completed_received: false,
+            publication_truth_export_checkpoint_headline_worker_step_query_started_received: false,
+            publication_truth_export_checkpoint_headline_worker_step_row_fetch_completed_received:
+                false,
+            publication_truth_export_checkpoint_headline_worker_step_phase_decoded_received: false,
+            publication_truth_export_checkpoint_headline_worker_step_updated_at_decoded_received:
+                false,
             publication_truth_export_checkpoint_headline_worker_step_completed_received: false,
+            publication_truth_export_checkpoint_headline_worker_finished_send_attempted: false,
             publication_truth_export_checkpoint_headline_worker_finished_received: false,
             publication_truth_export_checkpoint_headline_worker_disconnected: false,
             publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open: 0,
@@ -857,7 +869,12 @@ struct PublicationTruthExportCheckpointHeadlineWorkerTelemetry {
     schema_lookup_completed_received: bool,
     row_count_completed_received: bool,
     prepare_completed_received: bool,
+    step_query_started_received: bool,
+    step_row_fetch_completed_received: bool,
+    step_phase_decoded_received: bool,
+    step_updated_at_decoded_received: bool,
     step_completed_received: bool,
+    finished_send_attempted: bool,
     finished_received: bool,
     disconnected: bool,
 }
@@ -869,7 +886,12 @@ enum PublicationTruthExportCheckpointRowMetaWorkerMessage {
     SchemaLookupCompleted(u64),
     RowCountCompleted(u64),
     PrepareCompleted(u64),
+    StepQueryStarted,
+    StepRowFetchCompleted,
+    StepPhaseDecoded,
+    StepUpdatedAtDecoded,
     StepCompleted(u64),
+    FinishedSendAttempted,
     Finished(Result<PublicationTruthExportCheckpointRowMeta, String>),
 }
 
@@ -892,7 +914,12 @@ impl PublicationTruthExportCheckpointRowMetaWorkerMessage {
             Self::SchemaLookupCompleted(_) => "schema_lookup_completed",
             Self::RowCountCompleted(_) => "row_count_completed",
             Self::PrepareCompleted(_) => "prepare_completed",
+            Self::StepQueryStarted => "step_query_started",
+            Self::StepRowFetchCompleted => "step_row_fetch_completed",
+            Self::StepPhaseDecoded => "step_phase_decoded",
+            Self::StepUpdatedAtDecoded => "step_updated_at_decoded",
             Self::StepCompleted(_) => "step_completed",
+            Self::FinishedSendAttempted => "finished_send_attempted",
             Self::Finished(_) => "finished",
         }
     }
@@ -1009,8 +1036,20 @@ fn sync_publication_truth_export_checkpoint_headline_worker_telemetry(
         worker.row_count_completed_received;
     diagnostic.publication_truth_export_checkpoint_headline_worker_prepare_completed_received =
         worker.prepare_completed_received;
+    diagnostic.publication_truth_export_checkpoint_headline_worker_step_query_started_received =
+        worker.step_query_started_received;
+    diagnostic
+        .publication_truth_export_checkpoint_headline_worker_step_row_fetch_completed_received =
+        worker.step_row_fetch_completed_received;
+    diagnostic.publication_truth_export_checkpoint_headline_worker_step_phase_decoded_received =
+        worker.step_phase_decoded_received;
+    diagnostic
+        .publication_truth_export_checkpoint_headline_worker_step_updated_at_decoded_received =
+        worker.step_updated_at_decoded_received;
     diagnostic.publication_truth_export_checkpoint_headline_worker_step_completed_received =
         worker.step_completed_received;
+    diagnostic.publication_truth_export_checkpoint_headline_worker_finished_send_attempted =
+        worker.finished_send_attempted;
     diagnostic.publication_truth_export_checkpoint_headline_worker_finished_received =
         worker.finished_received;
     diagnostic.publication_truth_export_checkpoint_headline_worker_disconnected =
@@ -1297,6 +1336,31 @@ fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
                 timing.budget_remaining_ms_after_prepare =
                     remaining_budget_ms(budget, total_started_at);
             }
+            Ok(message @ PublicationTruthExportCheckpointRowMetaWorkerMessage::StepQueryStarted) => {
+                worker.event_count += 1;
+                worker.last_event = Some(message.event_name().to_string());
+                worker.step_query_started_received = true;
+            }
+            Ok(
+                message @ PublicationTruthExportCheckpointRowMetaWorkerMessage::StepRowFetchCompleted,
+            ) => {
+                worker.event_count += 1;
+                worker.last_event = Some(message.event_name().to_string());
+                worker.step_row_fetch_completed_received = true;
+            }
+            Ok(message @ PublicationTruthExportCheckpointRowMetaWorkerMessage::StepPhaseDecoded) => {
+                worker.event_count += 1;
+                worker.last_event = Some(message.event_name().to_string());
+                worker.step_phase_decoded_received = true;
+            }
+            Ok(
+                message
+                @ PublicationTruthExportCheckpointRowMetaWorkerMessage::StepUpdatedAtDecoded,
+            ) => {
+                worker.event_count += 1;
+                worker.last_event = Some(message.event_name().to_string());
+                worker.step_updated_at_decoded_received = true;
+            }
             Ok(message @ PublicationTruthExportCheckpointRowMetaWorkerMessage::StepCompleted(
                 elapsed_ms,
             )) => {
@@ -1305,6 +1369,13 @@ fn load_publication_truth_export_checkpoint_row_meta_direct_with_budget(
                 worker.step_completed_received = true;
                 timing.step_elapsed_ms = elapsed_ms;
                 timing.budget_remaining_ms_after_step = remaining_budget_ms(budget, total_started_at);
+            }
+            Ok(
+                message @ PublicationTruthExportCheckpointRowMetaWorkerMessage::FinishedSendAttempted,
+            ) => {
+                worker.event_count += 1;
+                worker.last_event = Some(message.event_name().to_string());
+                worker.finished_send_attempted = true;
             }
             Ok(PublicationTruthExportCheckpointRowMetaWorkerMessage::Finished(result)) => {
                 worker.event_count += 1;
@@ -1397,6 +1468,12 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
         return Ok(());
     }
     if !table_exists {
+        if tx
+            .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::FinishedSendAttempted)
+            .is_err()
+        {
+            return Ok(());
+        }
         let _ = tx.send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Finished(Ok(
             PublicationTruthExportCheckpointRowMeta {
                 checkpoint_exists: false,
@@ -1431,6 +1508,12 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
         return Ok(());
     }
     if row_count == 0 {
+        if tx
+            .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::FinishedSendAttempted)
+            .is_err()
+        {
+            return Ok(());
+        }
         let _ = tx.send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Finished(Ok(
             PublicationTruthExportCheckpointRowMeta {
                 checkpoint_exists: false,
@@ -1473,12 +1556,56 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
         return Ok(());
     }
     let step_started_at = Instant::now();
-    let raw = stmt
-        .query_row([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .optional()
-        .context("failed stepping persisted rebuild checkpoint row-meta query")?;
+    if tx
+        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::StepQueryStarted)
+        .is_err()
+    {
+        return Ok(());
+    }
+    let mut rows = stmt
+        .query([])
+        .context("failed starting persisted rebuild checkpoint row-meta query")?;
+    let raw = match rows
+        .next()
+        .context("failed stepping persisted rebuild checkpoint row-meta query")?
+    {
+        Some(row) => {
+            if tx
+                .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::StepRowFetchCompleted)
+                .is_err()
+            {
+                return Ok(());
+            }
+            let phase_raw = row
+                .get::<_, String>(0)
+                .context("failed decoding persisted rebuild checkpoint phase column")?;
+            if tx
+                .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::StepPhaseDecoded)
+                .is_err()
+            {
+                return Ok(());
+            }
+            let updated_at_raw = row
+                .get::<_, String>(1)
+                .context("failed decoding persisted rebuild checkpoint updated_at column")?;
+            if tx
+                .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::StepUpdatedAtDecoded)
+                .is_err()
+            {
+                return Ok(());
+            }
+            Some((phase_raw, updated_at_raw))
+        }
+        None => {
+            if tx
+                .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::StepRowFetchCompleted)
+                .is_err()
+            {
+                return Ok(());
+            }
+            None
+        }
+    };
     if tx
         .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::StepCompleted(
             elapsed_ms(step_started_at),
@@ -1514,9 +1641,13 @@ fn load_publication_truth_export_checkpoint_row_meta_worker(
         },
     };
 
-    let _ = tx.send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Finished(Ok(
-        row_meta,
-    )));
+    if tx
+        .send(PublicationTruthExportCheckpointRowMetaWorkerMessage::FinishedSendAttempted)
+        .is_err()
+    {
+        return Ok(());
+    }
+    let _ = tx.send(PublicationTruthExportCheckpointRowMetaWorkerMessage::Finished(Ok(row_meta)));
     Ok(())
 }
 
@@ -4340,9 +4471,34 @@ fn render_publication_truth_export_blocker_human(
                 .publication_truth_export_checkpoint_headline_worker_prepare_completed_received
         ),
         format!(
+            "publication_truth_export_checkpoint_headline_worker_step_query_started_received={}",
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_step_query_started_received
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_worker_step_row_fetch_completed_received={}",
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_step_row_fetch_completed_received
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_worker_step_phase_decoded_received={}",
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_step_phase_decoded_received
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_worker_step_updated_at_decoded_received={}",
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_step_updated_at_decoded_received
+        ),
+        format!(
             "publication_truth_export_checkpoint_headline_worker_step_completed_received={}",
             diagnostic
                 .publication_truth_export_checkpoint_headline_worker_step_completed_received
+        ),
+        format!(
+            "publication_truth_export_checkpoint_headline_worker_finished_send_attempted={}",
+            diagnostic
+                .publication_truth_export_checkpoint_headline_worker_finished_send_attempted
         ),
         format!(
             "publication_truth_export_checkpoint_headline_worker_finished_received={}",
@@ -7007,7 +7163,27 @@ mod tests {
             true
         );
         assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_worker_step_query_started_received"],
+            true
+        );
+        assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_worker_step_row_fetch_completed_received"],
+            true
+        );
+        assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_worker_step_phase_decoded_received"],
+            true
+        );
+        assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_worker_step_updated_at_decoded_received"],
+            true
+        );
+        assert_eq!(
             parsed["publication_truth_export_checkpoint_headline_worker_step_completed_received"],
+            true
+        );
+        assert_eq!(
+            parsed["publication_truth_export_checkpoint_headline_worker_finished_send_attempted"],
             true
         );
         assert_eq!(
@@ -7101,7 +7277,12 @@ mod tests {
             "publication_truth_export_checkpoint_headline_worker_schema_lookup_completed_received",
             "publication_truth_export_checkpoint_headline_worker_row_count_completed_received",
             "publication_truth_export_checkpoint_headline_worker_prepare_completed_received",
+            "publication_truth_export_checkpoint_headline_worker_step_query_started_received",
+            "publication_truth_export_checkpoint_headline_worker_step_row_fetch_completed_received",
+            "publication_truth_export_checkpoint_headline_worker_step_phase_decoded_received",
+            "publication_truth_export_checkpoint_headline_worker_step_updated_at_decoded_received",
             "publication_truth_export_checkpoint_headline_worker_step_completed_received",
+            "publication_truth_export_checkpoint_headline_worker_finished_send_attempted",
             "publication_truth_export_checkpoint_headline_worker_finished_received",
             "publication_truth_export_checkpoint_headline_worker_disconnected",
             "publication_truth_export_checkpoint_headline_budget_remaining_ms_after_open",
@@ -7607,7 +7788,23 @@ mod tests {
             diagnostic.publication_truth_export_checkpoint_headline_worker_started
         );
         assert!(
+            !diagnostic.publication_truth_export_checkpoint_headline_worker_step_query_started_received
+        );
+        assert!(
+            !diagnostic.publication_truth_export_checkpoint_headline_worker_step_row_fetch_completed_received
+        );
+        assert!(
+            !diagnostic.publication_truth_export_checkpoint_headline_worker_step_phase_decoded_received
+        );
+        assert!(
+            !diagnostic
+                .publication_truth_export_checkpoint_headline_worker_step_updated_at_decoded_received
+        );
+        assert!(
             !diagnostic.publication_truth_export_checkpoint_headline_worker_finished_received
+        );
+        assert!(
+            !diagnostic.publication_truth_export_checkpoint_headline_worker_finished_send_attempted
         );
         assert!(
             !diagnostic.publication_truth_export_checkpoint_headline_worker_disconnected

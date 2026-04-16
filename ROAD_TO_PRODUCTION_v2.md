@@ -13600,6 +13600,50 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+Corrective repository batch accepted (`2026-04-16`):
+
+1. The publication-blocker checkpoint-headline worker no longer treats the
+   whole primary-key step as one opaque `query_row(...).optional()` region.
+2. The worker now emits explicit micro-stage events around that seam:
+   - `step_query_started`
+   - `step_row_fetch_completed`
+   - `step_phase_decoded`
+   - `step_updated_at_decoded`
+   - `finished_send_attempted`
+3. The worker now uses `stmt.query([])` plus `rows.next()?` and emits those
+   micro-stage events before `StepCompleted` / `Finished`.
+4. The publication operator now exposes the corresponding controller-side
+   fields:
+   - `publication_truth_export_checkpoint_headline_worker_step_query_started_received`
+   - `publication_truth_export_checkpoint_headline_worker_step_row_fetch_completed_received`
+   - `publication_truth_export_checkpoint_headline_worker_step_phase_decoded_received`
+   - `publication_truth_export_checkpoint_headline_worker_step_updated_at_decoded_received`
+   - `publication_truth_export_checkpoint_headline_worker_finished_send_attempted`
+5. Existing controller budget behavior and existing operator semantics are
+   preserved.
+6. The checkpoint-headline path remains:
+   - runtime-DB-only
+   - no recent_raw open
+   - no state_json parsing
+   - no `length(state_json)` probing
+7. Source-compare mode still reuses the publication diagnostic path unchanged.
+8. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+9. It does not change:
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
 Live rollout result (`2026-04-16`, commit `a6cdb4e`):
 
 1. The server was fast-forwarded to `a6cdb4e` and only
