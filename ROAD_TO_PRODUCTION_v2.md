@@ -13737,3 +13737,56 @@ Current interpretation:
 2. This corrective batch is accepted because it removes that false downgrade:
    top-level export-blocker proof now comes from persisted publication state
    first, while deeper checkpoint/replay work is advisory enrichment only.
+
+### Stage 3 bounded replay-checkpoint headline operator (`2026-04-16`)
+
+Accepted repository change:
+
+1. A new bounded read-only runtime-DB-only operator now exists:
+   - `discovery_replay_checkpoint_headline --config <path> --json`
+2. The operator resolves the runtime DB from the supplied config, opens it
+   read-only, and reads only the persisted replay-checkpoint headline columns
+   plus `length(state_json)`.
+3. It does not:
+   - open `recent_raw`
+   - parse the full persisted replay-checkpoint JSON payload
+   - run replay/source comparison
+   - classify deeper replay blocker families
+4. It emits the headline/meta fields plus bounded worker status:
+   - `replay_checkpoint_headline_budget_exhausted`
+   - `replay_checkpoint_headline_stage`
+   - `replay_checkpoint_headline_total_elapsed_ms`
+5. It returns these reason classes:
+   - `replay_checkpoint_headline_row_present`
+   - `replay_checkpoint_headline_row_missing`
+   - `replay_checkpoint_headline_unproven_due_to_missing_evidence`
+6. The batch touches only:
+   - `crates/discovery/src/bin/discovery_replay_checkpoint_headline.rs`
+7. It does not change:
+   - `discovery_runtime_export`
+   - `discovery_replay_checkpoint_diagnose`
+   - replay behavior
+   - publication/export gate semantics
+   - recent-raw behavior
+   - configs, templates, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_replay_checkpoint_headline`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_replay_checkpoint_headline`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_replay_checkpoint_headline.rs`
+   passed.
+4. `git diff --check --no-index -- /dev/null crates/discovery/src/bin/discovery_replay_checkpoint_headline.rs`
+   produced no whitespace findings; the nonzero exit is expected for a
+   new-file comparison against `/dev/null`.
+
+Current interpretation:
+
+1. This batch is accepted as the cheap disjoint checkpoint-row headline surface
+   that the roadmap needed next.
+2. It gives operators a bounded way to prove whether the persisted replay
+   checkpoint row exists, what phase it is in, how large the stored JSON is,
+   and how far the persisted counters/cursor have advanced, without reentering
+   the heavier `discovery_runtime_export` enrichment path.
