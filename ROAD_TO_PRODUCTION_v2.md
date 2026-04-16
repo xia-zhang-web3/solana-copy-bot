@@ -14399,3 +14399,27 @@ Current interpretation:
 2. If live still falsifies the operator after this correction, the remaining
    bug will be in the new mode's prerequisite reuse or post-prerequisite
    handoff, not in the already-established publication-blocker path itself.
+3. Live rollout to the production host falsified the intended operator result:
+   - server commit moved to `5707279`
+   - only `discovery_runtime_export` was rebuilt
+   - `solana-copy-bot.service` stayed `active`
+   - `copybot-discovery-runtime-export.timer` stayed `active`
+4. On the deployed binary, the established primary operator still completed
+   successfully on a repeated live run:
+   - `publication_truth_export_blocked_on_replay_sol_leg_incomplete`
+   - `publication_truth_export_checkpoint_headline_completed = true`
+   - `publication_truth_export_checkpoint_headline_budget_exhausted = false`
+   - `publication_truth_export_checkpoint_headline_stage = complete`
+   - `publication_truth_export_checkpoint_headline_total_elapsed_ms = 275`
+5. But the new replay-sol-leg mode still failed operationally on live:
+   - external command:
+     `timeout 60s discovery_runtime_export --explain-replay-sol-leg-blocker --config /etc/solana-copy-bot/live.server.toml --json`
+     exited with `rc=124`
+   - `/tmp/replay_sol_leg_blocker_after_fix.json` remained `0` bytes
+   - no deep-proof JSON result was produced
+6. Current interpretation after rollout:
+   - the prerequisite reuse correction did not yet make the new replay-sol-leg
+     mode operationally bounded on live
+   - the remaining defect is now inside the new mode's post-prerequisite or
+     deep-proof execution path, not in the established publication-blocker
+     prerequisite contract
