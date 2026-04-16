@@ -13600,6 +13600,43 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+Corrective repository batch accepted (`2026-04-16`):
+
+1. The publication-blocker checkpoint-headline worker now emits row-fetch proof
+   metadata for the exact SQLite fetch seam.
+2. New publication operator fields:
+   - `publication_truth_export_checkpoint_headline_worker_sqlite_busy_timeout_ms`
+   - `publication_truth_export_checkpoint_headline_worker_query_sql`
+   - `publication_truth_export_checkpoint_headline_worker_explain_query_plan`
+   - `publication_truth_export_checkpoint_headline_worker_row_fetch_access_path`
+   - `publication_truth_export_checkpoint_headline_worker_row_fetch_started_at_unix_ms`
+   - `publication_truth_export_checkpoint_headline_worker_row_fetch_elapsed_ms_observed_by_worker`
+3. The worker now:
+   - reads `PRAGMA busy_timeout`
+   - captures the exact row-meta SQL string
+   - runs `EXPLAIN QUERY PLAN`
+   - derives a row-fetch access-path string
+   - keeps the low-level fetch boundary explicit via:
+     - `stmt.query([])`
+     - `StepQueryStarted(...)`
+     - `rows.next()?`
+     - `StepRowFetchCompleted(...)`
+4. Existing controller timeout behavior and existing operator semantics are
+   preserved.
+5. The path remains:
+   - runtime-DB-only
+   - no recent_raw
+   - no state_json parsing
+   - no `length(state_json)`
+6. Source-compare mode still reuses the publication diagnostic path unchanged.
+7. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+8. It does not change:
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
 Live rollout result (`2026-04-16`, commit `29c07b4`):
 
 1. The server was fast-forwarded to `29c07b4` and only
