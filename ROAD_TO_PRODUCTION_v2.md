@@ -13752,6 +13752,53 @@ Live rollout result (`2026-04-16`, commit `fb6edd5`):
 
 Corrective repository batch accepted (`2026-04-16`):
 
+1. The copied-snapshot probe now proves the `copy_main_db` seam instead of
+   merely timing out there with zero detail.
+2. It emits explicit copy-main proof fields:
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_size_bytes`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_modified_at`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_main_started_at_unix_ms`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes_observed_before_timeout`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_main_effective_bytes_per_sec`
+   - `checkpoint_row_fetch_copied_snapshot_probe_copy_main_progress_kind`
+3. The main DB staging step now uses an explicitly instrumented buffered copy
+   loop, so the controller observes real byte progress rather than inferring it
+   after timeout.
+4. On timeout or worker disconnect during `copy_main_db`, the controller now
+   finalizes:
+   - zero-progress vs partial-progress vs full-copy state
+   - effective copy throughput
+   - the last observed copy-main byte count
+5. The copied-snapshot operator remains:
+   - bounded
+   - runtime-DB-only
+   - no recent_raw
+   - no state_json parsing
+   - no `length(state_json)`
+6. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+7. It does not change:
+   - `--explain-publication-truth-export-blocker`
+   - `--explain-replay-sol-leg-blocker`
+   - `--trace-replay-sol-leg-deep-proof`
+   - `--trace-replay-sol-leg-source-compare`
+   - `--probe-checkpoint-row-fetch-busy-wait`
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Corrective repository batch accepted (`2026-04-16`):
+
 1. `discovery_runtime_export` now exposes a new bounded read-only operator:
    `--probe-checkpoint-row-fetch-copied-snapshot`.
 2. The new mode resolves the runtime DB trio from config:

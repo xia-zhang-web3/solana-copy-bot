@@ -25,7 +25,8 @@ use copybot_storage::{
 use rusqlite::{Connection, ErrorCode, OpenFlags};
 use serde::Serialize;
 use std::env;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 #[cfg(test)]
@@ -545,6 +546,14 @@ enum CheckpointRowFetchCopiedSnapshotProbeReasonClass {
     CheckpointRowFetchCopiedSnapshotProbeUnprovenDueToMissingEvidence,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind {
+    NoBytesObservedBeforeTimeout,
+    PartialCopyObservedBeforeTimeout,
+    FullCopyCompleted,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct CheckpointRowFetchBusyProbeDiagnostic {
     checkpoint_row_fetch_busy_probe_observed: bool,
@@ -631,6 +640,13 @@ struct CheckpointRowFetchCopiedSnapshotProbeDiagnostic {
     checkpoint_row_fetch_copied_snapshot_probe_copy_main_started: bool,
     checkpoint_row_fetch_copied_snapshot_probe_copy_main_completed: bool,
     checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes: u64,
+    checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_size_bytes: Option<u64>,
+    checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_modified_at: Option<DateTime<Utc>>,
+    checkpoint_row_fetch_copied_snapshot_probe_copy_main_started_at_unix_ms: Option<u64>,
+    checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes_observed_before_timeout: u64,
+    checkpoint_row_fetch_copied_snapshot_probe_copy_main_effective_bytes_per_sec: Option<u64>,
+    checkpoint_row_fetch_copied_snapshot_probe_copy_main_progress_kind:
+        Option<CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind>,
     checkpoint_row_fetch_copied_snapshot_probe_copy_wal_started: bool,
     checkpoint_row_fetch_copied_snapshot_probe_copy_wal_completed: bool,
     checkpoint_row_fetch_copied_snapshot_probe_copy_wal_bytes: u64,
@@ -687,6 +703,12 @@ impl CheckpointRowFetchCopiedSnapshotProbeDiagnostic {
             checkpoint_row_fetch_copied_snapshot_probe_copy_main_started: false,
             checkpoint_row_fetch_copied_snapshot_probe_copy_main_completed: false,
             checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes: 0,
+            checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_size_bytes: None,
+            checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_modified_at: None,
+            checkpoint_row_fetch_copied_snapshot_probe_copy_main_started_at_unix_ms: None,
+            checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes_observed_before_timeout: 0,
+            checkpoint_row_fetch_copied_snapshot_probe_copy_main_effective_bytes_per_sec: None,
+            checkpoint_row_fetch_copied_snapshot_probe_copy_main_progress_kind: None,
             checkpoint_row_fetch_copied_snapshot_probe_copy_wal_started: false,
             checkpoint_row_fetch_copied_snapshot_probe_copy_wal_completed: false,
             checkpoint_row_fetch_copied_snapshot_probe_copy_wal_bytes: 0,
@@ -2223,7 +2245,15 @@ enum CheckpointRowFetchCopiedSnapshotProbeWorkerMessage {
         path: String,
         elapsed_ms: u64,
     },
-    CopyMainStarted,
+    CopyMainStarted {
+        source_size_bytes: u64,
+        source_modified_at: Option<DateTime<Utc>>,
+        started_at_unix_ms: u64,
+    },
+    CopyMainProgress {
+        bytes_copied: u64,
+        elapsed_ms: u64,
+    },
     CopyMainCompleted {
         bytes: u64,
         elapsed_ms: u64,
@@ -2251,6 +2281,7 @@ enum CheckpointRowFetchCopiedSnapshotProbeWorkerMessage {
 #[derive(Debug, Clone, Copy)]
 enum CheckpointRowFetchCopiedSnapshotProbeTestBehavior {
     DelayBeforeCopyMain(StdDuration),
+    DelayAfterCopyMainFirstChunk(StdDuration),
     DelayBeforeCopyWal(StdDuration),
     DelayBeforeHandoff(StdDuration),
     BusyProbe(CheckpointRowFetchBusyProbeTestBehavior),
@@ -2597,11 +2628,38 @@ fn probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_impl(
                 diagnostic.checkpoint_row_fetch_copied_snapshot_probe_temp_dir_elapsed_ms =
                     elapsed_ms;
             }
-            Ok(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyMainStarted) => {
+            Ok(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyMainStarted {
+                source_size_bytes,
+                source_modified_at,
+                started_at_unix_ms,
+            }) => {
                 current_stage = CheckpointRowFetchCopiedSnapshotProbeStage::CopyMainDb;
                 diagnostic.checkpoint_row_fetch_copied_snapshot_probe_stage =
                     Some(current_stage.as_str().to_string());
                 diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_started = true;
+                diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_size_bytes =
+                    Some(source_size_bytes);
+                diagnostic
+                    .checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_modified_at =
+                    source_modified_at;
+                diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_started_at_unix_ms =
+                    Some(started_at_unix_ms);
+            }
+            Ok(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyMainProgress {
+                bytes_copied,
+                elapsed_ms,
+            }) => {
+                current_stage = CheckpointRowFetchCopiedSnapshotProbeStage::CopyMainDb;
+                diagnostic.checkpoint_row_fetch_copied_snapshot_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes_observed_before_timeout =
+                    bytes_copied;
+                diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_elapsed_ms =
+                    elapsed_ms;
+                diagnostic
+                    .checkpoint_row_fetch_copied_snapshot_probe_copy_main_effective_bytes_per_sec =
+                    Some(compute_bytes_per_second(bytes_copied, elapsed_ms));
             }
             Ok(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyMainCompleted {
                 bytes,
@@ -2613,8 +2671,19 @@ fn probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_impl(
                 diagnostic.checkpoint_row_fetch_copied_snapshot_probe_main_db_copied = true;
                 diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_completed = true;
                 diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes = bytes;
+                diagnostic
+                    .checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes_observed_before_timeout =
+                    bytes;
                 diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_elapsed_ms =
                     elapsed_ms;
+                diagnostic
+                    .checkpoint_row_fetch_copied_snapshot_probe_copy_main_effective_bytes_per_sec =
+                    Some(compute_bytes_per_second(bytes, elapsed_ms));
+                diagnostic
+                    .checkpoint_row_fetch_copied_snapshot_probe_copy_main_progress_kind =
+                    Some(
+                        CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind::FullCopyCompleted,
+                    );
             }
             Ok(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyWalStarted) => {
                 current_stage = CheckpointRowFetchCopiedSnapshotProbeStage::CopyWal;
@@ -2775,6 +2844,7 @@ fn probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_impl(
             Ok(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::Finished(Err(error))) => {
                 diagnostic.checkpoint_row_fetch_copied_snapshot_probe_total_elapsed_ms =
                     elapsed_ms(total_started_at);
+                finalize_copy_main_progress_kind(&mut diagnostic);
                 diagnostic.checkpoint_row_fetch_copied_snapshot_probe_explanation = error;
                 return diagnostic;
             }
@@ -2786,6 +2856,7 @@ fn probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_impl(
                     CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeBudgetExhausted;
                 diagnostic.checkpoint_row_fetch_copied_snapshot_probe_stage =
                     Some(current_stage.as_str().to_string());
+                finalize_copy_main_progress_kind(&mut diagnostic);
                 diagnostic.checkpoint_row_fetch_copied_snapshot_probe_explanation = format!(
                     "copied-snapshot checkpoint row-fetch probe exhausted its bounded budget while executing stage={}",
                     current_stage.as_str()
@@ -2795,6 +2866,7 @@ fn probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_impl(
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 diagnostic.checkpoint_row_fetch_copied_snapshot_probe_total_elapsed_ms =
                     elapsed_ms(total_started_at);
+                finalize_copy_main_progress_kind(&mut diagnostic);
                 diagnostic.checkpoint_row_fetch_copied_snapshot_probe_explanation =
                     "copied-snapshot checkpoint row-fetch probe worker disconnected before returning a result"
                         .to_string();
@@ -2835,6 +2907,63 @@ fn sqlite_sidecar_path(base: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(sidecar)
 }
 
+fn compute_bytes_per_second(bytes: u64, elapsed_ms: u64) -> u64 {
+    if bytes == 0 {
+        return 0;
+    }
+    let elapsed_ms = elapsed_ms.max(1);
+    ((bytes as u128) * 1_000 / (elapsed_ms as u128)).min(u64::MAX as u128) as u64
+}
+
+fn finalize_copy_main_progress_kind(
+    diagnostic: &mut CheckpointRowFetchCopiedSnapshotProbeDiagnostic,
+) {
+    if diagnostic
+        .checkpoint_row_fetch_copied_snapshot_probe_copy_main_completed
+    {
+        diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_progress_kind = Some(
+            CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind::FullCopyCompleted,
+        );
+        if diagnostic
+            .checkpoint_row_fetch_copied_snapshot_probe_copy_main_effective_bytes_per_sec
+            .is_none()
+        {
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_effective_bytes_per_sec =
+                Some(compute_bytes_per_second(
+                    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes,
+                    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_elapsed_ms,
+                ));
+        }
+        return;
+    }
+    if !diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_started {
+        return;
+    }
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_progress_kind = Some(
+        if diagnostic
+            .checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes_observed_before_timeout
+            == 0
+        {
+            CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind::NoBytesObservedBeforeTimeout
+        } else {
+            CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind::PartialCopyObservedBeforeTimeout
+        },
+    );
+    if diagnostic
+        .checkpoint_row_fetch_copied_snapshot_probe_copy_main_effective_bytes_per_sec
+        .is_none()
+    {
+        diagnostic
+            .checkpoint_row_fetch_copied_snapshot_probe_copy_main_effective_bytes_per_sec =
+            Some(compute_bytes_per_second(
+                diagnostic
+                    .checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes_observed_before_timeout,
+                diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_elapsed_ms,
+            ));
+    }
+}
+
 fn copy_checkpoint_row_fetch_probe_file(src: &Path, dst: &Path) -> Result<Option<u64>> {
     if !src.exists() {
         return Ok(None);
@@ -2847,6 +2976,81 @@ fn copy_checkpoint_row_fetch_probe_file(src: &Path, dst: &Path) -> Result<Option
         )
     })?;
     Ok(Some(copied_bytes))
+}
+
+fn copy_checkpoint_row_fetch_probe_main_file_with_progress(
+    src: &Path,
+    dst: &Path,
+    tx: &mpsc::SyncSender<CheckpointRowFetchCopiedSnapshotProbeWorkerMessage>,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchCopiedSnapshotProbeTestBehavior>,
+) -> Result<(u64, u64)> {
+    let mut src_file = File::open(src).with_context(|| {
+        format!(
+            "failed opening checkpoint row-fetch copied-snapshot main db source {}",
+            src.display()
+        )
+    })?;
+    let mut dst_file = File::create(dst).with_context(|| {
+        format!(
+            "failed opening checkpoint row-fetch copied-snapshot main db destination {}",
+            dst.display()
+        )
+    })?;
+    let mut buffer = [0_u8; 256 * 1024];
+    let mut total_bytes = 0_u64;
+    let copy_started_at = Instant::now();
+    #[cfg(test)]
+    let mut delayed_after_first_chunk = false;
+    loop {
+        #[cfg(test)]
+        if total_bytes == 0 {
+            if let Some(CheckpointRowFetchCopiedSnapshotProbeTestBehavior::DelayBeforeCopyMain(
+                delay,
+            )) = test_behavior
+            {
+                thread::sleep(delay);
+            }
+        }
+        let read_len = src_file.read(&mut buffer).with_context(|| {
+            format!(
+                "failed reading checkpoint row-fetch copied-snapshot main db source {}",
+                src.display()
+            )
+        })?;
+        if read_len == 0 {
+            break;
+        }
+        dst_file.write_all(&buffer[..read_len]).with_context(|| {
+            format!(
+                "failed writing checkpoint row-fetch copied-snapshot main db destination {}",
+                dst.display()
+            )
+        })?;
+        total_bytes = total_bytes.saturating_add(read_len as u64);
+        let _ = tx.try_send(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyMainProgress {
+            bytes_copied: total_bytes,
+            elapsed_ms: elapsed_ms(copy_started_at),
+        });
+        #[cfg(test)]
+        if !delayed_after_first_chunk {
+            if let Some(
+                CheckpointRowFetchCopiedSnapshotProbeTestBehavior::DelayAfterCopyMainFirstChunk(
+                    delay,
+                ),
+            ) = test_behavior
+            {
+                delayed_after_first_chunk = true;
+                thread::sleep(delay);
+            }
+        }
+    }
+    dst_file.flush().with_context(|| {
+        format!(
+            "failed flushing checkpoint row-fetch copied-snapshot main db destination {}",
+            dst.display()
+        )
+    })?;
+    Ok((total_bytes, elapsed_ms(copy_started_at)))
 }
 
 fn probe_checkpoint_row_fetch_copied_snapshot_worker(
@@ -2876,35 +3080,42 @@ fn probe_checkpoint_row_fetch_copied_snapshot_worker(
                 .unwrap_or_else(|| std::ffi::OsStr::new("runtime.db")),
         );
 
+        let runtime_db_meta = fs::metadata(runtime_db_path).with_context(|| {
+            format!(
+                "failed reading runtime db metadata for copied-snapshot checkpoint row-fetch probe {}",
+                runtime_db_path.display()
+            )
+        })?;
         if tx
-            .send(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyMainStarted)
+            .send(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyMainStarted {
+                source_size_bytes: runtime_db_meta.len(),
+                source_modified_at: runtime_db_meta.modified().ok().map(DateTime::<Utc>::from),
+                started_at_unix_ms: Utc::now().timestamp_millis().max(0) as u64,
+            })
             .is_err()
         {
             return Ok(());
         }
-        #[cfg(test)]
-        if let Some(CheckpointRowFetchCopiedSnapshotProbeTestBehavior::DelayBeforeCopyMain(delay)) =
-            test_behavior
-        {
-            thread::sleep(delay);
-        }
-        let copy_main_started_at = Instant::now();
-        let main_copy_bytes = match copy_checkpoint_row_fetch_probe_file(
+        let (main_copy_bytes, copy_main_elapsed_ms) = match copy_checkpoint_row_fetch_probe_main_file_with_progress(
             runtime_db_path,
             &copied_main_db_path,
-        )? {
-            Some(bytes) => bytes,
-            None => {
+            &tx,
+            #[cfg(test)]
+            test_behavior,
+        ) {
+            Ok(result) => result,
+            Err(_error) if !runtime_db_path.exists() => {
                 bail!(
                     "runtime db {} did not exist for copied-snapshot checkpoint row-fetch probe",
                     runtime_db_path.display()
                 );
             }
+            Err(error) => return Err(error),
         };
         if tx
             .send(CheckpointRowFetchCopiedSnapshotProbeWorkerMessage::CopyMainCompleted {
                 bytes: main_copy_bytes,
-                elapsed_ms: elapsed_ms(copy_main_started_at),
+                elapsed_ms: copy_main_elapsed_ms,
             })
             .is_err()
         {
@@ -7360,6 +7571,45 @@ fn render_checkpoint_row_fetch_copied_snapshot_probe_human(
             diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes
         ),
         format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_size_bytes={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_size_bytes
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_modified_at={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_modified_at
+                .map(|value| value.to_rfc3339())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_copy_main_started_at_unix_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_started_at_unix_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes_observed_before_timeout={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes_observed_before_timeout
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_copy_main_effective_bytes_per_sec={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_effective_bytes_per_sec
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_copy_main_progress_kind={}",
+            format_optional_enum_json(
+                &diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_main_progress_kind
+            )
+        ),
+        format!(
             "checkpoint_row_fetch_copied_snapshot_probe_copy_wal_started={}",
             diagnostic.checkpoint_row_fetch_copied_snapshot_probe_copy_wal_started
         ),
@@ -8770,6 +9020,7 @@ mod tests {
         trace_replay_sol_leg_source_compare_read_only_with_budget,
         trace_replay_sol_leg_source_compare_read_only_with_prerequisite_budget,
         CheckpointRowFetchBusyProbeReasonClass, CheckpointRowFetchBusyProbeResultKind,
+        CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind,
         CheckpointRowFetchCopiedSnapshotProbeTestBehavior,
         CheckpointRowFetchCopiedSnapshotProbeReasonClass,
         CheckpointRowFetchBusyProbeTestBehavior,
@@ -9536,6 +9787,10 @@ mod tests {
             true
         );
         assert_eq!(
+            parsed["checkpoint_row_fetch_copied_snapshot_probe_copy_main_progress_kind"],
+            "full_copy_completed"
+        );
+        assert_eq!(
             parsed["checkpoint_row_fetch_copied_snapshot_probe_handoff_to_zero_timeout_probe_started"],
             true
         );
@@ -9560,6 +9815,12 @@ mod tests {
             "checkpoint_row_fetch_copied_snapshot_probe_copy_main_started",
             "checkpoint_row_fetch_copied_snapshot_probe_copy_main_completed",
             "checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes",
+            "checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_size_bytes",
+            "checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_modified_at",
+            "checkpoint_row_fetch_copied_snapshot_probe_copy_main_started_at_unix_ms",
+            "checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes_observed_before_timeout",
+            "checkpoint_row_fetch_copied_snapshot_probe_copy_main_effective_bytes_per_sec",
+            "checkpoint_row_fetch_copied_snapshot_probe_copy_main_progress_kind",
             "checkpoint_row_fetch_copied_snapshot_probe_copy_wal_started",
             "checkpoint_row_fetch_copied_snapshot_probe_copy_wal_completed",
             "checkpoint_row_fetch_copied_snapshot_probe_copy_wal_bytes",
@@ -9818,6 +10079,100 @@ mod tests {
         assert!(
             !diagnostic
                 .checkpoint_row_fetch_copied_snapshot_probe_copy_main_completed
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_source_size_bytes
+                .is_some()
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_started_at_unix_ms
+                .is_some()
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes_observed_before_timeout,
+            0
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_progress_kind,
+            Some(
+                CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind::NoBytesObservedBeforeTimeout
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_copied_snapshot_probe_copy_main_partial_progress_timeout_reports_partial(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-copied-snapshot-probe-copy-main-partial-timeout",
+        )?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-copied-snapshot-probe-copy-main-partial-timeout".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "x".repeat(2_000_000),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_millis(50),
+                Some(
+                    CheckpointRowFetchCopiedSnapshotProbeTestBehavior::DelayAfterCopyMainFirstChunk(
+                        StdDuration::from_millis(200),
+                    ),
+                ),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_reason_class,
+            CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeBudgetExhausted
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_stage
+                .as_deref(),
+            Some("copy_main_db")
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_started
+        );
+        assert!(
+            !diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_completed
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_bytes_observed_before_timeout
+                > 0
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_copy_main_progress_kind,
+            Some(
+                CheckpointRowFetchCopiedSnapshotProbeCopyMainProgressKind::PartialCopyObservedBeforeTimeout
+            )
         );
         Ok(())
     }
