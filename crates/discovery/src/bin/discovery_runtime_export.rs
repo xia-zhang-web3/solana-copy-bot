@@ -55,6 +55,7 @@ const USAGE: &str = "usage:
   discovery_runtime_export --probe-checkpoint-row-fetch-copied-snapshot --config <path> [--json]
   discovery_runtime_export --probe-checkpoint-row-fetch-minimal-snapshot --config <path> [--json]
   discovery_runtime_export --probe-checkpoint-row-fetch-materialization-busy-wait --config <path> [--json]
+  discovery_runtime_export --probe-checkpoint-row-fetch-materialization-immutable-source --config <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-window-seeding --state-root <path> [--json]
@@ -76,10 +77,17 @@ const DEFAULT_CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_BUDGET_SOURCE: &str =
 const DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_BUDGET_MS: u64 = 1_000;
 const DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_BUDGET_SOURCE: &str =
     "fixed_constant_zero_busy_timeout_materialization_insert_select_probe";
+const DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_BUDGET_MS: u64 = 1_000;
+const DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_BUDGET_SOURCE: &str =
+    "fixed_constant_immutable_source_materialization_insert_select_probe";
 const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY: &str =
     "temp_sqlite_row_meta_only_table_materialized_via_attach_insert_select";
 const CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_STRATEGY: &str =
     "temp_sqlite_row_meta_only_table_materialized_via_attach_insert_select_zero_busy_timeout_execute_probe";
+const CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_STRATEGY: &str =
+    "temp_sqlite_row_meta_only_table_materialized_via_attach_insert_select_immutable_read_only_source_uri";
+const CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_SOURCE_ATTACH_MODE: &str =
+    "sqlite_uri_mode_ro_immutable_1";
 const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL: &str =
     "INSERT INTO discovery_persisted_rebuild_state (id, phase, updated_at)
 SELECT id, phase, updated_at
@@ -225,6 +233,12 @@ struct ProbeCheckpointRowFetchMaterializationBusyWaitConfig {
 }
 
 #[derive(Debug, Clone)]
+struct ProbeCheckpointRowFetchMaterializationImmutableSourceConfig {
+    config_path: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 struct ExplainRecentRawStagedLineageConfig {
     state_root: PathBuf,
     json: bool,
@@ -273,6 +287,9 @@ enum Command {
     ProbeCheckpointRowFetchMinimalSnapshot(ProbeCheckpointRowFetchMinimalSnapshotConfig),
     ProbeCheckpointRowFetchMaterializationBusyWait(
         ProbeCheckpointRowFetchMaterializationBusyWaitConfig,
+    ),
+    ProbeCheckpointRowFetchMaterializationImmutableSource(
+        ProbeCheckpointRowFetchMaterializationImmutableSourceConfig,
     ),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
@@ -601,6 +618,25 @@ enum CheckpointRowFetchMaterializationBusyProbeReasonClass {
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum CheckpointRowFetchMaterializationBusyProbeResultKind {
+    InsertSelectSucceeded,
+    SqliteBusy,
+    SqliteLocked,
+    OtherSqliteError,
+    OtherError,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchMaterializationImmutableProbeReasonClass {
+    CheckpointRowFetchMaterializationImmutableProbeProvenChangedByAttachMode,
+    CheckpointRowFetchMaterializationImmutableProbeProvenNotChangedByAttachMode,
+    CheckpointRowFetchMaterializationImmutableProbeBudgetExhausted,
+    CheckpointRowFetchMaterializationImmutableProbeUnprovenDueToMissingEvidence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchMaterializationImmutableProbeResultKind {
     InsertSelectSucceeded,
     SqliteBusy,
     SqliteLocked,
@@ -1130,6 +1166,119 @@ impl CheckpointRowFetchMaterializationBusyProbeDiagnostic {
             checkpoint_row_fetch_materialization_busy_probe_result_kind: None,
             checkpoint_row_fetch_materialization_busy_probe_sqlite_error_code: None,
             checkpoint_row_fetch_materialization_busy_probe_sqlite_error_message: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct CheckpointRowFetchMaterializationImmutableProbeDiagnostic {
+    checkpoint_row_fetch_materialization_immutable_probe_observed: bool,
+    checkpoint_row_fetch_materialization_immutable_probe_reason_class:
+        CheckpointRowFetchMaterializationImmutableProbeReasonClass,
+    checkpoint_row_fetch_materialization_immutable_probe_explanation: String,
+    config_path: String,
+    runtime_db_path: Option<String>,
+    checkpoint_row_fetch_materialization_immutable_probe_strategy: String,
+    checkpoint_row_fetch_materialization_immutable_probe_temp_dir: Option<String>,
+    checkpoint_row_fetch_materialization_immutable_probe_budget_ms: u64,
+    checkpoint_row_fetch_materialization_immutable_probe_budget_source: String,
+    checkpoint_row_fetch_materialization_immutable_probe_total_elapsed_ms: u64,
+    checkpoint_row_fetch_materialization_immutable_probe_budget_exhausted: bool,
+    checkpoint_row_fetch_materialization_immutable_probe_stage: Option<String>,
+    checkpoint_row_fetch_materialization_immutable_probe_source_attach_uri: Option<String>,
+    checkpoint_row_fetch_materialization_immutable_probe_source_attach_mode: String,
+    checkpoint_row_fetch_materialization_immutable_probe_source_attach_immutable: bool,
+    checkpoint_row_fetch_materialization_immutable_probe_source_attach_readonly: bool,
+    checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_sql: String,
+    checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_explain_query_plan:
+        Option<String>,
+    checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_explain_query_plan_rows:
+        Option<Vec<String>>,
+    checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_journal_mode:
+        Option<String>,
+    checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_locking_mode:
+        Option<String>,
+    checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_query_only:
+        Option<bool>,
+    checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_busy_timeout_ms:
+        Option<u64>,
+    checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_started:
+        bool,
+    checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_completed:
+        bool,
+    checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_elapsed_ms:
+        u64,
+    checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_rows_changed:
+        Option<u64>,
+    checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_started:
+        bool,
+    checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_completed:
+        bool,
+    checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_row_count:
+        Option<u64>,
+    checkpoint_row_fetch_materialization_immutable_probe_result_kind:
+        Option<CheckpointRowFetchMaterializationImmutableProbeResultKind>,
+    checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_code: Option<String>,
+    checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_message: Option<String>,
+}
+
+impl CheckpointRowFetchMaterializationImmutableProbeDiagnostic {
+    fn unproven(config_path: &Path, explanation: String) -> Self {
+        Self {
+            checkpoint_row_fetch_materialization_immutable_probe_observed: false,
+            checkpoint_row_fetch_materialization_immutable_probe_reason_class:
+                CheckpointRowFetchMaterializationImmutableProbeReasonClass::CheckpointRowFetchMaterializationImmutableProbeUnprovenDueToMissingEvidence,
+            checkpoint_row_fetch_materialization_immutable_probe_explanation: explanation,
+            config_path: config_path.display().to_string(),
+            runtime_db_path: None,
+            checkpoint_row_fetch_materialization_immutable_probe_strategy:
+                CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_STRATEGY.to_string(),
+            checkpoint_row_fetch_materialization_immutable_probe_temp_dir: None,
+            checkpoint_row_fetch_materialization_immutable_probe_budget_ms:
+                DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_BUDGET_MS,
+            checkpoint_row_fetch_materialization_immutable_probe_budget_source:
+                DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_BUDGET_SOURCE
+                    .to_string(),
+            checkpoint_row_fetch_materialization_immutable_probe_total_elapsed_ms: 0,
+            checkpoint_row_fetch_materialization_immutable_probe_budget_exhausted: false,
+            checkpoint_row_fetch_materialization_immutable_probe_stage: None,
+            checkpoint_row_fetch_materialization_immutable_probe_source_attach_uri: None,
+            checkpoint_row_fetch_materialization_immutable_probe_source_attach_mode:
+                CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_SOURCE_ATTACH_MODE
+                    .to_string(),
+            checkpoint_row_fetch_materialization_immutable_probe_source_attach_immutable: true,
+            checkpoint_row_fetch_materialization_immutable_probe_source_attach_readonly: true,
+            checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_sql:
+                CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL.to_string(),
+            checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_explain_query_plan:
+                None,
+            checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_explain_query_plan_rows:
+                None,
+            checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_journal_mode:
+                None,
+            checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_locking_mode:
+                None,
+            checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_query_only:
+                None,
+            checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_busy_timeout_ms:
+                None,
+            checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_started:
+                false,
+            checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_completed:
+                false,
+            checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_elapsed_ms:
+                0,
+            checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_rows_changed:
+                None,
+            checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_started:
+                false,
+            checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_completed:
+                false,
+            checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_row_count:
+                None,
+            checkpoint_row_fetch_materialization_immutable_probe_result_kind: None,
+            checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_code: None,
+            checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_message: None,
         }
     }
 }
@@ -2682,6 +2831,35 @@ impl CheckpointRowFetchMaterializationBusyProbeStage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointRowFetchMaterializationImmutableProbeStage {
+    CreateTempDir,
+    TempDbOpen,
+    SchemaCreate,
+    AttachSource,
+    LoadBusyTimeout,
+    LoadConnectionMetadata,
+    LoadExplainQueryPlan,
+    InsertSelectExecute,
+    Postcheck,
+}
+
+impl CheckpointRowFetchMaterializationImmutableProbeStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::CreateTempDir => "create_temp_dir",
+            Self::TempDbOpen => "temp_db_open",
+            Self::SchemaCreate => "schema_create",
+            Self::AttachSource => "attach_source",
+            Self::LoadBusyTimeout => "load_busy_timeout",
+            Self::LoadConnectionMetadata => "load_connection_metadata",
+            Self::LoadExplainQueryPlan => "load_explain_query_plan",
+            Self::InsertSelectExecute => "insert_select_execute",
+            Self::Postcheck => "postcheck",
+        }
+    }
+}
+
 #[derive(Debug)]
 enum CheckpointRowFetchCopiedSnapshotProbeWorkerMessage {
     TempDirCreated {
@@ -2787,6 +2965,43 @@ enum CheckpointRowFetchMaterializationBusyProbeWorkerMessage {
     Finished(Result<(), String>),
 }
 
+#[derive(Debug)]
+enum CheckpointRowFetchMaterializationImmutableProbeWorkerMessage {
+    TempDirCreated {
+        path: String,
+    },
+    Entered(CheckpointRowFetchMaterializationImmutableProbeStage),
+    SourceAttachInfo {
+        uri: String,
+        mode: String,
+        immutable: bool,
+        readonly: bool,
+    },
+    BusyTimeout(u64),
+    ConnectionReadMode {
+        journal_mode: String,
+        locking_mode: String,
+        query_only: bool,
+    },
+    QueryPlan {
+        explain_query_plan: String,
+        explain_query_plan_rows: Vec<String>,
+    },
+    InsertSelectExecuteStarted,
+    InsertSelectExecuteCompleted {
+        elapsed_ms: u64,
+        rows_changed: u64,
+        result_kind: CheckpointRowFetchMaterializationImmutableProbeResultKind,
+        sqlite_error_code: Option<String>,
+        sqlite_error_message: Option<String>,
+    },
+    InsertSelectPostcheckStarted,
+    InsertSelectPostcheckCompleted {
+        row_count: u64,
+    },
+    Finished(Result<(), String>),
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 enum CheckpointRowFetchCopiedSnapshotProbeTestBehavior {
@@ -2814,6 +3029,17 @@ enum CheckpointRowFetchMinimalSnapshotProbeTestBehavior {
 enum CheckpointRowFetchMaterializationBusyProbeTestBehavior {
     ForceBusy,
     ForceLocked,
+    DelayBeforeExecute(StdDuration),
+    DelayBeforePostcheck(StdDuration),
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+enum CheckpointRowFetchMaterializationImmutableProbeTestBehavior {
+    ForceBusy,
+    ForceLocked,
+    ForceOtherSqliteError,
     DelayBeforeExecute(StdDuration),
     DelayBeforePostcheck(StdDuration),
 }
@@ -3441,6 +3667,355 @@ fn probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_impl(
                 finalize_copy_main_progress_kind(&mut diagnostic);
                 diagnostic.checkpoint_row_fetch_copied_snapshot_probe_explanation =
                     "copied-snapshot checkpoint row-fetch probe worker disconnected before returning a result"
+                        .to_string();
+                return diagnostic;
+            }
+        }
+    }
+}
+
+fn probe_checkpoint_row_fetch_materialization_immutable_source_read_only(
+    config_path: &Path,
+) -> CheckpointRowFetchMaterializationImmutableProbeDiagnostic {
+    probe_checkpoint_row_fetch_materialization_immutable_source_read_only_with_budget_impl(
+        config_path,
+        StdDuration::from_millis(
+            DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_BUDGET_MS,
+        ),
+        #[cfg(test)]
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_materialization_immutable_source_read_only_with_budget(
+    config_path: &Path,
+    budget: StdDuration,
+) -> CheckpointRowFetchMaterializationImmutableProbeDiagnostic {
+    probe_checkpoint_row_fetch_materialization_immutable_source_read_only_with_budget_impl(
+        config_path,
+        budget,
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_materialization_immutable_source_read_only_with_budget_and_test_behavior(
+    config_path: &Path,
+    budget: StdDuration,
+    test_behavior: Option<CheckpointRowFetchMaterializationImmutableProbeTestBehavior>,
+) -> CheckpointRowFetchMaterializationImmutableProbeDiagnostic {
+    probe_checkpoint_row_fetch_materialization_immutable_source_read_only_with_budget_impl(
+        config_path,
+        budget,
+        test_behavior,
+    )
+}
+
+fn probe_checkpoint_row_fetch_materialization_immutable_source_read_only_with_budget_impl(
+    config_path: &Path,
+    budget: StdDuration,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchMaterializationImmutableProbeTestBehavior>,
+) -> CheckpointRowFetchMaterializationImmutableProbeDiagnostic {
+    let mut diagnostic = CheckpointRowFetchMaterializationImmutableProbeDiagnostic::unproven(
+        config_path,
+        "checkpoint row-fetch materialization immutable-source probe did not run".to_string(),
+    );
+    diagnostic.checkpoint_row_fetch_materialization_immutable_probe_budget_ms =
+        budget.as_millis().min(u64::MAX as u128) as u64;
+    diagnostic.checkpoint_row_fetch_materialization_immutable_probe_budget_source =
+        DEFAULT_CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_BUDGET_SOURCE.to_string();
+
+    let total_started_at = Instant::now();
+    let loaded_config = match load_from_path(config_path)
+        .with_context(|| format!("failed loading config {}", config_path.display()))
+    {
+        Ok(config) => config,
+        Err(error) => {
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_explanation =
+                format!("{error:#}");
+            return diagnostic;
+        }
+    };
+    let runtime_db_path = resolve_db_path(config_path, None, &loaded_config.sqlite.path);
+    diagnostic.runtime_db_path = Some(runtime_db_path.display().to_string());
+    diagnostic.checkpoint_row_fetch_materialization_immutable_probe_observed = true;
+
+    let (tx, rx) = mpsc::sync_channel(32);
+    let config_path_for_worker = config_path.to_path_buf();
+    let runtime_db_path_for_worker = runtime_db_path.clone();
+    thread::spawn(move || {
+        let _ = probe_checkpoint_row_fetch_materialization_immutable_source_worker(
+            &config_path_for_worker,
+            &runtime_db_path_for_worker,
+            tx,
+            #[cfg(test)]
+            test_behavior,
+        );
+    });
+
+    let mut current_stage = CheckpointRowFetchMaterializationImmutableProbeStage::CreateTempDir;
+    loop {
+        match rx.recv_timeout(remaining_budget_duration(budget, total_started_at)) {
+            Ok(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::TempDirCreated {
+                    path,
+                },
+            ) => {
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_temp_dir =
+                    Some(path);
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_stage =
+                    Some(current_stage.as_str().to_string());
+            }
+            Ok(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(stage)) => {
+                current_stage = stage;
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_stage =
+                    Some(stage.as_str().to_string());
+                if stage
+                    == CheckpointRowFetchMaterializationImmutableProbeStage::InsertSelectExecute
+                {
+                    diagnostic
+                        .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_started =
+                        true;
+                }
+                if stage == CheckpointRowFetchMaterializationImmutableProbeStage::Postcheck {
+                    diagnostic
+                        .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_started =
+                        true;
+                }
+            }
+            Ok(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::SourceAttachInfo {
+                    uri,
+                    mode,
+                    immutable,
+                    readonly,
+                },
+            ) => {
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_source_attach_uri =
+                    Some(uri);
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_source_attach_mode = mode;
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_source_attach_immutable =
+                    immutable;
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_source_attach_readonly =
+                    readonly;
+            }
+            Ok(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::BusyTimeout(
+                value,
+            )) => {
+                current_stage = CheckpointRowFetchMaterializationImmutableProbeStage::LoadBusyTimeout;
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_busy_timeout_ms =
+                    Some(value);
+            }
+            Ok(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::ConnectionReadMode {
+                    journal_mode,
+                    locking_mode,
+                    query_only,
+                },
+            ) => {
+                current_stage =
+                    CheckpointRowFetchMaterializationImmutableProbeStage::LoadConnectionMetadata;
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_journal_mode =
+                    Some(journal_mode);
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_locking_mode =
+                    Some(locking_mode);
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_query_only =
+                    Some(query_only);
+            }
+            Ok(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::QueryPlan {
+                explain_query_plan,
+                explain_query_plan_rows,
+            }) => {
+                current_stage =
+                    CheckpointRowFetchMaterializationImmutableProbeStage::LoadExplainQueryPlan;
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_explain_query_plan =
+                    Some(explain_query_plan);
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_explain_query_plan_rows =
+                    Some(explain_query_plan_rows);
+            }
+            Ok(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::InsertSelectExecuteStarted,
+            ) => {
+                current_stage =
+                    CheckpointRowFetchMaterializationImmutableProbeStage::InsertSelectExecute;
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_started =
+                    true;
+            }
+            Ok(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::InsertSelectExecuteCompleted {
+                    elapsed_ms,
+                    rows_changed,
+                    result_kind,
+                    sqlite_error_code,
+                    sqlite_error_message,
+                },
+            ) => {
+                current_stage =
+                    CheckpointRowFetchMaterializationImmutableProbeStage::InsertSelectExecute;
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_completed =
+                    true;
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_elapsed_ms =
+                    elapsed_ms;
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_rows_changed =
+                    Some(rows_changed);
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_result_kind =
+                    Some(result_kind);
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_code =
+                    sqlite_error_code;
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_message =
+                    sqlite_error_message;
+            }
+            Ok(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::InsertSelectPostcheckStarted,
+            ) => {
+                current_stage = CheckpointRowFetchMaterializationImmutableProbeStage::Postcheck;
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_started =
+                    true;
+            }
+            Ok(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::InsertSelectPostcheckCompleted {
+                    row_count,
+                },
+            ) => {
+                current_stage = CheckpointRowFetchMaterializationImmutableProbeStage::Postcheck;
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_completed =
+                    true;
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_row_count =
+                    Some(row_count);
+            }
+            Ok(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Finished(result)) => {
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                match result {
+                    Ok(()) => {
+                        diagnostic.checkpoint_row_fetch_materialization_immutable_probe_reason_class =
+                            match diagnostic
+                                .checkpoint_row_fetch_materialization_immutable_probe_result_kind
+                            {
+                                Some(
+                                    CheckpointRowFetchMaterializationImmutableProbeResultKind::InsertSelectSucceeded
+                                    | CheckpointRowFetchMaterializationImmutableProbeResultKind::SqliteBusy
+                                    | CheckpointRowFetchMaterializationImmutableProbeResultKind::SqliteLocked
+                                    | CheckpointRowFetchMaterializationImmutableProbeResultKind::OtherSqliteError
+                                    | CheckpointRowFetchMaterializationImmutableProbeResultKind::OtherError,
+                                ) => CheckpointRowFetchMaterializationImmutableProbeReasonClass::CheckpointRowFetchMaterializationImmutableProbeProvenChangedByAttachMode,
+                                None => CheckpointRowFetchMaterializationImmutableProbeReasonClass::CheckpointRowFetchMaterializationImmutableProbeUnprovenDueToMissingEvidence,
+                            };
+                        diagnostic.checkpoint_row_fetch_materialization_immutable_probe_explanation =
+                            match diagnostic
+                                .checkpoint_row_fetch_materialization_immutable_probe_reason_class
+                            {
+                                CheckpointRowFetchMaterializationImmutableProbeReasonClass::CheckpointRowFetchMaterializationImmutableProbeProvenChangedByAttachMode => {
+                                    match diagnostic
+                                        .checkpoint_row_fetch_materialization_immutable_probe_result_kind
+                                    {
+                                        Some(CheckpointRowFetchMaterializationImmutableProbeResultKind::InsertSelectSucceeded) => format!(
+                                            "immutable-source attach mode changed the materialization execute seam: INSERT ... SELECT completed successfully using source_attach_mode={}",
+                                            diagnostic
+                                                .checkpoint_row_fetch_materialization_immutable_probe_source_attach_mode
+                                        ),
+                                        Some(result_kind) => format!(
+                                            "immutable-source attach mode changed the materialization execute seam: INSERT ... SELECT returned result_kind={} sqlite_error_code={} sqlite_error_message={} using source_attach_mode={}",
+                                            serde_json::to_string(&result_kind)
+                                                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                                                .trim_matches('\"'),
+                                            diagnostic
+                                                .checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_code
+                                                .as_deref()
+                                                .unwrap_or("null"),
+                                            diagnostic
+                                                .checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_message
+                                                .as_deref()
+                                                .unwrap_or("null"),
+                                            diagnostic
+                                                .checkpoint_row_fetch_materialization_immutable_probe_source_attach_mode
+                                        ),
+                                        None => "immutable-source attach probe ended without a conclusive execute result".to_string(),
+                                    }
+                                }
+                                CheckpointRowFetchMaterializationImmutableProbeReasonClass::CheckpointRowFetchMaterializationImmutableProbeProvenNotChangedByAttachMode => unreachable!(),
+                                CheckpointRowFetchMaterializationImmutableProbeReasonClass::CheckpointRowFetchMaterializationImmutableProbeBudgetExhausted => unreachable!(),
+                                CheckpointRowFetchMaterializationImmutableProbeReasonClass::CheckpointRowFetchMaterializationImmutableProbeUnprovenDueToMissingEvidence => {
+                                    "immutable-source attach probe ended without a conclusive execute result".to_string()
+                                }
+                            };
+                    }
+                    Err(error) => {
+                        diagnostic.checkpoint_row_fetch_materialization_immutable_probe_reason_class =
+                            CheckpointRowFetchMaterializationImmutableProbeReasonClass::CheckpointRowFetchMaterializationImmutableProbeUnprovenDueToMissingEvidence;
+                        diagnostic.checkpoint_row_fetch_materialization_immutable_probe_explanation =
+                            error;
+                    }
+                }
+                return diagnostic;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_budget_exhausted =
+                    true;
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_stage =
+                    Some(current_stage.as_str().to_string());
+                if current_stage
+                    == CheckpointRowFetchMaterializationImmutableProbeStage::InsertSelectExecute
+                {
+                    diagnostic.checkpoint_row_fetch_materialization_immutable_probe_reason_class =
+                        CheckpointRowFetchMaterializationImmutableProbeReasonClass::CheckpointRowFetchMaterializationImmutableProbeProvenNotChangedByAttachMode;
+                    diagnostic
+                        .checkpoint_row_fetch_materialization_immutable_probe_explanation = format!(
+                        "immutable-source attach mode did not change the exact materialization execute seam: the probe still exhausted its bounded budget while executing stage={}",
+                        current_stage.as_str()
+                    );
+                } else {
+                    diagnostic.checkpoint_row_fetch_materialization_immutable_probe_reason_class =
+                        CheckpointRowFetchMaterializationImmutableProbeReasonClass::CheckpointRowFetchMaterializationImmutableProbeBudgetExhausted;
+                    diagnostic
+                        .checkpoint_row_fetch_materialization_immutable_probe_explanation = format!(
+                        "checkpoint row-fetch materialization immutable-source probe exhausted its bounded budget while executing stage={}",
+                        current_stage.as_str()
+                    );
+                }
+                return diagnostic;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_reason_class =
+                    CheckpointRowFetchMaterializationImmutableProbeReasonClass::CheckpointRowFetchMaterializationImmutableProbeUnprovenDueToMissingEvidence;
+                diagnostic.checkpoint_row_fetch_materialization_immutable_probe_explanation =
+                    "checkpoint row-fetch materialization immutable-source probe worker disconnected before returning a result"
                         .to_string();
                 return diagnostic;
             }
@@ -5369,6 +5944,393 @@ fn probe_checkpoint_row_fetch_materialization_busy_wait_worker(
     Ok(())
 }
 
+fn probe_checkpoint_row_fetch_materialization_immutable_source_worker(
+    _config_path: &Path,
+    runtime_db_path: &Path,
+    tx: mpsc::SyncSender<CheckpointRowFetchMaterializationImmutableProbeWorkerMessage>,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchMaterializationImmutableProbeTestBehavior>,
+) -> Result<()> {
+    let run = || -> Result<()> {
+        let temp_dir_path = create_checkpoint_row_fetch_probe_temp_dir()?;
+        if tx
+            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::TempDirCreated {
+                path: temp_dir_path.display().to_string(),
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        let minimal_db_path = temp_dir_path.join(
+            runtime_db_path
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("runtime.db")),
+        );
+        let minimal_db_uri = if minimal_db_path.is_absolute() {
+            format!("file://{}?mode=rwc", minimal_db_path.to_string_lossy())
+        } else {
+            format!("file:{}?mode=rwc", minimal_db_path.to_string_lossy())
+        };
+
+        if tx
+            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
+                CheckpointRowFetchMaterializationImmutableProbeStage::TempDbOpen,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        let conn = Connection::open_with_flags(
+            &minimal_db_uri,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| {
+            format!(
+                "failed opening materialization immutable-source probe temp sqlite db {}",
+                minimal_db_path.display()
+            )
+        })?;
+
+        if tx
+            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
+                CheckpointRowFetchMaterializationImmutableProbeStage::SchemaCreate,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        conn.execute_batch(
+            "PRAGMA journal_mode = DELETE;
+             CREATE TABLE discovery_persisted_rebuild_state (
+                 id INTEGER PRIMARY KEY,
+                 phase TEXT,
+                 updated_at TEXT
+             );",
+        )
+        .context("failed creating materialization immutable-source probe temp sqlite schema")?;
+
+        if tx
+            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
+                CheckpointRowFetchMaterializationImmutableProbeStage::AttachSource,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        let source_attach_uri = build_sqlite_immutable_read_only_uri(runtime_db_path);
+        if tx
+            .send(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::SourceAttachInfo {
+                    uri: source_attach_uri.clone(),
+                    mode: CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_SOURCE_ATTACH_MODE
+                        .to_string(),
+                    immutable: true,
+                    readonly: true,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let attach_sql = format!(
+            "ATTACH DATABASE '{}' AS source",
+            escape_sqlite_string_literal(&source_attach_uri)
+        );
+        conn.execute_batch(&attach_sql).with_context(|| {
+            format!(
+                "failed attaching immutable read-only source runtime db {} for materialization immutable-source probe",
+                runtime_db_path.display()
+            )
+        })?;
+
+        if tx
+            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
+                CheckpointRowFetchMaterializationImmutableProbeStage::LoadBusyTimeout,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        let busy_timeout_ms = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
+            .context("failed reading sqlite busy_timeout for materialization immutable-source probe")?;
+        if tx
+            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::BusyTimeout(
+                busy_timeout_ms,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
+                CheckpointRowFetchMaterializationImmutableProbeStage::LoadConnectionMetadata,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        let journal_mode = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+            .context("failed reading sqlite journal_mode for materialization immutable-source probe")?;
+        let locking_mode = conn
+            .query_row("PRAGMA locking_mode", [], |row| row.get::<_, String>(0))
+            .context("failed reading sqlite locking_mode for materialization immutable-source probe")?;
+        let query_only = conn
+            .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+            .context("failed reading sqlite query_only for materialization immutable-source probe")?
+            != 0;
+        if tx
+            .send(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::ConnectionReadMode {
+                    journal_mode,
+                    locking_mode,
+                    query_only,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
+                CheckpointRowFetchMaterializationImmutableProbeStage::LoadExplainQueryPlan,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        if let Ok(explain_query_plan) = load_explain_query_plan_for_sql(
+            &conn,
+            CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL,
+            "materialization immutable-source probe insert-select",
+        ) {
+            if tx
+                .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::QueryPlan {
+                    explain_query_plan: explain_query_plan.explain_query_plan,
+                    explain_query_plan_rows: explain_query_plan.explain_query_plan_rows,
+                })
+                .is_err()
+            {
+                return Ok(());
+            }
+        }
+
+        if tx
+            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
+                CheckpointRowFetchMaterializationImmutableProbeStage::InsertSelectExecute,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        if tx
+            .send(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::InsertSelectExecuteStarted,
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        #[cfg(test)]
+        match test_behavior {
+            Some(CheckpointRowFetchMaterializationImmutableProbeTestBehavior::ForceBusy) => {
+                let _ = tx.send(
+                    CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::InsertSelectExecuteCompleted {
+                        elapsed_ms: 0,
+                        rows_changed: 0,
+                        result_kind:
+                            CheckpointRowFetchMaterializationImmutableProbeResultKind::SqliteBusy,
+                        sqlite_error_code: Some("SQLITE_BUSY".to_string()),
+                        sqlite_error_message: Some(
+                            "forced SQLITE_BUSY at immutable-source materialization INSERT ... SELECT boundary"
+                                .to_string(),
+                        ),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+            Some(CheckpointRowFetchMaterializationImmutableProbeTestBehavior::ForceLocked) => {
+                let _ = tx.send(
+                    CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::InsertSelectExecuteCompleted {
+                        elapsed_ms: 0,
+                        rows_changed: 0,
+                        result_kind:
+                            CheckpointRowFetchMaterializationImmutableProbeResultKind::SqliteLocked,
+                        sqlite_error_code: Some("SQLITE_LOCKED".to_string()),
+                        sqlite_error_message: Some(
+                            "forced SQLITE_LOCKED at immutable-source materialization INSERT ... SELECT boundary"
+                                .to_string(),
+                        ),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+            Some(
+                CheckpointRowFetchMaterializationImmutableProbeTestBehavior::ForceOtherSqliteError,
+            ) => {
+                let _ = tx.send(
+                    CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::InsertSelectExecuteCompleted {
+                        elapsed_ms: 0,
+                        rows_changed: 0,
+                        result_kind:
+                            CheckpointRowFetchMaterializationImmutableProbeResultKind::OtherSqliteError,
+                        sqlite_error_code: Some("SQLITE_CORRUPT".to_string()),
+                        sqlite_error_message: Some(
+                            "forced other sqlite error at immutable-source materialization INSERT ... SELECT boundary"
+                                .to_string(),
+                        ),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Finished(Ok(())),
+                );
+                return Ok(());
+            }
+            Some(
+                CheckpointRowFetchMaterializationImmutableProbeTestBehavior::DelayBeforeExecute(
+                    delay,
+                ),
+            ) => {
+                thread::sleep(delay);
+            }
+            Some(
+                CheckpointRowFetchMaterializationImmutableProbeTestBehavior::DelayBeforePostcheck(
+                    _,
+                ),
+            )
+            | None => {}
+        }
+
+        let execute_started_at = Instant::now();
+        let execute_outcome = match conn.execute(
+            CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL,
+            [],
+        ) {
+            Ok(_) => (
+                CheckpointRowFetchMaterializationImmutableProbeResultKind::InsertSelectSucceeded,
+                conn.changes(),
+                None,
+                None,
+            ),
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                let result_kind = match error.code {
+                    ErrorCode::DatabaseBusy => {
+                        CheckpointRowFetchMaterializationImmutableProbeResultKind::SqliteBusy
+                    }
+                    ErrorCode::DatabaseLocked => {
+                        CheckpointRowFetchMaterializationImmutableProbeResultKind::SqliteLocked
+                    }
+                    _ => {
+                        CheckpointRowFetchMaterializationImmutableProbeResultKind::OtherSqliteError
+                    }
+                };
+                (
+                    result_kind,
+                    0,
+                    Some(sqlite_error_code_name(error.code)),
+                    Some(
+                        message.unwrap_or_else(|| {
+                            "sqlite failure at immutable-source materialization INSERT ... SELECT boundary"
+                                .to_string()
+                        }),
+                    ),
+                )
+            }
+            Err(error) => (
+                CheckpointRowFetchMaterializationImmutableProbeResultKind::OtherError,
+                0,
+                None,
+                Some(error.to_string()),
+            ),
+        };
+        if tx
+            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::InsertSelectExecuteCompleted {
+                elapsed_ms: elapsed_ms(execute_started_at),
+                rows_changed: execute_outcome.1,
+                result_kind: execute_outcome.0,
+                sqlite_error_code: execute_outcome.2,
+                sqlite_error_message: execute_outcome.3,
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+        if execute_outcome.0
+            != CheckpointRowFetchMaterializationImmutableProbeResultKind::InsertSelectSucceeded
+        {
+            let _ = tx
+                .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Finished(
+                    Ok(()),
+                ));
+            return Ok(());
+        }
+
+        if tx
+            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Entered(
+                CheckpointRowFetchMaterializationImmutableProbeStage::Postcheck,
+            ))
+            .is_err()
+        {
+            return Ok(());
+        }
+        if tx
+            .send(
+                CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::InsertSelectPostcheckStarted,
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if let Some(
+            CheckpointRowFetchMaterializationImmutableProbeTestBehavior::DelayBeforePostcheck(
+                delay,
+            ),
+        ) = test_behavior
+        {
+            thread::sleep(delay);
+        }
+        let postcheck_row_count = conn
+            .query_row(CHECKPOINT_HEADLINE_ROW_META_ROW_COUNT_SQL, [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .context("failed postcheck row count after immutable-source materialization probe")?
+            .max(0) as u64;
+        if tx
+            .send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::InsertSelectPostcheckCompleted {
+                row_count: postcheck_row_count,
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        let _ = tx.send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Finished(
+            Ok(()),
+        ));
+        Ok(())
+    };
+
+    if let Err(error) = run() {
+        let _ = tx.send(CheckpointRowFetchMaterializationImmutableProbeWorkerMessage::Finished(
+            Err(format!("{error:#}")),
+        ));
+    }
+    Ok(())
+}
+
 fn probe_checkpoint_row_fetch_busy_wait_worker(
     runtime_db_path: &Path,
     tx: mpsc::SyncSender<CheckpointRowFetchBusyProbeWorkerMessage>,
@@ -5620,6 +6582,19 @@ fn sqlite_error_code_name(code: ErrorCode) -> String {
         ErrorCode::DatabaseLocked => "SQLITE_LOCKED".to_string(),
         _ => format!("{code:?}"),
     }
+}
+
+fn build_sqlite_immutable_read_only_uri(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if path.starts_with('/') {
+        format!("file://{path}?mode=ro&immutable=1")
+    } else {
+        format!("file:{path}?mode=ro&immutable=1")
+    }
+}
+
+fn escape_sqlite_string_literal(value: &str) -> String {
+    value.replace('\'', "''")
 }
 
 #[cfg(test)]
@@ -6648,6 +7623,7 @@ where
     let mut probe_checkpoint_row_fetch_copied_snapshot = false;
     let mut probe_checkpoint_row_fetch_minimal_snapshot = false;
     let mut probe_checkpoint_row_fetch_materialization_busy_wait = false;
+    let mut probe_checkpoint_row_fetch_materialization_immutable_source = false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
@@ -6714,6 +7690,9 @@ where
             "--probe-checkpoint-row-fetch-materialization-busy-wait" => {
                 probe_checkpoint_row_fetch_materialization_busy_wait = true;
             }
+            "--probe-checkpoint-row-fetch-materialization-immutable-source" => {
+                probe_checkpoint_row_fetch_materialization_immutable_source = true;
+            }
             "--deep-attempt-telemetry-scan" => {
                 deep_attempt_telemetry_scan = true;
             }
@@ -6770,13 +7749,14 @@ where
         + usize::from(probe_checkpoint_row_fetch_copied_snapshot)
         + usize::from(probe_checkpoint_row_fetch_minimal_snapshot)
         + usize::from(probe_checkpoint_row_fetch_materialization_busy_wait)
+        + usize::from(probe_checkpoint_row_fetch_materialization_immutable_source)
         + usize::from(explain_recent_raw_staged_lineage)
         + usize::from(explain_recent_raw_staged_regression)
         + usize::from(explain_recent_raw_staged_birth)
         + usize::from(explain_recent_raw_staged_window_seeding);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --probe-checkpoint-row-fetch-materialization-busy-wait, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --probe-checkpoint-row-fetch-materialization-busy-wait, --probe-checkpoint-row-fetch-materialization-immutable-source, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
     if deep_attempt_telemetry_scan && !explain_recent_raw_replacement_attempt_telemetry {
@@ -7124,6 +8104,30 @@ where
         ));
     }
 
+    if probe_checkpoint_row_fetch_materialization_immutable_source {
+        if state_root.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+            || deep_attempt_telemetry_scan
+        {
+            bail!(
+                "--probe-checkpoint-row-fetch-materialization-immutable-source only accepts --config and optional --json"
+            );
+        }
+        return Ok(Some(
+            Command::ProbeCheckpointRowFetchMaterializationImmutableSource(
+                ProbeCheckpointRowFetchMaterializationImmutableSourceConfig {
+                    config_path: config_path
+                        .ok_or_else(|| anyhow!("missing required --config"))?,
+                    json,
+                },
+            ),
+        ));
+    }
+
     if explain_recent_raw_staged_lineage {
         if config_path.is_some()
             || db_path.is_some()
@@ -7437,6 +8441,23 @@ fn run_command(command: Command) -> Result<String> {
                 Ok(render_checkpoint_row_fetch_materialization_busy_probe_human(
                     &diagnostic,
                 ))
+            }
+        }
+        Command::ProbeCheckpointRowFetchMaterializationImmutableSource(config) => {
+            let diagnostic =
+                probe_checkpoint_row_fetch_materialization_immutable_source_read_only(
+                    &config.config_path,
+                );
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic).context(
+                    "failed serializing checkpoint row-fetch materialization immutable-source probe json",
+                )
+            } else {
+                Ok(
+                    render_checkpoint_row_fetch_materialization_immutable_probe_human(
+                        &diagnostic,
+                    ),
+                )
             }
         }
         Command::ExplainRecentRawStagedLineage(config) => {
@@ -10626,6 +11647,195 @@ fn render_checkpoint_row_fetch_materialization_busy_probe_human(
     .join("\n")
 }
 
+fn render_checkpoint_row_fetch_materialization_immutable_probe_human(
+    diagnostic: &CheckpointRowFetchMaterializationImmutableProbeDiagnostic,
+) -> String {
+    [
+        "event=discovery_checkpoint_row_fetch_materialization_immutable_probe".to_string(),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_observed={}",
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_observed
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_reason_class={}",
+            serde_json::to_string(
+                &diagnostic.checkpoint_row_fetch_materialization_immutable_probe_reason_class
+            )
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_explanation={}",
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_explanation
+        ),
+        format!("config_path={}", diagnostic.config_path),
+        format!(
+            "runtime_db_path={}",
+            diagnostic.runtime_db_path.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_strategy={}",
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_strategy
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_temp_dir={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_temp_dir
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_budget_ms={}",
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_budget_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_budget_source={}",
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_budget_source
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_total_elapsed_ms={}",
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_total_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_budget_exhausted={}",
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_budget_exhausted
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_stage={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_stage
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_source_attach_uri={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_source_attach_uri
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_source_attach_mode={}",
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_source_attach_mode
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_source_attach_immutable={}",
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_source_attach_immutable
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_source_attach_readonly={}",
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_source_attach_readonly
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_sql={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_sql
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_explain_query_plan={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_explain_query_plan
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_explain_query_plan_rows={}",
+            format_optional_json(
+                &diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_explain_query_plan_rows
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_journal_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_journal_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_locking_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_locking_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_query_only={}",
+            format_optional_bool(
+                diagnostic
+                    .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_query_only
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_busy_timeout_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_busy_timeout_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_started={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_started
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_completed={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_completed
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_elapsed_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_rows_changed={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_rows_changed
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_started={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_started
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_completed={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_completed
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_row_count={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_row_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_result_kind={}",
+            format_optional_enum_json(
+                &diagnostic.checkpoint_row_fetch_materialization_immutable_probe_result_kind
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_code={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_code
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_message={}",
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_message
+                .as_deref()
+                .unwrap_or("null")
+        ),
+    ]
+    .join("\n")
+}
+
 fn format_optional_bool(value: Option<bool>) -> String {
     value
         .map(|value| value.to_string())
@@ -11839,6 +13049,8 @@ mod tests {
         probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget,
         probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_and_test_behavior,
+        probe_checkpoint_row_fetch_materialization_immutable_source_read_only_with_budget,
+        probe_checkpoint_row_fetch_materialization_immutable_source_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget,
         probe_checkpoint_row_fetch_materialization_busy_wait_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_minimal_snapshot_read_only_with_budget,
@@ -11849,6 +13061,9 @@ mod tests {
         trace_replay_sol_leg_source_compare_read_only_with_budget,
         trace_replay_sol_leg_source_compare_read_only_with_prerequisite_budget,
         CheckpointRowFetchBusyProbeReasonClass, CheckpointRowFetchBusyProbeResultKind,
+        CheckpointRowFetchMaterializationImmutableProbeReasonClass,
+        CheckpointRowFetchMaterializationImmutableProbeResultKind,
+        CheckpointRowFetchMaterializationImmutableProbeTestBehavior,
         CheckpointRowFetchMaterializationBusyProbeReasonClass,
         CheckpointRowFetchMaterializationBusyProbeResultKind,
         CheckpointRowFetchMaterializationBusyProbeTestBehavior,
@@ -11863,6 +13078,7 @@ mod tests {
         ExplainPublicationTruthExportBlockerConfig, ExplainRecentRawCatchUpStatusConfig,
         ExplainReplaySolLegBlockerConfig,
         ProbeCheckpointRowFetchCopiedSnapshotConfig,
+        ProbeCheckpointRowFetchMaterializationImmutableSourceConfig,
         ProbeCheckpointRowFetchMaterializationBusyWaitConfig,
         ProbeCheckpointRowFetchMinimalSnapshotConfig,
         ProbeCheckpointRowFetchBusyWaitConfig,
@@ -11892,6 +13108,12 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration as StdDuration;
     use tempfile::tempdir;
+
+    fn checkpoint_fixture_db_to_main_db(db_path: &Path) -> Result<()> {
+        let conn = rusqlite::Connection::open(db_path)?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        Ok(())
+    }
 
     #[test]
     fn parse_args_from_accepts_scheduled_force_json_and_now() {
@@ -12292,6 +13514,23 @@ mod tests {
         .expect("command should be present");
         let Command::ProbeCheckpointRowFetchMaterializationBusyWait(parsed) = parsed else {
             panic!("expected checkpoint row-fetch materialization busy probe command");
+        };
+        assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_probe_checkpoint_row_fetch_materialization_immutable_source_mode() {
+        let parsed = parse_args_from(vec![
+            "--probe-checkpoint-row-fetch-materialization-immutable-source".to_string(),
+            "--config".to_string(),
+            "/tmp/live.server.toml".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ProbeCheckpointRowFetchMaterializationImmutableSource(parsed) = parsed else {
+            panic!("expected checkpoint row-fetch materialization immutable-source probe command");
         };
         assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
         assert!(parsed.json);
@@ -14180,6 +15419,261 @@ mod tests {
         assert!(
             !diagnostic
                 .checkpoint_row_fetch_materialization_busy_probe_materialization_insert_select_postcheck_completed
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_probe_checkpoint_row_fetch_materialization_immutable_source_returns_success_json(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-materialization-immutable-probe-row",
+        )?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-materialization-immutable-probe-row".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_materialization_immutable_source_read_only_with_budget(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_reason_class,
+            CheckpointRowFetchMaterializationImmutableProbeReasonClass::CheckpointRowFetchMaterializationImmutableProbeProvenChangedByAttachMode,
+            "{diagnostic:#?}"
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_result_kind,
+            Some(
+                CheckpointRowFetchMaterializationImmutableProbeResultKind::InsertSelectSucceeded
+            )
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_completed
+        );
+
+        let rendered = run_command(Command::ProbeCheckpointRowFetchMaterializationImmutableSource(
+            ProbeCheckpointRowFetchMaterializationImmutableSourceConfig {
+                config_path: fixture.config_path.clone(),
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["checkpoint_row_fetch_materialization_immutable_probe_reason_class"],
+            "checkpoint_row_fetch_materialization_immutable_probe_proven_changed_by_attach_mode"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_completed"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_completed"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_materialization_immutable_probe_result_kind"],
+            "insert_select_succeeded"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_materialization_immutable_probe_source_attach_mode"],
+            super::CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_SOURCE_ATTACH_MODE
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_materialization_immutable_probe_source_attach_immutable"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_materialization_immutable_probe_source_attach_readonly"],
+            true
+        );
+        for key in [
+            "checkpoint_row_fetch_materialization_immutable_probe_observed",
+            "checkpoint_row_fetch_materialization_immutable_probe_reason_class",
+            "checkpoint_row_fetch_materialization_immutable_probe_explanation",
+            "config_path",
+            "runtime_db_path",
+            "checkpoint_row_fetch_materialization_immutable_probe_strategy",
+            "checkpoint_row_fetch_materialization_immutable_probe_temp_dir",
+            "checkpoint_row_fetch_materialization_immutable_probe_budget_ms",
+            "checkpoint_row_fetch_materialization_immutable_probe_budget_source",
+            "checkpoint_row_fetch_materialization_immutable_probe_total_elapsed_ms",
+            "checkpoint_row_fetch_materialization_immutable_probe_budget_exhausted",
+            "checkpoint_row_fetch_materialization_immutable_probe_stage",
+            "checkpoint_row_fetch_materialization_immutable_probe_source_attach_uri",
+            "checkpoint_row_fetch_materialization_immutable_probe_source_attach_mode",
+            "checkpoint_row_fetch_materialization_immutable_probe_source_attach_immutable",
+            "checkpoint_row_fetch_materialization_immutable_probe_source_attach_readonly",
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_sql",
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_explain_query_plan",
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_explain_query_plan_rows",
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_journal_mode",
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_locking_mode",
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_connection_query_only",
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_busy_timeout_ms",
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_started",
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_completed",
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_elapsed_ms",
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_rows_changed",
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_started",
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_completed",
+            "checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_postcheck_row_count",
+            "checkpoint_row_fetch_materialization_immutable_probe_result_kind",
+            "checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_code",
+            "checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_message",
+        ] {
+            assert!(parsed.get(key).is_some(), "missing key {key}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_materialization_immutable_probe_forced_timeout_returns_proven_not_changed_by_attach_mode(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-materialization-immutable-probe-timeout",
+        )?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-materialization-immutable-probe-timeout".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_materialization_immutable_source_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_millis(50),
+                Some(
+                    CheckpointRowFetchMaterializationImmutableProbeTestBehavior::DelayBeforeExecute(
+                        StdDuration::from_millis(200),
+                    ),
+                ),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_reason_class,
+            CheckpointRowFetchMaterializationImmutableProbeReasonClass::CheckpointRowFetchMaterializationImmutableProbeProvenNotChangedByAttachMode
+        );
+        assert!(
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_budget_exhausted
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_stage
+                .as_deref(),
+            Some("insert_select_execute")
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_started
+        );
+        assert!(
+            !diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_materialization_insert_select_execute_completed
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_materialization_immutable_probe_forced_sqlite_error_reports_exact_fields(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-materialization-immutable-probe-sqlite-error",
+        )?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-materialization-immutable-probe-sqlite-error".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_materialization_immutable_source_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+                Some(
+                    CheckpointRowFetchMaterializationImmutableProbeTestBehavior::ForceOtherSqliteError,
+                ),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_reason_class,
+            CheckpointRowFetchMaterializationImmutableProbeReasonClass::CheckpointRowFetchMaterializationImmutableProbeProvenChangedByAttachMode
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_materialization_immutable_probe_result_kind,
+            Some(
+                CheckpointRowFetchMaterializationImmutableProbeResultKind::OtherSqliteError
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_code
+                .as_deref(),
+            Some("SQLITE_CORRUPT")
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_materialization_immutable_probe_sqlite_error_message
+                .as_deref(),
+            Some(
+                "forced other sqlite error at immutable-source materialization INSERT ... SELECT boundary"
+            )
         );
         Ok(())
     }
