@@ -13614,3 +13614,61 @@ Current interpretation:
 3. This new primary operator is accepted because it lets operators prove that
    blocker from config-relative paths without log archaeology or manual DB-path
    discovery.
+
+### Stage 3 corrective boundedness fix for publication-truth export blocker surface (`2026-04-16`)
+
+Accepted repository change:
+
+1. The primary operator
+   `discovery_runtime_export --explain-publication-truth-export-blocker --config <path> --json`
+   now short-circuits aggressively instead of opening promoted `recent_raw`
+   latest and running deep replay/source proof on every non-green run.
+2. The corrected decision order is now:
+   - return immediately when publication truth is already complete and fresh
+     under the export gate
+   - run only the bounded publishable-checkpoint blocker explanation against the
+     runtime DB
+   - return immediately when there is no publishable checkpoint blocker
+   - return immediately when the blocker exists but is not
+     `replay_sol_leg_incomplete`
+   - open promoted `recent_raw` latest and run
+     `explain_replay_sol_leg_incomplete_read_only` only when the blocker is
+     already proven to be `replay_sol_leg_incomplete`
+3. On the replay blocker path, if promoted `recent_raw` latest is missing or
+   the bounded deep proof cannot complete, the operator now keeps the honest
+   top-level blocker:
+   - `publication_truth_export_blocked_on_replay_sol_leg_incomplete`
+   and leaves nested replay/source fields null instead of stalling.
+4. On the non-green path, if the bounded checkpoint-blocker diagnostic itself
+   cannot complete or exhausts its budget, the operator now returns the honest
+   top-level non-green class:
+   - `publication_truth_export_blocked_on_incomplete_or_stale_truth_without_checkpoint_explanation`
+   rather than walking into the heavy replay/source path anyway.
+5. The corrective batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+6. It does not change:
+   - replay behavior
+   - publication/export gate semantics
+   - recent-raw snapshot behavior
+   - scoring/fail-closed/runtime policy
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Current interpretation:
+
+1. The first live rollout of the new primary operator was semantically useful
+   but not operationally bounded:
+   - the manual live run exceeded three minutes
+   - RSS reached roughly `1.9 GiB`
+   - the operator had to be killed manually
+2. This corrective batch is accepted because it removes the unconditional deep
+   path and restores the intended bounded/operator-safe shape for the primary
+   Stage 3 blocker surface.

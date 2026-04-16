@@ -1224,27 +1224,9 @@ fn explain_publication_truth_export_blocker_read_only(
         }
     };
 
-    let recent_raw_store = match SqliteStore::open_read_only(&recent_raw_db_path).with_context(
-        || {
-            format!(
-                "failed opening promoted recent_raw latest db {}",
-                recent_raw_db_path.display()
-            )
-        },
-    ) {
-        Ok(store) => store,
-        Err(error) => {
-            diagnostic.publication_truth_export_blocker_explanation = format!(
-                "publication truth export blocker is unproven because promoted recent_raw latest db {} could not be opened read-only: {error:#}",
-                recent_raw_db_path.display()
-            );
-            return diagnostic;
-        }
-    };
-
-    if publication_state.has_complete_publication_truth()
-        && publication_state.is_fresh_under_gate(publication_gate, now)
-    {
+    let publication_truth_complete = publication_state.has_complete_publication_truth();
+    let fresh_under_export_gate = publication_state.is_fresh_under_gate(publication_gate, now);
+    if publication_truth_complete && fresh_under_export_gate {
         diagnostic.publication_truth_export_blocker_observed = true;
         diagnostic.publication_truth_export_blocker_reason_class =
             PublicationTruthExportBlockerReasonClass::PublicationTruthExportGateSatisfied;
@@ -1262,13 +1244,16 @@ fn explain_publication_truth_export_blocker_read_only(
     let checkpoint_runtime_db_diagnostic =
         match DiscoveryService::diagnose_runtime_db_replay_checkpoint_read_only(
             &runtime_db_path,
-            ReplayCheckpointRuntimeDbOnlyMode::Inspect,
+            ReplayCheckpointRuntimeDbOnlyMode::ExplainPublishableCheckpointBlocker,
             DEFAULT_RUNTIME_DB_DIAGNOSTIC_BUDGET_MS,
         ) {
             Ok(diagnostic_result) => diagnostic_result,
             Err(error) => {
+                diagnostic.publication_truth_export_blocker_observed = true;
+                diagnostic.publication_truth_export_blocker_reason_class =
+                    PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnIncompleteOrStaleTruthWithoutCheckpointExplanation;
                 diagnostic.publication_truth_export_blocker_explanation = format!(
-                    "publication truth export blocker is unproven because the bounded runtime replay-checkpoint diagnostic could not be completed against runtime db {}: {error:#}",
+                    "publication truth export is currently unsatisfied, but the bounded runtime replay-checkpoint blocker diagnostic could not complete against runtime db {}: {error:#}",
                     runtime_db_path.display()
                 );
                 return diagnostic;
@@ -1280,15 +1265,21 @@ fn explain_publication_truth_export_blocker_read_only(
             .unwrap_or_else(|_| "\"unknown\"".to_string())
             .trim_matches('"')
             .to_string();
+        diagnostic.publication_truth_export_blocker_observed = true;
+        diagnostic.publication_truth_export_blocker_reason_class =
+            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnIncompleteOrStaleTruthWithoutCheckpointExplanation;
         diagnostic.publication_truth_export_blocker_explanation = format!(
-            "publication truth export blocker is unproven because the bounded runtime replay-checkpoint diagnostic exhausted its budget before completion (stage={stage})"
+            "publication truth export is currently unsatisfied, but the bounded runtime replay-checkpoint blocker diagnostic exhausted its budget before completion (stage={stage})"
         );
         return diagnostic;
     }
 
-    let Some(checkpoint) = checkpoint_runtime_db_diagnostic.inspection else {
+    let Some(checkpoint) = checkpoint_runtime_db_diagnostic.blocker_explanation else {
+        diagnostic.publication_truth_export_blocker_observed = true;
+        diagnostic.publication_truth_export_blocker_reason_class =
+            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnIncompleteOrStaleTruthWithoutCheckpointExplanation;
         diagnostic.publication_truth_export_blocker_explanation = format!(
-            "publication truth export blocker is unproven because the bounded runtime replay-checkpoint diagnostic completed without an inspect payload for runtime db {}",
+            "publication truth export is currently unsatisfied, but the bounded runtime replay-checkpoint blocker diagnostic completed without a blocker explanation for runtime db {}",
             runtime_db_path.display()
         );
         return diagnostic;
@@ -1299,50 +1290,29 @@ fn explain_publication_truth_export_blocker_read_only(
     diagnostic.rebuild_replay_subphase = checkpoint.rebuild_replay_subphase.clone();
     diagnostic.publishable_checkpoint_blocker = checkpoint.publishable_checkpoint_blocker.clone();
     diagnostic.replay_incomplete = Some(checkpoint.replay_incomplete);
-    diagnostic.checkpoint_exact_target_surface_exists = checkpoint.exact_target_surface_exists;
-    diagnostic.checkpoint_exact_target_surface_repairable_for_resume =
-        checkpoint.exact_target_surface_repairable_for_resume;
-    diagnostic.checkpoint_replay_candidate_activity_backfill_required =
-        checkpoint.replay_candidate_activity_backfill_required;
-    diagnostic.checkpoint_replay_candidate_activity_backfill_pending =
-        checkpoint.replay_candidate_activity_backfill_pending;
-
-    let source_vs_checkpoint =
-        match DiscoveryService::compare_sol_leg_source_vs_checkpoint_read_only(
-            &runtime_store,
-            &recent_raw_store,
-        ) {
-            Ok(diagnostic_result) => diagnostic_result,
-            Err(error) => {
-                diagnostic.publication_truth_export_blocker_explanation = format!(
-                "publication truth export blocker is unproven because the replay source-vs-checkpoint comparison could not be completed against runtime db {} and recent_raw db {}: {error:#}",
-                runtime_db_path.display(),
-                recent_raw_db_path.display()
-            );
-                return diagnostic;
-            }
-        };
-    diagnostic.source_comparison_applicable =
-        Some(source_vs_checkpoint.source_comparison_applicable);
-    diagnostic.source_scan_target_buy_mint_filter_active =
-        source_vs_checkpoint.source_scan_target_buy_mint_filter_active;
-    diagnostic.source_scan_target_buy_mint_count =
-        source_vs_checkpoint.source_scan_target_buy_mint_count;
-    diagnostic.source_rows_exist_beyond_stored_replay_checkpoint =
-        source_vs_checkpoint.source_rows_exist_beyond_stored_replay_checkpoint;
-    diagnostic.source_rows_ahead_count = source_vs_checkpoint.source_rows_ahead_count;
-    diagnostic.source_rows_ahead_pages_scanned =
-        source_vs_checkpoint.source_rows_ahead_pages_scanned;
-    diagnostic.source_rows_ahead_first_cursor =
-        source_vs_checkpoint.source_rows_ahead_first_cursor.clone();
-    diagnostic.source_rows_ahead_last_cursor =
-        source_vs_checkpoint.source_rows_ahead_last_cursor.clone();
-    diagnostic.source_scan_access_path = source_vs_checkpoint.source_scan_access_path.clone();
-    diagnostic.source_scan_time_budget_exhausted =
-        source_vs_checkpoint.source_scan_time_budget_exhausted;
 
     let blocker = checkpoint.publishable_checkpoint_blocker.as_deref();
     if blocker == Some("replay_sol_leg_incomplete") {
+        diagnostic.publication_truth_export_blocker_observed = true;
+        diagnostic.publication_truth_export_blocker_reason_class =
+            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnReplaySolLegIncomplete;
+        let recent_raw_store = match SqliteStore::open_read_only(&recent_raw_db_path).with_context(
+            || {
+                format!(
+                    "failed opening promoted recent_raw latest db {}",
+                    recent_raw_db_path.display()
+                )
+            },
+        ) {
+            Ok(store) => store,
+            Err(error) => {
+                diagnostic.publication_truth_export_blocker_explanation = format!(
+                    "publication truth export is currently blocked on replay_sol_leg_incomplete under the primary export gate, but the bounded replay-sol-leg deep proof could not open promoted recent_raw latest db {} read-only: {error:#}",
+                    recent_raw_db_path.display()
+                );
+                return diagnostic;
+            }
+        };
         let replay_diagnostic = match DiscoveryService::explain_replay_sol_leg_incomplete_read_only(
             &runtime_store,
             &recent_raw_store,
@@ -1350,7 +1320,7 @@ fn explain_publication_truth_export_blocker_read_only(
             Ok(diagnostic_result) => diagnostic_result,
             Err(error) => {
                 diagnostic.publication_truth_export_blocker_explanation = format!(
-                    "publication truth export blocker is unproven because replay_sol_leg read-only diagnostics could not be completed against runtime db {} and recent_raw db {}: {error:#}",
+                    "publication truth export is currently blocked on replay_sol_leg_incomplete under the primary export gate, but the bounded replay-sol-leg deep proof could not complete against runtime db {} and recent_raw db {}: {error:#}",
                     runtime_db_path.display(),
                     recent_raw_db_path.display()
                 );
@@ -1364,9 +1334,52 @@ fn explain_publication_truth_export_blocker_read_only(
                 .replay_sol_leg_incomplete_explanation
                 .clone(),
         );
-        diagnostic.publication_truth_export_blocker_observed = true;
-        diagnostic.publication_truth_export_blocker_reason_class =
-            PublicationTruthExportBlockerReasonClass::PublicationTruthExportBlockedOnReplaySolLegIncomplete;
+        diagnostic.checkpoint_exact_target_surface_exists =
+            replay_diagnostic.checkpoint.exact_target_surface_exists;
+        diagnostic.checkpoint_exact_target_surface_repairable_for_resume = replay_diagnostic
+            .checkpoint
+            .exact_target_surface_repairable_for_resume;
+        diagnostic.checkpoint_replay_candidate_activity_backfill_required = replay_diagnostic
+            .checkpoint
+            .replay_candidate_activity_backfill_required;
+        diagnostic.checkpoint_replay_candidate_activity_backfill_pending = replay_diagnostic
+            .checkpoint
+            .replay_candidate_activity_backfill_pending;
+        diagnostic.source_comparison_applicable = Some(
+            replay_diagnostic
+                .source_vs_checkpoint
+                .source_comparison_applicable,
+        );
+        diagnostic.source_scan_target_buy_mint_filter_active = replay_diagnostic
+            .source_vs_checkpoint
+            .source_scan_target_buy_mint_filter_active;
+        diagnostic.source_scan_target_buy_mint_count = replay_diagnostic
+            .source_vs_checkpoint
+            .source_scan_target_buy_mint_count;
+        diagnostic.source_rows_exist_beyond_stored_replay_checkpoint = replay_diagnostic
+            .source_vs_checkpoint
+            .source_rows_exist_beyond_stored_replay_checkpoint;
+        diagnostic.source_rows_ahead_count = replay_diagnostic
+            .source_vs_checkpoint
+            .source_rows_ahead_count;
+        diagnostic.source_rows_ahead_pages_scanned = replay_diagnostic
+            .source_vs_checkpoint
+            .source_rows_ahead_pages_scanned;
+        diagnostic.source_rows_ahead_first_cursor = replay_diagnostic
+            .source_vs_checkpoint
+            .source_rows_ahead_first_cursor
+            .clone();
+        diagnostic.source_rows_ahead_last_cursor = replay_diagnostic
+            .source_vs_checkpoint
+            .source_rows_ahead_last_cursor
+            .clone();
+        diagnostic.source_scan_access_path = replay_diagnostic
+            .source_vs_checkpoint
+            .source_scan_access_path
+            .clone();
+        diagnostic.source_scan_time_budget_exhausted = replay_diagnostic
+            .source_vs_checkpoint
+            .source_scan_time_budget_exhausted;
         diagnostic.publication_truth_export_blocker_explanation = format!(
             "publication truth export is currently blocked on replay_sol_leg_incomplete under the primary export gate: runtime_mode={}, reason={}, replay_sol_leg_incomplete_reason_class={}, replay_explanation={}",
             diagnostic
@@ -1375,8 +1388,8 @@ fn explain_publication_truth_export_blocker_read_only(
                 .unwrap_or("unknown"),
             diagnostic.export_gate_reason.as_deref().unwrap_or("unknown"),
             serde_json::to_string(&diagnostic.replay_sol_leg_incomplete_reason_class)
-            .unwrap_or_else(|_| "\"unknown\"".to_string())
-            .trim_matches('"'),
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"'),
             diagnostic
                 .replay_sol_leg_incomplete_explanation
                 .as_deref()
@@ -3091,26 +3104,11 @@ mod tests {
     }
 
     #[test]
-    fn run_command_publication_truth_export_blocker_green_fixture_returns_satisfied() -> Result<()>
-    {
+    fn run_command_publication_truth_export_blocker_green_fixture_short_circuits_before_recent_raw_open(
+    ) -> Result<()> {
         let fixture = make_fixture("runtime-export-publication-truth-green")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         seed_runtime_export_source(&fixture.store, now)?;
-        let recent_raw_dir = fixture
-            .config_path
-            .parent()
-            .expect("config parent")
-            .join("state/discovery_restore/recent_raw");
-        fs::create_dir_all(&recent_raw_dir)?;
-        write_recent_raw_snapshot_sqlite_content(
-            &recent_raw_dir.join("latest.sqlite"),
-            &[recent_raw_swap(
-                "raw-wallet",
-                "sig-green",
-                parse_ts("2026-04-16T09:55:00Z")?,
-            )],
-            parse_ts("2026-04-16T09:56:00Z")?,
-        )?;
 
         let rendered = run_command(Command::ExplainPublicationTruthExportBlocker(
             ExplainPublicationTruthExportBlockerConfig {
@@ -3128,6 +3126,7 @@ mod tests {
         assert_eq!(parsed["publication_truth_complete"], true);
         assert_eq!(parsed["fresh_under_export_gate"], true);
         assert_eq!(parsed["persisted_rebuild_checkpoint_exists"], Value::Null);
+        assert_eq!(parsed["source_comparison_applicable"], Value::Null);
         Ok(())
     }
 
@@ -3315,11 +3314,21 @@ mod tests {
     }
 
     #[test]
-    fn run_command_publication_truth_export_blocker_missing_recent_raw_returns_unproven(
+    fn run_command_publication_truth_export_blocker_missing_recent_raw_without_checkpoint_blocker_returns_noncheckpoint_reason(
     ) -> Result<()> {
         let fixture = make_fixture("runtime-export-publication-truth-missing-recent-raw")?;
         let now = parse_ts("2026-04-16T10:00:00Z")?;
         seed_runtime_export_source(&fixture.store, now)?;
+        fixture
+            .store
+            .set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::FailClosed,
+                reason: "publication_truth_withheld_without_publishable_checkpoint".to_string(),
+                last_published_at: Some(now - Duration::hours(2)),
+                last_published_window_start: Some(metrics_window_start(now) - Duration::hours(1)),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(Vec::new()),
+            })?;
 
         let rendered = run_command(Command::ExplainPublicationTruthExportBlocker(
             ExplainPublicationTruthExportBlockerConfig {
@@ -3330,17 +3339,158 @@ mod tests {
         let parsed: Value = serde_json::from_str(&rendered)?;
         assert_eq!(
             parsed["publication_truth_export_blocker_reason_class"],
-            "publication_truth_export_blocker_unproven_due_to_missing_evidence"
+            "publication_truth_export_blocked_on_incomplete_or_stale_truth_without_checkpoint_explanation"
         );
-        assert_eq!(parsed["publication_truth_export_blocker_observed"], false);
+        assert_eq!(parsed["publication_truth_export_blocker_observed"], true);
         assert_eq!(
             parsed["runtime_db_path"],
             fixture.db_path.display().to_string()
         );
+        assert_eq!(parsed["persisted_rebuild_checkpoint_exists"], false);
+        assert_eq!(parsed["publishable_checkpoint_blocker"], Value::Null);
+        assert_eq!(parsed["source_comparison_applicable"], Value::Null);
         assert!(parsed["publication_truth_export_blocker_explanation"]
             .as_str()
             .unwrap_or_default()
-            .contains("could not be opened read-only"));
+            .contains("unsatisfied without a publishable checkpoint blocker explanation"));
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_publication_truth_export_blocker_other_checkpoint_reason_short_circuits_before_recent_raw_open(
+    ) -> Result<()> {
+        let fixture = make_fixture("runtime-export-publication-truth-other-checkpoint-blocker")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        seed_runtime_export_source(&fixture.store, now)?;
+        fixture
+            .store
+            .set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::FailClosed,
+                reason: "publication_truth_withheld_while_publishable_checkpoint_blocked"
+                    .to_string(),
+                last_published_at: Some(now - Duration::hours(2)),
+                last_published_window_start: Some(metrics_window_start(now) - Duration::hours(1)),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(Vec::new()),
+            })?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-checkpoint-other".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: replay_sol_leg_checkpoint_state_json(false, true)?,
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let rendered = run_command(Command::ExplainPublicationTruthExportBlocker(
+            ExplainPublicationTruthExportBlockerConfig {
+                config_path: fixture.config_path.clone(),
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["publication_truth_export_blocker_reason_class"],
+            "publication_truth_export_blocked_on_other_publishable_checkpoint_reason"
+        );
+        assert_eq!(parsed["publication_truth_export_blocker_observed"], true);
+        assert_eq!(
+            parsed["publishable_checkpoint_blocker"],
+            "replay_candidate_activity_backfill_incomplete"
+        );
+        assert_eq!(parsed["source_comparison_applicable"], Value::Null);
+        assert_eq!(
+            parsed["replay_sol_leg_incomplete_reason_class"],
+            Value::Null
+        );
+        assert!(parsed["publication_truth_export_blocker_explanation"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(
+                "publishable checkpoint blocker replay_candidate_activity_backfill_incomplete"
+            ));
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_publication_truth_export_blocker_replay_missing_recent_raw_returns_top_level_blocker(
+    ) -> Result<()> {
+        let fixture = make_fixture("runtime-export-publication-truth-replay-missing-recent-raw")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        seed_runtime_export_source(&fixture.store, now)?;
+        fixture
+            .store
+            .set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::FailClosed,
+                reason: "publication_truth_withheld_while_replay_sol_leg_incomplete".to_string(),
+                last_published_at: Some(now - Duration::hours(2)),
+                last_published_window_start: Some(metrics_window_start(now) - Duration::hours(1)),
+                published_scoring_source: Some("raw_window".to_string()),
+                published_wallet_ids: Some(Vec::new()),
+            })?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-checkpoint-replay-missing".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: replay_sol_leg_checkpoint_state_json(false, false)?,
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let rendered = run_command(Command::ExplainPublicationTruthExportBlocker(
+            ExplainPublicationTruthExportBlockerConfig {
+                config_path: fixture.config_path.clone(),
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["publication_truth_export_blocker_reason_class"],
+            "publication_truth_export_blocked_on_replay_sol_leg_incomplete"
+        );
+        assert_eq!(parsed["publication_truth_export_blocker_observed"], true);
+        assert_eq!(
+            parsed["publishable_checkpoint_blocker"],
+            "replay_sol_leg_incomplete"
+        );
+        assert_eq!(
+            parsed["replay_sol_leg_incomplete_reason_class"],
+            Value::Null
+        );
+        assert_eq!(parsed["source_comparison_applicable"], Value::Null);
+        assert_eq!(parsed["source_scan_time_budget_exhausted"], Value::Null);
+        assert!(parsed["publication_truth_export_blocker_explanation"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(
+                "bounded replay-sol-leg deep proof could not open promoted recent_raw latest db"
+            ));
         Ok(())
     }
 
