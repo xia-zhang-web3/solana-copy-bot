@@ -13600,6 +13600,38 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+Live rollout result (`2026-04-16`, commit `6eb5c32`):
+
+1. The server was fast-forwarded to `6eb5c32` and only
+   `discovery_runtime_export` was rebuilt.
+2. A clean live run of:
+   `discovery_runtime_export --explain-publication-truth-export-blocker --config /etc/solana-copy-bot/live.server.toml --json`
+   now returns bounded JSON again instead of hanging for `30s`-`50s`, with:
+   - `publication_truth_export_blocked_on_replay_sol_leg_incomplete`
+   - `publication_truth_export_checkpoint_headline_prerequisite_source = direct_runtime_db_row_meta_worker_timeout_path`
+   - `publication_truth_export_checkpoint_headline_completed = false`
+   - `publication_truth_export_checkpoint_headline_budget_exhausted = true`
+   - `publication_truth_export_checkpoint_headline_stage = load_persisted_rebuild_row_meta_step_primary_key_lookup`
+   - `publication_truth_export_checkpoint_headline_total_elapsed_ms = 1000`
+   - per-stage timing fields all remained `0`
+3. A clean live run of:
+   `discovery_runtime_export --trace-replay-sol-leg-source-compare --config /etc/solana-copy-bot/live.server.toml --json`
+   now inherits that same bounded prerequisite failure immediately, with:
+   - `replay_sol_leg_source_compare_trace_unproven_due_to_missing_evidence`
+   - `source_compare_trace_prerequisite_source = explain_publication_truth_export_blocker_read_only`
+   - `source_compare_trace_prerequisite_reused_publication_diagnostic = true`
+   - `source_compare_trace_prerequisite_completed = false`
+   - `source_compare_trace_prerequisite_checkpoint_headline_budget_exhausted = true`
+   - `source_compare_trace_prerequisite_checkpoint_headline_stage = load_persisted_rebuild_row_meta_step_primary_key_lookup`
+   - `source_compare_trace_total_elapsed_ms = 1001`
+   - `source_compare_trace_compare_started = false`
+4. Therefore this batch successfully restored bounded operator behavior on live,
+   but it did not restore successful checkpoint-headline completion.
+5. The next corrective batch must prove why the new row-meta worker path reaches
+   `step_primary_key_lookup` timeout with zero per-stage elapsed telemetry,
+   instead of finishing the cheap row-meta path that previously completed on
+   live.
+
 Corrective repository batch accepted (`2026-04-16`):
 
 1. The primary publication-blocker checkpoint-headline path no longer performs
