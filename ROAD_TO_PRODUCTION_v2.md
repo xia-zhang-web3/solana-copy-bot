@@ -13641,6 +13641,58 @@ Live rollout result (`2026-04-16`, commit `fb6edd5`):
 
 Corrective repository batch accepted (`2026-04-16`):
 
+1. `discovery_runtime_export` now exposes a new bounded read-only operator:
+   `--probe-checkpoint-row-fetch-copied-snapshot`.
+2. The new mode resolves the runtime DB trio from config:
+   - main DB
+   - optional `-wal`
+   - optional `-shm`
+3. It copies the available trio into a temp probe directory, opens the copied
+   main DB read-only, applies `PRAGMA busy_timeout = 0`, and then runs the same
+   checkpoint row-meta primary-key fetch surface as the zero-timeout live-file
+   probe:
+   - same `CHECKPOINT_HEADLINE_ROW_META_SQL`
+   - same `EXPLAIN QUERY PLAN`
+   - same `stmt.query([])` then `rows.next()?` step boundary
+4. The copied-snapshot mode always returns structured JSON and distinguishes:
+   - row
+   - EOF
+   - `SQLITE_BUSY`
+   - `SQLITE_LOCKED`
+   - other SQLite / non-SQLite errors
+   - bounded operator timeout
+5. The copied-snapshot mode reuses the same path-based zero-busy-timeout
+   row-fetch core as the live-file busy probe, so it stands on the same SQL and
+   step logic rather than introducing another divergent fetch path.
+6. It remains:
+   - runtime-DB-only
+   - no recent_raw
+   - no state_json parsing
+   - no `length(state_json)`
+7. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+8. It does not change:
+   - `--explain-publication-truth-export-blocker`
+   - `--explain-replay-sol-leg-blocker`
+   - `--trace-replay-sol-leg-deep-proof`
+   - `--trace-replay-sol-leg-source-compare`
+   - `--probe-checkpoint-row-fetch-busy-wait`
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Corrective repository batch accepted (`2026-04-16`):
+
 1. The publication-blocker checkpoint-headline worker now emits row-fetch proof
    metadata for the exact SQLite fetch seam.
 2. New publication operator fields:

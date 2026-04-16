@@ -25,6 +25,7 @@ use copybot_storage::{
 use rusqlite::{Connection, ErrorCode, OpenFlags};
 use serde::Serialize;
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 #[cfg(test)]
@@ -50,6 +51,7 @@ const USAGE: &str = "usage:
   discovery_runtime_export --trace-replay-sol-leg-deep-proof --config <path> [--json]
   discovery_runtime_export --trace-replay-sol-leg-source-compare --config <path> [--json]
   discovery_runtime_export --probe-checkpoint-row-fetch-busy-wait --config <path> [--json]
+  discovery_runtime_export --probe-checkpoint-row-fetch-copied-snapshot --config <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-window-seeding --state-root <path> [--json]
@@ -62,6 +64,9 @@ const DEFAULT_PUBLICATION_TRUTH_CHECKPOINT_HEADLINE_BUDGET_SOURCE: &str =
 const DEFAULT_CHECKPOINT_ROW_FETCH_BUSY_PROBE_BUDGET_MS: u64 = 1_000;
 const DEFAULT_CHECKPOINT_ROW_FETCH_BUSY_PROBE_BUDGET_SOURCE: &str =
     "fixed_constant_zero_busy_timeout_checkpoint_row_fetch_probe";
+const DEFAULT_CHECKPOINT_ROW_FETCH_COPIED_SNAPSHOT_PROBE_BUDGET_MS: u64 = 1_000;
+const DEFAULT_CHECKPOINT_ROW_FETCH_COPIED_SNAPSHOT_PROBE_BUDGET_SOURCE: &str =
+    "fixed_constant_copied_snapshot_zero_busy_timeout_checkpoint_row_fetch_probe";
 const DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_MS: u64 = 30_000;
 const DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_SOURCE: &str =
     "copybot_discovery_default_replay_sol_leg_read_only_source_scan_budget";
@@ -184,6 +189,12 @@ struct ProbeCheckpointRowFetchBusyWaitConfig {
 }
 
 #[derive(Debug, Clone)]
+struct ProbeCheckpointRowFetchCopiedSnapshotConfig {
+    config_path: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 struct ExplainRecentRawStagedLineageConfig {
     state_root: PathBuf,
     json: bool,
@@ -228,6 +239,7 @@ enum Command {
     TraceReplaySolLegDeepProof(TraceReplaySolLegDeepProofConfig),
     TraceReplaySolLegSourceCompare(TraceReplaySolLegSourceCompareConfig),
     ProbeCheckpointRowFetchBusyWait(ProbeCheckpointRowFetchBusyWaitConfig),
+    ProbeCheckpointRowFetchCopiedSnapshot(ProbeCheckpointRowFetchCopiedSnapshotConfig),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
     ExplainRecentRawStagedBirth(ExplainRecentRawStagedBirthConfig),
@@ -524,6 +536,15 @@ enum CheckpointRowFetchBusyProbeResultKind {
     NonSqliteError,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchCopiedSnapshotProbeReasonClass {
+    CheckpointRowFetchCopiedSnapshotProbeProvenNonBusyWait,
+    CheckpointRowFetchCopiedSnapshotProbeProvenBusyWait,
+    CheckpointRowFetchCopiedSnapshotProbeBudgetExhausted,
+    CheckpointRowFetchCopiedSnapshotProbeUnprovenDueToMissingEvidence,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct CheckpointRowFetchBusyProbeDiagnostic {
     checkpoint_row_fetch_busy_probe_observed: bool,
@@ -590,6 +611,86 @@ impl CheckpointRowFetchBusyProbeDiagnostic {
             checkpoint_row_fetch_busy_probe_sqlite_error_code: None,
             checkpoint_row_fetch_busy_probe_sqlite_error_message: None,
             checkpoint_row_fetch_busy_probe_row_returned: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct CheckpointRowFetchCopiedSnapshotProbeDiagnostic {
+    checkpoint_row_fetch_copied_snapshot_probe_observed: bool,
+    checkpoint_row_fetch_copied_snapshot_probe_reason_class:
+        CheckpointRowFetchCopiedSnapshotProbeReasonClass,
+    checkpoint_row_fetch_copied_snapshot_probe_explanation: String,
+    config_path: String,
+    runtime_db_path: Option<String>,
+    checkpoint_row_fetch_copied_snapshot_probe_temp_dir: Option<String>,
+    checkpoint_row_fetch_copied_snapshot_probe_main_db_copied: bool,
+    checkpoint_row_fetch_copied_snapshot_probe_wal_copied: bool,
+    checkpoint_row_fetch_copied_snapshot_probe_shm_copied: bool,
+    checkpoint_row_fetch_copied_snapshot_probe_runtime_db_opened_read_only: bool,
+    checkpoint_row_fetch_copied_snapshot_probe_budget_ms: u64,
+    checkpoint_row_fetch_copied_snapshot_probe_budget_source: String,
+    checkpoint_row_fetch_copied_snapshot_probe_total_elapsed_ms: u64,
+    checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted: bool,
+    checkpoint_row_fetch_copied_snapshot_probe_stage: Option<String>,
+    checkpoint_row_fetch_copied_snapshot_probe_connection_journal_mode: Option<String>,
+    checkpoint_row_fetch_copied_snapshot_probe_connection_locking_mode: Option<String>,
+    checkpoint_row_fetch_copied_snapshot_probe_connection_query_only: Option<bool>,
+    checkpoint_row_fetch_copied_snapshot_probe_query_readonly_mode: Option<bool>,
+    checkpoint_row_fetch_copied_snapshot_probe_busy_timeout_ms_before: Option<u64>,
+    checkpoint_row_fetch_copied_snapshot_probe_busy_timeout_ms_applied: Option<u64>,
+    checkpoint_row_fetch_copied_snapshot_probe_query_sql: Option<String>,
+    checkpoint_row_fetch_copied_snapshot_probe_explain_query_plan: Option<String>,
+    checkpoint_row_fetch_copied_snapshot_probe_explain_query_plan_rows: Option<Vec<String>>,
+    checkpoint_row_fetch_copied_snapshot_probe_access_path: Option<String>,
+    checkpoint_row_fetch_copied_snapshot_probe_step_started: bool,
+    checkpoint_row_fetch_copied_snapshot_probe_step_completed: bool,
+    checkpoint_row_fetch_copied_snapshot_probe_step_elapsed_ms: u64,
+    checkpoint_row_fetch_copied_snapshot_probe_result_kind:
+        Option<CheckpointRowFetchBusyProbeResultKind>,
+    checkpoint_row_fetch_copied_snapshot_probe_sqlite_error_code: Option<String>,
+    checkpoint_row_fetch_copied_snapshot_probe_sqlite_error_message: Option<String>,
+    checkpoint_row_fetch_copied_snapshot_probe_row_returned: Option<bool>,
+}
+
+impl CheckpointRowFetchCopiedSnapshotProbeDiagnostic {
+    fn unproven(config_path: &Path, explanation: String) -> Self {
+        Self {
+            checkpoint_row_fetch_copied_snapshot_probe_observed: false,
+            checkpoint_row_fetch_copied_snapshot_probe_reason_class:
+                CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeUnprovenDueToMissingEvidence,
+            checkpoint_row_fetch_copied_snapshot_probe_explanation: explanation,
+            config_path: config_path.display().to_string(),
+            runtime_db_path: None,
+            checkpoint_row_fetch_copied_snapshot_probe_temp_dir: None,
+            checkpoint_row_fetch_copied_snapshot_probe_main_db_copied: false,
+            checkpoint_row_fetch_copied_snapshot_probe_wal_copied: false,
+            checkpoint_row_fetch_copied_snapshot_probe_shm_copied: false,
+            checkpoint_row_fetch_copied_snapshot_probe_runtime_db_opened_read_only: false,
+            checkpoint_row_fetch_copied_snapshot_probe_budget_ms:
+                DEFAULT_CHECKPOINT_ROW_FETCH_COPIED_SNAPSHOT_PROBE_BUDGET_MS,
+            checkpoint_row_fetch_copied_snapshot_probe_budget_source:
+                DEFAULT_CHECKPOINT_ROW_FETCH_COPIED_SNAPSHOT_PROBE_BUDGET_SOURCE.to_string(),
+            checkpoint_row_fetch_copied_snapshot_probe_total_elapsed_ms: 0,
+            checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted: false,
+            checkpoint_row_fetch_copied_snapshot_probe_stage: None,
+            checkpoint_row_fetch_copied_snapshot_probe_connection_journal_mode: None,
+            checkpoint_row_fetch_copied_snapshot_probe_connection_locking_mode: None,
+            checkpoint_row_fetch_copied_snapshot_probe_connection_query_only: None,
+            checkpoint_row_fetch_copied_snapshot_probe_query_readonly_mode: None,
+            checkpoint_row_fetch_copied_snapshot_probe_busy_timeout_ms_before: None,
+            checkpoint_row_fetch_copied_snapshot_probe_busy_timeout_ms_applied: None,
+            checkpoint_row_fetch_copied_snapshot_probe_query_sql: None,
+            checkpoint_row_fetch_copied_snapshot_probe_explain_query_plan: None,
+            checkpoint_row_fetch_copied_snapshot_probe_explain_query_plan_rows: None,
+            checkpoint_row_fetch_copied_snapshot_probe_access_path: None,
+            checkpoint_row_fetch_copied_snapshot_probe_step_started: false,
+            checkpoint_row_fetch_copied_snapshot_probe_step_completed: false,
+            checkpoint_row_fetch_copied_snapshot_probe_step_elapsed_ms: 0,
+            checkpoint_row_fetch_copied_snapshot_probe_result_kind: None,
+            checkpoint_row_fetch_copied_snapshot_probe_sqlite_error_code: None,
+            checkpoint_row_fetch_copied_snapshot_probe_sqlite_error_message: None,
+            checkpoint_row_fetch_copied_snapshot_probe_row_returned: None,
         }
     }
 }
@@ -2098,6 +2199,33 @@ fn probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_impl(
     budget: StdDuration,
     #[cfg(test)] test_behavior: Option<CheckpointRowFetchBusyProbeTestBehavior>,
 ) -> CheckpointRowFetchBusyProbeDiagnostic {
+    let loaded_config = match load_from_path(config_path)
+        .with_context(|| format!("failed loading config {}", config_path.display()))
+    {
+        Ok(config) => config,
+        Err(error) => {
+            return CheckpointRowFetchBusyProbeDiagnostic::unproven(
+                config_path,
+                format!("{error:#}"),
+            );
+        }
+    };
+    let runtime_db_path = resolve_db_path(config_path, None, &loaded_config.sqlite.path);
+    probe_checkpoint_row_fetch_busy_wait_against_db_path_with_budget(
+        config_path,
+        &runtime_db_path,
+        budget,
+        #[cfg(test)]
+        test_behavior,
+    )
+}
+
+fn probe_checkpoint_row_fetch_busy_wait_against_db_path_with_budget(
+    config_path: &Path,
+    runtime_db_path: &Path,
+    budget: StdDuration,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchBusyProbeTestBehavior>,
+) -> CheckpointRowFetchBusyProbeDiagnostic {
     let mut diagnostic = CheckpointRowFetchBusyProbeDiagnostic::unproven(
         config_path,
         "checkpoint row-fetch busy-wait probe did not run".to_string(),
@@ -2106,23 +2234,12 @@ fn probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_impl(
         budget.as_millis().min(u64::MAX as u128) as u64;
     diagnostic.checkpoint_row_fetch_busy_probe_budget_source =
         DEFAULT_CHECKPOINT_ROW_FETCH_BUSY_PROBE_BUDGET_SOURCE.to_string();
-
-    let loaded_config = match load_from_path(config_path)
-        .with_context(|| format!("failed loading config {}", config_path.display()))
-    {
-        Ok(config) => config,
-        Err(error) => {
-            diagnostic.checkpoint_row_fetch_busy_probe_explanation = format!("{error:#}");
-            return diagnostic;
-        }
-    };
-    let runtime_db_path = resolve_db_path(config_path, None, &loaded_config.sqlite.path);
     diagnostic.runtime_db_path = Some(runtime_db_path.display().to_string());
     diagnostic.checkpoint_row_fetch_busy_probe_observed = true;
 
     let total_started_at = Instant::now();
     let (tx, rx) = mpsc::sync_channel(16);
-    let runtime_db_path_for_worker = runtime_db_path.clone();
+    let runtime_db_path_for_worker = runtime_db_path.to_path_buf();
     thread::spawn(move || {
         let _ = probe_checkpoint_row_fetch_busy_wait_worker(
             &runtime_db_path_for_worker,
@@ -2294,6 +2411,296 @@ fn probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_impl(
             }
         }
     }
+}
+
+fn probe_checkpoint_row_fetch_copied_snapshot_read_only(
+    config_path: &Path,
+) -> CheckpointRowFetchCopiedSnapshotProbeDiagnostic {
+    probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_impl(
+        config_path,
+        StdDuration::from_millis(DEFAULT_CHECKPOINT_ROW_FETCH_COPIED_SNAPSHOT_PROBE_BUDGET_MS),
+        #[cfg(test)]
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget(
+    config_path: &Path,
+    budget: StdDuration,
+) -> CheckpointRowFetchCopiedSnapshotProbeDiagnostic {
+    probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_impl(config_path, budget, None)
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_and_test_behavior(
+    config_path: &Path,
+    budget: StdDuration,
+    test_behavior: Option<CheckpointRowFetchBusyProbeTestBehavior>,
+) -> CheckpointRowFetchCopiedSnapshotProbeDiagnostic {
+    probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_impl(
+        config_path,
+        budget,
+        test_behavior,
+    )
+}
+
+fn probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_impl(
+    config_path: &Path,
+    budget: StdDuration,
+    #[cfg(test)] test_behavior: Option<CheckpointRowFetchBusyProbeTestBehavior>,
+) -> CheckpointRowFetchCopiedSnapshotProbeDiagnostic {
+    let mut diagnostic = CheckpointRowFetchCopiedSnapshotProbeDiagnostic::unproven(
+        config_path,
+        "checkpoint row-fetch copied-snapshot probe did not run".to_string(),
+    );
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_budget_ms =
+        budget.as_millis().min(u64::MAX as u128) as u64;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_budget_source =
+        DEFAULT_CHECKPOINT_ROW_FETCH_COPIED_SNAPSHOT_PROBE_BUDGET_SOURCE.to_string();
+
+    let total_started_at = Instant::now();
+    let loaded_config = match load_from_path(config_path)
+        .with_context(|| format!("failed loading config {}", config_path.display()))
+    {
+        Ok(config) => config,
+        Err(error) => {
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_explanation =
+                format!("{error:#}");
+            return diagnostic;
+        }
+    };
+    let runtime_db_path = resolve_db_path(config_path, None, &loaded_config.sqlite.path);
+    diagnostic.runtime_db_path = Some(runtime_db_path.display().to_string());
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_observed = true;
+
+    let temp_dir_path = match create_checkpoint_row_fetch_probe_temp_dir() {
+        Ok(path) => path,
+        Err(error) => {
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_explanation = format!(
+                "failed creating copied-snapshot checkpoint row-fetch probe temp directory: {error:#}"
+            );
+            return diagnostic;
+        }
+    };
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_temp_dir =
+        Some(temp_dir_path.display().to_string());
+
+    let copied_main_db_path = temp_dir_path.join(
+        runtime_db_path
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("runtime.db")),
+    );
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_stage = Some("copy_main_db".to_string());
+    match copy_checkpoint_row_fetch_probe_file(&runtime_db_path, &copied_main_db_path) {
+        Ok(true) => {
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_main_db_copied = true;
+        }
+        Ok(false) => {
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_explanation = format!(
+                "runtime db {} did not exist for copied-snapshot checkpoint row-fetch probe",
+                runtime_db_path.display()
+            );
+            return diagnostic;
+        }
+        Err(error) => {
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_explanation = format!(
+                "failed copying runtime db {} into copied-snapshot probe temp dir: {error:#}",
+                runtime_db_path.display()
+            );
+            return diagnostic;
+        }
+    }
+
+    let runtime_db_wal_path = sqlite_sidecar_path(&runtime_db_path, "-wal");
+    let copied_wal_path = sqlite_sidecar_path(&copied_main_db_path, "-wal");
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_stage = Some("copy_wal".to_string());
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_wal_copied =
+        match copy_checkpoint_row_fetch_probe_file(&runtime_db_wal_path, &copied_wal_path) {
+            Ok(copied) => copied,
+            Err(error) => {
+                diagnostic.checkpoint_row_fetch_copied_snapshot_probe_explanation = format!(
+                    "failed copying runtime db wal sidecar {} into copied-snapshot probe temp dir: {error:#}",
+                    runtime_db_wal_path.display()
+                );
+                return diagnostic;
+            }
+        };
+
+    let runtime_db_shm_path = sqlite_sidecar_path(&runtime_db_path, "-shm");
+    let copied_shm_path = sqlite_sidecar_path(&copied_main_db_path, "-shm");
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_stage = Some("copy_shm".to_string());
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_shm_copied =
+        match copy_checkpoint_row_fetch_probe_file(&runtime_db_shm_path, &copied_shm_path) {
+            Ok(copied) => copied,
+            Err(error) => {
+                diagnostic.checkpoint_row_fetch_copied_snapshot_probe_explanation = format!(
+                    "failed copying runtime db shm sidecar {} into copied-snapshot probe temp dir: {error:#}",
+                    runtime_db_shm_path.display()
+                );
+                return diagnostic;
+            }
+        };
+
+    let remaining_budget = remaining_budget_duration(budget, total_started_at);
+    if remaining_budget.is_zero() {
+        diagnostic.checkpoint_row_fetch_copied_snapshot_probe_total_elapsed_ms =
+            elapsed_ms(total_started_at);
+        diagnostic.checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted = true;
+        diagnostic.checkpoint_row_fetch_copied_snapshot_probe_reason_class =
+            CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeBudgetExhausted;
+        diagnostic.checkpoint_row_fetch_copied_snapshot_probe_explanation =
+            "copied-snapshot checkpoint row-fetch probe exhausted its bounded budget before opening the copied runtime db".to_string();
+        return diagnostic;
+    }
+
+    let base = probe_checkpoint_row_fetch_busy_wait_against_db_path_with_budget(
+        config_path,
+        &copied_main_db_path,
+        remaining_budget,
+        #[cfg(test)]
+        test_behavior,
+    );
+
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_runtime_db_opened_read_only =
+        base.checkpoint_row_fetch_busy_probe_runtime_db_opened_read_only;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_total_elapsed_ms =
+        elapsed_ms(total_started_at);
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted =
+        base.checkpoint_row_fetch_busy_probe_budget_exhausted;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_stage =
+        base.checkpoint_row_fetch_busy_probe_stage;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_connection_journal_mode =
+        base.checkpoint_row_fetch_busy_probe_connection_journal_mode;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_connection_locking_mode =
+        base.checkpoint_row_fetch_busy_probe_connection_locking_mode;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_connection_query_only =
+        base.checkpoint_row_fetch_busy_probe_connection_query_only;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_query_readonly_mode =
+        base.checkpoint_row_fetch_busy_probe_query_readonly_mode;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_busy_timeout_ms_before =
+        base.checkpoint_row_fetch_busy_probe_busy_timeout_ms_before;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_busy_timeout_ms_applied =
+        base.checkpoint_row_fetch_busy_probe_busy_timeout_ms_applied;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_query_sql =
+        base.checkpoint_row_fetch_busy_probe_query_sql;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_explain_query_plan =
+        base.checkpoint_row_fetch_busy_probe_explain_query_plan;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_explain_query_plan_rows =
+        base.checkpoint_row_fetch_busy_probe_explain_query_plan_rows;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_access_path =
+        base.checkpoint_row_fetch_busy_probe_access_path;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_step_started =
+        base.checkpoint_row_fetch_busy_probe_step_started;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_step_completed =
+        base.checkpoint_row_fetch_busy_probe_step_completed;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_step_elapsed_ms =
+        base.checkpoint_row_fetch_busy_probe_step_elapsed_ms;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_result_kind =
+        base.checkpoint_row_fetch_busy_probe_result_kind;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_sqlite_error_code =
+        base.checkpoint_row_fetch_busy_probe_sqlite_error_code;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_sqlite_error_message =
+        base.checkpoint_row_fetch_busy_probe_sqlite_error_message;
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_row_returned =
+        base.checkpoint_row_fetch_busy_probe_row_returned;
+
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_reason_class =
+        match base.checkpoint_row_fetch_busy_probe_reason_class {
+            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeProvenNonBusyWait => {
+                CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeProvenNonBusyWait
+            }
+            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeProvenBusyWait => {
+                CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeProvenBusyWait
+            }
+            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeBudgetExhausted => {
+                CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeBudgetExhausted
+            }
+            CheckpointRowFetchBusyProbeReasonClass::CheckpointRowFetchBusyProbeUnprovenDueToMissingEvidence => {
+                CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeUnprovenDueToMissingEvidence
+            }
+        };
+    diagnostic.checkpoint_row_fetch_copied_snapshot_probe_explanation = match diagnostic
+        .checkpoint_row_fetch_copied_snapshot_probe_reason_class
+    {
+        CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeProvenNonBusyWait => {
+            format!(
+                "copied-snapshot zero-busy-timeout checkpoint row fetch completed without SQLITE_BUSY or SQLITE_LOCKED ({})",
+                diagnostic
+                    .checkpoint_row_fetch_copied_snapshot_probe_result_kind
+                    .as_ref()
+                    .map(|kind| serde_json::to_string(kind).unwrap_or_else(|_| "\"unknown\"".to_string()).trim_matches('"').to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            )
+        }
+        CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeProvenBusyWait => {
+            format!(
+                "copied-snapshot zero-busy-timeout checkpoint row fetch returned {} at the SQLite step boundary",
+                diagnostic
+                    .checkpoint_row_fetch_copied_snapshot_probe_sqlite_error_code
+                    .as_deref()
+                    .unwrap_or("SQLITE_BUSY_OR_LOCKED")
+            )
+        }
+        CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeBudgetExhausted => {
+            format!(
+                "copied-snapshot checkpoint row-fetch probe exhausted its bounded budget while executing stage={}",
+                diagnostic
+                    .checkpoint_row_fetch_copied_snapshot_probe_stage
+                    .as_deref()
+                    .unwrap_or("unknown")
+            )
+        }
+        CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeUnprovenDueToMissingEvidence => {
+            base.checkpoint_row_fetch_busy_probe_explanation
+        }
+    };
+    diagnostic
+}
+
+fn create_checkpoint_row_fetch_probe_temp_dir() -> Result<PathBuf> {
+    let base = env::temp_dir();
+    for attempt in 0..32_u32 {
+        let candidate = base.join(format!(
+            "checkpoint-row-fetch-copied-snapshot-probe-{}-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_millis(),
+            attempt
+        ));
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed creating copied-snapshot checkpoint row-fetch probe temp dir {}",
+                        candidate.display()
+                    )
+                });
+            }
+        }
+    }
+    bail!("failed creating a unique copied-snapshot checkpoint row-fetch probe temp dir")
+}
+
+fn sqlite_sidecar_path(base: &Path, suffix: &str) -> PathBuf {
+    let mut sidecar = base.as_os_str().to_os_string();
+    sidecar.push(suffix);
+    PathBuf::from(sidecar)
+}
+
+fn copy_checkpoint_row_fetch_probe_file(src: &Path, dst: &Path) -> Result<bool> {
+    if !src.exists() {
+        return Ok(false);
+    }
+    fs::copy(src, dst).with_context(|| {
+        format!(
+            "failed copying checkpoint row-fetch probe file {} -> {}",
+            src.display(),
+            dst.display()
+        )
+    })?;
+    Ok(true)
 }
 
 fn probe_checkpoint_row_fetch_busy_wait_worker(
@@ -3572,6 +3979,7 @@ where
     let mut trace_replay_sol_leg_deep_proof = false;
     let mut trace_replay_sol_leg_source_compare = false;
     let mut probe_checkpoint_row_fetch_busy_wait = false;
+    let mut probe_checkpoint_row_fetch_copied_snapshot = false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
@@ -3629,6 +4037,9 @@ where
             "--probe-checkpoint-row-fetch-busy-wait" => {
                 probe_checkpoint_row_fetch_busy_wait = true;
             }
+            "--probe-checkpoint-row-fetch-copied-snapshot" => {
+                probe_checkpoint_row_fetch_copied_snapshot = true;
+            }
             "--deep-attempt-telemetry-scan" => {
                 deep_attempt_telemetry_scan = true;
             }
@@ -3682,13 +4093,14 @@ where
         + usize::from(trace_replay_sol_leg_deep_proof)
         + usize::from(trace_replay_sol_leg_source_compare)
         + usize::from(probe_checkpoint_row_fetch_busy_wait)
+        + usize::from(probe_checkpoint_row_fetch_copied_snapshot)
         + usize::from(explain_recent_raw_staged_lineage)
         + usize::from(explain_recent_raw_staged_regression)
         + usize::from(explain_recent_raw_staged_birth)
         + usize::from(explain_recent_raw_staged_window_seeding);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
     if deep_attempt_telemetry_scan && !explain_recent_raw_replacement_attempt_telemetry {
@@ -3970,6 +4382,27 @@ where
         )));
     }
 
+    if probe_checkpoint_row_fetch_copied_snapshot {
+        if state_root.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+            || deep_attempt_telemetry_scan
+        {
+            bail!(
+                "--probe-checkpoint-row-fetch-copied-snapshot only accepts --config and optional --json"
+            );
+        }
+        return Ok(Some(Command::ProbeCheckpointRowFetchCopiedSnapshot(
+            ProbeCheckpointRowFetchCopiedSnapshotConfig {
+                config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
+                json,
+            },
+        )));
+    }
+
     if explain_recent_raw_staged_lineage {
         if config_path.is_some()
             || db_path.is_some()
@@ -4244,6 +4677,18 @@ fn run_command(command: Command) -> Result<String> {
                     .context("failed serializing checkpoint row fetch busy probe json")
             } else {
                 Ok(render_checkpoint_row_fetch_busy_probe_human(&diagnostic))
+            }
+        }
+        Command::ProbeCheckpointRowFetchCopiedSnapshot(config) => {
+            let diagnostic =
+                probe_checkpoint_row_fetch_copied_snapshot_read_only(&config.config_path);
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic)
+                    .context("failed serializing checkpoint row fetch copied snapshot probe json")
+            } else {
+                Ok(render_checkpoint_row_fetch_copied_snapshot_probe_human(
+                    &diagnostic,
+                ))
             }
         }
         Command::ExplainRecentRawStagedLineage(config) => {
@@ -6549,6 +6994,189 @@ fn render_checkpoint_row_fetch_busy_probe_human(
     .join("\n")
 }
 
+fn render_checkpoint_row_fetch_copied_snapshot_probe_human(
+    diagnostic: &CheckpointRowFetchCopiedSnapshotProbeDiagnostic,
+) -> String {
+    [
+        "event=discovery_checkpoint_row_fetch_copied_snapshot_probe".to_string(),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_observed={}",
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_observed
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_reason_class={}",
+            serde_json::to_string(
+                &diagnostic.checkpoint_row_fetch_copied_snapshot_probe_reason_class
+            )
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_explanation={}",
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_explanation
+        ),
+        format!("config_path={}", diagnostic.config_path),
+        format!(
+            "runtime_db_path={}",
+            diagnostic.runtime_db_path.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_temp_dir={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_temp_dir
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_main_db_copied={}",
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_main_db_copied
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_wal_copied={}",
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_wal_copied
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_shm_copied={}",
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_shm_copied
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_runtime_db_opened_read_only={}",
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_runtime_db_opened_read_only
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_budget_ms={}",
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_budget_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_budget_source={}",
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_budget_source
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_total_elapsed_ms={}",
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_total_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted={}",
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_stage={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_stage
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_connection_journal_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_connection_journal_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_connection_locking_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_connection_locking_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_connection_query_only={}",
+            format_optional_bool(
+                diagnostic.checkpoint_row_fetch_copied_snapshot_probe_connection_query_only
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_query_readonly_mode={}",
+            format_optional_bool(
+                diagnostic.checkpoint_row_fetch_copied_snapshot_probe_query_readonly_mode
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_busy_timeout_ms_before={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_busy_timeout_ms_before
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_busy_timeout_ms_applied={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_busy_timeout_ms_applied
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_query_sql={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_query_sql
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_explain_query_plan={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_explain_query_plan
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_explain_query_plan_rows={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_explain_query_plan_rows
+                .as_ref()
+                .map(|rows| rows.join(" | "))
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_access_path={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_access_path
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_step_started={}",
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_step_started
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_step_completed={}",
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_step_completed
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_step_elapsed_ms={}",
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_step_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_result_kind={}",
+            format_optional_enum_json(
+                &diagnostic.checkpoint_row_fetch_copied_snapshot_probe_result_kind
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_sqlite_error_code={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_sqlite_error_code
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_sqlite_error_message={}",
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_sqlite_error_message
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_copied_snapshot_probe_row_returned={}",
+            format_optional_bool(
+                diagnostic.checkpoint_row_fetch_copied_snapshot_probe_row_returned
+            )
+        ),
+    ]
+    .join("\n")
+}
+
 fn format_optional_bool(value: Option<bool>) -> String {
     value
         .map(|value| value.to_string())
@@ -7760,17 +8388,21 @@ mod tests {
         explain_publication_truth_export_blocker_read_only_with_checkpoint_headline_budget_impl,
         probe_checkpoint_row_fetch_busy_wait_read_only_with_budget,
         probe_checkpoint_row_fetch_busy_wait_read_only_with_budget_and_test_behavior,
+        probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget,
+        probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_and_test_behavior,
         trace_replay_sol_leg_deep_proof_read_only,
         trace_replay_sol_leg_deep_proof_read_only_with_budget,
         trace_replay_sol_leg_source_compare_read_only,
         trace_replay_sol_leg_source_compare_read_only_with_budget,
         trace_replay_sol_leg_source_compare_read_only_with_prerequisite_budget,
         CheckpointRowFetchBusyProbeReasonClass, CheckpointRowFetchBusyProbeResultKind,
+        CheckpointRowFetchCopiedSnapshotProbeReasonClass,
         CheckpointRowFetchBusyProbeTestBehavior,
         DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_MS,
         load_json, parse_args_from, run, run_command, write_json_atomic, Command, Config,
         ExplainPublicationTruthExportBlockerConfig, ExplainRecentRawCatchUpStatusConfig,
         ExplainReplaySolLegBlockerConfig,
+        ProbeCheckpointRowFetchCopiedSnapshotConfig,
         ProbeCheckpointRowFetchBusyWaitConfig,
         TraceReplaySolLegDeepProofConfig,
         TraceReplaySolLegSourceCompareConfig,
@@ -8153,6 +8785,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_from_accepts_probe_checkpoint_row_fetch_copied_snapshot_mode() {
+        let parsed = parse_args_from(vec![
+            "--probe-checkpoint-row-fetch-copied-snapshot".to_string(),
+            "--config".to_string(),
+            "/tmp/live.server.toml".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ProbeCheckpointRowFetchCopiedSnapshot(parsed) = parsed else {
+            panic!("expected checkpoint row fetch copied snapshot probe command");
+        };
+        assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
+        assert!(parsed.json);
+    }
+
+    #[test]
     fn run_command_probe_checkpoint_row_fetch_busy_wait_row_returns_proven_non_busy_wait_json(
     ) -> Result<()> {
         let fixture = make_fixture("runtime-export-checkpoint-row-fetch-busy-probe-row")?;
@@ -8433,6 +9082,324 @@ mod tests {
         );
         assert!(diagnostic.checkpoint_row_fetch_busy_probe_step_started);
         assert!(!diagnostic.checkpoint_row_fetch_busy_probe_step_completed);
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_probe_checkpoint_row_fetch_copied_snapshot_row_returns_proven_non_busy_wait_json(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-copied-snapshot-probe-row")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-copied-snapshot-probe-row".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let rendered = run_command(Command::ProbeCheckpointRowFetchCopiedSnapshot(
+            ProbeCheckpointRowFetchCopiedSnapshotConfig {
+                config_path: fixture.config_path.clone(),
+                json: true,
+            },
+        ))?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["checkpoint_row_fetch_copied_snapshot_probe_reason_class"],
+            "checkpoint_row_fetch_copied_snapshot_probe_proven_non_busy_wait"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_copied_snapshot_probe_result_kind"],
+            "row"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_copied_snapshot_probe_row_returned"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_copied_snapshot_probe_runtime_db_opened_read_only"],
+            true
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_copied_snapshot_probe_busy_timeout_ms_applied"],
+            0
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_copied_snapshot_probe_query_sql"],
+            super::CHECKPOINT_HEADLINE_ROW_META_SQL
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_copied_snapshot_probe_main_db_copied"],
+            true
+        );
+        assert!(parsed["checkpoint_row_fetch_copied_snapshot_probe_temp_dir"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+        for key in [
+            "checkpoint_row_fetch_copied_snapshot_probe_observed",
+            "checkpoint_row_fetch_copied_snapshot_probe_reason_class",
+            "checkpoint_row_fetch_copied_snapshot_probe_explanation",
+            "config_path",
+            "runtime_db_path",
+            "checkpoint_row_fetch_copied_snapshot_probe_temp_dir",
+            "checkpoint_row_fetch_copied_snapshot_probe_main_db_copied",
+            "checkpoint_row_fetch_copied_snapshot_probe_wal_copied",
+            "checkpoint_row_fetch_copied_snapshot_probe_shm_copied",
+            "checkpoint_row_fetch_copied_snapshot_probe_runtime_db_opened_read_only",
+            "checkpoint_row_fetch_copied_snapshot_probe_budget_ms",
+            "checkpoint_row_fetch_copied_snapshot_probe_budget_source",
+            "checkpoint_row_fetch_copied_snapshot_probe_total_elapsed_ms",
+            "checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted",
+            "checkpoint_row_fetch_copied_snapshot_probe_stage",
+            "checkpoint_row_fetch_copied_snapshot_probe_connection_journal_mode",
+            "checkpoint_row_fetch_copied_snapshot_probe_connection_locking_mode",
+            "checkpoint_row_fetch_copied_snapshot_probe_connection_query_only",
+            "checkpoint_row_fetch_copied_snapshot_probe_query_readonly_mode",
+            "checkpoint_row_fetch_copied_snapshot_probe_busy_timeout_ms_before",
+            "checkpoint_row_fetch_copied_snapshot_probe_busy_timeout_ms_applied",
+            "checkpoint_row_fetch_copied_snapshot_probe_query_sql",
+            "checkpoint_row_fetch_copied_snapshot_probe_explain_query_plan",
+            "checkpoint_row_fetch_copied_snapshot_probe_explain_query_plan_rows",
+            "checkpoint_row_fetch_copied_snapshot_probe_access_path",
+            "checkpoint_row_fetch_copied_snapshot_probe_step_started",
+            "checkpoint_row_fetch_copied_snapshot_probe_step_completed",
+            "checkpoint_row_fetch_copied_snapshot_probe_step_elapsed_ms",
+            "checkpoint_row_fetch_copied_snapshot_probe_result_kind",
+            "checkpoint_row_fetch_copied_snapshot_probe_sqlite_error_code",
+            "checkpoint_row_fetch_copied_snapshot_probe_sqlite_error_message",
+            "checkpoint_row_fetch_copied_snapshot_probe_row_returned",
+        ] {
+            assert!(parsed.get(key).is_some(), "missing key {key}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_copied_snapshot_probe_missing_row_returns_proven_non_busy_wait_eof(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-copied-snapshot-probe-eof")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-copied-snapshot-probe-eof".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        let conn = rusqlite::Connection::open(&fixture.db_path)?;
+        conn.execute("DELETE FROM discovery_persisted_rebuild_state WHERE id = 1", [])?;
+
+        let diagnostic = probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget(
+            &fixture.config_path,
+            StdDuration::from_secs(1),
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_reason_class,
+            CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeProvenNonBusyWait
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_result_kind,
+            Some(CheckpointRowFetchBusyProbeResultKind::Eof)
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_row_returned,
+            Some(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_copied_snapshot_probe_missing_config_returns_unproven() -> Result<()> {
+        let temp = tempdir()?;
+        let missing_config = temp.path().join("missing.toml");
+        let diagnostic = probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget(
+            &missing_config,
+            StdDuration::from_secs(1),
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_reason_class,
+            CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeUnprovenDueToMissingEvidence
+        );
+        assert!(!diagnostic.checkpoint_row_fetch_copied_snapshot_probe_observed);
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_copied_snapshot_probe_unreadable_runtime_db_returns_unproven(
+    ) -> Result<()> {
+        let temp = tempdir()?;
+        let missing_db_path = temp.path().join("missing-runtime.db");
+        let config_path = temp.path().join("missing-runtime.toml");
+        fs::write(
+            &config_path,
+            format!(
+                "[sqlite]\npath = \"{}\"\n\n[runtime_restore_ops]\nartifact_retention = 2\nartifact_cadence_minutes = 10\n\n[discovery]\nscoring_window_days = 7\nrefresh_seconds = 600\nmetric_snapshot_interval_seconds = 1800\nmax_window_swaps_in_memory = 8\nmax_fetch_swaps_per_cycle = 8\nmax_fetch_pages_per_cycle = 5\nfetch_time_budget_ms = 1000\nobserved_swaps_retention_days = 14\n",
+                missing_db_path.display()
+            ),
+        )?;
+        let diagnostic = probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget(
+            &config_path,
+            StdDuration::from_secs(1),
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_reason_class,
+            CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeUnprovenDueToMissingEvidence
+        );
+        let expected_runtime_db_path = missing_db_path.display().to_string();
+        assert_eq!(
+            diagnostic.runtime_db_path.as_deref(),
+            Some(expected_runtime_db_path.as_str())
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_temp_dir
+                .is_some()
+        );
+        assert!(
+            !diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_runtime_db_opened_read_only
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_copied_snapshot_probe_forced_busy_returns_proven_busy_wait(
+    ) -> Result<()> {
+        let fixture =
+            make_fixture("runtime-export-checkpoint-row-fetch-copied-snapshot-probe-busy")?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-copied-snapshot-probe-force-busy".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+                Some(CheckpointRowFetchBusyProbeTestBehavior::ForceBusy),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_reason_class,
+            CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeProvenBusyWait
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_result_kind,
+            Some(CheckpointRowFetchBusyProbeResultKind::SqliteBusy)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_sqlite_error_code
+                .as_deref(),
+            Some("SQLITE_BUSY")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_copied_snapshot_probe_budget_exhaustion_returns_budget_exhausted(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-copied-snapshot-probe-budget-exhausted",
+        )?;
+        let now = parse_ts("2026-04-16T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-16T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-copied-snapshot-probe-budget-exhausted".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_copied_snapshot_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_millis(50),
+                Some(CheckpointRowFetchBusyProbeTestBehavior::DelayBeforeStep(
+                    StdDuration::from_millis(200),
+                )),
+            );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_reason_class,
+            CheckpointRowFetchCopiedSnapshotProbeReasonClass::CheckpointRowFetchCopiedSnapshotProbeBudgetExhausted
+        );
+        assert!(
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_budget_exhausted
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_copied_snapshot_probe_stage
+                .as_deref(),
+            Some("step_primary_key_lookup")
+        );
+        assert!(
+            diagnostic.checkpoint_row_fetch_copied_snapshot_probe_step_started
+        );
+        assert!(
+            !diagnostic.checkpoint_row_fetch_copied_snapshot_probe_step_completed
+        );
         Ok(())
     }
 
