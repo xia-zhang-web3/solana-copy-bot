@@ -13600,6 +13600,84 @@ Acceptance checks:
 3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
+### Stage 3 direct immutable runtime-db select probe (`2026-04-16`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a new bounded proof mode:
+   `--probe-checkpoint-row-fetch-direct-immutable-select --config <path> --json`
+2. The new mode removes temp DB creation and `ATTACH` entirely.
+3. It opens the runtime DB itself through an explicit SQLite URI in immutable
+   read-only mode and runs:
+   - `SELECT phase, updated_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+4. The worker is instrumented at the exact low-level boundary:
+   - prepare statement
+   - `stmt.query([])`
+   - `rows.next()?`
+5. The operator always returns structured JSON and classifies:
+   - row / eof / explicit SQLite error as
+     `checkpoint_row_fetch_direct_immutable_select_probe_proven_changed_by_connection_shape`
+   - timeout after query start and before row-fetch completion as
+     `checkpoint_row_fetch_direct_immutable_select_probe_proven_not_changed_by_connection_shape`
+   - timeout before that boundary as
+     `checkpoint_row_fetch_direct_immutable_select_probe_budget_exhausted`
+   - missing config/runtime DB evidence as
+     `checkpoint_row_fetch_direct_immutable_select_probe_unproven_due_to_missing_evidence`
+6. The operator stays:
+   - runtime-DB-only
+   - free of temp DB creation
+   - free of `ATTACH`
+   - free of `recent_raw` open
+   - free of `state_json` parsing and `length(state_json)`
+7. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+8. It does not change:
+   - publication blocker semantics
+   - replay blocker semantics
+   - deep trace semantics
+   - source-compare semantics
+   - existing busy/copy/minimal/materialization/immutable/select probe semantics
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Live rollout result (`2026-04-16`, commit `86c446b`):
+
+1. The production host was fast-forwarded to `86c446b`.
+2. Only `discovery_runtime_export` was rebuilt.
+3. `solana-copy-bot.service` stayed `active`.
+4. `copybot-discovery-runtime-export.timer` stayed `active`.
+5. A clean live run of:
+   `sudo -n target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-select --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_select_probe_reason_class = checkpoint_row_fetch_direct_immutable_select_probe_proven_not_changed_by_connection_shape`
+   - `checkpoint_row_fetch_direct_immutable_select_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_select_probe_budget_exhausted = true`
+   - `checkpoint_row_fetch_direct_immutable_select_probe_stage = row_fetch_direct_select`
+   - `checkpoint_row_fetch_direct_immutable_select_probe_runtime_db_uri = file:///var/www/solana-copy-bot/state/live_runtime_20260324T134339Z.db?mode=ro&immutable=1`
+   - `checkpoint_row_fetch_direct_immutable_select_probe_runtime_db_mode = sqlite_uri_mode_ro_immutable_1`
+   - `checkpoint_row_fetch_direct_immutable_select_probe_select_sql = SELECT phase, updated_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_select_probe_select_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_select_probe_select_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_select_probe_select_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_select_probe_result_kind = null`
+   - `checkpoint_row_fetch_direct_immutable_select_probe_sqlite_error_code = null`
+6. Current interpretation after rollout:
+   - removing temp DB creation and `ATTACH` still did not remove the seam
+   - planner/access path still looks correct
+   - the remaining exact blocker is now the direct immutable runtime-db
+     row-fetch boundary itself: after `stmt.query([])` and before `rows.next()?`
+
 ### Stage 3 immutable-source pure-select probe (`2026-04-16`)
 
 Accepted repository change:
