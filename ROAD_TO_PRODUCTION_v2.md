@@ -14587,3 +14587,64 @@ Current interpretation:
    - the remaining exact blocker is no longer “somewhere in deep replay”
    - the remaining exact blocker is now narrowed to the source-vs-checkpoint
      comparison wait path itself
+
+### Stage 3 replay-sol-leg source-compare trace operator (`2026-04-16`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a new bounded read-only mode:
+   `--trace-replay-sol-leg-source-compare --config <path> --json`
+2. The new mode reuses the same cheap prerequisite proof first:
+   - current blocker must be `replay_sol_leg_incomplete`
+   - cheap checkpoint headline must be completed
+   - persisted checkpoint must still be `phase = replay`,
+     `subphase = sol_leg`
+3. Only after prerequisite proof succeeds does the new mode:
+   - open runtime DB read-only
+   - open promoted `recent_raw` latest read-only
+   - trace only the source-vs-checkpoint comparison path
+4. The new mode explicitly distinguishes:
+   - outer operator wait timeout:
+     `source_compare_trace_wait_timeout`
+   - internal helper-reported source scan budget exhaustion:
+     `source_compare_trace_internal_source_scan_budget_exhausted`
+5. The new mode always returns structured JSON and does not invent a final
+   replay reason.
+6. It emits explicit trace fields for:
+   - prerequisite result
+   - total and per-stage elapsed timings
+   - source-vs-checkpoint comparison start/completion
+   - outer wait-timeout hit
+   - all `source_compare_trace_result_source_*` fields from the comparison
+7. It implements the bounded top-level reason classes:
+   - `replay_sol_leg_source_compare_trace_proven`
+   - `replay_sol_leg_source_compare_trace_not_current_blocker`
+   - `replay_sol_leg_source_compare_trace_unproven_due_to_missing_evidence`
+   - `replay_sol_leg_source_compare_trace_budget_exhausted`
+8. The batch touches only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+9. It does not change:
+   - `--explain-publication-truth-export-blocker`
+   - `--explain-replay-sol-leg-blocker`
+   - `--trace-replay-sol-leg-deep-proof`
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Current interpretation:
+
+1. The repository now has a dedicated operator for proving whether the remaining
+   deep replay seam is an outer wait-timeout problem or an internal
+   source-scan-budget problem.
+2. Live rollout still must confirm which of those two source-compare failure
+   classes actually occurs on production data.
