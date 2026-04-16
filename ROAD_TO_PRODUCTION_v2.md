@@ -14040,3 +14040,66 @@ Current interpretation:
    read itself is cheap enough on live, and which concrete query stage absorbs
    the time budget, without reentering `state_json`-size probing or any
    recent-raw-backed deep replay path.
+
+### Stage 3 publication-truth export-blocker trace operator (`2026-04-16`)
+
+Accepted repository change:
+
+1. A new bounded read-only proof operator now exists:
+   - `discovery_publication_truth_export_blocker_trace --config <path> --json`
+2. The operator traces only the cheap stages that the primary export-blocker
+   path conceptually depends on before any deep replay enrichment:
+   - config load
+   - runtime DB read-only open
+   - persisted publication-state load
+   - checkpoint row-meta schema lookup / row count / primary-key lookup
+3. It does not:
+   - open `recent_raw`
+   - inspect or deserialize persisted checkpoint `state_json`
+   - call `length(state_json)`
+   - run replay/source comparison
+   - classify deeper replay-sol-leg subreasons
+4. It emits separate timings for:
+   - config load
+   - runtime DB open
+   - publication-state load
+   - checkpoint row-meta total and substeps
+5. It returns these reason classes:
+   - `publication_truth_export_blocker_trace_green`
+   - `publication_truth_export_blocker_trace_non_green_with_checkpoint_family`
+   - `publication_truth_export_blocker_trace_non_green_without_checkpoint_family`
+   - `publication_truth_export_blocker_trace_unproven_due_to_missing_evidence`
+6. It also emits bounded-stage status:
+   - `trace_budget_exhausted`
+   - `trace_budget_exhausted_stage`
+7. The batch touches only:
+   - `crates/discovery/src/bin/discovery_publication_truth_export_blocker_trace.rs`
+8. It does not change:
+   - `discovery_runtime_export`
+   - `discovery_replay_checkpoint_row_meta_probe`
+   - `discovery_replay_checkpoint_headline`
+   - `discovery_replay_checkpoint_diagnose`
+   - replay behavior
+   - publication/export semantics
+   - recent-raw behavior
+   - configs, systemd, rollout files, or Stage 4 wrappers
+
+Acceptance checks:
+
+1. `cargo test -j 1 -p copybot-discovery --bin discovery_publication_truth_export_blocker_trace`
+   passed.
+2. `cargo check -j 1 -p copybot-discovery --bin discovery_publication_truth_export_blocker_trace`
+   passed.
+3. `git diff --check --no-index -- /dev/null crates/discovery/src/bin/discovery_publication_truth_export_blocker_trace.rs`
+   produced no whitespace findings; the nonzero exit is expected for a
+   new-file comparison against `/dev/null`.
+
+Current interpretation:
+
+1. We had already proved that the standalone cheap row-meta SQL path is fast on
+   live, but we still lacked a proof tool for the whole cheap precondition chain
+   that the primary export-blocker path depends on.
+2. This batch is accepted because it turns that discrepancy into an explicit
+   bounded trace surface, so future fixes can target the exact cheap stage that
+   diverges from the primary operator instead of guessing from top-level budget
+   exhaustion labels.
