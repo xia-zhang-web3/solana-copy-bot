@@ -13821,6 +13821,63 @@ Live rollout result (`2026-04-17`, commit `905c5b3`):
      materialization from the `updated_at` cell on the direct immutable
      runtime-db row-fetch path
 
+Repository batch accepted (`2026-04-17`):
+
+1. A new bounded direct immutable started_at text-vs-blob first-byte proof
+   operator now exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-first-byte --config <path> --json`
+2. The operator runs two independent direct immutable subprobes on fresh
+   connections:
+   - `SELECT substr(started_at, 1, 1) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT hex(substr(CAST(started_at AS BLOB), 1, 1)) FROM discovery_persisted_rebuild_state WHERE id = 1`
+3. Each subprobe is instrumented at the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The accepted code commit is:
+   - `9395acf Add started-at text-vs-blob probe`
+5. Acceptance checks:
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-17`, commit `9395acf`):
+
+1. The production host was fast-forwarded from `905c5b3` to `9395acf`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-first-byte --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class = checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_explanation = direct immutable started_at text-vs-blob first-byte probe completed with bounded outcomes: text_result_kind=row_fetch_timeout_after_query_start blob_result_kind=row_fetch_timeout_after_query_start`
+   - `checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_exhausted = false`
+5. The started_at text-first-byte subprobe reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sql = SELECT substr(started_at, 1, 1) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_value = null`
+   - `checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_result_kind = row_fetch_timeout_after_query_start`
+6. The started_at blob-first-byte subprobe also reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sql = SELECT hex(substr(CAST(started_at AS BLOB), 1, 1)) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_value = null`
+   - `checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_result_kind = row_fetch_timeout_after_query_start`
+7. Current interpretation:
+   - the seam is broader than `updated_at` alone
+   - sibling timestamp payload access on the same row reproduces the same
+     first-byte timeout seam
+   - the remaining blocker is now narrowed to timestamp-payload materialization
+     on `discovery_persisted_rebuild_state(id = 1)`, not just one specific
+     timestamp column name
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
