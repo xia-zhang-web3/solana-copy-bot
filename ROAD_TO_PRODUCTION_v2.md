@@ -14530,6 +14530,67 @@ Live rollout result (`2026-04-17`, commit `fe66caf`):
      materialization semantics directly, not continue scanning larger prefix
      depths
 
+Repository batch accepted (`2026-04-17`):
+
+1. A new bounded direct immutable updated_at printf second-char text-vs-unicode
+   proof operator now exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-second-char-text-vs-unicode --config <path> --json`
+2. The operator runs two independent direct immutable subprobes on fresh
+   connections:
+   - `SELECT substr(printf('%s', updated_at), 2, 1) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT unicode(substr(printf('%s', updated_at), 2, 1)) FROM discovery_persisted_rebuild_state WHERE id = 1`
+3. Each subprobe is instrumented at the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The accepted code commit is:
+   - `c4bd7b7 Add updated-at printf second-char probe`
+5. Acceptance checks:
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-17`, commit `c4bd7b7`):
+
+1. The production host was fast-forwarded from `fe66caf` to `c4bd7b7`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-second-char-text-vs-unicode --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_printf_second_char_probe_reason_class = checkpoint_row_fetch_direct_immutable_updated_at_printf_second_char_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_printf_second_char_probe_explanation = direct immutable updated_at printf second-char text-vs-unicode probe completed with bounded outcomes: text_result_kind=row_fetch_timeout_after_query_start unicode_result_kind=row_fetch_timeout_after_query_start. This is a second-character text-vs-scalar proof operator, not a replay blocker classifier.`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_printf_second_char_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_printf_second_char_probe_budget_exhausted = false`
+5. The `substr(printf('%s', updated_at), 2, 1)` subprobe reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_printf_second_char_probe_text_sql = SELECT substr(printf('%s', updated_at), 2, 1) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_printf_second_char_probe_text_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_printf_second_char_probe_text_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_printf_second_char_probe_text_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_printf_second_char_probe_text_result_kind = row_fetch_timeout_after_query_start`
+6. The `unicode(substr(printf('%s', updated_at), 2, 1))` subprobe also reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_printf_second_char_probe_unicode_sql = SELECT unicode(substr(printf('%s', updated_at), 2, 1)) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_printf_second_char_probe_unicode_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_printf_second_char_probe_unicode_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_printf_second_char_probe_unicode_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_printf_second_char_probe_unicode_result_kind = row_fetch_timeout_after_query_start`
+7. Current interpretation:
+   - the seam is not limited to returning a multi-character synthesized text
+     result
+   - the seam is not limited to second-character text materialization alone
+   - even scalar inspection of the second synthesized character reproduces the
+     same bounded timeout seam
+   - combined with the previously proven successful first-character probes,
+     the remaining boundary is now: first synthesized character access is safe,
+     but any access that reaches the second synthesized character already
+     stalls
+   - the next useful probe should isolate whether that boundary is tied to
+     second-character addressing itself or to a deeper internal traversal step
+     shared by both `substr(..., 2, 1)` and `unicode(substr(..., 2, 1))`
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
