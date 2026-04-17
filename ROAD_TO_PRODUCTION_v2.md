@@ -14832,6 +14832,66 @@ Live rollout result (`2026-04-17`, commit `5d6a3db`):
      expression, versus the base expression now being seamful under the same
      direct immutable worker contract
 
+Repository batch accepted (`2026-04-17`):
+
+1. A new bounded direct immutable updated_at unixepoch-text duplicate-base
+   proof operator now exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-duplicate-base-split --config <path> --json`
+2. The operator runs two independent direct immutable subprobes on fresh
+   connections, both using the same SQL:
+   - `SELECT CAST(unixepoch(updated_at) AS TEXT) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT CAST(unixepoch(updated_at) AS TEXT) FROM discovery_persisted_rebuild_state WHERE id = 1`
+3. Each subprobe is instrumented at the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The accepted code commit is:
+   - `3f01731 Add updated-at unixepoch-text duplicate-base probe`
+5. Acceptance checks:
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-17`, commit `3f01731`):
+
+1. The production host was fast-forwarded from `5d6a3db` to `3f01731`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-duplicate-base-split --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_duplicate_base_probe_reason_class = checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_duplicate_base_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_duplicate_base_probe_explanation = direct immutable updated_at unixepoch-text duplicate-base probe completed with bounded outcomes: base_a_result_kind=row_fetch_timeout_after_query_start base_b_result_kind=row_fetch_timeout_after_query_start. This is a duplicate-base-expression proof operator, not a replay blocker classifier.`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_duplicate_base_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_duplicate_base_probe_budget_exhausted = false`
+5. The first duplicate base subprobe reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_duplicate_base_probe_base_a_sql = SELECT CAST(unixepoch(updated_at) AS TEXT) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_duplicate_base_probe_base_a_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_duplicate_base_probe_base_a_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_duplicate_base_probe_base_a_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_duplicate_base_probe_base_a_result_kind = row_fetch_timeout_after_query_start`
+6. The second duplicate base subprobe also reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_duplicate_base_probe_base_b_sql = SELECT CAST(unixepoch(updated_at) AS TEXT) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_duplicate_base_probe_base_b_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_duplicate_base_probe_base_b_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_duplicate_base_probe_base_b_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_duplicate_base_probe_base_b_result_kind = row_fetch_timeout_after_query_start`
+7. Current interpretation:
+   - the seam does not require a `substr(...)` peer over textified
+     `unixepoch(updated_at)`
+   - paired same-column evaluation of `CAST(unixepoch(updated_at) AS TEXT)` is
+     already sufficient to reproduce the bounded timeout seam
+   - this strengthens the prior inference: the seam is broader than a
+     base-vs-substr path distinction and already appears under duplicate base
+     expression concurrency
+   - the next useful probe should target whether this is specifically a paired
+     concurrency effect for this expression family, versus a more general
+     direct immutable row-fetch seam once the worker contract touches
+     textified unixepoch on `updated_at`
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
