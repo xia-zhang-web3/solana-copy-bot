@@ -14178,6 +14178,65 @@ Live rollout result (`2026-04-17`, commit `f540d1c`):
      functions or direct raw payload return over the original timestamp cells
      on `discovery_persisted_rebuild_state(id = 1)`
 
+Repository batch accepted (`2026-04-17`):
+
+1. A new bounded direct immutable timestamp zero-length-substr split proof
+   operator now exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-timestamp-zero-length-substr-split --config <path> --json`
+2. The operator runs two independent direct immutable subprobes on fresh
+   connections:
+   - `SELECT substr(updated_at, 1, 0) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT substr(started_at, 1, 0) FROM discovery_persisted_rebuild_state WHERE id = 1`
+3. Each subprobe is instrumented at the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The accepted code commit is:
+   - `1c315fa Add timestamp zero-length substr probe`
+5. Acceptance checks:
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-17`, commit `1c315fa`):
+
+1. The production host was fast-forwarded from `f540d1c` to `1c315fa`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-timestamp-zero-length-substr-split --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_reason_class = checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_explanation = direct immutable timestamp zero-length substr split probe completed with bounded outcomes: updated_at_result_kind=row started_at_result_kind=row. This is a zero-length-substr proof operator, not a replay blocker classifier.`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_total_elapsed_ms = 602`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_budget_exhausted = false`
+5. The `substr(updated_at, 1, 0)` subprobe completed successfully:
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_updated_at_sql = SELECT substr(updated_at, 1, 0) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_updated_at_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_updated_at_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_updated_at_row_fetch_completed = true`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_updated_at_row_returned = true`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_updated_at_value = ""`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_updated_at_result_kind = row`
+6. The `substr(started_at, 1, 0)` subprobe also completed successfully:
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_started_at_sql = SELECT substr(started_at, 1, 0) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_started_at_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_started_at_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_started_at_row_fetch_completed = true`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_started_at_row_returned = true`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_started_at_value = ""`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_probe_started_at_result_kind = row`
+7. Current interpretation:
+   - the blocker is not generic `substr(...)` over the original timestamp cells
+   - zero-length substring extraction still completes bounded and returns rows
+     on the live runtime DB
+   - the remaining seam now starts only once SQLite must return one or more
+     original payload bytes from the timestamp cells, not on the substring path
+     itself
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
