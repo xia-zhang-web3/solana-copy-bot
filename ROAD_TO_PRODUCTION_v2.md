@@ -15013,6 +15013,66 @@ Live rollout result (`2026-04-17`, commit `61434cd`):
      whether the paired bounded harness is exposing a more general same-row
      scalar row-fetch effect
 
+Repository batch accepted (`2026-04-17`):
+
+1. A new bounded direct immutable updated_at unixepoch-vs-id proof operator
+   now exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-vs-id-split --config <path> --json`
+2. The operator runs two independent direct immutable subprobes on fresh
+   connections:
+   - `SELECT unixepoch(updated_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT id FROM discovery_persisted_rebuild_state WHERE id = 1`
+3. Each subprobe is instrumented at the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The accepted code commit is:
+   - `c1d8bdf Add updated-at unixepoch-vs-id probe`
+5. Acceptance checks:
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-17`, commit `c1d8bdf`):
+
+1. The production host was fast-forwarded from `61434cd` to `c1d8bdf`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-vs-id-split --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_reason_class = checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_explanation = direct immutable updated_at unixepoch-vs-id probe completed with bounded outcomes: unixepoch_result_kind=row_fetch_timeout_after_query_start id_result_kind=row. This is a same-row scalar unixepoch-vs-id proof operator, not a replay blocker classifier.`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_budget_exhausted = false`
+5. The `unixepoch(updated_at)` subprobe reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_unixepoch_sql = SELECT unixepoch(updated_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_unixepoch_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_unixepoch_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_unixepoch_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_unixepoch_result_kind = row_fetch_timeout_after_query_start`
+6. The `id` subprobe stayed bounded and returned a row:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_id_sql = SELECT id FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_id_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_id_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_id_row_fetch_completed = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_id_row_returned = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_id_value = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_id_probe_id_result_kind = row`
+7. Current interpretation:
+   - the seam is not a generic same-row scalar row-fetch effect
+   - the seam remains specific to the `unixepoch(updated_at)` expression
+     family under the paired same-row bounded harness
+   - this materially tightens the prior hypothesis: paired same-row
+     concurrency alone is not sufficient when the peer is a bare primary-key
+     scalar fetch
+   - the next useful probe should compare `unixepoch(updated_at)` against a
+     different non-PK scalar on the same row, to separate unixepoch-family
+     specificity from broader non-PK expression sensitivity
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
