@@ -62,6 +62,7 @@ const USAGE: &str = "usage:
   discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-expression-split --config <path> [--json]
   discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-prefix-split --config <path> [--json]
   discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-text-vs-blob-first-byte --config <path> [--json]
+  discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-first-byte --config <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-window-seeding --state-root <path> [--json]
@@ -110,6 +111,10 @@ const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_TEXT_VS_BLOB_PROB
     1_000;
 const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_TEXT_VS_BLOB_PROBE_BUDGET_SOURCE:
     &str = "fixed_constant_direct_immutable_runtime_db_updated_at_text_vs_blob_first_byte_probe";
+const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_STARTED_AT_TEXT_VS_BLOB_PROBE_BUDGET_MS: u64 =
+    1_000;
+const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_STARTED_AT_TEXT_VS_BLOB_PROBE_BUDGET_SOURCE:
+    &str = "fixed_constant_direct_immutable_runtime_db_started_at_text_vs_blob_first_byte_probe";
 const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY: &str =
     "temp_sqlite_row_meta_only_table_materialized_via_attach_insert_select";
 const CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_STRATEGY: &str =
@@ -130,6 +135,8 @@ const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_PREFIX_PROBE_STRATEGY: &s
     "direct_runtime_db_open_via_immutable_read_only_uri_split_updated_at_prefix1_and_prefix32_probe";
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_TEXT_VS_BLOB_PROBE_STRATEGY: &str =
     "direct_runtime_db_open_via_immutable_read_only_uri_split_updated_at_text_first_byte_and_blob_first_byte_probe";
+const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_STARTED_AT_TEXT_VS_BLOB_PROBE_STRATEGY: &str =
+    "direct_runtime_db_open_via_immutable_read_only_uri_split_started_at_text_first_byte_and_blob_first_byte_probe";
 const CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_SOURCE_ATTACH_MODE: &str =
     "sqlite_uri_mode_ro_immutable_1";
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_SELECT_PROBE_RUNTIME_DB_MODE: &str =
@@ -143,6 +150,8 @@ const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_EXPRESSION_PROBE_RUNTIME_
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_PREFIX_PROBE_RUNTIME_DB_MODE: &str =
     "sqlite_uri_mode_ro_immutable_1";
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_TEXT_VS_BLOB_PROBE_RUNTIME_DB_MODE: &str =
+    "sqlite_uri_mode_ro_immutable_1";
+const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_STARTED_AT_TEXT_VS_BLOB_PROBE_RUNTIME_DB_MODE: &str =
     "sqlite_uri_mode_ro_immutable_1";
 const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL: &str =
     "INSERT INTO discovery_persisted_rebuild_state (id, phase, updated_at)
@@ -178,6 +187,14 @@ FROM discovery_persisted_rebuild_state
 WHERE id = 1";
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_BLOB_FIRST_BYTE_UPDATED_AT_SELECT_SQL: &str =
     "SELECT hex(substr(CAST(updated_at AS BLOB), 1, 1))
+FROM discovery_persisted_rebuild_state
+WHERE id = 1";
+const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_TEXT_FIRST_BYTE_STARTED_AT_SELECT_SQL: &str =
+    "SELECT substr(started_at, 1, 1)
+FROM discovery_persisted_rebuild_state
+WHERE id = 1";
+const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_BLOB_FIRST_BYTE_STARTED_AT_SELECT_SQL: &str =
+    "SELECT hex(substr(CAST(started_at AS BLOB), 1, 1))
 FROM discovery_persisted_rebuild_state
 WHERE id = 1";
 const DEFAULT_REPLAY_SOL_LEG_BLOCKER_BUDGET_MS: u64 = 30_000;
@@ -368,6 +385,12 @@ struct ProbeCheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobFirstByteConfig 
 }
 
 #[derive(Debug, Clone)]
+struct ProbeCheckpointRowFetchDirectImmutableStartedAtTextVsBlobFirstByteConfig {
+    config_path: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 struct ExplainRecentRawStagedLineageConfig {
     state_root: PathBuf,
     json: bool,
@@ -440,6 +463,9 @@ enum Command {
     ),
     ProbeCheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobFirstByte(
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobFirstByteConfig,
+    ),
+    ProbeCheckpointRowFetchDirectImmutableStartedAtTextVsBlobFirstByte(
+        ProbeCheckpointRowFetchDirectImmutableStartedAtTextVsBlobFirstByteConfig,
     ),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
@@ -926,6 +952,26 @@ enum CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobProbeReasonClass {
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobProbeResultKind {
+    Row,
+    Eof,
+    SqliteBusy,
+    SqliteLocked,
+    OtherSqliteError,
+    OtherError,
+    RowFetchTimeoutAfterQueryStart,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeReasonClass {
+    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeProven,
+    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeBudgetExhausted,
+    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeUnprovenDueToMissingEvidence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind {
     Row,
     Eof,
     SqliteBusy,
@@ -2509,6 +2555,181 @@ impl CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobProbeDiagnostic {
             checkpoint_row_fetch_direct_immutable_updated_at_text_vs_blob_probe_blob_sqlite_error_code:
                 None,
             checkpoint_row_fetch_direct_immutable_updated_at_text_vs_blob_probe_blob_sqlite_error_message:
+                None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeDiagnostic {
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_observed: bool,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class:
+        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeReasonClass,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_explanation: String,
+    config_path: String,
+    runtime_db_path: Option<String>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_strategy: String,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_uri:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_mode: String,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_immutable:
+        bool,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_readonly:
+        bool,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_ms: u64,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_source: String,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_total_elapsed_ms: u64,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_exhausted: bool,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_stage: Option<String>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sql: String,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_explain_query_plan:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_explain_query_plan_rows:
+        Option<Vec<String>>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_journal_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_locking_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_query_only:
+        Option<bool>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_busy_timeout_ms:
+        Option<u64>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_query_started: bool,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_fetch_completed:
+        bool,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_fetch_elapsed_ms:
+        u64,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_returned:
+        Option<bool>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_value:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_result_kind:
+        Option<CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sqlite_error_code:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sqlite_error_message:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sql: String,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_explain_query_plan:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_explain_query_plan_rows:
+        Option<Vec<String>>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_journal_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_locking_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_query_only:
+        Option<bool>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_busy_timeout_ms:
+        Option<u64>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_query_started: bool,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_fetch_completed:
+        bool,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_fetch_elapsed_ms:
+        u64,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_returned:
+        Option<bool>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_value:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_result_kind:
+        Option<CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sqlite_error_code:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sqlite_error_message:
+        Option<String>,
+}
+
+impl CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeDiagnostic {
+    fn unproven(config_path: &Path, explanation: String) -> Self {
+        Self {
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_observed: false,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class:
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeReasonClass::CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeUnprovenDueToMissingEvidence,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_explanation:
+                explanation,
+            config_path: config_path.display().to_string(),
+            runtime_db_path: None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_strategy:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_STARTED_AT_TEXT_VS_BLOB_PROBE_STRATEGY
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_uri:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_mode:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_STARTED_AT_TEXT_VS_BLOB_PROBE_RUNTIME_DB_MODE
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_immutable:
+                true,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_readonly:
+                true,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_ms:
+                DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_STARTED_AT_TEXT_VS_BLOB_PROBE_BUDGET_MS,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_source:
+                DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_STARTED_AT_TEXT_VS_BLOB_PROBE_BUDGET_SOURCE
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_total_elapsed_ms:
+                0,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_exhausted:
+                false,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_stage: None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sql:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_TEXT_FIRST_BYTE_STARTED_AT_SELECT_SQL
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_explain_query_plan:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_explain_query_plan_rows:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_journal_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_locking_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_query_only:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_busy_timeout_ms:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_query_started:
+                false,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_fetch_completed:
+                false,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_fetch_elapsed_ms:
+                0,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_returned:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_value: None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_result_kind:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sqlite_error_code:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sqlite_error_message:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sql:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_BLOB_FIRST_BYTE_STARTED_AT_SELECT_SQL
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_explain_query_plan:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_explain_query_plan_rows:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_journal_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_locking_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_query_only:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_busy_timeout_ms:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_query_started:
+                false,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_fetch_completed:
+                false,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_fetch_elapsed_ms:
+                0,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_returned:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_value: None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_result_kind:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sqlite_error_code:
+                None,
+            checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sqlite_error_message:
                 None,
         }
     }
@@ -4420,6 +4641,64 @@ impl CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobTarget {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage {
+    OpenRuntimeDb,
+    LoadBusyTimeout,
+    LoadConnectionMetadata,
+    LoadExplainQueryPlan,
+    PrepareSelect,
+    QuerySelect,
+    RowFetchSelect,
+}
+
+impl CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenRuntimeDb => "open_runtime_db",
+            Self::LoadBusyTimeout => "load_busy_timeout",
+            Self::LoadConnectionMetadata => "load_connection_metadata",
+            Self::LoadExplainQueryPlan => "load_explain_query_plan",
+            Self::PrepareSelect => "prepare_select",
+            Self::QuerySelect => "query_select",
+            Self::RowFetchSelect => "row_fetch_select",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget {
+    Text,
+    Blob,
+}
+
+impl CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget {
+    fn as_label(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Blob => "blob",
+        }
+    }
+
+    fn select_sql(self) -> &'static str {
+        match self {
+            Self::Text => CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_TEXT_FIRST_BYTE_STARTED_AT_SELECT_SQL,
+            Self::Blob => CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_BLOB_FIRST_BYTE_STARTED_AT_SELECT_SQL,
+        }
+    }
+
+    fn explain_context(self) -> &'static str {
+        match self {
+            Self::Text => {
+                "direct immutable runtime-db substr(started_at, 1, 1) select query"
+            }
+            Self::Blob => {
+                "direct immutable runtime-db hex(substr(CAST(started_at AS BLOB), 1, 1)) select query"
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 enum CheckpointRowFetchCopiedSnapshotProbeWorkerMessage {
     TempDirCreated {
@@ -4856,6 +5135,51 @@ enum CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobProbeWorkerMessage {
     },
 }
 
+#[derive(Debug)]
+enum CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage {
+    Entered {
+        target: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget,
+        stage: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage,
+    },
+    BusyTimeout {
+        target: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget,
+        value: u64,
+    },
+    ConnectionReadMode {
+        target: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget,
+        journal_mode: String,
+        locking_mode: String,
+        query_only: bool,
+    },
+    QueryPlan {
+        target: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget,
+        explain_query_plan: String,
+        explain_query_plan_rows: Vec<String>,
+    },
+    SelectQueryStarted {
+        target: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget,
+    },
+    SelectFailed {
+        target: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget,
+        result_kind: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind,
+        sqlite_error_code: Option<String>,
+        sqlite_error_message: Option<String>,
+    },
+    SelectRowFetchCompleted {
+        target: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget,
+        elapsed_ms: u64,
+        row_returned: bool,
+        value: Option<String>,
+        result_kind: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind,
+        sqlite_error_code: Option<String>,
+        sqlite_error_message: Option<String>,
+    },
+    Finished {
+        target: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget,
+        result: Result<(), String>,
+    },
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 enum CheckpointRowFetchCopiedSnapshotProbeTestBehavior {
@@ -4978,6 +5302,21 @@ enum CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobProbeTestBehavior {
 #[cfg(test)]
 #[derive(Debug, Default)]
 struct CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobProbeTestSync {
+    text_conclusive: AtomicBool,
+    blob_conclusive: AtomicBool,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+enum CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeTestBehavior {
+    ForceTextOtherSqliteError,
+    DelayTextBeforeRowFetch(StdDuration),
+    DelayBlobBeforeRowFetch(StdDuration),
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeTestSync {
     text_conclusive: AtomicBool,
     blob_conclusive: AtomicBool,
 }
@@ -15508,6 +15847,1127 @@ fn wait_for_checkpoint_row_fetch_direct_immutable_updated_at_text_vs_blob_peer_c
     }
 }
 
+#[derive(Debug, Clone)]
+struct CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeState {
+    current_stage: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage,
+    explain_query_plan: Option<String>,
+    explain_query_plan_rows: Option<Vec<String>>,
+    connection_journal_mode: Option<String>,
+    connection_locking_mode: Option<String>,
+    connection_query_only: Option<bool>,
+    busy_timeout_ms: Option<u64>,
+    query_started: bool,
+    row_fetch_completed: bool,
+    row_fetch_elapsed_ms: u64,
+    row_returned: Option<bool>,
+    value: Option<String>,
+    result_kind: Option<CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind>,
+    sqlite_error_code: Option<String>,
+    sqlite_error_message: Option<String>,
+    finished: bool,
+}
+
+impl Default for CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeState {
+    fn default() -> Self {
+        Self {
+            current_stage:
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage::OpenRuntimeDb,
+            explain_query_plan: None,
+            explain_query_plan_rows: None,
+            connection_journal_mode: None,
+            connection_locking_mode: None,
+            connection_query_only: None,
+            busy_timeout_ms: None,
+            query_started: false,
+            row_fetch_completed: false,
+            row_fetch_elapsed_ms: 0,
+            row_returned: None,
+            value: None,
+            result_kind: None,
+            sqlite_error_code: None,
+            sqlite_error_message: None,
+            finished: false,
+        }
+    }
+}
+
+impl CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeState {
+    fn is_conclusive(&self) -> bool {
+        self.result_kind.is_some()
+    }
+}
+
+fn format_direct_immutable_started_at_text_vs_blob_stage(
+    target: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget,
+    stage: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage,
+) -> String {
+    format!("{}_select_{}", target.as_label(), stage.as_str())
+}
+
+fn apply_direct_immutable_started_at_text_vs_blob_state_to_diagnostic(
+    target: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget,
+    state: &CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeState,
+    diagnostic: &mut CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeDiagnostic,
+) {
+    match target {
+        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Text => {
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_explain_query_plan =
+                state.explain_query_plan.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_explain_query_plan_rows =
+                state.explain_query_plan_rows.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_journal_mode =
+                state.connection_journal_mode.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_locking_mode =
+                state.connection_locking_mode.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_query_only =
+                state.connection_query_only;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_busy_timeout_ms =
+                state.busy_timeout_ms;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_query_started =
+                state.query_started;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_fetch_completed =
+                state.row_fetch_completed;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_fetch_elapsed_ms =
+                state.row_fetch_elapsed_ms;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_returned =
+                state.row_returned;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_value =
+                state.value.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_result_kind =
+                state.result_kind;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sqlite_error_code =
+                state.sqlite_error_code.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sqlite_error_message =
+                state.sqlite_error_message.clone();
+        }
+        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Blob => {
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_explain_query_plan =
+                state.explain_query_plan.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_explain_query_plan_rows =
+                state.explain_query_plan_rows.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_journal_mode =
+                state.connection_journal_mode.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_locking_mode =
+                state.connection_locking_mode.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_query_only =
+                state.connection_query_only;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_busy_timeout_ms =
+                state.busy_timeout_ms;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_query_started =
+                state.query_started;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_fetch_completed =
+                state.row_fetch_completed;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_fetch_elapsed_ms =
+                state.row_fetch_elapsed_ms;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_returned =
+                state.row_returned;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_value =
+                state.value.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_result_kind =
+                state.result_kind;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sqlite_error_code =
+                state.sqlite_error_code.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sqlite_error_message =
+                state.sqlite_error_message.clone();
+        }
+    }
+}
+
+fn summarize_direct_immutable_started_at_text_vs_blob_subprobe(
+    label: &str,
+    result_kind: Option<CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind>,
+) -> String {
+    let result_kind = result_kind
+        .map(|value| {
+            serde_json::to_string(&value)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+                .to_string()
+        })
+        .unwrap_or_else(|| "null".to_string());
+    format!("{label}_result_kind={result_kind}")
+}
+
+fn resolve_direct_immutable_started_at_text_vs_blob_unfinished_stage(
+    text_state: &CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeState,
+    blob_state: &CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeState,
+) -> String {
+    if !text_state.is_conclusive() && !text_state.finished {
+        return format_direct_immutable_started_at_text_vs_blob_stage(
+            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Text,
+            text_state.current_stage,
+        );
+    }
+    if !blob_state.is_conclusive() && !blob_state.finished {
+        return format_direct_immutable_started_at_text_vs_blob_stage(
+            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Blob,
+            blob_state.current_stage,
+        );
+    }
+    "wait_subprobe_results".to_string()
+}
+
+fn probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only(
+    config_path: &Path,
+) -> CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeDiagnostic {
+    probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only_with_budget_impl(
+        config_path,
+        StdDuration::from_millis(
+            DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_STARTED_AT_TEXT_VS_BLOB_PROBE_BUDGET_MS,
+        ),
+        #[cfg(test)]
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only_with_budget(
+    config_path: &Path,
+    budget: StdDuration,
+) -> CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeDiagnostic {
+    probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only_with_budget_impl(
+        config_path,
+        budget,
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only_with_budget_and_test_behavior(
+    config_path: &Path,
+    budget: StdDuration,
+    test_behavior: Option<CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeTestBehavior>,
+) -> CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeDiagnostic {
+    probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only_with_budget_impl(
+        config_path,
+        budget,
+        test_behavior,
+    )
+}
+
+fn probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only_with_budget_impl(
+    config_path: &Path,
+    budget: StdDuration,
+    #[cfg(test)] test_behavior: Option<
+        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeTestBehavior,
+    >,
+) -> CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeDiagnostic {
+    let mut diagnostic =
+        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeDiagnostic::unproven(
+            config_path,
+            "checkpoint row-fetch direct immutable started_at text-vs-blob first-byte probe did not run"
+                .to_string(),
+        );
+    diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_ms =
+        budget.as_millis().min(u64::MAX as u128) as u64;
+    diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_source =
+        DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_STARTED_AT_TEXT_VS_BLOB_PROBE_BUDGET_SOURCE
+            .to_string();
+
+    let total_started_at = Instant::now();
+    let loaded_config = match load_from_path(config_path)
+        .with_context(|| format!("failed loading config {}", config_path.display()))
+    {
+        Ok(config) => config,
+        Err(error) => {
+            diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_explanation =
+                format!("{error:#}");
+            return diagnostic;
+        }
+    };
+    let runtime_db_path = resolve_db_path(config_path, None, &loaded_config.sqlite.path);
+    let runtime_db_uri = build_sqlite_immutable_read_only_uri(&runtime_db_path);
+    diagnostic.runtime_db_path = Some(runtime_db_path.display().to_string());
+    diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_uri =
+        Some(runtime_db_uri);
+    diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_observed = true;
+
+    #[cfg(test)]
+    let test_sync = test_behavior.map(|_| {
+        Arc::new(CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeTestSync::default())
+    });
+
+    let (tx, rx) = mpsc::sync_channel(64);
+    for target in [
+        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Text,
+        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Blob,
+    ] {
+        let runtime_db_path_for_worker = runtime_db_path.clone();
+        let tx = tx.clone();
+        #[cfg(test)]
+        let test_sync_for_worker = test_sync.clone();
+        thread::spawn(move || {
+            let _ = probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_worker(
+                target,
+                &runtime_db_path_for_worker,
+                tx,
+                #[cfg(test)]
+                test_behavior,
+                #[cfg(test)]
+                test_sync_for_worker,
+            );
+        });
+    }
+    drop(tx);
+
+    let mut text_state =
+        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeState::default();
+    let mut blob_state =
+        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeState::default();
+
+    loop {
+        if text_state.is_conclusive() && blob_state.is_conclusive() {
+            apply_direct_immutable_started_at_text_vs_blob_state_to_diagnostic(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Text,
+                &text_state,
+                &mut diagnostic,
+            );
+            apply_direct_immutable_started_at_text_vs_blob_state_to_diagnostic(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Blob,
+                &blob_state,
+                &mut diagnostic,
+            );
+            diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_total_elapsed_ms =
+                elapsed_ms(total_started_at);
+            diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class =
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeReasonClass::CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeProven;
+            diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_explanation =
+                format!(
+                    "direct immutable started_at text-vs-blob first-byte probe completed with bounded outcomes: {} {}",
+                    summarize_direct_immutable_started_at_text_vs_blob_subprobe(
+                        "text",
+                        text_state.result_kind
+                    ),
+                    summarize_direct_immutable_started_at_text_vs_blob_subprobe(
+                        "blob",
+                        blob_state.result_kind
+                    )
+                );
+            return diagnostic;
+        }
+
+        match rx.recv_timeout(remaining_budget_duration(budget, total_started_at)) {
+            Ok(message) => {
+                let state = match &message {
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Entered {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::BusyTimeout {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::ConnectionReadMode {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::QueryPlan {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectQueryStarted {
+                        target,
+                    }
+                    | CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectFailed {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectRowFetchCompleted {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Finished {
+                        target,
+                        ..
+                    } => match target {
+                        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Text => {
+                            &mut text_state
+                        }
+                        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Blob => {
+                            &mut blob_state
+                        }
+                    },
+                };
+
+                match message {
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Entered {
+                        stage,
+                        ..
+                    } => {
+                        state.current_stage = stage;
+                    }
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::BusyTimeout {
+                        value,
+                        ..
+                    } => {
+                        state.current_stage =
+                            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage::LoadBusyTimeout;
+                        state.busy_timeout_ms = Some(value);
+                    }
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::ConnectionReadMode {
+                        journal_mode,
+                        locking_mode,
+                        query_only,
+                        ..
+                    } => {
+                        state.current_stage =
+                            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage::LoadConnectionMetadata;
+                        state.connection_journal_mode = Some(journal_mode);
+                        state.connection_locking_mode = Some(locking_mode);
+                        state.connection_query_only = Some(query_only);
+                    }
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::QueryPlan {
+                        explain_query_plan,
+                        explain_query_plan_rows,
+                        ..
+                    } => {
+                        state.current_stage =
+                            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage::LoadExplainQueryPlan;
+                        state.explain_query_plan = Some(explain_query_plan);
+                        state.explain_query_plan_rows = Some(explain_query_plan_rows);
+                    }
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectQueryStarted {
+                        ..
+                    } => {
+                        state.query_started = true;
+                    }
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectFailed {
+                        result_kind,
+                        sqlite_error_code,
+                        sqlite_error_message,
+                        ..
+                    } => {
+                        state.result_kind = Some(result_kind);
+                        state.sqlite_error_code = sqlite_error_code;
+                        state.sqlite_error_message = sqlite_error_message;
+                    }
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectRowFetchCompleted {
+                        elapsed_ms,
+                        row_returned,
+                        value,
+                        result_kind,
+                        sqlite_error_code,
+                        sqlite_error_message,
+                        ..
+                    } => {
+                        state.current_stage =
+                            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage::RowFetchSelect;
+                        state.row_fetch_completed = true;
+                        state.row_fetch_elapsed_ms = elapsed_ms;
+                        state.row_returned = Some(row_returned);
+                        state.value = value;
+                        state.result_kind = Some(result_kind);
+                        state.sqlite_error_code = sqlite_error_code;
+                        state.sqlite_error_message = sqlite_error_message;
+                    }
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Finished {
+                        result,
+                        ..
+                    } => match result {
+                        Ok(()) => state.finished = true,
+                        Err(error) => {
+                            apply_direct_immutable_started_at_text_vs_blob_state_to_diagnostic(
+                                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Text,
+                                &text_state,
+                                &mut diagnostic,
+                            );
+                            apply_direct_immutable_started_at_text_vs_blob_state_to_diagnostic(
+                                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Blob,
+                                &blob_state,
+                                &mut diagnostic,
+                            );
+                            diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_total_elapsed_ms =
+                                elapsed_ms(total_started_at);
+                            diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class =
+                                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeReasonClass::CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeUnprovenDueToMissingEvidence;
+                            diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_explanation =
+                                error;
+                            return diagnostic;
+                        }
+                    },
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if text_state.query_started
+                    && !text_state.row_fetch_completed
+                    && text_state.result_kind.is_none()
+                {
+                    text_state.result_kind = Some(
+                        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::RowFetchTimeoutAfterQueryStart,
+                    );
+                }
+                if blob_state.query_started
+                    && !blob_state.row_fetch_completed
+                    && blob_state.result_kind.is_none()
+                {
+                    blob_state.result_kind = Some(
+                        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::RowFetchTimeoutAfterQueryStart,
+                    );
+                }
+
+                apply_direct_immutable_started_at_text_vs_blob_state_to_diagnostic(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Text,
+                    &text_state,
+                    &mut diagnostic,
+                );
+                apply_direct_immutable_started_at_text_vs_blob_state_to_diagnostic(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Blob,
+                    &blob_state,
+                    &mut diagnostic,
+                );
+                diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+
+                if text_state.is_conclusive() && blob_state.is_conclusive() {
+                    diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class =
+                        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeReasonClass::CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeProven;
+                    diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_explanation =
+                        format!(
+                            "direct immutable started_at text-vs-blob first-byte probe completed with bounded outcomes: {} {}",
+                            summarize_direct_immutable_started_at_text_vs_blob_subprobe(
+                                "text",
+                                text_state.result_kind
+                            ),
+                            summarize_direct_immutable_started_at_text_vs_blob_subprobe(
+                                "blob",
+                                blob_state.result_kind
+                            )
+                        );
+                } else {
+                    diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_exhausted =
+                        true;
+                    diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class =
+                        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeReasonClass::CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeBudgetExhausted;
+                    diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_stage =
+                        Some(resolve_direct_immutable_started_at_text_vs_blob_unfinished_stage(
+                            &text_state,
+                            &blob_state,
+                        ));
+                    diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_explanation =
+                        format!(
+                            "checkpoint row-fetch direct immutable started_at text-vs-blob first-byte probe exhausted its bounded budget before both subprobes reached conclusive outcomes: {} {}",
+                            summarize_direct_immutable_started_at_text_vs_blob_subprobe(
+                                "text",
+                                text_state.result_kind
+                            ),
+                            summarize_direct_immutable_started_at_text_vs_blob_subprobe(
+                                "blob",
+                                blob_state.result_kind
+                            )
+                        );
+                }
+                return diagnostic;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                apply_direct_immutable_started_at_text_vs_blob_state_to_diagnostic(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Text,
+                    &text_state,
+                    &mut diagnostic,
+                );
+                apply_direct_immutable_started_at_text_vs_blob_state_to_diagnostic(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Blob,
+                    &blob_state,
+                    &mut diagnostic,
+                );
+                diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class =
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeReasonClass::CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeUnprovenDueToMissingEvidence;
+                diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_explanation =
+                    "checkpoint row-fetch direct immutable started_at text-vs-blob first-byte probe workers disconnected before returning conclusive outcomes"
+                        .to_string();
+                return diagnostic;
+            }
+        }
+    }
+}
+
+fn probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_worker(
+    target: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget,
+    runtime_db_path: &Path,
+    tx: mpsc::SyncSender<CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage>,
+    #[cfg(test)] test_behavior: Option<
+        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeTestBehavior,
+    >,
+    #[cfg(test)] test_sync: Option<
+        Arc<CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeTestSync>,
+    >,
+) -> Result<()> {
+    let run = || -> Result<()> {
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage::OpenRuntimeDb,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let runtime_db_uri = build_sqlite_immutable_read_only_uri(runtime_db_path);
+        let conn = Connection::open_with_flags(
+            &runtime_db_uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| {
+            format!(
+                "failed opening runtime db {} for {} started_at text-vs-blob probe",
+                runtime_db_path.display(),
+                target.as_label()
+            )
+        })?;
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage::LoadBusyTimeout,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let busy_timeout_ms =
+            conn.query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
+                .with_context(|| {
+                    format!(
+                        "failed reading sqlite busy_timeout for {} started_at text-vs-blob probe",
+                        target.as_label()
+                    )
+                })?;
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::BusyTimeout {
+                    target,
+                    value: busy_timeout_ms,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage::LoadConnectionMetadata,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let journal_mode = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+            .with_context(|| {
+                format!(
+                    "failed reading sqlite journal_mode for {} started_at text-vs-blob probe",
+                    target.as_label()
+                )
+            })?;
+        let locking_mode = conn
+            .query_row("PRAGMA locking_mode", [], |row| row.get::<_, String>(0))
+            .with_context(|| {
+                format!(
+                    "failed reading sqlite locking_mode for {} started_at text-vs-blob probe",
+                    target.as_label()
+                )
+            })?;
+        let query_only = conn
+            .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+            .with_context(|| {
+                format!(
+                    "failed reading sqlite query_only for {} started_at text-vs-blob probe",
+                    target.as_label()
+                )
+            })?
+            != 0;
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::ConnectionReadMode {
+                    target,
+                    journal_mode,
+                    locking_mode,
+                    query_only,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage::LoadExplainQueryPlan,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let explain_query_plan =
+            load_explain_query_plan_for_sql(&conn, target.select_sql(), target.explain_context())?;
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::QueryPlan {
+                    target,
+                    explain_query_plan: explain_query_plan.explain_query_plan,
+                    explain_query_plan_rows: explain_query_plan.explain_query_plan_rows,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage::PrepareSelect,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let mut stmt = match conn.prepare(target.select_sql()) {
+            Ok(stmt) => stmt,
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::SqliteBusy,
+                            ErrorCode::DatabaseLocked => CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::SqliteLocked,
+                            _ => CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::OtherSqliteError,
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            format!(
+                                "sqlite failure while preparing {} started_at text-vs-blob SELECT statement",
+                                target.as_label()
+                            )
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage::QuerySelect,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let mut rows = match stmt.query([]) {
+            Ok(rows) => rows,
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::SqliteBusy,
+                            ErrorCode::DatabaseLocked => CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::SqliteLocked,
+                            _ => CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::OtherSqliteError,
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            format!(
+                                "sqlite failure while starting {} started_at text-vs-blob SELECT query",
+                                target.as_label()
+                            )
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobSubprobeStage::RowFetchSelect,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectQueryStarted {
+                    target,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        #[cfg(test)]
+        match (target, test_behavior) {
+            (
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Text,
+                Some(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeTestBehavior::ForceTextOtherSqliteError,
+                ),
+            ) => {
+                mark_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::OtherSqliteError,
+                        sqlite_error_code: Some("SQLITE_CORRUPT".to_string()),
+                        sqlite_error_message: Some(
+                            "forced other sqlite error at direct immutable text first-byte started_at SELECT rows.next() boundary".to_string(),
+                        ),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            (
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Text,
+                Some(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeTestBehavior::DelayTextBeforeRowFetch(delay),
+                ),
+            )
+            | (
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Blob,
+                Some(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeTestBehavior::DelayBlobBeforeRowFetch(delay),
+                ),
+            ) => {
+                wait_for_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_peer_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                thread::sleep(delay);
+            }
+            _ => {}
+        }
+
+        let row_fetch_started_at = Instant::now();
+        let row = match rows.next() {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                if tx
+                    .send(
+                        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectRowFetchCompleted {
+                            target,
+                            elapsed_ms: elapsed_ms(row_fetch_started_at),
+                            row_returned: false,
+                            value: None,
+                            result_kind:
+                                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::Eof,
+                            sqlite_error_code: None,
+                            sqlite_error_message: None,
+                        },
+                    )
+                    .is_err()
+                {
+                    return Ok(());
+                }
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::SqliteBusy,
+                            ErrorCode::DatabaseLocked => CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::SqliteLocked,
+                            _ => CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::OtherSqliteError,
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            format!(
+                                "sqlite failure at direct immutable {} started_at text-vs-blob SELECT rows.next() boundary",
+                                target.as_label()
+                            )
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+        };
+
+        #[cfg(test)]
+        mark_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_subprobe_conclusive(
+            target,
+            test_sync.as_ref(),
+        );
+        let value = match row.get::<_, Option<String>>(0) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectRowFetchCompleted {
+                        target,
+                        elapsed_ms: elapsed_ms(row_fetch_started_at),
+                        row_returned: true,
+                        value: None,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::SelectRowFetchCompleted {
+                    target,
+                    elapsed_ms: elapsed_ms(row_fetch_started_at),
+                    row_returned: true,
+                    value,
+                    result_kind:
+                        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::Row,
+                    sqlite_error_code: None,
+                    sqlite_error_message: None,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let _ = tx.send(
+            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Finished {
+                target,
+                result: Ok(()),
+            },
+        );
+        Ok(())
+    };
+
+    if let Err(error) = run() {
+        let _ = tx.send(
+            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeWorkerMessage::Finished {
+                target,
+                result: Err(format!("{error:#}")),
+            },
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn mark_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_subprobe_conclusive(
+    target: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget,
+    test_sync: Option<&Arc<CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeTestSync>>,
+) {
+    if let Some(test_sync) = test_sync {
+        match target {
+            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Text => {
+                test_sync.text_conclusive.store(true, AtomicOrdering::SeqCst);
+            }
+            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Blob => {
+                test_sync.blob_conclusive.store(true, AtomicOrdering::SeqCst);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn wait_for_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_peer_conclusive(
+    target: CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget,
+    test_sync: Option<&Arc<CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeTestSync>>,
+) {
+    let Some(test_sync) = test_sync else {
+        return;
+    };
+    let peer_conclusive = match target {
+        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Text => {
+            &test_sync.blob_conclusive
+        }
+        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobTarget::Blob => {
+            &test_sync.text_conclusive
+        }
+    };
+    while !peer_conclusive.load(AtomicOrdering::SeqCst) {
+        thread::sleep(StdDuration::from_millis(1));
+    }
+}
+
 fn build_sqlite_immutable_read_only_uri(path: &Path) -> String {
     let path = path.to_string_lossy();
     if path.starts_with('/') {
@@ -16564,6 +18024,7 @@ where
     let mut probe_checkpoint_row_fetch_direct_immutable_updated_at_expression_split = false;
     let mut probe_checkpoint_row_fetch_direct_immutable_updated_at_prefix_split = false;
     let mut probe_checkpoint_row_fetch_direct_immutable_updated_at_text_vs_blob_first_byte = false;
+    let mut probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte = false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
@@ -16655,6 +18116,10 @@ where
                 probe_checkpoint_row_fetch_direct_immutable_updated_at_text_vs_blob_first_byte =
                     true;
             }
+            "--probe-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-first-byte" => {
+                probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte =
+                    true;
+            }
             "--deep-attempt-telemetry-scan" => {
                 deep_attempt_telemetry_scan = true;
             }
@@ -16719,13 +18184,14 @@ where
         + usize::from(probe_checkpoint_row_fetch_direct_immutable_updated_at_expression_split)
         + usize::from(probe_checkpoint_row_fetch_direct_immutable_updated_at_prefix_split)
         + usize::from(probe_checkpoint_row_fetch_direct_immutable_updated_at_text_vs_blob_first_byte)
+        + usize::from(probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte)
         + usize::from(explain_recent_raw_staged_lineage)
         + usize::from(explain_recent_raw_staged_regression)
         + usize::from(explain_recent_raw_staged_birth)
         + usize::from(explain_recent_raw_staged_window_seeding);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --probe-checkpoint-row-fetch-materialization-busy-wait, --probe-checkpoint-row-fetch-materialization-immutable-source, --probe-checkpoint-row-fetch-immutable-source-select, --probe-checkpoint-row-fetch-direct-immutable-select, --probe-checkpoint-row-fetch-direct-immutable-id-only-select, --probe-checkpoint-row-fetch-direct-immutable-single-column-selects, --probe-checkpoint-row-fetch-direct-immutable-updated-at-expression-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-prefix-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-text-vs-blob-first-byte, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --probe-checkpoint-row-fetch-materialization-busy-wait, --probe-checkpoint-row-fetch-materialization-immutable-source, --probe-checkpoint-row-fetch-immutable-source-select, --probe-checkpoint-row-fetch-direct-immutable-select, --probe-checkpoint-row-fetch-direct-immutable-id-only-select, --probe-checkpoint-row-fetch-direct-immutable-single-column-selects, --probe-checkpoint-row-fetch-direct-immutable-updated-at-expression-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-prefix-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-text-vs-blob-first-byte, --probe-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-first-byte, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
     if deep_attempt_telemetry_scan && !explain_recent_raw_replacement_attempt_telemetry {
@@ -17248,6 +18714,29 @@ where
         ));
     }
 
+    if probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte {
+        if state_root.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+            || deep_attempt_telemetry_scan
+        {
+            bail!(
+                "--probe-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-first-byte only accepts --config and optional --json"
+            );
+        }
+        return Ok(Some(
+            Command::ProbeCheckpointRowFetchDirectImmutableStartedAtTextVsBlobFirstByte(
+                ProbeCheckpointRowFetchDirectImmutableStartedAtTextVsBlobFirstByteConfig {
+                    config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
+                    json,
+                },
+            ),
+        ));
+    }
+
     if explain_recent_raw_staged_lineage {
         if config_path.is_some()
             || db_path.is_some()
@@ -17668,6 +19157,22 @@ fn run_command(command: Command) -> Result<String> {
             } else {
                 Ok(
                     render_checkpoint_row_fetch_direct_immutable_updated_at_text_vs_blob_probe_human(
+                        &diagnostic,
+                    ),
+                )
+            }
+        }
+        Command::ProbeCheckpointRowFetchDirectImmutableStartedAtTextVsBlobFirstByte(config) => {
+            let diagnostic = probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only(
+                &config.config_path,
+            );
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic).context(
+                    "failed serializing checkpoint row-fetch direct immutable started_at text-vs-blob probe json",
+                )
+            } else {
+                Ok(
+                    render_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_human(
                         &diagnostic,
                     ),
                 )
@@ -23890,6 +25395,285 @@ fn render_checkpoint_row_fetch_direct_immutable_updated_at_text_vs_blob_probe_hu
     .join("\n")
 }
 
+fn render_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_human(
+    diagnostic: &CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeDiagnostic,
+) -> String {
+    [
+        "event=discovery_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe"
+            .to_string(),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_observed={}",
+            diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_observed
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class={}",
+            serde_json::to_string(
+                &diagnostic
+                    .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class
+            )
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_explanation={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_explanation
+        ),
+        format!("config_path={}", diagnostic.config_path),
+        format!(
+            "runtime_db_path={}",
+            diagnostic.runtime_db_path.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_strategy={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_strategy
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_uri={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_uri
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_mode
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_immutable={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_immutable
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_readonly={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_readonly
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_source={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_source
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_total_elapsed_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_total_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_exhausted={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_exhausted
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_stage={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_stage
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sql={}",
+            diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sql
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_explain_query_plan={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_explain_query_plan
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_explain_query_plan_rows={}",
+            format_optional_json(
+                &diagnostic
+                    .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_explain_query_plan_rows
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_journal_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_journal_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_locking_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_locking_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_query_only={}",
+            format_optional_bool(
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_query_only
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_busy_timeout_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_busy_timeout_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_query_started={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_query_started
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_fetch_completed={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_fetch_completed
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_fetch_elapsed_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_fetch_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_returned={}",
+            format_optional_bool(
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_returned
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_value={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_value
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_result_kind={}",
+            format_optional_enum_json(
+                &diagnostic
+                    .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_result_kind
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sqlite_error_code={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sqlite_error_code
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sqlite_error_message={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sqlite_error_message
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sql={}",
+            diagnostic.checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sql
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_explain_query_plan={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_explain_query_plan
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_explain_query_plan_rows={}",
+            format_optional_json(
+                &diagnostic
+                    .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_explain_query_plan_rows
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_journal_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_journal_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_locking_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_locking_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_query_only={}",
+            format_optional_bool(
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_query_only
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_busy_timeout_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_busy_timeout_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_query_started={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_query_started
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_fetch_completed={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_fetch_completed
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_fetch_elapsed_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_fetch_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_returned={}",
+            format_optional_bool(
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_returned
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_value={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_value
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_result_kind={}",
+            format_optional_enum_json(
+                &diagnostic
+                    .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_result_kind
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sqlite_error_code={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sqlite_error_code
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sqlite_error_message={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sqlite_error_message
+                .as_deref()
+                .unwrap_or("null")
+        ),
+    ]
+    .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -23915,6 +25699,8 @@ mod tests {
         probe_checkpoint_row_fetch_direct_immutable_updated_at_expression_split_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_direct_immutable_updated_at_prefix_split_read_only_with_budget,
         probe_checkpoint_row_fetch_direct_immutable_updated_at_prefix_split_read_only_with_budget_and_test_behavior,
+        probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only_with_budget,
+        probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_direct_immutable_updated_at_text_vs_blob_first_byte_read_only_with_budget,
         probe_checkpoint_row_fetch_direct_immutable_updated_at_text_vs_blob_first_byte_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_immutable_source_select_read_only_with_budget,
@@ -23950,6 +25736,9 @@ mod tests {
         CheckpointRowFetchDirectImmutableUpdatedAtPrefixProbeReasonClass,
         CheckpointRowFetchDirectImmutableUpdatedAtPrefixProbeResultKind,
         CheckpointRowFetchDirectImmutableUpdatedAtPrefixProbeTestBehavior,
+        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeReasonClass,
+        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind,
+        CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeTestBehavior,
         CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobProbeReasonClass,
         CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobProbeResultKind,
         CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobProbeTestBehavior,
@@ -23980,6 +25769,7 @@ mod tests {
         ProbeCheckpointRowFetchDirectImmutableSingleColumnSelectsConfig,
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtExpressionSplitConfig,
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtPrefixSplitConfig,
+        ProbeCheckpointRowFetchDirectImmutableStartedAtTextVsBlobFirstByteConfig,
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobFirstByteConfig,
         ProbeCheckpointRowFetchImmutableSourceSelectConfig,
         ProbeCheckpointRowFetchMaterializationBusyWaitConfig,
@@ -24561,6 +26351,29 @@ mod tests {
         else {
             panic!(
                 "expected checkpoint row-fetch direct immutable updated_at text-vs-blob first-byte probe command"
+            );
+        };
+        assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_mode(
+    ) {
+        let parsed = parse_args_from(vec![
+            "--probe-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-first-byte"
+                .to_string(),
+            "--config".to_string(),
+            "/tmp/live.server.toml".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ProbeCheckpointRowFetchDirectImmutableStartedAtTextVsBlobFirstByte(parsed) =
+            parsed
+        else {
+            panic!(
+                "expected checkpoint row-fetch direct immutable started_at text-vs-blob first-byte probe command"
             );
         };
         assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
@@ -29133,6 +30946,393 @@ mod tests {
         assert!(
             diagnostic
                 .checkpoint_row_fetch_direct_immutable_updated_at_text_vs_blob_probe_blob_result_kind
+                .is_some()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_returns_success_json(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-row",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-direct-immutable-started-at-text-vs-blob-row".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic = probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only_with_budget(
+            &fixture.config_path,
+            StdDuration::from_secs(1),
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class,
+            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeReasonClass::CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeProven,
+            "{diagnostic:#?}"
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_result_kind,
+            Some(CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::Row)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_result_kind,
+            Some(CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::Row)
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_value
+                .is_some()
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_value
+                .is_some()
+        );
+
+        let rendered = run_command(
+            Command::ProbeCheckpointRowFetchDirectImmutableStartedAtTextVsBlobFirstByte(
+                ProbeCheckpointRowFetchDirectImmutableStartedAtTextVsBlobFirstByteConfig {
+                    config_path: fixture.config_path.clone(),
+                    json: true,
+                },
+            ),
+        )?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class"],
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_proven"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_result_kind"],
+            "row"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_result_kind"],
+            "row"
+        );
+        for key in [
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_observed",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_explanation",
+            "config_path",
+            "runtime_db_path",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_strategy",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_uri",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_mode",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_immutable",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_runtime_db_readonly",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_ms",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_source",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_total_elapsed_ms",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_exhausted",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sql",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_explain_query_plan",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_explain_query_plan_rows",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_journal_mode",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_locking_mode",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_connection_query_only",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_busy_timeout_ms",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_query_started",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_fetch_completed",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_fetch_elapsed_ms",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_row_returned",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_value",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_result_kind",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sqlite_error_code",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sqlite_error_message",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sql",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_explain_query_plan",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_explain_query_plan_rows",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_journal_mode",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_locking_mode",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_connection_query_only",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_busy_timeout_ms",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_query_started",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_fetch_completed",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_fetch_elapsed_ms",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_row_returned",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_value",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_result_kind",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sqlite_error_code",
+            "checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_sqlite_error_message",
+        ] {
+            assert!(parsed.get(key).is_some(), "missing key {key}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_missing_row_returns_proven_eof(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-eof",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-direct-immutable-started-at-text-vs-blob-eof".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        let conn = rusqlite::Connection::open(&fixture.db_path)?;
+        conn.execute(
+            "DELETE FROM discovery_persisted_rebuild_state WHERE id = 1",
+            [],
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic = probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only_with_budget(
+            &fixture.config_path,
+            StdDuration::from_secs(1),
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class,
+            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeReasonClass::CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeProven
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_result_kind,
+            Some(CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::Eof)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_result_kind,
+            Some(CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::Eof)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_timeout_still_returns_bounded_blob_result(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-text-timeout",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature:
+                        "sig-direct-immutable-started-at-text-vs-blob-text-timeout".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic = probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only_with_budget_and_test_behavior(
+            &fixture.config_path,
+            StdDuration::from_secs(1),
+            Some(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeTestBehavior::DelayTextBeforeRowFetch(
+                    StdDuration::from_secs(2),
+                ),
+            ),
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class,
+            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeReasonClass::CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeProven
+        );
+        assert!(
+            !diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_exhausted
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::RowFetchTimeoutAfterQueryStart
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_result_kind,
+            Some(CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::Row)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_timeout_still_returns_bounded_text_result(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-blob-timeout",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature:
+                        "sig-direct-immutable-started-at-text-vs-blob-blob-timeout".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic = probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only_with_budget_and_test_behavior(
+            &fixture.config_path,
+            StdDuration::from_secs(1),
+            Some(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeTestBehavior::DelayBlobBeforeRowFetch(
+                    StdDuration::from_secs(2),
+                ),
+            ),
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class,
+            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeReasonClass::CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeProven
+        );
+        assert!(
+            !diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_budget_exhausted
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::RowFetchTimeoutAfterQueryStart
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_result_kind,
+            Some(CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::Row)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_forced_sqlite_error_reports_exact_fields(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-error",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-direct-immutable-started-at-text-vs-blob-error".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic = probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only_with_budget_and_test_behavior(
+            &fixture.config_path,
+            StdDuration::from_secs(1),
+            Some(
+                CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeTestBehavior::ForceTextOtherSqliteError,
+            ),
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_reason_class,
+            CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeReasonClass::CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeProven
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_result_kind,
+            Some(CheckpointRowFetchDirectImmutableStartedAtTextVsBlobProbeResultKind::OtherSqliteError)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sqlite_error_code
+                .as_deref(),
+            Some("SQLITE_CORRUPT")
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_text_sqlite_error_message
+                .as_deref(),
+            Some(
+                "forced other sqlite error at direct immutable text first-byte started_at SELECT rows.next() boundary"
+            )
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_probe_blob_result_kind
                 .is_some()
         );
         Ok(())
