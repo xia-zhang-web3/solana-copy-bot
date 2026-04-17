@@ -71,6 +71,7 @@ const USAGE: &str = "usage:
   discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-timestamp-unicode-first-char-split --config <path> [--json]
   discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-timestamp-zero-length-substr-split --config <path> [--json]
   discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-hex-original-vs-printf --config <path> [--json]
+  discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-length-vs-hex --config <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-lineage --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-regression --state-root <path> [--json]
   discovery_runtime_export --explain-recent-raw-staged-window-seeding --state-root <path> [--json]
@@ -155,6 +156,10 @@ const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_HEX_SOURCE_PROBE_
     1_000;
 const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_HEX_SOURCE_PROBE_BUDGET_SOURCE:
     &str = "fixed_constant_direct_immutable_runtime_db_updated_at_hex_original_vs_printf_probe";
+const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_PRINTF_LENGTH_VS_HEX_PROBE_BUDGET_MS:
+    u64 = 1_000;
+const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_PRINTF_LENGTH_VS_HEX_PROBE_BUDGET_SOURCE:
+    &str = "fixed_constant_direct_immutable_runtime_db_updated_at_printf_length_vs_hex_probe";
 const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY: &str =
     "temp_sqlite_row_meta_only_table_materialized_via_attach_insert_select";
 const CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_STRATEGY: &str =
@@ -193,6 +198,9 @@ const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_TIMESTAMP_ZERO_LENGTH_SUBSTR_PROBE_S
     "direct_runtime_db_open_via_immutable_read_only_uri_split_updated_at_and_started_at_zero_length_substr_timestamp_probe";
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_HEX_SOURCE_PROBE_STRATEGY: &str =
     "direct_runtime_db_open_via_immutable_read_only_uri_split_updated_at_original_hex_and_printf_hex_probe";
+const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_PRINTF_LENGTH_VS_HEX_PROBE_STRATEGY:
+    &str =
+    "direct_runtime_db_open_via_immutable_read_only_uri_split_updated_at_printf_length_and_printf_hex_probe";
 const CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_SOURCE_ATTACH_MODE: &str =
     "sqlite_uri_mode_ro_immutable_1";
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_SELECT_PROBE_RUNTIME_DB_MODE: &str =
@@ -225,6 +233,8 @@ const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_TIMESTAMP_ZERO_LENGTH_SUBSTR_PROBE_R
     &str = "sqlite_uri_mode_ro_immutable_1";
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_HEX_SOURCE_PROBE_RUNTIME_DB_MODE: &str =
     "sqlite_uri_mode_ro_immutable_1";
+const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_PRINTF_LENGTH_VS_HEX_PROBE_RUNTIME_DB_MODE:
+    &str = "sqlite_uri_mode_ro_immutable_1";
 const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL: &str =
     "INSERT INTO discovery_persisted_rebuild_state (id, phase, updated_at)
 SELECT id, phase, updated_at
@@ -295,6 +305,10 @@ FROM discovery_persisted_rebuild_state
 WHERE id = 1";
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_PRINTF_TEXT_UPDATED_AT_SELECT_SQL: &str =
     "SELECT printf('%s', updated_at)
+FROM discovery_persisted_rebuild_state
+WHERE id = 1";
+const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_PRINTF_LENGTH_UPDATED_AT_SELECT_SQL: &str =
+    "SELECT length(printf('%s', updated_at))
 FROM discovery_persisted_rebuild_state
 WHERE id = 1";
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_PRINTF_TEXT_STARTED_AT_SELECT_SQL: &str =
@@ -575,6 +589,12 @@ struct ProbeCheckpointRowFetchDirectImmutableUpdatedAtHexOriginalVsPrintfConfig 
 }
 
 #[derive(Debug, Clone)]
+struct ProbeCheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexConfig {
+    config_path: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 struct ExplainRecentRawStagedLineageConfig {
     state_root: PathBuf,
     json: bool,
@@ -674,6 +694,9 @@ enum Command {
     ),
     ProbeCheckpointRowFetchDirectImmutableUpdatedAtHexOriginalVsPrintf(
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtHexOriginalVsPrintfConfig,
+    ),
+    ProbeCheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHex(
+        ProbeCheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexConfig,
     ),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
@@ -1160,6 +1183,26 @@ enum CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobProbeReasonClass {
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobProbeResultKind {
+    Row,
+    Eof,
+    SqliteBusy,
+    SqliteLocked,
+    OtherSqliteError,
+    OtherError,
+    RowFetchTimeoutAfterQueryStart,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeReasonClass {
+    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeProven,
+    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeBudgetExhausted,
+    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeUnprovenDueToMissingEvidence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind {
     Row,
     Eof,
     SqliteBusy,
@@ -2923,6 +2966,173 @@ impl CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobProbeDiagnostic {
             checkpoint_row_fetch_direct_immutable_updated_at_text_vs_blob_probe_blob_sqlite_error_code:
                 None,
             checkpoint_row_fetch_direct_immutable_updated_at_text_vs_blob_probe_blob_sqlite_error_message:
+                None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeDiagnostic {
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_observed: bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_reason_class:
+        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeReasonClass,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_explanation: String,
+    config_path: String,
+    runtime_db_path: Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_strategy: String,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_uri:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_mode: String,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_immutable: bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_readonly: bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_ms: u64,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_source: String,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_total_elapsed_ms: u64,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_exhausted: bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_stage: Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sql: String,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_explain_query_plan:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_explain_query_plan_rows:
+        Option<Vec<String>>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_journal_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_locking_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_query_only:
+        Option<bool>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_busy_timeout_ms:
+        Option<u64>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_query_started: bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_fetch_completed:
+        bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_fetch_elapsed_ms:
+        u64,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_returned:
+        Option<bool>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_value: Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_result_kind:
+        Option<CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sqlite_error_code:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sqlite_error_message:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sql: String,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_explain_query_plan:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_explain_query_plan_rows:
+        Option<Vec<String>>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_journal_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_locking_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_query_only:
+        Option<bool>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_busy_timeout_ms:
+        Option<u64>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_query_started: bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_fetch_completed:
+        bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_fetch_elapsed_ms:
+        u64,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_returned:
+        Option<bool>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_value: Option<u64>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_result_kind:
+        Option<CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sqlite_error_code:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sqlite_error_message:
+        Option<String>,
+}
+
+impl CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeDiagnostic {
+    fn unproven(config_path: &Path, explanation: String) -> Self {
+        Self {
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_observed: false,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_reason_class:
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeUnprovenDueToMissingEvidence,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_explanation:
+                explanation,
+            config_path: config_path.display().to_string(),
+            runtime_db_path: None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_strategy:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_PRINTF_LENGTH_VS_HEX_PROBE_STRATEGY
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_uri: None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_mode:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_PRINTF_LENGTH_VS_HEX_PROBE_RUNTIME_DB_MODE
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_immutable:
+                true,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_readonly:
+                true,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_ms:
+                DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_PRINTF_LENGTH_VS_HEX_PROBE_BUDGET_MS,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_source:
+                DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_PRINTF_LENGTH_VS_HEX_PROBE_BUDGET_SOURCE
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_total_elapsed_ms: 0,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_exhausted:
+                false,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_stage: None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sql:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_HEX_PRINTF_UPDATED_AT_SELECT_SQL.to_string(),
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_explain_query_plan:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_explain_query_plan_rows:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_journal_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_locking_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_query_only:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_busy_timeout_ms:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_query_started:
+                false,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_fetch_completed:
+                false,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_fetch_elapsed_ms:
+                0,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_returned:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_value: None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_result_kind:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sqlite_error_code:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sqlite_error_message:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sql:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_PRINTF_LENGTH_UPDATED_AT_SELECT_SQL.to_string(),
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_explain_query_plan:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_explain_query_plan_rows:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_journal_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_locking_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_query_only:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_busy_timeout_ms:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_query_started:
+                false,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_fetch_completed:
+                false,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_fetch_elapsed_ms:
+                0,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_returned:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_value: None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_result_kind:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sqlite_error_code:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sqlite_error_message:
                 None,
         }
     }
@@ -6421,6 +6631,60 @@ impl CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobTarget {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage {
+    OpenRuntimeDb,
+    LoadBusyTimeout,
+    LoadConnectionMetadata,
+    LoadExplainQueryPlan,
+    PrepareSelect,
+    QuerySelect,
+    RowFetchSelect,
+}
+
+impl CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenRuntimeDb => "open_runtime_db",
+            Self::LoadBusyTimeout => "load_busy_timeout",
+            Self::LoadConnectionMetadata => "load_connection_metadata",
+            Self::LoadExplainQueryPlan => "load_explain_query_plan",
+            Self::PrepareSelect => "prepare_select",
+            Self::QuerySelect => "query_select",
+            Self::RowFetchSelect => "row_fetch_select",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget {
+    PrintfHex,
+    PrintfLength,
+}
+
+impl CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget {
+    fn as_label(self) -> &'static str {
+        match self {
+            Self::PrintfHex => "printf_hex",
+            Self::PrintfLength => "printf_length",
+        }
+    }
+
+    fn select_sql(self) -> &'static str {
+        match self {
+            Self::PrintfHex => CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_HEX_PRINTF_UPDATED_AT_SELECT_SQL,
+            Self::PrintfLength => CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_PRINTF_LENGTH_UPDATED_AT_SELECT_SQL,
+        }
+    }
+
+    fn explain_context(self) -> &'static str {
+        match self {
+            Self::PrintfHex => "direct immutable runtime-db hex(printf('%s', updated_at)) select query",
+            Self::PrintfLength => "direct immutable runtime-db length(printf('%s', updated_at)) select query",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckpointRowFetchDirectImmutableUpdatedAtHexSourceSubprobeStage {
     OpenRuntimeDb,
     LoadBusyTimeout,
@@ -7371,6 +7635,52 @@ enum CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobProbeWorkerMessage {
 }
 
 #[derive(Debug)]
+enum CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage {
+    Entered {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget,
+        stage: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage,
+    },
+    BusyTimeout {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget,
+        value: u64,
+    },
+    ConnectionReadMode {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget,
+        journal_mode: String,
+        locking_mode: String,
+        query_only: bool,
+    },
+    QueryPlan {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget,
+        explain_query_plan: String,
+        explain_query_plan_rows: Vec<String>,
+    },
+    SelectQueryStarted {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget,
+    },
+    SelectFailed {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget,
+        result_kind: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind,
+        sqlite_error_code: Option<String>,
+        sqlite_error_message: Option<String>,
+    },
+    SelectRowFetchCompleted {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget,
+        elapsed_ms: u64,
+        row_returned: bool,
+        string_value: Option<String>,
+        int_value: Option<u64>,
+        result_kind: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind,
+        sqlite_error_code: Option<String>,
+        sqlite_error_message: Option<String>,
+    },
+    Finished {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget,
+        result: Result<(), String>,
+    },
+}
+
+#[derive(Debug)]
 enum CheckpointRowFetchDirectImmutableUpdatedAtHexSourceProbeWorkerMessage {
     Entered {
         target: CheckpointRowFetchDirectImmutableUpdatedAtHexSourceTarget,
@@ -7905,6 +8215,21 @@ enum CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobProbeTestBehavior {
 struct CheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobProbeTestSync {
     text_conclusive: AtomicBool,
     blob_conclusive: AtomicBool,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+enum CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeTestBehavior {
+    ForcePrintfHexOtherSqliteError,
+    DelayPrintfHexBeforeRowFetch(StdDuration),
+    DelayPrintfLengthBeforeRowFetch(StdDuration),
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeTestSync {
+    printf_hex_conclusive: AtomicBool,
+    printf_length_conclusive: AtomicBool,
 }
 
 #[cfg(test)]
@@ -18611,6 +18936,1186 @@ fn wait_for_checkpoint_row_fetch_direct_immutable_updated_at_text_vs_blob_peer_c
 }
 
 #[derive(Debug, Clone)]
+struct CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeState {
+    current_stage: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage,
+    explain_query_plan: Option<String>,
+    explain_query_plan_rows: Option<Vec<String>>,
+    connection_journal_mode: Option<String>,
+    connection_locking_mode: Option<String>,
+    connection_query_only: Option<bool>,
+    busy_timeout_ms: Option<u64>,
+    query_started: bool,
+    row_fetch_completed: bool,
+    row_fetch_elapsed_ms: u64,
+    row_returned: Option<bool>,
+    string_value: Option<String>,
+    int_value: Option<u64>,
+    result_kind: Option<CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind>,
+    sqlite_error_code: Option<String>,
+    sqlite_error_message: Option<String>,
+    finished: bool,
+}
+
+impl Default for CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeState {
+    fn default() -> Self {
+        Self {
+            current_stage:
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage::OpenRuntimeDb,
+            explain_query_plan: None,
+            explain_query_plan_rows: None,
+            connection_journal_mode: None,
+            connection_locking_mode: None,
+            connection_query_only: None,
+            busy_timeout_ms: None,
+            query_started: false,
+            row_fetch_completed: false,
+            row_fetch_elapsed_ms: 0,
+            row_returned: None,
+            string_value: None,
+            int_value: None,
+            result_kind: None,
+            sqlite_error_code: None,
+            sqlite_error_message: None,
+            finished: false,
+        }
+    }
+}
+
+impl CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeState {
+    fn is_conclusive(&self) -> bool {
+        self.result_kind.is_some()
+    }
+}
+
+fn format_direct_immutable_updated_at_printf_length_vs_hex_stage(
+    target: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget,
+    stage: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage,
+) -> String {
+    format!("{}_select_{}", target.as_label(), stage.as_str())
+}
+
+fn apply_direct_immutable_updated_at_printf_length_vs_hex_state_to_diagnostic(
+    target: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget,
+    state: &CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeState,
+    diagnostic: &mut CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeDiagnostic,
+) {
+    match target {
+        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfHex => {
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_explain_query_plan =
+                state.explain_query_plan.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_explain_query_plan_rows =
+                state.explain_query_plan_rows.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_journal_mode =
+                state.connection_journal_mode.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_locking_mode =
+                state.connection_locking_mode.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_query_only =
+                state.connection_query_only;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_busy_timeout_ms =
+                state.busy_timeout_ms;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_query_started =
+                state.query_started;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_fetch_completed =
+                state.row_fetch_completed;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_fetch_elapsed_ms =
+                state.row_fetch_elapsed_ms;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_returned =
+                state.row_returned;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_value =
+                state.string_value.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_result_kind =
+                state.result_kind;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sqlite_error_code =
+                state.sqlite_error_code.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sqlite_error_message =
+                state.sqlite_error_message.clone();
+        }
+        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfLength => {
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_explain_query_plan =
+                state.explain_query_plan.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_explain_query_plan_rows =
+                state.explain_query_plan_rows.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_journal_mode =
+                state.connection_journal_mode.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_locking_mode =
+                state.connection_locking_mode.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_query_only =
+                state.connection_query_only;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_busy_timeout_ms =
+                state.busy_timeout_ms;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_query_started =
+                state.query_started;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_fetch_completed =
+                state.row_fetch_completed;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_fetch_elapsed_ms =
+                state.row_fetch_elapsed_ms;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_returned =
+                state.row_returned;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_value =
+                state.int_value;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_result_kind =
+                state.result_kind;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sqlite_error_code =
+                state.sqlite_error_code.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sqlite_error_message =
+                state.sqlite_error_message.clone();
+        }
+    }
+}
+
+fn summarize_direct_immutable_updated_at_printf_length_vs_hex_subprobe(
+    label: &str,
+    result_kind: Option<CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind>,
+) -> String {
+    let result_kind = result_kind
+        .map(|value| {
+            serde_json::to_string(&value)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+                .to_string()
+        })
+        .unwrap_or_else(|| "null".to_string());
+    format!("{label}_result_kind={result_kind}")
+}
+
+fn resolve_direct_immutable_updated_at_printf_length_vs_hex_unfinished_stage(
+    printf_hex_state: &CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeState,
+    printf_length_state: &CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeState,
+) -> String {
+    if !printf_hex_state.is_conclusive() && !printf_hex_state.finished {
+        return format_direct_immutable_updated_at_printf_length_vs_hex_stage(
+            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfHex,
+            printf_hex_state.current_stage,
+        );
+    }
+    if !printf_length_state.is_conclusive() && !printf_length_state.finished {
+        return format_direct_immutable_updated_at_printf_length_vs_hex_stage(
+            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfLength,
+            printf_length_state.current_stage,
+        );
+    }
+    "wait_subprobe_results".to_string()
+}
+
+fn probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_read_only(
+    config_path: &Path,
+) -> CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeDiagnostic {
+    probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_read_only_with_budget_impl(
+        config_path,
+        StdDuration::from_millis(
+            DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_PRINTF_LENGTH_VS_HEX_PROBE_BUDGET_MS,
+        ),
+        #[cfg(test)]
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_read_only_with_budget(
+    config_path: &Path,
+    budget: StdDuration,
+) -> CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeDiagnostic {
+    probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_read_only_with_budget_impl(
+        config_path,
+        budget,
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_read_only_with_budget_and_test_behavior(
+    config_path: &Path,
+    budget: StdDuration,
+    test_behavior: Option<CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeTestBehavior>,
+) -> CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeDiagnostic {
+    probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_read_only_with_budget_impl(
+        config_path,
+        budget,
+        test_behavior,
+    )
+}
+
+fn probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_read_only_with_budget_impl(
+    config_path: &Path,
+    budget: StdDuration,
+    #[cfg(test)] test_behavior: Option<
+        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeTestBehavior,
+    >,
+) -> CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeDiagnostic {
+    let mut diagnostic =
+        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeDiagnostic::unproven(
+            config_path,
+            "checkpoint row-fetch direct immutable updated_at printf length-vs-hex probe did not run"
+                .to_string(),
+        );
+    diagnostic.checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_ms =
+        budget.as_millis().min(u64::MAX as u128) as u64;
+    diagnostic.checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_source =
+        DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_PRINTF_LENGTH_VS_HEX_PROBE_BUDGET_SOURCE
+            .to_string();
+
+    let total_started_at = Instant::now();
+    let loaded_config = match load_from_path(config_path)
+        .with_context(|| format!("failed loading config {}", config_path.display()))
+    {
+        Ok(config) => config,
+        Err(error) => {
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_explanation =
+                format!("{error:#}");
+            return diagnostic;
+        }
+    };
+    let runtime_db_path = resolve_db_path(config_path, None, &loaded_config.sqlite.path);
+    let runtime_db_uri = build_sqlite_immutable_read_only_uri(&runtime_db_path);
+    diagnostic.runtime_db_path = Some(runtime_db_path.display().to_string());
+    diagnostic.checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_uri =
+        Some(runtime_db_uri);
+    diagnostic.checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_observed = true;
+
+    #[cfg(test)]
+    let test_sync = test_behavior.map(|_| {
+        Arc::new(CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeTestSync::default())
+    });
+
+    let (tx, rx) = mpsc::sync_channel(64);
+    for target in [
+        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfLength,
+        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfHex,
+    ] {
+        let runtime_db_path_for_worker = runtime_db_path.clone();
+        let tx = tx.clone();
+        #[cfg(test)]
+        let test_sync_for_worker = test_sync.clone();
+        thread::spawn(move || {
+            let _ = probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_worker(
+                target,
+                &runtime_db_path_for_worker,
+                tx,
+                #[cfg(test)]
+                test_behavior,
+                #[cfg(test)]
+                test_sync_for_worker,
+            );
+        });
+    }
+    drop(tx);
+
+    let mut printf_hex_state =
+        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeState::default();
+    let mut printf_length_state =
+        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeState::default();
+
+    loop {
+        if printf_hex_state.is_conclusive() && printf_length_state.is_conclusive() {
+            apply_direct_immutable_updated_at_printf_length_vs_hex_state_to_diagnostic(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfHex,
+                &printf_hex_state,
+                &mut diagnostic,
+            );
+            apply_direct_immutable_updated_at_printf_length_vs_hex_state_to_diagnostic(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfLength,
+                &printf_length_state,
+                &mut diagnostic,
+            );
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_total_elapsed_ms =
+                elapsed_ms(total_started_at);
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_reason_class =
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeProven;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_explanation =
+                format!(
+                    "direct immutable updated_at printf length-vs-hex probe completed with bounded outcomes: {} {}. This is a synthesized-text full-traversal-vs-hex proof operator, not a replay blocker classifier.",
+                    summarize_direct_immutable_updated_at_printf_length_vs_hex_subprobe(
+                        "printf_length",
+                        printf_length_state.result_kind
+                    ),
+                    summarize_direct_immutable_updated_at_printf_length_vs_hex_subprobe(
+                        "printf_hex",
+                        printf_hex_state.result_kind
+                    )
+                );
+            return diagnostic;
+        }
+
+        match rx.recv_timeout(remaining_budget_duration(budget, total_started_at)) {
+            Ok(message) => {
+                let state = match &message {
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Entered {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::BusyTimeout {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::ConnectionReadMode {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::QueryPlan {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectQueryStarted {
+                        target,
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectFailed {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectRowFetchCompleted {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Finished {
+                        target,
+                        ..
+                    } => match target {
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfHex => {
+                            &mut printf_hex_state
+                        }
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfLength => {
+                            &mut printf_length_state
+                        }
+                    },
+                };
+
+                match message {
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Entered {
+                        stage,
+                        ..
+                    } => {
+                        state.current_stage = stage;
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::BusyTimeout {
+                        value,
+                        ..
+                    } => {
+                        state.current_stage =
+                            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage::LoadBusyTimeout;
+                        state.busy_timeout_ms = Some(value);
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::ConnectionReadMode {
+                        journal_mode,
+                        locking_mode,
+                        query_only,
+                        ..
+                    } => {
+                        state.current_stage =
+                            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage::LoadConnectionMetadata;
+                        state.connection_journal_mode = Some(journal_mode);
+                        state.connection_locking_mode = Some(locking_mode);
+                        state.connection_query_only = Some(query_only);
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::QueryPlan {
+                        explain_query_plan,
+                        explain_query_plan_rows,
+                        ..
+                    } => {
+                        state.current_stage =
+                            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage::LoadExplainQueryPlan;
+                        state.explain_query_plan = Some(explain_query_plan);
+                        state.explain_query_plan_rows = Some(explain_query_plan_rows);
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectQueryStarted {
+                        ..
+                    } => {
+                        state.query_started = true;
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectFailed {
+                        result_kind,
+                        sqlite_error_code,
+                        sqlite_error_message,
+                        ..
+                    } => {
+                        state.result_kind = Some(result_kind);
+                        state.sqlite_error_code = sqlite_error_code;
+                        state.sqlite_error_message = sqlite_error_message;
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectRowFetchCompleted {
+                        elapsed_ms,
+                        row_returned,
+                        string_value,
+                        int_value,
+                        result_kind,
+                        sqlite_error_code,
+                        sqlite_error_message,
+                        ..
+                    } => {
+                        state.current_stage =
+                            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage::RowFetchSelect;
+                        state.row_fetch_completed = true;
+                        state.row_fetch_elapsed_ms = elapsed_ms;
+                        state.row_returned = Some(row_returned);
+                        state.string_value = string_value;
+                        state.int_value = int_value;
+                        state.result_kind = Some(result_kind);
+                        state.sqlite_error_code = sqlite_error_code;
+                        state.sqlite_error_message = sqlite_error_message;
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Finished {
+                        result,
+                        ..
+                    } => match result {
+                        Ok(()) => {
+                            state.finished = true;
+                        }
+                        Err(error) => {
+                            apply_direct_immutable_updated_at_printf_length_vs_hex_state_to_diagnostic(
+                                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfHex,
+                                &printf_hex_state,
+                                &mut diagnostic,
+                            );
+                            apply_direct_immutable_updated_at_printf_length_vs_hex_state_to_diagnostic(
+                                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfLength,
+                                &printf_length_state,
+                                &mut diagnostic,
+                            );
+                            diagnostic
+                                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_total_elapsed_ms =
+                                elapsed_ms(total_started_at);
+                            diagnostic
+                                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_reason_class =
+                                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeUnprovenDueToMissingEvidence;
+                            diagnostic
+                                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_explanation =
+                                error;
+                            return diagnostic;
+                        }
+                    },
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if printf_hex_state.query_started
+                    && !printf_hex_state.row_fetch_completed
+                    && printf_hex_state.result_kind.is_none()
+                {
+                    printf_hex_state.result_kind = Some(
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::RowFetchTimeoutAfterQueryStart,
+                    );
+                }
+                if printf_length_state.query_started
+                    && !printf_length_state.row_fetch_completed
+                    && printf_length_state.result_kind.is_none()
+                {
+                    printf_length_state.result_kind = Some(
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::RowFetchTimeoutAfterQueryStart,
+                    );
+                }
+
+                apply_direct_immutable_updated_at_printf_length_vs_hex_state_to_diagnostic(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfHex,
+                    &printf_hex_state,
+                    &mut diagnostic,
+                );
+                apply_direct_immutable_updated_at_printf_length_vs_hex_state_to_diagnostic(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfLength,
+                    &printf_length_state,
+                    &mut diagnostic,
+                );
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+
+                if printf_hex_state.is_conclusive() && printf_length_state.is_conclusive() {
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_reason_class =
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeProven;
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_explanation =
+                        format!(
+                            "direct immutable updated_at printf length-vs-hex probe completed with bounded outcomes: {} {}. This is a synthesized-text full-traversal-vs-hex proof operator, not a replay blocker classifier.",
+                            summarize_direct_immutable_updated_at_printf_length_vs_hex_subprobe(
+                                "printf_length",
+                                printf_length_state.result_kind
+                            ),
+                            summarize_direct_immutable_updated_at_printf_length_vs_hex_subprobe(
+                                "printf_hex",
+                                printf_hex_state.result_kind
+                            )
+                        );
+                } else {
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_exhausted =
+                        true;
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_reason_class =
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeBudgetExhausted;
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_stage =
+                        Some(
+                            resolve_direct_immutable_updated_at_printf_length_vs_hex_unfinished_stage(
+                                &printf_hex_state,
+                                &printf_length_state,
+                            ),
+                        );
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_explanation =
+                        format!(
+                            "checkpoint row-fetch direct immutable updated_at printf length-vs-hex probe exhausted its bounded budget before both subprobes reached conclusive outcomes: {} {}. This is a synthesized-text full-traversal-vs-hex proof operator, not a replay blocker classifier.",
+                            summarize_direct_immutable_updated_at_printf_length_vs_hex_subprobe(
+                                "printf_length",
+                                printf_length_state.result_kind
+                            ),
+                            summarize_direct_immutable_updated_at_printf_length_vs_hex_subprobe(
+                                "printf_hex",
+                                printf_hex_state.result_kind
+                            )
+                        );
+                }
+                return diagnostic;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                apply_direct_immutable_updated_at_printf_length_vs_hex_state_to_diagnostic(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfHex,
+                    &printf_hex_state,
+                    &mut diagnostic,
+                );
+                apply_direct_immutable_updated_at_printf_length_vs_hex_state_to_diagnostic(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfLength,
+                    &printf_length_state,
+                    &mut diagnostic,
+                );
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_reason_class =
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeUnprovenDueToMissingEvidence;
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_explanation =
+                    "checkpoint row-fetch direct immutable updated_at printf length-vs-hex probe workers disconnected before returning conclusive outcomes"
+                        .to_string();
+                return diagnostic;
+            }
+        }
+    }
+}
+
+fn probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_worker(
+    target: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget,
+    runtime_db_path: &Path,
+    tx: mpsc::SyncSender<CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage>,
+    #[cfg(test)] test_behavior: Option<
+        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeTestBehavior,
+    >,
+    #[cfg(test)] test_sync: Option<
+        Arc<CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeTestSync>,
+    >,
+) -> Result<()> {
+    let run = || -> Result<()> {
+        let runtime_db_uri = build_sqlite_immutable_read_only_uri(runtime_db_path);
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage::OpenRuntimeDb,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let conn = Connection::open_with_flags(
+            &runtime_db_uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| {
+            format!(
+                "failed opening direct immutable runtime db uri {} for {} updated_at expression probe",
+                runtime_db_uri,
+                target.as_label()
+            )
+        })?;
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage::LoadBusyTimeout,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let busy_timeout_ms = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
+            .with_context(|| {
+                format!(
+                    "failed reading sqlite busy_timeout for {} updated_at expression probe",
+                    target.as_label()
+                )
+            })?;
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::BusyTimeout {
+                    target,
+                    value: busy_timeout_ms,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage::LoadConnectionMetadata,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let journal_mode = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+            .with_context(|| {
+                format!(
+                    "failed reading sqlite journal_mode for {} updated_at expression probe",
+                    target.as_label()
+                )
+            })?;
+        let locking_mode = conn
+            .query_row("PRAGMA locking_mode", [], |row| row.get::<_, String>(0))
+            .with_context(|| {
+                format!(
+                    "failed reading sqlite locking_mode for {} updated_at expression probe",
+                    target.as_label()
+                )
+            })?;
+        let query_only = conn
+            .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+            .with_context(|| {
+                format!(
+                    "failed reading sqlite query_only for {} updated_at expression probe",
+                    target.as_label()
+                )
+            })?
+            != 0;
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::ConnectionReadMode {
+                    target,
+                    journal_mode,
+                    locking_mode,
+                    query_only,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage::LoadExplainQueryPlan,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let explain_query_plan =
+            load_explain_query_plan_for_sql(&conn, target.select_sql(), target.explain_context())?;
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::QueryPlan {
+                    target,
+                    explain_query_plan: explain_query_plan.explain_query_plan,
+                    explain_query_plan_rows: explain_query_plan.explain_query_plan_rows,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage::PrepareSelect,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let mut stmt = match conn.prepare(target.select_sql()) {
+            Ok(stmt) => stmt,
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::SqliteBusy,
+                            ErrorCode::DatabaseLocked => CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::SqliteLocked,
+                            _ => CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::OtherSqliteError,
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            format!(
+                                "sqlite failure while preparing {} updated_at expression SELECT statement",
+                                target.as_label()
+                            )
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage::QuerySelect,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let mut rows = match stmt.query([]) {
+            Ok(rows) => rows,
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::SqliteBusy,
+                            ErrorCode::DatabaseLocked => CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::SqliteLocked,
+                            _ => CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::OtherSqliteError,
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            format!(
+                                "sqlite failure while starting {} updated_at expression SELECT query",
+                                target.as_label()
+                            )
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexSubprobeStage::RowFetchSelect,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectQueryStarted {
+                    target,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        #[cfg(test)]
+        match (target, test_behavior) {
+            (
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfHex,
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeTestBehavior::ForcePrintfHexOtherSqliteError,
+                ),
+            ) => {
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::OtherSqliteError,
+                        sqlite_error_code: Some("SQLITE_CORRUPT".to_string()),
+                        sqlite_error_message: Some(
+                            "forced other sqlite error at direct immutable hex(printf('%s', updated_at)) SELECT rows.next() boundary"
+                                .to_string(),
+                        ),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            (
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfHex,
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeTestBehavior::DelayPrintfHexBeforeRowFetch(delay),
+                ),
+            )
+            | (
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfLength,
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeTestBehavior::DelayPrintfLengthBeforeRowFetch(delay),
+                ),
+            ) => {
+                wait_for_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_peer_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                thread::sleep(delay);
+            }
+            _ => {}
+        }
+
+        let row_fetch_started_at = Instant::now();
+        let row = match rows.next() {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                if tx
+                    .send(
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectRowFetchCompleted {
+                            target,
+                            elapsed_ms: elapsed_ms(row_fetch_started_at),
+                            row_returned: false,
+                            string_value: None,
+                            int_value: None,
+                            result_kind:
+                                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::Eof,
+                            sqlite_error_code: None,
+                            sqlite_error_message: None,
+                        },
+                    )
+                    .is_err()
+                {
+                    return Ok(());
+                }
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::SqliteBusy,
+                            ErrorCode::DatabaseLocked => CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::SqliteLocked,
+                            _ => CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::OtherSqliteError,
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            format!(
+                                "sqlite failure at direct immutable {} updated_at expression SELECT rows.next() boundary",
+                                target.as_label()
+                            )
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+        };
+
+        #[cfg(test)]
+        mark_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_subprobe_conclusive(
+            target,
+            test_sync.as_ref(),
+        );
+        let (string_value, int_value) = match target {
+            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfHex => match row
+                .get::<_, Option<String>>(0)
+            {
+                Ok(value) => (value, None),
+                Err(error) => {
+                    let _ = tx.send(
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectRowFetchCompleted {
+                            target,
+                            elapsed_ms: elapsed_ms(row_fetch_started_at),
+                            row_returned: true,
+                            string_value: None,
+                            int_value: None,
+                            result_kind:
+                                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::OtherError,
+                            sqlite_error_code: None,
+                            sqlite_error_message: Some(error.to_string()),
+                        },
+                    );
+                    let _ = tx.send(
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Finished {
+                            target,
+                            result: Ok(()),
+                        },
+                    );
+                    return Ok(());
+                }
+            },
+            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfLength => match row
+                .get::<_, Option<i64>>(0)
+            {
+                Ok(value) => (None, value.map(|value| value.max(0) as u64)),
+                Err(error) => {
+                    let _ = tx.send(
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectRowFetchCompleted {
+                            target,
+                            elapsed_ms: elapsed_ms(row_fetch_started_at),
+                            row_returned: true,
+                            string_value: None,
+                            int_value: None,
+                            result_kind:
+                                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::OtherError,
+                            sqlite_error_code: None,
+                            sqlite_error_message: Some(error.to_string()),
+                        },
+                    );
+                    let _ = tx.send(
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Finished {
+                            target,
+                            result: Ok(()),
+                        },
+                    );
+                    return Ok(());
+                }
+            },
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::SelectRowFetchCompleted {
+                    target,
+                    elapsed_ms: elapsed_ms(row_fetch_started_at),
+                    row_returned: true,
+                    string_value,
+                    int_value,
+                    result_kind:
+                        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::Row,
+                    sqlite_error_code: None,
+                    sqlite_error_message: None,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let _ = tx.send(
+            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Finished {
+                target,
+                result: Ok(()),
+            },
+        );
+        Ok(())
+    };
+
+    if let Err(error) = run() {
+        let _ = tx.send(
+            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeWorkerMessage::Finished {
+                target,
+                result: Err(format!("{error:#}")),
+            },
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn mark_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_subprobe_conclusive(
+    target: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget,
+    test_sync: Option<&Arc<CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeTestSync>>,
+) {
+    if let Some(test_sync) = test_sync {
+        match target {
+            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfHex => {
+                test_sync.printf_hex_conclusive.store(true, AtomicOrdering::SeqCst);
+            }
+            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfLength => {
+                test_sync.printf_length_conclusive.store(true, AtomicOrdering::SeqCst);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn wait_for_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_peer_conclusive(
+    target: CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget,
+    test_sync: Option<&Arc<CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeTestSync>>,
+) {
+    let Some(test_sync) = test_sync else {
+        return;
+    };
+    let peer_conclusive = match target {
+        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfHex => {
+            &test_sync.printf_length_conclusive
+        }
+        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexTarget::PrintfLength => {
+            &test_sync.printf_hex_conclusive
+        }
+    };
+    while !peer_conclusive.load(AtomicOrdering::SeqCst) {
+        thread::sleep(StdDuration::from_millis(1));
+    }
+}
+
 struct CheckpointRowFetchDirectImmutableUpdatedAtHexSourceSubprobeState {
     current_stage: CheckpointRowFetchDirectImmutableUpdatedAtHexSourceSubprobeStage,
     explain_query_plan: Option<String>,
@@ -29782,6 +31287,7 @@ where
     let mut probe_checkpoint_row_fetch_direct_immutable_timestamp_unicode_first_char_split = false;
     let mut probe_checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_split = false;
     let mut probe_checkpoint_row_fetch_direct_immutable_updated_at_hex_original_vs_printf = false;
+    let mut probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex = false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
@@ -29906,6 +31412,9 @@ where
                 probe_checkpoint_row_fetch_direct_immutable_updated_at_hex_original_vs_printf =
                     true;
             }
+            "--probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-length-vs-hex" => {
+                probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex = true;
+            }
             "--deep-attempt-telemetry-scan" => {
                 deep_attempt_telemetry_scan = true;
             }
@@ -29981,13 +31490,14 @@ where
         + usize::from(probe_checkpoint_row_fetch_direct_immutable_timestamp_unicode_first_char_split)
         + usize::from(probe_checkpoint_row_fetch_direct_immutable_timestamp_zero_length_substr_split)
         + usize::from(probe_checkpoint_row_fetch_direct_immutable_updated_at_hex_original_vs_printf)
+        + usize::from(probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex)
         + usize::from(explain_recent_raw_staged_lineage)
         + usize::from(explain_recent_raw_staged_regression)
         + usize::from(explain_recent_raw_staged_birth)
         + usize::from(explain_recent_raw_staged_window_seeding);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --probe-checkpoint-row-fetch-materialization-busy-wait, --probe-checkpoint-row-fetch-materialization-immutable-source, --probe-checkpoint-row-fetch-immutable-source-select, --probe-checkpoint-row-fetch-direct-immutable-select, --probe-checkpoint-row-fetch-direct-immutable-id-only-select, --probe-checkpoint-row-fetch-direct-immutable-single-column-selects, --probe-checkpoint-row-fetch-direct-immutable-updated-at-expression-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-prefix-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-text-vs-blob-first-byte, --probe-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-first-byte, --probe-checkpoint-row-fetch-direct-immutable-timestamp-unixepoch-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-textified-unixepoch-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-datetime-reconstruction-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-printf-text-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-printf-prefix-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-unicode-first-char-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-zero-length-substr-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-hex-original-vs-printf, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --probe-checkpoint-row-fetch-materialization-busy-wait, --probe-checkpoint-row-fetch-materialization-immutable-source, --probe-checkpoint-row-fetch-immutable-source-select, --probe-checkpoint-row-fetch-direct-immutable-select, --probe-checkpoint-row-fetch-direct-immutable-id-only-select, --probe-checkpoint-row-fetch-direct-immutable-single-column-selects, --probe-checkpoint-row-fetch-direct-immutable-updated-at-expression-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-prefix-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-text-vs-blob-first-byte, --probe-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-first-byte, --probe-checkpoint-row-fetch-direct-immutable-timestamp-unixepoch-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-textified-unixepoch-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-datetime-reconstruction-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-printf-text-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-printf-prefix-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-unicode-first-char-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-zero-length-substr-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-hex-original-vs-printf, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-length-vs-hex, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
     if deep_attempt_telemetry_scan && !explain_recent_raw_replacement_attempt_telemetry {
@@ -30717,6 +32227,29 @@ where
         ));
     }
 
+    if probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex {
+        if state_root.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+            || deep_attempt_telemetry_scan
+        {
+            bail!(
+                "--probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-length-vs-hex only accepts --config and optional --json"
+            );
+        }
+        return Ok(Some(
+            Command::ProbeCheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHex(
+                ProbeCheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexConfig {
+                    config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
+                    json,
+                },
+            ),
+        ));
+    }
+
     if explain_recent_raw_staged_lineage {
         if config_path.is_some()
             || db_path.is_some()
@@ -31286,6 +32819,21 @@ fn run_command(command: Command) -> Result<String> {
                 )
             } else {
                 Ok(render_checkpoint_row_fetch_direct_immutable_updated_at_hex_source_probe_human(
+                    &diagnostic,
+                ))
+            }
+        }
+        Command::ProbeCheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHex(config) => {
+            let diagnostic =
+                probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_read_only(
+                    &config.config_path,
+                );
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic).context(
+                    "failed serializing checkpoint row-fetch direct immutable updated_at printf length-vs-hex probe json",
+                )
+            } else {
+                Ok(render_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_human(
                     &diagnostic,
                 ))
             }
@@ -37507,6 +39055,288 @@ fn render_checkpoint_row_fetch_direct_immutable_updated_at_text_vs_blob_probe_hu
     .join("\n")
 }
 
+fn render_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_human(
+    diagnostic: &CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeDiagnostic,
+) -> String {
+    [
+        "event=discovery_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe"
+            .to_string(),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_observed={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_observed
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_reason_class={}",
+            serde_json::to_string(
+                &diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_reason_class
+            )
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_explanation={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_explanation
+        ),
+        format!("config_path={}", diagnostic.config_path),
+        format!(
+            "runtime_db_path={}",
+            diagnostic.runtime_db_path.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_strategy={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_strategy
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_uri={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_uri
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_mode
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_immutable={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_immutable
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_readonly={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_readonly
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_source={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_source
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_total_elapsed_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_total_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_exhausted={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_exhausted
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_stage={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_stage
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sql={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sql
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_explain_query_plan={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_explain_query_plan
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_explain_query_plan_rows={}",
+            format_optional_json(
+                &diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_explain_query_plan_rows
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_journal_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_journal_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_locking_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_locking_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_query_only={}",
+            format_optional_bool(
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_query_only
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_busy_timeout_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_busy_timeout_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_query_started={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_query_started
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_fetch_completed={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_fetch_completed
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_fetch_elapsed_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_fetch_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_returned={}",
+            format_optional_bool(
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_returned
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_value={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_value
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_result_kind={}",
+            format_optional_enum_json(
+                &diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_result_kind
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sqlite_error_code={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sqlite_error_code
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sqlite_error_message={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sqlite_error_message
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sql={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sql
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_explain_query_plan={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_explain_query_plan
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_explain_query_plan_rows={}",
+            format_optional_json(
+                &diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_explain_query_plan_rows
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_journal_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_journal_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_locking_mode={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_locking_mode
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_query_only={}",
+            format_optional_bool(
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_query_only
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_busy_timeout_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_busy_timeout_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_query_started={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_query_started
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_fetch_completed={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_fetch_completed
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_fetch_elapsed_ms={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_fetch_elapsed_ms
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_returned={}",
+            format_optional_bool(
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_returned
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_value={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_value
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_result_kind={}",
+            format_optional_enum_json(
+                &diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_result_kind
+            )
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sqlite_error_code={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sqlite_error_code
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sqlite_error_message={}",
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sqlite_error_message
+                .as_deref()
+                .unwrap_or("null")
+        ),
+    ]
+    .join("\n")
+}
+
 fn render_checkpoint_row_fetch_direct_immutable_updated_at_hex_source_probe_human(
     diagnostic: &CheckpointRowFetchDirectImmutableUpdatedAtHexSourceProbeDiagnostic,
 ) -> String {
@@ -38720,6 +40550,8 @@ mod tests {
         probe_checkpoint_row_fetch_direct_immutable_updated_at_expression_split_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_direct_immutable_updated_at_hex_source_first_byte_read_only_with_budget,
         probe_checkpoint_row_fetch_direct_immutable_updated_at_hex_source_first_byte_read_only_with_budget_and_test_behavior,
+        probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_read_only_with_budget,
+        probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_direct_immutable_updated_at_prefix_split_read_only_with_budget,
         probe_checkpoint_row_fetch_direct_immutable_updated_at_prefix_split_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only_with_budget,
@@ -38780,6 +40612,9 @@ mod tests {
         CheckpointRowFetchDirectImmutableUpdatedAtHexSourceProbeReasonClass,
         CheckpointRowFetchDirectImmutableUpdatedAtHexSourceProbeResultKind,
         CheckpointRowFetchDirectImmutableUpdatedAtHexSourceProbeTestBehavior,
+        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeReasonClass,
+        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind,
+        CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeTestBehavior,
         CheckpointRowFetchDirectImmutableUpdatedAtPrefixProbeReasonClass,
         CheckpointRowFetchDirectImmutableUpdatedAtPrefixProbeResultKind,
         CheckpointRowFetchDirectImmutableUpdatedAtPrefixProbeTestBehavior,
@@ -38823,6 +40658,7 @@ mod tests {
         ProbeCheckpointRowFetchDirectImmutableTimestampUnixepochSplitConfig,
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtExpressionSplitConfig,
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtHexOriginalVsPrintfConfig,
+        ProbeCheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexConfig,
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtPrefixSplitConfig,
         ProbeCheckpointRowFetchDirectImmutableStartedAtTextVsBlobFirstByteConfig,
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtTextVsBlobFirstByteConfig,
@@ -39406,6 +41242,29 @@ mod tests {
         else {
             panic!(
                 "expected checkpoint row-fetch direct immutable updated_at text-vs-blob first-byte probe command"
+            );
+        };
+        assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_mode(
+    ) {
+        let parsed = parse_args_from(vec![
+            "--probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-length-vs-hex"
+                .to_string(),
+            "--config".to_string(),
+            "/tmp/live.server.toml".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ProbeCheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHex(parsed) =
+            parsed
+        else {
+            panic!(
+                "expected checkpoint row-fetch direct immutable updated_at printf-length-vs-hex probe command"
             );
         };
         assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
@@ -44189,6 +46048,389 @@ mod tests {
         assert!(
             diagnostic
                 .checkpoint_row_fetch_direct_immutable_updated_at_text_vs_blob_probe_blob_result_kind
+                .is_some()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_returns_success_json(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-printf-printf_length-vs-hex-row",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-direct-immutable-updated-at-printf-printf_length-vs-hex-row".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_read_only_with_budget(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+            );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeProven,
+            "{diagnostic:#?}"
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_result_kind,
+            Some(CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::Row)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_result_kind,
+            Some(CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::Row)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_value
+                .as_deref(),
+            Some("323032362D30342D31375430393A35393A30302B30303A3030")
+        );
+        assert!(diagnostic
+            .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_value
+            .is_some());
+
+        let rendered = run_command(
+            Command::ProbeCheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHex(
+                ProbeCheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexConfig {
+                    config_path: fixture.config_path.clone(),
+                    json: true,
+                },
+            ),
+        )?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_reason_class"],
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_proven"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_result_kind"],
+            "row"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_result_kind"],
+            "row"
+        );
+        for key in [
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_observed",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_reason_class",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_explanation",
+            "config_path",
+            "runtime_db_path",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_strategy",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_uri",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_mode",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_immutable",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_runtime_db_readonly",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_source",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_total_elapsed_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_budget_exhausted",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_stage",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sql",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_explain_query_plan",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_explain_query_plan_rows",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_journal_mode",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_locking_mode",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_connection_query_only",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_busy_timeout_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_query_started",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_fetch_completed",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_fetch_elapsed_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_row_returned",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_value",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_result_kind",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sqlite_error_code",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sqlite_error_message",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sql",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_explain_query_plan",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_explain_query_plan_rows",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_journal_mode",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_locking_mode",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_connection_query_only",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_busy_timeout_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_query_started",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_fetch_completed",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_fetch_elapsed_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_row_returned",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_value",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_result_kind",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sqlite_error_code",
+            "checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_sqlite_error_message",
+        ] {
+            assert!(parsed.get(key).is_some(), "missing key {key}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_missing_row_returns_proven_eof(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-printf-printf_length-vs-hex-eof",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-direct-immutable-updated-at-printf-printf_length-vs-hex-eof".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        let conn = rusqlite::Connection::open(&fixture.db_path)?;
+        conn.execute(
+            "DELETE FROM discovery_persisted_rebuild_state WHERE id = 1",
+            [],
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_read_only_with_budget(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+            );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeProven
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_result_kind,
+            Some(CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::Eof)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_result_kind,
+            Some(CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::Eof)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_timeout_still_returns_bounded_printf_printf_length_result(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-printf-printf_length-vs-hex-printf_hex-timeout",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-direct-immutable-updated-at-printf-printf_length-vs-hex-printf_hex-timeout"
+                        .to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic = probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_read_only_with_budget_and_test_behavior(
+            &fixture.config_path,
+            StdDuration::from_secs(1),
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeTestBehavior::DelayPrintfHexBeforeRowFetch(
+                    StdDuration::from_secs(2),
+                ),
+            ),
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeProven
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::RowFetchTimeoutAfterQueryStart
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_result_kind,
+            Some(CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::Row)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_printf_length_timeout_still_returns_bounded_printf_hex_result(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-printf-printf_length-vs-hex-printf_length-timeout",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-direct-immutable-updated-at-printf-printf_length-vs-hex-printf_length-timeout"
+                        .to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic = probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_read_only_with_budget_and_test_behavior(
+            &fixture.config_path,
+            StdDuration::from_secs(1),
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeTestBehavior::DelayPrintfLengthBeforeRowFetch(
+                    StdDuration::from_secs(2),
+                ),
+            ),
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeProven
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::RowFetchTimeoutAfterQueryStart
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_result_kind,
+            Some(CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::Row)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_forced_sqlite_error_reports_exact_fields(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-printf-printf_length-vs-hex-error",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-direct-immutable-updated-at-printf-printf_length-vs-hex-error".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic = probe_checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_split_read_only_with_budget_and_test_behavior(
+            &fixture.config_path,
+            StdDuration::from_secs(1),
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeTestBehavior::ForcePrintfHexOtherSqliteError,
+            ),
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeProven
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtPrintfLengthVsHexProbeResultKind::OtherSqliteError
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sqlite_error_code
+                .as_deref(),
+            Some("SQLITE_CORRUPT")
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_hex_sqlite_error_message
+                .as_deref(),
+            Some(
+                "forced other sqlite error at direct immutable hex(printf('%s', updated_at)) SELECT rows.next() boundary"
+            )
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_printf_length_vs_hex_probe_printf_length_result_kind
                 .is_some()
         );
         Ok(())
