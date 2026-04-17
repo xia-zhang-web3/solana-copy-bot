@@ -13997,6 +13997,67 @@ Live rollout result (`2026-04-17`, commit `750d433`):
      payload-byte access or string functions over the original timestamp cells
      on `discovery_persisted_rebuild_state(id = 1)`
 
+Repository batch accepted (`2026-04-17`):
+
+1. A new bounded direct immutable timestamp datetime reconstruction split proof
+   operator now exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-timestamp-datetime-reconstruction-split --config <path> --json`
+2. The operator runs two independent direct immutable subprobes on fresh
+   connections:
+   - `SELECT datetime(updated_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT datetime(started_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+3. Each subprobe is instrumented at the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The accepted code commit is:
+   - `3dab6d8 Add datetime reconstruction probe`
+5. Acceptance checks:
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-17`, commit `3dab6d8`):
+
+1. The production host was fast-forwarded from `750d433` to `3dab6d8`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-timestamp-datetime-reconstruction-split --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_reason_class = checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_explanation = direct immutable timestamp datetime reconstruction split probe completed with bounded outcomes: updated_at_result_kind=row started_at_result_kind=row. This is a timestamp-datetime-reconstruction proof operator, not a replay blocker classifier.`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_total_elapsed_ms = 643`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_budget_exhausted = false`
+5. The `datetime(updated_at)` subprobe completed successfully:
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_updated_at_sql = SELECT datetime(updated_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_updated_at_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_updated_at_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_updated_at_row_fetch_completed = true`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_updated_at_row_returned = true`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_updated_at_value = "2026-04-13 09:07:43"`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_updated_at_result_kind = row`
+6. The `datetime(started_at)` subprobe also completed successfully:
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_started_at_sql = SELECT datetime(started_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_started_at_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_started_at_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_started_at_row_fetch_completed = true`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_started_at_row_returned = true`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_started_at_value = "2026-04-06 18:17:23"`
+   - `checkpoint_row_fetch_direct_immutable_timestamp_datetime_probe_started_at_result_kind = row`
+7. Current interpretation:
+   - the blocker is not generic reconstructed datetime text emission from the
+     original timestamp cells
+   - both reconstructed datetime projections still complete bounded and return
+     rows on the live runtime DB
+   - the remaining seam is now narrowed further to raw/original timestamp
+     payload-byte access or string functions that operate over the original
+     timestamp cell bytes on
+     `discovery_persisted_rebuild_state(id = 1)`
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
