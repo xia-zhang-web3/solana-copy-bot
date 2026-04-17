@@ -194,6 +194,11 @@ const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_TEXT_ZE
 const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_TEXT_ZERO_LENGTH_OFFSET_PROBE_BUDGET_SOURCE:
     &str =
     "fixed_constant_direct_immutable_runtime_db_updated_at_unixepoch_text_zero_length_offset_split_probe";
+const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_TEXT_SUBSTR_PATH_PROBE_BUDGET_MS:
+    u64 = 1_000;
+const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_TEXT_SUBSTR_PATH_PROBE_BUDGET_SOURCE:
+    &str =
+    "fixed_constant_direct_immutable_runtime_db_updated_at_unixepoch_text_base_vs_zero_length_substr_probe";
 const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY: &str =
     "temp_sqlite_row_meta_only_table_materialized_via_attach_insert_select";
 const CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_STRATEGY: &str =
@@ -252,6 +257,9 @@ const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_SECOND_CHAR_BOUNDARY_SOUR
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_TEXT_ZERO_LENGTH_OFFSET_PROBE_STRATEGY:
     &str =
     "direct_runtime_db_open_via_immutable_read_only_uri_split_updated_at_unixepoch_text_zero_length_offset1_and_offset2_probe";
+const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_TEXT_SUBSTR_PATH_PROBE_STRATEGY:
+    &str =
+    "direct_runtime_db_open_via_immutable_read_only_uri_split_updated_at_unixepoch_text_base_text_and_zero_length_substr_probe";
 const CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_SOURCE_ATTACH_MODE: &str =
     "sqlite_uri_mode_ro_immutable_1";
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_SELECT_PROBE_RUNTIME_DB_MODE: &str =
@@ -297,6 +305,8 @@ const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_PRINTF_SECOND_CHAR_BOUNDA
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_SECOND_CHAR_BOUNDARY_SOURCE_PROBE_RUNTIME_DB_MODE:
     &str = "sqlite_uri_mode_ro_immutable_1";
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_TEXT_ZERO_LENGTH_OFFSET_PROBE_RUNTIME_DB_MODE:
+    &str = "sqlite_uri_mode_ro_immutable_1";
+const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_TEXT_SUBSTR_PATH_PROBE_RUNTIME_DB_MODE:
     &str = "sqlite_uri_mode_ro_immutable_1";
 const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL: &str =
     "INSERT INTO discovery_persisted_rebuild_state (id, phase, updated_at)
@@ -738,6 +748,12 @@ struct ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOff
 }
 
 #[derive(Debug, Clone)]
+struct ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextBaseVsZeroLengthSubstrConfig {
+    config_path: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 struct ExplainRecentRawStagedLineageConfig {
     state_root: PathBuf,
     json: bool,
@@ -858,6 +874,9 @@ enum Command {
     ),
     ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetSplit(
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetSplitConfig,
+    ),
+    ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextBaseVsZeroLengthSubstr(
+        ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextBaseVsZeroLengthSubstrConfig,
     ),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
@@ -1484,6 +1503,26 @@ enum CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetProb
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetProbeResultKind {
+    Row,
+    Eof,
+    SqliteBusy,
+    SqliteLocked,
+    OtherSqliteError,
+    OtherError,
+    RowFetchTimeoutAfterQueryStart,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeReasonClass {
+    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeProven,
+    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeBudgetExhausted,
+    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeUnprovenDueToMissingEvidence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind {
     Row,
     Eof,
     SqliteBusy,
@@ -4552,6 +4591,198 @@ impl CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetProb
             checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_zero_length_offset_probe_offset2_sqlite_error_code:
                 None,
             checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_zero_length_offset_probe_offset2_sqlite_error_message:
+                None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeDiagnostic {
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_observed:
+        bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_reason_class:
+        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeReasonClass,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_explanation:
+        String,
+    config_path: String,
+    runtime_db_path: Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_strategy:
+        String,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_runtime_db_uri:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_runtime_db_mode:
+        String,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_runtime_db_immutable:
+        bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_runtime_db_readonly:
+        bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_budget_ms:
+        u64,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_budget_source:
+        String,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_total_elapsed_ms:
+        u64,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_budget_exhausted:
+        bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_stage:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_sql:
+        String,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_explain_query_plan:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_explain_query_plan_rows:
+        Option<Vec<String>>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_connection_journal_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_connection_locking_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_connection_query_only:
+        Option<bool>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_busy_timeout_ms:
+        Option<u64>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_query_started:
+        bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_row_fetch_completed:
+        bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_row_fetch_elapsed_ms:
+        u64,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_row_returned:
+        Option<bool>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_value:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_result_kind:
+        Option<CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_sqlite_error_code:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_sqlite_error_message:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_sql:
+        String,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_explain_query_plan:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_explain_query_plan_rows:
+        Option<Vec<String>>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_connection_journal_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_connection_locking_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_connection_query_only:
+        Option<bool>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_busy_timeout_ms:
+        Option<u64>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_query_started:
+        bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_row_fetch_completed:
+        bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_row_fetch_elapsed_ms:
+        u64,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_row_returned:
+        Option<bool>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_value:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_result_kind:
+        Option<CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_sqlite_error_code:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_sqlite_error_message:
+        Option<String>,
+}
+
+impl CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeDiagnostic {
+    fn unproven(config_path: &Path, explanation: String) -> Self {
+        Self {
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_observed:
+                false,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_reason_class:
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeUnprovenDueToMissingEvidence,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_explanation:
+                explanation,
+            config_path: config_path.display().to_string(),
+            runtime_db_path: None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_strategy:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_TEXT_SUBSTR_PATH_PROBE_STRATEGY
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_runtime_db_uri:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_runtime_db_mode:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_TEXT_SUBSTR_PATH_PROBE_RUNTIME_DB_MODE
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_runtime_db_immutable:
+                true,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_runtime_db_readonly:
+                true,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_budget_ms:
+                DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_TEXT_SUBSTR_PATH_PROBE_BUDGET_MS,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_budget_source:
+                DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_TEXT_SUBSTR_PATH_PROBE_BUDGET_SOURCE
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_total_elapsed_ms:
+                0,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_budget_exhausted:
+                false,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_stage:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_sql:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_TEXTIFIED_UNIXEPOCH_UPDATED_AT_SELECT_SQL
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_explain_query_plan:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_explain_query_plan_rows:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_connection_journal_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_connection_locking_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_connection_query_only:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_busy_timeout_ms:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_query_started:
+                false,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_row_fetch_completed:
+                false,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_row_fetch_elapsed_ms:
+                0,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_row_returned:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_value:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_result_kind:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_sqlite_error_code:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_sqlite_error_message:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_sql:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UNIXEPOCH_TEXT_ZERO_LENGTH_OFFSET1_UPDATED_AT_SELECT_SQL
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_explain_query_plan:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_explain_query_plan_rows:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_connection_journal_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_connection_locking_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_connection_query_only:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_busy_timeout_ms:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_query_started:
+                false,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_row_fetch_completed:
+                false,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_row_fetch_elapsed_ms:
+                0,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_row_returned:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_value:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_result_kind:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_sqlite_error_code:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_sqlite_error_message:
                 None,
         }
     }
@@ -8470,6 +8701,68 @@ impl CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetTarg
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage {
+    OpenRuntimeDb,
+    LoadBusyTimeout,
+    LoadConnectionMetadata,
+    LoadExplainQueryPlan,
+    PrepareSelect,
+    QuerySelect,
+    RowFetchSelect,
+}
+
+impl CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenRuntimeDb => "open_runtime_db",
+            Self::LoadBusyTimeout => "load_busy_timeout",
+            Self::LoadConnectionMetadata => "load_connection_metadata",
+            Self::LoadExplainQueryPlan => "load_explain_query_plan",
+            Self::PrepareSelect => "prepare_select",
+            Self::QuerySelect => "query_select",
+            Self::RowFetchSelect => "row_fetch_select",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget {
+    BaseText,
+    ZeroLengthSubstr,
+}
+
+impl CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget {
+    fn as_label(self) -> &'static str {
+        match self {
+            Self::BaseText => "base_text",
+            Self::ZeroLengthSubstr => "zero_length_substr",
+        }
+    }
+
+    fn select_sql(self) -> &'static str {
+        match self {
+            Self::BaseText => {
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_TEXTIFIED_UNIXEPOCH_UPDATED_AT_SELECT_SQL
+            }
+            Self::ZeroLengthSubstr => {
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UNIXEPOCH_TEXT_ZERO_LENGTH_OFFSET1_UPDATED_AT_SELECT_SQL
+            }
+        }
+    }
+
+    fn explain_context(self) -> &'static str {
+        match self {
+            Self::BaseText => {
+                "direct immutable runtime-db CAST(unixepoch(updated_at) AS TEXT) select query"
+            }
+            Self::ZeroLengthSubstr => {
+                "direct immutable runtime-db substr(CAST(unixepoch(updated_at) AS TEXT), 1, 0) select query"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckpointRowFetchDirectImmutableUpdatedAtHexSourceSubprobeStage {
     OpenRuntimeDb,
     LoadBusyTimeout,
@@ -9743,6 +10036,53 @@ enum CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetProb
 }
 
 #[derive(Debug)]
+enum CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage {
+    Entered {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget,
+        stage: CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage,
+    },
+    BusyTimeout {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget,
+        value: u64,
+    },
+    ConnectionReadMode {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget,
+        journal_mode: String,
+        locking_mode: String,
+        query_only: bool,
+    },
+    QueryPlan {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget,
+        explain_query_plan: String,
+        explain_query_plan_rows: Vec<String>,
+    },
+    SelectQueryStarted {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget,
+    },
+    SelectFailed {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget,
+        result_kind:
+            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind,
+        sqlite_error_code: Option<String>,
+        sqlite_error_message: Option<String>,
+    },
+    SelectRowFetchCompleted {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget,
+        elapsed_ms: u64,
+        row_returned: bool,
+        value: Option<String>,
+        result_kind:
+            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind,
+        sqlite_error_code: Option<String>,
+        sqlite_error_message: Option<String>,
+    },
+    Finished {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget,
+        result: Result<(), String>,
+    },
+}
+
+#[derive(Debug)]
 enum CheckpointRowFetchDirectImmutableUpdatedAtHexSourceProbeWorkerMessage {
     Entered {
         target: CheckpointRowFetchDirectImmutableUpdatedAtHexSourceTarget,
@@ -10382,6 +10722,21 @@ enum CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetProb
 struct CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetProbeTestSync {
     offset1_conclusive: AtomicBool,
     offset2_conclusive: AtomicBool,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+enum CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeTestBehavior {
+    ForceZeroLengthSubstrOtherSqliteError,
+    DelayBaseTextBeforeRowFetch(StdDuration),
+    DelayZeroLengthSubstrBeforeRowFetch(StdDuration),
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeTestSync {
+    base_text_conclusive: AtomicBool,
+    zero_length_substr_conclusive: AtomicBool,
 }
 
 #[cfg(test)]
@@ -29278,6 +29633,1162 @@ fn wait_for_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_zero
     }
 }
 
+struct CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeState {
+    current_stage: CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage,
+    explain_query_plan: Option<String>,
+    explain_query_plan_rows: Option<Vec<String>>,
+    connection_journal_mode: Option<String>,
+    connection_locking_mode: Option<String>,
+    connection_query_only: Option<bool>,
+    busy_timeout_ms: Option<u64>,
+    query_started: bool,
+    row_fetch_completed: bool,
+    row_fetch_elapsed_ms: u64,
+    row_returned: Option<bool>,
+    value: Option<String>,
+    result_kind:
+        Option<CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind>,
+    sqlite_error_code: Option<String>,
+    sqlite_error_message: Option<String>,
+    finished: bool,
+}
+
+impl Default for CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeState {
+    fn default() -> Self {
+        Self {
+            current_stage:
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage::OpenRuntimeDb,
+            explain_query_plan: None,
+            explain_query_plan_rows: None,
+            connection_journal_mode: None,
+            connection_locking_mode: None,
+            connection_query_only: None,
+            busy_timeout_ms: None,
+            query_started: false,
+            row_fetch_completed: false,
+            row_fetch_elapsed_ms: 0,
+            row_returned: None,
+            value: None,
+            result_kind: None,
+            sqlite_error_code: None,
+            sqlite_error_message: None,
+            finished: false,
+        }
+    }
+}
+
+impl CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeState {
+    fn is_conclusive(&self) -> bool {
+        self.result_kind.is_some()
+    }
+}
+
+fn format_direct_immutable_updated_at_unixepoch_text_substr_path_stage(
+    target: CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget,
+    stage: CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage,
+) -> String {
+    format!("{}_select_{}", target.as_label(), stage.as_str())
+}
+
+fn apply_direct_immutable_updated_at_unixepoch_text_substr_path_state_to_diagnostic(
+    target: CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget,
+    state: &CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeState,
+    diagnostic: &mut CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeDiagnostic,
+) {
+    match target {
+        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::BaseText => {
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_explain_query_plan =
+                state.explain_query_plan.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_explain_query_plan_rows =
+                state.explain_query_plan_rows.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_connection_journal_mode =
+                state.connection_journal_mode.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_connection_locking_mode =
+                state.connection_locking_mode.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_connection_query_only =
+                state.connection_query_only;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_busy_timeout_ms =
+                state.busy_timeout_ms;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_query_started =
+                state.query_started;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_row_fetch_completed =
+                state.row_fetch_completed;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_row_fetch_elapsed_ms =
+                state.row_fetch_elapsed_ms;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_row_returned =
+                state.row_returned;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_value =
+                state.value.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_result_kind =
+                state.result_kind;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_sqlite_error_code =
+                state.sqlite_error_code.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_sqlite_error_message =
+                state.sqlite_error_message.clone();
+        }
+        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::ZeroLengthSubstr => {
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_explain_query_plan =
+                state.explain_query_plan.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_explain_query_plan_rows =
+                state.explain_query_plan_rows.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_connection_journal_mode =
+                state.connection_journal_mode.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_connection_locking_mode =
+                state.connection_locking_mode.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_connection_query_only =
+                state.connection_query_only;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_busy_timeout_ms =
+                state.busy_timeout_ms;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_query_started =
+                state.query_started;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_row_fetch_completed =
+                state.row_fetch_completed;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_row_fetch_elapsed_ms =
+                state.row_fetch_elapsed_ms;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_row_returned =
+                state.row_returned;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_value =
+                state.value.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_result_kind =
+                state.result_kind;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_sqlite_error_code =
+                state.sqlite_error_code.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_sqlite_error_message =
+                state.sqlite_error_message.clone();
+        }
+    }
+}
+
+fn summarize_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe(
+    label: &str,
+    result_kind:
+        Option<CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind>,
+) -> String {
+    let result_kind = result_kind
+        .map(|value| {
+            serde_json::to_string(&value)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+                .to_string()
+        })
+        .unwrap_or_else(|| "null".to_string());
+    format!("{label}_result_kind={result_kind}")
+}
+
+fn resolve_direct_immutable_updated_at_unixepoch_text_substr_path_unfinished_stage(
+    base_text_state: &CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeState,
+    zero_length_substr_state:
+        &CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeState,
+) -> String {
+    if !base_text_state.is_conclusive() && !base_text_state.finished {
+        return format_direct_immutable_updated_at_unixepoch_text_substr_path_stage(
+            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::BaseText,
+            base_text_state.current_stage,
+        );
+    }
+    if !zero_length_substr_state.is_conclusive() && !zero_length_substr_state.finished {
+        return format_direct_immutable_updated_at_unixepoch_text_substr_path_stage(
+            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::ZeroLengthSubstr,
+            zero_length_substr_state.current_stage,
+        );
+    }
+    "wait_subprobe_results".to_string()
+}
+
+fn probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_read_only(
+    config_path: &Path,
+) -> CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeDiagnostic {
+    probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_read_only_with_budget_impl(
+        config_path,
+        StdDuration::from_millis(
+            DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_TEXT_SUBSTR_PATH_PROBE_BUDGET_MS,
+        ),
+        #[cfg(test)]
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_read_only_with_budget(
+    config_path: &Path,
+    budget: StdDuration,
+) -> CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeDiagnostic {
+    probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_read_only_with_budget_impl(
+        config_path,
+        budget,
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_read_only_with_budget_and_test_behavior(
+    config_path: &Path,
+    budget: StdDuration,
+    test_behavior:
+        Option<CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeTestBehavior>,
+) -> CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeDiagnostic {
+    probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_read_only_with_budget_impl(
+        config_path,
+        budget,
+        test_behavior,
+    )
+}
+
+fn probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_read_only_with_budget_impl(
+    config_path: &Path,
+    budget: StdDuration,
+    #[cfg(test)] test_behavior:
+        Option<CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeTestBehavior>,
+) -> CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeDiagnostic {
+    let mut diagnostic =
+        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeDiagnostic::unproven(
+            config_path,
+            "checkpoint row-fetch direct immutable updated_at unixepoch-text substr-path probe did not run"
+                .to_string(),
+        );
+    diagnostic
+        .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_budget_ms =
+        budget.as_millis().min(u64::MAX as u128) as u64;
+    diagnostic
+        .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_budget_source =
+        DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_TEXT_SUBSTR_PATH_PROBE_BUDGET_SOURCE
+            .to_string();
+
+    let total_started_at = Instant::now();
+    let loaded_config = match load_from_path(config_path)
+        .with_context(|| format!("failed loading config {}", config_path.display()))
+    {
+        Ok(config) => config,
+        Err(error) => {
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_explanation =
+                format!("{error:#}");
+            return diagnostic;
+        }
+    };
+    let runtime_db_path = resolve_db_path(config_path, None, &loaded_config.sqlite.path);
+    let runtime_db_uri = build_sqlite_immutable_read_only_uri(&runtime_db_path);
+    diagnostic.runtime_db_path = Some(runtime_db_path.display().to_string());
+    diagnostic
+        .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_runtime_db_uri =
+        Some(runtime_db_uri);
+    diagnostic
+        .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_observed =
+        true;
+
+    #[cfg(test)]
+    let test_sync = test_behavior.map(|_| {
+        Arc::new(
+            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeTestSync::default(),
+        )
+    });
+
+    let (tx, rx) = mpsc::sync_channel(64);
+    for target in [
+        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::BaseText,
+        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::ZeroLengthSubstr,
+    ] {
+        let runtime_db_path_for_worker = runtime_db_path.clone();
+        let tx = tx.clone();
+        #[cfg(test)]
+        let test_sync_for_worker = test_sync.clone();
+        thread::spawn(move || {
+            let _ =
+                probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_worker(
+                    target,
+                    &runtime_db_path_for_worker,
+                    tx,
+                    #[cfg(test)]
+                    test_behavior,
+                    #[cfg(test)]
+                    test_sync_for_worker,
+                );
+        });
+    }
+    drop(tx);
+
+    let mut base_text_state =
+        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeState::default();
+    let mut zero_length_substr_state =
+        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeState::default();
+
+    loop {
+        if base_text_state.is_conclusive() && zero_length_substr_state.is_conclusive() {
+            apply_direct_immutable_updated_at_unixepoch_text_substr_path_state_to_diagnostic(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::BaseText,
+                &base_text_state,
+                &mut diagnostic,
+            );
+            apply_direct_immutable_updated_at_unixepoch_text_substr_path_state_to_diagnostic(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::ZeroLengthSubstr,
+                &zero_length_substr_state,
+                &mut diagnostic,
+            );
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_total_elapsed_ms =
+                elapsed_ms(total_started_at);
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_reason_class =
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeProven;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_explanation =
+                format!(
+                    "direct immutable updated_at unixepoch-text substr-path probe completed with bounded outcomes: {} {}. This is a base-vs-substr-path proof operator, not a replay blocker classifier.",
+                    summarize_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe(
+                        "base_text",
+                        base_text_state.result_kind
+                    ),
+                    summarize_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe(
+                        "zero_length_substr",
+                        zero_length_substr_state.result_kind
+                    )
+                );
+            return diagnostic;
+        }
+
+        match rx.recv_timeout(remaining_budget_duration(budget, total_started_at)) {
+            Ok(message) => {
+                let state = match &message {
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Entered {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::BusyTimeout {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::ConnectionReadMode {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::QueryPlan {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectQueryStarted {
+                        target,
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectFailed {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectRowFetchCompleted {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Finished {
+                        target,
+                        ..
+                    } => match target {
+                        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::BaseText => {
+                            &mut base_text_state
+                        }
+                        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::ZeroLengthSubstr => {
+                            &mut zero_length_substr_state
+                        }
+                    },
+                };
+
+                match message {
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Entered {
+                        stage,
+                        ..
+                    } => {
+                        state.current_stage = stage;
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::BusyTimeout {
+                        value,
+                        ..
+                    } => {
+                        state.current_stage =
+                            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage::LoadBusyTimeout;
+                        state.busy_timeout_ms = Some(value);
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::ConnectionReadMode {
+                        journal_mode,
+                        locking_mode,
+                        query_only,
+                        ..
+                    } => {
+                        state.current_stage =
+                            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage::LoadConnectionMetadata;
+                        state.connection_journal_mode = Some(journal_mode);
+                        state.connection_locking_mode = Some(locking_mode);
+                        state.connection_query_only = Some(query_only);
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::QueryPlan {
+                        explain_query_plan,
+                        explain_query_plan_rows,
+                        ..
+                    } => {
+                        state.current_stage =
+                            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage::LoadExplainQueryPlan;
+                        state.explain_query_plan = Some(explain_query_plan);
+                        state.explain_query_plan_rows = Some(explain_query_plan_rows);
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectQueryStarted {
+                        ..
+                    } => {
+                        state.query_started = true;
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectFailed {
+                        result_kind,
+                        sqlite_error_code,
+                        sqlite_error_message,
+                        ..
+                    } => {
+                        state.result_kind = Some(result_kind);
+                        state.sqlite_error_code = sqlite_error_code;
+                        state.sqlite_error_message = sqlite_error_message;
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectRowFetchCompleted {
+                        elapsed_ms,
+                        row_returned,
+                        value,
+                        result_kind,
+                        sqlite_error_code,
+                        sqlite_error_message,
+                        ..
+                    } => {
+                        state.current_stage =
+                            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage::RowFetchSelect;
+                        state.row_fetch_completed = true;
+                        state.row_fetch_elapsed_ms = elapsed_ms;
+                        state.row_returned = Some(row_returned);
+                        state.value = value;
+                        state.result_kind = Some(result_kind);
+                        state.sqlite_error_code = sqlite_error_code;
+                        state.sqlite_error_message = sqlite_error_message;
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Finished {
+                        result,
+                        ..
+                    } => match result {
+                        Ok(()) => {
+                            state.finished = true;
+                        }
+                        Err(error) => {
+                            apply_direct_immutable_updated_at_unixepoch_text_substr_path_state_to_diagnostic(
+                                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::BaseText,
+                                &base_text_state,
+                                &mut diagnostic,
+                            );
+                            apply_direct_immutable_updated_at_unixepoch_text_substr_path_state_to_diagnostic(
+                                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::ZeroLengthSubstr,
+                                &zero_length_substr_state,
+                                &mut diagnostic,
+                            );
+                            diagnostic
+                                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_total_elapsed_ms =
+                                elapsed_ms(total_started_at);
+                            diagnostic
+                                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_reason_class =
+                                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeUnprovenDueToMissingEvidence;
+                            diagnostic
+                                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_explanation =
+                                error;
+                            return diagnostic;
+                        }
+                    },
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if base_text_state.query_started
+                    && !base_text_state.row_fetch_completed
+                    && base_text_state.result_kind.is_none()
+                {
+                    base_text_state.result_kind = Some(
+                        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::RowFetchTimeoutAfterQueryStart,
+                    );
+                }
+                if zero_length_substr_state.query_started
+                    && !zero_length_substr_state.row_fetch_completed
+                    && zero_length_substr_state.result_kind.is_none()
+                {
+                    zero_length_substr_state.result_kind = Some(
+                        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::RowFetchTimeoutAfterQueryStart,
+                    );
+                }
+
+                apply_direct_immutable_updated_at_unixepoch_text_substr_path_state_to_diagnostic(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::BaseText,
+                    &base_text_state,
+                    &mut diagnostic,
+                );
+                apply_direct_immutable_updated_at_unixepoch_text_substr_path_state_to_diagnostic(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::ZeroLengthSubstr,
+                    &zero_length_substr_state,
+                    &mut diagnostic,
+                );
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+
+                if base_text_state.is_conclusive() && zero_length_substr_state.is_conclusive() {
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_reason_class =
+                        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeProven;
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_explanation =
+                        format!(
+                            "direct immutable updated_at unixepoch-text substr-path probe completed with bounded outcomes: {} {}. This is a base-vs-substr-path proof operator, not a replay blocker classifier.",
+                            summarize_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe(
+                                "base_text",
+                                base_text_state.result_kind
+                            ),
+                            summarize_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe(
+                                "zero_length_substr",
+                                zero_length_substr_state.result_kind
+                            )
+                        );
+                } else {
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_budget_exhausted =
+                        true;
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_reason_class =
+                        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeBudgetExhausted;
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_stage =
+                        Some(resolve_direct_immutable_updated_at_unixepoch_text_substr_path_unfinished_stage(
+                            &base_text_state,
+                            &zero_length_substr_state,
+                        ));
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_explanation =
+                        format!(
+                            "checkpoint row-fetch direct immutable updated_at unixepoch-text substr-path probe exhausted its bounded budget before both subprobes reached conclusive outcomes: {} {}. This is a base-vs-substr-path proof operator, not a replay blocker classifier.",
+                            summarize_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe(
+                                "base_text",
+                                base_text_state.result_kind
+                            ),
+                            summarize_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe(
+                                "zero_length_substr",
+                                zero_length_substr_state.result_kind
+                            )
+                        );
+                }
+                return diagnostic;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                apply_direct_immutable_updated_at_unixepoch_text_substr_path_state_to_diagnostic(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::BaseText,
+                    &base_text_state,
+                    &mut diagnostic,
+                );
+                apply_direct_immutable_updated_at_unixepoch_text_substr_path_state_to_diagnostic(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::ZeroLengthSubstr,
+                    &zero_length_substr_state,
+                    &mut diagnostic,
+                );
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_reason_class =
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeUnprovenDueToMissingEvidence;
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_explanation =
+                    "checkpoint row-fetch direct immutable updated_at unixepoch-text substr-path probe workers disconnected before returning conclusive outcomes"
+                        .to_string();
+                return diagnostic;
+            }
+        }
+    }
+}
+
+fn probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_worker(
+    target: CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget,
+    runtime_db_path: &Path,
+    tx: mpsc::SyncSender<
+        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage,
+    >,
+    #[cfg(test)] test_behavior:
+        Option<CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeTestBehavior>,
+    #[cfg(test)] test_sync: Option<
+        Arc<CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeTestSync>,
+    >,
+) -> Result<()> {
+    let run = || -> Result<()> {
+        let runtime_db_uri = build_sqlite_immutable_read_only_uri(runtime_db_path);
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage::OpenRuntimeDb,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let conn = Connection::open_with_flags(
+            &runtime_db_uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| {
+            format!(
+                "failed opening direct immutable runtime db uri {} for {} updated_at unixepoch-text substr-path probe",
+                runtime_db_uri,
+                target.as_label()
+            )
+        })?;
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage::LoadBusyTimeout,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let busy_timeout_ms = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
+            .with_context(|| {
+                format!(
+                    "failed reading sqlite busy_timeout for {} updated_at unixepoch-text substr-path probe",
+                    target.as_label()
+                )
+            })?;
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::BusyTimeout {
+                    target,
+                    value: busy_timeout_ms,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage::LoadConnectionMetadata,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let journal_mode = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+            .with_context(|| {
+                format!(
+                    "failed reading sqlite journal_mode for {} updated_at unixepoch-text substr-path probe",
+                    target.as_label()
+                )
+            })?;
+        let locking_mode = conn
+            .query_row("PRAGMA locking_mode", [], |row| row.get::<_, String>(0))
+            .with_context(|| {
+                format!(
+                    "failed reading sqlite locking_mode for {} updated_at unixepoch-text substr-path probe",
+                    target.as_label()
+                )
+            })?;
+        let query_only = conn
+            .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+            .with_context(|| {
+                format!(
+                    "failed reading sqlite query_only for {} updated_at unixepoch-text substr-path probe",
+                    target.as_label()
+                )
+            })?
+            != 0;
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::ConnectionReadMode {
+                    target,
+                    journal_mode,
+                    locking_mode,
+                    query_only,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage::LoadExplainQueryPlan,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let explain_query_plan =
+            load_explain_query_plan_for_sql(&conn, target.select_sql(), target.explain_context())?;
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::QueryPlan {
+                    target,
+                    explain_query_plan: explain_query_plan.explain_query_plan,
+                    explain_query_plan_rows: explain_query_plan.explain_query_plan_rows,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage::PrepareSelect,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let mut stmt = match conn.prepare(target.select_sql()) {
+            Ok(stmt) => stmt,
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::SqliteBusy,
+                            ErrorCode::DatabaseLocked => CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::SqliteLocked,
+                            _ => CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::OtherSqliteError,
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            format!(
+                                "sqlite failure while preparing {} updated_at unixepoch-text substr-path SELECT statement",
+                                target.as_label()
+                            )
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage::QuerySelect,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let mut rows = match stmt.query([]) {
+            Ok(rows) => rows,
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::SqliteBusy,
+                            ErrorCode::DatabaseLocked => CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::SqliteLocked,
+                            _ => CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::OtherSqliteError,
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            format!(
+                                "sqlite failure while starting {} updated_at unixepoch-text substr-path SELECT query",
+                                target.as_label()
+                            )
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathSubprobeStage::RowFetchSelect,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectQueryStarted {
+                    target,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        #[cfg(test)]
+        match (target, test_behavior) {
+            (
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::ZeroLengthSubstr,
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeTestBehavior::ForceZeroLengthSubstrOtherSqliteError,
+                ),
+            ) => {
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::OtherSqliteError,
+                        sqlite_error_code: Some("SQLITE_CORRUPT".to_string()),
+                        sqlite_error_message: Some(
+                            "forced other sqlite error at direct immutable substr(CAST(unixepoch(updated_at) AS TEXT), 1, 0) SELECT rows.next() boundary".to_string(),
+                        ),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            (
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::BaseText,
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeTestBehavior::DelayBaseTextBeforeRowFetch(delay),
+                ),
+            )
+            | (
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::ZeroLengthSubstr,
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeTestBehavior::DelayZeroLengthSubstrBeforeRowFetch(delay),
+                ),
+            ) => {
+                wait_for_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_peer_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                thread::sleep(delay);
+            }
+            _ => {}
+        }
+
+        let row_fetch_started_at = Instant::now();
+        let row = match rows.next() {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                if tx
+                    .send(
+                        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectRowFetchCompleted {
+                            target,
+                            elapsed_ms: elapsed_ms(row_fetch_started_at),
+                            row_returned: false,
+                            value: None,
+                            result_kind:
+                                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::Eof,
+                            sqlite_error_code: None,
+                            sqlite_error_message: None,
+                        },
+                    )
+                    .is_err()
+                {
+                    return Ok(());
+                }
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::SqliteBusy,
+                            ErrorCode::DatabaseLocked => CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::SqliteLocked,
+                            _ => CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::OtherSqliteError,
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            format!(
+                                "sqlite failure at direct immutable {} updated_at unixepoch-text substr-path SELECT rows.next() boundary",
+                                target.as_label()
+                            )
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+        };
+
+        #[cfg(test)]
+        mark_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe_conclusive(
+            target,
+            test_sync.as_ref(),
+        );
+        let value = match row.get::<_, Option<String>>(0) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectRowFetchCompleted {
+                        target,
+                        elapsed_ms: elapsed_ms(row_fetch_started_at),
+                        row_returned: true,
+                        value: None,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+        };
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::SelectRowFetchCompleted {
+                    target,
+                    elapsed_ms: elapsed_ms(row_fetch_started_at),
+                    row_returned: true,
+                    value,
+                    result_kind:
+                        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::Row,
+                    sqlite_error_code: None,
+                    sqlite_error_message: None,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let _ = tx.send(
+            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Finished {
+                target,
+                result: Ok(()),
+            },
+        );
+        Ok(())
+    };
+
+    if let Err(error) = run() {
+        let _ = tx.send(
+            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeWorkerMessage::Finished {
+                target,
+                result: Err(format!("{error:#}")),
+            },
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn mark_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_subprobe_conclusive(
+    target: CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget,
+    test_sync:
+        Option<&Arc<CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeTestSync>>,
+) {
+    if let Some(test_sync) = test_sync {
+        match target {
+            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::BaseText => {
+                test_sync
+                    .base_text_conclusive
+                    .store(true, AtomicOrdering::SeqCst);
+            }
+            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::ZeroLengthSubstr => {
+                test_sync
+                    .zero_length_substr_conclusive
+                    .store(true, AtomicOrdering::SeqCst);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn wait_for_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_peer_conclusive(
+    target: CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget,
+    test_sync:
+        Option<&Arc<CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeTestSync>>,
+) {
+    let Some(test_sync) = test_sync else {
+        return;
+    };
+    let peer_conclusive = match target {
+        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::BaseText => {
+            &test_sync.zero_length_substr_conclusive
+        }
+        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathTarget::ZeroLengthSubstr => {
+            &test_sync.base_text_conclusive
+        }
+    };
+    while !peer_conclusive.load(AtomicOrdering::SeqCst) {
+        thread::sleep(StdDuration::from_millis(1));
+    }
+}
+
 struct CheckpointRowFetchDirectImmutableUpdatedAtHexSourceSubprobeState {
     current_stage: CheckpointRowFetchDirectImmutableUpdatedAtHexSourceSubprobeStage,
     explain_query_plan: Option<String>,
@@ -40462,6 +41973,8 @@ where
         false;
     let mut probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_zero_length_offset_split =
         false;
+    let mut probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_base_vs_zero_length_substr =
+        false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
@@ -40613,6 +42126,10 @@ where
                 probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_zero_length_offset_split =
                     true;
             }
+            "--probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-base-vs-zero-length-substr" => {
+                probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_base_vs_zero_length_substr =
+                    true;
+            }
             "--deep-attempt-telemetry-scan" => {
                 deep_attempt_telemetry_scan = true;
             }
@@ -40705,13 +42222,16 @@ where
         + usize::from(
             probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_zero_length_offset_split,
         )
+        + usize::from(
+            probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_base_vs_zero_length_substr,
+        )
         + usize::from(explain_recent_raw_staged_lineage)
         + usize::from(explain_recent_raw_staged_regression)
         + usize::from(explain_recent_raw_staged_birth)
         + usize::from(explain_recent_raw_staged_window_seeding);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --probe-checkpoint-row-fetch-materialization-busy-wait, --probe-checkpoint-row-fetch-materialization-immutable-source, --probe-checkpoint-row-fetch-immutable-source-select, --probe-checkpoint-row-fetch-direct-immutable-select, --probe-checkpoint-row-fetch-direct-immutable-id-only-select, --probe-checkpoint-row-fetch-direct-immutable-single-column-selects, --probe-checkpoint-row-fetch-direct-immutable-updated-at-expression-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-prefix-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-text-vs-blob-first-byte, --probe-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-first-byte, --probe-checkpoint-row-fetch-direct-immutable-timestamp-unixepoch-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-textified-unixepoch-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-datetime-reconstruction-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-printf-text-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-printf-prefix-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-unicode-first-char-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-zero-length-substr-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-hex-original-vs-printf, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-length-vs-hex, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-prefix-depth-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-prefix-threshold-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-second-char-text-vs-unicode, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-second-char-boundary-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-second-char-boundary-printf-vs-unixepoch-text, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-zero-length-offset-split, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --probe-checkpoint-row-fetch-materialization-busy-wait, --probe-checkpoint-row-fetch-materialization-immutable-source, --probe-checkpoint-row-fetch-immutable-source-select, --probe-checkpoint-row-fetch-direct-immutable-select, --probe-checkpoint-row-fetch-direct-immutable-id-only-select, --probe-checkpoint-row-fetch-direct-immutable-single-column-selects, --probe-checkpoint-row-fetch-direct-immutable-updated-at-expression-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-prefix-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-text-vs-blob-first-byte, --probe-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-first-byte, --probe-checkpoint-row-fetch-direct-immutable-timestamp-unixepoch-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-textified-unixepoch-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-datetime-reconstruction-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-printf-text-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-printf-prefix-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-unicode-first-char-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-zero-length-substr-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-hex-original-vs-printf, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-length-vs-hex, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-prefix-depth-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-prefix-threshold-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-second-char-text-vs-unicode, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-second-char-boundary-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-second-char-boundary-printf-vs-unixepoch-text, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-zero-length-offset-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-base-vs-zero-length-substr, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
     if deep_attempt_telemetry_scan && !explain_recent_raw_replacement_attempt_telemetry {
@@ -41065,6 +42585,28 @@ where
                 json,
             },
         )));
+    }
+
+    if probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_base_vs_zero_length_substr {
+        if state_root.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+        {
+            bail!(
+                "--probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-base-vs-zero-length-substr only accepts --config and optional --json"
+            );
+        }
+        return Ok(Some(
+            Command::ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextBaseVsZeroLengthSubstr(
+                ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextBaseVsZeroLengthSubstrConfig {
+                    config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
+                    json,
+                },
+            ),
+        ));
     }
 
     if trace_replay_sol_leg_source_compare {
@@ -42294,6 +43836,25 @@ fn run_command(command: Command) -> Result<String> {
             } else {
                 Ok(
                     render_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_zero_length_offset_probe_human(
+                        &diagnostic,
+                    ),
+                )
+            }
+        }
+        Command::ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextBaseVsZeroLengthSubstr(
+            config,
+        ) => {
+            let diagnostic =
+                probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_read_only(
+                    &config.config_path,
+                );
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic).context(
+                    "failed serializing checkpoint row-fetch direct immutable updated_at unixepoch-text substr-path probe json",
+                )
+            } else {
+                Ok(
+                    render_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_human(
                         &diagnostic,
                     ),
                 )
@@ -48864,6 +50425,17 @@ fn render_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_zero_l
     })
 }
 
+fn render_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_human(
+    diagnostic: &CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeDiagnostic,
+) -> String {
+    serde_json::to_string_pretty(diagnostic).unwrap_or_else(|error| {
+        format!(
+            "{{\"event\":\"discovery_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe\",\"render_error\":\"{}\"}}",
+            error
+        )
+    })
+}
+
 fn render_checkpoint_row_fetch_direct_immutable_updated_at_hex_source_probe_human(
     diagnostic: &CheckpointRowFetchDirectImmutableUpdatedAtHexSourceProbeDiagnostic,
 ) -> String {
@@ -50091,6 +51663,8 @@ mod tests {
         probe_checkpoint_row_fetch_direct_immutable_updated_at_second_char_boundary_source_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_zero_length_offset_split_read_only_with_budget,
         probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_zero_length_offset_split_read_only_with_budget_and_test_behavior,
+        probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_read_only_with_budget,
+        probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_direct_immutable_updated_at_prefix_split_read_only_with_budget,
         probe_checkpoint_row_fetch_direct_immutable_updated_at_prefix_split_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only_with_budget,
@@ -50169,6 +51743,9 @@ mod tests {
         CheckpointRowFetchDirectImmutableUpdatedAtSecondCharBoundarySourceProbeReasonClass,
         CheckpointRowFetchDirectImmutableUpdatedAtSecondCharBoundarySourceProbeResultKind,
         CheckpointRowFetchDirectImmutableUpdatedAtSecondCharBoundarySourceProbeTestBehavior,
+        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeReasonClass,
+        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind,
+        CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeTestBehavior,
         CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetProbeReasonClass,
         CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetProbeResultKind,
         CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetProbeTestBehavior,
@@ -50221,6 +51798,7 @@ mod tests {
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtPrintfSecondCharTextVsUnicodeConfig,
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtPrintfSecondCharBoundarySplitConfig,
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtSecondCharBoundaryPrintfVsUnixepochTextConfig,
+        ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextBaseVsZeroLengthSubstrConfig,
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetSplitConfig,
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtPrefixSplitConfig,
         ProbeCheckpointRowFetchDirectImmutableStartedAtTextVsBlobFirstByteConfig,
@@ -50971,6 +52549,30 @@ mod tests {
         else {
             panic!(
                 "expected checkpoint row-fetch direct immutable updated_at unixepoch-text zero-length offset probe command"
+            );
+        };
+        assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_base_vs_zero_length_substr_mode(
+    ) {
+        let parsed = parse_args_from(vec![
+            "--probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-base-vs-zero-length-substr"
+                .to_string(),
+            "--config".to_string(),
+            "/tmp/live.server.toml".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextBaseVsZeroLengthSubstr(
+            parsed,
+        ) = parsed
+        else {
+            panic!(
+                "expected checkpoint row-fetch direct immutable updated_at unixepoch-text base-vs-zero-length-substr probe command"
             );
         };
         assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
@@ -58521,6 +60123,413 @@ mod tests {
         assert!(
             diagnostic
                 .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_zero_length_offset_probe_offset1_result_kind
+                .is_some()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_base_vs_zero_length_substr_returns_success_json(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-base-vs-zero-length-substr-row",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature:
+                        "sig-direct-immutable-updated-at-unixepoch-text-base-vs-zero-length-substr-row"
+                            .to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_read_only_with_budget(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+            );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeProven,
+            "{diagnostic:#?}"
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::Row
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::Row
+            )
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_value
+                .is_some()
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_value
+                .is_some()
+        );
+
+        let rendered = run_command(
+            Command::ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextBaseVsZeroLengthSubstr(
+                ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextBaseVsZeroLengthSubstrConfig {
+                    config_path: fixture.config_path.clone(),
+                    json: true,
+                },
+            ),
+        )?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_reason_class"],
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_proven"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_result_kind"],
+            "row"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_result_kind"],
+            "row"
+        );
+        for key in [
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_observed",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_reason_class",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_explanation",
+            "config_path",
+            "runtime_db_path",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_strategy",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_runtime_db_uri",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_runtime_db_mode",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_runtime_db_immutable",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_runtime_db_readonly",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_budget_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_budget_source",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_total_elapsed_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_budget_exhausted",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_stage",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_sql",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_explain_query_plan",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_explain_query_plan_rows",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_connection_journal_mode",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_connection_locking_mode",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_connection_query_only",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_busy_timeout_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_query_started",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_row_fetch_completed",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_row_fetch_elapsed_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_row_returned",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_value",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_result_kind",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_sqlite_error_code",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_sqlite_error_message",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_sql",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_explain_query_plan",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_explain_query_plan_rows",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_connection_journal_mode",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_connection_locking_mode",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_connection_query_only",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_busy_timeout_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_query_started",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_row_fetch_completed",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_row_fetch_elapsed_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_row_returned",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_value",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_result_kind",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_sqlite_error_code",
+            "checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_sqlite_error_message",
+        ] {
+            assert!(parsed.get(key).is_some(), "missing key {key}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_missing_row_returns_proven_eof(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-base-vs-zero-length-substr-eof",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature:
+                        "sig-direct-immutable-updated-at-unixepoch-text-base-vs-zero-length-substr-eof"
+                            .to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        let conn = rusqlite::Connection::open(&fixture.db_path)?;
+        conn.execute(
+            "DELETE FROM discovery_persisted_rebuild_state WHERE id = 1",
+            [],
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_read_only_with_budget(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+            );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeProven
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::Eof
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::Eof
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_timeout_still_returns_bounded_zero_length_substr_result(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-base-vs-zero-length-substr-base-text-timeout",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature:
+                        "sig-direct-immutable-updated-at-unixepoch-text-base-vs-zero-length-substr-base-text-timeout"
+                            .to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeTestBehavior::DelayBaseTextBeforeRowFetch(
+                        StdDuration::from_secs(2),
+                    ),
+                ),
+            );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeProven
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::RowFetchTimeoutAfterQueryStart
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::Row
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_timeout_still_returns_bounded_base_text_result(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-base-vs-zero-length-substr-zero-length-timeout",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature:
+                        "sig-direct-immutable-updated-at-unixepoch-text-base-vs-zero-length-substr-zero-length-timeout"
+                            .to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeTestBehavior::DelayZeroLengthSubstrBeforeRowFetch(
+                        StdDuration::from_secs(2),
+                    ),
+                ),
+            );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeProven
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::RowFetchTimeoutAfterQueryStart
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::Row
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_forced_sqlite_error_reports_exact_fields(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-base-vs-zero-length-substr-error",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature:
+                        "sig-direct-immutable-updated-at-unixepoch-text-base-vs-zero-length-substr-error"
+                            .to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeTestBehavior::ForceZeroLengthSubstrOtherSqliteError,
+                ),
+            );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeProven
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextSubstrPathProbeResultKind::OtherSqliteError
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_sqlite_error_code
+                .as_deref(),
+            Some("SQLITE_CORRUPT")
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_zero_length_substr_sqlite_error_message
+                .as_deref(),
+            Some(
+                "forced other sqlite error at direct immutable substr(CAST(unixepoch(updated_at) AS TEXT), 1, 0) SELECT rows.next() boundary"
+            )
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_text_substr_path_probe_base_text_result_kind
                 .is_some()
         );
         Ok(())
