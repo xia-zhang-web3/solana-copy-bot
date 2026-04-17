@@ -14954,6 +14954,65 @@ Live rollout result (`2026-04-17`, commit `f5ff8e7`):
      unixepoch-family, versus a more general paired-expression effect that can
      be reproduced on a different same-row scalar path
 
+Repository batch accepted (`2026-04-17`):
+
+1. A new bounded direct immutable updated_at unixepoch duplicate-int proof
+   operator now exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-duplicate-int-split --config <path> --json`
+2. The operator runs two independent direct immutable subprobes on fresh
+   connections, both executing the same SQL:
+   - `SELECT unixepoch(updated_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT unixepoch(updated_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+3. Each subprobe is instrumented at the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The accepted code commit is:
+   - `61434cd Add updated-at unixepoch duplicate-int probe`
+5. Acceptance checks:
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-17`, commit `61434cd`):
+
+1. The production host was fast-forwarded from `f5ff8e7` to `61434cd`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-duplicate-int-split --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_duplicate_int_probe_reason_class = checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_duplicate_int_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_duplicate_int_probe_explanation = direct immutable updated_at unixepoch duplicate-int probe completed with bounded outcomes: unixepoch_a_result_kind=row_fetch_timeout_after_query_start unixepoch_b_result_kind=row_fetch_timeout_after_query_start. This is a duplicate-unixepoch-int proof operator, not a replay blocker classifier.`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_duplicate_int_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_duplicate_int_probe_budget_exhausted = false`
+5. The `unixepoch_a` subprobe reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_duplicate_int_probe_unixepoch_a_sql = SELECT unixepoch(updated_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_duplicate_int_probe_unixepoch_a_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_duplicate_int_probe_unixepoch_a_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_duplicate_int_probe_unixepoch_a_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_duplicate_int_probe_unixepoch_a_result_kind = row_fetch_timeout_after_query_start`
+6. The `unixepoch_b` subprobe also reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_duplicate_int_probe_unixepoch_b_sql = SELECT unixepoch(updated_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_duplicate_int_probe_unixepoch_b_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_duplicate_int_probe_unixepoch_b_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_duplicate_int_probe_unixepoch_b_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_duplicate_int_probe_unixepoch_b_result_kind = row_fetch_timeout_after_query_start`
+7. Current interpretation:
+   - the seam no longer depends on pairing `unixepoch(updated_at)` with a
+     text-returning peer
+   - paired same-column evaluation of duplicate `unixepoch(updated_at)` is
+     already sufficient to reproduce the bounded timeout seam
+   - this strengthens the latest inference: the problem is broader than an
+     `int-vs-text` distinction inside the `unixepoch(updated_at)` family
+   - the next useful probe should distinguish whether the seam is now specific
+     to paired same-column concurrency for this scalar expression family, or
+     whether the paired bounded harness is exposing a more general same-row
+     scalar row-fetch effect
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
