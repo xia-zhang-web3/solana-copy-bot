@@ -14652,6 +14652,65 @@ Live rollout result (`2026-04-17`, commit `f771bfd`):
      SQLite internal offset/seek step rather than to result materialization
      size
 
+Repository batch accepted (`2026-04-17`):
+
+1. A new bounded direct immutable updated_at second-char-boundary source-path
+   proof operator now exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-second-char-boundary-printf-vs-unixepoch-text --config <path> --json`
+2. The operator runs two independent direct immutable subprobes on fresh
+   connections:
+   - `SELECT substr(printf('%s', updated_at), 2, 0) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT substr(CAST(unixepoch(updated_at) AS TEXT), 2, 0) FROM discovery_persisted_rebuild_state WHERE id = 1`
+3. Each subprobe is instrumented at the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The accepted code commit is:
+   - `87cf89e Add updated-at second-char boundary source probe`
+5. Acceptance checks:
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-17`, commit `87cf89e`):
+
+1. The production host was fast-forwarded from `f771bfd` to `87cf89e`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-second-char-boundary-printf-vs-unixepoch-text --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_second_char_boundary_source_probe_reason_class = checkpoint_row_fetch_direct_immutable_updated_at_second_char_boundary_source_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_second_char_boundary_source_probe_explanation = direct immutable updated_at second-char boundary source probe completed with bounded outcomes: printf_zero_length_result_kind=row_fetch_timeout_after_query_start unixepoch_text_zero_length_result_kind=row_fetch_timeout_after_query_start. This is a second-character-boundary source-path proof operator, not a replay blocker classifier.`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_second_char_boundary_source_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_second_char_boundary_source_probe_budget_exhausted = false`
+5. The `substr(printf('%s', updated_at), 2, 0)` subprobe reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_second_char_boundary_source_probe_printf_zero_length_sql = SELECT substr(printf('%s', updated_at), 2, 0) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_second_char_boundary_source_probe_printf_zero_length_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_second_char_boundary_source_probe_printf_zero_length_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_second_char_boundary_source_probe_printf_zero_length_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_second_char_boundary_source_probe_printf_zero_length_result_kind = row_fetch_timeout_after_query_start`
+6. The `substr(CAST(unixepoch(updated_at) AS TEXT), 2, 0)` subprobe also reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_second_char_boundary_source_probe_unixepoch_text_zero_length_sql = SELECT substr(CAST(unixepoch(updated_at) AS TEXT), 2, 0) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_second_char_boundary_source_probe_unixepoch_text_zero_length_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_second_char_boundary_source_probe_unixepoch_text_zero_length_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_second_char_boundary_source_probe_unixepoch_text_zero_length_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_second_char_boundary_source_probe_unixepoch_text_zero_length_result_kind = row_fetch_timeout_after_query_start`
+7. Current interpretation:
+   - the seam is not specific to `printf('%s', updated_at)` alone
+   - the seam is not specific to original timestamp-string formatting alone
+   - even second-character-boundary zero-length access on textified
+     `unixepoch(updated_at)` reproduces the same bounded timeout seam
+   - the strongest current inference is now broader: first synthesized
+     character access is safe, but second-character-boundary access stalls
+     across multiple synthesized text representations of `updated_at`
+   - the next useful probe should target whether this is an internal
+     second-character offset/seek boundary in SQLite text handling rather than
+     anything unique to one SQL formatter
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
