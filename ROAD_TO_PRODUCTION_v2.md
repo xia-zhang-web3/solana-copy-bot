@@ -15432,6 +15432,64 @@ Live rollout result (`2026-04-18`, commit `6861f7b`):
      clean same-column control or compare two different raw/value-materializing
      peers to keep narrowing the exact seam
 
+Repository batch accepted (`2026-04-18`):
+
+1. A new bounded direct immutable updated_at raw-vs-typeof proof operator now
+   exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-raw-vs-typeof-split --config <path> --json`
+2. The operator runs two independent direct immutable subprobes on fresh
+   connections:
+   - `SELECT updated_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT typeof(updated_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+3. Each subprobe is instrumented at the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The accepted code commit is:
+   - `489dd42 Add updated-at raw-vs-typeof probe`
+5. Acceptance checks:
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-18`, commit `489dd42`):
+
+1. The production host was fast-forwarded from `6861f7b` to `489dd42`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-raw-vs-typeof-split --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_typeof_probe_reason_class = checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_typeof_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_typeof_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_typeof_probe_budget_exhausted = false`
+5. The raw `updated_at` subprobe reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_typeof_probe_raw_updated_at_sql = SELECT updated_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_typeof_probe_raw_updated_at_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_typeof_probe_raw_updated_at_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_typeof_probe_raw_updated_at_result_kind = row_fetch_timeout_after_query_start`
+6. The `typeof(updated_at)` subprobe stayed clean:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_typeof_probe_typeof_sql = SELECT typeof(updated_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_typeof_probe_typeof_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_typeof_probe_typeof_row_fetch_completed = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_typeof_probe_typeof_row_returned = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_typeof_probe_typeof_value = text`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_typeof_probe_typeof_result_kind = row`
+7. Current interpretation:
+   - the seam remains best described as value-materializing `updated_at`
+     access under the paired same-row bounded harness
+   - raw `updated_at` still stalls while the same-column type-only inspection
+     path `typeof(updated_at)` remains clean
+   - this materially tightens the current inference around reading the
+     `updated_at` value itself, rather than around generic same-column
+     function inspection
+   - the next useful probe should compare raw `updated_at` against another
+     proven-clean same-row control or another value-materializing peer to keep
+     narrowing where the stall boundary actually lives
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
