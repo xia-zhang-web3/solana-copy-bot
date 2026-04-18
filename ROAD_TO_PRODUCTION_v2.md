@@ -15194,6 +15194,72 @@ Live rollout result (`2026-04-18`, commit `c3f0a46`):
      different non-clean `updated_at`-derived expression, not against another
      already-proven clean control
 
+Repository batch accepted (`2026-04-18`):
+
+1. A new bounded direct immutable updated_at unixepoch-vs-length proof
+   operator now exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-vs-length-split --config <path> --json`
+2. The operator runs two independent direct immutable subprobes on fresh
+   connections:
+   - `SELECT unixepoch(updated_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT length(updated_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+3. Each subprobe is instrumented at the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The accepted code commit is:
+   - `e4ececa Add updated-at unixepoch-vs-length probe`
+5. Acceptance checks:
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-18`, commit `e4ececa`):
+
+1. The production host was fast-forwarded from `c3f0a46` to `e4ececa`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. One rollout-specific artifact issue occurred:
+   - the first post-pull `release` artifact was stale and still rejected the
+     new `--probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-vs-length-split`
+     flag as unknown
+   - a package-local `cargo clean -p copybot-discovery` followed by a fresh
+     `release` rebuild corrected the artifact and exposed the new operator
+4. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+5. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-vs-length-split --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_reason_class = checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_explanation = direct immutable updated_at unixepoch-vs-length probe completed with bounded outcomes: unixepoch_result_kind=row_fetch_timeout_after_query_start length_result_kind=row_fetch_timeout_after_query_start. This is a same-row value-reading unixepoch-vs-length proof operator, not a replay blocker classifier.`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_budget_exhausted = false`
+6. The `unixepoch(updated_at)` subprobe reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_unixepoch_sql = SELECT unixepoch(updated_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_unixepoch_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_unixepoch_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_unixepoch_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_unixepoch_result_kind = row_fetch_timeout_after_query_start`
+7. The `length(updated_at)` subprobe also reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_length_sql = SELECT length(updated_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_length_explain_query_plan = SEARCH discovery_persisted_rebuild_state USING INTEGER PRIMARY KEY (rowid=?)`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_length_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_length_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_length_result_kind = row_fetch_timeout_after_query_start`
+8. Current interpretation:
+   - the seam is no longer narrow enough to treat as `unixepoch(updated_at)`-specific
+     under the paired same-row bounded harness
+   - pairing `unixepoch(updated_at)` with another value-reading `updated_at`
+     function, `length(updated_at)`, reproduces the same bounded timeout on
+     both sides
+   - this materially broadens the current inference: the blocker now extends
+     across multiple value-reading `updated_at` functions, while still not
+     generalizing to clean peers like `id`, `phase`, or `typeof(updated_at)`
+   - the next useful probe should compare `length(updated_at)` against another
+     value-reading `updated_at` function or directly test whether the seam is
+     now tied to value-materializing `updated_at` access more generally
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
