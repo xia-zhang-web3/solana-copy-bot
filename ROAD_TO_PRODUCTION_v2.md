@@ -15545,6 +15545,68 @@ Live rollout result (`2026-04-18`, commit `4445e15`):
      proven-clean non-timestamp peer or another timestamp-shape control to keep
      tightening where this broader seam actually begins
 
+Repository batch accepted (`2026-04-18`):
+
+1. A new bounded direct immutable started_at raw-vs-id proof operator now
+   exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-raw-vs-id-split --config <path> --json`
+2. The operator runs two independent direct immutable subprobes on fresh
+   connections:
+   - `SELECT started_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT id FROM discovery_persisted_rebuild_state WHERE id = 1`
+3. Each subprobe is instrumented at the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The accepted code commit is:
+   - `da1dc2f Add started-at raw-vs-id probe`
+5. Acceptance checks:
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-18`, commit `da1dc2f`):
+
+1. The production host was fast-forwarded from `4445e15` to `da1dc2f`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. During rollout, the first `release` artifact was stale and did not expose
+   the new operator flag. A package-local rebuild fixed that:
+   - first live attempt returned `unknown argument: --probe-checkpoint-row-fetch-direct-immutable-started-at-raw-vs-id-split`
+   - the operator reran `/home/ubuntu/.cargo/bin/cargo clean -p copybot-discovery`
+   - then rebuilt `discovery_runtime_export` again in `release`
+4. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+5. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-raw-vs-id-split --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_id_probe_reason_class = checkpoint_row_fetch_direct_immutable_started_at_raw_vs_id_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_id_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_id_probe_budget_exhausted = false`
+6. The raw `started_at` subprobe reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_id_probe_started_at_raw_sql = SELECT started_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_id_probe_started_at_raw_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_id_probe_started_at_raw_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_id_probe_started_at_raw_result_kind = row_fetch_timeout_after_query_start`
+7. The `id` subprobe stayed clean:
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_id_probe_id_sql = SELECT id FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_id_probe_id_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_id_probe_id_row_fetch_completed = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_id_probe_id_row_returned = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_id_probe_id_value = 1`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_id_probe_id_result_kind = row`
+8. Current interpretation:
+   - raw `started_at` is independently sufficient to reproduce the bounded
+     seam even against a proven-clean scalar peer
+   - the seam is therefore broader than raw `updated_at` only and broader than
+     raw timestamp-vs-raw timestamp pairing alone
+   - at the same time, the seam still does not look like a generic same-row
+     scalar effect because `id` remains clean
+   - the next useful probe should compare raw timestamp access against another
+     proven-clean non-timestamp peer or isolate another timestamp-control
+     shape to keep tightening the broader seam boundary
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
