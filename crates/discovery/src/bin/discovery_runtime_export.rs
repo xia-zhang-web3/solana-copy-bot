@@ -234,6 +234,10 @@ const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_VS_LENG
 const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_VS_LENGTH_PROBE_BUDGET_SOURCE:
     &str =
     "fixed_constant_direct_immutable_runtime_db_updated_at_unixepoch_vs_length_split_probe";
+const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_LENGTH_VS_ID_PROBE_BUDGET_MS:
+    u64 = 1_000;
+const DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_LENGTH_VS_ID_PROBE_BUDGET_SOURCE:
+    &str = "fixed_constant_direct_immutable_runtime_db_updated_at_length_vs_id_split_probe";
 const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_PROBE_STRATEGY: &str =
     "temp_sqlite_row_meta_only_table_materialized_via_attach_insert_select";
 const CHECKPOINT_ROW_FETCH_MATERIALIZATION_BUSY_PROBE_STRATEGY: &str =
@@ -315,6 +319,8 @@ const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_VS_TYPEOF_PROBE
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_VS_LENGTH_PROBE_STRATEGY:
     &str =
     "direct_runtime_db_open_via_immutable_read_only_uri_split_updated_at_unixepoch_and_length_probe";
+const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_LENGTH_VS_ID_PROBE_STRATEGY: &str =
+    "direct_runtime_db_open_via_immutable_read_only_uri_split_updated_at_length_and_id_probe";
 const CHECKPOINT_ROW_FETCH_MATERIALIZATION_IMMUTABLE_PROBE_SOURCE_ATTACH_MODE: &str =
     "sqlite_uri_mode_ro_immutable_1";
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_SELECT_PROBE_RUNTIME_DB_MODE: &str =
@@ -376,6 +382,8 @@ const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_VS_PHASE_PROBE_
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_VS_TYPEOF_PROBE_RUNTIME_DB_MODE:
     &str = "sqlite_uri_mode_ro_immutable_1";
 const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_UNIXEPOCH_VS_LENGTH_PROBE_RUNTIME_DB_MODE:
+    &str = "sqlite_uri_mode_ro_immutable_1";
+const CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_LENGTH_VS_ID_PROBE_RUNTIME_DB_MODE:
     &str = "sqlite_uri_mode_ro_immutable_1";
 const CHECKPOINT_ROW_FETCH_MINIMAL_SNAPSHOT_SQLITE_SIDE_MATERIALIZATION_SQL: &str =
     "INSERT INTO discovery_persisted_rebuild_state (id, phase, updated_at)
@@ -865,6 +873,12 @@ struct ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsLengthSplitConf
 }
 
 #[derive(Debug, Clone)]
+struct ProbeCheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSplitConfig {
+    config_path: PathBuf,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
 struct ExplainRecentRawStagedLineageConfig {
     state_root: PathBuf,
     json: bool,
@@ -1009,6 +1023,9 @@ enum Command {
     ),
     ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsLengthSplit(
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsLengthSplitConfig,
+    ),
+    ProbeCheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSplit(
+        ProbeCheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSplitConfig,
     ),
     ExplainRecentRawStagedLineage(ExplainRecentRawStagedLineageConfig),
     ExplainRecentRawStagedRegression(ExplainRecentRawStagedRegressionConfig),
@@ -1795,6 +1812,26 @@ enum CheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsLengthProbeReasonClass
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum CheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsLengthProbeResultKind {
+    Row,
+    Eof,
+    SqliteBusy,
+    SqliteLocked,
+    OtherSqliteError,
+    OtherError,
+    RowFetchTimeoutAfterQueryStart,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeReasonClass {
+    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeProven,
+    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeBudgetExhausted,
+    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeUnprovenDueToMissingEvidence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind {
     Row,
     Eof,
     SqliteBusy,
@@ -6384,6 +6421,180 @@ impl CheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsLengthProbeDiagnostic 
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeDiagnostic {
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_observed: bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_reason_class:
+        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeReasonClass,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_explanation: String,
+    config_path: String,
+    runtime_db_path: Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_strategy: String,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_runtime_db_uri:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_runtime_db_mode: String,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_runtime_db_immutable:
+        bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_runtime_db_readonly:
+        bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_budget_ms: u64,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_budget_source: String,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_total_elapsed_ms: u64,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_budget_exhausted: bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_stage: Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_sql: String,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_explain_query_plan:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_explain_query_plan_rows:
+        Option<Vec<String>>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_connection_journal_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_connection_locking_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_connection_query_only:
+        Option<bool>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_busy_timeout_ms:
+        Option<u64>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_query_started:
+        bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_row_fetch_completed:
+        bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_row_fetch_elapsed_ms:
+        u64,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_row_returned:
+        Option<bool>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_value:
+        Option<u64>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_result_kind:
+        Option<CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_sqlite_error_code:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_sqlite_error_message:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_sql: String,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_explain_query_plan:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_explain_query_plan_rows:
+        Option<Vec<String>>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_connection_journal_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_connection_locking_mode:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_connection_query_only:
+        Option<bool>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_busy_timeout_ms:
+        Option<u64>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_query_started: bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_row_fetch_completed:
+        bool,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_row_fetch_elapsed_ms:
+        u64,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_row_returned:
+        Option<bool>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_value: Option<i64>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_result_kind:
+        Option<CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_sqlite_error_code:
+        Option<String>,
+    checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_sqlite_error_message:
+        Option<String>,
+}
+
+impl CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeDiagnostic {
+    fn unproven(config_path: &Path, explanation: String) -> Self {
+        Self {
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_observed: false,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_reason_class:
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeUnprovenDueToMissingEvidence,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_explanation:
+                explanation,
+            config_path: config_path.display().to_string(),
+            runtime_db_path: None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_strategy:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_LENGTH_VS_ID_PROBE_STRATEGY
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_runtime_db_uri:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_runtime_db_mode:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_LENGTH_VS_ID_PROBE_RUNTIME_DB_MODE
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_runtime_db_immutable:
+                true,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_runtime_db_readonly:
+                true,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_budget_ms:
+                DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_LENGTH_VS_ID_PROBE_BUDGET_MS,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_budget_source:
+                DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_LENGTH_VS_ID_PROBE_BUDGET_SOURCE
+                    .to_string(),
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_total_elapsed_ms:
+                0,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_budget_exhausted:
+                false,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_stage: None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_sql:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_LENGTH_UPDATED_AT_SELECT_SQL.to_string(),
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_explain_query_plan:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_explain_query_plan_rows:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_connection_journal_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_connection_locking_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_connection_query_only:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_busy_timeout_ms:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_query_started:
+                false,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_row_fetch_completed:
+                false,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_row_fetch_elapsed_ms:
+                0,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_row_returned:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_value:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_result_kind:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_sqlite_error_code:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_sqlite_error_message:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_sql:
+                CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_SELECT_SQL.to_string(),
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_explain_query_plan:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_explain_query_plan_rows:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_connection_journal_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_connection_locking_mode:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_connection_query_only:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_busy_timeout_ms:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_query_started:
+                false,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_row_fetch_completed:
+                false,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_row_fetch_elapsed_ms:
+                0,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_row_returned:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_value: None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_result_kind:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_sqlite_error_code:
+                None,
+            checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_sqlite_error_message:
+                None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct CheckpointRowFetchDirectImmutableUpdatedAtHexSourceProbeDiagnostic {
     checkpoint_row_fetch_direct_immutable_updated_at_hex_source_probe_observed: bool,
     checkpoint_row_fetch_direct_immutable_updated_at_hex_source_probe_reason_class:
@@ -10728,6 +10939,60 @@ impl CheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsLengthTarget {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage {
+    OpenRuntimeDb,
+    LoadBusyTimeout,
+    LoadConnectionMetadata,
+    LoadExplainQueryPlan,
+    PrepareSelect,
+    QuerySelect,
+    RowFetchSelect,
+}
+
+impl CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenRuntimeDb => "open_runtime_db",
+            Self::LoadBusyTimeout => "load_busy_timeout",
+            Self::LoadConnectionMetadata => "load_connection_metadata",
+            Self::LoadExplainQueryPlan => "load_explain_query_plan",
+            Self::PrepareSelect => "prepare_select",
+            Self::QuerySelect => "query_select",
+            Self::RowFetchSelect => "row_fetch_select",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget {
+    Length,
+    Id,
+}
+
+impl CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget {
+    fn as_label(self) -> &'static str {
+        match self {
+            Self::Length => "length",
+            Self::Id => "id",
+        }
+    }
+
+    fn select_sql(self) -> &'static str {
+        match self {
+            Self::Length => CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_LENGTH_UPDATED_AT_SELECT_SQL,
+            Self::Id => CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_ID_ONLY_SELECT_SQL,
+        }
+    }
+
+    fn explain_context(self) -> &'static str {
+        match self {
+            Self::Length => "direct immutable runtime-db length(updated_at) select query",
+            Self::Id => "direct immutable runtime-db id select query",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckpointRowFetchDirectImmutableUpdatedAtHexSourceSubprobeStage {
     OpenRuntimeDb,
     LoadBusyTimeout,
@@ -12371,6 +12636,52 @@ enum CheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsLengthProbeWorkerMessa
 }
 
 #[derive(Debug)]
+enum CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage {
+    Entered {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget,
+        stage: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage,
+    },
+    BusyTimeout {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget,
+        value: u64,
+    },
+    ConnectionReadMode {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget,
+        journal_mode: String,
+        locking_mode: String,
+        query_only: bool,
+    },
+    QueryPlan {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget,
+        explain_query_plan: String,
+        explain_query_plan_rows: Vec<String>,
+    },
+    SelectQueryStarted {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget,
+    },
+    SelectFailed {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget,
+        result_kind: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind,
+        sqlite_error_code: Option<String>,
+        sqlite_error_message: Option<String>,
+    },
+    SelectRowFetchCompleted {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget,
+        elapsed_ms: u64,
+        row_returned: bool,
+        length_value: Option<u64>,
+        id_value: Option<i64>,
+        result_kind: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind,
+        sqlite_error_code: Option<String>,
+        sqlite_error_message: Option<String>,
+    },
+    Finished {
+        target: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget,
+        result: Result<(), String>,
+    },
+}
+
+#[derive(Debug)]
 enum CheckpointRowFetchDirectImmutableUpdatedAtHexSourceProbeWorkerMessage {
     Entered {
         target: CheckpointRowFetchDirectImmutableUpdatedAtHexSourceTarget,
@@ -13134,6 +13445,23 @@ enum CheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsLengthProbeTestBehavio
 struct CheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsLengthProbeTestSync {
     unixepoch_conclusive: AtomicBool,
     length_conclusive: AtomicBool,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+enum CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior {
+    ForceIdOtherSqliteError,
+    ForceLengthOtherSqliteErrorAndDelayIdBeforeRowFetch(StdDuration),
+    ForceIdOtherSqliteErrorAndDelayLengthBeforeRowFetch(StdDuration),
+    DelayLengthBeforeRowFetch(StdDuration),
+    DelayIdBeforeRowFetch(StdDuration),
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestSync {
+    length_conclusive: AtomicBool,
+    id_conclusive: AtomicBool,
 }
 
 #[cfg(test)]
@@ -41501,6 +41829,1233 @@ fn wait_for_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length
     }
 }
 
+struct CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeState {
+    current_stage: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage,
+    explain_query_plan: Option<String>,
+    explain_query_plan_rows: Option<Vec<String>>,
+    connection_journal_mode: Option<String>,
+    connection_locking_mode: Option<String>,
+    connection_query_only: Option<bool>,
+    busy_timeout_ms: Option<u64>,
+    query_started: bool,
+    row_fetch_completed: bool,
+    row_fetch_elapsed_ms: u64,
+    row_returned: Option<bool>,
+    length_value: Option<u64>,
+    id_value: Option<i64>,
+    result_kind: Option<CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind>,
+    sqlite_error_code: Option<String>,
+    sqlite_error_message: Option<String>,
+    finished: bool,
+}
+
+impl Default for CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeState {
+    fn default() -> Self {
+        Self {
+            current_stage:
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage::OpenRuntimeDb,
+            explain_query_plan: None,
+            explain_query_plan_rows: None,
+            connection_journal_mode: None,
+            connection_locking_mode: None,
+            connection_query_only: None,
+            busy_timeout_ms: None,
+            query_started: false,
+            row_fetch_completed: false,
+            row_fetch_elapsed_ms: 0,
+            row_returned: None,
+            length_value: None,
+            id_value: None,
+            result_kind: None,
+            sqlite_error_code: None,
+            sqlite_error_message: None,
+            finished: false,
+        }
+    }
+}
+
+impl CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeState {
+    fn is_conclusive(&self) -> bool {
+        self.result_kind.is_some()
+    }
+}
+
+fn format_direct_immutable_updated_at_length_vs_id_stage(
+    target: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget,
+    stage: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage,
+) -> String {
+    format!("{}_select_{}", target.as_label(), stage.as_str())
+}
+
+fn apply_direct_immutable_updated_at_length_vs_id_state_to_diagnostic(
+    target: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget,
+    state: &CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeState,
+    diagnostic: &mut CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeDiagnostic,
+) {
+    match target {
+        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Length => {
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_explain_query_plan =
+                state.explain_query_plan.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_explain_query_plan_rows =
+                state.explain_query_plan_rows.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_connection_journal_mode =
+                state.connection_journal_mode.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_connection_locking_mode =
+                state.connection_locking_mode.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_connection_query_only =
+                state.connection_query_only;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_busy_timeout_ms =
+                state.busy_timeout_ms;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_query_started =
+                state.query_started;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_row_fetch_completed =
+                state.row_fetch_completed;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_row_fetch_elapsed_ms =
+                state.row_fetch_elapsed_ms;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_row_returned =
+                state.row_returned;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_value =
+                state.length_value;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_result_kind =
+                state.result_kind;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_sqlite_error_code =
+                state.sqlite_error_code.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_sqlite_error_message =
+                state.sqlite_error_message.clone();
+        }
+        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Id => {
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_explain_query_plan =
+                state.explain_query_plan.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_explain_query_plan_rows =
+                state.explain_query_plan_rows.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_connection_journal_mode =
+                state.connection_journal_mode.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_connection_locking_mode =
+                state.connection_locking_mode.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_connection_query_only =
+                state.connection_query_only;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_busy_timeout_ms =
+                state.busy_timeout_ms;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_query_started =
+                state.query_started;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_row_fetch_completed =
+                state.row_fetch_completed;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_row_fetch_elapsed_ms =
+                state.row_fetch_elapsed_ms;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_row_returned =
+                state.row_returned;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_value =
+                state.id_value;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_result_kind =
+                state.result_kind;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_sqlite_error_code =
+                state.sqlite_error_code.clone();
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_sqlite_error_message =
+                state.sqlite_error_message.clone();
+        }
+    }
+}
+
+fn summarize_direct_immutable_updated_at_length_vs_id_subprobe(
+    label: &str,
+    result_kind: Option<CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind>,
+) -> String {
+    let result_kind = result_kind
+        .map(|value| {
+            serde_json::to_string(&value)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .trim_matches('"')
+                .to_string()
+        })
+        .unwrap_or_else(|| "null".to_string());
+    format!("{label}_result_kind={result_kind}")
+}
+
+fn resolve_direct_immutable_updated_at_length_vs_id_unfinished_stage(
+    length_state: &CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeState,
+    id_state: &CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeState,
+) -> String {
+    if !length_state.is_conclusive() && !length_state.finished {
+        return format_direct_immutable_updated_at_length_vs_id_stage(
+            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Length,
+            length_state.current_stage,
+        );
+    }
+    if !id_state.is_conclusive() && !id_state.finished {
+        return format_direct_immutable_updated_at_length_vs_id_stage(
+            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Id,
+            id_state.current_stage,
+        );
+    }
+    "wait_subprobe_results".to_string()
+}
+
+fn probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only(
+    config_path: &Path,
+) -> CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeDiagnostic {
+    probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only_with_budget_impl(
+        config_path,
+        StdDuration::from_millis(
+            DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_LENGTH_VS_ID_PROBE_BUDGET_MS,
+        ),
+        #[cfg(test)]
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only_with_budget(
+    config_path: &Path,
+    budget: StdDuration,
+) -> CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeDiagnostic {
+    probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only_with_budget_impl(
+        config_path,
+        budget,
+        None,
+    )
+}
+
+#[cfg(test)]
+fn probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only_with_budget_and_test_behavior(
+    config_path: &Path,
+    budget: StdDuration,
+    test_behavior: Option<CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior>,
+) -> CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeDiagnostic {
+    probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only_with_budget_impl(
+        config_path,
+        budget,
+        test_behavior,
+    )
+}
+
+fn probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only_with_budget_impl(
+    config_path: &Path,
+    budget: StdDuration,
+    #[cfg(test)] test_behavior:
+        Option<CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior>,
+) -> CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeDiagnostic {
+    let mut diagnostic =
+        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeDiagnostic::unproven(
+            config_path,
+            "checkpoint row-fetch direct immutable updated_at length-vs-id probe did not run"
+                .to_string(),
+        );
+    diagnostic.checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_budget_ms =
+        budget.as_millis().min(u64::MAX as u128) as u64;
+    diagnostic.checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_budget_source =
+        DEFAULT_CHECKPOINT_ROW_FETCH_DIRECT_IMMUTABLE_UPDATED_AT_LENGTH_VS_ID_PROBE_BUDGET_SOURCE
+            .to_string();
+
+    let total_started_at = Instant::now();
+    let loaded_config = match load_from_path(config_path)
+        .with_context(|| format!("failed loading config {}", config_path.display()))
+    {
+        Ok(config) => config,
+        Err(error) => {
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_explanation =
+                format!("{error:#}");
+            return diagnostic;
+        }
+    };
+    let runtime_db_path = resolve_db_path(config_path, None, &loaded_config.sqlite.path);
+    let runtime_db_uri = build_sqlite_immutable_read_only_uri(&runtime_db_path);
+    diagnostic.runtime_db_path = Some(runtime_db_path.display().to_string());
+    diagnostic.checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_runtime_db_uri =
+        Some(runtime_db_uri);
+    diagnostic.checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_observed = true;
+
+    #[cfg(test)]
+    let test_sync = test_behavior.map(|_| {
+        Arc::new(CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestSync::default())
+    });
+
+    let (tx, rx) = mpsc::sync_channel(64);
+    for target in [
+        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Length,
+        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Id,
+    ] {
+        let runtime_db_path_for_worker = runtime_db_path.clone();
+        let tx = tx.clone();
+        #[cfg(test)]
+        let test_sync_for_worker = test_sync.clone();
+        thread::spawn(move || {
+            let _ = probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_worker(
+                target,
+                &runtime_db_path_for_worker,
+                tx,
+                #[cfg(test)]
+                test_behavior,
+                #[cfg(test)]
+                test_sync_for_worker,
+            );
+        });
+    }
+    drop(tx);
+
+    let mut length_state = CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeState::default();
+    let mut id_state = CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeState::default();
+
+    loop {
+        if length_state.is_conclusive() && id_state.is_conclusive() {
+            apply_direct_immutable_updated_at_length_vs_id_state_to_diagnostic(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Length,
+                &length_state,
+                &mut diagnostic,
+            );
+            apply_direct_immutable_updated_at_length_vs_id_state_to_diagnostic(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Id,
+                &id_state,
+                &mut diagnostic,
+            );
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_total_elapsed_ms =
+                elapsed_ms(total_started_at);
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_reason_class =
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeProven;
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_explanation =
+                format!(
+                    "direct immutable updated_at length-vs-id probe completed with bounded outcomes: {} {}. This is a same-row value-reading length-vs-id proof operator, not a replay blocker classifier.",
+                    summarize_direct_immutable_updated_at_length_vs_id_subprobe(
+                        "length",
+                        length_state.result_kind
+                    ),
+                    summarize_direct_immutable_updated_at_length_vs_id_subprobe(
+                        "id",
+                        id_state.result_kind
+                    )
+                );
+            return diagnostic;
+        }
+
+        match rx.recv_timeout(remaining_budget_duration(budget, total_started_at)) {
+            Ok(message) => {
+                let state = match &message {
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Entered {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::BusyTimeout {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::ConnectionReadMode {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::QueryPlan {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectQueryStarted {
+                        target,
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectFailed {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectRowFetchCompleted {
+                        target,
+                        ..
+                    }
+                    | CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Finished {
+                        target,
+                        ..
+                    } => match target {
+                        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Length => {
+                            &mut length_state
+                        }
+                        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Id => {
+                            &mut id_state
+                        }
+                    },
+                };
+
+                match message {
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Entered {
+                        stage,
+                        ..
+                    } => {
+                        state.current_stage = stage;
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::BusyTimeout {
+                        value,
+                        ..
+                    } => {
+                        state.current_stage =
+                            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage::LoadBusyTimeout;
+                        state.busy_timeout_ms = Some(value);
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::ConnectionReadMode {
+                        journal_mode,
+                        locking_mode,
+                        query_only,
+                        ..
+                    } => {
+                        state.current_stage =
+                            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage::LoadConnectionMetadata;
+                        state.connection_journal_mode = Some(journal_mode);
+                        state.connection_locking_mode = Some(locking_mode);
+                        state.connection_query_only = Some(query_only);
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::QueryPlan {
+                        explain_query_plan,
+                        explain_query_plan_rows,
+                        ..
+                    } => {
+                        state.current_stage =
+                            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage::LoadExplainQueryPlan;
+                        state.explain_query_plan = Some(explain_query_plan);
+                        state.explain_query_plan_rows = Some(explain_query_plan_rows);
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectQueryStarted {
+                        ..
+                    } => {
+                        state.query_started = true;
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectFailed {
+                        result_kind,
+                        sqlite_error_code,
+                        sqlite_error_message,
+                        ..
+                    } => {
+                        state.result_kind = Some(result_kind);
+                        state.sqlite_error_code = sqlite_error_code;
+                        state.sqlite_error_message = sqlite_error_message;
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectRowFetchCompleted {
+                        elapsed_ms,
+                        row_returned,
+                        length_value,
+                        id_value,
+                        result_kind,
+                        sqlite_error_code,
+                        sqlite_error_message,
+                        ..
+                    } => {
+                        state.current_stage =
+                            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage::RowFetchSelect;
+                        state.row_fetch_completed = true;
+                        state.row_fetch_elapsed_ms = elapsed_ms;
+                        state.row_returned = Some(row_returned);
+                        state.length_value = length_value;
+                        state.id_value = id_value;
+                        state.result_kind = Some(result_kind);
+                        state.sqlite_error_code = sqlite_error_code;
+                        state.sqlite_error_message = sqlite_error_message;
+                    }
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Finished {
+                        result,
+                        ..
+                    } => match result {
+                        Ok(()) => state.finished = true,
+                        Err(error) => {
+                            apply_direct_immutable_updated_at_length_vs_id_state_to_diagnostic(
+                                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Length,
+                                &length_state,
+                                &mut diagnostic,
+                            );
+                            apply_direct_immutable_updated_at_length_vs_id_state_to_diagnostic(
+                                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Id,
+                                &id_state,
+                                &mut diagnostic,
+                            );
+                            diagnostic
+                                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_total_elapsed_ms =
+                                elapsed_ms(total_started_at);
+                            diagnostic
+                                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_reason_class =
+                                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeUnprovenDueToMissingEvidence;
+                            diagnostic
+                                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_explanation =
+                                error;
+                            return diagnostic;
+                        }
+                    },
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if length_state.query_started
+                    && !length_state.row_fetch_completed
+                    && length_state.result_kind.is_none()
+                {
+                    length_state.result_kind = Some(
+                        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::RowFetchTimeoutAfterQueryStart,
+                    );
+                }
+                if id_state.query_started
+                    && !id_state.row_fetch_completed
+                    && id_state.result_kind.is_none()
+                {
+                    id_state.result_kind = Some(
+                        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::RowFetchTimeoutAfterQueryStart,
+                    );
+                }
+
+                apply_direct_immutable_updated_at_length_vs_id_state_to_diagnostic(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Length,
+                    &length_state,
+                    &mut diagnostic,
+                );
+                apply_direct_immutable_updated_at_length_vs_id_state_to_diagnostic(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Id,
+                    &id_state,
+                    &mut diagnostic,
+                );
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+
+                if length_state.is_conclusive() && id_state.is_conclusive() {
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_reason_class =
+                        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeProven;
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_explanation =
+                        format!(
+                            "direct immutable updated_at length-vs-id probe completed with bounded outcomes: {} {}. This is a same-row value-reading length-vs-id proof operator, not a replay blocker classifier.",
+                            summarize_direct_immutable_updated_at_length_vs_id_subprobe(
+                                "length",
+                                length_state.result_kind
+                            ),
+                            summarize_direct_immutable_updated_at_length_vs_id_subprobe(
+                                "id",
+                                id_state.result_kind
+                            )
+                        );
+                } else {
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_budget_exhausted =
+                        true;
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_reason_class =
+                        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeBudgetExhausted;
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_stage =
+                        Some(resolve_direct_immutable_updated_at_length_vs_id_unfinished_stage(
+                            &length_state,
+                            &id_state,
+                        ));
+                    diagnostic
+                        .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_explanation =
+                        format!(
+                            "checkpoint row-fetch direct immutable updated_at length-vs-id probe exhausted its bounded budget before both subprobes reached conclusive outcomes: {} {}. This is a same-row value-reading length-vs-id proof operator, not a replay blocker classifier.",
+                            summarize_direct_immutable_updated_at_length_vs_id_subprobe(
+                                "length",
+                                length_state.result_kind
+                            ),
+                            summarize_direct_immutable_updated_at_length_vs_id_subprobe(
+                                "id",
+                                id_state.result_kind
+                            )
+                        );
+                }
+                return diagnostic;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                apply_direct_immutable_updated_at_length_vs_id_state_to_diagnostic(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Length,
+                    &length_state,
+                    &mut diagnostic,
+                );
+                apply_direct_immutable_updated_at_length_vs_id_state_to_diagnostic(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Id,
+                    &id_state,
+                    &mut diagnostic,
+                );
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_total_elapsed_ms =
+                    elapsed_ms(total_started_at);
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_reason_class =
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeUnprovenDueToMissingEvidence;
+                diagnostic
+                    .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_explanation =
+                    "checkpoint row-fetch direct immutable updated_at length-vs-id probe workers disconnected before returning conclusive outcomes"
+                        .to_string();
+                return diagnostic;
+            }
+        }
+    }
+}
+
+fn probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_worker(
+    target: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget,
+    runtime_db_path: &Path,
+    tx: mpsc::SyncSender<CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage>,
+    #[cfg(test)] test_behavior:
+        Option<CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior>,
+    #[cfg(test)] test_sync:
+        Option<Arc<CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestSync>>,
+) -> Result<()> {
+    let run = || -> Result<()> {
+        let runtime_db_uri = build_sqlite_immutable_read_only_uri(runtime_db_path);
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage::OpenRuntimeDb,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let conn = Connection::open_with_flags(
+            &runtime_db_uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| {
+            format!(
+                "failed opening direct immutable runtime db uri {} for {} updated_at length-vs-id probe",
+                runtime_db_uri,
+                target.as_label()
+            )
+        })?;
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage::LoadBusyTimeout,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let busy_timeout_ms = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
+            .with_context(|| {
+                format!(
+                    "failed reading sqlite busy_timeout for {} updated_at length-vs-id probe",
+                    target.as_label()
+                )
+            })?;
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::BusyTimeout {
+                    target,
+                    value: busy_timeout_ms,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage::LoadConnectionMetadata,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let journal_mode = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+            .with_context(|| {
+                format!(
+                    "failed reading sqlite journal_mode for {} updated_at length-vs-id probe",
+                    target.as_label()
+                )
+            })?;
+        let locking_mode = conn
+            .query_row("PRAGMA locking_mode", [], |row| row.get::<_, String>(0))
+            .with_context(|| {
+                format!(
+                    "failed reading sqlite locking_mode for {} updated_at length-vs-id probe",
+                    target.as_label()
+                )
+            })?;
+        let query_only = conn
+            .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+            .with_context(|| {
+                format!(
+                    "failed reading sqlite query_only for {} updated_at length-vs-id probe",
+                    target.as_label()
+                )
+            })?
+            != 0;
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::ConnectionReadMode {
+                    target,
+                    journal_mode,
+                    locking_mode,
+                    query_only,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage::LoadExplainQueryPlan,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let explain_query_plan =
+            load_explain_query_plan_for_sql(&conn, target.select_sql(), target.explain_context())?;
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::QueryPlan {
+                    target,
+                    explain_query_plan: explain_query_plan.explain_query_plan,
+                    explain_query_plan_rows: explain_query_plan.explain_query_plan_rows,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage::PrepareSelect,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let mut stmt = match conn.prepare(target.select_sql()) {
+            Ok(stmt) => stmt,
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::SqliteBusy,
+                            ErrorCode::DatabaseLocked => CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::SqliteLocked,
+                            _ => CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::OtherSqliteError,
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            format!(
+                                "sqlite failure while preparing {} updated_at length-vs-id SELECT statement",
+                                target.as_label()
+                            )
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage::QuerySelect,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let mut rows = match stmt.query([]) {
+            Ok(rows) => rows,
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::SqliteBusy,
+                            ErrorCode::DatabaseLocked => CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::SqliteLocked,
+                            _ => CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::OtherSqliteError,
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            format!(
+                                "sqlite failure while starting {} updated_at length-vs-id SELECT query",
+                                target.as_label()
+                            )
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Entered {
+                    target,
+                    stage:
+                        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSubprobeStage::RowFetchSelect,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectQueryStarted {
+                    target,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        #[cfg(test)]
+        match (target, test_behavior) {
+            (
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Length,
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior::ForceLengthOtherSqliteErrorAndDelayIdBeforeRowFetch(_),
+                ),
+            ) => {
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::OtherSqliteError,
+                        sqlite_error_code: Some("SQLITE_CORRUPT".to_string()),
+                        sqlite_error_message: Some(
+                            "forced other sqlite error at direct immutable length(updated_at) SELECT rows.next() boundary".to_string(),
+                        ),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            (
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Id,
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior::ForceIdOtherSqliteError,
+                ),
+            )
+            | (
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Id,
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior::ForceIdOtherSqliteErrorAndDelayLengthBeforeRowFetch(_),
+                ),
+            ) => {
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::OtherSqliteError,
+                        sqlite_error_code: Some("SQLITE_CORRUPT".to_string()),
+                        sqlite_error_message: Some(
+                            "forced other sqlite error at direct immutable id SELECT rows.next() boundary".to_string(),
+                        ),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            (
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Length,
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior::DelayLengthBeforeRowFetch(delay),
+                ),
+            )
+            | (
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Length,
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior::ForceIdOtherSqliteErrorAndDelayLengthBeforeRowFetch(delay),
+                ),
+            )
+            | (
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Id,
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior::DelayIdBeforeRowFetch(delay),
+                ),
+            ) => {
+                wait_for_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_peer_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                thread::sleep(delay);
+            }
+            (
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Id,
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior::ForceLengthOtherSqliteErrorAndDelayIdBeforeRowFetch(delay),
+                ),
+            ) => {
+                wait_for_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_peer_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                thread::sleep(delay);
+            }
+            _ => {}
+        }
+
+        let row_fetch_started_at = Instant::now();
+        let row = match rows.next() {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                if tx
+                    .send(
+                        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectRowFetchCompleted {
+                            target,
+                            elapsed_ms: elapsed_ms(row_fetch_started_at),
+                            row_returned: false,
+                            length_value: None,
+                            id_value: None,
+                            result_kind:
+                                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::Eof,
+                            sqlite_error_code: None,
+                            sqlite_error_message: None,
+                        },
+                    )
+                    .is_err()
+                {
+                    return Ok(());
+                }
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            Err(rusqlite::Error::SqliteFailure(error, message)) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind: match error.code {
+                            ErrorCode::DatabaseBusy => CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::SqliteBusy,
+                            ErrorCode::DatabaseLocked => CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::SqliteLocked,
+                            _ => CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::OtherSqliteError,
+                        },
+                        sqlite_error_code: Some(sqlite_error_code_name(error.code)),
+                        sqlite_error_message: Some(message.unwrap_or_else(|| {
+                            format!(
+                                "sqlite failure at direct immutable {} updated_at length-vs-id SELECT rows.next() boundary",
+                                target.as_label()
+                            )
+                        })),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                #[cfg(test)]
+                mark_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_subprobe_conclusive(
+                    target,
+                    test_sync.as_ref(),
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectFailed {
+                        target,
+                        result_kind:
+                            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::OtherError,
+                        sqlite_error_code: None,
+                        sqlite_error_message: Some(error.to_string()),
+                    },
+                );
+                let _ = tx.send(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Finished {
+                        target,
+                        result: Ok(()),
+                    },
+                );
+                return Ok(());
+            }
+        };
+
+        #[cfg(test)]
+        mark_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_subprobe_conclusive(
+            target,
+            test_sync.as_ref(),
+        );
+        let (length_value, id_value) = match target {
+            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Length => {
+                match row.get::<_, Option<i64>>(0) {
+                    Ok(value) => (value.map(|value| value.max(0) as u64), None),
+                    Err(error) => {
+                        let _ = tx.send(
+                            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectRowFetchCompleted {
+                                target,
+                                elapsed_ms: elapsed_ms(row_fetch_started_at),
+                                row_returned: true,
+                                length_value: None,
+                                id_value: None,
+                                result_kind:
+                                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::OtherError,
+                                sqlite_error_code: None,
+                                sqlite_error_message: Some(error.to_string()),
+                            },
+                        );
+                        let _ = tx.send(
+                            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Finished {
+                                target,
+                                result: Ok(()),
+                            },
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Id => {
+                match row.get::<_, Option<i64>>(0) {
+                    Ok(value) => (None, value),
+                    Err(error) => {
+                        let _ = tx.send(
+                            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectRowFetchCompleted {
+                                target,
+                                elapsed_ms: elapsed_ms(row_fetch_started_at),
+                                row_returned: true,
+                                length_value: None,
+                                id_value: None,
+                                result_kind:
+                                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::OtherError,
+                                sqlite_error_code: None,
+                                sqlite_error_message: Some(error.to_string()),
+                            },
+                        );
+                        let _ = tx.send(
+                            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Finished {
+                                target,
+                                result: Ok(()),
+                            },
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+        };
+
+        if tx
+            .send(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::SelectRowFetchCompleted {
+                    target,
+                    elapsed_ms: elapsed_ms(row_fetch_started_at),
+                    row_returned: true,
+                    length_value,
+                    id_value,
+                    result_kind:
+                        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::Row,
+                    sqlite_error_code: None,
+                    sqlite_error_message: None,
+                },
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+        let _ = tx.send(
+            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Finished {
+                target,
+                result: Ok(()),
+            },
+        );
+        Ok(())
+    };
+
+    if let Err(error) = run() {
+        let _ = tx.send(
+            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeWorkerMessage::Finished {
+                target,
+                result: Err(format!("{error:#}")),
+            },
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn mark_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_subprobe_conclusive(
+    target: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget,
+    test_sync:
+        Option<&Arc<CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestSync>>,
+) {
+    if let Some(test_sync) = test_sync {
+        match target {
+            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Length => {
+                test_sync
+                    .length_conclusive
+                    .store(true, AtomicOrdering::SeqCst);
+            }
+            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Id => {
+                test_sync.id_conclusive.store(true, AtomicOrdering::SeqCst);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn wait_for_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_peer_conclusive(
+    target: CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget,
+    test_sync:
+        Option<&Arc<CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestSync>>,
+) {
+    let Some(test_sync) = test_sync else {
+        return;
+    };
+    let peer_conclusive = match target {
+        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Length => {
+            &test_sync.id_conclusive
+        }
+        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdTarget::Id => {
+            &test_sync.length_conclusive
+        }
+    };
+    while !peer_conclusive.load(AtomicOrdering::SeqCst) {
+        thread::sleep(StdDuration::from_millis(1));
+    }
+}
+
 struct CheckpointRowFetchDirectImmutableUpdatedAtHexSourceSubprobeState {
     current_stage: CheckpointRowFetchDirectImmutableUpdatedAtHexSourceSubprobeStage,
     explain_query_plan: Option<String>,
@@ -52701,6 +54256,7 @@ where
         false;
     let mut probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_split =
         false;
+    let mut probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split = false;
     let mut explain_recent_raw_staged_lineage = false;
     let mut explain_recent_raw_staged_regression = false;
     let mut explain_recent_raw_staged_birth = false;
@@ -52884,6 +54440,9 @@ where
                 probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_split =
                     true;
             }
+            "--probe-checkpoint-row-fetch-direct-immutable-updated-at-length-vs-id-split" => {
+                probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split = true;
+            }
             "--deep-attempt-telemetry-scan" => {
                 deep_attempt_telemetry_scan = true;
             }
@@ -53000,13 +54559,14 @@ where
         + usize::from(
             probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_split,
         )
+        + usize::from(probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split)
         + usize::from(explain_recent_raw_staged_lineage)
         + usize::from(explain_recent_raw_staged_regression)
         + usize::from(explain_recent_raw_staged_birth)
         + usize::from(explain_recent_raw_staged_window_seeding);
     if explain_mode_count > 1 {
         bail!(
-            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --probe-checkpoint-row-fetch-materialization-busy-wait, --probe-checkpoint-row-fetch-materialization-immutable-source, --probe-checkpoint-row-fetch-immutable-source-select, --probe-checkpoint-row-fetch-direct-immutable-select, --probe-checkpoint-row-fetch-direct-immutable-id-only-select, --probe-checkpoint-row-fetch-direct-immutable-single-column-selects, --probe-checkpoint-row-fetch-direct-immutable-updated-at-expression-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-prefix-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-text-vs-blob-first-byte, --probe-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-first-byte, --probe-checkpoint-row-fetch-direct-immutable-timestamp-unixepoch-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-textified-unixepoch-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-datetime-reconstruction-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-printf-text-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-printf-prefix-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-unicode-first-char-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-zero-length-substr-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-hex-original-vs-printf, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-length-vs-hex, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-prefix-depth-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-prefix-threshold-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-second-char-text-vs-unicode, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-second-char-boundary-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-second-char-boundary-printf-vs-unixepoch-text, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-zero-length-offset-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-base-vs-zero-length-substr, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-duplicate-base-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-int-vs-text-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-duplicate-int-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-vs-id-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-vs-phase-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-vs-typeof-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-vs-length-split, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
+            "--explain-recent-raw-promotion-blocker, --explain-recent-raw-catch-up-status, --explain-recent-raw-source-window-contract, --explain-recent-raw-promoted-retention-contract, --explain-recent-raw-replacement-promotion-contract, --explain-recent-raw-replacement-progress-contract, --explain-recent-raw-replacement-artifact-history-contract, --explain-recent-raw-replacement-attempt-telemetry, --explain-recent-raw-replacement-convergence, --explain-publication-truth-export-blocker, --explain-replay-sol-leg-blocker, --trace-replay-sol-leg-deep-proof, --trace-replay-sol-leg-source-compare, --probe-checkpoint-row-fetch-busy-wait, --probe-checkpoint-row-fetch-copied-snapshot, --probe-checkpoint-row-fetch-minimal-snapshot, --probe-checkpoint-row-fetch-materialization-busy-wait, --probe-checkpoint-row-fetch-materialization-immutable-source, --probe-checkpoint-row-fetch-immutable-source-select, --probe-checkpoint-row-fetch-direct-immutable-select, --probe-checkpoint-row-fetch-direct-immutable-id-only-select, --probe-checkpoint-row-fetch-direct-immutable-single-column-selects, --probe-checkpoint-row-fetch-direct-immutable-updated-at-expression-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-prefix-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-text-vs-blob-first-byte, --probe-checkpoint-row-fetch-direct-immutable-started-at-text-vs-blob-first-byte, --probe-checkpoint-row-fetch-direct-immutable-timestamp-unixepoch-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-textified-unixepoch-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-datetime-reconstruction-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-printf-text-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-printf-prefix-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-unicode-first-char-split, --probe-checkpoint-row-fetch-direct-immutable-timestamp-zero-length-substr-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-hex-original-vs-printf, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-length-vs-hex, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-prefix-depth-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-prefix-threshold-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-second-char-text-vs-unicode, --probe-checkpoint-row-fetch-direct-immutable-updated-at-printf-second-char-boundary-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-second-char-boundary-printf-vs-unixepoch-text, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-zero-length-offset-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-base-vs-zero-length-substr, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-text-duplicate-base-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-int-vs-text-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-duplicate-int-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-vs-id-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-vs-phase-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-vs-typeof-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-unixepoch-vs-length-split, --probe-checkpoint-row-fetch-direct-immutable-updated-at-length-vs-id-split, --explain-recent-raw-staged-lineage, --explain-recent-raw-staged-regression, --explain-recent-raw-staged-window-seeding, and --explain-recent-raw-staged-birth are mutually exclusive"
         );
     }
     if deep_attempt_telemetry_scan && !explain_recent_raw_replacement_attempt_telemetry {
@@ -54078,6 +55638,28 @@ where
         ));
     }
 
+    if probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split {
+        if state_root.is_some()
+            || db_path.is_some()
+            || output_path.is_some()
+            || scheduled
+            || force
+            || now.is_some()
+        {
+            bail!(
+                "--probe-checkpoint-row-fetch-direct-immutable-updated-at-length-vs-id-split only accepts --config and optional --json"
+            );
+        }
+        return Ok(Some(
+            Command::ProbeCheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSplit(
+                ProbeCheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSplitConfig {
+                    config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
+                    json,
+                },
+            ),
+        ));
+    }
+
     if explain_recent_raw_staged_lineage {
         if config_path.is_some()
             || db_path.is_some()
@@ -54907,6 +56489,23 @@ fn run_command(command: Command) -> Result<String> {
             } else {
                 Ok(
                     render_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_human(
+                        &diagnostic,
+                    ),
+                )
+            }
+        }
+        Command::ProbeCheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSplit(config) => {
+            let diagnostic =
+                probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only(
+                    &config.config_path,
+                );
+            if config.json {
+                serde_json::to_string_pretty(&diagnostic).context(
+                    "failed serializing checkpoint row-fetch direct immutable updated_at length-vs-id probe json",
+                )
+            } else {
+                Ok(
+                    render_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_human(
                         &diagnostic,
                     ),
                 )
@@ -61565,6 +63164,17 @@ fn render_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_p
     })
 }
 
+fn render_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_human(
+    diagnostic: &CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeDiagnostic,
+) -> String {
+    serde_json::to_string_pretty(diagnostic).unwrap_or_else(|error| {
+        format!(
+            "{{\"event\":\"discovery_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe\",\"render_error\":\"{}\"}}",
+            error
+        )
+    })
+}
+
 fn render_checkpoint_row_fetch_direct_immutable_updated_at_hex_source_probe_human(
     diagnostic: &CheckpointRowFetchDirectImmutableUpdatedAtHexSourceProbeDiagnostic,
 ) -> String {
@@ -62808,6 +64418,8 @@ mod tests {
         probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_typeof_split_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_split_read_only_with_budget,
         probe_checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_split_read_only_with_budget_and_test_behavior,
+        probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only_with_budget,
+        probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_direct_immutable_updated_at_prefix_split_read_only_with_budget,
         probe_checkpoint_row_fetch_direct_immutable_updated_at_prefix_split_read_only_with_budget_and_test_behavior,
         probe_checkpoint_row_fetch_direct_immutable_started_at_text_vs_blob_first_byte_read_only_with_budget,
@@ -62910,6 +64522,9 @@ mod tests {
         CheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsLengthProbeReasonClass,
         CheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsLengthProbeResultKind,
         CheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsLengthProbeTestBehavior,
+        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeReasonClass,
+        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind,
+        CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior,
         CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetProbeReasonClass,
         CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetProbeResultKind,
         CheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetProbeTestBehavior,
@@ -62970,6 +64585,7 @@ mod tests {
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsPhaseSplitConfig,
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsTypeofSplitConfig,
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsLengthSplitConfig,
+        ProbeCheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSplitConfig,
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtUnixepochTextZeroLengthOffsetSplitConfig,
         ProbeCheckpointRowFetchDirectImmutableUpdatedAtPrefixSplitConfig,
         ProbeCheckpointRowFetchDirectImmutableStartedAtTextVsBlobFirstByteConfig,
@@ -63910,6 +65526,29 @@ mod tests {
         else {
             panic!(
                 "expected checkpoint row-fetch direct immutable updated_at unixepoch-vs-length split probe command"
+            );
+        };
+        assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
+        assert!(parsed.json);
+    }
+
+    #[test]
+    fn parse_args_from_accepts_probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_mode(
+    ) {
+        let parsed = parse_args_from(vec![
+            "--probe-checkpoint-row-fetch-direct-immutable-updated-at-length-vs-id-split"
+                .to_string(),
+            "--config".to_string(),
+            "/tmp/live.server.toml".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parse should succeed")
+        .expect("command should be present");
+        let Command::ProbeCheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSplit(parsed) =
+            parsed
+        else {
+            panic!(
+                "expected checkpoint row-fetch direct immutable updated_at length-vs-id split probe command"
             );
         };
         assert_eq!(parsed.config_path, PathBuf::from("/tmp/live.server.toml"));
@@ -74476,6 +76115,549 @@ mod tests {
                 .checkpoint_row_fetch_direct_immutable_updated_at_unixepoch_vs_length_probe_length_result_kind,
             Some(
                 CheckpointRowFetchDirectImmutableUpdatedAtUnixepochVsLengthProbeResultKind::RowFetchTimeoutAfterQueryStart
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_command_probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_returns_success_json(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-length-vs-id-row",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-direct-immutable-updated-at-length-vs-id-row".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only_with_budget(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+            );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeProven,
+            "{diagnostic:#?}"
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_result_kind,
+            Some(CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::Row)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_result_kind,
+            Some(CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::Row)
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_value
+                .is_some()
+        );
+        assert_eq!(
+            diagnostic.checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_value,
+            Some(1)
+        );
+
+        let rendered = run_command(
+            Command::ProbeCheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSplit(
+                ProbeCheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdSplitConfig {
+                    config_path: fixture.config_path.clone(),
+                    json: true,
+                },
+            ),
+        )?;
+        let parsed: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_reason_class"],
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_proven"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_result_kind"],
+            "row"
+        );
+        assert_eq!(
+            parsed["checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_result_kind"],
+            "row"
+        );
+        for key in [
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_observed",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_reason_class",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_explanation",
+            "config_path",
+            "runtime_db_path",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_strategy",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_runtime_db_uri",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_runtime_db_mode",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_runtime_db_immutable",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_runtime_db_readonly",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_budget_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_budget_source",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_total_elapsed_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_budget_exhausted",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_stage",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_sql",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_explain_query_plan",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_explain_query_plan_rows",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_connection_journal_mode",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_connection_locking_mode",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_connection_query_only",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_busy_timeout_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_query_started",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_row_fetch_completed",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_row_fetch_elapsed_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_row_returned",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_value",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_result_kind",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_sqlite_error_code",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_sqlite_error_message",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_sql",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_explain_query_plan",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_explain_query_plan_rows",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_connection_journal_mode",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_connection_locking_mode",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_connection_query_only",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_busy_timeout_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_query_started",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_row_fetch_completed",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_row_fetch_elapsed_ms",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_row_returned",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_value",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_result_kind",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_sqlite_error_code",
+            "checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_sqlite_error_message",
+        ] {
+            assert!(
+                parsed.get(key).is_some(),
+                "missing length-vs-id json key {key}: {parsed:#?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_missing_row_returns_proven_eof(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-length-vs-id-missing-row",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-direct-immutable-updated-at-length-vs-id-eof".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        let conn = rusqlite::Connection::open(&fixture.db_path)?;
+        conn.execute(
+            "DELETE FROM discovery_persisted_rebuild_state WHERE id = 1",
+            [],
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only_with_budget(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+            );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeProven
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_result_kind,
+            Some(CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::Eof)
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_result_kind,
+            Some(CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::Eof)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_timeout_still_returns_bounded_id_result(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-length-vs-id-length-timeout",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature:
+                        "sig-direct-immutable-updated-at-length-vs-id-length-timeout"
+                            .to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior::DelayLengthBeforeRowFetch(
+                        StdDuration::from_secs(2),
+                    ),
+                ),
+            );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeProven
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::RowFetchTimeoutAfterQueryStart
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_result_kind,
+            Some(CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::Row)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_timeout_still_returns_bounded_length_result(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-length-vs-id-id-timeout",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature: "sig-direct-immutable-updated-at-length-vs-id-id-timeout"
+                        .to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior::DelayIdBeforeRowFetch(
+                        StdDuration::from_secs(2),
+                    ),
+                ),
+            );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeProven
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::RowFetchTimeoutAfterQueryStart
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_result_kind,
+            Some(CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::Row)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_forced_sqlite_error_reports_exact_fields(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-length-vs-id-sqlite-error",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature:
+                        "sig-direct-immutable-updated-at-length-vs-id-sqlite-error".to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior::ForceIdOtherSqliteError,
+                ),
+            );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeProven
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::OtherSqliteError
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_sqlite_error_code
+                .as_deref(),
+            Some("SQLITE_CORRUPT")
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_sqlite_error_message
+                .as_deref(),
+            Some("forced other sqlite error at direct immutable id SELECT rows.next() boundary")
+        );
+        assert!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_result_kind
+                .is_some()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_preserves_length_sqlite_error_when_id_times_out(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-length-vs-id-preserve-length-sqlite-error",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature:
+                        "sig-direct-immutable-updated-at-length-vs-id-preserve-length-sqlite-error"
+                            .to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior::ForceLengthOtherSqliteErrorAndDelayIdBeforeRowFetch(
+                        StdDuration::from_secs(2),
+                    ),
+                ),
+            );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeProven
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::OtherSqliteError
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_sqlite_error_code
+                .as_deref(),
+            Some("SQLITE_CORRUPT")
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_sqlite_error_message
+                .as_deref(),
+            Some(
+                "forced other sqlite error at direct immutable length(updated_at) SELECT rows.next() boundary"
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::RowFetchTimeoutAfterQueryStart
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_preserves_id_sqlite_error_when_length_times_out(
+    ) -> Result<()> {
+        let fixture = make_fixture(
+            "runtime-export-checkpoint-row-fetch-direct-immutable-updated-at-length-vs-id-preserve-id-sqlite-error",
+        )?;
+        let now = parse_ts("2026-04-17T10:00:00Z")?;
+        fixture.store.upsert_discovery_persisted_rebuild_state(
+            &DiscoveryPersistedRebuildStateRow {
+                phase: DiscoveryPersistedRebuildPhase::Replay,
+                window_start: metrics_window_start(now),
+                horizon_end: metrics_window_start(now) + Duration::days(7),
+                metrics_window_start: metrics_window_start(now),
+                phase_cursor: Some(DiscoveryRuntimeCursor {
+                    ts_utc: parse_ts("2026-04-17T09:40:00Z")?,
+                    slot: 100,
+                    signature:
+                        "sig-direct-immutable-updated-at-length-vs-id-preserve-id-sqlite-error"
+                            .to_string(),
+                }),
+                prepass_rows_processed: 0,
+                prepass_pages_processed: 0,
+                replay_rows_processed: 1,
+                replay_pages_processed: 1,
+                chunks_completed: 0,
+                state_json: "{}".to_string(),
+                started_at: now - Duration::minutes(10),
+                updated_at: now - Duration::minutes(1),
+            },
+        )?;
+        checkpoint_fixture_db_to_main_db(&fixture.db_path)?;
+
+        let diagnostic =
+            probe_checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_split_read_only_with_budget_and_test_behavior(
+                &fixture.config_path,
+                StdDuration::from_secs(1),
+                Some(
+                    CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeTestBehavior::ForceIdOtherSqliteErrorAndDelayLengthBeforeRowFetch(
+                        StdDuration::from_secs(2),
+                    ),
+                ),
+            );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_reason_class,
+            CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeReasonClass::CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeProven
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::OtherSqliteError
+            )
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_sqlite_error_code
+                .as_deref(),
+            Some("SQLITE_CORRUPT")
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_id_sqlite_error_message
+                .as_deref(),
+            Some("forced other sqlite error at direct immutable id SELECT rows.next() boundary")
+        );
+        assert_eq!(
+            diagnostic
+                .checkpoint_row_fetch_direct_immutable_updated_at_length_vs_id_probe_length_result_kind,
+            Some(
+                CheckpointRowFetchDirectImmutableUpdatedAtLengthVsIdProbeResultKind::RowFetchTimeoutAfterQueryStart
             )
         );
         Ok(())
