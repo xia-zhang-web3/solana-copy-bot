@@ -15490,6 +15490,61 @@ Live rollout result (`2026-04-18`, commit `489dd42`):
      proven-clean same-row control or another value-materializing peer to keep
      narrowing where the stall boundary actually lives
 
+Repository batch accepted (`2026-04-18`):
+
+1. A new bounded direct immutable updated_at raw-vs-started_at-raw proof
+   operator now exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-raw-vs-started-at-raw-split --config <path> --json`
+2. The operator runs two independent direct immutable subprobes on fresh
+   connections:
+   - `SELECT updated_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT started_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+3. Each subprobe is instrumented at the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The accepted code commit is:
+   - `4445e15 Add updated-at raw-vs-started-at-raw probe`
+5. Acceptance checks:
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-18`, commit `4445e15`):
+
+1. The production host was fast-forwarded from `489dd42` to `4445e15`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-raw-vs-started-at-raw-split --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_started_at_raw_probe_reason_class = checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_started_at_raw_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_started_at_raw_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_started_at_raw_probe_budget_exhausted = false`
+5. The raw `updated_at` subprobe reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_started_at_raw_probe_updated_at_raw_sql = SELECT updated_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_started_at_raw_probe_updated_at_raw_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_started_at_raw_probe_updated_at_raw_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_started_at_raw_probe_updated_at_raw_result_kind = row_fetch_timeout_after_query_start`
+6. The raw `started_at` subprobe also reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_started_at_raw_probe_started_at_raw_sql = SELECT started_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_started_at_raw_probe_started_at_raw_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_started_at_raw_probe_started_at_raw_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_raw_vs_started_at_raw_probe_started_at_raw_result_kind = row_fetch_timeout_after_query_start`
+7. Current interpretation:
+   - the seam no longer fits an `updated_at`-specific raw projection theory
+   - raw `started_at` reproduces the same bounded stall when paired with raw
+     `updated_at`
+   - this materially broadens the current inference from “value-materializing
+     `updated_at` access” to a wider raw timestamp-column materialization seam
+     under the paired same-row bounded harness
+   - the next useful probe should compare raw timestamp projection against a
+     proven-clean non-timestamp peer or another timestamp-shape control to keep
+     tightening where this broader seam actually begins
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
