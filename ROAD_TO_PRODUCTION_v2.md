@@ -15825,6 +15825,61 @@ Live rollout result (`2026-04-18`, commit `3cc0d9e`):
      extends across same-column value-reading function access, while type-only
      inspection on that column remains clean
 
+Repository batch accepted (`2026-04-18`):
+
+1. A new bounded direct immutable started_at length-vs-typeof proof operator
+   now exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-length-vs-typeof-split --config <path> --json`
+2. The operator runs two independent direct immutable subprobes on fresh
+   connections:
+   - `SELECT length(started_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT typeof(started_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+3. Each subprobe is instrumented at the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The accepted code commit is:
+   - `12ad036 Add started-at length-vs-typeof probe`
+5. Acceptance checks:
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-18`, commit `12ad036`):
+
+1. The production host was fast-forwarded from `3cc0d9e` to `12ad036`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-length-vs-typeof-split --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_typeof_probe_reason_class = checkpoint_row_fetch_direct_immutable_started_at_length_vs_typeof_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_typeof_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_typeof_probe_budget_exhausted = false`
+5. The `length(started_at)` subprobe reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_typeof_probe_length_sql = SELECT length(started_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_typeof_probe_length_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_typeof_probe_length_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_typeof_probe_length_result_kind = row_fetch_timeout_after_query_start`
+6. The `typeof(started_at)` subprobe stayed clean:
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_typeof_probe_typeof_sql = SELECT typeof(started_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_typeof_probe_typeof_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_typeof_probe_typeof_row_fetch_completed = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_typeof_probe_typeof_row_returned = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_typeof_probe_typeof_value = text`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_typeof_probe_typeof_result_kind = row`
+7. Current interpretation:
+   - the started_at seam clearly extends beyond raw/unixepoch access into
+     another same-column value-reading function family
+   - `typeof(started_at)` remains clean, so this still is not a generic
+     same-column inspection effect on `started_at`
+   - the strongest current inference is that the blocker on `started_at`
+     generalizes across multiple same-column value-reading access shapes, while
+     type-only inspection remains clean
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
