@@ -15377,6 +15377,61 @@ Live rollout result (`2026-04-18`, commit `23b8b6c`):
      clean control or another value-reading `updated_at` function to keep
      tightening the seam around value-reading behavior
 
+Repository batch accepted (`2026-04-18`):
+
+1. A new bounded direct immutable updated_at length-vs-raw proof operator now
+   exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-length-vs-raw-split --config <path> --json`
+2. The operator runs two independent direct immutable subprobes on fresh
+   connections:
+   - `SELECT length(updated_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT updated_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+3. Each subprobe is instrumented at the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The accepted code commit is:
+   - `6861f7b Add updated-at length-vs-raw probe`
+5. Acceptance checks:
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-18`, commit `6861f7b`):
+
+1. The production host was fast-forwarded from `23b8b6c` to `6861f7b`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-updated-at-length-vs-raw-split --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_length_vs_raw_probe_reason_class = checkpoint_row_fetch_direct_immutable_updated_at_length_vs_raw_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_length_vs_raw_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_length_vs_raw_probe_budget_exhausted = false`
+5. The `length(updated_at)` subprobe reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_length_vs_raw_probe_length_sql = SELECT length(updated_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_length_vs_raw_probe_length_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_length_vs_raw_probe_length_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_length_vs_raw_probe_length_result_kind = row_fetch_timeout_after_query_start`
+6. The raw `updated_at` subprobe also reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_updated_at_length_vs_raw_probe_raw_updated_at_sql = SELECT updated_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_length_vs_raw_probe_raw_updated_at_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_length_vs_raw_probe_raw_updated_at_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_updated_at_length_vs_raw_probe_raw_updated_at_result_kind = row_fetch_timeout_after_query_start`
+7. Current interpretation:
+   - the seam is now best described as broader value-materializing
+     `updated_at` access under the paired same-row bounded harness
+   - the timeout no longer depends on a specific wrapper like `length(...)`,
+     because raw `updated_at` reproduces the same bounded stall alongside it
+   - this materially tightens the current inference around the act of reading
+     `updated_at` as value, rather than around a narrower function-shaped path
+   - the next useful probe should compare raw `updated_at` against another
+     clean same-column control or compare two different raw/value-materializing
+     peers to keep narrowing the exact seam
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
