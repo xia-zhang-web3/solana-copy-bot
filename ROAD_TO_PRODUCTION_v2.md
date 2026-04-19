@@ -15935,6 +15935,61 @@ Live rollout result (`2026-04-19`, commit `9e85aeb`):
    - at the same time, this still does not look like a generic same-row scalar
      effect because `id` remains clean
 
+Repository batch accepted (`2026-04-19`):
+
+1. A new bounded direct immutable started_at length-vs-phase-length proof
+   operator now exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-length-vs-phase-length-split --config <path> --json`
+2. The operator runs two independent direct immutable subprobes on fresh
+   connections:
+   - `SELECT length(started_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT length(phase) FROM discovery_persisted_rebuild_state WHERE id = 1`
+3. Each subprobe is instrumented at the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The accepted code commit is:
+   - `c04f48a Add started-at length-vs-phase-length probe`
+5. Acceptance checks:
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-19`, commit `c04f48a`):
+
+1. The production host was fast-forwarded from `9e85aeb` to `c04f48a`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-length-vs-phase-length-split --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_phase_length_probe_reason_class = checkpoint_row_fetch_direct_immutable_started_at_length_vs_phase_length_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_phase_length_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_phase_length_probe_budget_exhausted = false`
+5. The `length(started_at)` subprobe independently reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_phase_length_probe_started_at_length_sql = SELECT length(started_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_phase_length_probe_started_at_length_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_phase_length_probe_started_at_length_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_phase_length_probe_started_at_length_result_kind = row_fetch_timeout_after_query_start`
+6. The `length(phase)` subprobe stayed clean:
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_phase_length_probe_phase_length_sql = SELECT length(phase) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_phase_length_probe_phase_length_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_phase_length_probe_phase_length_row_fetch_completed = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_phase_length_probe_phase_length_row_returned = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_phase_length_probe_phase_length_value = 6`
+   - `checkpoint_row_fetch_direct_immutable_started_at_length_vs_phase_length_probe_phase_length_result_kind = row`
+7. Current interpretation:
+   - the seam on `started_at` does not currently look like a broader same-row
+     `length(column)` effect
+   - `length(started_at)` still reproduces the bounded timeout while
+     `length(phase)` stays clean
+   - the strongest current inference is that the blocker remains specific to
+     the timestamp-family column rather than contaminating a previously clean
+     non-timestamp text peer under the same `length(...)` wrapper
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
