@@ -16196,6 +16196,81 @@ Live rollout result (`2026-04-19`, commit `9dedf9b`):
      or runtime value materialization details rather than in a mnemonic that is
      absent from every clean peer
 
+Repository batch accepted (`2026-04-19`):
+
+1. The previously rejected direct immutable started_at seam bytecode-signature
+   matrix surface is now accepted with a bounded-orchestration fix:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-seam-bytecode-signature-matrix --config <path> --json`
+2. This is the corrective fix for the earlier rejected implementation that was
+   reverted on `main` and on the host because it still blocked on unfinished
+   worker lifecycle after budget expiry.
+3. The accepted code commit is:
+   - `de6b245 Fix seam bytecode signature matrix bounded return`
+4. The operator surface, JSON contract, and fixed seven-subprobe matrix all stay
+   unchanged.
+5. The critical fix is orchestration-only:
+   - after timeout synthesis or any other conclusive exit path, the top-level
+     operator now returns immediately
+   - it no longer waits on stalled workers after a bounded decision has already
+     been reached
+6. Added regression coverage now proves bounded wall-clock return for:
+   - a delayed started_at target beyond budget
+   - a delayed clean peer after another started_at target already reached a
+     conclusive SQLite error
+7. Acceptance checks:
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-19`, commit `de6b245`):
+
+1. The production host was fast-forwarded from the revert commit `af77f80` to
+   `de6b245`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live rerun of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-seam-bytecode-signature-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   returned boundedly again:
+   - remote wrapper wall-clock `elapsed_sec = 1.030`
+   - output file bytes `= 25531`
+   - `checkpoint_row_fetch_direct_immutable_started_at_seam_bytecode_signature_matrix_probe_reason_class = checkpoint_row_fetch_direct_immutable_started_at_seam_bytecode_signature_matrix_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_started_at_seam_bytecode_signature_matrix_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_started_at_seam_bytecode_signature_matrix_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_direct_immutable_started_at_seam_bytecode_signature_matrix_probe_subprobe_order = ["started_at_raw", "started_at_unixepoch", "started_at_length", "started_at_typeof", "phase_raw", "phase_length", "id"]`
+5. The bounded live outcome matrix matches the earlier consolidation and
+   bytecode-mnemonic probes:
+   - `started_at_raw.result_kind = row_fetch_timeout_after_query_start`
+   - `started_at_unixepoch.result_kind = row_fetch_timeout_after_query_start`
+   - `started_at_length.result_kind = row_fetch_timeout_after_query_start`
+   - `started_at_typeof.result_kind = row`, `value_text = text`
+   - `phase_raw.result_kind = row`, `value_text = replay`
+   - `phase_length.result_kind = row`, `value_u64 = 6`
+   - `id.result_kind = row`, `value_i64 = 1`
+6. The top-level derived signature fields came back as:
+   - `failing_started_at_labels = ["started_at_raw", "started_at_unixepoch", "started_at_length"]`
+   - `clean_row_labels = ["started_at_typeof", "phase_raw", "phase_length", "id"]`
+   - `shared_failing_signature_intersection = ["opcode=Goto p1=0 p2=1 p3=0 p4=null p5=0 comment=null", "opcode=Halt p1=0 p2=0 p3=0 p4=null p5=0 comment=null", "opcode=Integer p1=1 p2=1 p3=0 p4=null p5=0 comment=null", "opcode=OpenRead p1=0 p2=92 p3=0 p4=15 p5=0 comment=null", "opcode=ResultRow p1=2 p2=1 p3=0 p4=null p5=0 comment=null", "opcode=Transaction p1=0 p2=0 p3=148 p4=0 p5=1 comment=null"]`
+   - `shared_clean_signature_intersection = ["opcode=Goto p1=0 p2=1 p3=0 p4=null p5=0 comment=null", "opcode=Halt p1=0 p2=0 p3=0 p4=null p5=0 comment=null", "opcode=Integer p1=1 p2=1 p3=0 p4=null p5=0 comment=null", "opcode=ResultRow p1=2 p2=1 p3=0 p4=null p5=0 comment=null", "opcode=Transaction p1=0 p2=0 p3=148 p4=0 p5=1 comment=null"]`
+   - `failing_only_shared_signatures = []`
+   - `shared_started_at_reader_column_signature_intersection = []`
+   - `started_at_reader_only_shared_column_signatures = []`
+   - `shared_transforming_started_at_function_signature_intersection = []`
+   - `shared_clean_function_signature_intersection = []`
+   - `transforming_only_shared_function_signatures = []`
+7. Current interpretation:
+   - the operator is now truly bounded again on live, which was the only
+     acceptance blocker for this surface
+   - signature-level bytecode instrumentation preserved the same failing-vs-clean
+     row-fetch split as the earlier matrix probes
+   - but normalized signature intersections are still not isolating a unique
+     failing-only signature, column signature, or transforming-only function
+     signature
+   - the next root-cause step should move below EXPLAIN signature space rather
+     than reopening pairwise surface churn
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
