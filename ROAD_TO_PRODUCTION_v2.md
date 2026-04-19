@@ -16344,6 +16344,99 @@ Live rollout result (`2026-04-19`, commit `1c36742`):
    - this is still instrumentation evidence, not a causal proof, but it is a
      stronger low-level discriminator than the previous signature-level matrix
 
+### Stage 3 started_at seam source-compare matrix via materialized secondary source (`2026-04-19`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a bounded source-path comparison mode:
+   `--probe-checkpoint-row-fetch-started-at-seam-source-compare-matrix --config <path> --json`
+2. The operator keeps the fixed seven-label started_at seam matrix:
+   - `started_at_raw`
+   - `started_at_unixepoch`
+   - `started_at_length`
+   - `started_at_typeof`
+   - `phase_raw`
+   - `phase_length`
+   - `id`
+3. The direct side keeps the existing exact low-level boundary on fresh immutable
+   runtime-DB connections:
+   - prepare statement
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The secondary side no longer depends on whole-file copied-snapshot cloning.
+   It now uses bounded SQLite-side materialization to build a fresh secondary
+   source containing only the `discovery_persisted_rebuild_state WHERE id = 1`
+   row shape needed by this matrix.
+5. The operator now reports accurate materialized-source telemetry:
+   - `materialized_source_created`
+   - `materialized_source_path`
+   - `materialization_budget_ms`
+   - `materialization_elapsed_ms`
+   - `materialization_stage`
+   - `materialization_stage_detail`
+   - `materialization_partial_progress_observed`
+6. Comparison fields remain honest:
+   - they stay empty when one source side has null `result_kind`
+   - missing-evidence labels remain explicit per source side
+   - timeout synthesis still happens only after query start and before
+     row-fetch completion
+
+Live rollout result (`2026-04-19`, commit `5f68824`):
+
+1. The production host was fast-forwarded from `d4ec9fc` to `5f68824`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live rerun of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-seam-source-compare-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   returned boundedly:
+   - remote wrapper wall-clock `elapsed_sec = 2.14`
+   - output file bytes `= 11854`
+   - `checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_reason_class = checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_proven`
+   - `checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_total_elapsed_ms = 2122`
+   - `checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_budget_ms = 7000`
+   - `checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_stage = run_materialized_source_matrix`
+5. Secondary-source materialization now completes on the live host:
+   - `materialization_budget_ms = 5000`
+   - `materialization_elapsed_ms = 1119`
+   - `materialization_stage = materialization_detach_completed`
+   - `materialization_stage_detail = detach_completed elapsed_ms=0`
+   - `materialization_partial_progress_observed = true`
+   - `materialized_source_created = true`
+6. The direct immutable source preserved the known seam split:
+   - `started_at_raw = row_fetch_timeout_after_query_start`
+   - `started_at_unixepoch = row_fetch_timeout_after_query_start`
+   - `started_at_length = row_fetch_timeout_after_query_start`
+   - `started_at_typeof = row`
+   - `phase_raw = row`
+   - `phase_length = row`
+   - `id = row`
+7. The materialized secondary source returned row for all seven labels:
+   - `started_at_raw = row`
+   - `started_at_unixepoch = row`
+   - `started_at_length = row`
+   - `started_at_typeof = row`
+   - `phase_raw = row`
+   - `phase_length = row`
+   - `id = row`
+8. The top-level comparison fields came back as:
+   - `labels_changed_by_source = ["started_at_raw", "started_at_unixepoch", "started_at_length"]`
+   - `labels_unchanged_across_sources = ["started_at_typeof", "phase_raw", "phase_length", "id"]`
+   - `labels_direct_timeout_but_materialized_row = ["started_at_raw", "started_at_unixepoch", "started_at_length"]`
+   - `labels_direct_row_but_materialized_timeout = []`
+   - `labels_direct_and_materialized_row = ["started_at_typeof", "phase_raw", "phase_length", "id"]`
+   - `labels_direct_and_materialized_timeout = []`
+   - `labels_missing_materialized_source_evidence = []`
+   - `labels_missing_direct_evidence = []`
+9. Current interpretation:
+   - the source-path question is now answered on live
+   - the started_at seam is source-path dependent in this matrix shape:
+     the failing started_at readers time out on the direct immutable runtime DB
+     but return row on the bounded materialized secondary source
+   - the clean controls stay row on both sources
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
