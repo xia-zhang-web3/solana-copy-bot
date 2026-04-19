@@ -16567,11 +16567,15 @@ Current rollout status:
 
 1. The code batch was accepted locally and pushed to `main` as commit `9419d00`.
 2. Live rollout and production proof were not completed from this session.
-3. The blocker is infrastructure access, not probe correctness:
-   - direct SSH attempts to `52.28.0.218` from this session under
-     `root`, `admin`, `ec2-user`, `ubuntu`, and `blacktower`
-     all returned `Permission denied (publickey)`
-4. Therefore there is not yet a production fact for this operator.
+3. The blocker is still infrastructure access, not probe correctness:
+   - the SSH identity file was later located at
+     `/Users/blacktower/Documents/keys/solana-copy-bot.pem`
+   - one direct login check with that key succeeded as `ubuntu`
+   - subsequent host access checks then failed at transport level instead:
+     - `ssh ... ubuntu@52.28.0.218` returned `connection refused`
+     - `nc -vz 52.28.0.218 22` returned `connection refused`
+     - `ping -c 2 52.28.0.218` returned `100% packet loss`
+4. Therefore there is still not yet a production fact for this operator.
 5. Next reviewer/operator session should treat live rollout and bounded proof for
    `--probe-checkpoint-row-fetch-started-at-seam-source-bytecode-compare-matrix`
    as still pending.
