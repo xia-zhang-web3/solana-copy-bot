@@ -16120,6 +16120,82 @@ Live rollout result (`2026-04-19`, commit `493d1e8`):
    - type-only inspection and the clean non-timestamp peers still remain
      unaffected in the same bounded matrix run
 
+Repository batch accepted (`2026-04-19`):
+
+1. A new additive-only direct immutable started_at seam bytecode-matrix
+   instrumentation operator now exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-seam-bytecode-matrix --config <path> --json`
+2. The operator reruns the same fixed seven-subprobe started_at seam matrix on
+   fresh direct immutable read-only connections:
+   - `started_at_raw`
+   - `started_at_unixepoch`
+   - `started_at_length`
+   - `started_at_typeof`
+   - `phase_raw`
+   - `phase_length`
+   - `id`
+3. For each subprobe it now captures:
+   - the existing bounded row-fetch outcome
+   - `EXPLAIN QUERY PLAN`
+   - full `EXPLAIN` bytecode rows
+   - ordered opcode mnemonics
+4. The accepted code commit is:
+   - `9dedf9b Add started-at seam bytecode matrix probe`
+5. Acceptance checks:
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-19`, commit `9dedf9b`):
+
+1. The production host was fast-forwarded from `493d1e8` to `9dedf9b`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. The first release artifact on the host was stale and did not expose the new
+   flag even though the checked-out source did:
+   - `--probe-checkpoint-row-fetch-direct-immutable-started-at-seam-bytecode-matrix`
+   This was corrected by running:
+   - `cargo clean -p copybot-discovery`
+   - then rebuilding only `discovery_runtime_export`
+4. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+5. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-seam-bytecode-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_started_at_seam_bytecode_matrix_probe_reason_class = checkpoint_row_fetch_direct_immutable_started_at_seam_bytecode_matrix_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_started_at_seam_bytecode_matrix_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_started_at_seam_bytecode_matrix_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_direct_immutable_started_at_seam_bytecode_matrix_probe_subprobe_order = ["started_at_raw", "started_at_unixepoch", "started_at_length", "started_at_typeof", "phase_raw", "phase_length", "id"]`
+6. The bounded outcome matrix matched the earlier consolidation probe:
+   - `started_at_raw.result_kind = row_fetch_timeout_after_query_start`
+   - `started_at_unixepoch.result_kind = row_fetch_timeout_after_query_start`
+   - `started_at_length.result_kind = row_fetch_timeout_after_query_start`
+   - `started_at_typeof.result_kind = row`
+   - `phase_raw.result_kind = row`
+   - `phase_length.result_kind = row`
+   - `id.result_kind = row`
+7. The top-level opcode comparison fields came back as:
+   - `failing_started_at_labels = ["started_at_raw", "started_at_unixepoch", "started_at_length"]`
+   - `clean_row_labels = ["started_at_typeof", "phase_raw", "phase_length", "id"]`
+   - `shared_failing_opcode_intersection = ["Column", "Goto", "Halt", "Init", "Integer", "OpenRead", "ResultRow", "SeekRowid", "Transaction"]`
+   - `shared_clean_opcode_intersection = ["Goto", "Halt", "Init", "Integer", "OpenRead", "ResultRow", "SeekRowid", "Transaction"]`
+   - `failing_only_shared_opcodes = []`
+8. Example live opcode prefixes showed the expected instrumentation surface:
+   - `started_at_raw.explain_bytecode_opcodes_prefix = ["Init", "OpenRead", "Integer", "SeekRowid", "Column", "ResultRow", "Halt", "Transaction"]`
+   - `started_at_unixepoch.explain_bytecode_opcodes_prefix = ["Init", "OpenRead", "Integer", "SeekRowid", "Column", "Function", "ResultRow", "Halt"]`
+   - `started_at_length.explain_bytecode_opcodes_prefix = ["Init", "OpenRead", "Integer", "SeekRowid", "Column", "Function", "ResultRow", "Halt"]`
+   - `started_at_typeof.explain_bytecode_opcodes_prefix = ["Init", "OpenRead", "Integer", "SeekRowid", "Column", "Function", "ResultRow", "Halt"]`
+9. Current interpretation:
+   - bytecode-level instrumentation preserved the same failing-vs-clean outcome
+     split as the consolidation matrix
+   - but opcode mnemonic intersection alone did not produce a unique
+     failing-only signature
+   - the strongest current inference is that the seam likely sits below simple
+     opcode-set membership, for example in operand shape, p4 function target,
+     or runtime value materialization details rather than in a mnemonic that is
+     absent from every clean peer
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
