@@ -16045,6 +16045,81 @@ Live rollout result (`2026-04-19`, commit `2edb52a`):
      the timestamp-family column rather than contaminating a previously clean
      non-timestamp text peer under the paired raw harness
 
+Repository batch accepted (`2026-04-19`):
+
+1. A new additive-only direct immutable started_at seam-matrix consolidation
+   operator now exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-seam-matrix --config <path> --json`
+2. The operator reruns one fixed ordered matrix of seven independent direct
+   immutable subprobes on fresh connections:
+   - `started_at_raw`
+   - `started_at_unixepoch`
+   - `started_at_length`
+   - `started_at_typeof`
+   - `phase_raw`
+   - `phase_length`
+   - `id`
+3. The exact SQL covered by the matrix is:
+   - `SELECT started_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT unixepoch(started_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT length(started_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT typeof(started_at) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT phase FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT length(phase) FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT id FROM discovery_persisted_rebuild_state WHERE id = 1`
+4. Each subprobe stays pinned to the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+5. The accepted code commit is:
+   - `493d1e8 Add started-at seam matrix probe`
+6. Acceptance checks:
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-19`, commit `493d1e8`):
+
+1. The production host was fast-forwarded from `2edb52a` to `493d1e8`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-seam-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_started_at_seam_matrix_probe_reason_class = checkpoint_row_fetch_direct_immutable_started_at_seam_matrix_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_started_at_seam_matrix_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_started_at_seam_matrix_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_direct_immutable_started_at_seam_matrix_probe_subprobe_order = ["started_at_raw", "started_at_unixepoch", "started_at_length", "started_at_typeof", "phase_raw", "phase_length", "id"]`
+5. The three failing started_at readers all reproduced the bounded seam:
+   - `started_at_raw.result_kind = row_fetch_timeout_after_query_start`
+   - `started_at_raw.query_started = true`
+   - `started_at_raw.row_fetch_completed = false`
+   - `started_at_unixepoch.result_kind = row_fetch_timeout_after_query_start`
+   - `started_at_unixepoch.query_started = true`
+   - `started_at_unixepoch.row_fetch_completed = false`
+   - `started_at_length.result_kind = row_fetch_timeout_after_query_start`
+   - `started_at_length.query_started = true`
+   - `started_at_length.row_fetch_completed = false`
+6. The previously clean peers stayed clean in the same rerun:
+   - `started_at_typeof.result_kind = row`
+   - `started_at_typeof.value_text = text`
+   - `phase_raw.result_kind = row`
+   - `phase_raw.value_text = replay`
+   - `phase_length.result_kind = row`
+   - `phase_length.value_u64 = 6`
+   - `id.result_kind = row`
+   - `id.value_i64 = 1`
+7. Current interpretation:
+   - the consolidation rerun matches the prior micro-probe chain instead of
+     weakening it
+   - the shared seam currently covers broader value-reading access on the
+     timestamp-family `started_at` column
+   - type-only inspection and the clean non-timestamp peers still remain
+     unaffected in the same bounded matrix run
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
