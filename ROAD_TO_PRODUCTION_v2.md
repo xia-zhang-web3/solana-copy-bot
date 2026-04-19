@@ -15990,6 +15990,61 @@ Live rollout result (`2026-04-19`, commit `c04f48a`):
      the timestamp-family column rather than contaminating a previously clean
      non-timestamp text peer under the same `length(...)` wrapper
 
+Repository batch accepted (`2026-04-19`):
+
+1. A new bounded direct immutable started_at raw-vs-phase-raw proof operator
+   now exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-raw-vs-phase-raw-split --config <path> --json`
+2. The operator runs two independent direct immutable subprobes on fresh
+   connections:
+   - `SELECT started_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `SELECT phase FROM discovery_persisted_rebuild_state WHERE id = 1`
+3. Each subprobe is instrumented at the same low-level boundary:
+   - `prepare`
+   - `stmt.query([])`
+   - `rows.next()?`
+4. The accepted code commit is:
+   - `2edb52a Add started-at raw-vs-phase-raw probe`
+5. Acceptance checks:
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-19`, commit `2edb52a`):
+
+1. The production host was fast-forwarded from `c04f48a` to `2edb52a`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-raw-vs-phase-raw-split --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON with:
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_phase_raw_probe_reason_class = checkpoint_row_fetch_direct_immutable_started_at_raw_vs_phase_raw_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_phase_raw_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_phase_raw_probe_budget_exhausted = false`
+5. The raw `started_at` subprobe independently reproduced the seam:
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_phase_raw_probe_started_at_raw_sql = SELECT started_at FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_phase_raw_probe_started_at_raw_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_phase_raw_probe_started_at_raw_row_fetch_completed = false`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_phase_raw_probe_started_at_raw_result_kind = row_fetch_timeout_after_query_start`
+6. The raw `phase` subprobe stayed clean:
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_phase_raw_probe_phase_raw_sql = SELECT phase FROM discovery_persisted_rebuild_state WHERE id = 1`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_phase_raw_probe_phase_raw_query_started = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_phase_raw_probe_phase_raw_row_fetch_completed = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_phase_raw_probe_phase_raw_row_returned = true`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_phase_raw_probe_phase_raw_value = replay`
+   - `checkpoint_row_fetch_direct_immutable_started_at_raw_vs_phase_raw_probe_phase_raw_result_kind = row`
+7. Current interpretation:
+   - the seam on `started_at` does not currently look like a broader same-row
+     raw-projection contamination effect
+   - raw `started_at` still reproduces the bounded timeout while raw `phase`
+     stays clean
+   - the strongest current inference is that the blocker remains specific to
+     the timestamp-family column rather than contaminating a previously clean
+     non-timestamp text peer under the paired raw harness
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
