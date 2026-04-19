@@ -16704,6 +16704,102 @@ Second rejection and rollback:
    - `solana-copy-bot.service = active`
    - `copybot-discovery-runtime-export.timer = active`
 
+Third corrective reintroduction with reordered stages (`2026-04-19`,
+commit `dcd43c2`):
+
+1. The previously rejected source-bytecode compare operator was reintroduced
+   again without changing its surface, source paths, bytecode fields, or JSON
+   contract.
+2. The one intended semantic change was orchestration order only:
+   - materialize secondary source first
+   - then run same-file plain read-only matrix
+   - then run materialized-source matrix
+3. The corrective budgets from `e75d6c2` were kept unchanged:
+   - `materialization_budget_ms = 15000`
+   - same-file stage budget `= 1000`
+   - materialized-side stage budget `= 1000`
+   - total default `budget_ms = 17000`
+
+Local reviewer checks (`2026-04-19`, commit `dcd43c2`):
+
+1. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed with `492` tests green.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Third live rollout result (`2026-04-19`, commit `dcd43c2`):
+
+1. The production host checkout at `/var/www/solana-copy-bot` was
+   fast-forwarded from `623dd3d` to `dcd43c2`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy during the candidate rollout:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-seam-source-bytecode-compare-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   still did not reach two-source comparison:
+   - remote wrapper wall-clock `elapsed_sec = 15.05`
+   - output file bytes `= 17551`
+   - `checkpoint_row_fetch_started_at_seam_source_bytecode_compare_matrix_probe_reason_class = checkpoint_row_fetch_started_at_seam_source_bytecode_compare_matrix_probe_budget_exhausted`
+   - `checkpoint_row_fetch_started_at_seam_source_bytecode_compare_matrix_probe_total_elapsed_ms = 15001`
+   - `checkpoint_row_fetch_started_at_seam_source_bytecode_compare_matrix_probe_budget_ms = 17000`
+   - `checkpoint_row_fetch_started_at_seam_source_bytecode_compare_matrix_probe_budget_exhausted = true`
+   - `checkpoint_row_fetch_started_at_seam_source_bytecode_compare_matrix_probe_stage = materialize_secondary_source`
+   - `checkpoint_row_fetch_started_at_seam_source_bytecode_compare_matrix_probe_materialization_elapsed_ms = 15000`
+   - `checkpoint_row_fetch_started_at_seam_source_bytecode_compare_matrix_probe_materialized_source_created = false`
+   - explanation reported:
+     - `materialization_stage = materialization_insert_select_started`
+     - `materialization_stage_detail = insert_select_started`
+     - `materialization_partial_progress_observed = true`
+5. Unlike the first two rejected runs, same-file workers now never started before
+   the materialization timeout:
+   - all seven same-file `result_kind` values remained `null`
+   - all seven materialized `result_kind` values remained `null`
+   - all source-vs-bytecode comparison fields remained empty
+6. Current interpretation:
+   - reordering the operator stages did not clear the live blocker
+   - the blocking point is upstream of same-file subprobe execution
+   - the shared materialized-source preparation path itself is now the primary
+     live blocker for this family, still stalling at
+     `materialization_insert_select_started`
+
+Shared-path live regression observed during review (`2026-04-19`, commit `dcd43c2`):
+
+1. As a control check, the already-accepted
+   `--probe-checkpoint-row-fetch-started-at-seam-source-compare-matrix`
+   operator was rerun on the same live host under the same candidate build.
+2. That rerun also no longer completed its materialized-source stage:
+   - remote wrapper wall-clock `elapsed_sec = 6.03`
+   - `checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_reason_class = checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_budget_exhausted`
+   - `checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_total_elapsed_ms = 6001`
+   - `checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_budget_ms = 7000`
+   - `checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_budget_exhausted = true`
+   - `checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_stage = materialize_secondary_source`
+   - `checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_materialization_elapsed_ms = 5000`
+   - `checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_materialized_source_created = false`
+   - `checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_materialization_stage = materialization_insert_select_started`
+   - `checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_materialization_stage_detail = insert_select_started`
+   - `checkpoint_row_fetch_started_at_seam_source_compare_matrix_probe_materialization_partial_progress_observed = true`
+3. Current interpretation:
+   - the live blocker is no longer specific to the source-bytecode compare
+     orchestration
+   - the shared SQLite-side materialization helper used by this Stage 3 source
+     family has itself degraded on the live host since the earlier accepted
+     proof
+
+Third rejection and rollback:
+
+1. Because live utility still failed, code commit `dcd43c2` was rejected.
+2. The third code revert was pushed as commit:
+   `6d29d4f Revert "Reorder seam source bytecode compare stages"`
+3. The production host was then fast-forwarded from `dcd43c2` to `6d29d4f`.
+4. Only `discovery_runtime_export` was rebuilt during rollback.
+5. Post-rollback service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
