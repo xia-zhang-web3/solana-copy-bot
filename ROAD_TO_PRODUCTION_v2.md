@@ -16519,7 +16519,7 @@ Live rollout result (`2026-04-19`, commit `a0eea3a`):
 
 ### Stage 3 started_at seam source-bytecode compare matrix (`2026-04-19`)
 
-Accepted repository change:
+Attempted repository change:
 
 1. `discovery_runtime_export` now supports a bounded source-path bytecode
    comparison mode:
@@ -16552,7 +16552,7 @@ Accepted repository change:
    - timeout synthesis still happens only after query start and before
      row-fetch completion
 
-Acceptance checks (`2026-04-19`, commit `9419d00`):
+Local reviewer checks (`2026-04-19`, commit `9419d00`):
 
 1. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
    passed.
@@ -16563,22 +16563,61 @@ Acceptance checks (`2026-04-19`, commit `9419d00`):
 4. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
    passed.
 
-Current rollout status:
+Live rollout result (`2026-04-19`, commit `9419d00`):
 
-1. The code batch was accepted locally and pushed to `main` as commit `9419d00`.
-2. Live rollout and production proof were not completed from this session.
-3. The blocker is still infrastructure access, not probe correctness:
-   - the SSH identity file was later located at
-     `/Users/blacktower/Documents/keys/solana-copy-bot.pem`
-   - one direct login check with that key succeeded as `ubuntu`
-   - subsequent host access checks then failed at transport level instead:
-     - `ssh ... ubuntu@52.28.0.218` returned `connection refused`
-     - `nc -vz 52.28.0.218 22` returned `connection refused`
-     - `ping -c 2 52.28.0.218` returned `100% packet loss`
-4. Therefore there is still not yet a production fact for this operator.
-5. Next reviewer/operator session should treat live rollout and bounded proof for
-   `--probe-checkpoint-row-fetch-started-at-seam-source-bytecode-compare-matrix`
-   as still pending.
+1. After SSH access was restored with
+   `/Users/blacktower/Documents/keys/solana-copy-bot.pem`, the production host
+   checkout at `/var/www/solana-copy-bot` was fast-forwarded from `a0eea3a` to
+   `9419d00`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-seam-source-bytecode-compare-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   returned bounded JSON, but did not reach two-source comparison:
+   - remote wrapper wall-clock `elapsed_sec = 6.04`
+   - output file bytes `= 31344`
+   - `checkpoint_row_fetch_started_at_seam_source_bytecode_compare_matrix_probe_reason_class = checkpoint_row_fetch_started_at_seam_source_bytecode_compare_matrix_probe_budget_exhausted`
+   - `checkpoint_row_fetch_started_at_seam_source_bytecode_compare_matrix_probe_total_elapsed_ms = 6002`
+   - `checkpoint_row_fetch_started_at_seam_source_bytecode_compare_matrix_probe_budget_ms = 7000`
+   - `checkpoint_row_fetch_started_at_seam_source_bytecode_compare_matrix_probe_budget_exhausted = true`
+   - `checkpoint_row_fetch_started_at_seam_source_bytecode_compare_matrix_probe_stage = materialize_secondary_source`
+   - `checkpoint_row_fetch_started_at_seam_source_bytecode_compare_matrix_probe_materialization_elapsed_ms = 5000`
+   - `checkpoint_row_fetch_started_at_seam_source_bytecode_compare_matrix_probe_materialized_source_created = false`
+   - explanation reported:
+     - `materialization_stage = materialization_insert_select_started`
+     - `materialization_stage_detail = insert_select_started`
+     - `materialization_partial_progress_observed = true`
+5. The same-file plain read-only side still reached the known seam split:
+   - `started_at_raw = row_fetch_timeout_after_query_start`
+   - `started_at_unixepoch = row_fetch_timeout_after_query_start`
+   - `started_at_length = row_fetch_timeout_after_query_start`
+   - `started_at_typeof = row`
+   - `phase_raw = row`
+   - `phase_length = row`
+   - `id = row`
+6. The materialized side never produced conclusive evidence:
+   - all seven materialized `result_kind` values remained `null`
+   - all source-vs-bytecode comparison fields remained empty
+7. Current interpretation:
+   - this operator did not answer the source-vs-bytecode question on live
+   - the blocking point is bounded materialized-source preparation, not
+     same-file subprobe execution
+   - `samefile_only_shared_started_at_openread_operands` was still non-empty on
+     the same-file side:
+     `["opcode=OpenRead p2=92 p4=15 p5=0 comment=null"]`
+
+Rejection and rollback:
+
+1. Because live utility failed, code commit `9419d00` was rejected.
+2. The code revert was pushed as commit:
+   `3b4e457 Revert "Add seam source bytecode compare matrix probe"`
+3. The production host was then fast-forwarded from `9419d00` to `3b4e457`.
+4. Only `discovery_runtime_export` was rebuilt during rollback.
+5. Post-rollback service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
 
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
