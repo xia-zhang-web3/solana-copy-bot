@@ -16800,6 +16800,108 @@ Third rejection and rollback:
    - `solana-copy-bot.service = active`
    - `copybot-discovery-runtime-export.timer = active`
 
+### Stage 3 started_at materialization projection matrix (`2026-04-20`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a bounded shared SQLite-side
+   materialization proof mode:
+   `--probe-checkpoint-row-fetch-started-at-materialization-projection-matrix --config <path> --json`
+2. The operator probes the same source row shape at
+   `source.discovery_persisted_rebuild_state WHERE id = 1` across a fixed
+   four-projection matrix:
+   - `id_phase`
+   - `id_phase_started_at_raw`
+   - `id_phase_started_at_typeof`
+   - `id_phase_id_only_control`
+3. Each subprobe uses a fresh temp sqlite db and the exact bounded materialization
+   sequence:
+   - create temp db
+   - create target schema
+   - `ATTACH DATABASE ?1 AS source`
+   - capture `EXPLAIN QUERY PLAN`
+   - capture full `EXPLAIN` bytecode rows and normalized signatures
+   - execute exact `INSERT ... SELECT`
+   - run bounded postcheck row count
+   - `DETACH DATABASE source`
+4. The operator keeps bounded no-join timeout semantics and only synthesizes
+   `execute_timeout_after_start` after execute has started and before it has
+   completed.
+5. A completed subprobe is only treated as conclusive after postcheck row-count
+   evidence is present.
+
+Local reviewer checks (`2026-04-20`, commit `ebadc10`):
+
+1. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed with `482` tests green.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Live rollout result (`2026-04-20`, commit `ebadc10`):
+
+1. The production host checkout at `/var/www/solana-copy-bot` was
+   fast-forwarded from `6d29d4f` to `ebadc10`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-materialization-projection-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   returned boundedly and produced conclusive evidence for all four projections:
+   - remote wrapper wall-clock `elapsed_sec = 0.55`
+   - output file bytes `= 25463`
+   - `checkpoint_row_fetch_started_at_materialization_projection_matrix_probe_reason_class = checkpoint_row_fetch_started_at_materialization_projection_matrix_probe_proven`
+   - `checkpoint_row_fetch_started_at_materialization_projection_matrix_probe_total_elapsed_ms = 445`
+   - `checkpoint_row_fetch_started_at_materialization_projection_matrix_probe_budget_ms = 1000`
+   - `checkpoint_row_fetch_started_at_materialization_projection_matrix_probe_budget_exhausted = false`
+5. Top-level derived fields on live were:
+   - `labels_completed = ["id_phase", "id_phase_started_at_raw", "id_phase_started_at_typeof", "id_phase_id_only_control"]`
+   - `labels_execute_timeout_after_start = []`
+   - `labels_missing_evidence = []`
+   - `labels_with_nonzero_postcheck_row_count = ["id_phase", "id_phase_started_at_raw", "id_phase_started_at_typeof", "id_phase_id_only_control"]`
+   - `raw_started_at_projection_timed_out_while_controls_completed = false`
+6. Per-projection live outcomes were:
+   - `id_phase`
+     - `result_kind = completed`
+     - `execute_elapsed_ms = 12`
+     - `rows_changed = 1`
+     - `postcheck_row_count = 1`
+     - final stage `= materialization_detach_completed`
+   - `id_phase_started_at_raw`
+     - `result_kind = completed`
+     - `execute_elapsed_ms = 381`
+     - `rows_changed = 1`
+     - `postcheck_row_count = 1`
+     - last observed stage before completion reporting `= materialization_insert_select_postcheck_started`
+   - `id_phase_started_at_typeof`
+     - `result_kind = completed`
+     - `execute_elapsed_ms = 11`
+     - `rows_changed = 1`
+     - `postcheck_row_count = 1`
+     - final stage `= materialization_detach_completed`
+   - `id_phase_id_only_control`
+     - `result_kind = completed`
+     - `execute_elapsed_ms = 12`
+     - `rows_changed = 1`
+     - `postcheck_row_count = 1`
+     - final stage `= materialization_detach_completed`
+7. The operator explanation on live reported:
+   - `raw_started_at_projection_timed_out_while_controls_completed = false`
+   - `raw_vs_controls_query_plan_differences_observed = false`
+   - `raw_vs_controls_bytecode_signature_differences_observed = true`
+8. Current interpretation:
+   - the isolated one-row SQLite-side materialization seam is reproducible and
+     bounded on live
+   - raw `started_at` projection is materially slower than the control
+     projections on the same live host (`381ms` versus about `11-12ms`)
+   - but it does not itself time out under this isolated matrix
+   - the previously observed shared-path live blocker therefore remains
+     upstream of, or broader than, this isolated projection matrix alone
+     rather than being explained by an unconditional raw-started_at
+     `INSERT ... SELECT` timeout in isolation
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
