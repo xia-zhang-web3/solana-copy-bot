@@ -16517,6 +16517,65 @@ Live rollout result (`2026-04-19`, commit `a0eea3a`):
      and continues to separate started_at value-reading access from the clean
      controls
 
+### Stage 3 started_at seam source-bytecode compare matrix (`2026-04-19`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a bounded source-path bytecode
+   comparison mode:
+   `--probe-checkpoint-row-fetch-started-at-seam-source-bytecode-compare-matrix --config <path> --json`
+2. The operator keeps the fixed seven-label started_at seam matrix:
+   - `started_at_raw`
+   - `started_at_unixepoch`
+   - `started_at_length`
+   - `started_at_typeof`
+   - `phase_raw`
+   - `phase_length`
+   - `id`
+3. The operator compares two source paths:
+   - same-file plain read-only non-immutable runtime DB
+   - bounded materialized secondary source
+4. Both sides keep the same exact low-level row-fetch boundary:
+   - prepare statement
+   - `stmt.query([])`
+   - `rows.next()?`
+5. Each side also captures:
+   - `EXPLAIN QUERY PLAN`
+   - full `EXPLAIN` bytecode rows
+   - normalized bytecode signatures
+   - `OpenRead` operand signatures
+6. Comparison fields remain honest:
+   - source-outcome comparisons are computed only when both sides have
+     conclusive non-null `result_kind`
+   - missing-evidence labels remain explicit per side
+   - materialization timeout/failure leaves comparison fields empty
+   - timeout synthesis still happens only after query start and before
+     row-fetch completion
+
+Acceptance checks (`2026-04-19`, commit `9419d00`):
+
+1. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export started_at_seam_source_bytecode_compare_matrix -- --nocapture`
+   passed.
+3. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed with `490` tests green.
+4. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Current rollout status:
+
+1. The code batch was accepted locally and pushed to `main` as commit `9419d00`.
+2. Live rollout and production proof were not completed from this session.
+3. The blocker is infrastructure access, not probe correctness:
+   - direct SSH attempts to `52.28.0.218` from this session under
+     `root`, `admin`, `ec2-user`, `ubuntu`, and `blacktower`
+     all returned `Permission denied (publickey)`
+4. Therefore there is not yet a production fact for this operator.
+5. Next reviewer/operator session should treat live rollout and bounded proof for
+   `--probe-checkpoint-row-fetch-started-at-seam-source-bytecode-compare-matrix`
+   as still pending.
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
