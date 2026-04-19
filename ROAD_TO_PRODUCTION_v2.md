@@ -16437,6 +16437,86 @@ Live rollout result (`2026-04-19`, commit `5f68824`):
      but return row on the bounded materialized secondary source
    - the clean controls stay row on both sources
 
+### Stage 3 started_at seam connection-shape compare matrix (`2026-04-19`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a bounded connection-shape comparison mode:
+   `--probe-checkpoint-row-fetch-started-at-seam-connection-compare-matrix --config <path> --json`
+2. The operator keeps the fixed seven-label started_at seam matrix:
+   - `started_at_raw`
+   - `started_at_unixepoch`
+   - `started_at_length`
+   - `started_at_typeof`
+   - `phase_raw`
+   - `phase_length`
+   - `id`
+3. The operator compares the same live runtime DB file via two connection shapes:
+   - direct immutable read-only URI open
+   - direct plain read-only non-immutable open
+4. Both sides keep the same exact low-level boundary:
+   - prepare statement
+   - `stmt.query([])`
+   - `rows.next()?`
+5. Comparison fields remain honest:
+   - they are computed only when both sides have conclusive non-null `result_kind`
+   - missing-evidence labels remain explicit per side
+   - timeout synthesis still happens only after query start and before row-fetch
+     completion
+
+Live rollout result (`2026-04-19`, commit `a0eea3a`):
+
+1. The production host was fast-forwarded from `5f68824` to `a0eea3a`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live rerun of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-seam-connection-compare-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   returned boundedly:
+   - remote wrapper wall-clock `elapsed_sec = 2.03`
+   - output file bytes `= 11459`
+   - `checkpoint_row_fetch_started_at_seam_connection_compare_matrix_probe_reason_class = checkpoint_row_fetch_started_at_seam_connection_compare_matrix_probe_proven`
+   - `checkpoint_row_fetch_started_at_seam_connection_compare_matrix_probe_total_elapsed_ms = 2000`
+   - `checkpoint_row_fetch_started_at_seam_connection_compare_matrix_probe_budget_ms = 2000`
+   - `checkpoint_row_fetch_started_at_seam_connection_compare_matrix_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_started_at_seam_connection_compare_matrix_probe_stage = run_plain_readonly_matrix`
+5. The two connection shapes used on live were:
+   - immutable side: `sqlite_uri_mode_ro_immutable_1`
+   - plain side: `sqlite_open_read_only_non_immutable_path`
+6. The immutable side preserved the known seam split:
+   - `started_at_raw = row_fetch_timeout_after_query_start`
+   - `started_at_unixepoch = row_fetch_timeout_after_query_start`
+   - `started_at_length = row_fetch_timeout_after_query_start`
+   - `started_at_typeof = row`
+   - `phase_raw = row`
+   - `phase_length = row`
+   - `id = row`
+7. The plain read-only non-immutable side returned the same matrix:
+   - `started_at_raw = row_fetch_timeout_after_query_start`
+   - `started_at_unixepoch = row_fetch_timeout_after_query_start`
+   - `started_at_length = row_fetch_timeout_after_query_start`
+   - `started_at_typeof = row`
+   - `phase_raw = row`
+   - `phase_length = row`
+   - `id = row`
+8. The top-level comparison fields came back as:
+   - `labels_changed_by_connection_shape = []`
+   - `labels_unchanged_across_connection_shapes = ["started_at_raw", "started_at_unixepoch", "started_at_length", "started_at_typeof", "phase_raw", "phase_length", "id"]`
+   - `labels_immutable_timeout_but_plain_row = []`
+   - `labels_immutable_row_but_plain_timeout = []`
+   - `labels_immutable_and_plain_row = ["started_at_typeof", "phase_raw", "phase_length", "id"]`
+   - `labels_immutable_and_plain_timeout = ["started_at_raw", "started_at_unixepoch", "started_at_length"]`
+   - `labels_missing_plain_evidence = []`
+   - `labels_missing_immutable_evidence = []`
+9. Current interpretation:
+   - the seam survives same-file plain read-only non-immutable access
+   - this rules out the narrow theory that the live seam is specific to
+     `immutable=1` alone
+   - the strongest current discriminator remains broader than connection shape
+     and continues to separate started_at value-reading access from the clean
+     controls
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
