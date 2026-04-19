@@ -16271,6 +16271,79 @@ Live rollout result (`2026-04-19`, commit `de6b245`):
    - the next root-cause step should move below EXPLAIN signature space rather
      than reopening pairwise surface churn
 
+Repository batch accepted (`2026-04-19`):
+
+1. A new additive-only direct immutable started_at seam bytecode-operand matrix
+   operator now exists:
+   - `discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-seam-bytecode-operand-matrix --config <path> --json`
+2. The operator stays on the same fixed seven-subprobe started_at seam matrix and
+   preserves the accepted bounded no-join orchestration pattern from the
+   signature-matrix fix.
+3. For each subprobe it now captures the existing bounded row-fetch outcome plus
+   operand-family EXPLAIN projections:
+   - `explain_bytecode_column_operand_signatures`
+   - `explain_bytecode_function_operand_signatures`
+   - `explain_bytecode_openread_operand_signatures`
+4. The accepted code commit is:
+   - `1c36742 Add seam bytecode operand matrix probe`
+5. Acceptance checks:
+   - `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   - `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   all passed.
+
+Live rollout result (`2026-04-19`, commit `1c36742`):
+
+1. The production host was fast-forwarded from `de6b245` to `1c36742`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live rerun of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-direct-immutable-started-at-seam-bytecode-operand-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   again returned boundedly:
+   - remote wrapper wall-clock `elapsed_sec = 1.032`
+   - output file bytes `= 26069`
+   - `checkpoint_row_fetch_direct_immutable_started_at_seam_bytecode_operand_matrix_probe_reason_class = checkpoint_row_fetch_direct_immutable_started_at_seam_bytecode_operand_matrix_probe_proven`
+   - `checkpoint_row_fetch_direct_immutable_started_at_seam_bytecode_operand_matrix_probe_total_elapsed_ms = 1000`
+   - `checkpoint_row_fetch_direct_immutable_started_at_seam_bytecode_operand_matrix_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_direct_immutable_started_at_seam_bytecode_operand_matrix_probe_subprobe_order = ["started_at_raw", "started_at_unixepoch", "started_at_length", "started_at_typeof", "phase_raw", "phase_length", "id"]`
+5. The bounded row-fetch outcome matrix stayed unchanged:
+   - `started_at_raw.result_kind = row_fetch_timeout_after_query_start`
+   - `started_at_unixepoch.result_kind = row_fetch_timeout_after_query_start`
+   - `started_at_length.result_kind = row_fetch_timeout_after_query_start`
+   - `started_at_typeof.result_kind = row`, `value_text = text`
+   - `phase_raw.result_kind = row`, `value_text = replay`
+   - `phase_length.result_kind = row`, `value_u64 = 6`
+   - `id.result_kind = row`, `value_i64 = 1`
+6. The top-level operand-family comparison fields came back as:
+   - `failing_started_at_labels = ["started_at_raw", "started_at_unixepoch", "started_at_length"]`
+   - `clean_row_labels = ["started_at_typeof", "phase_raw", "phase_length", "id"]`
+   - `shared_failing_column_operand_intersection = []`
+   - `clean_peer_column_operand_union = ["opcode=Column p1=0 p2=1 p4=null p5=0 comment=null", "opcode=Column p1=0 p2=1 p4=null p5=64 comment=null", "opcode=Column p1=0 p2=14 p4=null p5=128 comment=null"]`
+   - `failing_only_column_operand_signatures = []`
+   - `shared_transforming_started_at_function_operand_intersection = []`
+   - `clean_function_operand_union = ["opcode=Function p4=length(1) p5=0 comment=null", "opcode=Function p4=typeof(1) p5=0 comment=null"]`
+   - `transforming_only_function_operand_signatures = []`
+   - `shared_started_at_openread_operand_intersection = ["opcode=OpenRead p2=92 p4=15 p5=0 comment=null"]`
+   - `clean_peer_openread_operand_union = ["opcode=OpenRead p2=92 p4=0 p5=0 comment=null", "opcode=OpenRead p2=92 p4=2 p5=0 comment=null"]`
+   - `started_at_only_openread_operand_signatures = ["opcode=OpenRead p2=92 p4=15 p5=0 comment=null"]`
+7. Example live operand prefixes showed the expected per-target split:
+   - `started_at_raw.column_operands_prefix = ["opcode=Column p1=0 p2=14 p4=null p5=0 comment=null"]`
+   - `started_at_unixepoch.function_operands_prefix = ["opcode=Function p4=unixepoch(-1) p5=0 comment=null"]`
+   - `started_at_length.function_operands_prefix = ["opcode=Function p4=length(1) p5=0 comment=null"]`
+   - `started_at_typeof.openread_operands_prefix = ["opcode=OpenRead p2=92 p4=15 p5=0 comment=null"]`
+   - `phase_raw.openread_operands_prefix = ["opcode=OpenRead p2=92 p4=2 p5=0 comment=null"]`
+   - `id.openread_operands_prefix = ["opcode=OpenRead p2=92 p4=0 p5=0 comment=null"]`
+8. Current interpretation:
+   - operand-family instrumentation still does not isolate a failing-only column
+     or transforming-function signature
+   - but it does isolate one shared started_at-family `OpenRead` operand shape
+     that is absent from the clean peers:
+     `opcode=OpenRead p2=92 p4=15 p5=0 comment=null`
+   - this is still instrumentation evidence, not a causal proof, but it is a
+     stronger low-level discriminator than the previous signature-level matrix
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
