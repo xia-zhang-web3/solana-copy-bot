@@ -16902,6 +16902,86 @@ Live rollout result (`2026-04-20`, commit `ebadc10`):
      rather than being explained by an unconditional raw-started_at
      `INSERT ... SELECT` timeout in isolation
 
+### Stage 3 standalone started_at source-compare materialization helper probe (`2026-04-20`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a bounded standalone probe of the
+   exact shared materialized-source helper already used by the started_at
+   source-compare family:
+   `--probe-checkpoint-row-fetch-started-at-source-compare-materialization-helper --config <path> --json`
+2. The new operator does not start any direct-side or materialized-side matrix
+   workers. It runs only the shared helper path that creates the started_at
+   source-compare materialized sqlite db.
+3. The operator captures:
+   - materialization stage / detail / partial-progress telemetry
+   - materialized-source creation status and path
+   - exact schema SQL and materialization SQL used by the shared helper
+   - `EXPLAIN QUERY PLAN`
+   - full `EXPLAIN` bytecode rows and normalized signatures
+   - execute timing, rows changed, postcheck row count, and exact sqlite /
+     non-sqlite error fields
+4. The operator keeps bounded no-join timeout semantics and only synthesizes
+   `execute_timeout_after_start` after execute has started and before it has
+   completed.
+5. The implementation reuses the existing
+   `create_checkpoint_row_fetch_started_at_seam_source_compare_materialized_source_via_sqlite_materialization(...)`
+   helper instead of introducing a second materialization path.
+
+Local reviewer checks (`2026-04-20`, commit `9aea549`):
+
+1. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed with `490` tests green.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Live rollout result (`2026-04-20`, commit `9aea549`):
+
+1. The production host checkout at `/var/www/solana-copy-bot` was
+   fast-forwarded from `ebadc10` to `9aea549`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-source-compare-materialization-helper --config /etc/solana-copy-bot/live.server.toml --json`
+   returned boundedly and produced a conclusive standalone helper result:
+   - remote wrapper wall-clock `elapsed_sec = 5.05`
+   - output file bytes `= 8670`
+   - `checkpoint_row_fetch_started_at_source_compare_materialization_helper_probe_reason_class = checkpoint_row_fetch_started_at_source_compare_materialization_helper_probe_proven`
+   - `checkpoint_row_fetch_started_at_source_compare_materialization_helper_probe_total_elapsed_ms = 5000`
+   - `checkpoint_row_fetch_started_at_source_compare_materialization_helper_probe_budget_ms = 5000`
+   - `checkpoint_row_fetch_started_at_source_compare_materialization_helper_probe_budget_exhausted = false`
+5. The conclusive live helper outcome was:
+   - `materialized_source_created = false`
+   - `materialization_stage = materialization_insert_select_started`
+   - `materialization_stage_detail = insert_select_started`
+   - `materialization_partial_progress_observed = true`
+   - `execute_started = true`
+   - `execute_completed = false`
+   - `execute_elapsed_ms = 0`
+   - `rows_changed = null`
+   - `postcheck_row_count = null`
+   - `result_kind = execute_timeout_after_start`
+   - `sqlite_error_code = null`
+   - `sqlite_error_message = null`
+6. The operator explanation on live also reported:
+   - `explain_query_plan_populated = true`
+   - `explain_bytecode_populated = true`
+7. Current interpretation:
+   - the exact shared started_at source-compare materialization helper now
+     reproduces its own bounded execute-timeout behavior in standalone isolation
+     on live
+   - therefore the earlier source-compare-family failures are not explained by
+     surrounding matrix orchestration alone
+   - the remaining live blocker is the shared helper path itself at the
+     `materialization_insert_select_started` boundary
+   - the next accepted Stage 3 batch should target that helper internals or a
+     lower-level execution seam, not another compare-operator orchestration
+     shuffle
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
