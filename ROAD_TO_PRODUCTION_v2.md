@@ -17614,6 +17614,114 @@ Live rollout result (`2026-04-20`, commit `157ed34`):
      progress-vs-busy SQLite instrumentation layer rather than adding more
      attached-source query variants
 
+### Stage 3 started_at materialization attached-source read progress-timeline matrix (`2026-04-20`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a bounded attached-source
+   read progress-timeline matrix operator for the started_at materialization
+   path:
+   `--probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-timeline-matrix --config <path> --json`
+2. The operator reuses the exact attached-source read-progress machinery with:
+   - fixed progress interval `1`
+   - the same fresh temp db plus attached-source lifecycle
+   - the same fixed three-step read sequence:
+     - `source_phase_raw_select`
+     - `source_started_at_typeof_select`
+     - `source_started_at_raw_select`
+3. In addition to the existing progress count fields, each substep now captures:
+   - `first_progress_elapsed_us`
+   - `last_progress_elapsed_us`
+   - bounded `progress_elapsed_us_samples`
+4. The timeline samples keep only the first up to `8` observed elapsed-us values
+   per substep while preserving the true total callback count and last observed
+   elapsed-us.
+5. Existing accepted operator semantics were left unchanged.
+6. The batch touched only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+
+Local reviewer checks (`2026-04-20`, commit `8dafac8`):
+
+1. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed with `568` tests green.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Live rollout result (`2026-04-20`, commit `8dafac8`):
+
+1. The production host checkout at `/var/www/solana-copy-bot` was
+   fast-forwarded from `157ed34` to `8dafac8`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-timeline-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   returned boundedly and produced conclusive microsecond timeline evidence:
+   - remote wrapper wall-clock `elapsed_sec = 1.07`
+   - output file bytes `= 14494`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_timeline_matrix_probe_reason_class = checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_timeline_matrix_probe_proven`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_timeline_matrix_probe_total_elapsed_ms = 1013`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_timeline_matrix_probe_budget_ms = 3000`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_timeline_matrix_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_timeline_matrix_probe_stage = source_started_at_raw_select_row_fetch_started`
+5. Shared connection metadata on live matched the earlier attached-source family:
+   - `connection_journal_mode = delete`
+   - `connection_locking_mode = normal`
+   - `connection_query_only = false`
+   - `connection_synchronous = 2`
+   - `connection_temp_store = 0`
+   - `progress_handler_opcodes_per_callback = 1`
+6. Top-level live results were:
+   - `attached_source_controls_completed = true`
+   - `raw_started_at_timed_out_while_controls_completed = true`
+   - `raw_started_at_progress_observed_before_timeout = true`
+   - `raw_started_at_progress_callback_count = 3`
+   - `raw_started_at_first_progress_elapsed_us = 1`
+   - `raw_started_at_last_progress_elapsed_us = 1`
+   - `raw_started_at_progress_elapsed_us_samples = [1, 1, 1]`
+   - `raw_started_at_progress_observed_after_1ms = false`
+   - `raw_started_at_progress_observed_after_10ms = false`
+   - `raw_started_at_only_submillisecond_progress_while_controls_completed = true`
+   - `max_control_progress_callback_count = 9`
+   - `max_control_last_progress_elapsed_us = 659`
+   - `raw_last_progress_exceeds_max_control_last_progress = false`
+7. Per-substep live outcomes were:
+   - `source_phase_raw_select`
+     - `result_kind = row`
+     - `progress_callback_count = 8`
+     - `first_progress_elapsed_us = 4`
+     - `last_progress_elapsed_us = 659`
+     - `progress_elapsed_us_samples = [4, 4, 4, 658, 658, 659, 659, 659]`
+     - `value_text = replay`
+   - `source_started_at_typeof_select`
+     - `result_kind = row`
+     - `progress_callback_count = 9`
+     - `first_progress_elapsed_us = 2`
+     - `last_progress_elapsed_us = 5`
+     - `progress_elapsed_us_samples = [2, 3, 3, 5, 5, 5, 5, 5]`
+     - `value_text = text`
+   - `source_started_at_raw_select`
+     - `result_kind = row_fetch_timeout_after_query_start`
+     - `query_started = true`
+     - `row_fetch_completed = false`
+     - `progress_callback_count = 3`
+     - `first_progress_elapsed_us = 1`
+     - `last_progress_elapsed_us = 1`
+     - `progress_elapsed_us_samples = [1, 1, 1]`
+8. Current interpretation:
+   - on the current live host state, the attached-source raw `started_at` read
+     still times out while both controls complete on the same connection
+   - the raw timeout path now has a narrower proven shape:
+     it shows only an immediate submillisecond SQLite progress burst and no
+     later measurable progress inside the timeout window
+   - the controls can still show later microsecond progress windows than the raw
+     timeout path on the same instrumentation surface
+   - the next accepted Stage 3 batch should move below the current progress
+     timeline sampling layer rather than continue attached-source read variants
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
