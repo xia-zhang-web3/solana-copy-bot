@@ -17199,7 +17199,7 @@ Live rollout result (`2026-04-20`, commit `d7b4944`):
    - the next accepted Stage 3 batch should target the attached-source raw-read
      execution seam below the visible SQL / EXPLAIN layer rather than returning
      to insert-only compare churn
-			
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
