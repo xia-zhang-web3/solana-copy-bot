@@ -16982,6 +16982,114 @@ Live rollout result (`2026-04-20`, commit `9aea549`):
      lower-level execution seam, not another compare-operator orchestration
      shuffle
 
+### Stage 3 started_at materialization implementation-compare probe (`2026-04-20`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a bounded execution-path comparison
+   mode for the same started_at materialization SQL:
+   `--probe-checkpoint-row-fetch-started-at-materialization-implementation-compare --config <path> --json`
+2. The operator compares two exact existing implementations:
+   - `isolated_projection_impl`
+     - reusing the accepted `id_phase_started_at_raw` path from
+       `--probe-checkpoint-row-fetch-started-at-materialization-projection-matrix`
+   - `shared_helper_impl`
+     - reusing the exact shared source-compare materialization helper already
+       used by the started_at source-compare family
+3. For both implementations the operator captures:
+   - exact schema SQL and materialization SQL
+   - `EXPLAIN QUERY PLAN`
+   - full `EXPLAIN` bytecode rows and normalized signatures
+   - temp-db connection pragma metadata:
+     `journal_mode`, `locking_mode`, `query_only`, `synchronous`, `temp_store`
+   - stage / detail / partial-progress telemetry
+   - execute timing, rows changed, postcheck row count, and exact error fields
+4. The operator emits top-level identity booleans for:
+   - schema SQL equality
+   - materialization SQL equality
+   - query-plan equality
+   - bytecode-signature equality
+   - connection-metadata equality
+   - plus whether the shared helper timed out while the isolated projection
+     completed
+5. Existing accepted operators were left unchanged.
+
+Local reviewer checks (`2026-04-20`, commit `1f4b8c2`):
+
+1. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed with `501` tests green.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Live rollout result (`2026-04-20`, commit `1f4b8c2`):
+
+1. The production host checkout at `/var/www/solana-copy-bot` was
+   fast-forwarded from `9aea549` to `1f4b8c2`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-materialization-implementation-compare --config /etc/solana-copy-bot/live.server.toml --json`
+   returned boundedly and produced conclusive outcomes for both exact
+   implementations:
+   - remote wrapper wall-clock `elapsed_sec = 6.05`
+   - output file bytes `= 14017`
+   - `checkpoint_row_fetch_started_at_materialization_implementation_compare_probe_reason_class = checkpoint_row_fetch_started_at_materialization_implementation_compare_probe_proven`
+   - `checkpoint_row_fetch_started_at_materialization_implementation_compare_probe_total_elapsed_ms = 6001`
+   - `checkpoint_row_fetch_started_at_materialization_implementation_compare_probe_budget_ms = 6000`
+   - `checkpoint_row_fetch_started_at_materialization_implementation_compare_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_started_at_materialization_implementation_compare_probe_stage = compare_results`
+5. Top-level identity results on live were:
+   - `schema_sql_identical = true`
+   - `materialization_sql_identical = true`
+   - `explain_query_plan_identical = true`
+   - `explain_bytecode_signatures_identical = true`
+   - `connection_metadata_identical = true`
+   - `shared_helper_timeout_while_isolated_projection_completed = false`
+6. The isolated projection implementation on live reported:
+   - `result_kind = execute_timeout_after_start`
+   - `stage = materialization_insert_select_execute_started`
+   - `stage_detail = insert_select_execute_started`
+   - `execute_started = true`
+   - `execute_completed = false`
+   - `execute_elapsed_ms = 0`
+   - `rows_changed = null`
+   - `postcheck_row_count = null`
+   - `connection_journal_mode = delete`
+   - `connection_locking_mode = normal`
+   - `connection_query_only = false`
+   - `connection_synchronous = 2`
+   - `connection_temp_store = 0`
+7. The shared helper implementation on live reported:
+   - `result_kind = execute_timeout_after_start`
+   - `stage = materialization_insert_select_started`
+   - `stage_detail = insert_select_started`
+   - `execute_started = true`
+   - `execute_completed = false`
+   - `execute_elapsed_ms = 0`
+   - `rows_changed = null`
+   - `postcheck_row_count = null`
+   - `connection_journal_mode = delete`
+   - `connection_locking_mode = normal`
+   - `connection_query_only = false`
+   - `connection_synchronous = 2`
+   - `connection_temp_store = 0`
+8. Current interpretation:
+   - on the current live host state, both exact execution paths now time out at
+     the execute boundary under their bounded standalone budgets
+   - there is no surviving discriminator between them in visible schema SQL,
+     materialization SQL, `EXPLAIN QUERY PLAN`, bytecode signatures, or temp-db
+     pragma metadata
+   - the earlier accepted `id_phase_started_at_raw` completion from the
+     projection matrix does not reproduce in this standalone implementation
+     comparison on the current live host state
+   - the next accepted Stage 3 batch should move below the visible SQL /
+     EXPLAIN / pragma layer rather than adding more query-shape or
+     implementation-wrapper variations
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
