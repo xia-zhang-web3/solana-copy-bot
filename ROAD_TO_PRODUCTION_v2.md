@@ -17963,6 +17963,153 @@ Live rollout result (`2026-04-20`, commit `5e7a0d6`):
    - the next accepted Stage 3 batch should move below current db-status
      instrumentation rather than add more attached-source read variants
 
+### Stage 3 started_at materialization attached-source read progress+stmt-status+db-status+source-vfs matrix (`2026-04-20`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a bounded attached-source
+   read progress+stmt-status+db-status+source-vfs matrix operator for the
+   started_at materialization path:
+   `--probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-stmt-status-db-status-source-vfs-matrix --config <path> --json`
+2. The operator reuses the accepted attached-source read
+   progress+stmt-status+db-status path with:
+   - fixed progress interval `1`
+   - the same fresh temp db plus attached-source lifecycle
+   - the same fixed three-step read sequence:
+     - `source_phase_raw_select`
+     - `source_started_at_typeof_select`
+     - `source_started_at_raw_select`
+3. In addition to the existing progress timeline, stmt-status, and db-status
+   fields, each substep now captures source-file VFS deltas scoped to the
+   attached runtime db file:
+   - `source_vfs_xread_call_count_delta`
+   - `source_vfs_xread_byte_count_delta`
+   - `source_vfs_xlock_call_count_delta`
+   - `source_vfs_xunlock_call_count_delta`
+   - `source_vfs_xshmlock_call_count_delta`
+4. The bounded no-join timeout behavior stays unchanged, and later substeps
+   remain truly null / unstarted if an earlier substep never reaches a
+   conclusive outcome.
+5. Existing accepted operator surfaces were left unchanged.
+6. The batch touched only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+
+Local reviewer checks (`2026-04-20`, commit `de77d97`):
+
+1. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed with `605` tests green.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Live rollout result (`2026-04-20`, commit `de77d97`):
+
+1. The production host checkout at `/var/www/solana-copy-bot` was
+   fast-forwarded from `5e7a0d6` to `de77d97`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-stmt-status-db-status-source-vfs-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   returned boundedly and produced conclusive source-vfs evidence:
+   - remote wrapper wall-clock `elapsed_sec = 2.71`
+   - output file bytes `= 21925`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_matrix_probe_reason_class = checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_matrix_probe_proven`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_matrix_probe_total_elapsed_ms = 1067`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_matrix_probe_budget_ms = 3000`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_matrix_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_matrix_probe_stage = source_started_at_raw_select_row_fetch_started`
+5. Shared connection metadata on live matched the earlier attached-source family:
+   - `connection_journal_mode = delete`
+   - `connection_locking_mode = normal`
+   - `connection_query_only = false`
+   - `connection_synchronous = 2`
+   - `connection_temp_store = 0`
+   - `progress_handler_opcodes_per_callback = 1`
+6. Top-level live results were:
+   - `attached_source_controls_completed = true`
+   - `raw_started_at_timed_out_while_controls_completed = true`
+   - `raw_started_at_progress_observed_before_timeout = true`
+   - `raw_started_at_stmt_vm_step_count = 0`
+   - `raw_started_at_stmt_fullscan_step_count = 0`
+   - `raw_started_at_stmt_run_count = 1`
+   - `raw_started_at_db_cache_hit_count_delta = 1`
+   - `raw_started_at_db_cache_miss_count_delta = 0`
+   - `raw_started_at_db_cache_write_count_delta = 0`
+   - `raw_started_at_db_cache_spill_count_delta = 0`
+   - `raw_started_at_source_vfs_xread_call_count_delta = 59532`
+   - `raw_started_at_source_vfs_xread_byte_count_delta = 243843072`
+   - `raw_started_at_source_vfs_xlock_call_count_delta = 0`
+   - `raw_started_at_source_vfs_xunlock_call_count_delta = 0`
+   - `raw_started_at_source_vfs_xshmlock_call_count_delta = 0`
+   - `raw_started_at_zero_vm_steps_while_controls_completed = true`
+   - `raw_started_at_zero_db_cache_activity_while_controls_completed = false`
+   - `raw_started_at_source_vfs_activity_without_vm_steps = true`
+   - `raw_started_at_zero_source_vfs_activity_while_controls_completed = false`
+   - `raw_started_at_source_vfs_xread_observed_before_timeout = true`
+   - `raw_started_at_source_vfs_lock_activity_observed_before_timeout = false`
+   - `raw_started_at_only_submillisecond_progress_while_controls_completed = true`
+   - `max_control_stmt_vm_step_count = 9`
+   - `max_control_db_cache_hit_count_delta = 2`
+   - `max_control_db_cache_miss_count_delta = 1`
+   - `max_control_source_vfs_xread_call_count_delta = 59533`
+   - `max_control_source_vfs_xlock_call_count_delta = 0`
+   - `raw_stmt_vm_step_exceeds_controls = false`
+   - `raw_db_cache_hit_exceeds_controls = false`
+   - `raw_db_cache_miss_exceeds_controls = false`
+   - `raw_source_vfs_xread_exceeds_controls = false`
+   - `raw_source_vfs_lock_activity_exceeds_controls = false`
+7. Per-substep live outcomes were:
+   - `source_phase_raw_select`
+     - `result_kind = row`
+     - `progress_callback_count = 8`
+     - `stmt_status_vm_step_count = 8`
+     - `db_status_cache_hit_count_delta = 1`
+     - `db_status_cache_miss_count_delta = 1`
+     - `source_vfs_xread_call_count_delta = 59533`
+     - `source_vfs_xread_byte_count_delta = 243847168`
+     - `source_vfs_xlock_call_count_delta = 0`
+     - `value_text = replay`
+   - `source_started_at_typeof_select`
+     - `result_kind = row`
+     - `progress_callback_count = 9`
+     - `stmt_status_vm_step_count = 9`
+     - `db_status_cache_hit_count_delta = 2`
+     - `db_status_cache_miss_count_delta = 0`
+     - `source_vfs_xread_call_count_delta = 59532`
+     - `source_vfs_xread_byte_count_delta = 243843072`
+     - `source_vfs_xlock_call_count_delta = 0`
+     - `value_text = text`
+   - `source_started_at_raw_select`
+     - `result_kind = row_fetch_timeout_after_query_start`
+     - `query_started = true`
+     - `row_fetch_completed = false`
+     - `progress_callback_count = 3`
+     - `stmt_status_vm_step_count = 0`
+     - `stmt_status_fullscan_step_count = 0`
+     - `stmt_status_run_count = 1`
+     - `db_status_cache_hit_count_delta = 1`
+     - `db_status_cache_miss_count_delta = 0`
+     - `source_vfs_xread_call_count_delta = 59532`
+     - `source_vfs_xread_byte_count_delta = 243843072`
+     - `source_vfs_xlock_call_count_delta = 0`
+     - `source_vfs_xunlock_call_count_delta = 0`
+     - `source_vfs_xshmlock_call_count_delta = 0`
+8. Current interpretation:
+   - on the current live host state, the attached-source raw `started_at` read
+     still times out while both controls complete on the same connection
+   - the raw timeout path now has the strongest current lower-level shape:
+     it shows massive source-file `xRead` activity on the attached runtime db
+     even though no visible stmt-status `vm_step` accumulation occurs
+   - the seam is therefore later than visible source-file VFS read activity,
+     but still earlier than visible stmt-status vm-step accumulation
+   - no source-file lock / unlock / shmlock activity was observed on the raw
+     timeout path
+   - the next accepted Stage 3 batch should move below current source-file VFS
+     instrumentation rather than add more attached-source read variants
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
