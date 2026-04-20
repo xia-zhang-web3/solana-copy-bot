@@ -17200,6 +17200,106 @@ Live rollout result (`2026-04-20`, commit `d7b4944`):
      execution seam below the visible SQL / EXPLAIN layer rather than returning
      to insert-only compare churn
 
+### Stage 3 started_at materialization attached-source read-progress matrix (`2026-04-20`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a bounded attached-source read-progress
+   operator for the started_at materialization path:
+   `--probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-matrix --config <path> --json`
+2. The operator reuses the same temp-db + shared schema + `ATTACH DATABASE source`
+   setup as the accepted attached-source preflight family, but runs only the fixed
+   three read substeps on one connection:
+   - `source_phase_raw_select`
+   - `source_started_at_typeof_select`
+   - `source_started_at_raw_select`
+3. Each substep captures:
+   - exact SQL
+   - `EXPLAIN QUERY PLAN`
+   - full `EXPLAIN` bytecode rows and normalized signatures
+   - progress-handler telemetry at `1000` opcodes per callback
+   - stage / detail telemetry
+   - bounded row-fetch outcome fields
+4. The operator keeps bounded no-join timeout semantics, and later substeps remain
+   truly null / unstarted if an earlier step never reaches a conclusive outcome.
+5. The batch touched only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+
+Local reviewer checks (`2026-04-20`, commit `c1e1f04`):
+
+1. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed with `522` tests green.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Live rollout result (`2026-04-20`, commit `c1e1f04`):
+
+1. The production host checkout at `/var/www/solana-copy-bot` was
+   fast-forwarded from `d7b4944` to `c1e1f04`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   returned boundedly and produced conclusive evidence for all three read substeps:
+   - remote wrapper wall-clock `elapsed_sec = 0.28`
+   - output file bytes `= 12687`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_matrix_probe_reason_class = checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_matrix_probe_proven`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_matrix_probe_total_elapsed_ms = 242`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_matrix_probe_budget_ms = 3000`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_matrix_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_matrix_probe_stage = source_started_at_raw_select_row_fetch_started`
+5. Connection metadata on live matched the earlier attached-source materialization
+   family:
+   - `connection_journal_mode = delete`
+   - `connection_locking_mode = normal`
+   - `connection_query_only = false`
+   - `connection_synchronous = 2`
+   - `connection_temp_store = 0`
+6. Top-level progress results on live were:
+   - `attached_source_controls_completed = true`
+   - `raw_started_at_timed_out_while_controls_completed = false`
+   - `raw_started_at_progress_observed_before_timeout = false`
+   - `raw_started_at_zero_progress_while_controls_completed = false`
+   - `raw_started_at_progress_callback_count = 0`
+   - `max_control_progress_callback_count = 0`
+   - `raw_started_at_progress_callback_count_exceeds_controls = false`
+7. Per-substep live outcomes were:
+   - `source_phase_raw_select`
+     - `result_kind = row`
+     - `row_fetch_completed = true`
+     - `row_fetch_elapsed_ms = 0`
+     - `value_text = replay`
+     - `progress_callback_count = 0`
+   - `source_started_at_typeof_select`
+     - `result_kind = row`
+     - `row_fetch_completed = true`
+     - `row_fetch_elapsed_ms = 0`
+     - `value_text = text`
+     - `progress_callback_count = 0`
+   - `source_started_at_raw_select`
+     - `result_kind = row`
+     - `query_started = true`
+     - `row_fetch_completed = true`
+     - `row_fetch_elapsed_ms = 229`
+     - `value_text = 2026-04-06T18:17:23.236425745+00:00`
+     - `progress_callback_count = 0`
+8. Current interpretation:
+   - on the current live host state, the attached-source raw `started_at` read
+     completed boundedly under the read-progress operator instead of reproducing
+     the earlier timeout seam
+   - no visible discriminator appeared at the progress-handler surface:
+     raw `started_at` and both control reads all reported `progress_callback_count = 0`
+   - the current live seam therefore still sits below visible SQL / EXPLAIN /
+     pragma state, but this operator does not show a measurable progress-handler
+     divergence before timeout because no timeout reproduced here
+   - the next accepted Stage 3 batch should either move below the progress-handler
+     callback surface or tighten the reproduction context around the earlier
+     attached-source raw-read timeout path
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
