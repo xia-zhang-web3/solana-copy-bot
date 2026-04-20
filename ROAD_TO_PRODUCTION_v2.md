@@ -17090,6 +17090,116 @@ Live rollout result (`2026-04-20`, commit `1f4b8c2`):
      EXPLAIN / pragma layer rather than adding more query-shape or
      implementation-wrapper variations
 
+### Stage 3 started_at materialization attached-source preflight matrix (`2026-04-20`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a bounded attached-source preflight
+   operator for the started_at materialization path:
+   `--probe-checkpoint-row-fetch-started-at-materialization-attached-source-preflight-matrix --config <path> --json`
+2. The operator uses one fresh temp sqlite db and one attached-source
+   connection, then runs a fixed staged sequence on that same connection:
+   - `source_phase_raw_select`
+   - `source_started_at_typeof_select`
+   - `source_started_at_raw_select`
+   - `materialization_insert_select`
+3. Each staged substep captures:
+   - exact SQL
+   - `EXPLAIN QUERY PLAN`
+   - full `EXPLAIN` bytecode rows
+   - normalized bytecode signatures
+   - stage / detail telemetry
+   - bounded read or execute outcome fields
+4. The operator records temp-connection metadata on the same attached-source
+   connection:
+   - `journal_mode`
+   - `locking_mode`
+   - `query_only`
+   - `synchronous`
+   - `temp_store`
+5. The staged timeout bookkeeping now measures each active substep against its
+   own configured step budget, and later substeps remain truly null / unstarted
+   if an earlier staged substep never reached a conclusive outcome.
+6. The batch touched only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+
+Local reviewer checks (`2026-04-20`, commit `d7b4944`):
+
+1. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed with `512` tests green.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Live rollout result (`2026-04-20`, commit `d7b4944`):
+
+1. The production host checkout at `/var/www/solana-copy-bot` was
+   fast-forwarded from `1f4b8c2` to `d7b4944`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-materialization-attached-source-preflight-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   returned boundedly and produced a conclusive staged timeout path:
+   - remote wrapper wall-clock `elapsed_sec = 1.06`
+   - output file bytes `= 12769`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_preflight_matrix_probe_reason_class = checkpoint_row_fetch_started_at_materialization_attached_source_preflight_matrix_probe_proven`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_preflight_matrix_probe_total_elapsed_ms = 1014`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_preflight_matrix_probe_budget_ms = 8000`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_preflight_matrix_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_preflight_matrix_probe_stage = source_started_at_raw_select_row_fetch_started`
+5. Connection metadata on live matched the earlier temp-db materialization family:
+   - `connection_journal_mode = delete`
+   - `connection_locking_mode = normal`
+   - `connection_query_only = false`
+   - `connection_synchronous = 2`
+   - `connection_temp_store = 0`
+6. Top-level derived results on live were:
+   - `attached_source_controls_completed = true`
+   - `raw_started_at_preflight_timed_out_while_controls_completed = true`
+   - `insert_select_timed_out_after_preflights_completed = false`
+   - `seam_visible_before_insert_select = true`
+7. Per-substep live outcomes were:
+   - `source_phase_raw_select`
+     - `result_kind = row`
+     - `row_fetch_completed = true`
+     - `row_fetch_elapsed_ms = 0`
+     - `value_text = replay`
+     - final stage `= source_phase_raw_select_row_fetch_completed`
+   - `source_started_at_typeof_select`
+     - `result_kind = row`
+     - `row_fetch_completed = true`
+     - `row_fetch_elapsed_ms = 0`
+     - `value_text = text`
+     - final stage `= source_started_at_typeof_select_row_fetch_completed`
+   - `source_started_at_raw_select`
+     - `result_kind = row_fetch_timeout_after_query_start`
+     - `query_started = true`
+     - `row_fetch_completed = false`
+     - final stage `= source_started_at_raw_select_row_fetch_started`
+   - `materialization_insert_select`
+     - `result_kind = null`
+     - `stage = not_started`
+     - `execute_started = false`
+     - `postcheck_row_count = null`
+8. The operator explanation on live also reported:
+   - `raw_vs_controls_query_plan_differences_observed = false`
+   - `raw_vs_controls_bytecode_signature_differences_observed = true`
+9. Current interpretation:
+   - on the current live host state, the seam is already visible on the
+     attached-source raw `started_at` read path before the materialization
+     `INSERT ... SELECT` step begins
+   - the control reads for `phase` and `typeof(started_at)` complete on the same
+     attached-source connection while the raw `started_at` read times out
+   - the materialization insert step never starts on this conclusive live path,
+     so the current blocker is not exclusively downstream in the write/copy
+     execute stage
+   - the next accepted Stage 3 batch should target the attached-source raw-read
+     execution seam below the visible SQL / EXPLAIN layer rather than returning
+     to insert-only compare churn
+			
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
