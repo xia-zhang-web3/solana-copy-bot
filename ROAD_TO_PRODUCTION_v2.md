@@ -17507,6 +17507,113 @@ Live rollout result (`2026-04-20`, commit `54a0a98`):
      interval instrumentation rather than adding more attached-source query-shape
      variants
 
+### Stage 3 started_at materialization attached-source read progress+busy matrix (`2026-04-20`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a bounded attached-source
+   read progress+busy matrix operator for the started_at materialization path:
+   `--probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-busy-matrix --config <path> --json`
+2. The operator reuses the exact accepted attached-source read-progress path on:
+   - one fresh temp db
+   - one attached-source connection
+   - the same fixed three-step read sequence:
+     - `source_phase_raw_select`
+     - `source_started_at_typeof_select`
+     - `source_started_at_raw_select`
+3. The operator fixes the progress interval to `1` opcode per callback and adds
+   SQLite busy-handler telemetry for the same three substeps.
+4. Each substep now captures:
+   - exact SQL
+   - `EXPLAIN QUERY PLAN`
+   - full `EXPLAIN` bytecode rows and normalized signatures
+   - progress-handler telemetry
+   - busy-handler telemetry
+   - stage / detail telemetry
+   - bounded row-fetch outcome fields
+5. The busy fields are populated only for this new surface; existing accepted
+   operators keep their previous behavior unchanged.
+6. The batch touched only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+
+Local reviewer checks (`2026-04-20`, commit `157ed34`):
+
+1. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed with `556` tests green.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Live rollout result (`2026-04-20`, commit `157ed34`):
+
+1. The production host checkout at `/var/www/solana-copy-bot` was
+   fast-forwarded from `54a0a98` to `157ed34`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-busy-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   returned boundedly and produced conclusive progress-vs-busy evidence:
+   - remote wrapper wall-clock `elapsed_sec = 1.07`
+   - output file bytes `= 14278`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_busy_matrix_probe_reason_class = checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_busy_matrix_probe_proven`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_busy_matrix_probe_total_elapsed_ms = 1014`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_busy_matrix_probe_budget_ms = 3000`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_busy_matrix_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_busy_matrix_probe_stage = source_started_at_raw_select_row_fetch_started`
+5. Shared connection metadata on live matched the earlier attached-source family:
+   - `connection_journal_mode = delete`
+   - `connection_locking_mode = normal`
+   - `connection_query_only = false`
+   - `connection_synchronous = 2`
+   - `connection_temp_store = 0`
+   - `progress_handler_opcodes_per_callback = 1`
+6. Top-level live results were:
+   - `attached_source_controls_completed = true`
+   - `raw_started_at_timed_out_while_controls_completed = true`
+   - `raw_started_at_progress_observed_before_timeout = true`
+   - `raw_started_at_busy_observed_before_timeout = false`
+   - `raw_started_at_zero_busy_while_controls_completed = true`
+   - `raw_started_at_progress_without_busy = true`
+   - `raw_started_at_busy_without_progress = false`
+   - `raw_started_at_progress_callback_count = 3`
+   - `raw_started_at_busy_callback_count = 0`
+   - `max_control_progress_callback_count = 9`
+   - `max_control_busy_callback_count = 0`
+   - `raw_progress_exceeds_controls = false`
+   - `raw_busy_exceeds_controls = false`
+7. Per-substep live outcomes were:
+   - `source_phase_raw_select`
+     - `result_kind = row`
+     - `value_text = replay`
+     - `progress_callback_count = 8`
+     - `busy_callback_count = 0`
+   - `source_started_at_typeof_select`
+     - `result_kind = row`
+     - `value_text = text`
+     - `progress_callback_count = 9`
+     - `busy_callback_count = 0`
+   - `source_started_at_raw_select`
+     - `result_kind = row_fetch_timeout_after_query_start`
+     - `query_started = true`
+     - `row_fetch_completed = false`
+     - `progress_callback_count = 3`
+     - `busy_callback_count = 0`
+8. Current interpretation:
+   - on the current live host state, the attached-source raw `started_at` read
+     still times out while both controls complete on the same connection
+   - the raw timeout path now has two proven runtime facts:
+     measurable SQLite progress callbacks are present, but busy-handler callbacks
+     are absent
+   - the current seam is therefore inside active SQLite execution without visible
+     lock-retry / busy-handler activity on the instrumentation surface exposed
+     here
+   - the next accepted Stage 3 batch should move below the current
+     progress-vs-busy SQLite instrumentation layer rather than adding more
+     attached-source query variants
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
