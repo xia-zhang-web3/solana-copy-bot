@@ -18371,6 +18371,155 @@ Live rollout result (`2026-04-20`, commit `b75fff1`):
    - the next accepted Stage 3 batch should move below current xRead timeline
      instrumentation rather than add more attached-source read variants
 
+### Stage 3 started_at materialization attached-source read progress+stmt-status+db-status+source-vfs-xread-after-progress matrix (`2026-04-20`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a bounded attached-source read
+   progress+stmt-status+db-status+source-vfs-xread-after-progress matrix
+   operator for the started_at materialization path:
+   `--probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-stmt-status-db-status-source-vfs-xread-after-progress-matrix --config <path> --json`
+2. The operator reuses the accepted attached-source read
+   progress+stmt-status+db-status+source-vfs-xread-timeline path with:
+   - fixed progress interval `1`
+   - the same fresh temp db plus attached-source lifecycle
+   - the same fixed three-step read sequence:
+     - `source_phase_raw_select`
+     - `source_started_at_typeof_select`
+     - `source_started_at_raw_select`
+3. In addition to the inherited progress timeline, stmt-status, db-status, and
+   source-vfs xRead timeline fields, each substep now captures bounded source-
+   file xRead partition telemetry around that substep’s final
+   `last_progress_elapsed_us`:
+   - `source_vfs_xread_call_count_at_or_before_last_progress`
+   - `source_vfs_xread_call_count_after_last_progress`
+   - `source_vfs_xread_byte_count_at_or_before_last_progress`
+   - `source_vfs_xread_byte_count_after_last_progress`
+   - `source_vfs_xread_after_last_progress_observed`
+   - `source_vfs_xread_first_after_last_progress_elapsed_us`
+   - `source_vfs_xread_last_after_last_progress_elapsed_us`
+4. The bounded no-join timeout behavior stays unchanged, and later substeps
+   remain truly null / unstarted if an earlier substep never reaches a
+   conclusive outcome.
+5. Existing accepted operator surfaces were left unchanged.
+6. The batch touched only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+
+Local reviewer checks (`2026-04-20`, commit `b0b02d0`):
+
+1. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed with `643` tests green.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Live rollout result (`2026-04-20`, commit `b0b02d0`):
+
+1. The production host checkout at `/var/www/solana-copy-bot` was
+   fast-forwarded from `b75fff1` to `b0b02d0`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-stmt-status-db-status-source-vfs-xread-after-progress-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   returned boundedly and produced conclusive xRead-after-progress evidence:
+   - remote wrapper wall-clock `elapsed_sec = 1.94`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_xread_after_progress_matrix_probe_reason_class = checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_xread_after_progress_matrix_probe_proven`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_xread_after_progress_matrix_probe_total_elapsed_ms = 1016`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_xread_after_progress_matrix_probe_budget_ms = 3000`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_xread_after_progress_matrix_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_xread_after_progress_matrix_probe_stage = source_started_at_raw_select_row_fetch_started`
+5. Shared connection metadata on live matched the earlier attached-source family:
+   - `connection_journal_mode = delete`
+   - `connection_locking_mode = normal`
+   - `connection_query_only = false`
+   - `connection_synchronous = 2`
+   - `connection_temp_store = 0`
+   - `progress_handler_opcodes_per_callback = 1`
+6. Top-level live results were:
+   - `attached_source_controls_completed = true`
+   - `raw_started_at_timed_out_while_controls_completed = true`
+   - `raw_started_at_progress_observed_before_timeout = true`
+   - `raw_started_at_stmt_vm_step_count = 0`
+   - `raw_started_at_db_cache_hit_count_delta = 1`
+   - `raw_started_at_source_vfs_xread_call_count_delta = 3391`
+   - `raw_started_at_source_vfs_xread_byte_count_delta = 13889536`
+   - `raw_started_at_source_vfs_xread_call_count_at_or_before_last_progress = 0`
+   - `raw_started_at_source_vfs_xread_call_count_after_last_progress = 3391`
+   - `raw_started_at_source_vfs_xread_byte_count_at_or_before_last_progress = 0`
+   - `raw_started_at_source_vfs_xread_byte_count_after_last_progress = 13889536`
+   - `raw_started_at_source_vfs_xread_after_last_progress_observed = true`
+   - `raw_started_at_source_vfs_xread_first_after_last_progress_elapsed_us = 389`
+   - `raw_started_at_source_vfs_xread_last_after_last_progress_elapsed_us = 1000013`
+   - `raw_started_at_source_vfs_xread_majority_calls_after_last_progress = true`
+   - `raw_started_at_source_vfs_xread_majority_bytes_after_last_progress = true`
+   - `raw_started_at_source_vfs_xread_after_last_progress_while_vm_steps_zero = true`
+   - `max_control_source_vfs_xread_call_count_after_last_progress = 0`
+   - `max_control_source_vfs_xread_byte_count_after_last_progress = 0`
+   - `raw_source_vfs_xread_after_last_progress_calls_exceed_controls = true`
+   - `raw_source_vfs_xread_after_last_progress_bytes_exceed_controls = true`
+7. Per-substep live outcomes were:
+   - `source_phase_raw_select`
+     - `result_kind = row`
+     - `progress_callback_count = 8`
+     - `last_progress_elapsed_us = 22`
+     - `stmt_status_vm_step_count = 8`
+     - `db_status_cache_hit_count_delta = 1`
+     - `source_vfs_xread_call_count_delta = 3392`
+     - `source_vfs_xread_byte_count_delta = 13893632`
+     - `source_vfs_xread_call_count_at_or_before_last_progress = 3392`
+     - `source_vfs_xread_call_count_after_last_progress = 0`
+     - `source_vfs_xread_byte_count_at_or_before_last_progress = 13893632`
+     - `source_vfs_xread_byte_count_after_last_progress = 0`
+     - `source_vfs_xread_after_last_progress_observed = false`
+     - `value_text = replay`
+   - `source_started_at_typeof_select`
+     - `result_kind = row`
+     - `progress_callback_count = 9`
+     - `last_progress_elapsed_us = 9`
+     - `stmt_status_vm_step_count = 9`
+     - `db_status_cache_hit_count_delta = 2`
+     - `source_vfs_xread_call_count_delta = 3391`
+     - `source_vfs_xread_byte_count_delta = 13889536`
+     - `source_vfs_xread_call_count_at_or_before_last_progress = 3391`
+     - `source_vfs_xread_call_count_after_last_progress = 0`
+     - `source_vfs_xread_byte_count_at_or_before_last_progress = 13889536`
+     - `source_vfs_xread_byte_count_after_last_progress = 0`
+     - `source_vfs_xread_after_last_progress_observed = false`
+     - `value_text = text`
+   - `source_started_at_raw_select`
+     - `result_kind = row_fetch_timeout_after_query_start`
+     - `query_started = true`
+     - `row_fetch_completed = false`
+     - `progress_callback_count = 3`
+     - `last_progress_elapsed_us = 3`
+     - `stmt_status_vm_step_count = 0`
+     - `db_status_cache_hit_count_delta = 1`
+     - `source_vfs_xread_call_count_delta = 3391`
+     - `source_vfs_xread_byte_count_delta = 13889536`
+     - `source_vfs_xread_call_count_at_or_before_last_progress = 0`
+     - `source_vfs_xread_call_count_after_last_progress = 3391`
+     - `source_vfs_xread_byte_count_at_or_before_last_progress = 0`
+     - `source_vfs_xread_byte_count_after_last_progress = 13889536`
+     - `source_vfs_xread_after_last_progress_observed = true`
+     - `source_vfs_xread_first_after_last_progress_elapsed_us = 389`
+     - `source_vfs_xread_last_after_last_progress_elapsed_us = 1000013`
+8. Current interpretation:
+   - on the current live host state, the attached-source raw `started_at` read
+     still times out while both controls complete on the same connection
+   - the new partition result is stronger than the earlier xRead timeline fact:
+     on the raw timeout path, all currently visible source-file `xRead` calls
+     and bytes land after the last visible progress callback
+   - that post-progress xRead volume now sharply exceeds both controls while
+     `stmt_status_vm_step_count` still remains `0`
+   - the strongest current discriminator is therefore sustained silent source-
+     file reads after visible progress stops, not merely a tiny late xRead
+     residue near timeout
+   - the next accepted Stage 3 batch should move below current xRead-after-
+     progress instrumentation rather than add another neighboring read variant
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
