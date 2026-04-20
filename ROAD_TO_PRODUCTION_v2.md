@@ -17722,6 +17722,123 @@ Live rollout result (`2026-04-20`, commit `8dafac8`):
    - the next accepted Stage 3 batch should move below the current progress
      timeline sampling layer rather than continue attached-source read variants
 
+### Stage 3 started_at materialization attached-source read progress+stmt-status matrix (`2026-04-20`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a bounded attached-source
+   read progress+stmt-status matrix operator for the started_at materialization
+   path:
+   `--probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-stmt-status-matrix --config <path> --json`
+2. The operator reuses the accepted attached-source read progress-timeline path
+   with:
+   - fixed progress interval `1`
+   - the same fresh temp db plus attached-source lifecycle
+   - the same fixed three-step read sequence:
+     - `source_phase_raw_select`
+     - `source_started_at_typeof_select`
+     - `source_started_at_raw_select`
+3. In addition to the existing progress timeline fields, each substep now
+   captures SQLite statement-status counters from the live prepared statement:
+   - `stmt_status_vm_step_count`
+   - `stmt_status_fullscan_step_count`
+   - `stmt_status_sort_count`
+   - `stmt_status_autoindex_count`
+   - `stmt_status_reprepare_count`
+   - `stmt_status_run_count`
+4. The bounded no-join timeout behavior stays unchanged, and later substeps
+   remain truly null / unstarted if an earlier substep never reaches a
+   conclusive outcome.
+5. Existing accepted operator surfaces were left unchanged.
+6. The batch touched only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+
+Local reviewer checks (`2026-04-20`, commit `ef88f24`):
+
+1. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed with `580` tests green.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Live rollout result (`2026-04-20`, commit `ef88f24`):
+
+1. The production host checkout at `/var/www/solana-copy-bot` was
+   fast-forwarded from `8dafac8` to `ef88f24`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-stmt-status-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   returned boundedly and produced conclusive stmt-status evidence:
+   - remote wrapper wall-clock `elapsed_sec = 1.06`
+   - output file bytes `= 15864`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_matrix_probe_reason_class = checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_matrix_probe_proven`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_matrix_probe_total_elapsed_ms = 1015`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_matrix_probe_budget_ms = 3000`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_matrix_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_matrix_probe_stage = source_started_at_raw_select_row_fetch_started`
+5. Shared connection metadata on live matched the earlier attached-source family:
+   - `connection_journal_mode = delete`
+   - `connection_locking_mode = normal`
+   - `connection_query_only = false`
+   - `connection_synchronous = 2`
+   - `connection_temp_store = 0`
+   - `progress_handler_opcodes_per_callback = 1`
+6. Top-level live results were:
+   - `attached_source_controls_completed = true`
+   - `raw_started_at_timed_out_while_controls_completed = true`
+   - `raw_started_at_progress_observed_before_timeout = true`
+   - `raw_started_at_stmt_vm_step_count = 0`
+   - `raw_started_at_stmt_fullscan_step_count = 0`
+   - `raw_started_at_stmt_run_count = 1`
+   - `raw_started_at_zero_vm_steps_while_controls_completed = true`
+   - `raw_started_at_vm_steps_without_fullscan = false`
+   - `raw_started_at_fullscan_observed_before_timeout = false`
+   - `raw_started_at_only_submillisecond_progress_while_controls_completed = true`
+   - `max_control_stmt_vm_step_count = 9`
+   - `max_control_stmt_fullscan_step_count = 0`
+   - `max_control_stmt_run_count = 1`
+   - `raw_stmt_vm_step_exceeds_controls = false`
+   - `raw_stmt_fullscan_step_exceeds_controls = false`
+   - `raw_stmt_run_exceeds_controls = false`
+7. Per-substep live outcomes were:
+   - `source_phase_raw_select`
+     - `result_kind = row`
+     - `progress_callback_count = 8`
+     - `stmt_status_vm_step_count = 8`
+     - `stmt_status_fullscan_step_count = 0`
+     - `stmt_status_run_count = 1`
+     - `value_text = replay`
+   - `source_started_at_typeof_select`
+     - `result_kind = row`
+     - `progress_callback_count = 9`
+     - `stmt_status_vm_step_count = 9`
+     - `stmt_status_fullscan_step_count = 0`
+     - `stmt_status_run_count = 1`
+     - `value_text = text`
+   - `source_started_at_raw_select`
+     - `result_kind = row_fetch_timeout_after_query_start`
+     - `query_started = true`
+     - `row_fetch_completed = false`
+     - `progress_callback_count = 3`
+     - `stmt_status_vm_step_count = 0`
+     - `stmt_status_fullscan_step_count = 0`
+     - `stmt_status_run_count = 1`
+8. Current interpretation:
+   - on the current live host state, the attached-source raw `started_at` read
+     still times out while both controls complete on the same connection
+   - the raw timeout path now has a narrower proven SQLite runtime shape:
+     statement execution has entered a run (`stmt_status_run_count = 1`), but no
+     `vm_step` or `fullscan_step` accumulation is visible before the bounded
+     timeout return
+   - the phase and typeof controls still accumulate small nonzero `vm_step`
+     counts on the same instrumentation surface
+   - the next accepted Stage 3 batch should move below current stmt-status
+     instrumentation rather than add more attached-source read variants
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
