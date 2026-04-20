@@ -17300,6 +17300,106 @@ Live rollout result (`2026-04-20`, commit `c1e1f04`):
      callback surface or tighten the reproduction context around the earlier
      attached-source raw-read timeout path
 
+### Stage 3 started_at materialization attached-source read implementation compare (`2026-04-20`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a bounded attached-source read
+   implementation-compare operator for the started_at materialization path:
+   `--probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-implementation-compare --config <path> --json`
+2. The operator compares two exact existing attached-source read paths against the
+   same fixed three-step sequence:
+   - `preflight_impl`
+     - reusing the first three read substeps from the accepted
+       `--probe-checkpoint-row-fetch-started-at-materialization-attached-source-preflight-matrix`
+       path, with no insert step
+   - `read_progress_impl`
+     - reusing the accepted
+       `--probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-matrix`
+       path as-is
+3. For both implementations the operator captures:
+   - attached-source connection metadata
+   - exact ordered substeps
+   - exact SQL
+   - `EXPLAIN QUERY PLAN`
+   - full `EXPLAIN` bytecode rows and normalized signatures
+   - stage / detail telemetry
+   - bounded row-fetch outcome fields
+4. The chosen honest progress contract is:
+   - `preflight_impl` progress fields remain `null`
+   - `read_progress_impl` preserves the existing progress-handler telemetry
+5. The batch touched only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+
+Local reviewer checks (`2026-04-20`, commit `62d6ebd`):
+
+1. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed with `536` tests green.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Live rollout result (`2026-04-20`, commit `62d6ebd`):
+
+1. The production host checkout at `/var/www/solana-copy-bot` was
+   fast-forwarded from `c1e1f04` to `62d6ebd`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-implementation-compare --config /etc/solana-copy-bot/live.server.toml --json`
+   returned boundedly and produced conclusive evidence for both exact
+   implementations:
+   - remote wrapper wall-clock `elapsed_sec = 2.08`
+   - output file bytes `= 22715`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_implementation_compare_probe_reason_class = checkpoint_row_fetch_started_at_materialization_attached_source_read_implementation_compare_probe_proven`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_implementation_compare_probe_total_elapsed_ms = 2028`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_implementation_compare_probe_budget_ms = 6000`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_implementation_compare_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_implementation_compare_probe_stage = compare_results`
+5. Top-level comparison results on live were:
+   - `connection_metadata_identical = true`
+   - `phase_sql_identical = true`
+   - `typeof_sql_identical = true`
+   - `raw_sql_identical = true`
+   - `raw_explain_query_plan_identical = true`
+   - `raw_explain_bytecode_signatures_identical = true`
+   - `both_impls_controls_completed = true`
+   - `preflight_raw_timeout_while_read_progress_row = false`
+   - `preflight_raw_row_while_read_progress_timeout = false`
+   - `both_impls_raw_timeout = true`
+   - `both_impls_raw_row = false`
+   - `read_progress_raw_progress_callback_count = 0`
+   - `max_read_progress_control_callback_count = 0`
+   - `read_progress_raw_progress_exceeds_controls = false`
+6. The `preflight_impl` live outcomes were:
+   - `source_phase_raw_select.result_kind = row`
+   - `source_started_at_typeof_select.result_kind = row`
+   - `source_started_at_raw_select.result_kind = row_fetch_timeout_after_query_start`
+   - raw final stage `= source_started_at_raw_select_row_fetch_started`
+   - raw progress fields stayed `null`
+7. The `read_progress_impl` live outcomes were:
+   - `source_phase_raw_select.result_kind = row`
+   - `source_started_at_typeof_select.result_kind = row`
+   - `source_started_at_raw_select.result_kind = row_fetch_timeout_after_query_start`
+   - raw final stage `= source_started_at_raw_select_row_fetch_started`
+   - raw `progress_callback_count = 0`
+   - raw `progress_observed = false`
+8. Current interpretation:
+   - on the current live host state, the earlier divergence between attached-source
+     preflight and attached-source read-progress no longer reproduces
+   - both exact implementation paths now converge on the same result:
+     controls complete and raw `started_at` times out
+   - visible connection metadata, SQL text, query plan, and bytecode signature
+     surfaces also collapse to equality across both implementations
+   - the remaining Stage 3 seam is therefore not isolated to one attached-source
+     read wrapper implementation on the current host state
+   - the next accepted Stage 3 batch should move below this implementation layer
+     or explicitly target the contextual state that made the earlier row-vs-timeout
+     divergence transiently observable
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
