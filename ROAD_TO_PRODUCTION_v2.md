@@ -17400,6 +17400,113 @@ Live rollout result (`2026-04-20`, commit `62d6ebd`):
      or explicitly target the contextual state that made the earlier row-vs-timeout
      divergence transiently observable
 
+### Stage 3 started_at materialization attached-source read progress-interval matrix (`2026-04-20`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a bounded attached-source
+   read progress-interval matrix operator for the started_at materialization
+   path:
+   `--probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-interval-matrix --config <path> --json`
+2. The operator reuses the accepted attached-source read-progress path and runs
+   the same fixed three-step attached-source read sequence on fresh temp-db runs
+   for the fixed interval order:
+   - `1`
+   - `10`
+   - `100`
+   - `1000`
+3. The only intended semantic variable across interval runs is
+   `progress_handler_opcodes_per_callback`.
+4. Each interval object captures:
+   - attached-source connection metadata
+   - exact ordered substeps
+   - exact SQL
+   - `EXPLAIN QUERY PLAN`
+   - full `EXPLAIN` bytecode rows and normalized signatures
+   - progress-handler telemetry
+   - stage / detail telemetry
+   - bounded row-fetch outcome fields
+5. The operator keeps bounded no-join timeout semantics and does not change the
+   accepted default interval behavior of
+   `--probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-matrix`.
+6. The batch touched only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+
+Local reviewer checks (`2026-04-20`, commit `54a0a98`):
+
+1. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed with `546` tests green.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Live rollout result (`2026-04-20`, commit `54a0a98`):
+
+1. The production host checkout at `/var/www/solana-copy-bot` was
+   fast-forwarded from `62d6ebd` to `54a0a98`.
+2. Only `discovery_runtime_export` was rebuilt on the server.
+3. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+4. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-interval-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   returned boundedly and produced conclusive evidence across all four fixed
+   callback intervals:
+   - remote wrapper wall-clock `elapsed_sec = 4.17`
+   - output file bytes `= 42097`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_interval_matrix_probe_reason_class = checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_interval_matrix_probe_proven`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_interval_matrix_probe_total_elapsed_ms = 4095`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_interval_matrix_probe_budget_ms = 12000`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_interval_matrix_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_interval_matrix_probe_stage = compare_results`
+5. Top-level live results were:
+   - `intervals_with_controls_completed = ["1", "10", "100", "1000"]`
+   - `intervals_with_raw_timeout_while_controls_completed = ["1", "10", "100", "1000"]`
+   - `intervals_with_raw_row = []`
+   - `intervals_with_raw_progress_observed_before_timeout = ["1"]`
+   - `intervals_with_raw_zero_progress_while_controls_completed = ["10", "100", "1000"]`
+   - `smallest_interval_with_raw_progress_observed = 1`
+   - `smallest_interval_with_any_control_progress_observed = 1`
+   - `any_interval_raw_progress_exceeds_controls = false`
+6. Shared connection metadata on live stayed the same across all interval runs:
+   - `journal_mode = delete`
+   - `locking_mode = normal`
+   - `query_only = false`
+   - `synchronous = 2`
+   - `temp_store = 0`
+7. Interval-specific live outcomes were:
+   - interval `1`
+     - controls completed as `row`
+     - raw `started_at` timed out as `row_fetch_timeout_after_query_start`
+     - control progress counts were `8` and `9`
+     - raw progress count was `3`
+   - interval `10`
+     - controls completed as `row`
+     - raw `started_at` timed out as `row_fetch_timeout_after_query_start`
+     - all control and raw progress counts were `0`
+   - interval `100`
+     - controls completed as `row`
+     - raw `started_at` timed out as `row_fetch_timeout_after_query_start`
+     - all control and raw progress counts were `0`
+   - interval `1000`
+     - controls completed as `row`
+     - raw `started_at` timed out as `row_fetch_timeout_after_query_start`
+     - all control and raw progress counts were `0`
+8. Current interpretation:
+   - on the current live host state, the attached-source raw `started_at` read
+     times out across all four callback intervals while the `phase` and
+     `typeof(started_at)` controls complete
+   - the earlier zero-progress result at interval `1000` is not the whole story:
+     interval `1` shows measurable SQLite progress callbacks before the raw
+     timeout, and the controls also show callbacks there
+   - the current seam is therefore inside active SQLite execution below the
+     visible SQL / EXPLAIN / pragma surface, but it is only visible at the
+     finest callback interval tested so far
+   - the next accepted Stage 3 batch should move below SQLite progress-handler
+     interval instrumentation rather than adding more attached-source query-shape
+     variants
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
