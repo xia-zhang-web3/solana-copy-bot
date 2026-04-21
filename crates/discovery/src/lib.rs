@@ -482,6 +482,51 @@ pub struct CloneLatestTrustedBootstrapSummary {
     pub top_wallets: Vec<String>,
 }
 
+pub const DISCOVERY_SELECTOR_PROOF_CONFIG_FINGERPRINT_METHOD: &str =
+    "exact_config_bytes_fnv1a64";
+
+#[derive(Debug, Clone)]
+pub struct DiscoverySelectorProofRequest {
+    pub db_path: PathBuf,
+    pub config_path: PathBuf,
+    pub config_bytes: Vec<u8>,
+    pub fixed_now_utc: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DiscoverySelectorProofReport {
+    pub db_path: String,
+    pub db_file_size_bytes: u64,
+    pub db_file_mtime_utc: DateTime<Utc>,
+    pub db_page_size: u64,
+    pub db_page_count: u64,
+    pub db_read_only_open_confirmed: bool,
+    pub config_path: String,
+    pub config_fingerprint_method: String,
+    pub config_fingerprint: String,
+    pub fixed_now_utc: DateTime<Utc>,
+    pub rpc_enabled: bool,
+    pub metrics_window_start_utc: Option<DateTime<Utc>>,
+    pub observed_swaps_loaded: Option<u64>,
+    pub wallets_seen: Option<u64>,
+    pub eligible_wallet_count: Option<u64>,
+    pub ranked_wallets: Vec<String>,
+    pub reject_breakdown: BTreeMap<String, u64>,
+    pub token_quality_coverage: BTreeMap<String, u64>,
+}
+
+fn discovery_selector_proof_config_fingerprint(config_bytes: &[u8]) -> String {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in config_bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("0x{hash:016x}")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AggregateReadinessBlocker {
     WritesDisabledByConfig,
@@ -12347,6 +12392,48 @@ impl DiscoveryService {
             helius_http_url,
             window_state: Arc::new(Mutex::new(DiscoveryWindowState::default())),
         }
+    }
+
+    pub fn selector_proof_report(
+        &self,
+        store: &SqliteStore,
+        request: &DiscoverySelectorProofRequest,
+    ) -> Result<DiscoverySelectorProofReport> {
+        let db_metadata = fs::metadata(&request.db_path)
+            .with_context(|| format!("failed reading db metadata {}", request.db_path.display()))?;
+        let db_file_mtime_utc = db_metadata.modified().map(DateTime::<Utc>::from).with_context(
+            || format!("failed reading db modified time {}", request.db_path.display()),
+        )?;
+        let db_facts = store.sqlite_read_only_probe_facts().with_context(|| {
+            format!(
+                "failed probing sqlite read-only facts {}",
+                request.db_path.display()
+            )
+        })?;
+
+        Ok(DiscoverySelectorProofReport {
+            db_path: request.db_path.display().to_string(),
+            db_file_size_bytes: db_metadata.len(),
+            db_file_mtime_utc,
+            db_page_size: db_facts.page_size as u64,
+            db_page_count: db_facts.page_count as u64,
+            db_read_only_open_confirmed: true,
+            config_path: request.config_path.display().to_string(),
+            config_fingerprint_method: DISCOVERY_SELECTOR_PROOF_CONFIG_FINGERPRINT_METHOD
+                .to_string(),
+            config_fingerprint: discovery_selector_proof_config_fingerprint(
+                &request.config_bytes,
+            ),
+            fixed_now_utc: request.fixed_now_utc,
+            rpc_enabled: self.helius_http_url.is_some(),
+            metrics_window_start_utc: None,
+            observed_swaps_loaded: None,
+            wallets_seen: None,
+            eligible_wallet_count: None,
+            ranked_wallets: Vec::new(),
+            reject_breakdown: BTreeMap::new(),
+            token_quality_coverage: BTreeMap::new(),
+        })
     }
 
     pub fn aggregate_readiness_status(
