@@ -19015,6 +19015,172 @@ Live rollout result (`2026-04-21`, commit `c911ac9`):
      instrumentation rather than add another neighboring attached-source read
      variant
 
+### Stage 3 started_at materialization attached-source read progress+stmt-status+db-status+source-vfs-xread-over-500ms-page-kind matrix (`2026-04-21`)
+
+Accepted repository change:
+
+1. `discovery_runtime_export` now supports a bounded attached-source read
+   progress+stmt-status+db-status+source-vfs-xread-over-500ms-page-kind matrix
+   operator for the started_at materialization path:
+   `--probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-stmt-status-db-status-source-vfs-xread-over-500ms-page-kind-matrix --config <path> --json`
+2. The operator reuses the accepted attached-source read
+   progress+stmt-status+db-status+source-vfs-xread-over-500ms-run-shape path
+   with:
+   - fixed progress interval `1`
+   - the same fresh temp db plus attached-source lifecycle
+   - the same fixed three-step read sequence:
+     - `source_phase_raw_select`
+     - `source_started_at_typeof_select`
+     - `source_started_at_raw_select`
+3. In addition to the inherited progress timeline, stmt-status, db-status,
+   source-vfs aggregate, xRead pattern, xRead timeline, xRead-after-progress,
+   xRead time-bucket, `>500ms` late-window offset-pattern, and `>500ms`
+   run-shape fields, each substep now captures exact/bounded SQLite page-kind
+   telemetry for the same `elapsed_us > 500000` late-window xRead subset,
+   including:
+   - bounded sampled page-kind labels
+   - exact canonical / noncanonical late-window read counts
+   - exact per-kind counts for:
+     - `index_interior`
+     - `table_interior`
+     - `index_leaf`
+     - `table_leaf`
+     - `other_or_zero`
+   - exact dominant-kind fields
+   - single-kind / table-leaf-only / known-btree-only booleans
+   - mixed-btree / other-or-zero / noncanonical booleans
+   - a normalized late-window page-kind signature
+4. The bounded no-join timeout behavior stays unchanged, and later substeps
+   remain truly null / unstarted if an earlier substep never reaches a
+   conclusive outcome.
+5. Existing accepted operator surfaces were left unchanged.
+6. The batch touched only:
+   - `crates/discovery/src/bin/discovery_runtime_export.rs`
+
+Local reviewer checks (`2026-04-21`, commit `92b208f`):
+
+1. `cargo check -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed.
+2. `cargo test -j 1 -p copybot-discovery --bin discovery_runtime_export`
+   passed with `696` tests green.
+3. `git diff --check -- crates/discovery/src/lib.rs crates/discovery/src/bin/discovery_runtime_export.rs`
+   passed.
+
+Live rollout result (`2026-04-21`, commit `92b208f`):
+
+1. The production host checkout at `/var/www/solana-copy-bot` was
+   fast-forwarded from `c911ac9` to `92b208f`.
+2. During that code rollout the host also pulled the earlier docs-only commit
+   `c98bcee`, because it was already below `92b208f` on `main`.
+3. Only `discovery_runtime_export` was rebuilt on the server.
+4. Service state remained healthy:
+   - `solana-copy-bot.service = active`
+   - `copybot-discovery-runtime-export.timer = active`
+5. A clean live run of:
+   `sudo -n ./target/release/discovery_runtime_export --probe-checkpoint-row-fetch-started-at-materialization-attached-source-read-progress-stmt-status-db-status-source-vfs-xread-over-500ms-page-kind-matrix --config /etc/solana-copy-bot/live.server.toml --json`
+   returned boundedly and produced conclusive `>500ms` late-window page-kind
+   evidence:
+   - remote wrapper wall-clock `elapsed_sec = 2.95`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_xread_over500ms_page_kind_matrix_probe_reason_class = checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_xread_over500ms_page_kind_matrix_probe_proven`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_xread_over500ms_page_kind_matrix_probe_total_elapsed_ms = 1014`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_xread_over500ms_page_kind_matrix_probe_budget_ms = 3000`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_xread_over500ms_page_kind_matrix_probe_budget_exhausted = false`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_xread_over500ms_page_kind_matrix_probe_stage = source_started_at_raw_select_row_fetch_started`
+   - `checkpoint_row_fetch_started_at_materialization_attached_source_read_progress_stmt_status_db_status_source_vfs_xread_over500ms_page_kind_matrix_probe_source_vfs_xread_over_500ms_page_kind_sample_limit = 16`
+6. Shared connection metadata on live matched the earlier attached-source family:
+   - `connection_journal_mode = delete`
+   - `connection_locking_mode = normal`
+   - `connection_query_only = false`
+   - `connection_synchronous = 2`
+   - `connection_temp_store = 0`
+   - `progress_handler_opcodes_per_callback = 1`
+7. Top-level live results were:
+   - `attached_source_controls_completed = true`
+   - `raw_started_at_timed_out_while_controls_completed = true`
+   - `raw_started_at_progress_observed_before_timeout = true`
+   - `raw_started_at_stmt_vm_step_count = 0`
+   - `raw_started_at_db_cache_hit_count_delta = 1`
+   - inherited late-window bucket surface still showed visible raw `>500ms` volume:
+     - `raw_started_at_source_vfs_xread_call_count_over_500ms = 845`
+     - `raw_started_at_source_vfs_xread_byte_count_over_500ms = 3461120`
+   - raw `>500ms` sampled page-kind labels were all:
+     - `[other_or_zero, other_or_zero, other_or_zero, other_or_zero, other_or_zero, other_or_zero, other_or_zero, other_or_zero, other_or_zero, other_or_zero, other_or_zero, other_or_zero, other_or_zero, other_or_zero, other_or_zero, other_or_zero]`
+   - raw `>500ms` exact page-kind counts were:
+     - `raw_started_at_source_vfs_xread_over_500ms_canonical_page_read_count = 844`
+     - `raw_started_at_source_vfs_xread_over_500ms_noncanonical_page_read_count = 1`
+     - `raw_started_at_source_vfs_xread_over_500ms_index_interior_count = 0`
+     - `raw_started_at_source_vfs_xread_over_500ms_table_interior_count = 0`
+     - `raw_started_at_source_vfs_xread_over_500ms_index_leaf_count = 0`
+     - `raw_started_at_source_vfs_xread_over_500ms_table_leaf_count = 0`
+     - `raw_started_at_source_vfs_xread_over_500ms_other_or_zero_page_kind_count = 844`
+   - raw `>500ms` summary booleans were:
+     - `raw_started_at_source_vfs_xread_over_500ms_dominant_page_kind = other_or_zero`
+     - `raw_started_at_source_vfs_xread_over_500ms_dominant_page_kind_count = 844`
+     - `raw_started_at_source_vfs_xread_over_500ms_only_single_page_kind = false`
+     - `raw_started_at_source_vfs_xread_over_500ms_only_table_leaf = false`
+     - `raw_started_at_source_vfs_xread_over_500ms_only_known_btree_page_kinds = false`
+     - `raw_started_at_source_vfs_xread_over_500ms_mixed_btree_page_kinds_observed = false`
+     - `raw_started_at_source_vfs_xread_over_500ms_other_or_zero_page_kind_observed = true`
+     - `raw_started_at_source_vfs_xread_over_500ms_noncanonical_page_read_observed = true`
+8. Per-substep live outcomes were:
+   - `source_phase_raw_select`
+     - `result_kind = row`
+     - `query_started = true`
+     - `row_fetch_completed = true`
+     - `progress_callback_count = 8`
+     - `last_progress_elapsed_us = 722`
+     - `stmt_status_vm_step_count = 8`
+     - `db_status_cache_hit_count_delta = 1`
+     - `source_vfs_xread_call_count_over_500ms = 0`
+     - `source_vfs_xread_over_500ms_dominant_page_kind = null`
+     - `value_text = replay`
+   - `source_started_at_typeof_select`
+     - `result_kind = row`
+     - `query_started = true`
+     - `row_fetch_completed = true`
+     - `progress_callback_count = 9`
+     - `last_progress_elapsed_us = 11`
+     - `stmt_status_vm_step_count = 9`
+     - `db_status_cache_hit_count_delta = 2`
+     - `source_vfs_xread_call_count_over_500ms = 0`
+     - `source_vfs_xread_over_500ms_dominant_page_kind = null`
+     - `value_text = text`
+   - `source_started_at_raw_select`
+     - `result_kind = row_fetch_timeout_after_query_start`
+     - `query_started = true`
+     - `row_fetch_completed = false`
+     - `progress_callback_count = 3`
+     - `last_progress_elapsed_us = 3`
+     - `stmt_status_vm_step_count = 0`
+     - `db_status_cache_hit_count_delta = 1`
+     - `source_vfs_xread_call_count_over_500ms = 845`
+     - `source_vfs_xread_byte_count_over_500ms = 3461120`
+     - `source_vfs_xread_over_500ms_canonical_page_read_count = 844`
+     - `source_vfs_xread_over_500ms_noncanonical_page_read_count = 1`
+     - `source_vfs_xread_over_500ms_other_or_zero_page_kind_count = 844`
+     - `source_vfs_xread_over_500ms_dominant_page_kind = other_or_zero`
+     - `source_vfs_xread_over_500ms_dominant_page_kind_count = 844`
+     - `source_vfs_xread_over_500ms_only_table_leaf = false`
+     - `source_vfs_xread_over_500ms_only_known_btree_page_kinds = false`
+     - `source_vfs_xread_over_500ms_mixed_btree_page_kinds_observed = false`
+     - `source_vfs_xread_over_500ms_other_or_zero_page_kind_observed = true`
+     - `source_vfs_xread_over_500ms_noncanonical_page_read_observed = true`
+9. Current interpretation:
+   - on the current live host state, the attached-source raw `started_at` read
+     still times out while both controls complete on the same connection
+   - the new page-kind result does not support a clean homogeneous known-btree
+     interpretation of the raw `>500ms` late window on the current host state
+   - the late window is currently dominated by `other_or_zero` page-header
+     classifications, and it also contains at least one `noncanonical` read
+   - there is no live evidence here for a pure `table_leaf` walk and no live
+     evidence for a mixed known-btree-kind walk either
+   - the strongest current discriminator is therefore still the silent late-
+     window descending page walk itself; the page-kind layer says that this
+     visible late window is not safely characterizable as a clean known-btree
+     page-kind run
+   - the next accepted Stage 3 batch should move below page-kind interpretation
+     and avoid overclaiming SQLite page semantics from this surface
+
 ### Stage 3 direct immutable runtime-db id-only select probe (`2026-04-16`)
 
 Accepted repository change:
