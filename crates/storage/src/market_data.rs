@@ -19,10 +19,11 @@ use crate::{
     DiscoveryPersistedRebuildStateRow, DiscoveryRuntimeCursor, ObservedSwapBatchWriteMetrics,
     ObservedSwapsCoverageSnapshot, RecentRawJournalReplaySummary, RecentRawJournalStateRow,
     RecentRawJournalWriteSummary, SqliteBatchedDeleteSummary, SqliteStore, TokenMarketStats,
-    TokenQualityCacheRow, TokenQualityRpcRow, WalletActivityDayRow, WalletRecentActivityCountRow,
+    TokenQualityCacheRow, TokenQualityRpcRow, WalletActivityDayRow,
+    WalletActivityDaysCoverageSnapshot, WalletRecentActivityCountRow,
 };
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_core_types::{ExactSwapAmounts, SwapEvent};
 use reqwest::blocking::Client;
 use rusqlite::{
@@ -311,6 +312,21 @@ fn parse_optional_rfc3339_utc(
 ) -> Result<Option<DateTime<Utc>>> {
     raw.map(|raw| parse_rfc3339_utc(&raw, field_name))
         .transpose()
+}
+
+fn parse_optional_day_start_utc(
+    raw: Option<String>,
+    field_name: &str,
+) -> Result<Option<DateTime<Utc>>> {
+    raw.map(|raw| {
+        let day = NaiveDate::parse_from_str(&raw, "%Y-%m-%d")
+            .with_context(|| format!("invalid {field_name} day value: {raw}"))?;
+        Ok(DateTime::<Utc>::from_naive_utc_and_offset(
+            day.and_hms_opt(0, 0, 0).expect("midnight utc day"),
+            Utc,
+        ))
+    })
+    .transpose()
 }
 
 fn discovery_runtime_cursor_cmp(
@@ -3849,6 +3865,65 @@ impl SqliteStore {
             covered_through_cursor,
             row_count: row_count.max(0) as usize,
         })
+    }
+
+    pub fn observed_swaps_row_count_since(&self, since: DateTime<Utc>) -> Result<u64> {
+        let row_count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM observed_swaps
+                 WHERE ts >= ?1",
+                params![since.to_rfc3339()],
+                |row| row.get(0),
+            )
+            .context("failed counting observed_swaps rows since window start")?;
+        Ok(row_count.max(0) as u64)
+    }
+
+    pub fn wallet_activity_days_coverage_snapshot(
+        &self,
+    ) -> Result<WalletActivityDaysCoverageSnapshot> {
+        let (min_day_raw, max_day_raw, row_count): (Option<String>, Option<String>, i64) = self
+            .conn
+            .query_row(
+                "SELECT MIN(activity_day), MAX(activity_day), COUNT(*)
+                 FROM wallet_activity_days",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .context("failed querying wallet_activity_days coverage snapshot")?;
+        Ok(WalletActivityDaysCoverageSnapshot {
+            covered_since_day_utc: parse_optional_day_start_utc(
+                min_day_raw,
+                "wallet_activity_days.activity_day",
+            )?,
+            covered_through_day_utc: parse_optional_day_start_utc(
+                max_day_raw,
+                "wallet_activity_days.activity_day",
+            )?,
+            row_count: row_count.max(0) as u64,
+        })
+    }
+
+    pub fn wallet_activity_days_row_count_since(&self, window_start: DateTime<Utc>) -> Result<u64> {
+        let row_count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM wallet_activity_days
+                 WHERE (
+                        activity_day > ?1
+                        OR (activity_day = ?1 AND last_seen >= ?2)
+                    )",
+                params![
+                    window_start.date_naive().format("%Y-%m-%d").to_string(),
+                    window_start.to_rfc3339(),
+                ],
+                |row| row.get(0),
+            )
+            .context("failed counting wallet_activity_days rows since window start")?;
+        Ok(row_count.max(0) as u64)
     }
 
     pub fn recent_observed_swap_counts_for_wallets(

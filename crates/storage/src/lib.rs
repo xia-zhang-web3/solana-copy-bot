@@ -271,6 +271,15 @@ fn prepare_snapshot_destination(destination: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn build_sqlite_immutable_read_only_uri(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if path.starts_with('/') {
+        format!("file://{path}?mode=ro&immutable=1")
+    } else {
+        format!("file:{path}?mode=ro&immutable=1")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartupStepOutcome {
     Started,
@@ -718,6 +727,14 @@ pub struct WalletActivityDayRow {
     pub last_seen: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WalletActivityDayCoverageSummary {
+    pub window_min_day_utc: Option<DateTime<Utc>>,
+    pub window_max_day_utc: Option<DateTime<Utc>>,
+    pub rows_for_wallets: u64,
+    pub distinct_wallets_for_wallets: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct ObservedSwapBatchWriteMetrics {
     pub inserted: Vec<bool>,
@@ -742,6 +759,13 @@ pub struct ObservedSwapsCoverageSnapshot {
     pub covered_since: Option<DateTime<Utc>>,
     pub covered_through_cursor: Option<DiscoveryRuntimeCursor>,
     pub row_count: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WalletActivityDaysCoverageSnapshot {
+    pub covered_since_day_utc: Option<DateTime<Utc>>,
+    pub covered_through_day_utc: Option<DateTime<Utc>>,
+    pub row_count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1903,6 +1927,96 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn wallet_activity_day_coverage_since(
+        &self,
+        wallet_ids: &[String],
+        window_start: DateTime<Utc>,
+    ) -> Result<WalletActivityDayCoverageSummary> {
+        if wallet_ids.is_empty() {
+            return Ok(WalletActivityDayCoverageSummary::default());
+        }
+
+        let mut canonical_wallet_ids = wallet_ids.to_vec();
+        canonical_wallet_ids.sort();
+        canonical_wallet_ids.dedup();
+
+        let day_start = window_start.date_naive();
+        let mut summary = WalletActivityDayCoverageSummary::default();
+        for chunk in canonical_wallet_ids.chunks(900) {
+            let placeholders = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT MIN(activity_day), MAX(activity_day), COUNT(*), COUNT(DISTINCT wallet_id)
+                 FROM wallet_activity_days
+                 WHERE (
+                        activity_day > ?1
+                        OR (activity_day = ?1 AND last_seen >= ?2)
+                    )
+                   AND wallet_id IN ({placeholders})"
+            );
+            let mut params = vec![
+                rusqlite::types::Value::from(day_start.format("%Y-%m-%d").to_string()),
+                rusqlite::types::Value::from(window_start.to_rfc3339()),
+            ];
+            params.extend(chunk.iter().cloned().map(rusqlite::types::Value::from));
+            let mut stmt = self
+                .conn
+                .prepare(&sql)
+                .context("failed to prepare wallet_activity_days coverage query")?;
+            let (min_day_raw, max_day_raw, row_count, distinct_wallet_count): (
+                Option<String>,
+                Option<String>,
+                i64,
+                i64,
+            ) = stmt
+                .query_row(rusqlite::params_from_iter(params), |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .context("failed querying wallet_activity_days coverage")?;
+            if let Some(min_day_raw) = min_day_raw {
+                let min_day =
+                    NaiveDate::parse_from_str(&min_day_raw, "%Y-%m-%d").with_context(|| {
+                        format!("invalid wallet_activity_days min activity_day: {min_day_raw}")
+                    })?;
+                let min_day_utc = DateTime::<Utc>::from_naive_utc_and_offset(
+                    min_day.and_hms_opt(0, 0, 0).expect("midnight utc day"),
+                    Utc,
+                );
+                summary.window_min_day_utc = Some(
+                    summary
+                        .window_min_day_utc
+                        .map(|current| current.min(min_day_utc))
+                        .unwrap_or(min_day_utc),
+                );
+            }
+            if let Some(max_day_raw) = max_day_raw {
+                let max_day =
+                    NaiveDate::parse_from_str(&max_day_raw, "%Y-%m-%d").with_context(|| {
+                        format!("invalid wallet_activity_days max activity_day: {max_day_raw}")
+                    })?;
+                let max_day_utc = DateTime::<Utc>::from_naive_utc_and_offset(
+                    max_day.and_hms_opt(0, 0, 0).expect("midnight utc day"),
+                    Utc,
+                );
+                summary.window_max_day_utc = Some(
+                    summary
+                        .window_max_day_utc
+                        .map(|current| current.max(max_day_utc))
+                        .unwrap_or(max_day_utc),
+                );
+            }
+            summary.rows_for_wallets = summary
+                .rows_for_wallets
+                .saturating_add(row_count.max(0) as u64);
+            summary.distinct_wallets_for_wallets = summary
+                .distinct_wallets_for_wallets
+                .saturating_add(distinct_wallet_count.max(0) as u64);
+        }
+
+        Ok(summary)
+    }
+
     fn load_live_open_positions(
         conn: &Connection,
         token: &str,
@@ -2233,6 +2347,27 @@ impl SqliteStore {
             .context("failed to set sqlite busy_timeout")?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .context("failed to enable sqlite foreign keys")?;
+        Ok(Self { conn })
+    }
+
+    pub fn open_read_only_immutable(path: &Path) -> Result<Self> {
+        let uri = build_sqlite_immutable_read_only_uri(path);
+        let conn = Connection::open_with_flags(
+            &uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        )
+        .with_context(|| {
+            format!(
+                "failed to open sqlite db immutable read-only: {}",
+                path.display()
+            )
+        })?;
+        conn.busy_timeout(StdDuration::from_secs(5))
+            .context("failed to set sqlite busy_timeout")?;
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .context("failed to enable sqlite foreign keys")?;
+        conn.pragma_update(None, "query_only", "ON")
+            .context("failed to enable sqlite query_only")?;
         Ok(Self { conn })
     }
 
@@ -3417,6 +3552,56 @@ mod tests {
                 })?;
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn immutable_read_only_helper_is_proof_specific_and_general_read_only_keeps_default_semantics(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("immutable-read-only-proof.db");
+
+        {
+            let conn = Connection::open(&db_path)
+                .with_context(|| format!("failed creating fixture {}", db_path.display()))?;
+            conn.execute_batch(
+                "
+                PRAGMA journal_mode=DELETE;
+                CREATE TABLE proof_fixture(id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO proof_fixture(value) VALUES ('seed');
+                ",
+            )
+            .context("failed seeding immutable read-only fixture")?;
+        }
+
+        let general_store = SqliteStore::open_read_only(&db_path)?;
+        let immutable_store = SqliteStore::open_read_only_immutable(&db_path)?;
+        let general_facts = general_store.sqlite_read_only_driver_compare_facts()?;
+        let immutable_facts = immutable_store.sqlite_read_only_driver_compare_facts()?;
+
+        assert!(
+            !general_facts.query_only,
+            "general read-only helper must not hardcode proof-only query_only semantics"
+        );
+        assert!(
+            immutable_facts.query_only,
+            "immutable proof helper must force query_only for frozen artifacts"
+        );
+        let row_count: i64 =
+            immutable_store
+                .conn
+                .query_row("SELECT COUNT(*) FROM proof_fixture", [], |row| row.get(0))?;
+        assert_eq!(
+            row_count, 1,
+            "immutable helper must read the frozen fixture"
+        );
+        assert!(
+            immutable_store
+                .conn
+                .execute("CREATE TABLE proof_mutation(id INTEGER)", [])
+                .is_err(),
+            "immutable helper must remain read-only"
+        );
         Ok(())
     }
 

@@ -482,8 +482,34 @@ pub struct CloneLatestTrustedBootstrapSummary {
     pub top_wallets: Vec<String>,
 }
 
-pub const DISCOVERY_SELECTOR_PROOF_CONFIG_FINGERPRINT_METHOD: &str =
-    "exact_config_bytes_fnv1a64";
+pub const DISCOVERY_SELECTOR_PROOF_CONFIG_FINGERPRINT_METHOD: &str = "exact_config_bytes_fnv1a64";
+const SELECTOR_PROOF_REJECT_BREAKDOWN_KEYS: &[&str] = &[
+    "below_min_score",
+    "insufficient_active_days",
+    "insufficient_buy_count",
+    "insufficient_trades",
+    "low_notional",
+    "low_tradable_ratio",
+    "missing_token_quality",
+    "open_position_gate",
+    "rug_gate",
+    "stale_last_seen",
+    "stale_token_quality",
+    "suspicious_activity",
+];
+const SELECTOR_PROOF_TOKEN_QUALITY_COVERAGE_KEYS: &[&str] = &[
+    "buy_mints_total",
+    "fresh_cache_hits",
+    "missing_cache_entries",
+    "stale_cache_hits",
+];
+const SELECTOR_PROOF_REJECTED_WALLET_SAMPLE_LIMIT: usize = 10;
+const SELECTOR_UNIVERSE_EXPLANATION_EMPTY_NO_OBSERVED_SWAPS: &str =
+    "empty_due_to_no_observed_swaps_in_window";
+const SELECTOR_UNIVERSE_EXPLANATION_EMPTY_NO_WALLETS_SEEN: &str = "empty_due_to_no_wallets_seen";
+const SELECTOR_UNIVERSE_EXPLANATION_EMPTY_SELECTOR_GATES: &str =
+    "empty_due_to_selector_gates_on_seen_wallets";
+const SELECTOR_UNIVERSE_EXPLANATION_NON_EMPTY: &str = "non_empty_ranked_universe";
 
 #[derive(Debug, Clone)]
 pub struct DiscoverySelectorProofRequest {
@@ -493,7 +519,7 @@ pub struct DiscoverySelectorProofRequest {
     pub fixed_now_utc: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct DiscoverySelectorProofReport {
     pub db_path: String,
     pub db_file_size_bytes: u64,
@@ -510,9 +536,206 @@ pub struct DiscoverySelectorProofReport {
     pub observed_swaps_loaded: Option<u64>,
     pub wallets_seen: Option<u64>,
     pub eligible_wallet_count: Option<u64>,
+    pub observed_swaps_window_min_ts_utc: Option<DateTime<Utc>>,
+    pub observed_swaps_window_max_ts_utc: Option<DateTime<Utc>>,
+    pub observed_swaps_buy_count: u64,
+    pub observed_swaps_sell_count: u64,
+    pub observed_swaps_distinct_wallet_count: u64,
+    pub observed_swaps_distinct_buy_mint_count: u64,
+    pub wallet_activity_days_window_min_day_utc: Option<DateTime<Utc>>,
+    pub wallet_activity_days_window_max_day_utc: Option<DateTime<Utc>>,
+    pub wallet_activity_days_rows_for_seen_wallets: u64,
+    pub wallet_activity_days_distinct_wallets_for_seen_wallets: u64,
+    pub wallet_activity_days_min_active_days_among_seen_wallets: Option<u32>,
+    pub wallet_activity_days_max_active_days_among_seen_wallets: Option<u32>,
+    pub token_quality_cache_rows_for_seen_buy_mints: u64,
+    pub token_quality_cache_distinct_mints_for_seen_buy_mints: u64,
+    pub token_quality_cache_fresh_rows_for_seen_buy_mints: u64,
+    pub token_quality_cache_stale_rows_for_seen_buy_mints: u64,
+    pub token_quality_cache_missing_rows_for_seen_buy_mints: u64,
+    pub token_quality_cache_min_fetched_at_utc_for_seen_buy_mints: Option<DateTime<Utc>>,
+    pub token_quality_cache_max_fetched_at_utc_for_seen_buy_mints: Option<DateTime<Utc>>,
     pub ranked_wallets: Vec<String>,
+    pub rejected_wallet_sample_limit: u64,
+    pub rejected_wallet_samples: Vec<DiscoverySelectorProofRejectedWalletSample>,
     pub reject_breakdown: BTreeMap<String, u64>,
     pub token_quality_coverage: BTreeMap<String, u64>,
+    pub selector_universe_explanation: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DiscoverySelectorProofRejectedWalletSample {
+    pub wallet_id: String,
+    pub score: f64,
+    pub eligible: bool,
+    pub reject_reasons: Vec<String>,
+    pub active_days: u32,
+    pub buy_total: u32,
+    pub trades: u32,
+    pub tradable_ratio: f64,
+    pub pnl_sol: f64,
+    pub last_seen_utc: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PersistedSelectorProofState {
+    snapshots: Vec<WalletSnapshot>,
+    outcomes: Vec<WalletSnapshotOutcome>,
+    by_wallet: HashMap<String, WalletAccumulator>,
+    token_quality_resolutions: HashMap<String, quality_cache::TokenQualityResolution>,
+    observed_swaps_loaded: usize,
+    observed_swap_coverage: SelectorProofObservedSwapCoverage,
+    token_quality_coverage: SelectorProofTokenQualityCoverage,
+}
+
+#[derive(Debug, Clone)]
+struct WalletSnapshotOutcome {
+    snapshot: WalletSnapshot,
+    reject_reasons: BTreeSet<SelectorRejectReason>,
+    active_days: u32,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SelectorProofObservedSwapCoverage {
+    min_ts_utc: Option<DateTime<Utc>>,
+    max_ts_utc: Option<DateTime<Utc>>,
+    buy_count: u64,
+    sell_count: u64,
+}
+
+impl SelectorProofObservedSwapCoverage {
+    fn observe(&mut self, swap: &SwapEvent) {
+        self.min_ts_utc = Some(
+            self.min_ts_utc
+                .map(|current| current.min(swap.ts_utc))
+                .unwrap_or(swap.ts_utc),
+        );
+        self.max_ts_utc = Some(
+            self.max_ts_utc
+                .map(|current| current.max(swap.ts_utc))
+                .unwrap_or(swap.ts_utc),
+        );
+        if is_sol_buy(swap) {
+            self.buy_count = self.buy_count.saturating_add(1);
+        } else if is_sol_sell(swap) {
+            self.sell_count = self.sell_count.saturating_add(1);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct SelectorProofWalletActivityCoverage {
+    window_min_day_utc: Option<DateTime<Utc>>,
+    window_max_day_utc: Option<DateTime<Utc>>,
+    rows_for_seen_wallets: u64,
+    distinct_wallets_for_seen_wallets: u64,
+    min_active_days_among_seen_wallets: Option<u32>,
+    max_active_days_among_seen_wallets: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SelectorRejectReason {
+    BelowMinScore,
+    InsufficientActiveDays,
+    InsufficientBuyCount,
+    InsufficientTrades,
+    LowNotional,
+    LowTradableRatio,
+    OpenPositionGate,
+    RugGate,
+    StaleLastSeen,
+    SuspiciousActivity,
+}
+
+impl SelectorRejectReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::BelowMinScore => "below_min_score",
+            Self::InsufficientActiveDays => "insufficient_active_days",
+            Self::InsufficientBuyCount => "insufficient_buy_count",
+            Self::InsufficientTrades => "insufficient_trades",
+            Self::LowNotional => "low_notional",
+            Self::LowTradableRatio => "low_tradable_ratio",
+            Self::OpenPositionGate => "open_position_gate",
+            Self::RugGate => "rug_gate",
+            Self::StaleLastSeen => "stale_last_seen",
+            Self::SuspiciousActivity => "suspicious_activity",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SelectorProofTokenQualityCoverage {
+    buy_mints_total: u64,
+    fresh_cache_hits: u64,
+    stale_cache_hits: u64,
+    missing_cache_entries: u64,
+    min_fetched_at_utc: Option<DateTime<Utc>>,
+    max_fetched_at_utc: Option<DateTime<Utc>>,
+}
+
+impl SelectorProofTokenQualityCoverage {
+    fn from_resolutions(
+        buy_mints: &[String],
+        resolutions: &HashMap<String, quality_cache::TokenQualityResolution>,
+    ) -> Self {
+        let mut coverage = Self {
+            buy_mints_total: buy_mints.len() as u64,
+            ..Self::default()
+        };
+        for mint in buy_mints {
+            match resolutions.get(mint) {
+                Some(quality_cache::TokenQualityResolution::Fresh(row)) => {
+                    coverage.fresh_cache_hits = coverage.fresh_cache_hits.saturating_add(1);
+                    coverage.observe_fetched_at(row.fetched_at);
+                }
+                Some(quality_cache::TokenQualityResolution::Stale(row)) => {
+                    coverage.stale_cache_hits = coverage.stale_cache_hits.saturating_add(1);
+                    coverage.observe_fetched_at(row.fetched_at);
+                }
+                Some(quality_cache::TokenQualityResolution::Missing)
+                | Some(quality_cache::TokenQualityResolution::Deferred)
+                | None => {
+                    coverage.missing_cache_entries =
+                        coverage.missing_cache_entries.saturating_add(1);
+                }
+            }
+        }
+        coverage
+    }
+
+    fn observe_fetched_at(&mut self, fetched_at: DateTime<Utc>) {
+        self.min_fetched_at_utc = Some(
+            self.min_fetched_at_utc
+                .map(|current| current.min(fetched_at))
+                .unwrap_or(fetched_at),
+        );
+        self.max_fetched_at_utc = Some(
+            self.max_fetched_at_utc
+                .map(|current| current.max(fetched_at))
+                .unwrap_or(fetched_at),
+        );
+    }
+
+    fn to_map(self) -> BTreeMap<String, u64> {
+        let mut out = zeroed_u64_map(SELECTOR_PROOF_TOKEN_QUALITY_COVERAGE_KEYS);
+        out.insert("buy_mints_total".to_string(), self.buy_mints_total);
+        out.insert("fresh_cache_hits".to_string(), self.fresh_cache_hits);
+        out.insert("stale_cache_hits".to_string(), self.stale_cache_hits);
+        out.insert(
+            "missing_cache_entries".to_string(),
+            self.missing_cache_entries,
+        );
+        out
+    }
+
+    fn cache_rows_for_seen_buy_mints(self) -> u64 {
+        self.fresh_cache_hits.saturating_add(self.stale_cache_hits)
+    }
+
+    fn distinct_mints_for_seen_buy_mints(self) -> u64 {
+        self.cache_rows_for_seen_buy_mints()
+    }
 }
 
 fn discovery_selector_proof_config_fingerprint(config_bytes: &[u8]) -> String {
@@ -525,6 +748,12 @@ fn discovery_selector_proof_config_fingerprint(config_bytes: &[u8]) -> String {
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     format!("0x{hash:016x}")
+}
+
+fn zeroed_u64_map(keys: &[&str]) -> BTreeMap<String, u64> {
+    keys.iter()
+        .map(|key| ((*key).to_string(), 0u64))
+        .collect::<BTreeMap<_, _>>()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12401,15 +12630,53 @@ impl DiscoveryService {
     ) -> Result<DiscoverySelectorProofReport> {
         let db_metadata = fs::metadata(&request.db_path)
             .with_context(|| format!("failed reading db metadata {}", request.db_path.display()))?;
-        let db_file_mtime_utc = db_metadata.modified().map(DateTime::<Utc>::from).with_context(
-            || format!("failed reading db modified time {}", request.db_path.display()),
-        )?;
+        let db_file_mtime_utc = db_metadata
+            .modified()
+            .map(DateTime::<Utc>::from)
+            .with_context(|| {
+                format!(
+                    "failed reading db modified time {}",
+                    request.db_path.display()
+                )
+            })?;
         let db_facts = store.sqlite_read_only_probe_facts().with_context(|| {
             format!(
                 "failed probing sqlite read-only facts {}",
                 request.db_path.display()
             )
         })?;
+        let metrics_window_start = self.metrics_window_start(request.fixed_now_utc);
+        let selector_state = self.build_wallet_snapshots_from_persisted_stream_one_shot_state(
+            store,
+            metrics_window_start,
+            request.fixed_now_utc,
+        )?;
+        let ranked = rank_follow_candidates(&selector_state.snapshots, self.config.min_score);
+        let ranked_wallets = desired_wallets(&ranked, self.config.follow_top_n);
+        let reject_breakdown = self.selector_proof_reject_breakdown(
+            &selector_state.outcomes,
+            &selector_state.by_wallet,
+            &selector_state.token_quality_resolutions,
+        );
+        let seen_wallet_ids: Vec<String> = selector_state
+            .snapshots
+            .iter()
+            .map(|snapshot| snapshot.wallet_id.clone())
+            .collect();
+        let wallet_activity_coverage = self.selector_proof_wallet_activity_coverage(
+            store,
+            &seen_wallet_ids,
+            metrics_window_start,
+        )?;
+        let rejected_wallet_samples =
+            self.selector_proof_rejected_wallet_samples(&selector_state.outcomes);
+        let selector_universe_explanation = self
+            .selector_proof_universe_explanation(
+                selector_state.observed_swaps_loaded as u64,
+                selector_state.snapshots.len() as u64,
+                ranked.len() as u64,
+            )
+            .to_string();
 
         Ok(DiscoverySelectorProofReport {
             db_path: request.db_path.display().to_string(),
@@ -12421,19 +12688,205 @@ impl DiscoveryService {
             config_path: request.config_path.display().to_string(),
             config_fingerprint_method: DISCOVERY_SELECTOR_PROOF_CONFIG_FINGERPRINT_METHOD
                 .to_string(),
-            config_fingerprint: discovery_selector_proof_config_fingerprint(
-                &request.config_bytes,
-            ),
+            config_fingerprint: discovery_selector_proof_config_fingerprint(&request.config_bytes),
             fixed_now_utc: request.fixed_now_utc,
             rpc_enabled: self.helius_http_url.is_some(),
-            metrics_window_start_utc: None,
-            observed_swaps_loaded: None,
-            wallets_seen: None,
-            eligible_wallet_count: None,
-            ranked_wallets: Vec::new(),
-            reject_breakdown: BTreeMap::new(),
-            token_quality_coverage: BTreeMap::new(),
+            metrics_window_start_utc: Some(metrics_window_start),
+            observed_swaps_loaded: Some(selector_state.observed_swaps_loaded as u64),
+            wallets_seen: Some(selector_state.snapshots.len() as u64),
+            eligible_wallet_count: Some(ranked.len() as u64),
+            observed_swaps_window_min_ts_utc: selector_state.observed_swap_coverage.min_ts_utc,
+            observed_swaps_window_max_ts_utc: selector_state.observed_swap_coverage.max_ts_utc,
+            observed_swaps_buy_count: selector_state.observed_swap_coverage.buy_count,
+            observed_swaps_sell_count: selector_state.observed_swap_coverage.sell_count,
+            observed_swaps_distinct_wallet_count: selector_state.snapshots.len() as u64,
+            observed_swaps_distinct_buy_mint_count: selector_state
+                .token_quality_coverage
+                .buy_mints_total,
+            wallet_activity_days_window_min_day_utc: wallet_activity_coverage.window_min_day_utc,
+            wallet_activity_days_window_max_day_utc: wallet_activity_coverage.window_max_day_utc,
+            wallet_activity_days_rows_for_seen_wallets: wallet_activity_coverage
+                .rows_for_seen_wallets,
+            wallet_activity_days_distinct_wallets_for_seen_wallets: wallet_activity_coverage
+                .distinct_wallets_for_seen_wallets,
+            wallet_activity_days_min_active_days_among_seen_wallets: wallet_activity_coverage
+                .min_active_days_among_seen_wallets,
+            wallet_activity_days_max_active_days_among_seen_wallets: wallet_activity_coverage
+                .max_active_days_among_seen_wallets,
+            token_quality_cache_rows_for_seen_buy_mints: selector_state
+                .token_quality_coverage
+                .cache_rows_for_seen_buy_mints(),
+            token_quality_cache_distinct_mints_for_seen_buy_mints: selector_state
+                .token_quality_coverage
+                .distinct_mints_for_seen_buy_mints(),
+            token_quality_cache_fresh_rows_for_seen_buy_mints: selector_state
+                .token_quality_coverage
+                .fresh_cache_hits,
+            token_quality_cache_stale_rows_for_seen_buy_mints: selector_state
+                .token_quality_coverage
+                .stale_cache_hits,
+            token_quality_cache_missing_rows_for_seen_buy_mints: selector_state
+                .token_quality_coverage
+                .missing_cache_entries,
+            token_quality_cache_min_fetched_at_utc_for_seen_buy_mints: selector_state
+                .token_quality_coverage
+                .min_fetched_at_utc,
+            token_quality_cache_max_fetched_at_utc_for_seen_buy_mints: selector_state
+                .token_quality_coverage
+                .max_fetched_at_utc,
+            ranked_wallets,
+            rejected_wallet_sample_limit: SELECTOR_PROOF_REJECTED_WALLET_SAMPLE_LIMIT as u64,
+            rejected_wallet_samples,
+            reject_breakdown,
+            token_quality_coverage: selector_state.token_quality_coverage.to_map(),
+            selector_universe_explanation,
         })
+    }
+
+    fn selector_proof_reject_breakdown(
+        &self,
+        outcomes: &[WalletSnapshotOutcome],
+        by_wallet: &HashMap<String, WalletAccumulator>,
+        token_quality_resolutions: &HashMap<String, quality_cache::TokenQualityResolution>,
+    ) -> BTreeMap<String, u64> {
+        let mut breakdown = zeroed_u64_map(SELECTOR_PROOF_REJECT_BREAKDOWN_KEYS);
+        for outcome in outcomes {
+            if outcome.snapshot.eligible && outcome.snapshot.score >= self.config.min_score {
+                continue;
+            }
+            for reason in &outcome.reject_reasons {
+                let key = reason.as_str().to_string();
+                let entry = breakdown.entry(key).or_insert(0);
+                *entry = entry.saturating_add(1);
+            }
+
+            let quality_sensitive_rejection = outcome
+                .reject_reasons
+                .contains(&SelectorRejectReason::LowTradableRatio)
+                || outcome
+                    .reject_reasons
+                    .contains(&SelectorRejectReason::BelowMinScore);
+            if !quality_sensitive_rejection {
+                continue;
+            }
+
+            let Some(acc) = by_wallet.get(&outcome.snapshot.wallet_id) else {
+                continue;
+            };
+            let saw_missing_quality = acc.buy_mints.iter().any(|mint| {
+                matches!(
+                    token_quality_resolutions.get(mint),
+                    Some(quality_cache::TokenQualityResolution::Missing)
+                        | Some(quality_cache::TokenQualityResolution::Deferred)
+                        | None
+                )
+            });
+            let saw_stale_quality = acc.buy_mints.iter().any(|mint| {
+                matches!(
+                    token_quality_resolutions.get(mint),
+                    Some(quality_cache::TokenQualityResolution::Stale(_))
+                )
+            });
+
+            if saw_missing_quality {
+                let entry = breakdown
+                    .entry("missing_token_quality".to_string())
+                    .or_insert(0);
+                *entry = entry.saturating_add(1);
+            }
+            if saw_stale_quality {
+                let entry = breakdown
+                    .entry("stale_token_quality".to_string())
+                    .or_insert(0);
+                *entry = entry.saturating_add(1);
+            }
+        }
+        breakdown
+    }
+
+    fn selector_proof_wallet_activity_coverage(
+        &self,
+        store: &SqliteStore,
+        wallet_ids: &[String],
+        window_start: DateTime<Utc>,
+    ) -> Result<SelectorProofWalletActivityCoverage> {
+        let summary = match store.wallet_activity_day_coverage_since(wallet_ids, window_start) {
+            Ok(summary) => summary,
+            Err(error) => {
+                if discovery_wallet_activity_day_count_error_requires_abort(&error) {
+                    return Err(error).context(
+                        "failed loading persisted wallet_activity_days coverage with fatal sqlite I/O",
+                    );
+                }
+                warn!(
+                    error = %error,
+                    wallet_count = wallet_ids.len(),
+                    "failed loading persisted wallet_activity_days coverage; returning empty proof coverage"
+                );
+                return Ok(SelectorProofWalletActivityCoverage::default());
+            }
+        };
+        let counts = self.load_persisted_active_day_counts_for_wallet_ids_since(
+            store,
+            wallet_ids,
+            window_start,
+        )?;
+        Ok(SelectorProofWalletActivityCoverage {
+            window_min_day_utc: summary.window_min_day_utc,
+            window_max_day_utc: summary.window_max_day_utc,
+            rows_for_seen_wallets: summary.rows_for_wallets,
+            distinct_wallets_for_seen_wallets: summary.distinct_wallets_for_wallets,
+            min_active_days_among_seen_wallets: counts.values().copied().min(),
+            max_active_days_among_seen_wallets: counts.values().copied().max(),
+        })
+    }
+
+    fn selector_proof_rejected_wallet_samples(
+        &self,
+        outcomes: &[WalletSnapshotOutcome],
+    ) -> Vec<DiscoverySelectorProofRejectedWalletSample> {
+        let mut samples: Vec<_> = outcomes
+            .iter()
+            .filter(|outcome| {
+                !(outcome.snapshot.eligible && outcome.snapshot.score >= self.config.min_score)
+            })
+            .map(|outcome| DiscoverySelectorProofRejectedWalletSample {
+                wallet_id: outcome.snapshot.wallet_id.clone(),
+                score: outcome.snapshot.score,
+                eligible: outcome.snapshot.eligible,
+                reject_reasons: outcome
+                    .reject_reasons
+                    .iter()
+                    .map(|reason| reason.as_str().to_string())
+                    .collect(),
+                active_days: outcome.active_days,
+                buy_total: outcome.snapshot.buy_total,
+                trades: outcome.snapshot.trades,
+                tradable_ratio: outcome.snapshot.tradable_ratio,
+                pnl_sol: outcome.snapshot.pnl_sol,
+                last_seen_utc: outcome.snapshot.last_seen,
+            })
+            .collect();
+        samples.sort_by(|left, right| left.wallet_id.cmp(&right.wallet_id));
+        samples.truncate(SELECTOR_PROOF_REJECTED_WALLET_SAMPLE_LIMIT);
+        samples
+    }
+
+    fn selector_proof_universe_explanation(
+        &self,
+        observed_swaps_loaded: u64,
+        wallets_seen: u64,
+        eligible_wallet_count: u64,
+    ) -> &'static str {
+        if observed_swaps_loaded == 0 {
+            SELECTOR_UNIVERSE_EXPLANATION_EMPTY_NO_OBSERVED_SWAPS
+        } else if wallets_seen == 0 {
+            SELECTOR_UNIVERSE_EXPLANATION_EMPTY_NO_WALLETS_SEEN
+        } else if eligible_wallet_count > 0 {
+            SELECTOR_UNIVERSE_EXPLANATION_NON_EMPTY
+        } else {
+            SELECTOR_UNIVERSE_EXPLANATION_EMPTY_SELECTOR_GATES
+        }
     }
 
     pub fn aggregate_readiness_status(
@@ -22427,9 +22880,27 @@ impl DiscoveryService {
         window_start: DateTime<Utc>,
         now: DateTime<Utc>,
     ) -> Result<(Vec<WalletSnapshot>, usize)> {
+        let state = self.build_wallet_snapshots_from_persisted_stream_one_shot_state(
+            store,
+            window_start,
+            now,
+        )?;
+        Ok((state.snapshots, state.observed_swaps_loaded))
+    }
+
+    fn build_wallet_snapshots_from_persisted_stream_one_shot_state(
+        &self,
+        store: &SqliteStore,
+        window_start: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<PersistedSelectorProofState> {
         let unique_buy_mints = store.load_observed_buy_mints_in_window(window_start, now)?;
         let token_quality_cache =
             self.resolve_token_quality_for_mints(store, &unique_buy_mints, now)?;
+        let token_quality_coverage = SelectorProofTokenQualityCoverage::from_resolutions(
+            &unique_buy_mints,
+            &token_quality_cache,
+        );
         let lookahead = Duration::seconds(self.config.rug_lookahead_seconds.max(1) as i64);
         let mut by_wallet: HashMap<String, WalletAccumulator> = HashMap::new();
         let mut token_states: HashMap<String, TokenRollingState> = HashMap::new();
@@ -22437,12 +22908,14 @@ impl DiscoveryService {
         let mut pending_rug_checks = VecDeque::new();
         let mut token_pending_buy_starts: HashMap<String, VecDeque<DateTime<Utc>>> = HashMap::new();
         let mut processed_swaps = 0usize;
+        let mut observed_swap_coverage = SelectorProofObservedSwapCoverage::default();
         let observed_swaps_loaded = store.for_each_observed_swap_in_window_paged(
             window_start,
             now,
             OBSERVED_SWAP_WINDOW_PAGED_READ_LIMIT,
             |swap| {
                 processed_swaps = processed_swaps.saturating_add(1);
+                observed_swap_coverage.observe(&swap);
                 let buy_quality = self.update_token_quality_state_streaming(
                     &mut token_states,
                     &mut token_recent_sol_trades,
@@ -22504,13 +22977,25 @@ impl DiscoveryService {
             lookahead,
         );
         let empty_token_sol_history = HashMap::new();
-        let snapshots = self.wallet_snapshots_from_accumulators(
+        let outcomes = self.wallet_snapshot_outcomes_from_accumulators(
             store,
-            by_wallet,
+            by_wallet.clone(),
             now,
             &empty_token_sol_history,
         )?;
-        Ok((snapshots, observed_swaps_loaded))
+        let snapshots = outcomes
+            .iter()
+            .map(|outcome| outcome.snapshot.clone())
+            .collect();
+        Ok(PersistedSelectorProofState {
+            snapshots,
+            outcomes,
+            by_wallet,
+            token_quality_resolutions: token_quality_cache,
+            observed_swaps_loaded,
+            observed_swap_coverage,
+            token_quality_coverage,
+        })
     }
 
     fn wallet_snapshots_from_accumulators(
@@ -22520,11 +23005,25 @@ impl DiscoveryService {
         now: DateTime<Utc>,
         token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
     ) -> Result<Vec<WalletSnapshot>> {
+        Ok(self
+            .wallet_snapshot_outcomes_from_accumulators(store, by_wallet, now, token_sol_history)?
+            .into_iter()
+            .map(|outcome| outcome.snapshot)
+            .collect())
+    }
+
+    fn wallet_snapshot_outcomes_from_accumulators(
+        &self,
+        store: &SqliteStore,
+        by_wallet: HashMap<String, WalletAccumulator>,
+        now: DateTime<Utc>,
+        token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
+    ) -> Result<Vec<WalletSnapshotOutcome>> {
         let wallet_ids: Vec<String> = by_wallet.keys().cloned().collect();
         let persisted_active_day_counts =
             self.load_persisted_active_day_counts_for_wallet_ids(store, &wallet_ids, now)?;
 
-        let mut snapshots = Vec::with_capacity(by_wallet.len());
+        let mut outcomes = Vec::with_capacity(by_wallet.len());
         let mut snapshot_indexes_by_wallet = HashMap::with_capacity(by_wallet.len());
         let mut pre_gate_candidate_wallet_ids = Vec::new();
         for (wallet_id, acc) in &by_wallet {
@@ -22532,25 +23031,26 @@ impl DiscoveryService {
                 .get(wallet_id)
                 .copied()
                 .unwrap_or(0);
-            let snapshot = self.snapshot_from_accumulator_with_persisted_active_days_internal(
-                wallet_id.clone(),
-                acc.clone(),
-                now,
-                token_sol_history,
-                persisted_active_days,
-                false,
-                false,
-            );
-            if snapshot.eligible {
+            let outcome = self
+                .snapshot_outcome_from_accumulator_with_persisted_active_days_internal(
+                    wallet_id.clone(),
+                    acc.clone(),
+                    now,
+                    token_sol_history,
+                    persisted_active_days,
+                    false,
+                    false,
+                );
+            if outcome.snapshot.eligible {
                 pre_gate_candidate_wallet_ids.push(wallet_id.clone());
             }
-            snapshot_indexes_by_wallet.insert(wallet_id.clone(), snapshots.len());
-            snapshots.push(snapshot);
+            snapshot_indexes_by_wallet.insert(wallet_id.clone(), outcomes.len());
+            outcomes.push(outcome);
         }
         if !self.config.require_open_positions_for_publication
             || pre_gate_candidate_wallet_ids.is_empty()
         {
-            return Ok(snapshots);
+            return Ok(outcomes);
         }
 
         let reconstructed_positions_by_wallet = self
@@ -22572,19 +23072,22 @@ impl DiscoveryService {
                 .get(&wallet_id)
                 .copied()
                 .unwrap_or(0);
-            let gated_snapshot = self.snapshot_from_accumulator_with_persisted_active_days(
-                wallet_id.clone(),
-                gated_acc,
-                now,
-                token_sol_history,
-                persisted_active_days,
-            );
+            let gated_outcome = self
+                .snapshot_outcome_from_accumulator_with_persisted_active_days_internal(
+                    wallet_id.clone(),
+                    gated_acc,
+                    now,
+                    token_sol_history,
+                    persisted_active_days,
+                    true,
+                    false,
+                );
             if let Some(index) = snapshot_indexes_by_wallet.get(&wallet_id).copied() {
-                snapshots[index] = gated_snapshot;
+                outcomes[index] = gated_outcome;
             }
         }
 
-        Ok(snapshots)
+        Ok(outcomes)
     }
 
     fn load_persisted_active_day_counts_for_wallet_ids(
@@ -22593,10 +23096,20 @@ impl DiscoveryService {
         wallet_ids: &[String],
         now: DateTime<Utc>,
     ) -> Result<HashMap<String, u32>> {
-        match store.wallet_active_day_counts_since(
+        self.load_persisted_active_day_counts_for_wallet_ids_since(
+            store,
             wallet_ids,
             now - Duration::days(self.config.scoring_window_days.max(1) as i64),
-        ) {
+        )
+    }
+
+    fn load_persisted_active_day_counts_for_wallet_ids_since(
+        &self,
+        store: &SqliteStore,
+        wallet_ids: &[String],
+        window_start: DateTime<Utc>,
+    ) -> Result<HashMap<String, u32>> {
+        match store.wallet_active_day_counts_since(wallet_ids, window_start) {
             Ok(counts) => Ok(counts),
             Err(error) => {
                 if discovery_wallet_activity_day_count_error_requires_abort(&error) {
@@ -22634,15 +23147,17 @@ impl DiscoveryService {
                 .get(wallet_id)
                 .copied()
                 .unwrap_or(0);
-            let snapshot = self.snapshot_from_accumulator_with_persisted_active_days_internal(
-                wallet_id.clone(),
-                acc.clone(),
-                now,
-                &empty_token_sol_history,
-                persisted_active_days,
-                false,
-                true,
-            );
+            let snapshot = self
+                .snapshot_outcome_from_accumulator_with_persisted_active_days_internal(
+                    wallet_id.clone(),
+                    acc.clone(),
+                    now,
+                    &empty_token_sol_history,
+                    persisted_active_days,
+                    false,
+                    true,
+                )
+                .snapshot;
             if snapshot.eligible && snapshot.score >= self.config.min_score {
                 counterfactual_open_gate_candidate_wallet_ids.push(wallet_id.clone());
             }
@@ -22672,15 +23187,17 @@ impl DiscoveryService {
                 .get(&wallet_id)
                 .copied()
                 .unwrap_or(0);
-            let snapshot = self.snapshot_from_accumulator_with_persisted_active_days_internal(
-                wallet_id.clone(),
-                gated_acc,
-                now,
-                &empty_token_sol_history,
-                persisted_active_days,
-                true,
-                true,
-            );
+            let snapshot = self
+                .snapshot_outcome_from_accumulator_with_persisted_active_days_internal(
+                    wallet_id.clone(),
+                    gated_acc,
+                    now,
+                    &empty_token_sol_history,
+                    persisted_active_days,
+                    true,
+                    true,
+                )
+                .snapshot;
             if snapshot.eligible && snapshot.score >= self.config.min_score {
                 target_buy_mints.extend(acc.buy_mints.iter().cloned());
             }
@@ -22884,6 +23401,7 @@ impl DiscoveryService {
             .collect()
     }
 
+    #[cfg(test)]
     fn snapshot_from_components(
         &self,
         wallet_id: String,
@@ -22905,6 +23423,50 @@ impl DiscoveryService {
         rug_metrics: RugMetrics,
         now: DateTime<Utc>,
     ) -> WalletSnapshot {
+        self.snapshot_outcome_from_components(
+            wallet_id,
+            first_seen,
+            last_seen,
+            trades,
+            active_days,
+            spent_sol,
+            realized_pnl_sol,
+            max_buy_notional_sol,
+            wins,
+            closed_trades,
+            hold_samples_sec,
+            realized_pnl_by_day,
+            suspicious,
+            buy_total,
+            quality_resolved_buys,
+            tradable_buys,
+            rug_metrics,
+            now,
+        )
+        .snapshot
+    }
+
+    fn snapshot_outcome_from_components(
+        &self,
+        wallet_id: String,
+        first_seen: DateTime<Utc>,
+        last_seen: DateTime<Utc>,
+        trades: u32,
+        active_days: u32,
+        spent_sol: f64,
+        realized_pnl_sol: f64,
+        max_buy_notional_sol: f64,
+        wins: u32,
+        closed_trades: u32,
+        hold_samples_sec: &[i64],
+        realized_pnl_by_day: &HashMap<NaiveDate, f64>,
+        suspicious: bool,
+        buy_total: u32,
+        quality_resolved_buys: u32,
+        tradable_buys: u32,
+        rug_metrics: RugMetrics,
+        now: DateTime<Utc>,
+    ) -> WalletSnapshotOutcome {
         let resolved_buy_ratio = if buy_total > 0 {
             quality_resolved_buys as f64 / buy_total as f64
         } else {
@@ -22962,30 +23524,70 @@ impl DiscoveryService {
         };
         let raw_score = (base_score * tradable_penalty * rug_penalty).clamp(0.0, 1.0);
         let decay_cutoff = now - Duration::days(self.config.decay_window_days.max(1) as i64);
-        let eligible = trades >= self.config.min_trades
-            && active_days >= self.config.min_active_days
-            && !suspicious
-            && max_buy_notional_sol >= self.config.min_leader_notional_sol
-            && last_seen >= decay_cutoff
-            && buy_total >= self.config.min_buy_count
-            && tradable_ratio >= self.config.min_tradable_ratio
-            && (rug_checks_disabled || rug_ratio <= self.config.max_rug_ratio);
+        let insufficient_trades = trades < self.config.min_trades;
+        let insufficient_active_days = active_days < self.config.min_active_days;
+        let suspicious_activity = suspicious;
+        let low_notional = max_buy_notional_sol < self.config.min_leader_notional_sol;
+        let stale_last_seen = last_seen < decay_cutoff;
+        let insufficient_buy_count = buy_total < self.config.min_buy_count;
+        let low_tradable_ratio = tradable_ratio < self.config.min_tradable_ratio;
+        let rug_gate = !rug_checks_disabled && rug_ratio > self.config.max_rug_ratio;
+        let eligible = !insufficient_trades
+            && !insufficient_active_days
+            && !suspicious_activity
+            && !low_notional
+            && !stale_last_seen
+            && !insufficient_buy_count
+            && !low_tradable_ratio
+            && !rug_gate;
         let score = if eligible { raw_score } else { 0.0 };
+        let mut reject_reasons = BTreeSet::new();
+        if insufficient_trades {
+            reject_reasons.insert(SelectorRejectReason::InsufficientTrades);
+        }
+        if insufficient_active_days {
+            reject_reasons.insert(SelectorRejectReason::InsufficientActiveDays);
+        }
+        if suspicious_activity {
+            reject_reasons.insert(SelectorRejectReason::SuspiciousActivity);
+        }
+        if low_notional {
+            reject_reasons.insert(SelectorRejectReason::LowNotional);
+        }
+        if stale_last_seen {
+            reject_reasons.insert(SelectorRejectReason::StaleLastSeen);
+        }
+        if insufficient_buy_count {
+            reject_reasons.insert(SelectorRejectReason::InsufficientBuyCount);
+        }
+        if low_tradable_ratio {
+            reject_reasons.insert(SelectorRejectReason::LowTradableRatio);
+        }
+        if rug_gate {
+            reject_reasons.insert(SelectorRejectReason::RugGate);
+        }
+        if eligible && score < self.config.min_score {
+            reject_reasons.insert(SelectorRejectReason::BelowMinScore);
+        }
 
-        WalletSnapshot {
-            wallet_id,
-            first_seen,
-            last_seen,
-            pnl_sol: realized_pnl_sol,
-            win_rate,
-            trades,
-            closed_trades,
-            hold_median_seconds,
-            score,
-            buy_total,
-            tradable_ratio,
-            rug_ratio,
-            eligible,
+        WalletSnapshotOutcome {
+            snapshot: WalletSnapshot {
+                wallet_id,
+                first_seen,
+                last_seen,
+                pnl_sol: realized_pnl_sol,
+                win_rate,
+                trades,
+                closed_trades,
+                hold_median_seconds,
+                score,
+                buy_total,
+                tradable_ratio,
+                rug_ratio,
+                eligible,
+            },
+            reject_reasons,
+            active_days,
         }
     }
 
@@ -23014,7 +23616,7 @@ impl DiscoveryService {
         token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
         persisted_active_days: u32,
     ) -> WalletSnapshot {
-        self.snapshot_from_accumulator_with_persisted_active_days_internal(
+        self.snapshot_outcome_from_accumulator_with_persisted_active_days_internal(
             wallet_id,
             acc,
             now,
@@ -23023,9 +23625,10 @@ impl DiscoveryService {
             true,
             false,
         )
+        .snapshot
     }
 
-    fn snapshot_from_accumulator_with_persisted_active_days_internal(
+    fn snapshot_outcome_from_accumulator_with_persisted_active_days_internal(
         &self,
         wallet_id: String,
         acc: WalletAccumulator,
@@ -23034,7 +23637,7 @@ impl DiscoveryService {
         persisted_active_days: u32,
         apply_open_position_gate: bool,
         ignore_rug_gate: bool,
-    ) -> WalletSnapshot {
+    ) -> WalletSnapshotOutcome {
         let first_seen = acc.first_seen.unwrap_or(now);
         let last_seen = acc.last_seen.unwrap_or(now);
         let active_days = acc
@@ -23067,7 +23670,7 @@ impl DiscoveryService {
                     self.compute_rug_metrics(&acc.buy_observations, token_sol_history, now);
                 (buy_total, quality_resolved_buys, tradable_buys, rug_metrics)
             };
-        let mut snapshot = self.snapshot_from_components(
+        let mut outcome = self.snapshot_outcome_from_components(
             wallet_id,
             first_seen,
             last_seen,
@@ -23093,12 +23696,16 @@ impl DiscoveryService {
         );
         if apply_open_position_gate
             && self.config.require_open_positions_for_publication
+            && outcome.snapshot.eligible
             && !has_actionable_open_positions
         {
-            snapshot.eligible = false;
-            snapshot.score = 0.0;
+            outcome.snapshot.eligible = false;
+            outcome.snapshot.score = 0.0;
+            outcome
+                .reject_reasons
+                .insert(SelectorRejectReason::OpenPositionGate);
         }
-        snapshot
+        outcome
     }
 
     fn snapshot_from_persisted_metrics(
@@ -24765,15 +25372,17 @@ mod tests {
                 .get(wallet_id)
                 .copied()
                 .unwrap_or(0);
-            let snapshot = discovery.snapshot_from_accumulator_with_persisted_active_days_internal(
-                wallet_id.clone(),
-                acc.clone(),
-                now,
-                &empty_token_sol_history,
-                persisted_active_days,
-                false,
-                true,
-            );
+            let snapshot = discovery
+                .snapshot_outcome_from_accumulator_with_persisted_active_days_internal(
+                    wallet_id.clone(),
+                    acc.clone(),
+                    now,
+                    &empty_token_sol_history,
+                    persisted_active_days,
+                    false,
+                    true,
+                )
+                .snapshot;
             if snapshot.eligible && snapshot.score >= discovery.config.min_score {
                 before_actionable_open_position_gate =
                     before_actionable_open_position_gate.saturating_add(1);
@@ -24801,15 +25410,17 @@ mod tests {
                 .get(&wallet_id)
                 .copied()
                 .unwrap_or(0);
-            let snapshot = discovery.snapshot_from_accumulator_with_persisted_active_days_internal(
-                wallet_id,
-                gated_acc,
-                now,
-                &empty_token_sol_history,
-                persisted_active_days,
-                true,
-                true,
-            );
+            let snapshot = discovery
+                .snapshot_outcome_from_accumulator_with_persisted_active_days_internal(
+                    wallet_id,
+                    gated_acc,
+                    now,
+                    &empty_token_sol_history,
+                    persisted_active_days,
+                    true,
+                    true,
+                )
+                .snapshot;
             if snapshot.eligible && snapshot.score >= discovery.config.min_score {
                 after_actionable_open_position_gate =
                     after_actionable_open_position_gate.saturating_add(1);
