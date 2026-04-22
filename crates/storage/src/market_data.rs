@@ -177,6 +177,7 @@ pub struct ObservedWalletActivityPage {
     pub active_day_count_source: Option<ObservedWalletActivityDayCountSource>,
     pub wallet_id_page_wallets_seen: usize,
     pub wallet_id_page_cursor_after: Option<String>,
+    pub wallet_id_page_wallet_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2124,6 +2125,7 @@ impl SqliteStore {
                 active_day_count_source: None,
                 wallet_id_page_wallets_seen: wallet_id_page.wallet_ids.len(),
                 wallet_id_page_cursor_after: wallet_id_page.wallet_ids.last().cloned(),
+                wallet_id_page_wallet_ids: wallet_id_page.wallet_ids,
             });
         }
         let mut page = self.observed_wallet_activity_page_for_wallet_ids_in_window_with_budget(
@@ -2136,6 +2138,30 @@ impl SqliteStore {
         if page.time_budget_exhausted && page.rows_seen == 0 && !wallet_id_page.wallet_ids.is_empty() {
             page.wallet_id_page_wallets_seen = wallet_id_page.wallet_ids.len();
             page.wallet_id_page_cursor_after = wallet_id_page.wallet_ids.last().cloned();
+            page.wallet_id_page_wallet_ids = wallet_id_page.wallet_ids;
+        }
+        Ok(page)
+    }
+
+    pub fn observed_wallet_activity_page_for_staged_wallet_ids_in_window_with_budget(
+        &self,
+        wallet_ids: &[String],
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        max_tx_per_minute: u32,
+        deadline: Instant,
+    ) -> Result<ObservedWalletActivityPage> {
+        let mut page = self.observed_wallet_activity_page_for_wallet_ids_in_window_with_budget(
+            wallet_ids,
+            since,
+            until,
+            max_tx_per_minute,
+            deadline,
+        )?;
+        if page.time_budget_exhausted && page.rows_seen == 0 && !wallet_ids.is_empty() {
+            page.wallet_id_page_wallets_seen = wallet_ids.len();
+            page.wallet_id_page_cursor_after = wallet_ids.last().cloned();
+            page.wallet_id_page_wallet_ids = wallet_ids.to_vec();
         }
         Ok(page)
     }

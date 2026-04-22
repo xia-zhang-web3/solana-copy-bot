@@ -1095,7 +1095,9 @@ struct ResumeExactTargetBuyMintSurfaceRepairDiagnostics {
     wallet_cursor_before: Option<String>,
     wallet_cursor_after: Option<String>,
     persisted_partial_progress: bool,
+    persisted_staged_pre_row_state: bool,
     persisted_blocked_state: bool,
+    resumed_from_staged_pre_row_state: bool,
 }
 
 impl DiscoveryPublicationTruthRepairTraceContext {
@@ -1750,6 +1752,10 @@ struct PersistedStreamRebuildPayload {
     replay_exact_target_surface_wallet_cursor: Option<String>,
     #[serde(default)]
     replay_exact_target_surface_pre_row_blocked: bool,
+    #[serde(default)]
+    replay_exact_target_surface_staged_wallet_ids: Vec<String>,
+    #[serde(default)]
+    replay_exact_target_surface_staged_wallet_cursor_after: Option<String>,
     token_quality_cache: HashMap<String, quality_cache::TokenQualityResolution>,
     token_quality_progress: quality_cache::TokenQualityResolutionProgress,
     by_wallet: HashMap<String, WalletAccumulator>,
@@ -15598,8 +15604,16 @@ impl DiscoveryService {
         payload.replay_candidate_activity_backfill_required = false;
         payload.replay_candidate_activity_backfill_pending = false;
         payload.replay_candidate_activity_backfill_wallet_cursor = None;
+        Self::clear_replay_exact_target_surface_resume_state(payload);
+    }
+
+    fn clear_replay_exact_target_surface_resume_state(
+        payload: &mut PersistedStreamRebuildPayload,
+    ) {
         payload.replay_exact_target_surface_wallet_cursor = None;
         payload.replay_exact_target_surface_pre_row_blocked = false;
+        payload.replay_exact_target_surface_staged_wallet_ids.clear();
+        payload.replay_exact_target_surface_staged_wallet_cursor_after = None;
     }
 
     fn prepare_publish_pending_exact_quality_retry(
@@ -15616,8 +15630,7 @@ impl DiscoveryService {
         state
             .payload
             .replay_candidate_activity_backfill_wallet_cursor = None;
-        state.payload.replay_exact_target_surface_wallet_cursor = None;
-        state.payload.replay_exact_target_surface_pre_row_blocked = false;
+        Self::clear_replay_exact_target_surface_resume_state(&mut state.payload);
         state.payload.completed_snapshots.clear();
         state.payload.discovery_critical_target_buy_mints.clear();
         state.payload.publish_pending_requested_wallet_ids = None;
@@ -15859,8 +15872,7 @@ impl DiscoveryService {
         state
             .payload
             .replay_candidate_activity_backfill_wallet_cursor = None;
-        state.payload.replay_exact_target_surface_wallet_cursor = None;
-        state.payload.replay_exact_target_surface_pre_row_blocked = false;
+        Self::clear_replay_exact_target_surface_resume_state(&mut state.payload);
         state.phase_cursor = None;
         state.payload.by_wallet.clear();
         info!(
@@ -15896,8 +15908,7 @@ impl DiscoveryService {
         state
             .payload
             .replay_candidate_activity_backfill_wallet_cursor = None;
-        state.payload.replay_exact_target_surface_wallet_cursor = None;
-        state.payload.replay_exact_target_surface_pre_row_blocked = false;
+        Self::clear_replay_exact_target_surface_resume_state(&mut state.payload);
         for acc in state.payload.by_wallet.values_mut() {
             acc.reset_activity_summary_for_exact_backfill();
         }
@@ -15939,7 +15950,11 @@ impl DiscoveryService {
         state: &PersistedStreamRebuildState,
     ) -> bool {
         Self::state_owns_exact_target_buy_mint_surface_backfill_seam(state)
-            && !state.payload.replay_exact_target_surface_pre_row_blocked
+            && (!state.payload.replay_exact_target_surface_pre_row_blocked
+                || !state
+                    .payload
+                    .replay_exact_target_surface_staged_wallet_ids
+                    .is_empty())
     }
 
     fn persist_replay_exact_target_buy_mint_surface_budget_exhaustion_state(
@@ -15953,9 +15968,21 @@ impl DiscoveryService {
         diagnostics.wallet_id_page_wallets_seen = diagnostics
             .wallet_id_page_wallets_seen
             .saturating_add(page.wallet_id_page_wallets_seen);
+        if page.rows_seen == 0 && !page.wallet_id_page_wallet_ids.is_empty() {
+            state.payload.replay_exact_target_surface_pre_row_blocked = false;
+            state.payload.replay_exact_target_surface_staged_wallet_ids =
+                page.wallet_id_page_wallet_ids.clone();
+            state.payload.replay_exact_target_surface_staged_wallet_cursor_after =
+                page.wallet_id_page_cursor_after.clone();
+            diagnostics.persisted_staged_pre_row_state = true;
+            diagnostics.persisted_partial_progress = false;
+            return;
+        }
         if page.rows_seen == 0 && page.wallet_id_page_wallets_seen > 0 {
             state.payload.replay_exact_target_surface_wallet_cursor = None;
             state.payload.replay_exact_target_surface_pre_row_blocked = true;
+            state.payload.replay_exact_target_surface_staged_wallet_ids.clear();
+            state.payload.replay_exact_target_surface_staged_wallet_cursor_after = None;
             diagnostics.persisted_blocked_state = true;
             diagnostics.persisted_partial_progress = false;
             return;
@@ -16019,6 +16046,11 @@ impl DiscoveryService {
             "repairing resumed replay checkpoint exact target-mint surface before helper/run_cycle publication decisions"
         );
         let mut wallet_cursor = state.payload.replay_exact_target_surface_wallet_cursor.clone();
+        let mut staged_wallet_ids = std::mem::take(
+            &mut state.payload.replay_exact_target_surface_staged_wallet_ids,
+        );
+        let mut staged_wallet_cursor_after =
+            state.payload.replay_exact_target_surface_staged_wallet_cursor_after.take();
         {
             let mut scan_region = DiscoveryPublicationTruthRepairRegionScope::new(
                 helper_trace_context,
@@ -16033,8 +16065,19 @@ impl DiscoveryService {
             );
             scan_region.progress_mut().wallets_scanned = exact_wallet_ids.len();
             loop {
-                let page = store
-                    .observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
+                let consuming_staged_pre_row_state = !staged_wallet_ids.is_empty();
+                let staged_page_len = staged_wallet_ids.len();
+                let page = if consuming_staged_pre_row_state {
+                    diagnostics.resumed_from_staged_pre_row_state = true;
+                    store.observed_wallet_activity_page_for_staged_wallet_ids_in_window_with_budget(
+                        &staged_wallet_ids,
+                        state.window_start,
+                        state.horizon_end,
+                        self.config.max_tx_per_minute,
+                        deadline,
+                    )?
+                } else {
+                    store.observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
                         &exact_wallet_ids,
                         state.window_start,
                         state.horizon_end,
@@ -16042,7 +16085,8 @@ impl DiscoveryService {
                         wallet_limit,
                         self.config.max_tx_per_minute,
                         deadline,
-                )?;
+                    )?
+                };
                 diagnostics.wallet_pages = diagnostics.wallet_pages.saturating_add(1);
                 diagnostics.wallet_rows = diagnostics.wallet_rows.saturating_add(page.rows_seen);
                 scan_region.progress_mut().pages_scanned = diagnostics.wallet_pages;
@@ -16050,11 +16094,6 @@ impl DiscoveryService {
                 for row in page.rows.iter().cloned() {
                     Self::observe_replay_wallet_activity_summary(&mut state.payload, row);
                 }
-                wallet_cursor = page
-                    .rows
-                    .last()
-                    .map(|row| row.wallet_id.clone())
-                    .or_else(|| page.wallet_id_page_cursor_after.clone());
                 #[cfg(test)]
                 let forced_wallet_page_budget_exhausted = {
                     let page_limit = REPLAY_RESUME_EXACT_TARGET_SURFACE_TEST_WALLET_PAGE_LIMIT
@@ -16064,12 +16103,34 @@ impl DiscoveryService {
                 #[cfg(not(test))]
                 let forced_wallet_page_budget_exhausted = false;
                 if page.time_budget_exhausted || forced_wallet_page_budget_exhausted {
-                    Self::persist_replay_exact_target_buy_mint_surface_budget_exhaustion_state(
-                        state,
-                        &mut diagnostics,
-                        &page,
-                        wallet_cursor.clone(),
-                    );
+                    if consuming_staged_pre_row_state && page.wallet_id_page_wallet_ids.is_empty() {
+                        let mut staged_page = page.clone();
+                        staged_page.wallet_id_page_wallets_seen = staged_page_len;
+                        staged_page.wallet_id_page_cursor_after =
+                            staged_wallet_cursor_after.clone();
+                        staged_page.wallet_id_page_wallet_ids = staged_wallet_ids.clone();
+                        Self::persist_replay_exact_target_buy_mint_surface_budget_exhaustion_state(
+                            state,
+                            &mut diagnostics,
+                            &staged_page,
+                            staged_wallet_cursor_after.clone(),
+                        );
+                    } else {
+                        let wallet_cursor_after = if consuming_staged_pre_row_state {
+                            staged_wallet_cursor_after.clone()
+                        } else {
+                            page.rows
+                                .last()
+                                .map(|row| row.wallet_id.clone())
+                                .or_else(|| page.wallet_id_page_cursor_after.clone())
+                        };
+                        Self::persist_replay_exact_target_buy_mint_surface_budget_exhaustion_state(
+                            state,
+                            &mut diagnostics,
+                            &page,
+                            wallet_cursor_after,
+                        );
+                    }
                     scan_region.progress_mut().time_budget_exhausted = Some(true);
                     region.progress_mut().pages_scanned = diagnostics.wallet_pages;
                     region.progress_mut().rows_scanned = diagnostics.wallet_rows;
@@ -16096,6 +16157,8 @@ impl DiscoveryService {
                             diagnostics.wallet_cursor_after.as_deref(),
                         rebuild_resume_exact_target_surface_partial_progress_persisted =
                             diagnostics.persisted_partial_progress,
+                        rebuild_resume_exact_target_surface_staged_pre_row_state_persisted =
+                            diagnostics.persisted_staged_pre_row_state,
                         rebuild_resume_exact_target_surface_blocked_state_persisted =
                             diagnostics.persisted_blocked_state,
                         rebuild_resume_exact_target_surface_time_budget_exhausted =
@@ -16104,6 +16167,23 @@ impl DiscoveryService {
                     );
                     return Ok(diagnostics);
                 }
+                if consuming_staged_pre_row_state {
+                    staged_wallet_ids.clear();
+                    state.payload.replay_exact_target_surface_staged_wallet_ids.clear();
+                    state.payload.replay_exact_target_surface_staged_wallet_cursor_after = None;
+                    state.payload.replay_exact_target_surface_pre_row_blocked = false;
+                    wallet_cursor = staged_wallet_cursor_after.take();
+                    if staged_page_len < wallet_limit {
+                        wallet_cursor = None;
+                        break;
+                    }
+                    continue;
+                }
+                wallet_cursor = page
+                    .rows
+                    .last()
+                    .map(|row| row.wallet_id.clone())
+                    .or_else(|| page.wallet_id_page_cursor_after.clone());
                 if page.rows.len() < wallet_limit {
                     wallet_cursor = None;
                     break;
@@ -16112,8 +16192,7 @@ impl DiscoveryService {
             scan_region.progress_mut().time_budget_exhausted = Some(false);
         }
         diagnostics.wallet_cursor_after = wallet_cursor.clone();
-        state.payload.replay_exact_target_surface_wallet_cursor = None;
-        state.payload.replay_exact_target_surface_pre_row_blocked = false;
+        Self::clear_replay_exact_target_surface_resume_state(&mut state.payload);
 
         let exact_target_buy_mints = {
             let mut rebuild_region = DiscoveryPublicationTruthRepairRegionScope::new(
@@ -16184,8 +16263,7 @@ impl DiscoveryService {
             "backfilling missing exact candidate target-mint surface onto a resumed frozen partial SOL-leg checkpoint so persisted replay can re-enter the exact-target replay contract instead of broad-source fallback"
         );
         state.payload.discovery_critical_target_buy_mints = exact_target_buy_mints;
-        state.payload.replay_exact_target_surface_wallet_cursor = None;
-        state.payload.replay_exact_target_surface_pre_row_blocked = false;
+        Self::clear_replay_exact_target_surface_resume_state(&mut state.payload);
         diagnostics.completed = true;
         diagnostics.target_buy_mints_restored =
             state.payload.discovery_critical_target_buy_mints.len();
@@ -17273,11 +17351,46 @@ impl DiscoveryService {
                 if Self::payload_has_exact_buy_mint_membership(&state.payload) {
                     Self::sync_unique_buy_mints_from_counts(&mut state.payload);
                 }
+                if !state
+                    .payload
+                    .replay_exact_target_surface_staged_wallet_ids
+                    .is_empty()
+                    && state.payload.replay_exact_target_surface_pre_row_blocked
+                {
+                    info!(
+                        rebuild_window_start = %state.window_start,
+                        rebuild_horizon_end = %state.horizon_end,
+                        rebuild_phase = state.phase.as_str(),
+                        "clearing stale pre-row blocked marker because a staged exact wallet-id page is already present and should be resumed on the next cycle"
+                    );
+                    state.payload.replay_exact_target_surface_pre_row_blocked = false;
+                    changed = true;
+                }
+                if !state
+                    .payload
+                    .replay_exact_target_surface_staged_wallet_ids
+                    .is_empty()
+                    && state
+                        .payload
+                        .replay_exact_target_surface_staged_wallet_cursor_after
+                        .is_none()
+                {
+                    state.payload.replay_exact_target_surface_staged_wallet_cursor_after = state
+                        .payload
+                        .replay_exact_target_surface_staged_wallet_ids
+                        .last()
+                        .cloned();
+                    changed = true;
+                }
                 if !Self::state_owns_exact_target_buy_mint_surface_backfill_seam(state)
                     && (state
                         .payload
                         .replay_exact_target_surface_wallet_cursor
                         .is_some()
+                        || !state
+                            .payload
+                            .replay_exact_target_surface_staged_wallet_ids
+                            .is_empty()
                         || state.payload.replay_exact_target_surface_pre_row_blocked)
                 {
                     info!(
@@ -17286,8 +17399,7 @@ impl DiscoveryService {
                         rebuild_phase = state.phase.as_str(),
                         "clearing stale persisted exact target-surface repair resume state because the resumed checkpoint no longer owns that backfill seam"
                     );
-                    state.payload.replay_exact_target_surface_wallet_cursor = None;
-                    state.payload.replay_exact_target_surface_pre_row_blocked = false;
+                    Self::clear_replay_exact_target_surface_resume_state(&mut state.payload);
                     changed = true;
                 }
                 if Self::state_can_freeze_exact_target_buy_mint_surface_for_partial_sol_leg_checkpoint(state) {
@@ -17604,6 +17716,50 @@ impl DiscoveryService {
                         "persisting resumable exact target-mint surface repair progress onto the replay checkpoint after bounded deadline exhaustion"
                     );
                 }
+                if exact_target_surface_repair.persisted_staged_pre_row_state {
+                    warn!(
+                        rebuild_window_start = %state.window_start,
+                        rebuild_horizon_end = %state.horizon_end,
+                        rebuild_phase = state.phase.as_str(),
+                        rebuild_replay_subphase =
+                            Self::replay_subphase(
+                                state.phase,
+                                state.payload.replay_wallet_stats_complete,
+                                state.payload.replay_candidate_activity_backfill_pending,
+                            ),
+                        rebuild_resume_exact_target_surface_wallet_pages =
+                            exact_target_surface_repair.wallet_pages,
+                        rebuild_resume_exact_target_surface_wallet_rows =
+                            exact_target_surface_repair.wallet_rows,
+                        rebuild_resume_exact_target_surface_wallet_id_page_wallets_seen =
+                            exact_target_surface_repair.wallet_id_page_wallets_seen,
+                        rebuild_resume_exact_target_surface_wallet_cursor_before =
+                            exact_target_surface_repair.wallet_cursor_before.as_deref(),
+                        rebuild_resume_exact_target_surface_wallet_cursor_after =
+                            exact_target_surface_repair.wallet_cursor_after.as_deref(),
+                        "persisting staged resumable pre-row exact target-surface repair state after bounded deadline exhaustion"
+                    );
+                }
+                if exact_target_surface_repair.resumed_from_staged_pre_row_state
+                    && !exact_target_surface_repair.persisted_staged_pre_row_state
+                {
+                    info!(
+                        rebuild_window_start = %state.window_start,
+                        rebuild_horizon_end = %state.horizon_end,
+                        rebuild_phase = state.phase.as_str(),
+                        rebuild_replay_subphase =
+                            Self::replay_subphase(
+                                state.phase,
+                                state.payload.replay_wallet_stats_complete,
+                                state.payload.replay_candidate_activity_backfill_pending,
+                            ),
+                        rebuild_resume_exact_target_surface_wallet_pages =
+                            exact_target_surface_repair.wallet_pages,
+                        rebuild_resume_exact_target_surface_wallet_rows =
+                            exact_target_surface_repair.wallet_rows,
+                        "persisting replay checkpoint after staged pre-row exact target-surface state was consumed so the next cycle does not restart from the same staged page"
+                    );
+                }
                 if exact_target_surface_repair.persisted_blocked_state {
                     warn!(
                         rebuild_window_start = %state.window_start,
@@ -17631,6 +17787,8 @@ impl DiscoveryService {
                 if repaired_for_resume
                     || exact_target_surface_repair.completed
                     || exact_target_surface_repair.persisted_partial_progress
+                    || exact_target_surface_repair.persisted_staged_pre_row_state
+                    || exact_target_surface_repair.resumed_from_staged_pre_row_state
                     || exact_target_surface_repair.persisted_blocked_state
                 {
                     self.persist_persisted_stream_rebuild_state(store, &mut state, now)?;
@@ -17858,6 +18016,10 @@ impl DiscoveryService {
         ) && !state.payload.by_wallet.is_empty()
         {
             if state.payload.replay_exact_target_surface_wallet_cursor.is_some()
+                || !state
+                    .payload
+                    .replay_exact_target_surface_staged_wallet_ids
+                    .is_empty()
                 || state.payload.replay_exact_target_surface_pre_row_blocked
             {
                 state.payload.discovery_critical_target_buy_mints.clear();
@@ -24500,6 +24662,8 @@ mod tests {
             replay_candidate_activity_backfill_wallet_cursor: None,
             replay_exact_target_surface_wallet_cursor: None,
             replay_exact_target_surface_pre_row_blocked: false,
+            replay_exact_target_surface_staged_wallet_ids: Vec::new(),
+            replay_exact_target_surface_staged_wallet_cursor_after: None,
             token_quality_cache,
             token_quality_progress: quality_cache::TokenQualityResolutionProgress {
                 next_mint_index: 22_089,
@@ -42077,7 +42241,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_stream_replay_resume_pre_row_budget_exhaustion_persists_blocked_state_stage1(
+    fn persisted_stream_replay_resume_pre_row_budget_exhaustion_persists_staged_state_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let runtime_db_path = temp
@@ -42143,6 +42307,11 @@ mod tests {
             active_day_count_source: None,
             wallet_id_page_wallets_seen: 3,
             wallet_id_page_cursor_after: Some("wallet-pre-row-cursor".to_string()),
+            wallet_id_page_wallet_ids: vec![
+                "wallet-pre-row-a".to_string(),
+                "wallet-pre-row-b".to_string(),
+                "wallet-pre-row-c".to_string(),
+            ],
         };
         let mut diagnostics = ResumeExactTargetBuyMintSurfaceRepairDiagnostics {
             attempted: true,
@@ -42158,14 +42327,24 @@ mod tests {
         );
         assert!(diagnostics.time_budget_exhausted);
         assert!(!diagnostics.persisted_partial_progress);
-        assert!(diagnostics.persisted_blocked_state);
+        assert!(diagnostics.persisted_staged_pre_row_state);
+        assert!(!diagnostics.persisted_blocked_state);
         assert_eq!(diagnostics.wallet_rows, 0);
         assert_eq!(diagnostics.wallet_id_page_wallets_seen, 3);
         assert!(
-            replay_state.payload.replay_exact_target_surface_pre_row_blocked,
-            "when bounded exact-target repair exhausts its budget before the first activity row, the checkpoint must persist explicit blocked state instead of silently returning to the same frozen replay row"
+            replay_state
+                .payload
+                .replay_exact_target_surface_staged_wallet_ids
+                == page.wallet_id_page_wallet_ids,
+            "when bounded exact-target repair exhausts its budget after wallet-id paging but before the first activity row, the checkpoint must persist that exact staged page for the next cycle"
         );
-        assert_eq!(replay_state.payload.replay_exact_target_surface_wallet_cursor, None);
+        assert_eq!(
+            replay_state
+                .payload
+                .replay_exact_target_surface_staged_wallet_cursor_after,
+            page.wallet_id_page_cursor_after
+        );
+        assert!(!replay_state.payload.replay_exact_target_surface_pre_row_blocked);
 
         discovery.persist_persisted_stream_rebuild_state(
             &runtime_store,
@@ -42177,13 +42356,21 @@ mod tests {
             after.updated_at > before.updated_at,
             "the pre-row exhausted repair seam must now durably change the replay checkpoint instead of leaving the same stale row forever"
         );
-        assert!(after.payload.replay_exact_target_surface_pre_row_blocked);
+        assert_eq!(
+            after.payload.replay_exact_target_surface_staged_wallet_ids,
+            page.wallet_id_page_wallet_ids
+        );
+        assert_eq!(
+            after.payload.replay_exact_target_surface_staged_wallet_cursor_after,
+            page.wallet_id_page_cursor_after
+        );
+        assert!(!after.payload.replay_exact_target_surface_pre_row_blocked);
         assert_eq!(after.payload.discovery_critical_target_buy_mints.len(), 0);
         Ok(())
     }
 
     #[test]
-    fn persisted_stream_replay_resume_pre_row_blocked_state_survives_next_cycle_stage1(
+    fn persisted_stream_replay_resume_staged_pre_row_state_is_consumed_before_fresh_page_query_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let runtime_db_path = temp
@@ -42231,12 +42418,24 @@ mod tests {
             .payload
             .discovery_critical_target_buy_mints
             .clear();
-        replay_state.payload.replay_exact_target_surface_pre_row_blocked = true;
+        let mut staged_wallet_ids = replay_state
+            .payload
+            .by_wallet
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        staged_wallet_ids.sort();
+        staged_wallet_ids.truncate(3);
+        let staged_wallet_cursor_after = staged_wallet_ids.last().cloned();
+        replay_state.payload.replay_exact_target_surface_staged_wallet_ids =
+            staged_wallet_ids.clone();
+        replay_state.payload.replay_exact_target_surface_staged_wallet_cursor_after =
+            staged_wallet_cursor_after.clone();
         runtime_store.upsert_discovery_persisted_rebuild_state(
             &DiscoveryService::persisted_stream_rebuild_row(&replay_state, now)?,
         )?;
 
-        let (resumed, restore_outcome, diagnostics) = discovery
+        let (_resumed, restore_outcome, diagnostics) = discovery
             .load_or_start_persisted_stream_rebuild_state_with_options(
                 &runtime_store,
                 replay_state.window_start,
@@ -42254,13 +42453,25 @@ mod tests {
             ),
             "the explicit pre-row blocked replay seam must remain on the same persisted lineage instead of silently restarting from scratch"
         );
-        assert!(!diagnostics.attempted);
-        assert!(resumed.payload.replay_exact_target_surface_pre_row_blocked);
+        assert!(diagnostics.attempted);
+        assert!(diagnostics.resumed_from_staged_pre_row_state);
         assert!(
-            !DiscoveryService::state_can_backfill_exact_target_buy_mint_surface_for_resume(
-                &resumed
-            ),
-            "once the pre-row exhausted seam is explicitly blocked, the next cycle must not re-enter the same exact-target repair path as if nothing changed"
+            diagnostics.wallet_rows > 0,
+            "the next cycle must materialize wallet-activity rows from the staged exact wallet-id page before it is allowed to continue the replay seam"
+        );
+        let after = load_persisted_stream_rebuild_state_for_test(&runtime_store)?;
+        assert!(
+            after.payload.replay_exact_target_surface_staged_wallet_ids.is_empty(),
+            "once the staged exact wallet-id page has been safely materialized into activity rows, staged state must be cleared"
+        );
+        assert_eq!(
+            after.payload.replay_exact_target_surface_staged_wallet_cursor_after,
+            None
+        );
+        assert!(!after.payload.replay_exact_target_surface_pre_row_blocked);
+        assert!(
+            after.updated_at > now,
+            "consuming staged pre-row state must durably advance the persisted checkpoint instead of leaving the same staged page behind"
         );
         Ok(())
     }
