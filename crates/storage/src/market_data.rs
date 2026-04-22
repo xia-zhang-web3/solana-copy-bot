@@ -175,6 +175,7 @@ pub struct ObservedWalletActivityPage {
     pub rows_seen: usize,
     pub time_budget_exhausted: bool,
     pub active_day_count_source: Option<ObservedWalletActivityDayCountSource>,
+    pub wallet_id_query_exhausted_before_first_page: bool,
     pub wallet_id_page_wallets_seen: usize,
     pub wallet_id_page_cursor_after: Option<String>,
     pub wallet_id_page_wallet_ids: Vec<String>,
@@ -2038,6 +2039,7 @@ impl SqliteStore {
                 rows_seen: 0,
                 time_budget_exhausted: true,
                 active_day_count_source: None,
+                wallet_id_query_exhausted_before_first_page: true,
                 ..ObservedWalletActivityPage::default()
             });
         }
@@ -2109,6 +2111,7 @@ impl SqliteStore {
                 rows_seen: 0,
                 time_budget_exhausted: true,
                 active_day_count_source: None,
+                wallet_id_query_exhausted_before_first_page: true,
                 ..ObservedWalletActivityPage::default()
             });
         }
@@ -2123,6 +2126,7 @@ impl SqliteStore {
                 rows_seen: 0,
                 time_budget_exhausted: true,
                 active_day_count_source: None,
+                wallet_id_query_exhausted_before_first_page: false,
                 wallet_id_page_wallets_seen: wallet_id_page.wallet_ids.len(),
                 wallet_id_page_cursor_after: wallet_id_page.wallet_ids.last().cloned(),
                 wallet_id_page_wallet_ids: wallet_id_page.wallet_ids,
@@ -9081,6 +9085,10 @@ mod tests {
         );
         assert_eq!(page.rows_seen, 0);
         assert_eq!(page.active_day_count_source, None);
+        assert!(
+            page.wallet_id_query_exhausted_before_first_page,
+            "the exact-wallet helper must surface an explicit zero-progress seam marker when budget exhaustion happens inside the wallet-id page query before any truthful page boundary exists"
+        );
         assert_eq!(page.wallet_id_page_wallets_seen, 0);
         assert_eq!(page.wallet_id_page_cursor_after, None);
         Ok(())
@@ -9125,6 +9133,10 @@ mod tests {
         assert!(
             page.wallet_id_page_wallets_seen > 0,
             "the exact-wallet helper must surface wallet-id prefilter progress even when budget exhaustion happens before the first materialized activity row"
+        );
+        assert!(
+            !page.wallet_id_query_exhausted_before_first_page,
+            "the zero-progress marker must stay reserved for the earlier wallet-id query seam; once a wallet-id page is known this path should stage/resume that page instead"
         );
         assert!(
             page.wallet_id_page_cursor_after.is_some(),
