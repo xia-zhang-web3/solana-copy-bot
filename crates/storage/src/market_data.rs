@@ -175,6 +175,8 @@ pub struct ObservedWalletActivityPage {
     pub rows_seen: usize,
     pub time_budget_exhausted: bool,
     pub active_day_count_source: Option<ObservedWalletActivityDayCountSource>,
+    pub wallet_id_page_wallets_seen: usize,
+    pub wallet_id_page_cursor_after: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -253,6 +255,12 @@ thread_local! {
 }
 
 #[cfg(test)]
+thread_local! {
+    static EXACT_WALLET_ACTIVITY_PRE_ROW_BUDGET_EXHAUSTION_HOOK: RefCell<bool> =
+        RefCell::new(false);
+}
+
+#[cfg(test)]
 struct RecentRawBulkWriteBudgetHookGuard;
 
 #[cfg(test)]
@@ -278,6 +286,32 @@ where
         *slot = Some(Box::new(hook));
     });
     RecentRawBulkWriteBudgetHookGuard
+}
+
+#[cfg(test)]
+struct ExactWalletActivityPreRowBudgetExhaustionGuard;
+
+#[cfg(test)]
+impl Drop for ExactWalletActivityPreRowBudgetExhaustionGuard {
+    fn drop(&mut self) {
+        EXACT_WALLET_ACTIVITY_PRE_ROW_BUDGET_EXHAUSTION_HOOK.with(|slot| {
+            *slot.borrow_mut() = false;
+        });
+    }
+}
+
+#[cfg(test)]
+fn force_exact_wallet_activity_pre_row_budget_exhaustion_for_test(
+) -> ExactWalletActivityPreRowBudgetExhaustionGuard {
+    EXACT_WALLET_ACTIVITY_PRE_ROW_BUDGET_EXHAUSTION_HOOK.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        assert!(
+            !*slot,
+            "exact wallet activity pre-row budget exhaustion hook already installed"
+        );
+        *slot = true;
+    });
+    ExactWalletActivityPreRowBudgetExhaustionGuard
 }
 
 #[cfg(test)]
@@ -1937,6 +1971,7 @@ impl SqliteStore {
                 rows_seen: 0,
                 time_budget_exhausted: true,
                 active_day_count_source: None,
+                ..ObservedWalletActivityPage::default()
             });
         }
 
@@ -2002,6 +2037,7 @@ impl SqliteStore {
                 rows_seen: 0,
                 time_budget_exhausted: true,
                 active_day_count_source: None,
+                ..ObservedWalletActivityPage::default()
             });
         }
         self.observed_wallet_activity_page_for_wallet_ids_in_window_with_budget(
@@ -2032,6 +2068,7 @@ impl SqliteStore {
                 rows_seen: 0,
                 time_budget_exhausted: true,
                 active_day_count_source: None,
+                ..ObservedWalletActivityPage::default()
             });
         }
 
@@ -2071,15 +2108,36 @@ impl SqliteStore {
                 rows_seen: 0,
                 time_budget_exhausted: true,
                 active_day_count_source: None,
+                ..ObservedWalletActivityPage::default()
             });
         }
-        self.observed_wallet_activity_page_for_wallet_ids_in_window_with_budget(
+        #[cfg(test)]
+        let forced_pre_row_budget_exhausted =
+            EXACT_WALLET_ACTIVITY_PRE_ROW_BUDGET_EXHAUSTION_HOOK.with(|slot| *slot.borrow());
+        #[cfg(not(test))]
+        let forced_pre_row_budget_exhausted = false;
+        if forced_pre_row_budget_exhausted {
+            return Ok(ObservedWalletActivityPage {
+                rows: Vec::new(),
+                rows_seen: 0,
+                time_budget_exhausted: true,
+                active_day_count_source: None,
+                wallet_id_page_wallets_seen: wallet_id_page.wallet_ids.len(),
+                wallet_id_page_cursor_after: wallet_id_page.wallet_ids.last().cloned(),
+            });
+        }
+        let mut page = self.observed_wallet_activity_page_for_wallet_ids_in_window_with_budget(
             &wallet_id_page.wallet_ids,
             since,
             until,
             max_tx_per_minute,
             deadline,
-        )
+        )?;
+        if page.time_budget_exhausted && page.rows_seen == 0 && !wallet_id_page.wallet_ids.is_empty() {
+            page.wallet_id_page_wallets_seen = wallet_id_page.wallet_ids.len();
+            page.wallet_id_page_cursor_after = wallet_id_page.wallet_ids.last().cloned();
+        }
+        Ok(page)
     }
 
     fn load_observed_wallet_activity_wallet_id_page_from_rows(
@@ -2158,6 +2216,7 @@ impl SqliteStore {
                             rows_seen: 0,
                             time_budget_exhausted: true,
                             active_day_count_source: None,
+                            ..ObservedWalletActivityPage::default()
                         });
                     }
                     return Err(error)
@@ -2212,6 +2271,7 @@ impl SqliteStore {
                 rows_seen: 0,
                 time_budget_exhausted: true,
                 active_day_count_source: None,
+                ..ObservedWalletActivityPage::default()
             });
         }
         let since_day = since.date_naive();
@@ -2229,6 +2289,7 @@ impl SqliteStore {
                     rows_seen: 0,
                     time_budget_exhausted: true,
                     active_day_count_source: None,
+                    ..ObservedWalletActivityPage::default()
                 });
             }
             active_day_counts = fallback_active_day_counts.counts;
@@ -2319,6 +2380,7 @@ impl SqliteStore {
                             rows_seen: 0,
                             time_budget_exhausted: true,
                             active_day_count_source: None,
+                            ..ObservedWalletActivityPage::default()
                         });
                     }
                     return Err(error)
@@ -2348,6 +2410,7 @@ impl SqliteStore {
             rows_seen,
             time_budget_exhausted: false,
             active_day_count_source,
+            ..ObservedWalletActivityPage::default()
         })
     }
 
@@ -8992,6 +9055,55 @@ mod tests {
         );
         assert_eq!(page.rows_seen, 0);
         assert_eq!(page.active_day_count_source, None);
+        assert_eq!(page.wallet_id_page_wallets_seen, 0);
+        assert_eq!(page.wallet_id_page_cursor_after, None);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_wallet_activity_page_for_exact_wallets_exhausted_after_wallet_id_page_surfaces_pre_row_progress_stage1(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("wallet-activity-page-exact-wallet-pre-row-exhausted.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let since = DateTime::parse_from_rfc3339("2026-04-11T11:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let until = since + Duration::hours(6);
+        let exact_wallet_ids = seed_wallet_activity_interrupt_fixture(
+            &mut store,
+            since,
+            25_000,
+            "wallet-activity-exact-wallet-pre-row-exhausted",
+        )?;
+
+        let _guard = force_exact_wallet_activity_pre_row_budget_exhaustion_for_test();
+        let page = store.observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
+            &exact_wallet_ids,
+            since,
+            until,
+            None,
+            3,
+            50,
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+
+        assert!(page.time_budget_exhausted);
+        assert!(page.rows.is_empty());
+        assert_eq!(page.rows_seen, 0);
+        assert!(
+            page.wallet_id_page_wallets_seen > 0,
+            "the exact-wallet helper must surface wallet-id prefilter progress even when budget exhaustion happens before the first materialized activity row"
+        );
+        assert!(
+            page.wallet_id_page_cursor_after.is_some(),
+            "the exact-wallet helper must surface the last wallet-id cursor reached before pre-row exhaustion"
+        );
         Ok(())
     }
 
