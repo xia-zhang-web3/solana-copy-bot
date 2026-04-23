@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 #[cfg(test)]
 use chrono::Duration;
 use copybot_config::load_from_path;
@@ -49,6 +49,10 @@ const IN_PROGRESS_DB_NAME: &str = "in_progress.sqlite";
 const DEFAULT_PROGRESS_DOMINANT_PHASE: &str = "unknown";
 const DEFAULT_BLOCK_FETCH_ENCODING: &str = "json";
 const DEFAULT_BLOCK_FETCH_CONCURRENCY: usize = 1;
+const ZERO_PROGRESS_ESCAPE_THRESHOLD: usize = 3;
+const ZERO_PROGRESS_ESCAPE_DISTANCE: u64 = 1;
+const ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON: &str =
+    "program_history_gap_fill_skipped_persistently_provider_blocked_slot_after_bounded_retries";
 
 fn default_boundary_adjustment_kind() -> String {
     BoundaryAdjustmentKind::Unresolved.as_str().to_string()
@@ -166,6 +170,14 @@ struct ProgramHistoryGapFillOutput {
     #[serde(default)]
     attempt_frontier_advanced_slots: usize,
     next_batch_start_slot: Option<u64>,
+    #[serde(default)]
+    zero_progress_retry_count: usize,
+    #[serde(default)]
+    zero_progress_blocked_start_slot: Option<u64>,
+    #[serde(default)]
+    zero_progress_escape_applied: bool,
+    #[serde(default)]
+    zero_progress_escape_distance: Option<u64>,
     progress_reset_reason: Option<String>,
     attempt_budget_exhausted: bool,
     #[serde(default)]
@@ -455,6 +467,10 @@ struct FetchResult {
     attempt_frontier_end_slot: Option<u64>,
     attempt_frontier_advanced_slots: usize,
     next_batch_start_slot: Option<u64>,
+    zero_progress_retry_count: usize,
+    zero_progress_blocked_start_slot: Option<u64>,
+    zero_progress_escape_applied: bool,
+    zero_progress_escape_distance: Option<u64>,
     progress_reset_reason: Option<String>,
     attempt_budget_exhausted: bool,
     attempt_block_list_ms: u64,
@@ -1014,6 +1030,10 @@ fn run_with_source<S: ProgramHistorySource + Sync>(
                     attempt_frontier_end_slot: None,
                     attempt_frontier_advanced_slots: 0,
                     next_batch_start_slot: None,
+                    zero_progress_retry_count: 0,
+                    zero_progress_blocked_start_slot: None,
+                    zero_progress_escape_applied: false,
+                    zero_progress_escape_distance: None,
                     progress_reset_reason: None,
                     attempt_budget_exhausted: false,
                     attempt_block_list_ms: 0,
@@ -1203,18 +1223,78 @@ fn bounds_from_progress(progress: &ProgramHistoryGapFillOutput) -> Option<Resolv
             .requested_interval_fully_bracketed_after_adjustment,
         requested_interval_partially_bracketed_after_adjustment: progress
             .requested_interval_partially_bracketed_after_adjustment,
-        boundary_missing_segments: progress
-            .missing_segments
-            .iter()
-            .filter(|segment| {
-                segment.reason
-                    == "requested_window_prefix_uncovered_after_start_slot_adjustment"
-                    || segment.reason
-                        == "requested_window_suffix_uncovered_after_end_slot_adjustment"
-            })
-            .cloned()
-            .collect(),
+        boundary_missing_segments: persisted_explicit_missing_segments(progress),
     })
+}
+
+fn persisted_explicit_missing_segments(
+    progress: &ProgramHistoryGapFillOutput,
+) -> Vec<GapFillMissingSegment> {
+    progress
+        .missing_segments
+        .iter()
+        .filter(|segment| should_persist_explicit_missing_segment_reason(&segment.reason))
+        .cloned()
+        .collect()
+}
+
+fn should_persist_explicit_missing_segment_reason(reason: &str) -> bool {
+    reason == "requested_window_prefix_uncovered_after_start_slot_adjustment"
+        || reason == "requested_window_suffix_uncovered_after_end_slot_adjustment"
+        || reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON
+}
+
+fn merge_missing_segments(
+    segments: &mut Vec<GapFillMissingSegment>,
+    extras: impl IntoIterator<Item = GapFillMissingSegment>,
+) {
+    for extra in extras {
+        if !segments.iter().any(|segment| segment == &extra) {
+            segments.push(extra);
+        }
+    }
+}
+
+fn zero_progress_escape_missing_segment<S: ProgramHistorySource>(
+    source: &S,
+    blocked_slot: u64,
+    requested_window_start: DateTime<Utc>,
+    requested_window_end: DateTime<Utc>,
+) -> GapFillMissingSegment {
+    let avg_slot = ChronoDuration::milliseconds(AVG_SLOT_MS.round() as i64);
+    let slot_time = source.block_time(blocked_slot).ok().flatten();
+    let next_slot_time = blocked_slot
+        .checked_add(1)
+        .and_then(|slot| source.block_time(slot).ok().flatten());
+    let previous_slot_time = blocked_slot
+        .checked_sub(1)
+        .and_then(|slot| source.block_time(slot).ok().flatten());
+
+    let mut start = slot_time
+        .or_else(|| previous_slot_time.map(|ts| ts + avg_slot))
+        .unwrap_or(requested_window_start);
+    let mut end = next_slot_time
+        .or_else(|| slot_time.map(|ts| ts + avg_slot))
+        .unwrap_or(start);
+
+    if start < requested_window_start {
+        start = requested_window_start;
+    }
+    if start > requested_window_end {
+        start = requested_window_end;
+    }
+    if end < start {
+        end = start;
+    }
+    if end > requested_window_end {
+        end = requested_window_end;
+    }
+
+    GapFillMissingSegment {
+        start,
+        end,
+        reason: ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON.to_string(),
+    }
 }
 
 fn gap_fill_program_ids(config: &copybot_config::AppConfig) -> ProgramIdConfig {
@@ -1445,6 +1525,10 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
                 attempt_frontier_end_slot: None,
                 attempt_frontier_advanced_slots: 0,
                 next_batch_start_slot: None,
+                zero_progress_retry_count: 0,
+                zero_progress_blocked_start_slot: None,
+                zero_progress_escape_applied: false,
+                zero_progress_escape_distance: None,
                 progress_reset_reason,
                 attempt_budget_exhausted: false,
                 attempt_block_list_ms: 0,
@@ -1560,9 +1644,13 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
                     end_slot
                         .checked_sub(start_slot)
                         .map(|delta| delta as usize + 1)
-                })
-                .unwrap_or(0),
+            })
+            .unwrap_or(0),
             next_batch_start_slot: None,
+            zero_progress_retry_count: 0,
+            zero_progress_blocked_start_slot: None,
+            zero_progress_escape_applied: false,
+            zero_progress_escape_distance: None,
             progress_reset_reason,
             attempt_budget_exhausted: false,
             attempt_block_list_ms: summary.block_list_ms,
@@ -1673,6 +1761,12 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
     let previous_parsed_candidate_swaps = resume_progress
         .as_ref()
         .map_or(0, |output| output.parsed_candidate_swaps);
+    let previous_zero_progress_retry_count = resume_progress
+        .as_ref()
+        .map_or(0, |output| output.zero_progress_retry_count);
+    let previous_zero_progress_blocked_start_slot = resume_progress
+        .as_ref()
+        .and_then(|output| output.zero_progress_blocked_start_slot);
 
     let scanned_batches = previous_scanned_batches.saturating_add(attempt.summary.scanned_batches);
     let scanned_slots = previous_scanned_slots.saturating_add(attempt.summary.scanned_slots);
@@ -1687,10 +1781,84 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
         .saturating_add(attempt.summary.parsed_candidate_transactions);
     let parsed_candidate_swaps =
         previous_parsed_candidate_swaps.saturating_add(attempt.summary.parsed_candidate_swaps);
+    let attempt_frontier_advanced_slots = attempt
+        .summary
+        .frontier_end_slot
+        .and_then(|end_slot| {
+            end_slot
+                .checked_sub(frontier_start_slot)
+                .map(|delta| delta as usize + 1)
+        })
+        .unwrap_or(0);
+    let mut boundary_missing_segments = bounds.boundary_missing_segments.clone();
+    if let Some(progress) = resume_progress.as_ref() {
+        merge_missing_segments(
+            &mut boundary_missing_segments,
+            persisted_explicit_missing_segments(progress),
+        );
+    }
+
+    let zero_progress_source_error = attempt.source_error.as_ref().filter(|source_error| {
+        matches!(
+            source_error.kind,
+            SourceErrorKind::ProviderThrottled | SourceErrorKind::RetryableProviderFailure
+        )
+    });
+    let zero_progress_blocked_start_slot = zero_progress_source_error
+        .and_then(|_| attempt.next_slot_to_scan)
+        .filter(|slot| *slot == frontier_start_slot)
+        .filter(|_| attempt_frontier_advanced_slots == 0);
+    let mut zero_progress_retry_count = zero_progress_blocked_start_slot
+        .map(|blocked_slot| {
+            if previous_zero_progress_blocked_start_slot == Some(blocked_slot) {
+                previous_zero_progress_retry_count.saturating_add(1)
+            } else {
+                1
+            }
+        })
+        .unwrap_or(0);
+    let mut zero_progress_escape_applied = false;
+    let mut zero_progress_escape_distance = None;
 
     let (verdict, reason, current_phase, next_batch_start_slot) =
         if let Some(source_error) = attempt.source_error.as_ref() {
-            match source_error.kind {
+            let blocked_slot = zero_progress_blocked_start_slot;
+            let escape_applies = blocked_slot.is_some()
+                && zero_progress_retry_count >= ZERO_PROGRESS_ESCAPE_THRESHOLD;
+            if escape_applies {
+                let blocked_slot = blocked_slot.expect("blocked slot present when escape applies");
+                zero_progress_escape_applied = true;
+                zero_progress_escape_distance = Some(ZERO_PROGRESS_ESCAPE_DISTANCE);
+                let escaped_next_slot = blocked_slot.saturating_add(ZERO_PROGRESS_ESCAPE_DISTANCE);
+                merge_missing_segments(
+                    &mut boundary_missing_segments,
+                    [zero_progress_escape_missing_segment(
+                        source,
+                        blocked_slot,
+                        plan.requested_window_start,
+                        plan.requested_window_end,
+                    )],
+                );
+                (
+                    match source_error.kind {
+                        SourceErrorKind::ProviderThrottled => {
+                            GapFillVerdict::NotProvenDueToProviderThrottling
+                        }
+                        SourceErrorKind::RetryableProviderFailure => {
+                            GapFillVerdict::NotProvenDueToRetryableProviderFailure
+                        }
+                        SourceErrorKind::SourceContractFailure => {
+                            GapFillVerdict::NonViableSourceContract
+                        }
+                    },
+                    format!(
+                        "program_history_gap_fill_zero_progress_blocked_slot_skipped_after_bounded_retries:slot={blocked_slot}:retry_count={zero_progress_retry_count}"
+                    ),
+                    "awaiting_next_attempt".to_string(),
+                    Some(escaped_next_slot),
+                )
+            } else {
+                match source_error.kind {
                 SourceErrorKind::ProviderThrottled => (
                     GapFillVerdict::NotProvenDueToProviderThrottling,
                     format!(
@@ -1727,8 +1895,10 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
                             .unwrap_or(frontier_start_slot.min(end_slot)),
                     ),
                 ),
+                }
             }
         } else if attempt.summary.phase_b_like_cost_budget_exhausted {
+            zero_progress_retry_count = 0;
             (
                 GapFillVerdict::NotProvenDueToCostBudget,
                 "program_history_gap_fill_phase_b_like_cost_budget_exhausted".to_string(),
@@ -1740,6 +1910,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
                 ),
             )
         } else if attempt.attempt_budget_exhausted {
+            zero_progress_retry_count = 0;
             (
                 GapFillVerdict::NotProvenDueToAttemptBudget,
                 "program_history_gap_fill_attempt_budget_exhausted".to_string(),
@@ -1751,28 +1922,43 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
                 ),
             )
         } else {
-            let (verdict, reason) =
-                classify_fetch_outcome(plan, false, false, progress_state.row_count);
+            zero_progress_retry_count = 0;
+            let has_persisted_blocked_slot_gap = boundary_missing_segments
+                .iter()
+                .any(|segment| segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON);
+            let (verdict, reason, current_phase, next_batch_start_slot) =
+                if has_persisted_blocked_slot_gap
+                    && (frontier_start_slot > end_slot
+                        || attempt.summary.frontier_end_slot == Some(end_slot))
+                {
+                    (
+                        GapFillVerdict::NotProvenDueToProviderThrottling,
+                        "program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap"
+                            .to_string(),
+                        "completed_with_explicit_missing_segments".to_string(),
+                        Some(end_slot.saturating_add(1)),
+                    )
+                } else {
+                    let (verdict, reason) =
+                        classify_fetch_outcome(plan, false, false, progress_state.row_count);
+                    (
+                        verdict,
+                        reason,
+                        if frontier_start_slot > end_slot {
+                            "publishing_output".to_string()
+                        } else {
+                            "completed".to_string()
+                        },
+                        None,
+                    )
+                };
             (
                 verdict,
                 reason,
-                if frontier_start_slot > end_slot {
-                    "publishing_output".to_string()
-                } else {
-                    "completed".to_string()
-                },
-                None,
+                current_phase,
+                next_batch_start_slot,
             )
         };
-    let attempt_frontier_advanced_slots = attempt
-        .summary
-        .frontier_end_slot
-        .and_then(|end_slot| {
-            end_slot
-                .checked_sub(frontier_start_slot)
-                .map(|delta| delta as usize + 1)
-        })
-        .unwrap_or(0);
     let dominant_phase = dominant_phase_name(
         resolve_slot_bounds_ms,
         attempt.summary.block_list_ms,
@@ -1797,7 +1983,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
         requested_interval_partially_bracketed_after_adjustment: bounds
             .requested_interval_partially_bracketed_after_adjustment,
         slot_span: Some(slot_span),
-        boundary_missing_segments: bounds.boundary_missing_segments.clone(),
+        boundary_missing_segments,
         resolved_bounds_reused_from_progress,
         coverage_method: scan_plan.coverage_method.to_string(),
         block_fetch_encoding: "json".to_string(),
@@ -1827,6 +2013,10 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
         attempt_frontier_end_slot: attempt.summary.frontier_end_slot,
         attempt_frontier_advanced_slots,
         next_batch_start_slot,
+        zero_progress_retry_count,
+        zero_progress_blocked_start_slot,
+        zero_progress_escape_applied,
+        zero_progress_escape_distance,
         progress_reset_reason,
         attempt_budget_exhausted: attempt.attempt_budget_exhausted,
         attempt_block_list_ms: attempt.summary.block_list_ms,
@@ -2575,6 +2765,7 @@ fn write_gap_fill_output<S: ProgramHistorySource>(
         plan.requested_window_end,
         &gap_fill_state,
     );
+    merge_missing_segments(&mut missing_segments, fetch.boundary_missing_segments.clone());
     if !replayable_output {
         let mut explicit_segments = fetch.boundary_missing_segments.clone();
         explicit_segments.push(GapFillMissingSegment {
@@ -2687,6 +2878,10 @@ fn write_gap_fill_output<S: ProgramHistorySource>(
         attempt_frontier_end_slot: fetch.attempt_frontier_end_slot,
         attempt_frontier_advanced_slots: fetch.attempt_frontier_advanced_slots,
         next_batch_start_slot: fetch.next_batch_start_slot,
+        zero_progress_retry_count: fetch.zero_progress_retry_count,
+        zero_progress_blocked_start_slot: fetch.zero_progress_blocked_start_slot,
+        zero_progress_escape_applied: fetch.zero_progress_escape_applied,
+        zero_progress_escape_distance: fetch.zero_progress_escape_distance,
         progress_reset_reason: fetch.progress_reset_reason,
         attempt_budget_exhausted: fetch.attempt_budget_exhausted,
         attempt_block_list_ms: fetch.attempt_block_list_ms,
@@ -2962,6 +3157,28 @@ fn render_human(output: &ProgramHistoryGapFillOutput) -> String {
             "next_batch_start_slot={}",
             output
                 .next_batch_start_slot
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "zero_progress_retry_count={}",
+            output.zero_progress_retry_count
+        ),
+        format!(
+            "zero_progress_blocked_start_slot={}",
+            output
+                .zero_progress_blocked_start_slot
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "zero_progress_escape_applied={}",
+            output.zero_progress_escape_applied
+        ),
+        format!(
+            "zero_progress_escape_distance={}",
+            output
+                .zero_progress_escape_distance
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "null".to_string())
         ),
@@ -3404,7 +3621,7 @@ mod tests {
                 error
             };
             let result = match queued_failure {
-                Some(error) => Err(anyhow!(error)),
+                Some(error) => Err(error.into()),
                 None => Ok(self.blocks.get(&slot).cloned()),
             };
             self.current_get_block_in_flight
@@ -4097,6 +4314,169 @@ mod tests {
         );
         assert_eq!(second.staged_rows, 3);
         assert_eq!(second.next_batch_start_slot, None);
+        Ok(())
+    }
+
+    #[test]
+    fn zero_progress_provider_throttling_same_slot_escapes_after_bounded_retries_stage1(
+    ) -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-zero-progress-throttle")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(3);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let output_path = fixture
+            .temp
+            .path()
+            .join("program-gap-fill-zero-progress-throttle.sqlite");
+
+        let base_config = Config {
+            output_path: Some(output_path),
+            window_start: Some(window_start),
+            window_end: Some(window_end),
+            max_slot_batches_per_attempt_override: Some(1),
+            now,
+            ..gap_fill_config(&fixture, Some(window_start), Some(window_end))
+        };
+
+        let throttled_source = || {
+            FakeProgramHistorySource::default()
+                .with_latest_slot(102)
+                .with_block_time(100, window_start)
+                .with_block_time(101, window_start + Duration::minutes(1))
+                .with_block_time(102, window_end)
+                .with_block_range(100, 102, vec![100, 101, 102])
+                .with_block_range(101, 102, vec![101, 102])
+                .with_block(100, block_with_transactions(100, window_start, vec![]))
+                .with_block(
+                    101,
+                    block_with_transactions(
+                        101,
+                        window_start + Duration::minutes(1),
+                        vec![swap_tx("after-escape-a", "wallet-gap", 101, "raydium-program")],
+                    ),
+                )
+                .with_block(
+                    102,
+                    block_with_transactions(
+                        102,
+                        window_end - Duration::seconds(1),
+                        vec![swap_tx("after-escape-b", "wallet-gap", 102, "pumpswap-program")],
+                    ),
+                )
+                .with_get_block_failure_once(
+                    100,
+                    SourceError::provider_throttled(
+                        "rpc provider throttled request: simulated 429/limit",
+                    ),
+                )
+        };
+
+        let first = run_output_with_source(base_config.clone(), &throttled_source())?;
+        assert_eq!(first.verdict, "not_proven_due_to_provider_throttling");
+        assert_eq!(first.attempt_frontier_advanced_slots, 0);
+        assert_eq!(first.next_batch_start_slot, Some(100));
+        assert_eq!(first.zero_progress_retry_count, 1);
+        assert_eq!(first.zero_progress_blocked_start_slot, Some(100));
+        assert!(!first.zero_progress_escape_applied);
+
+        let second = run_output_with_source(base_config.clone(), &throttled_source())?;
+        assert_eq!(second.verdict, "not_proven_due_to_provider_throttling");
+        assert_eq!(second.attempt_frontier_advanced_slots, 0);
+        assert_eq!(second.next_batch_start_slot, Some(100));
+        assert_eq!(second.zero_progress_retry_count, 2);
+        assert_eq!(second.zero_progress_blocked_start_slot, Some(100));
+        assert!(!second.zero_progress_escape_applied);
+
+        let third = run_output_with_source(base_config.clone(), &throttled_source())?;
+        assert_eq!(third.verdict, "not_proven_due_to_provider_throttling");
+        assert_eq!(third.attempt_frontier_advanced_slots, 0);
+        assert_eq!(third.zero_progress_retry_count, 3);
+        assert_eq!(third.zero_progress_blocked_start_slot, Some(100));
+        assert!(third.zero_progress_escape_applied);
+        assert_eq!(
+            third.zero_progress_escape_distance,
+            Some(ZERO_PROGRESS_ESCAPE_DISTANCE)
+        );
+        assert_eq!(third.next_batch_start_slot, Some(101));
+        assert!(third.missing_segments.iter().any(|segment| {
+            segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON
+        }));
+
+        let advanced_source = FakeProgramHistorySource::default()
+            .with_latest_slot(102)
+            .with_block_time(100, window_start)
+            .with_block_time(101, window_start + Duration::minutes(1))
+            .with_block_time(102, window_end)
+            .with_block_range(101, 102, vec![101, 102])
+            .with_block(
+                101,
+                block_with_transactions(
+                    101,
+                    window_start + Duration::minutes(1),
+                    vec![swap_tx("after-escape-a", "wallet-gap", 101, "raydium-program")],
+                ),
+            )
+            .with_block(
+                102,
+                block_with_transactions(
+                    102,
+                    window_end - Duration::seconds(1),
+                    vec![swap_tx("after-escape-b", "wallet-gap", 102, "pumpswap-program")],
+                ),
+            );
+        let fourth = run_output_with_source(base_config, &advanced_source)?;
+        assert!(fourth.resolved_bounds_reused_from_progress);
+        assert_eq!(fourth.attempt_frontier_start_slot, Some(101));
+        assert_eq!(fourth.verdict, "not_proven_due_to_provider_throttling");
+        assert_eq!(fourth.current_phase, "completed_with_explicit_missing_segments");
+        assert_eq!(fourth.next_batch_start_slot, Some(103));
+        assert!(!fourth.replayable_output);
+        assert_eq!(fourth.zero_progress_retry_count, 0);
+        assert_eq!(fourth.zero_progress_blocked_start_slot, None);
+        assert!(!fourth.zero_progress_escape_applied);
+        assert!(fourth
+            .missing_segments
+            .iter()
+            .any(|segment| segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON));
+        Ok(())
+    }
+
+    #[test]
+    fn positive_progress_provider_throttling_does_not_trigger_zero_progress_escape_stage1(
+    ) -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-positive-progress-throttle")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let output_path = fixture
+            .temp
+            .path()
+            .join("program-gap-fill-positive-progress-throttle.sqlite");
+        let source = resumable_source(window_start, window_end).with_get_block_failure_once(
+            1_105,
+            SourceError::provider_throttled("rpc provider throttled request: simulated 429/limit"),
+        );
+
+        let output = run_output_with_source(
+            Config {
+                output_path: Some(output_path),
+                window_start: Some(window_start),
+                window_end: Some(window_end),
+                max_slot_batches_per_attempt_override: Some(3),
+                now,
+                ..gap_fill_config(&fixture, Some(window_start), Some(window_end))
+            },
+            &source,
+        )?;
+
+        assert_eq!(output.verdict, "not_proven_due_to_provider_throttling");
+        assert!(output.attempt_frontier_advanced_slots > 0);
+        assert_eq!(output.zero_progress_retry_count, 0);
+        assert_eq!(output.zero_progress_blocked_start_slot, None);
+        assert!(!output.zero_progress_escape_applied);
+        assert_eq!(output.next_batch_start_slot, Some(1_105));
         Ok(())
     }
 
