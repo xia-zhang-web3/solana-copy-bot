@@ -6,6 +6,50 @@
 These files are repository-side templates for the test-server bring-up tracked by `ops/test_server_rollout_6_1_tracker.md`.
 They are synced with the current staging server snapshot (`52.28.0.218`, `2026-03-03`).
 
+## Live Update (`2026-04-23`)
+
+The current live blocker is no longer the replay `sol_leg` recovery branch.
+
+Current operator truth from the live host:
+
+- service is running on the recent-raw corrective commits that made the branch
+  truthful:
+  - `16f8f5b Make zero-work head gap repair explicit`
+  - `ab75d6d Skip empty recent raw head-gap replay`
+- live `solana-copy-bot.service` cycles now repeatedly return:
+  - `repair_state = skipped_recent_raw_journal_head_gap_no_repairable_rows`
+  - `repair_reason = recent_raw_journal_has_no_rows_in_required_window_before_runtime_cursor`
+- the same cycles also show:
+  - `journal_covers_runtime_cursor = true`
+  - `runtime_window_first_cursor_signature = None`
+  - `runtime_window_first_cursor_slot = None`
+  - `runtime_window_first_cursor_ts = None`
+  - `replay_batches_completed = 0`
+  - `replay_rows_loaded = 0`
+  - `replay_rows_inserted = 0`
+  - `runtime_window_complete_after = false`
+- the live interval shape is:
+  - `required_window_start` around `2026-04-18T07:30:53Z`
+  - `replay_until_cursor_ts = 2026-04-17T17:33:19.708359647Z`
+  - this makes the derived replay interval empty
+- persisted publication truth remains fail-closed:
+  - `publication_runtime_mode = fail_closed`
+  - `publication_reason = raw_window_unusable_no_recent_published_universe`
+
+Operator interpretation:
+
+- do not describe the current host as blocked on replay `sol_leg`
+- do not describe the current branch as a zero-work replay-budget seam anymore
+- the live host is now explicitly proving a narrower recent-raw condition:
+  metadata says the journal covers the runtime cursor, but the derived replay
+  interval has no repairable rows
+- the next bounded corrective work should target the recent-raw interval /
+  frontier derivation contract, not selector, writer, ingress, or replay
+  checkpoint recovery
+- any operator check for this branch should prefer:
+  - `journalctl -u solana-copy-bot.service --no-pager | rg 'skipped_recent_raw_journal_head_gap_no_repairable_rows|recent_raw_journal_has_no_rows_in_required_window_before_runtime_cursor'`
+  - runtime DB check of `discovery_strategy_state.publication_reason`
+
 ## Incident Update (`2026-03-30`)
 
 The live project is still not production-usable, but the acute `recent_raw`

@@ -1,7 +1,51 @@
 # DISCOVERY RUNTIME RESTORE PLAN
 
 Date: 2026-03-23
-Status: Canonical, Batch 1-3 implemented; bounded gap-fill compare-runs completed; validation/snapshot hardening follow-ups implemented; live server is currently in bootstrap-degraded bridge mode
+Status: Canonical historical restore plan; live server is currently fail-closed on the recent-raw head-gap no-repairable-rows branch
+
+## Live addendum (`2026-04-23`)
+
+This restore plan is historical, but the current live incident shape has moved
+again and needs an explicit addendum so future sessions do not keep chasing the
+old blocker.
+
+Current live truth:
+
+- the active blocker is no longer the replay `sol_leg` seam
+- recent live cycles on `solana-copy-bot.service` show:
+  - `publication_truth_refresh_resume_exact_target_surface_repair_attempted = false`
+  - `run_cycle_publication_replay_incomplete = false`
+- the current blocker is now on the recent-raw / runtime-window repair path:
+  - `repair_state = skipped_recent_raw_journal_head_gap_no_repairable_rows`
+  - `repair_reason = recent_raw_journal_has_no_rows_in_required_window_before_runtime_cursor`
+  - `journal_covers_runtime_cursor = true`
+  - `runtime_window_first_cursor_signature = None`
+  - `runtime_window_first_cursor_slot = None`
+  - `runtime_window_first_cursor_ts = None`
+  - `replay_batches_completed = 0`
+  - `replay_rows_loaded = 0`
+  - `replay_rows_inserted = 0`
+  - `runtime_window_complete_after = false`
+- the live interval shape is now the important clue:
+  - `required_window_start` is around `2026-04-18T07:30:53Z`
+  - `replay_until_cursor_ts` is
+    `2026-04-17T17:33:19.708359647Z`
+  - so the derived interval is empty before replay can even load a first batch
+- persisted publication truth on the live runtime DB still remains:
+  - `publication_runtime_mode = fail_closed`
+  - `publication_reason = raw_window_unusable_no_recent_published_universe`
+
+Operational meaning:
+
+- the replay branch was narrowed correctly and is no longer the current live
+  seam
+- the current restore/publication failure is that recent-raw metadata says the
+  runtime cursor is covered, but the derived repair interval still has no
+  replayable rows
+- future corrective work should target the recent-raw head-gap eligibility /
+  interval derivation contract, not replay checkpoint resumability
+- do not describe the current incident as a generic replay failure anymore; the
+  live branch has changed
 
 ## 0. Суть
 

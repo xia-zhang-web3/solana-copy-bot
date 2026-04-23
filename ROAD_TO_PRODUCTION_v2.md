@@ -6,6 +6,57 @@
 Date: 2026-03-17
 Status: Active historical roadmap with 2026-03-27 production-readiness and live Stage 3 accumulation addendum
 
+## Live Update (`2026-04-23`)
+
+The current live Stage 3 blocker is no longer the replay `sol_leg` recovery
+lane.
+
+Current live verdict after the recent bounded replay and recent-raw corrective
+rollouts:
+
+- replay-specific recovery is not the active blocker on the host anymore:
+  - `publication_truth_refresh_resume_exact_target_surface_repair_attempted = false`
+  - `run_cycle_publication_replay_incomplete = false`
+- the active blocker has moved back onto the recent-raw/runtime-window branch
+  and is now classified truthfully by the live service:
+  - `repair_state = skipped_recent_raw_journal_head_gap_no_repairable_rows`
+  - `repair_reason = recent_raw_journal_has_no_rows_in_required_window_before_runtime_cursor`
+- the same live cycle also reports:
+  - `journal_covers_runtime_cursor = true`
+  - `runtime_window_first_cursor_signature = None`
+  - `runtime_window_first_cursor_slot = None`
+  - `runtime_window_first_cursor_ts = None`
+  - `replay_batches_completed = 0`
+  - `replay_rows_loaded = 0`
+  - `replay_rows_inserted = 0`
+  - `runtime_window_complete_after = false`
+- the important interval clue from live journald is:
+  - `required_window_start` is around `2026-04-18T07:30:53Z`
+  - `replay_until_cursor_ts = 2026-04-17T17:33:19.708359647Z`
+  - therefore the derived repair interval is empty before the first replay
+    batch can load rows
+- persisted publication truth on the live runtime DB remains:
+  - `publication_runtime_mode = fail_closed`
+  - `publication_reason = raw_window_unusable_no_recent_published_universe`
+
+Practical interpretation:
+
+- the accepted replay corrective work was still valuable because it proved the
+  replay lane is no longer the active live blocker
+- the current live failure is narrower and now sits in recent-raw interval /
+  frontier derivation
+- the service currently reaches a shape where metadata says the journal covers
+  the runtime cursor, but the derived replay interval contains no repairable
+  rows, so Stage 3 remains fail-closed
+- the next bounded work should therefore target the recent-raw
+  `required_window_start` / `replay_until_cursor` / head-gap replayability
+  contract, not replay `sol_leg`, selector, writer, or ingress
+
+Repository-side live corrective commits now relevant to this branch:
+
+- `16f8f5b Make zero-work head gap repair explicit`
+- `ab75d6d Skip empty recent raw head-gap replay`
+
 ## Live Update (`2026-04-06`)
 
 The specific Stage 3 discovery fail-closed recovery incident is now closed on

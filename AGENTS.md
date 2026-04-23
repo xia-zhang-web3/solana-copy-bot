@@ -242,40 +242,45 @@ This is the expected style for future sessions too.
 
 ## Current Server Facts
 
-Snapshot as of `2026-04-15` after the recent-raw staged bulk-insert rollout.
+Snapshot as of `2026-04-23` after the recent-raw head-gap truthfulness
+rollouts.
 
 ### Latest Stage 3 Update
 
-- Commit `4d2d81f` is deployed on the production host.
-- Only `discovery_recent_raw_snapshot` was rebuilt; `solana-copy-bot.service`
-  was not restarted.
-- The post-build manual snapshot attempt remained bounded and deferred:
-  - `state=deferred`
-  - `terminal_reason=staged_write_attempt_duration_budget_exhausted`
-  - `archive_promoted=false`
-- The staged bulk-insert write path is live and the throughput telemetry is
-  present:
-  - `staged_write_batch_rows=65536`
-  - `staged_write_batch_count=2`
-  - `staged_write_rows_per_second=573.964937222585`
-  - `staged_rows_inserted=69440`
-  - `staged_row_count_before_attempt=46828273`
-  - `staged_row_count_after_attempt=46897713`
-- The replacement convergence surface reports:
-  - `recent_raw_replacement_convergence_reason_class=recent_raw_replacement_convergence_advancing_but_incomplete`
-  - `recent_raw_replacement_candidate_row_count=46897713`
-  - `recent_raw_source_row_count=56180677`
-  - `recent_raw_replacement_rows_remaining_to_current_source=9282964`
-  - `recent_raw_replacement_estimated_attempts_to_current_source=134`
-  - `recent_raw_replacement_candidate_promotable_now=false`
+- The production host is currently on commit `ab75d6d`.
+- The main service was rebuilt and restarted:
+  - `solana-copy-bot.service = active`
+- The current active live blocker is no longer the replay `sol_leg` lane.
+- Recent live cycles now repeatedly return:
+  - `repair_state = skipped_recent_raw_journal_head_gap_no_repairable_rows`
+  - `repair_reason = recent_raw_journal_has_no_rows_in_required_window_before_runtime_cursor`
+- The same live cycles also show:
+  - `journal_covers_runtime_cursor = true`
+  - `runtime_window_first_cursor_signature = None`
+  - `runtime_window_first_cursor_slot = None`
+  - `runtime_window_first_cursor_ts = None`
+  - `replay_batches_completed = 0`
+  - `replay_rows_loaded = 0`
+  - `replay_rows_inserted = 0`
+  - `runtime_window_complete_after = false`
+- The current live interval clue is:
+  - `required_window_start` around `2026-04-18T07:30:53Z`
+  - `replay_until_cursor_ts = 2026-04-17T17:33:19.708359647Z`
+  - the derived repair interval is empty before first-batch replay can load
+    rows
+- Persisted publication truth on the runtime DB remains:
+  - `publication_runtime_mode = fail_closed`
+  - `publication_reason = raw_window_unusable_no_recent_published_universe`
 - Interpretation:
   - Stage 3 is still blocked.
-  - The fixed staged replacement is advancing, not ready to promote yet.
-  - The first live bulk-insert run proved bounded behavior under the new code,
-    but did not yet prove a material live throughput increase versus the
-    previous post-build baseline.
-  - Continue watching for `state=written`, `archive_promoted=true`, and a newer
-    promoted `latest.sqlite` frontier.
+  - Replay corrective work was still useful because it proved replay is no
+    longer the active live blocker.
+  - The current live seam is now narrower and sits in recent-raw interval /
+    frontier derivation.
+  - The journal metadata says the runtime cursor is covered, but the derived
+    replay interval still has no repairable rows.
+  - The next bounded batch should target that recent-raw eligibility /
+    interval-derivation contract, not replay resumability.
 
 ### Live Server
 
@@ -342,45 +347,41 @@ Snapshot as of `2026-04-15` after the recent-raw staged bulk-insert rollout.
 - Stage 3 is still blocked.
 - This is now a production-critical blocker on the primary path.
 - The runtime itself is still alive.
-- The bounded `recent_raw` accumulation path is now making preserved progress after
-  rollout, but Stage 3 remains blocked until that staged progress completes and a
-  newer `latest.sqlite` is promoted.
+- The current blocker is no longer the old staged-snapshot reset problem and no
+  longer the replay `sol_leg` seam.
+- The current blocker is the recent-raw head-gap eligibility branch where:
+  - metadata says the journal covers the runtime cursor
+  - `runtime_window_first_cursor_*` is still `None`
+  - the derived replay interval has no repairable rows
+  - publication remains `fail_closed`
 
 - Important observed fact:
   - the latest persisted `discovery_wallet_freshness_history` capture is still
     `2026-03-25 18:59:01 UTC`
   - no newer captures have been written since then
 
-- Root cause interpretation from code + logs:
-  - in-band Stage 3 captures are only persisted when `publish_due` and
-    `runtime_mode == Healthy`
-  - at `2026-03-25 19:00 UTC`, the runtime rolled into a new metrics bucket,
-    invalidated the cached healthy summary, recomputed truth, and switched to
-    `fail_closed`
-  - the scoring source became
-    `raw_window_incomplete_no_recent_published_universe`
-  - separately, the standalone bounded raw snapshot service now repeatedly times
-    out before it can finish cloning the growing source DB:
-    - source DB grew to about `11.6G`
-    - adaptive policy caps at `pages_per_step = 1024`
-    - adaptive policy caps at `max_attempt_duration = 120000ms`
-    - each attempt copies about `2.0M` pages out of about `2.72M` total, then
-      returns `Deferred`
-    - the old healthy `latest` surface is retained by design, so usable bounded
-      raw coverage never advances
-  - practical result: live swap ingest continues, but the 5-day bounded raw
-    surface required for Stage 3 does not progress
+- Root cause interpretation from current code + logs:
+  - the live service now truthfully proves that the current recent-raw repair
+    branch is not replaying anything because there are no repairable rows in
+    the derived interval before the runtime cursor
+  - specifically, the active branch currently reaches:
+    - `repair_state = skipped_recent_raw_journal_head_gap_no_repairable_rows`
+    - `repair_reason = recent_raw_journal_has_no_rows_in_required_window_before_runtime_cursor`
+  - practical result: live swap ingest continues, but Stage 3 publication truth
+    remains fail-closed because runtime-window completeness does not advance
 
 - Practical implication:
   - do not describe the server as “already healthy”; that is also false
-  - the dead livelock was fixed, and the bounded snapshot is progressing again
-  - shadow-trading readiness is still blocked until the resumed staged snapshot
-    finishes and Stage 3 can start collecting fresh healthy evidence again
+  - the current priority is no longer generic snapshot convergence watching
+  - shadow-trading readiness is still blocked until the recent-raw
+    runtime-window eligibility seam is corrected
   - current operator priority is to watch for:
-    - continued `staged_progress_advanced=true`
-    - eventual `state=written`
-    - `archive_promoted=true`
-    - a newer `latest.sqlite` frontier
+    - disappearance of
+      `skipped_recent_raw_journal_head_gap_no_repairable_rows`
+    - a repair branch that either finds replayable rows or exits through a more
+      correct earlier predicate
+    - a newer `discovery_strategy_state.updated_at`
+    - a reason different from `raw_window_unusable_no_recent_published_universe`
 
 ## If A New Session Starts Elsewhere
 
