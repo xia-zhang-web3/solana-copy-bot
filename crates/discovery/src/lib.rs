@@ -14130,13 +14130,13 @@ impl DiscoveryService {
                 false,
             ));
         }
-        let journal_covers_runtime_cursor = journal_state
+        let journal_metadata_covers_runtime_cursor = journal_state
             .covered_through_cursor
             .as_ref()
             .is_some_and(|cursor| {
                 Self::runtime_cursor_cmp(cursor, &runtime_cursor) != Ordering::Less
             });
-        if !journal_covers_runtime_cursor {
+        if !journal_metadata_covers_runtime_cursor {
             return log_and_return(DiscoveryPublicationTruthRepairTelemetry::skipped(
                 "skipped_journal_cursor_lineage_mismatch",
                 "recent_raw_journal_does_not_cover_runtime_cursor",
@@ -14168,7 +14168,7 @@ impl DiscoveryService {
                 publication_truth_fresh_before,
                 runtime_window_complete_before,
                 journal_state.covered_since,
-                journal_covers_runtime_cursor,
+                journal_metadata_covers_runtime_cursor,
             ));
         }
         let (journal_window_first_cursor, journal_window_first_cursor_time_budget_exhausted) = self
@@ -14183,18 +14183,19 @@ impl DiscoveryService {
         {
             return log_and_return(
                 DiscoveryPublicationTruthRepairTelemetry::skipped(
-                    "skipped_recent_raw_journal_head_gap_no_repairable_rows",
-                    "recent_raw_journal_has_no_rows_in_required_window_before_runtime_cursor",
+                    "skipped_recent_raw_journal_repair_interval_unavailable",
+                    "recent_raw_journal_does_not_cover_repairable_interval_before_runtime_cursor",
                     required_window_start,
                     publication_truth_complete_before,
                     publication_truth_fresh_before,
                     runtime_window_complete_before,
                     journal_state.covered_since,
-                    journal_covers_runtime_cursor,
+                    false,
                 )
                 .with_replay_window_context(runtime_window_first_cursor, Some(replay_until_cursor)),
             );
         }
+        let journal_covers_runtime_cursor = true;
 
         let mut replay_cursor: Option<DiscoveryRuntimeCursor> = None;
         let mut replay_batches_completed = 0usize;
@@ -37795,7 +37796,7 @@ mod tests {
     }
 
     #[test]
-    fn repair_recent_raw_journal_head_gap_without_repairable_rows_skips_non_replay_state_stage1(
+    fn repair_recent_raw_journal_head_gap_without_repairable_rows_rejects_cursor_metadata_as_insufficient_stage1(
     ) -> Result<()> {
         let (_temp, runtime_store, journal_store, discovery, now, runtime_cursor) =
             seed_stage1_recent_raw_journal_head_gap_no_repairable_rows_fixture()?;
@@ -37819,19 +37820,27 @@ mod tests {
             )?;
         assert_eq!(
             repair.state,
-            "skipped_recent_raw_journal_head_gap_no_repairable_rows"
+            "skipped_recent_raw_journal_repair_interval_unavailable"
         );
         assert_eq!(
             repair.reason.as_deref(),
-            Some("recent_raw_journal_has_no_rows_in_required_window_before_runtime_cursor")
+            Some("recent_raw_journal_does_not_cover_repairable_interval_before_runtime_cursor")
         );
-        assert!(repair.journal_covers_runtime_cursor);
+        assert!(
+            !repair.journal_covers_runtime_cursor,
+            "effective cursor coverage must now require a repairable journal interval, not only outer-bounds metadata"
+        );
         assert!(!repair.runtime_window_complete_after);
         assert!(repair.runtime_window_first_cursor.is_none());
         assert_eq!(repair.replay_batches_completed, 0);
         assert_eq!(repair.replay_rows_loaded, 0);
         assert_eq!(repair.replay_rows_inserted, 0);
         assert!(!repair.replay_time_budget_exhausted);
+        assert_ne!(
+            repair.state,
+            "skipped_recent_raw_journal_head_gap_no_repairable_rows",
+            "the empty-interval seam should now fail the stronger coverage predicate before claiming head-gap replay eligibility"
+        );
         let replay_until_cursor = repair.replay_until_cursor.as_ref().expect(
             "the explicit non-replay state should still expose the derived replay boundary",
         );
