@@ -1368,18 +1368,6 @@ fn zero_universe_empty_target_noncritical_irrelevant_context(
         )
 }
 
-fn should_preemptively_drop_noncritical_irrelevant_not_followed_without_ownership_surface(
-    discovery_critical: bool,
-    follow_snapshot: &FollowSnapshot,
-    open_shadow_lots: &HashSet<(String, String)>,
-    discovery_critical_target_buy_mints: &HashSet<String>,
-) -> bool {
-    !discovery_critical
-        && follow_snapshot.active.is_empty()
-        && open_shadow_lots.is_empty()
-        && discovery_critical_target_buy_mints.is_empty()
-}
-
 fn should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
     discovery_critical: bool,
     follow_snapshot: &FollowSnapshot,
@@ -4843,29 +4831,6 @@ async fn run_app_loop(
                                 shadow_strategy_fail_closed,
                                 &discovery_critical_target_buy_mints,
                             );
-                        if should_preemptively_drop_noncritical_irrelevant_not_followed_without_ownership_surface(
-                            discovery_critical_irrelevant_persistence,
-                            &follow_snapshot,
-                            &open_shadow_lots,
-                            &discovery_critical_target_buy_mints,
-                        ) {
-                            forget_recent_swap_signature(
-                                &mut recent_swap_signatures,
-                                &mut recent_swap_signature_order,
-                                &swap.signature,
-                            );
-                            app_consumer_loop_telemetry
-                                .note_processing_started_at(swap_processing_started_at);
-                            debug!(
-                                signature = %swap.signature,
-                                followed_wallet_count = follow_snapshot.active.len(),
-                                open_shadow_lot_count = open_shadow_lots.len(),
-                                discovery_critical_target_buy_mints_count =
-                                    discovery_critical_target_buy_mints.len(),
-                                "dropping non-critical irrelevant_not_followed observed swap because the runtime has no followed wallets, no open shadow lots, and no discovery-critical target mints"
-                            );
-                            continue;
-                        }
                         if should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
                             discovery_critical_irrelevant_persistence,
                             &follow_snapshot,
@@ -6728,9 +6693,12 @@ mod app_tests {
 
     fn run_irrelevant_observed_swap_no_ownership_surface_saturation_scenario(
         branch: IrrelevantObservedSwapScenarioBranch,
-        enable_production_not_followed_drop: bool,
+        simulate_old_not_followed_drop_before_writer: bool,
     ) -> Result<IrrelevantNotFollowedNoOwnershipSurfaceSummary> {
-        let (_store, db_path) = make_test_store("irrelevant-not-followed-no-ownership-saturation")?;
+        let test_store_name = format!(
+            "irrelevant-not-followed-no-ownership-saturation-{branch:?}-old-drop-{simulate_old_not_followed_drop_before_writer}"
+        );
+        let (_store, db_path) = make_test_store(&test_store_name)?;
         seed_runtime_raw_insert_backpressure(&db_path)?;
         let runtime_store = SqliteStore::open(Path::new(&db_path))?;
         runtime_store.checkpoint_wal_truncate()?;
@@ -6755,7 +6723,6 @@ mod app_tests {
             .with_timezone(&Utc);
         let follow_snapshot = FollowSnapshot::default();
         let open_shadow_lots = HashSet::new();
-        let discovery_critical_target_buy_mints = HashSet::new();
         let mut recent_signatures = HashSet::new();
         let mut recent_signature_order = VecDeque::new();
         let mut writer_pending_requests_peak = 0usize;
@@ -6804,13 +6771,10 @@ mod app_tests {
                 }
             }
 
-            if enable_production_not_followed_drop
-                && matches!(relevance, ObservedSwapShadowRelevance::IrrelevantNotFollowed(_))
-                && should_preemptively_drop_noncritical_irrelevant_not_followed_without_ownership_surface(
-                    discovery_critical,
-                    &follow_snapshot,
-                    &open_shadow_lots,
-                    &discovery_critical_target_buy_mints,
+            if simulate_old_not_followed_drop_before_writer
+                && matches!(
+                    relevance,
+                    ObservedSwapShadowRelevance::IrrelevantNotFollowed(_)
                 )
             {
                 dropped_swaps = dropped_swaps.saturating_add(1);
@@ -17926,56 +17890,164 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     }
 
     #[test]
-    fn irrelevant_not_followed_without_ownership_surface_drops_before_writer_enqueue_stage1(
+    fn app_consumer_follow_rejected_empty_universe_enqueues_raw_irrelevant_observed_swap_stage1(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("follow-rejected-empty-universe-raw-enqueue")?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            let writer = ObservedSwapWriter::start_for_test(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+                TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+                false,
+                DiscoveryAggregateWriteConfig::default(),
+            )?;
+            let swap = test_swap("sig-follow-rejected-empty-universe-raw");
+            let follow_snapshot = FollowSnapshot::default();
+            let open_shadow_lots = HashSet::new();
+            let relevance = classify_observed_swap_shadow_relevance(
+                &swap,
+                &follow_snapshot,
+                &ShadowScheduler::new(),
+                &open_shadow_lots,
+            );
+            assert!(
+                matches!(
+                    relevance,
+                    ObservedSwapShadowRelevance::IrrelevantNotFollowed(_)
+                ),
+                "empty follow universe must still classify this parse-valid swap as follow-rejected, not followed/relevant"
+            );
+            assert!(
+                !matches!(relevance, ObservedSwapShadowRelevance::Relevant(_)),
+                "raw evidence persistence must not promote a follow-rejected swap into the relevant path"
+            );
+
+            let mut telemetry = AppConsumerLoopTelemetry::default();
+            telemetry.note_swap_seen();
+            telemetry.note_follow_rejected();
+            let telemetry_snapshot = telemetry.snapshot_and_reset();
+            assert_eq!(telemetry_snapshot.swaps_seen, 1);
+            assert_eq!(telemetry_snapshot.follow_rejected, 1);
+            assert_eq!(telemetry_snapshot.follow_rejected_ratio, 1.0);
+
+            let discovery_critical = irrelevant_observed_swap_requires_discovery_critical_persistence(
+                &swap,
+                &follow_snapshot,
+                &open_shadow_lots,
+                true,
+                &HashSet::new(),
+            );
+            assert!(
+                !discovery_critical,
+                "empty-target follow-rejected swaps should use the normal raw writer path, not the reserved discovery-critical path"
+            );
+            let mut recent_signatures = HashSet::new();
+            let mut recent_signature_order = VecDeque::new();
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            assert_eq!(
+                persist_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    discovery_critical,
+                )
+                .await?,
+                IrrelevantObservedSwapEnqueueOutcome::Enqueued,
+                "follow-rejected parse-valid swaps must still feed raw observed-swap persistence when the runtime has no follow universe"
+            );
+            writer.shutdown()?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        let persisted = store.load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-14T15:59:59Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )?;
+        assert!(
+            persisted
+                .iter()
+                .any(|row| row.signature == "sig-follow-rejected-empty-universe-raw"),
+            "writer shutdown must flush the follow-rejected swap as raw observed-swap source evidence"
+        );
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+        Ok(())
+    }
+
+    #[test]
+    fn irrelevant_not_followed_without_ownership_surface_enqueues_before_writer_backpressure_stage1(
     ) -> Result<()> {
         let summary = run_irrelevant_observed_swap_no_ownership_surface_saturation_scenario(
             IrrelevantObservedSwapScenarioBranch::NotFollowed,
-            true,
+            false,
         )?;
         assert_eq!(
-            summary.first_backpressure_pending_requests, 0,
-            "the exact proven live branch should no longer hit writer backpressure once it is dropped before enqueue"
+            summary.first_backpressure_pending_requests, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+            "the exact proven live branch must now reach the raw writer path before normal non-critical writer backpressure applies"
         );
-        assert_eq!(
-            summary.writer_pending_requests_peak, 0,
-            "dropping the exact irrelevant_not_followed no-ownership class before enqueue should keep the non-critical writer budget empty"
+        assert!(
+            summary.writer_pending_requests_peak > 0,
+            "follow-rejected swaps must be observable at the raw writer instead of starving the Stage 3 source frontier"
         );
         assert_eq!(summary.aggregate_queue_depth_at_peak, 0);
         assert_eq!(summary.journal_queue_depth_at_peak, 0);
-        assert_eq!(summary.accepted_swaps, 0);
         assert!(
-            summary.dropped_swaps > 0,
-            "the reduced live class should now be handled entirely by the bounded early drop path"
+            summary.accepted_swaps > 0,
+            "the reduced live class should enqueue parse-valid raw evidence before any conservative backpressure drop"
+        );
+        assert!(
+            summary.completed_waves > 0,
+            "normal writer backpressure remains active after the raw frontier path has been exercised"
         );
         Ok(())
     }
 
     #[test]
-    fn irrelevant_not_followed_without_ownership_surface_eliminates_repeated_live_128_plateau_pattern_stage1(
+    fn irrelevant_not_followed_without_ownership_surface_old_drop_would_starve_raw_frontier_stage1(
     ) -> Result<()> {
-        let old = run_irrelevant_observed_swap_no_ownership_surface_saturation_scenario(
-            IrrelevantObservedSwapScenarioBranch::NotFollowed,
-            false,
-        )?;
-        let new = run_irrelevant_observed_swap_no_ownership_surface_saturation_scenario(
+        let old_like = run_irrelevant_observed_swap_no_ownership_surface_saturation_scenario(
             IrrelevantObservedSwapScenarioBranch::NotFollowed,
             true,
         )?;
+        let current = run_irrelevant_observed_swap_no_ownership_surface_saturation_scenario(
+            IrrelevantObservedSwapScenarioBranch::NotFollowed,
+            false,
+        )?;
         assert_eq!(
-            old.first_backpressure_pending_requests,
+            old_like.first_backpressure_pending_requests, 0,
+            "the removed early-drop behavior reproduces the source-frontier starvation shape: no writer backpressure because no writer enqueue"
+        );
+        assert_eq!(old_like.writer_pending_requests_peak, 0);
+        assert_eq!(old_like.accepted_swaps, 0);
+        assert!(
+            old_like.dropped_swaps > 0,
+            "the old-like branch drops follow-rejected raw evidence before the writer can see it"
+        );
+        assert_eq!(
+            current.first_backpressure_pending_requests,
             TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-            "old/current-like behavior should reproduce the same live 128 plateau from the exact irrelevant_not_followed no-ownership class"
+            "current behavior must feed follow-rejected raw evidence to the writer before conservative backpressure"
         );
-        assert_eq!(old.aggregate_queue_depth_at_peak, 0);
         assert!(
-            old.completed_waves > 0,
-            "old/current-like behavior should recreate repeated plateau waves under the same reduced live class"
+            current.accepted_swaps > 0,
+            "current behavior restores raw source evidence flow for follow-rejected swaps"
         );
-        assert_eq!(new.first_backpressure_pending_requests, 0);
-        assert_eq!(new.completed_waves, 0);
         assert!(
-            old.writer_pending_requests_peak > new.writer_pending_requests_peak,
-            "the bounded admission fix must materially change the proven live plateau seam itself"
+            current.writer_pending_requests_peak > old_like.writer_pending_requests_peak,
+            "the corrective behavior must materially change the proven writer-idle/source-frontier-freeze seam"
         );
         Ok(())
     }
@@ -18008,7 +18080,7 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     }
 
     #[test]
-    fn irrelevant_not_followed_without_ownership_surface_does_not_drop_when_target_buy_mints_exist_stage1(
+    fn irrelevant_not_followed_target_buy_mint_reserved_path_still_enqueues_raw_evidence_stage1(
     ) -> Result<()> {
         let (_store, db_path) =
             make_test_store("irrelevant-not-followed-target-surface-preserved")?;
@@ -18048,15 +18120,6 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
                 &discovery_critical_target_buy_mints,
             );
             assert!(discovery_critical);
-            assert!(
-                !should_preemptively_drop_noncritical_irrelevant_not_followed_without_ownership_surface(
-                    discovery_critical,
-                    &follow_snapshot,
-                    &open_shadow_lots,
-                    &discovery_critical_target_buy_mints,
-                ),
-                "the new drop contract must disengage once target-buy-mint ownership exists"
-            );
             let mut recent_signatures = HashSet::new();
             let mut recent_signature_order = VecDeque::new();
             assert!(note_recent_swap_signature(
@@ -18076,6 +18139,168 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
                 IrrelevantObservedSwapEnqueueOutcome::Enqueued,
                 "target-buy-mint ownership must preserve the previous reserved-path persistence behavior"
             );
+            writer.shutdown()?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+        Ok(())
+    }
+
+    #[test]
+    fn app_consumer_relevant_followed_swap_write_path_unchanged_stage1() -> Result<()> {
+        let (store, db_path) = make_test_store("followed-relevant-write-path-unchanged")?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            let writer = ObservedSwapWriter::start_for_test(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+                TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+                false,
+                DiscoveryAggregateWriteConfig::default(),
+            )?;
+            let swap = test_swap("sig-followed-relevant-write-unchanged");
+            let mut follow_snapshot = FollowSnapshot::default();
+            follow_snapshot.active.insert(swap.wallet.clone());
+            let relevance = classify_observed_swap_shadow_relevance(
+                &swap,
+                &follow_snapshot,
+                &ShadowScheduler::new(),
+                &HashSet::new(),
+            );
+            assert!(
+                matches!(
+                    relevance,
+                    ObservedSwapShadowRelevance::Relevant(ShadowSwapSide::Buy)
+                ),
+                "followed wallets must remain on the relevant persistence path"
+            );
+            let mut recent_signatures = HashSet::new();
+            let mut recent_signature_order = VecDeque::new();
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            assert!(
+                persist_relevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                )
+                .await?,
+                "first followed/relevant observed swap write should still insert"
+            );
+            writer.shutdown()?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+        let persisted = store.load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-14T15:59:59Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )?;
+        assert!(
+            persisted
+                .iter()
+                .any(|row| row.signature == "sig-followed-relevant-write-unchanged"),
+            "relevant/followed raw write path must remain unchanged"
+        );
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+        Ok(())
+    }
+
+    #[test]
+    fn app_consumer_irrelevant_writer_backpressure_stays_follow_rejected_stage1() -> Result<()> {
+        let (_store, db_path) = make_test_store("follow-rejected-backpressure-stays-irrelevant")?;
+        let blocker_conn = rusqlite::Connection::open(&db_path)?;
+        blocker_conn.busy_timeout(StdDuration::from_millis(1))?;
+        blocker_conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            let writer = ObservedSwapWriter::start_for_test_with_normal_try_enqueue_soft_limit(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+                TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+                false,
+                DiscoveryAggregateWriteConfig::default(),
+                1,
+            )?;
+            let follow_snapshot = FollowSnapshot::default();
+            let open_shadow_lots = HashSet::new();
+            let mut recent_signatures = HashSet::new();
+            let mut recent_signature_order = VecDeque::new();
+            let first = test_swap("sig-follow-rejected-backpressure-first");
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &first.signature,
+            ));
+            assert_eq!(
+                persist_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &first,
+                    false,
+                )
+                .await?,
+                IrrelevantObservedSwapEnqueueOutcome::Enqueued
+            );
+
+            let second = test_swap("sig-follow-rejected-backpressure-second");
+            let relevance = classify_observed_swap_shadow_relevance(
+                &second,
+                &follow_snapshot,
+                &ShadowScheduler::new(),
+                &open_shadow_lots,
+            );
+            assert!(
+                matches!(
+                    relevance,
+                    ObservedSwapShadowRelevance::IrrelevantNotFollowed(_)
+                ),
+                "backpressure must not convert a follow-rejected swap into a followed/relevant swap"
+            );
+            let mut telemetry = AppConsumerLoopTelemetry::default();
+            telemetry.note_swap_seen();
+            telemetry.note_follow_rejected();
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &second.signature,
+            ));
+            assert_eq!(
+                persist_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &second,
+                    false,
+                )
+                .await?,
+                IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure,
+                "normal non-critical writer backpressure remains conservative"
+            );
+            let snapshot = telemetry.snapshot_and_reset();
+            assert_eq!(snapshot.follow_rejected, 1);
+            assert_eq!(snapshot.follow_rejected_ratio, 1.0);
+
+            blocker_conn.execute_batch("ROLLBACK")?;
             writer.shutdown()?;
             Ok::<(), anyhow::Error>(())
         })?;
@@ -18126,17 +18351,51 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
     }
 
     #[test]
-    fn irrelevant_not_followed_without_ownership_surface_does_not_drop_discovery_critical_reserved_path_stage1(
-    ) {
-        assert!(
-            !should_preemptively_drop_noncritical_irrelevant_not_followed_without_ownership_surface(
-                true,
-                &FollowSnapshot::default(),
-                &HashSet::new(),
-                &HashSet::new(),
-            ),
-            "the bounded live-seam drop must never intercept the discovery-critical reserved irrelevant path"
-        );
+    fn irrelevant_not_followed_discovery_critical_reserved_path_still_enqueues_stage1() -> Result<()>
+    {
+        let (_store, db_path) =
+            make_test_store("irrelevant-not-followed-discovery-critical-preserved")?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            let writer = ObservedSwapWriter::start_for_test(
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(),
+                OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+                TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+                false,
+                DiscoveryAggregateWriteConfig::default(),
+            )?;
+            let swap = test_swap("sig-not-followed-discovery-critical-preserved");
+            let mut recent_signatures = HashSet::new();
+            let mut recent_signature_order = VecDeque::new();
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            assert_eq!(
+                persist_irrelevant_observed_swap(
+                    &writer,
+                    &mut recent_signatures,
+                    &mut recent_signature_order,
+                    &swap,
+                    true,
+                )
+                .await?,
+                IrrelevantObservedSwapEnqueueOutcome::Enqueued,
+                "the reserved discovery-critical irrelevant writer path must remain available"
+            );
+            writer.shutdown()?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+        Ok(())
     }
 
     #[test]
