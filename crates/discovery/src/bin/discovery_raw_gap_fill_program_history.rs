@@ -1,13 +1,17 @@
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
+#[cfg(test)]
+use chrono::Duration;
 use copybot_config::load_from_path;
 use copybot_core_types::SwapEvent;
 use copybot_discovery::raw_gap_fill_support::{
     compute_missing_segments, format_optional_cursor, format_optional_ts, max_cursor_opt,
-    min_ts_opt, parse_program_scoped_transaction_to_swap_with_context, reset_sqlite_path,
-    resolve_gap_fill_plan, transaction_mentions_target_programs, GapFillMissingSegment,
+    min_ts_opt, parse_program_scoped_transaction_to_swap_with_context, resolve_gap_fill_plan,
+    transaction_mentions_target_programs, GapFillMissingSegment,
     GapFillPlan, ProgramIdConfig,
 };
+#[cfg(test)]
+use copybot_discovery::raw_gap_fill_support::reset_sqlite_path;
 #[cfg(test)]
 use copybot_discovery::restore_verdict::DiscoveryRuntimeRestoreVerdictKind;
 use copybot_discovery::runtime_restore_ops::{
@@ -27,7 +31,6 @@ use copybot_storage::{
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::env;
 use std::error::Error as StdError;
@@ -46,6 +49,14 @@ const IN_PROGRESS_DB_NAME: &str = "in_progress.sqlite";
 const DEFAULT_PROGRESS_DOMINANT_PHASE: &str = "unknown";
 const DEFAULT_BLOCK_FETCH_ENCODING: &str = "json";
 const DEFAULT_BLOCK_FETCH_CONCURRENCY: usize = 1;
+
+fn default_boundary_adjustment_kind() -> String {
+    BoundaryAdjustmentKind::Unresolved.as_str().to_string()
+}
+
+fn default_boundary_resolution_verdict() -> String {
+    BoundaryResolutionVerdict::Unresolved.as_str().to_string()
+}
 
 fn default_progress_dominant_phase() -> String {
     DEFAULT_PROGRESS_DOMINANT_PHASE.to_string()
@@ -107,8 +118,22 @@ struct ProgramHistoryGapFillOutput {
     journal_covers_artifact_cursor: bool,
     journal_covered_since: Option<DateTime<Utc>>,
     journal_covered_through_cursor: Option<copybot_storage::DiscoveryRuntimeCursor>,
+    requested_start_slot_raw: Option<u64>,
+    requested_end_slot_raw: Option<u64>,
     resolved_start_slot: Option<u64>,
     resolved_end_slot: Option<u64>,
+    #[serde(default = "default_boundary_adjustment_kind")]
+    start_slot_adjustment_kind: String,
+    #[serde(default = "default_boundary_adjustment_kind")]
+    end_slot_adjustment_kind: String,
+    start_slot_adjustment_distance: Option<u64>,
+    end_slot_adjustment_distance: Option<u64>,
+    #[serde(default = "default_boundary_resolution_verdict")]
+    boundary_resolution_verdict: String,
+    #[serde(default)]
+    requested_interval_fully_bracketed_after_adjustment: bool,
+    #[serde(default)]
+    requested_interval_partially_bracketed_after_adjustment: bool,
     slot_span: Option<u64>,
     #[serde(default)]
     resolved_bounds_reused_from_progress: bool,
@@ -224,8 +249,128 @@ impl GapFillVerdict {
 
 #[derive(Debug, Clone)]
 struct ResolvedSlotBounds {
-    start_slot: u64,
-    end_slot: u64,
+    start: SlotBoundaryResolution,
+    end: SlotBoundaryResolution,
+    boundary_resolution_verdict: BoundaryResolutionVerdict,
+    requested_interval_fully_bracketed_after_adjustment: bool,
+    requested_interval_partially_bracketed_after_adjustment: bool,
+    boundary_missing_segments: Vec<GapFillMissingSegment>,
+}
+
+impl ResolvedSlotBounds {
+    fn requested_start_slot_raw(&self) -> Option<u64> {
+        self.start.requested_slot_raw
+    }
+
+    fn requested_end_slot_raw(&self) -> Option<u64> {
+        self.end.requested_slot_raw
+    }
+
+    fn start_slot(&self) -> Option<u64> {
+        self.start.resolved_slot
+    }
+
+    fn end_slot(&self) -> Option<u64> {
+        self.end.resolved_slot
+    }
+
+    fn usable_slot_range(&self) -> Option<(u64, u64)> {
+        let start_slot = self.start_slot()?;
+        let end_slot = self.end_slot()?;
+        (end_slot >= start_slot).then_some((start_slot, end_slot))
+    }
+
+    fn failure_reason(&self) -> String {
+        match (self.start.resolved_slot, self.end.resolved_slot) {
+            (None, None) => "slot_boundaries_unresolved_within_search_radius".to_string(),
+            (None, Some(_)) => "start_slot_boundary_unresolved_within_search_radius".to_string(),
+            (Some(_), None) => "end_slot_boundary_unresolved_within_search_radius".to_string(),
+            (Some(start_slot), Some(end_slot)) if end_slot < start_slot => {
+                "resolved_slot_bounds_crossed_after_boundary_adjustment".to_string()
+            }
+            _ => "slot_bounds_unresolved".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SlotBoundaryResolution {
+    requested_slot_raw: Option<u64>,
+    resolved_slot: Option<u64>,
+    resolved_block_time: Option<DateTime<Utc>>,
+    adjustment_kind: BoundaryAdjustmentKind,
+    adjustment_distance: Option<u64>,
+}
+
+impl SlotBoundaryResolution {
+    fn unresolved(requested_slot_raw: Option<u64>) -> Self {
+        Self {
+            requested_slot_raw,
+            resolved_slot: None,
+            resolved_block_time: None,
+            adjustment_kind: BoundaryAdjustmentKind::Unresolved,
+            adjustment_distance: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundaryAdjustmentKind {
+    Exact,
+    AdvancedToNextAvailable,
+    RewoundToPreviousAvailable,
+    Unresolved,
+}
+
+impl BoundaryAdjustmentKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::AdvancedToNextAvailable => "advanced_to_next_available",
+            Self::RewoundToPreviousAvailable => "rewound_to_previous_available",
+            Self::Unresolved => "unresolved",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundaryResolutionVerdict {
+    FullyBracketed,
+    PartiallyBracketed,
+    Unresolved,
+}
+
+impl BoundaryResolutionVerdict {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::FullyBracketed => "fully_bracketed",
+            Self::PartiallyBracketed => "partially_bracketed",
+            Self::Unresolved => "unresolved",
+        }
+    }
+}
+
+fn parse_boundary_adjustment_kind(raw: &str) -> BoundaryAdjustmentKind {
+    match raw {
+        "exact" => BoundaryAdjustmentKind::Exact,
+        "advanced_to_next_available" => BoundaryAdjustmentKind::AdvancedToNextAvailable,
+        "rewound_to_previous_available" => BoundaryAdjustmentKind::RewoundToPreviousAvailable,
+        _ => BoundaryAdjustmentKind::Unresolved,
+    }
+}
+
+fn parse_boundary_resolution_verdict(raw: &str) -> BoundaryResolutionVerdict {
+    match raw {
+        "fully_bracketed" => BoundaryResolutionVerdict::FullyBracketed,
+        "partially_bracketed" => BoundaryResolutionVerdict::PartiallyBracketed,
+        _ => BoundaryResolutionVerdict::Unresolved,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundarySide {
+    Start,
+    End,
 }
 
 #[derive(Debug, Clone)]
@@ -268,9 +413,19 @@ struct OutputPaths {
 
 #[derive(Debug, Clone)]
 struct FetchResult {
+    requested_start_slot_raw: Option<u64>,
+    requested_end_slot_raw: Option<u64>,
     resolved_start_slot: Option<u64>,
     resolved_end_slot: Option<u64>,
+    start_slot_adjustment_kind: String,
+    end_slot_adjustment_kind: String,
+    start_slot_adjustment_distance: Option<u64>,
+    end_slot_adjustment_distance: Option<u64>,
+    boundary_resolution_verdict: String,
+    requested_interval_fully_bracketed_after_adjustment: bool,
+    requested_interval_partially_bracketed_after_adjustment: bool,
     slot_span: Option<u64>,
+    boundary_missing_segments: Vec<GapFillMissingSegment>,
     resolved_bounds_reused_from_progress: bool,
     coverage_method: String,
     block_fetch_encoding: String,
@@ -525,10 +680,12 @@ impl ProgramHistorySource for QuickNodeBlocksRpcSource {
             "method": "getBlockTime",
             "params": [slot],
         });
-        let response = post_json_rpc(self, &payload)?;
-        let block_time = rpc_result(&response)
-            .as_i64()
-            .and_then(|value| DateTime::<Utc>::from_timestamp(value, 0));
+        let block_time = post_json_rpc_allow_missing_block_time(self, &payload)?
+            .and_then(|response| {
+                rpc_result(&response)
+                    .as_i64()
+                    .and_then(|value| DateTime::<Utc>::from_timestamp(value, 0))
+            });
         self.block_time_cache
             .lock()
             .expect("block_time_cache poisoned")
@@ -783,9 +940,25 @@ fn run_with_source<S: ProgramHistorySource + Sync>(
                 &target_program_ids,
                 &plan,
                 FetchResult {
+                    requested_start_slot_raw: None,
+                    requested_end_slot_raw: None,
                     resolved_start_slot: None,
                     resolved_end_slot: None,
+                    start_slot_adjustment_kind: BoundaryAdjustmentKind::Unresolved
+                        .as_str()
+                        .to_string(),
+                    end_slot_adjustment_kind: BoundaryAdjustmentKind::Unresolved
+                        .as_str()
+                        .to_string(),
+                    start_slot_adjustment_distance: None,
+                    end_slot_adjustment_distance: None,
+                    boundary_resolution_verdict: BoundaryResolutionVerdict::Unresolved
+                        .as_str()
+                        .to_string(),
+                    requested_interval_fully_bracketed_after_adjustment: false,
+                    requested_interval_partially_bracketed_after_adjustment: false,
                     slot_span: None,
+                    boundary_missing_segments: Vec::new(),
                     resolved_bounds_reused_from_progress: false,
                     coverage_method: "unresolved".to_string(),
                     block_fetch_encoding: "json".to_string(),
@@ -964,8 +1137,8 @@ fn resume_progress_with_bounds(
     };
     let expected_progress_db_path = paths.progress_db_path.display().to_string();
     let compatible = !progress.replayable_output
-        && progress.resolved_start_slot == Some(bounds.start_slot)
-        && progress.resolved_end_slot == Some(bounds.end_slot)
+        && progress.resolved_start_slot == bounds.start_slot()
+        && progress.resolved_end_slot == bounds.end_slot()
         && progress.next_batch_start_slot.is_some()
         && progress
             .progress_db_path
@@ -982,6 +1155,43 @@ fn resume_progress_with_bounds(
             Some("program_history_gap_fill_progress_reset_incompatible_state".to_string()),
         ))
     }
+}
+
+fn bounds_from_progress(progress: &ProgramHistoryGapFillOutput) -> Option<ResolvedSlotBounds> {
+    Some(ResolvedSlotBounds {
+        start: SlotBoundaryResolution {
+            requested_slot_raw: progress.requested_start_slot_raw,
+            resolved_slot: progress.resolved_start_slot,
+            resolved_block_time: None,
+            adjustment_kind: parse_boundary_adjustment_kind(&progress.start_slot_adjustment_kind),
+            adjustment_distance: progress.start_slot_adjustment_distance,
+        },
+        end: SlotBoundaryResolution {
+            requested_slot_raw: progress.requested_end_slot_raw,
+            resolved_slot: progress.resolved_end_slot,
+            resolved_block_time: None,
+            adjustment_kind: parse_boundary_adjustment_kind(&progress.end_slot_adjustment_kind),
+            adjustment_distance: progress.end_slot_adjustment_distance,
+        },
+        boundary_resolution_verdict: parse_boundary_resolution_verdict(
+            &progress.boundary_resolution_verdict,
+        ),
+        requested_interval_fully_bracketed_after_adjustment: progress
+            .requested_interval_fully_bracketed_after_adjustment,
+        requested_interval_partially_bracketed_after_adjustment: progress
+            .requested_interval_partially_bracketed_after_adjustment,
+        boundary_missing_segments: progress
+            .missing_segments
+            .iter()
+            .filter(|segment| {
+                segment.reason
+                    == "requested_window_prefix_uncovered_after_start_slot_adjustment"
+                    || segment.reason
+                        == "requested_window_suffix_uncovered_after_end_slot_adjustment"
+            })
+            .cloned()
+            .collect(),
+    })
 }
 
 fn gap_fill_program_ids(config: &copybot_config::AppConfig) -> ProgramIdConfig {
@@ -1131,14 +1341,12 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
     let resolve_slot_bounds_started_at = Instant::now();
     let (bounds, resolved_bounds_reused_from_progress) =
         if let Some(progress) = preflight_progress.as_ref() {
-            match (progress.resolved_start_slot, progress.resolved_end_slot) {
-                (Some(start_slot), Some(end_slot)) => (
-                    ResolvedSlotBounds {
-                        start_slot,
-                        end_slot,
-                    },
-                    true,
-                ),
+            match bounds_from_progress(progress) {
+                Some(bounds)
+                    if bounds.usable_slot_range().is_some() =>
+                {
+                    (bounds, true)
+                }
                 _ => (
                     resolve_slot_bounds(
                         source,
@@ -1170,11 +1378,88 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
     if bounds_progress_reset_reason.is_some() {
         progress_reset_reason = bounds_progress_reset_reason;
     }
-    let slot_span = bounds
-        .end_slot
-        .saturating_sub(bounds.start_slot)
-        .saturating_add(1);
-    let scan_plan = build_scan_plan(bounds.clone(), settings);
+    let (start_slot, end_slot) = match bounds.usable_slot_range() {
+        Some(range) => range,
+        None => {
+            return Ok(FetchResult {
+                requested_start_slot_raw: bounds.requested_start_slot_raw(),
+                requested_end_slot_raw: bounds.requested_end_slot_raw(),
+                resolved_start_slot: bounds.start_slot(),
+                resolved_end_slot: bounds.end_slot(),
+                start_slot_adjustment_kind: bounds.start.adjustment_kind.as_str().to_string(),
+                end_slot_adjustment_kind: bounds.end.adjustment_kind.as_str().to_string(),
+                start_slot_adjustment_distance: bounds.start.adjustment_distance,
+                end_slot_adjustment_distance: bounds.end.adjustment_distance,
+                boundary_resolution_verdict: bounds.boundary_resolution_verdict.as_str().to_string(),
+                requested_interval_fully_bracketed_after_adjustment: bounds
+                    .requested_interval_fully_bracketed_after_adjustment,
+                requested_interval_partially_bracketed_after_adjustment: bounds
+                    .requested_interval_partially_bracketed_after_adjustment,
+                slot_span: None,
+                boundary_missing_segments: bounds.boundary_missing_segments.clone(),
+                resolved_bounds_reused_from_progress,
+                coverage_method: "unresolved".to_string(),
+                block_fetch_encoding: "json".to_string(),
+                scan_budget_slots: settings.max_slots_to_scan,
+                budget_exhausted: false,
+                phase_b_like_cost_budget_exhausted: false,
+                sampling_segments: settings.sampling_segments,
+                sampling_window_slots: 0,
+                block_batch_size: settings.block_batch_size,
+                block_fetch_concurrency: settings.block_fetch_concurrency,
+                max_slot_batches_per_attempt: settings.max_slot_batches_per_attempt,
+                max_blocks_to_fetch: settings.max_blocks_to_fetch,
+                max_candidate_transactions_to_parse: settings.max_candidate_transactions_to_parse,
+                max_requests_per_second,
+                retry_429_max_attempts,
+                retry_429_backoff_ms,
+                current_phase: "source_contract_failed".to_string(),
+                dominant_phase: "source_contract_failed".to_string(),
+                resolve_slot_bounds_ms,
+                attempt_number: 1,
+                cumulative_across_attempts: false,
+                attempt_frontier_start_slot: None,
+                attempt_frontier_end_slot: None,
+                attempt_frontier_advanced_slots: 0,
+                next_batch_start_slot: None,
+                progress_reset_reason,
+                attempt_budget_exhausted: false,
+                attempt_block_list_ms: 0,
+                attempt_block_fetch_ms: 0,
+                attempt_candidate_filter_ms: 0,
+                attempt_swap_parse_ms: 0,
+                attempt_sqlite_stage_ms: 0,
+                attempt_scanned_batches: 0,
+                attempt_scanned_slots: 0,
+                attempt_listed_block_slots: 0,
+                attempt_scanned_blocks: 0,
+                attempt_scanned_transactions: 0,
+                attempt_candidate_program_transactions: 0,
+                attempt_parsed_candidate_transactions: 0,
+                attempt_parsed_candidate_swaps: 0,
+                scanned_batches: 0,
+                scanned_slots: 0,
+                listed_block_slots: 0,
+                scanned_blocks: 0,
+                scanned_transactions: 0,
+                candidate_program_transactions: 0,
+                parsed_candidate_transactions: 0,
+                parsed_candidate_swaps: 0,
+                attempt_inserted_rows: 0,
+                staged_rows: 0,
+                gap_fill_covered_since: None,
+                gap_fill_covered_through_cursor: None,
+                verdict: GapFillVerdict::NonViableSourceContract,
+                reason: format!(
+                    "slot_bounds_unresolved:{}",
+                    bounds.failure_reason()
+                ),
+                early_stop_reason: None,
+            });
+        }
+    };
+    let slot_span = end_slot.saturating_sub(start_slot).saturating_add(1);
+    let scan_plan = build_scan_plan(start_slot, end_slot, settings);
     if scan_plan.budget_exhausted {
         let sampled_scan = scan_slot_windows(
             source,
@@ -1201,9 +1486,21 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
             }
         };
         return Ok(FetchResult {
-            resolved_start_slot: Some(bounds.start_slot),
-            resolved_end_slot: Some(bounds.end_slot),
+            requested_start_slot_raw: bounds.requested_start_slot_raw(),
+            requested_end_slot_raw: bounds.requested_end_slot_raw(),
+            resolved_start_slot: Some(start_slot),
+            resolved_end_slot: Some(end_slot),
+            start_slot_adjustment_kind: bounds.start.adjustment_kind.as_str().to_string(),
+            end_slot_adjustment_kind: bounds.end.adjustment_kind.as_str().to_string(),
+            start_slot_adjustment_distance: bounds.start.adjustment_distance,
+            end_slot_adjustment_distance: bounds.end.adjustment_distance,
+            boundary_resolution_verdict: bounds.boundary_resolution_verdict.as_str().to_string(),
+            requested_interval_fully_bracketed_after_adjustment: bounds
+                .requested_interval_fully_bracketed_after_adjustment,
+            requested_interval_partially_bracketed_after_adjustment: bounds
+                .requested_interval_partially_bracketed_after_adjustment,
             slot_span: Some(slot_span),
+            boundary_missing_segments: bounds.boundary_missing_segments.clone(),
             resolved_bounds_reused_from_progress,
             coverage_method: scan_plan.coverage_method.to_string(),
             block_fetch_encoding: "json".to_string(),
@@ -1232,13 +1529,13 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
             resolve_slot_bounds_ms,
             attempt_number: 1,
             cumulative_across_attempts: false,
-            attempt_frontier_start_slot: Some(bounds.start_slot),
+            attempt_frontier_start_slot: Some(start_slot),
             attempt_frontier_end_slot: summary.frontier_end_slot,
             attempt_frontier_advanced_slots: summary
                 .frontier_end_slot
                 .and_then(|end_slot| {
                     end_slot
-                        .checked_sub(bounds.start_slot)
+                        .checked_sub(start_slot)
                         .map(|delta| delta as usize + 1)
                 })
                 .unwrap_or(0),
@@ -1282,9 +1579,9 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
     let frontier_start_slot = resume_progress
         .as_ref()
         .and_then(|output| output.next_batch_start_slot)
-        .unwrap_or(bounds.start_slot);
+        .unwrap_or(start_slot);
 
-    let attempt = if frontier_start_slot > bounds.end_slot {
+    let attempt = if frontier_start_slot > end_slot {
         AttemptScanResult {
             summary: ScanSummary::default(),
             next_slot_to_scan: None,
@@ -1298,7 +1595,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
             plan.requested_window_start,
             plan.requested_window_end,
             frontier_start_slot,
-            bounds.end_slot,
+            end_slot,
             settings,
         )?
     };
@@ -1381,7 +1678,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
                     Some(
                         attempt
                             .next_slot_to_scan
-                            .unwrap_or(frontier_start_slot.min(bounds.end_slot)),
+                            .unwrap_or(frontier_start_slot.min(end_slot)),
                     ),
                 ),
                 SourceErrorKind::SourceContractFailure => (
@@ -1394,7 +1691,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
                     Some(
                         attempt
                             .next_slot_to_scan
-                            .unwrap_or(frontier_start_slot.min(bounds.end_slot)),
+                            .unwrap_or(frontier_start_slot.min(end_slot)),
                     ),
                 ),
             }
@@ -1406,7 +1703,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
                 Some(
                     attempt
                         .next_slot_to_scan
-                        .unwrap_or(frontier_start_slot.min(bounds.end_slot)),
+                        .unwrap_or(frontier_start_slot.min(end_slot)),
                 ),
             )
         } else if attempt.attempt_budget_exhausted {
@@ -1417,7 +1714,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
                 Some(
                     attempt
                         .next_slot_to_scan
-                        .unwrap_or(frontier_start_slot.min(bounds.end_slot)),
+                        .unwrap_or(frontier_start_slot.min(end_slot)),
                 ),
             )
         } else {
@@ -1426,7 +1723,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
             (
                 verdict,
                 reason,
-                if frontier_start_slot > bounds.end_slot {
+                if frontier_start_slot > end_slot {
                     "publishing_output".to_string()
                 } else {
                     "completed".to_string()
@@ -1453,9 +1750,21 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
     );
 
     Ok(FetchResult {
-        resolved_start_slot: Some(bounds.start_slot),
-        resolved_end_slot: Some(bounds.end_slot),
+        requested_start_slot_raw: bounds.requested_start_slot_raw(),
+        requested_end_slot_raw: bounds.requested_end_slot_raw(),
+        resolved_start_slot: Some(start_slot),
+        resolved_end_slot: Some(end_slot),
+        start_slot_adjustment_kind: bounds.start.adjustment_kind.as_str().to_string(),
+        end_slot_adjustment_kind: bounds.end.adjustment_kind.as_str().to_string(),
+        start_slot_adjustment_distance: bounds.start.adjustment_distance,
+        end_slot_adjustment_distance: bounds.end.adjustment_distance,
+        boundary_resolution_verdict: bounds.boundary_resolution_verdict.as_str().to_string(),
+        requested_interval_fully_bracketed_after_adjustment: bounds
+            .requested_interval_fully_bracketed_after_adjustment,
+        requested_interval_partially_bracketed_after_adjustment: bounds
+            .requested_interval_partially_bracketed_after_adjustment,
         slot_span: Some(slot_span),
+        boundary_missing_segments: bounds.boundary_missing_segments.clone(),
         resolved_bounds_reused_from_progress,
         coverage_method: scan_plan.coverage_method.to_string(),
         block_fetch_encoding: "json".to_string(),
@@ -1477,7 +1786,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
         resolve_slot_bounds_ms,
         attempt_number,
         cumulative_across_attempts: attempt_number > 1,
-        attempt_frontier_start_slot: if frontier_start_slot > bounds.end_slot {
+        attempt_frontier_start_slot: if frontier_start_slot > end_slot {
             None
         } else {
             Some(frontier_start_slot)
@@ -1552,12 +1861,9 @@ fn classify_fetch_outcome(
     )
 }
 
-fn build_scan_plan(bounds: ResolvedSlotBounds, settings: ScanSettings) -> ScanPlan {
+fn build_scan_plan(start_slot: u64, end_slot: u64, settings: ScanSettings) -> ScanPlan {
     let scan_budget_slots = settings.max_slots_to_scan.max(1);
-    let slot_span = bounds
-        .end_slot
-        .saturating_sub(bounds.start_slot)
-        .saturating_add(1);
+    let slot_span = end_slot.saturating_sub(start_slot).saturating_add(1);
     if slot_span <= scan_budget_slots as u64 {
         return ScanPlan {
             coverage_method: "program_history_full_slot_scan",
@@ -1566,8 +1872,8 @@ fn build_scan_plan(bounds: ResolvedSlotBounds, settings: ScanSettings) -> ScanPl
             sampling_segments: 0,
             sampling_window_slots: 0,
             windows: vec![SlotScanWindow {
-                start_slot: bounds.start_slot,
-                end_slot: bounds.end_slot,
+                start_slot,
+                end_slot,
             }],
         };
     }
@@ -1582,10 +1888,8 @@ fn build_scan_plan(bounds: ResolvedSlotBounds, settings: ScanSettings) -> ScanPl
         } else {
             max_start_offset.saturating_mul(index as u64) / (segment_count.saturating_sub(1) as u64)
         };
-        let start_slot = bounds.start_slot.saturating_add(offset);
-        let end_slot = bounds
-            .end_slot
-            .min(start_slot.saturating_add(window_slots.saturating_sub(1)));
+        let start_slot = start_slot.saturating_add(offset);
+        let end_slot = end_slot.min(start_slot.saturating_add(window_slots.saturating_sub(1)));
         if windows.last().is_some_and(|window: &SlotScanWindow| {
             window.start_slot == start_slot && window.end_slot == end_slot
         }) {
@@ -1616,36 +1920,44 @@ fn resolve_slot_bounds<S: ProgramHistorySource>(
     let latest_slot = source.latest_finalized_slot()?;
     let (latest_anchor_slot, latest_anchor_time) =
         nearest_slot_with_time(source, latest_slot, probe_slots)?;
-    let start_slot = resolve_slot_for_timestamp(
+    let start_requested_slot_raw = estimate_requested_slot_raw(
         source,
         latest_anchor_slot,
         latest_anchor_time,
         window_start,
         probe_slots,
     )?;
-    let mut end_slot = resolve_slot_for_timestamp(
+    let end_requested_slot_raw = estimate_requested_slot_raw(
         source,
         latest_anchor_slot,
         latest_anchor_time,
         window_end,
         probe_slots,
     )?;
-    if end_slot < start_slot {
-        end_slot = start_slot;
-    }
-    Ok(ResolvedSlotBounds {
-        start_slot,
-        end_slot,
-    })
+    let start = resolve_boundary_slot(
+        source,
+        BoundarySide::Start,
+        window_start,
+        start_requested_slot_raw,
+        probe_slots,
+    )?;
+    let end = resolve_boundary_slot(
+        source,
+        BoundarySide::End,
+        window_end,
+        end_requested_slot_raw,
+        probe_slots,
+    )?;
+    Ok(finalize_resolved_slot_bounds(window_start, window_end, start, end))
 }
 
-fn resolve_slot_for_timestamp<S: ProgramHistorySource>(
+fn estimate_requested_slot_raw<S: ProgramHistorySource>(
     source: &S,
     latest_anchor_slot: u64,
     latest_anchor_time: DateTime<Utc>,
     target: DateTime<Utc>,
     probe_slots: u64,
-) -> Result<u64> {
+) -> Result<Option<u64>> {
     let diff_ms = latest_anchor_time
         .signed_duration_since(target)
         .num_milliseconds() as f64;
@@ -1657,10 +1969,13 @@ fn resolve_slot_for_timestamp<S: ProgramHistorySource>(
     };
 
     for _ in 0..6 {
-        let (anchor_slot, anchor_time) = nearest_slot_with_time(source, guess, probe_slots)?;
+        let (anchor_slot, anchor_time) = match nearest_slot_with_time(source, guess, probe_slots) {
+            Ok(anchor) => anchor,
+            Err(error) if source_error_kind(&error).is_none() => break,
+            Err(error) => return Err(error),
+        };
         let anchor_diff_ms = anchor_time.signed_duration_since(target).num_milliseconds();
         if anchor_diff_ms.abs() <= 30_000 {
-            guess = anchor_slot;
             break;
         }
         let adjust_slots = ((anchor_diff_ms.abs() as f64) / AVG_SLOT_MS)
@@ -1672,27 +1987,178 @@ fn resolve_slot_for_timestamp<S: ProgramHistorySource>(
             anchor_slot.saturating_add(adjust_slots)
         };
     }
+    Ok(Some(guess))
+}
 
-    let lower = guess.saturating_sub(probe_slots);
-    let upper = guess.saturating_add(probe_slots);
-    let mut candidate: Option<(u64, DateTime<Utc>)> = None;
-    for slot in lower..=upper {
-        let Some(block_time) = source.block_time(slot)? else {
-            continue;
-        };
-        if block_time < target {
-            continue;
+fn resolve_boundary_slot<S: ProgramHistorySource>(
+    source: &S,
+    side: BoundarySide,
+    target: DateTime<Utc>,
+    requested_slot_raw: Option<u64>,
+    probe_slots: u64,
+) -> Result<SlotBoundaryResolution> {
+    let Some(raw_slot) = requested_slot_raw else {
+        return Ok(SlotBoundaryResolution::unresolved(None));
+    };
+
+    if let Some(block_time) = source.block_time(raw_slot)? {
+        return Ok(SlotBoundaryResolution {
+            requested_slot_raw: Some(raw_slot),
+            resolved_slot: Some(raw_slot),
+            resolved_block_time: Some(block_time),
+            adjustment_kind: BoundaryAdjustmentKind::Exact,
+            adjustment_distance: Some(0),
+        });
+    }
+
+    let mut previous: Option<(u64, DateTime<Utc>, u64)> = None;
+    let mut next: Option<(u64, DateTime<Utc>, u64)> = None;
+    for distance in 1..=probe_slots {
+        if previous.is_none() {
+            let slot = raw_slot.saturating_sub(distance);
+            if let Some(block_time) = source.block_time(slot)? {
+                previous = Some((slot, block_time, distance));
+            }
         }
-        match candidate {
-            Some((best_slot, best_time))
-                if block_time > best_time
-                    || (block_time == best_time && slot.cmp(&best_slot) == Ordering::Greater) => {}
-            _ => candidate = Some((slot, block_time)),
+        if next.is_none() {
+            let slot = raw_slot.saturating_add(distance);
+            if let Some(block_time) = source.block_time(slot)? {
+                next = Some((slot, block_time, distance));
+            }
+        }
+        if previous.is_some() && next.is_some() {
+            break;
         }
     }
-    candidate
-        .map(|(slot, _)| slot)
-        .ok_or_else(|| anyhow!("unable to resolve slot for {}", target.to_rfc3339()))
+
+    let candidate = match side {
+        BoundarySide::Start => previous
+            .filter(|(_, block_time, _)| *block_time <= target)
+            .map(|(slot, block_time, distance)| {
+                (
+                    slot,
+                    block_time,
+                    BoundaryAdjustmentKind::RewoundToPreviousAvailable,
+                    distance,
+                )
+            })
+            .or_else(|| {
+                next.map(|(slot, block_time, distance)| {
+                    (
+                        slot,
+                        block_time,
+                        BoundaryAdjustmentKind::AdvancedToNextAvailable,
+                        distance,
+                    )
+                })
+            })
+            .or_else(|| {
+                previous.map(|(slot, block_time, distance)| {
+                    (
+                        slot,
+                        block_time,
+                        BoundaryAdjustmentKind::RewoundToPreviousAvailable,
+                        distance,
+                    )
+                })
+            }),
+        BoundarySide::End => next
+            .filter(|(_, block_time, _)| *block_time >= target)
+            .map(|(slot, block_time, distance)| {
+                (
+                    slot,
+                    block_time,
+                    BoundaryAdjustmentKind::AdvancedToNextAvailable,
+                    distance,
+                )
+            })
+            .or_else(|| {
+                previous.map(|(slot, block_time, distance)| {
+                    (
+                        slot,
+                        block_time,
+                        BoundaryAdjustmentKind::RewoundToPreviousAvailable,
+                        distance,
+                    )
+                })
+            })
+            .or_else(|| {
+                next.map(|(slot, block_time, distance)| {
+                    (
+                        slot,
+                        block_time,
+                        BoundaryAdjustmentKind::AdvancedToNextAvailable,
+                        distance,
+                    )
+                })
+            }),
+    };
+
+    Ok(match candidate {
+        Some((slot, block_time, adjustment_kind, distance)) => SlotBoundaryResolution {
+            requested_slot_raw: Some(raw_slot),
+            resolved_slot: Some(slot),
+            resolved_block_time: Some(block_time),
+            adjustment_kind,
+            adjustment_distance: Some(distance),
+        },
+        None => SlotBoundaryResolution::unresolved(Some(raw_slot)),
+    })
+}
+
+fn finalize_resolved_slot_bounds(
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+    start: SlotBoundaryResolution,
+    end: SlotBoundaryResolution,
+) -> ResolvedSlotBounds {
+    let mut boundary_missing_segments = Vec::new();
+    let (boundary_resolution_verdict, fully_bracketed, partially_bracketed) =
+        match (
+            start.resolved_slot,
+            start.resolved_block_time,
+            end.resolved_slot,
+            end.resolved_block_time,
+        ) {
+            (Some(start_slot), Some(start_ts), Some(end_slot), Some(end_ts)) if end_slot >= start_slot => {
+                if start_ts > window_start {
+                    boundary_missing_segments.push(GapFillMissingSegment {
+                        start: window_start,
+                        end: start_ts.min(window_end),
+                        reason: "requested_window_prefix_uncovered_after_start_slot_adjustment"
+                            .to_string(),
+                    });
+                }
+                if end_ts < window_end {
+                    boundary_missing_segments.push(GapFillMissingSegment {
+                        start: end_ts.max(window_start),
+                        end: window_end,
+                        reason: "requested_window_suffix_uncovered_after_end_slot_adjustment"
+                            .to_string(),
+                    });
+                }
+                let fully_bracketed = boundary_missing_segments.is_empty();
+                (
+                    if fully_bracketed {
+                        BoundaryResolutionVerdict::FullyBracketed
+                    } else {
+                        BoundaryResolutionVerdict::PartiallyBracketed
+                    },
+                    fully_bracketed,
+                    !fully_bracketed,
+                )
+            }
+            _ => (BoundaryResolutionVerdict::Unresolved, false, false),
+        };
+
+    ResolvedSlotBounds {
+        start,
+        end,
+        boundary_resolution_verdict,
+        requested_interval_fully_bracketed_after_adjustment: fully_bracketed,
+        requested_interval_partially_bracketed_after_adjustment: partially_bracketed,
+        boundary_missing_segments,
+    }
 }
 
 fn nearest_slot_with_time<S: ProgramHistorySource>(
@@ -2077,11 +2543,13 @@ fn write_gap_fill_output<S: ProgramHistorySource>(
         &gap_fill_state,
     );
     if !replayable_output {
-        missing_segments = vec![GapFillMissingSegment {
+        let mut explicit_segments = fetch.boundary_missing_segments.clone();
+        explicit_segments.push(GapFillMissingSegment {
             start: plan.requested_window_start,
             end: plan.requested_window_end,
             reason: fetch.reason.clone(),
-        }];
+        });
+        missing_segments = explicit_segments;
     }
     let source_lag_seconds = missing_segments.first().map(|segment| {
         segment
@@ -2147,8 +2615,19 @@ fn write_gap_fill_output<S: ProgramHistorySource>(
         journal_covers_artifact_cursor: plan.journal_covers_artifact_cursor,
         journal_covered_since: plan.journal_covered_since,
         journal_covered_through_cursor: plan.journal_covered_through_cursor.clone(),
+        requested_start_slot_raw: fetch.requested_start_slot_raw,
+        requested_end_slot_raw: fetch.requested_end_slot_raw,
         resolved_start_slot: fetch.resolved_start_slot,
         resolved_end_slot: fetch.resolved_end_slot,
+        start_slot_adjustment_kind: fetch.start_slot_adjustment_kind,
+        end_slot_adjustment_kind: fetch.end_slot_adjustment_kind,
+        start_slot_adjustment_distance: fetch.start_slot_adjustment_distance,
+        end_slot_adjustment_distance: fetch.end_slot_adjustment_distance,
+        boundary_resolution_verdict: fetch.boundary_resolution_verdict,
+        requested_interval_fully_bracketed_after_adjustment: fetch
+            .requested_interval_fully_bracketed_after_adjustment,
+        requested_interval_partially_bracketed_after_adjustment: fetch
+            .requested_interval_partially_bracketed_after_adjustment,
         slot_span: fetch.slot_span,
         resolved_bounds_reused_from_progress: fetch.resolved_bounds_reused_from_progress,
         coverage_method: fetch.coverage_method,
@@ -2310,6 +2789,20 @@ fn render_human(output: &ProgramHistoryGapFillOutput) -> String {
             output.requested_window_end.to_rfc3339()
         ),
         format!(
+            "requested_start_slot_raw={}",
+            output
+                .requested_start_slot_raw
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "requested_end_slot_raw={}",
+            output
+                .requested_end_slot_raw
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
             "resolved_start_slot={}",
             output
                 .resolved_start_slot
@@ -2322,6 +2815,40 @@ fn render_human(output: &ProgramHistoryGapFillOutput) -> String {
                 .resolved_end_slot
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "start_slot_adjustment_kind={}",
+            output.start_slot_adjustment_kind
+        ),
+        format!(
+            "end_slot_adjustment_kind={}",
+            output.end_slot_adjustment_kind
+        ),
+        format!(
+            "start_slot_adjustment_distance={}",
+            output
+                .start_slot_adjustment_distance
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "end_slot_adjustment_distance={}",
+            output
+                .end_slot_adjustment_distance
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string())
+        ),
+        format!(
+            "boundary_resolution_verdict={}",
+            output.boundary_resolution_verdict
+        ),
+        format!(
+            "requested_interval_fully_bracketed_after_adjustment={}",
+            output.requested_interval_fully_bracketed_after_adjustment
+        ),
+        format!(
+            "requested_interval_partially_bracketed_after_adjustment={}",
+            output.requested_interval_partially_bracketed_after_adjustment
         ),
         format!(
             "slot_span={}",
@@ -2518,6 +3045,11 @@ fn throttle_response_message(status_code: u16, body: &str) -> Option<String> {
     None
 }
 
+fn is_missing_block_time_rpc_error(error: &str) -> bool {
+    let lowered = error.to_ascii_lowercase();
+    lowered.contains("was skipped") || lowered.contains("ledger jump to recent snapshot")
+}
+
 fn maybe_sleep_with_pacer<F>(pacer: &Mutex<RequestPacer>, mut sleep_fn: F)
 where
     F: FnMut(StdDuration),
@@ -2628,6 +3160,48 @@ fn post_json_rpc(source: &QuickNodeBlocksRpcSource, payload: &Value) -> Result<V
         },
         sleep,
     )
+}
+
+fn post_json_rpc_allow_missing_block_time(
+    source: &QuickNodeBlocksRpcSource,
+    payload: &Value,
+) -> Result<Option<Value>> {
+    let response = execute_json_rpc_with_policy(
+        &source.request_pacer,
+        &source.request_policy,
+        || {
+            let response = source
+                .client
+                .post(&source.http_url)
+                .json(payload)
+                .send()
+                .map_err(|error| {
+                    anyhow!(SourceError::source_contract_failure(format!(
+                        "failed rpc request to {}: {error}",
+                        source.http_url
+                    )))
+                })?;
+            let status_code = response.status().as_u16();
+            let body = response.text().map_err(|error| {
+                anyhow!(SourceError::source_contract_failure(format!(
+                    "failed reading rpc response body: {error}"
+                )))
+            })?;
+            Ok(HttpRpcResponse { status_code, body })
+        },
+        sleep,
+    );
+    match response {
+        Ok(parsed) => Ok(Some(parsed)),
+        Err(error) if source_error_kind(&error) == Some(SourceErrorKind::SourceContractFailure) => {
+            if is_missing_block_time_rpc_error(&error.to_string()) {
+                Ok(None)
+            } else {
+                Err(error)
+            }
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn rpc_result(response: &Value) -> &Value {
@@ -3422,6 +3996,58 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn skipped_start_boundary_partial_bracket_is_reported_consistently_stage1() -> Result<()> {
+        let base = parse_ts("2026-03-24T00:00:00Z")?;
+        let window_start = boundary_slot_time(base, 100);
+        let window_end = boundary_slot_time(base, 110);
+        let source = boundary_source(
+            base,
+            120,
+            (101..=120).collect(),
+        );
+        let bounds = resolve_slot_bounds(&source, window_start, window_end, 4)?;
+        assert_eq!(bounds.requested_start_slot_raw(), Some(100));
+        assert_eq!(bounds.requested_end_slot_raw(), Some(110));
+        assert_eq!(bounds.start_slot(), Some(101));
+        assert_eq!(bounds.end_slot(), Some(110));
+        assert_eq!(
+            bounds.start.adjustment_kind,
+            BoundaryAdjustmentKind::AdvancedToNextAvailable
+        );
+        assert_eq!(bounds.end.adjustment_kind, BoundaryAdjustmentKind::Exact);
+        assert_eq!(
+            bounds.boundary_resolution_verdict,
+            BoundaryResolutionVerdict::PartiallyBracketed
+        );
+        assert!(bounds.requested_interval_partially_bracketed_after_adjustment);
+        assert!(bounds
+            .boundary_missing_segments
+            .iter()
+            .any(|segment| segment.reason
+                == "requested_window_prefix_uncovered_after_start_slot_adjustment"));
+        Ok(())
+    }
+
+    #[test]
+    fn unresolved_boundaries_fail_explicitly_stage1() -> Result<()> {
+        let base = parse_ts("2026-03-24T00:00:00Z")?;
+        let window_start = boundary_slot_time(base, 100);
+        let window_end = boundary_slot_time(base, 110);
+        let source = boundary_source(base, 120, vec![80, 120]);
+        let bounds = resolve_slot_bounds(&source, window_start, window_end, 2)?;
+        assert_eq!(
+            bounds.boundary_resolution_verdict,
+            BoundaryResolutionVerdict::Unresolved
+        );
+        assert!(bounds.usable_slot_range().is_none());
+        assert_eq!(
+            bounds.failure_reason(),
+            "slot_boundaries_unresolved_within_search_radius"
+        );
+        Ok(())
+    }
+
     fn gap_fill_config(
         fixture: &Fixture,
         window_start: Option<DateTime<Utc>>,
@@ -3751,5 +4377,21 @@ mod tests {
 
     fn parse_ts(raw: &str) -> Result<DateTime<Utc>> {
         Ok(DateTime::parse_from_rfc3339(raw)?.with_timezone(&Utc))
+    }
+
+    fn boundary_slot_time(base: DateTime<Utc>, slot: u64) -> DateTime<Utc> {
+        base + Duration::milliseconds(slot as i64 * 400)
+    }
+
+    fn boundary_source(
+        base: DateTime<Utc>,
+        latest_slot: u64,
+        available_slots: Vec<u64>,
+    ) -> FakeProgramHistorySource {
+        let mut source = FakeProgramHistorySource::default().with_latest_slot(latest_slot);
+        for slot in available_slots {
+            source = source.with_block_time(slot, boundary_slot_time(base, slot));
+        }
+        source
     }
 }
