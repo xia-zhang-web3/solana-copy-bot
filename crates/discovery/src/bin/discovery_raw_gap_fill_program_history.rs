@@ -220,6 +220,7 @@ enum GapFillVerdict {
     NotProvenDueToScanBudget,
     NotProvenDueToCostBudget,
     NotProvenDueToProviderThrottling,
+    NotProvenDueToRetryableProviderFailure,
     NonViableSourceContract,
 }
 
@@ -234,6 +235,9 @@ impl GapFillVerdict {
             Self::NotProvenDueToScanBudget => "not_proven_due_to_scan_budget",
             Self::NotProvenDueToCostBudget => "not_proven_due_to_cost_budget",
             Self::NotProvenDueToProviderThrottling => "not_proven_due_to_provider_throttling",
+            Self::NotProvenDueToRetryableProviderFailure => {
+                "not_proven_due_to_retryable_provider_failure"
+            }
             Self::NonViableSourceContract => "non_viable_source_contract",
         }
     }
@@ -514,6 +518,7 @@ struct ScanSummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SourceErrorKind {
     ProviderThrottled,
+    RetryableProviderFailure,
     SourceContractFailure,
 }
 
@@ -534,6 +539,13 @@ impl SourceError {
     fn source_contract_failure(message: impl Into<String>) -> Self {
         Self {
             kind: SourceErrorKind::SourceContractFailure,
+            message: message.into(),
+        }
+    }
+
+    fn retryable_provider_failure(message: impl Into<String>) -> Self {
+        Self {
+            kind: SourceErrorKind::RetryableProviderFailure,
             message: message.into(),
         }
     }
@@ -723,7 +735,18 @@ impl ProgramHistorySource for QuickNodeBlocksRpcSource {
                 }
             ],
         });
-        let response = post_json_rpc(self, &payload)?;
+        let response = match post_json_rpc(self, &payload) {
+            Ok(response) => response,
+            Err(error) => {
+                if let Some(reason_code) = retryable_block_fetch_reason_code(&error.to_string()) {
+                    return Err(SourceError::retryable_provider_failure(format!(
+                        "{reason_code}: {error}"
+                    ))
+                    .into());
+                }
+                return Err(error);
+            }
+        };
         match response.get("result") {
             Some(value) if !value.is_null() => Ok(Some(value.clone())),
             _ => Ok(None),
@@ -1674,6 +1697,16 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
                         "program_history_gap_fill_provider_throttled:{}",
                         source_error
                     ),
+                    "awaiting_next_attempt".to_string(),
+                    Some(
+                        attempt
+                            .next_slot_to_scan
+                            .unwrap_or(frontier_start_slot.min(end_slot)),
+                    ),
+                ),
+                SourceErrorKind::RetryableProviderFailure => (
+                    GapFillVerdict::NotProvenDueToRetryableProviderFailure,
+                    source_error.message.clone(),
                     "awaiting_next_attempt".to_string(),
                     Some(
                         attempt
@@ -2745,11 +2778,25 @@ fn classify_source_error(context: &str, error: &anyhow::Error) -> (GapFillVerdic
             GapFillVerdict::NotProvenDueToProviderThrottling,
             format!("{context}:{error}"),
         ),
+        Some(SourceErrorKind::RetryableProviderFailure) => (
+            GapFillVerdict::NotProvenDueToRetryableProviderFailure,
+            format!("{context}:{error}"),
+        ),
         _ => (
             GapFillVerdict::NonViableSourceContract,
             format!("{context}:{error}"),
         ),
     }
+}
+
+fn retryable_block_fetch_reason_code(message: &str) -> Option<&'static str> {
+    if message.contains("rpc returned http status 503") {
+        return Some("program_history_gap_fill_retryable_block_fetch_http_503");
+    }
+    if message.contains("failed reading rpc response body") {
+        return Some("program_history_gap_fill_retryable_block_fetch_body_decode_failure");
+    }
+    None
 }
 
 fn source_error_kind(error: &anyhow::Error) -> Option<SourceErrorKind> {
@@ -3211,6 +3258,7 @@ fn rpc_result(response: &Value) -> &Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::sync::{
         atomic::{AtomicUsize, Ordering as AtomicOrdering},
         Mutex,
@@ -3228,6 +3276,7 @@ mod tests {
         block_times: HashMap<u64, DateTime<Utc>>,
         block_ranges: HashMap<(u64, u64), Vec<u64>>,
         blocks: HashMap<u64, Value>,
+        get_block_failures: Mutex<HashMap<u64, VecDeque<SourceError>>>,
         get_block_delay: StdDuration,
         current_get_block_in_flight: AtomicUsize,
         max_get_block_in_flight: AtomicUsize,
@@ -3252,6 +3301,16 @@ mod tests {
 
         fn with_block(mut self, slot: u64, block: Value) -> Self {
             self.blocks.insert(slot, block);
+            self
+        }
+
+        fn with_get_block_failure_once(mut self, slot: u64, error: SourceError) -> Self {
+            self.get_block_failures
+                .get_mut()
+                .expect("get_block_failures poisoned")
+                .entry(slot)
+                .or_default()
+                .push_back(error);
             self
         }
 
@@ -3333,10 +3392,24 @@ mod tests {
             if !self.get_block_delay.is_zero() {
                 sleep(self.get_block_delay);
             }
-            let result = self.blocks.get(&slot).cloned();
+            let queued_failure = {
+                let mut failures = self
+                    .get_block_failures
+                    .lock()
+                    .expect("get_block_failures poisoned");
+                let error = failures.get_mut(&slot).and_then(|queued| queued.pop_front());
+                if failures.get(&slot).is_some_and(|queued| queued.is_empty()) {
+                    failures.remove(&slot);
+                }
+                error
+            };
+            let result = match queued_failure {
+                Some(error) => Err(anyhow!(error)),
+                None => Ok(self.blocks.get(&slot).cloned()),
+            };
             self.current_get_block_in_flight
                 .fetch_sub(1, AtomicOrdering::SeqCst);
-            Ok(result)
+            result
         }
     }
 
@@ -3358,6 +3431,26 @@ mod tests {
         assert!(error
             .to_string()
             .contains("unknown argument: --legacy-db-path"));
+    }
+
+    #[test]
+    fn retryable_block_fetch_reason_code_classifies_only_transient_patterns_stage1() {
+        assert_eq!(
+            retryable_block_fetch_reason_code("rpc returned http status 503: upstream unavailable"),
+            Some("program_history_gap_fill_retryable_block_fetch_http_503")
+        );
+        assert_eq!(
+            retryable_block_fetch_reason_code(
+                "failed reading rpc response body: error decoding response body"
+            ),
+            Some("program_history_gap_fill_retryable_block_fetch_body_decode_failure")
+        );
+        assert_eq!(
+            retryable_block_fetch_reason_code(
+                "failed parsing rpc response json: expected value at line 1 column 1"
+            ),
+            None
+        );
     }
 
     #[test]
@@ -3819,6 +3912,191 @@ mod tests {
         assert_eq!(output.block_fetch_concurrency, 4);
         assert_eq!(output.attempt_scanned_blocks, 4);
         assert!(source.max_get_block_in_flight() >= 2);
+        Ok(())
+    }
+
+    #[test]
+    fn retryable_block_fetch_http_503_mid_attempt_stays_resumable_stage1() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-retryable-503")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let output_path = fixture
+            .temp
+            .path()
+            .join("program-gap-fill-retryable-503.sqlite");
+        let source = resumable_source(window_start, window_end).with_get_block_failure_once(
+            1_105,
+            SourceError::retryable_provider_failure(
+                "program_history_gap_fill_retryable_block_fetch_http_503: rpc returned http status 503",
+            ),
+        );
+
+        let output = run_output_with_source(
+            Config {
+                output_path: Some(output_path),
+                window_start: Some(window_start),
+                window_end: Some(window_end),
+                max_slot_batches_per_attempt_override: Some(3),
+                now,
+                ..gap_fill_config(&fixture, Some(window_start), Some(window_end))
+            },
+            &source,
+        )?;
+
+        assert_eq!(
+            output.verdict,
+            "not_proven_due_to_retryable_provider_failure"
+        );
+        assert_eq!(output.current_phase, "awaiting_next_attempt");
+        assert_eq!(output.next_batch_start_slot, Some(1_105));
+        assert_eq!(output.attempt_frontier_end_slot, Some(1_104));
+        assert!(output.attempt_frontier_advanced_slots > 0);
+        assert_eq!(output.attempt_inserted_rows, 1);
+        assert_eq!(output.staged_rows, 1);
+        assert!(!output.replayable_output);
+        assert_eq!(
+            output.reason,
+            "program_history_gap_fill_retryable_block_fetch_http_503: rpc returned http status 503"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retryable_block_fetch_body_decode_failure_mid_attempt_stays_resumable_stage1(
+    ) -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-retryable-body")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let output_path = fixture
+            .temp
+            .path()
+            .join("program-gap-fill-retryable-body.sqlite");
+        let source = resumable_source(window_start, window_end).with_get_block_failure_once(
+            1_105,
+            SourceError::retryable_provider_failure(
+                "program_history_gap_fill_retryable_block_fetch_body_decode_failure: failed reading rpc response body: error decoding response body",
+            ),
+        );
+
+        let output = run_output_with_source(
+            Config {
+                output_path: Some(output_path),
+                window_start: Some(window_start),
+                window_end: Some(window_end),
+                max_slot_batches_per_attempt_override: Some(3),
+                now,
+                ..gap_fill_config(&fixture, Some(window_start), Some(window_end))
+            },
+            &source,
+        )?;
+
+        assert_eq!(
+            output.verdict,
+            "not_proven_due_to_retryable_provider_failure"
+        );
+        assert_eq!(output.current_phase, "awaiting_next_attempt");
+        assert_eq!(output.next_batch_start_slot, Some(1_105));
+        assert!(output.attempt_frontier_advanced_slots > 0);
+        assert_eq!(output.attempt_inserted_rows, 1);
+        assert_eq!(output.staged_rows, 1);
+        assert!(!output.replayable_output);
+        assert!(output
+            .reason
+            .contains("program_history_gap_fill_retryable_block_fetch_body_decode_failure"));
+        Ok(())
+    }
+
+    #[test]
+    fn deterministic_block_fetch_source_contract_failure_stays_terminal_stage1() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-terminal-block-fetch")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let output_path = fixture
+            .temp
+            .path()
+            .join("program-gap-fill-terminal-block-fetch.sqlite");
+        let source = resumable_source(window_start, window_end).with_get_block_failure_once(
+            1_105,
+            SourceError::source_contract_failure(
+                "rpc returned http status 500: malformed upstream contract",
+            ),
+        );
+
+        let output = run_output_with_source(
+            Config {
+                output_path: Some(output_path),
+                window_start: Some(window_start),
+                window_end: Some(window_end),
+                max_slot_batches_per_attempt_override: Some(3),
+                now,
+                ..gap_fill_config(&fixture, Some(window_start), Some(window_end))
+            },
+            &source,
+        )?;
+
+        assert_eq!(output.verdict, "non_viable_source_contract");
+        assert_eq!(output.current_phase, "source_contract_failed");
+        assert_eq!(output.next_batch_start_slot, Some(1_105));
+        assert_eq!(
+            output.reason,
+            "program_history_gap_fill_source_contract_failed:rpc returned http status 500: malformed upstream contract"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retryable_block_fetch_failure_rerun_reuses_progress_and_continues_stage1() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-retryable-resume")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let output_path = fixture
+            .temp
+            .path()
+            .join("program-gap-fill-retryable-resume.sqlite");
+        let source = resumable_source(window_start, window_end).with_get_block_failure_once(
+            1_105,
+            SourceError::retryable_provider_failure(
+                "program_history_gap_fill_retryable_block_fetch_http_503: rpc returned http status 503",
+            ),
+        );
+
+        let base_config = Config {
+            output_path: Some(output_path),
+            window_start: Some(window_start),
+            window_end: Some(window_end),
+            max_slot_batches_per_attempt_override: Some(3),
+            now,
+            ..gap_fill_config(&fixture, Some(window_start), Some(window_end))
+        };
+
+        let first = run_output_with_source(base_config.clone(), &source)?;
+        assert_eq!(
+            first.verdict,
+            "not_proven_due_to_retryable_provider_failure"
+        );
+        assert_eq!(first.next_batch_start_slot, Some(1_105));
+        assert!(!first.resolved_bounds_reused_from_progress);
+
+        let second = run_output_with_source(base_config, &source)?;
+        assert_eq!(second.attempt_number, 2);
+        assert!(second.cumulative_across_attempts);
+        assert!(second.resolved_bounds_reused_from_progress);
+        assert_eq!(second.attempt_frontier_start_slot, Some(1_105));
+        assert!(second.replayable_output);
+        assert_eq!(
+            second.verdict,
+            "complete_but_insufficient_for_healthy_restore"
+        );
+        assert_eq!(second.staged_rows, 3);
+        assert_eq!(second.next_batch_start_slot, None);
         Ok(())
     }
 
