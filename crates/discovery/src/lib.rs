@@ -13906,8 +13906,14 @@ impl DiscoveryService {
         let runtime_cursor_before = runtime_store.load_discovery_runtime_cursor()?;
         let runtime_cursor_exists_before = runtime_cursor_before.is_some();
         let journal_store_exists = journal_store.is_some();
-        let runtime_window_complete_before =
-            self.persisted_observed_swaps_cover_window(runtime_store, required_window_start)?;
+        let required_window_ahead_of_runtime_cursor = runtime_cursor_before
+            .as_ref()
+            .is_some_and(|cursor| required_window_start > cursor.ts_utc);
+        let runtime_window_complete_before = if required_window_ahead_of_runtime_cursor {
+            false
+        } else {
+            self.persisted_observed_swaps_cover_window(runtime_store, required_window_start)?
+        };
         let trace_context = DiscoveryPublicationTruthRepairTraceContext::new(
             publication_state_exists_before,
             publication_truth_complete_before,
@@ -13941,6 +13947,24 @@ impl DiscoveryService {
             Self::log_publication_truth_repair_helper_return(&telemetry, Some(&trace_context));
             Ok(telemetry)
         };
+        if let Some(runtime_cursor) = runtime_cursor_before
+            .as_ref()
+            .filter(|cursor| required_window_start > cursor.ts_utc)
+        {
+            return log_and_return(
+                DiscoveryPublicationTruthRepairTelemetry::skipped(
+                    "skipped_recent_raw_journal_required_window_ahead_of_runtime_cursor",
+                    "required_window_start_is_after_runtime_cursor",
+                    required_window_start,
+                    publication_truth_complete_before,
+                    publication_truth_fresh_before,
+                    runtime_window_complete_before,
+                    None,
+                    false,
+                )
+                .with_replay_window_context(None, Some(runtime_cursor.clone())),
+            );
+        }
         if publication_truth_fresh_before {
             return log_and_return(DiscoveryPublicationTruthRepairTelemetry::skipped(
                 "skipped_fresh_publication_truth",
@@ -37997,6 +38021,111 @@ mod tests {
             "raw_window_unusable_no_recent_published_universe"
         );
         assert_eq!(after.updated_at, before.updated_at);
+        Ok(())
+    }
+
+    fn seed_stage1_recent_raw_journal_required_window_ahead_minimal_pre_predicate_fixture(
+    ) -> Result<(
+        tempfile::TempDir,
+        SqliteStore,
+        SqliteStore,
+        DiscoveryService,
+        DateTime<Utc>,
+        DiscoveryRuntimeCursor,
+    )> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let runtime_db_path = temp
+            .path()
+            .join("stage1-publication-repair-window-ahead-minimal-runtime.db");
+        let journal_db_path = temp
+            .path()
+            .join("stage1-publication-repair-window-ahead-minimal-journal.db");
+        let runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-23T08:59:49Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = stage1_runtime_config();
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let required_window_start = now - Duration::days(discovery.runtime_scoring_window_days());
+        let metrics_window_start = discovery.metrics_window_start(now);
+        let runtime_cursor_ts = required_window_start - Duration::hours(16);
+        let runtime_cursor = DiscoveryRuntimeCursor {
+            ts_utc: runtime_cursor_ts,
+            slot: runtime_cursor_ts.timestamp().max(0) as u64,
+            signature: "head-gap-window-ahead-pre-predicate".to_string(),
+        };
+
+        runtime_store.upsert_discovery_runtime_cursor(&runtime_cursor)?;
+        runtime_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::FailClosed,
+            reason: "raw_window_unusable_no_recent_published_universe".to_string(),
+            last_published_at: Some(
+                now - discovery.runtime_published_universe_max_age() - Duration::seconds(1),
+            ),
+            last_published_window_start: Some(metrics_window_start - Duration::hours(1)),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(Vec::new()),
+        })?;
+
+        Ok((
+            temp,
+            runtime_store,
+            journal_store,
+            discovery,
+            now,
+            runtime_cursor,
+        ))
+    }
+
+    #[test]
+    fn repair_recent_raw_journal_required_window_ahead_exits_before_window_or_journal_reads_stage1(
+    ) -> Result<()> {
+        let (_temp, runtime_store, journal_store, discovery, now, runtime_cursor) =
+            seed_stage1_recent_raw_journal_required_window_ahead_minimal_pre_predicate_fixture()?;
+        let required_window_start = now - Duration::days(discovery.runtime_scoring_window_days());
+        assert!(
+            required_window_start > runtime_cursor.ts_utc,
+            "fixture must start with the live horizon-ahead shape"
+        );
+
+        let repair = discovery
+            .repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed(
+                &runtime_store,
+                Some(&journal_store),
+                now,
+                64,
+                Instant::now() + StdDuration::from_secs(1),
+            )?;
+
+        assert_eq!(
+            repair.state,
+            "skipped_recent_raw_journal_required_window_ahead_of_runtime_cursor"
+        );
+        assert_eq!(
+            repair.reason.as_deref(),
+            Some("required_window_start_is_after_runtime_cursor")
+        );
+        assert!(repair.runtime_cursor_exists_before);
+        assert!(repair.journal_store_exists);
+        assert!(!repair.runtime_window_complete_before);
+        assert!(!repair.runtime_window_complete_after);
+        assert!(
+            repair.journal_covered_since.is_none(),
+            "the horizon-ahead exit must not read recent_raw journal state before returning"
+        );
+        assert!(repair.runtime_window_first_cursor.is_none());
+        assert_eq!(repair.replay_batches_completed, 0);
+        assert_eq!(repair.replay_rows_loaded, 0);
+        assert_eq!(repair.replay_rows_inserted, 0);
+        let replay_until_cursor = repair
+            .replay_until_cursor
+            .as_ref()
+            .expect("explicit horizon-ahead telemetry should retain the runtime cursor boundary");
+        assert_eq!(replay_until_cursor.ts_utc, runtime_cursor.ts_utc);
+        assert_eq!(replay_until_cursor.slot, runtime_cursor.slot);
+        assert_eq!(replay_until_cursor.signature, runtime_cursor.signature);
         Ok(())
     }
 
