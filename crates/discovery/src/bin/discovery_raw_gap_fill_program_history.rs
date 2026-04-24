@@ -3339,6 +3339,21 @@ fn retryable_source_contract_http_status_reason_code(status_code: u16) -> Option
     None
 }
 
+fn retryable_source_contract_transport_reason_code(message: &str) -> Option<&'static str> {
+    let lowered = message.to_ascii_lowercase();
+    if lowered.contains("failed rpc request") && lowered.contains("error sending request for url") {
+        return Some("program_history_gap_fill_retryable_source_contract_transport_send_error");
+    }
+    None
+}
+
+fn source_contract_transport_or_contract_failure(message: String) -> SourceError {
+    if let Some(reason_code) = retryable_source_contract_transport_reason_code(&message) {
+        return SourceError::retryable_provider_failure(format!("{reason_code}: {message}"));
+    }
+    SourceError::source_contract_failure(message)
+}
+
 fn is_missing_block_time_rpc_error(error: &str) -> bool {
     let lowered = error.to_ascii_lowercase();
     lowered.contains("was skipped") || lowered.contains("ledger jump to recent snapshot")
@@ -3450,7 +3465,7 @@ fn post_json_rpc(source: &QuickNodeBlocksRpcSource, payload: &Value) -> Result<V
                 .json(payload)
                 .send()
                 .map_err(|error| {
-                    anyhow!(SourceError::source_contract_failure(format!(
+                    anyhow!(source_contract_transport_or_contract_failure(format!(
                         "failed rpc request to {}: {error}",
                         source.http_url
                     )))
@@ -3481,7 +3496,7 @@ fn post_json_rpc_allow_missing_block_time(
                 .json(payload)
                 .send()
                 .map_err(|error| {
-                    anyhow!(SourceError::source_contract_failure(format!(
+                    anyhow!(source_contract_transport_or_contract_failure(format!(
                         "failed rpc request to {}: {error}",
                         source.http_url
                     )))
@@ -3781,6 +3796,20 @@ mod tests {
         assert!(error
             .to_string()
             .contains("program_history_gap_fill_retryable_source_contract_http_503"));
+    }
+
+    #[test]
+    fn source_contract_transport_send_error_classifies_retryable_provider_failure_stage1() {
+        let source_error = source_contract_transport_or_contract_failure(
+            "failed rpc request to https://quicknode.example/?api-key=test: error sending request for url (https://quicknode.example/?api-key=test)"
+                .to_string(),
+        );
+
+        assert_eq!(source_error.kind, SourceErrorKind::RetryableProviderFailure);
+        assert_eq!(
+            source_error.message,
+            "program_history_gap_fill_retryable_source_contract_transport_send_error: failed rpc request to https://quicknode.example/?api-key=test: error sending request for url (https://quicknode.example/?api-key=test)"
+        );
     }
 
     #[test]
@@ -4409,6 +4438,58 @@ mod tests {
         assert_eq!(
             output.reason,
             "program_history_gap_fill_retryable_source_contract_http_503: rpc returned http status 503: upstream service unavailable"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retryable_source_contract_transport_send_error_mid_attempt_stays_resumable_stage1(
+    ) -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-source-contract-transport-send")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let output_path = fixture
+            .temp
+            .path()
+            .join("program-gap-fill-source-contract-transport-send.sqlite");
+        let source = resumable_source(window_start, window_end).with_list_blocks_failure_once(
+            1_105,
+            2_109,
+            source_contract_transport_or_contract_failure(
+                "failed rpc request to https://quicknode.example/?api-key=test: error sending request for url (https://quicknode.example/?api-key=test)"
+                    .to_string(),
+            ),
+        );
+
+        let output = run_output_with_source(
+            Config {
+                output_path: Some(output_path.clone()),
+                window_start: Some(window_start),
+                window_end: Some(window_end),
+                max_slot_batches_per_attempt_override: Some(3),
+                now,
+                ..gap_fill_config(&fixture, Some(window_start), Some(window_end))
+            },
+            &source,
+        )?;
+
+        assert_eq!(
+            output.verdict,
+            "not_proven_due_to_retryable_provider_failure"
+        );
+        assert_eq!(output.current_phase, "awaiting_next_attempt");
+        assert_eq!(output.next_batch_start_slot, Some(1_105));
+        assert_eq!(output.attempt_frontier_end_slot, Some(1_104));
+        assert!(output.attempt_frontier_advanced_slots > 0);
+        assert_eq!(output.attempt_inserted_rows, 1);
+        assert_eq!(output.staged_rows, 1);
+        assert!(!output.replayable_output);
+        assert!(!output_path.exists());
+        assert_eq!(
+            output.reason,
+            "program_history_gap_fill_retryable_source_contract_transport_send_error: failed rpc request to https://quicknode.example/?api-key=test: error sending request for url (https://quicknode.example/?api-key=test)"
         );
         Ok(())
     }

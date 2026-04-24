@@ -63,6 +63,9 @@ Repository/operator accounting:
   `program_history_gap_fill_retryable_block_fetch_http_408`
 - source-contract HTTP 503 is now accepted as a retryable provider failure with
   reason `program_history_gap_fill_retryable_source_contract_http_503`
+- source-contract transport send errors are now accepted as retryable provider
+  failures with reason
+  `program_history_gap_fill_retryable_source_contract_transport_send_error`
 - successful HTTP 2xx JSON-RPC `result` payloads are not throttle evidence even
   if their body text contains `rate limit` / `too many requests`; throttle
   detection remains limited to HTTP 429, non-2xx provider error bodies, and

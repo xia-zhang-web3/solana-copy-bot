@@ -255,6 +255,9 @@ Accepted local/repo work for the current lane:
   `program_history_gap_fill_retryable_block_fetch_http_408`
 - source-contract HTTP 503 retryable provider-failure classification:
   `program_history_gap_fill_retryable_source_contract_http_503`
+- source-contract transport send-error retryable provider-failure
+  classification:
+  `program_history_gap_fill_retryable_source_contract_transport_send_error`
 - repo-managed loop operator:
   `crates/discovery/src/bin/discovery_raw_gap_fill_program_history_loop.rs`
 - read-only status operator:
@@ -297,6 +300,8 @@ Operator semantics:
 - source-contract HTTP 503 remains incomplete/non-replayable and resumes through
   `awaiting_next_attempt`; it does not mark coverage complete or promote the
   progress DB
+- source-contract transport send errors have the same incomplete/non-replayable
+  semantics and resume through `awaiting_next_attempt`
 - successful HTTP 2xx JSON-RPC `result` payloads are not throttle evidence even
   if their body text contains throttle-like words
 - `copybot_operator_emergency_stop` manages only

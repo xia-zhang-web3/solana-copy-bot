@@ -35,6 +35,9 @@ Accepted / live-proven blocker removals on this lane:
 - transient source-contract HTTP 503 failures are retryable and non-terminal
   with reason
   `program_history_gap_fill_retryable_source_contract_http_503`
+- transient source-contract transport send failures are retryable and
+  non-terminal with reason
+  `program_history_gap_fill_retryable_source_contract_transport_send_error`
 - successful HTTP 2xx JSON-RPC `result` payloads are no longer scanned for
   throttle words such as `rate limit`; only HTTP 429, non-2xx error bodies, and
   JSON-RPC `error` payloads can drive throttle classification
