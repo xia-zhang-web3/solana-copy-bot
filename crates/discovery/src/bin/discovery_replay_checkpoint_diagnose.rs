@@ -1,16 +1,14 @@
 use anyhow::{anyhow, bail, Context, Result};
 use copybot_discovery::{
     DiscoveryService, PersistedRebuildRowCrossInvocationDiffDiagnostic,
-    PersistedRebuildRowCrossInvocationDiffReasonClass,
-    PersistedRebuildRowCrossInvocationDiffStage, PersistedRebuildRowDriverCompareDiagnostic,
-    PersistedRebuildRowSlowEventCaptureDiagnostic,
-    PersistedRebuildRowStepMetaIsolatedSharedDiagnostic,
-    PersistedRebuildRowStepMetaFullContextDiffDiagnostic,
-    PersistedRebuildRowStepMetaFullOrchestrationDiffDiagnostic,
-    PersistedRebuildRowSharedOrderingDiffDiagnostic,
+    PersistedRebuildRowCrossInvocationDiffReasonClass, PersistedRebuildRowCrossInvocationDiffStage,
+    PersistedRebuildRowDriverCompareDiagnostic, PersistedRebuildRowSharedOrderingDiffDiagnostic,
     PersistedRebuildRowSharedPathDiffDiagnostic,
     PersistedRebuildRowSharedSequenceCompareDiagnostic,
-    PersistedRebuildRowStepMetaCompareDiagnostic, RawPersistedRebuildRowProbeDiagnostic,
+    PersistedRebuildRowSlowEventCaptureDiagnostic, PersistedRebuildRowStepMetaCompareDiagnostic,
+    PersistedRebuildRowStepMetaFullContextDiffDiagnostic,
+    PersistedRebuildRowStepMetaFullOrchestrationDiffDiagnostic,
+    PersistedRebuildRowStepMetaIsolatedSharedDiagnostic, RawPersistedRebuildRowProbeDiagnostic,
     ReplayCheckpointRuntimeDbDiagnostic, ReplayCheckpointRuntimeDbOnlyMode,
 };
 use copybot_storage::SqliteStore;
@@ -560,7 +558,10 @@ fn run_cross_invocation_child_subprocess(
                 &json,
                 "step_meta_shared_connection_step_meta_elapsed_ms",
             )?,
-            row_exists: extract_optional_bool_field(&json, "step_meta_shared_connection_row_exists")?,
+            row_exists: extract_optional_bool_field(
+                &json,
+                "step_meta_shared_connection_row_exists",
+            )?,
             budget_exhausted: json
                 .get("step_meta_compare_budget_exhausted")
                 .and_then(Value::as_bool)
@@ -627,7 +628,12 @@ fn run_cross_invocation_diff(config: &Config) -> Result<Value> {
             });
         }
         if let Some(exec_path) = resolve_cross_invocation_self_exec_path()? {
-            run_cross_invocation_child_subprocess(&exec_path, surface, &config.runtime_db, budget_ms)
+            run_cross_invocation_child_subprocess(
+                &exec_path,
+                surface,
+                &config.runtime_db,
+                budget_ms,
+            )
         } else {
             #[cfg(test)]
             {
@@ -989,7 +995,10 @@ mod tests {
             "runtime.sqlite".to_string(),
         ])?
         .expect("config should parse");
-        assert_eq!(config.mode, Mode::ProbePersistedRebuildRowSharedOrderingDiff);
+        assert_eq!(
+            config.mode,
+            Mode::ProbePersistedRebuildRowSharedOrderingDiff
+        );
         Ok(())
     }
 
@@ -1001,7 +1010,10 @@ mod tests {
             "runtime.sqlite".to_string(),
         ])?
         .expect("config should parse");
-        assert_eq!(config.mode, Mode::ProbePersistedRebuildRowCrossInvocationDiff);
+        assert_eq!(
+            config.mode,
+            Mode::ProbePersistedRebuildRowCrossInvocationDiff
+        );
         Ok(())
     }
 
@@ -1236,8 +1248,8 @@ mod tests {
     }
 
     #[test]
-    fn run_step_meta_full_orchestration_diff_reports_missing_checkpoint_json_stage1(
-    ) -> Result<()> {
+    fn run_step_meta_full_orchestration_diff_reports_missing_checkpoint_json_stage1() -> Result<()>
+    {
         let (_temp, runtime_db) =
             make_test_store("diagnose-step-meta-full-orchestration-diff-runtime.sqlite")?;
         let store = SqliteStore::open(Path::new(&runtime_db))?;
@@ -1309,7 +1321,10 @@ mod tests {
             json["cross_invocation_diff_reason_class"],
             "cross_invocation_diff_row_missing"
         );
-        assert_eq!(json["cross_invocation_diff_mode_level_independent_invocations"], false);
+        assert_eq!(
+            json["cross_invocation_diff_mode_level_independent_invocations"],
+            false
+        );
         Ok(())
     }
 
@@ -1327,7 +1342,10 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(&output).context("invalid json output")?;
         assert_eq!(json["slow_event_capture_observed"], false);
-        assert_eq!(json["slow_event_capture_reason_class"], "slow_event_row_missing");
+        assert_eq!(
+            json["slow_event_capture_reason_class"],
+            "slow_event_row_missing"
+        );
         assert_eq!(
             json["slow_event_capture_surface_identity"],
             "probe_persisted_rebuild_row_step_meta_full_orchestration_diff_read_only"
@@ -1409,9 +1427,18 @@ mod tests {
         }
         let json: serde_json::Value =
             serde_json::from_str(&output).context("invalid json output")?;
-        assert_eq!(json["cross_invocation_diff_mode_level_independent_invocations"], true);
-        assert_eq!(json["cross_invocation_diff_isolated_child_first_fresh_process"], true);
-        assert_eq!(json["cross_invocation_diff_full_child_first_fresh_process"], true);
+        assert_eq!(
+            json["cross_invocation_diff_mode_level_independent_invocations"],
+            true
+        );
+        assert_eq!(
+            json["cross_invocation_diff_isolated_child_first_fresh_process"],
+            true
+        );
+        assert_eq!(
+            json["cross_invocation_diff_full_child_first_fresh_process"],
+            true
+        );
         assert_eq!(
             json["cross_invocation_diff_invocation_order"],
             serde_json::json!([
