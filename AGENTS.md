@@ -261,6 +261,8 @@ Accepted local/repo work for the current lane:
   `crates/discovery/src/bin/discovery_raw_gap_fill_program_history_restore_preflight.rs`
 - read-only artifact validator:
   `crates/discovery/src/bin/discovery_raw_gap_fill_program_history_artifact_validate.rs`
+- read-only human handoff report:
+  `crates/discovery/src/bin/discovery_raw_gap_fill_program_history_handoff_report.rs`
 
 Operator semantics:
 
@@ -276,6 +278,10 @@ Operator semantics:
   `artifact_valid_for_restore_review=true` only for explicit replayable
   exact-window coverage with no missing segments, positive inserted rows, and
   zero withheld rows
+- handoff report reads one progress JSON and reports
+  `handoff_ready_for_human_restore_review=true` only when the same artifact
+  review criteria are explicitly satisfied; otherwise it emits safe read-only
+  status, preflight, and artifact-validator commands
 - missing progress control truth fails closed
 
 Deployment status:
@@ -285,6 +291,8 @@ Deployment status:
 - status operator is observability only and does not change restore semantics
 - restore preflight is a fail-closed post-backfill gate helper; it does not
   apply restore or mark production green
+- handoff report is a human review helper only; it does not apply restore,
+  start the gap-fill child, or mark production green
 
 Current sync caveat:
 

@@ -111,6 +111,13 @@ Development accounting:
   explicit replayable exact-window coverage with no missing segments, positive
   inserted rows, and zero rows withheld due to incomplete outcome; it does not
   apply restore or mark production green
+- a read-only handoff report,
+  `crates/discovery/src/bin/discovery_raw_gap_fill_program_history_handoff_report.rs`,
+  has been reviewed and accepted locally
+- the handoff report reports `handoff_ready_for_human_restore_review=true` only
+  when the explicit artifact-validator criteria are satisfied, and otherwise
+  emits read-only status / restore-preflight / artifact-validator commands; it
+  does not apply restore or mark production green
 
 ## Live Update (`2026-04-23`)
 

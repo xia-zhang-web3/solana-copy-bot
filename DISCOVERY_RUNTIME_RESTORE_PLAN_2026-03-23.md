@@ -85,6 +85,12 @@ Repository/operator accounting:
   `discovery_raw_gap_fill_program_history_artifact_validate --progress-path <progress.json> --window-start-utc 2026-04-18T16:56:04Z --window-end-utc 2026-04-23T15:59:39.857189405Z --json`
 - this validator is artifact review only; it does not apply restore or
   authorize production readiness
+- a read-only human handoff report has been accepted locally:
+  `discovery_raw_gap_fill_program_history_handoff_report`
+- handoff report usage for the current exact window is:
+  `discovery_raw_gap_fill_program_history_handoff_report --progress-path <progress.json> --window-start-utc 2026-04-18T16:56:04Z --window-end-utc 2026-04-23T15:59:39.857189405Z --json`
+- this report is a human review helper only; it does not apply restore, does not
+  start the gap-fill child, and does not authorize production readiness
 
 ## Live addendum (`2026-04-23`)
 
