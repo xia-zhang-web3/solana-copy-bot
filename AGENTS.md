@@ -265,6 +265,8 @@ Accepted local/repo work for the current lane:
   `crates/discovery/src/bin/discovery_raw_gap_fill_program_history_handoff_report.rs`
 - mutating restore path gap-fill gate:
   `crates/discovery/src/bin/discovery_runtime_restore.rs`
+- Stage 4 operator emergency-stop CLI:
+  `crates/app/src/bin/copybot_operator_emergency_stop.rs`
 
 Operator semantics:
 
@@ -290,6 +292,17 @@ Operator semantics:
 - restore gate failures happen before target DB parent creation, target DB open,
   migrations, artifact restore, or journal/gap-fill replay
 - missing progress control truth fails closed
+- `copybot_operator_emergency_stop` manages only
+  `state/operator_emergency_stop.flag` or the explicitly configured
+  `SOLANA_COPY_BOT_EMERGENCY_STOP_FILE` / `--path`
+- emergency-stop status parsing matches runtime behavior: the first non-empty
+  non-comment line is the reason, and an unreadable existing flag is treated as
+  active fail-closed
+- emergency-stop activation is atomic via temp-file rename, idempotent for the
+  same reason, and requires `--force` to overwrite a different reason
+- emergency-stop clear requires the exact
+  `--confirm-clear CLEAR_OPERATOR_EMERGENCY_STOP` confirmation and does not
+  enable execution or submit trades
 
 Deployment status:
 
@@ -300,16 +313,16 @@ Deployment status:
   apply restore or mark production green
 - handoff report is a human review helper only; it does not apply restore,
   start the gap-fill child, or mark production green
+- emergency-stop CLI is a manual safety surface only; it is not a Stage 3
+  production-green signal and should not be deployed or used as an activation
+  shortcut
 
-Current sync caveat:
+Current sync status:
 
-- an accepted commit for the current operator files may exist in a temporary
-  clone because this sandbox could not write `.git/index.lock` in the main
-  working tree
-- push to GitHub was blocked by local DNS/network errors resolving
-  `github.com`
-- before duplicating work, check whether equivalent files have reached
-  `origin/main`
+- current gap-fill / restore operator commits have reached `origin/main`
+  through `21b56db`
+- before duplicating work in a new session, still check whether equivalent
+  files already exist on `origin/main`
 
 ## If A New Session Starts Elsewhere
 

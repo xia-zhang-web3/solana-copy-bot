@@ -846,6 +846,22 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 13. `rehearsal_green` and `rehearsal_green_with_business_reject` still do not
     override Stage 3. Discovery freshness evidence remains the gate before any
     activation discussion.
+14. Stage 4 now also has a manual operator emergency-stop CLI:
+    - status:
+      `copybot_operator_emergency_stop --status --json`
+    - activate:
+      `copybot_operator_emergency_stop --activate --reason <operator_reason> --json`
+    - clear:
+      `copybot_operator_emergency_stop --clear --confirm-clear CLEAR_OPERATOR_EMERGENCY_STOP --json`
+15. The emergency-stop CLI only manages the emergency-stop flag path used by
+    runtime (`state/operator_emergency_stop.flag`, the
+    `SOLANA_COPY_BOT_EMERGENCY_STOP_FILE` env override, or explicit `--path`).
+    It does not enable execution, submit trades, restart services, call RPC, or
+    mark Stage 3 green.
+16. Runtime-compatible status semantics are preserved: the first non-empty
+    non-comment line is the reason, and an unreadable existing flag is active
+    fail-closed. Activation is atomic and same-reason idempotent; clearing
+    requires the exact confirmation token.
 
 ## Devnet Dress Rehearsal
 

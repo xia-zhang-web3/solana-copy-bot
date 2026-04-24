@@ -124,6 +124,19 @@ Development accounting:
   `--gap-fill-window-start-utc`, and `--gap-fill-window-end-utc`, rejects invalid
   windows, and only accepts explicit replayable exact-window progress with no
   missing segments, positive inserted rows, and zero withheld rows
+- Stage 4 now also has a bounded operator emergency-stop CLI:
+  `copybot_operator_emergency_stop`
+- the CLI only manages the runtime emergency-stop flag path
+  (`state/operator_emergency_stop.flag`, `SOLANA_COPY_BOT_EMERGENCY_STOP_FILE`,
+  or explicit `--path`) and does not enable execution, submit trades, restart
+  services, call RPC, or alter Stage 3 discovery truth
+- its status parsing matches runtime emergency-stop semantics: the first
+  non-empty non-comment line is the reason, and an unreadable existing flag is
+  active fail-closed
+- activation is atomic via temp-file rename, idempotent for the same reason,
+  and requires `--force` to overwrite a different active reason
+- clearing requires exact operator confirmation:
+  `--clear --confirm-clear CLEAR_OPERATOR_EMERGENCY_STOP`
 
 ## Live Update (`2026-04-23`)
 
