@@ -61,6 +61,10 @@ Operator rules for this lane:
 - the preflight only reports `restore_ready=true` for explicit replayable
   complete coverage with no missing segments; it does not apply restore or
   authorize production readiness
+- for read-only artifact review, use:
+  `discovery_raw_gap_fill_program_history_artifact_validate --progress-path <progress.json> --window-start-utc 2026-04-18T16:56:04Z --window-end-utc 2026-04-23T15:59:39.857189405Z --json`
+- the validator only reports artifact review readiness; it does not apply
+  restore or authorize production readiness
 
 ## Live Update (`2026-04-23`)
 

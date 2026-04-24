@@ -259,6 +259,8 @@ Accepted local/repo work for the current lane:
   `crates/discovery/src/bin/discovery_raw_gap_fill_program_history_status.rs`
 - read-only restore readiness preflight:
   `crates/discovery/src/bin/discovery_raw_gap_fill_program_history_restore_preflight.rs`
+- read-only artifact validator:
+  `crates/discovery/src/bin/discovery_raw_gap_fill_program_history_artifact_validate.rs`
 
 Operator semantics:
 
@@ -270,6 +272,10 @@ Operator semantics:
 - restore preflight reads one progress JSON and reports `restore_ready=true`
   only when `replayable_output=true`, coverage reaches the requested window
   end, and `missing_segments` is empty
+- artifact validator reads one progress JSON and reports
+  `artifact_valid_for_restore_review=true` only for explicit replayable
+  exact-window coverage with no missing segments, positive inserted rows, and
+  zero withheld rows
 - missing progress control truth fails closed
 
 Deployment status:

@@ -104,6 +104,13 @@ Development accounting:
   has `replayable_output=true`, coverage reaches the exact window end, and
   `missing_segments` is empty; it does not apply restore or mark production
   green
+- a read-only artifact validator,
+  `crates/discovery/src/bin/discovery_raw_gap_fill_program_history_artifact_validate.rs`,
+  has been reviewed and accepted locally
+- the validator reports `artifact_valid_for_restore_review=true` only for
+  explicit replayable exact-window coverage with no missing segments, positive
+  inserted rows, and zero rows withheld due to incomplete outcome; it does not
+  apply restore or mark production green
 
 ## Live Update (`2026-04-23`)
 
