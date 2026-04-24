@@ -32,8 +32,9 @@ Accepted / live-proven blocker removals on this lane:
   validation or gap-fill
 - transient `getBlock` HTTP 503 / body-decode failures are retryable and
   non-terminal
-- transient source-contract HTTP 503 failures are retryable and non-terminal
-  with reason
+- transient source-contract HTTP 408 and HTTP 503 failures are retryable and
+  non-terminal with reasons
+  `program_history_gap_fill_retryable_source_contract_http_408` and
   `program_history_gap_fill_retryable_source_contract_http_503`
 - transient source-contract transport send failures are retryable and
   non-terminal with reason

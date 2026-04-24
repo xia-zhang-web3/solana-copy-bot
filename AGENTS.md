@@ -253,7 +253,9 @@ Accepted local/repo work for the current lane:
 
 - HTTP 408 retryable block-fetch classification:
   `program_history_gap_fill_retryable_block_fetch_http_408`
-- source-contract HTTP 503 retryable provider-failure classification:
+- source-contract HTTP 408 / HTTP 503 retryable provider-failure
+  classifications:
+  `program_history_gap_fill_retryable_source_contract_http_408`,
   `program_history_gap_fill_retryable_source_contract_http_503`
 - source-contract transport send-error retryable provider-failure
   classification:
@@ -297,9 +299,9 @@ Operator semantics:
 - restore gate failures happen before target DB parent creation, target DB open,
   migrations, artifact restore, or journal/gap-fill replay
 - missing progress control truth fails closed
-- source-contract HTTP 503 remains incomplete/non-replayable and resumes through
-  `awaiting_next_attempt`; it does not mark coverage complete or promote the
-  progress DB
+- source-contract HTTP 408 / HTTP 503 remain incomplete/non-replayable and
+  resume through `awaiting_next_attempt`; they do not mark coverage complete or
+  promote the progress DB
 - source-contract transport send errors have the same incomplete/non-replayable
   semantics and resume through `awaiting_next_attempt`
 - successful HTTP 2xx JSON-RPC `result` payloads are not throttle evidence even

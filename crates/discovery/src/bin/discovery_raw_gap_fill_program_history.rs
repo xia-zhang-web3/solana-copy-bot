@@ -3333,6 +3333,9 @@ fn throttle_http_error_response_message(status_code: u16, body: &str) -> Option<
 }
 
 fn retryable_source_contract_http_status_reason_code(status_code: u16) -> Option<&'static str> {
+    if status_code == 408 {
+        return Some("program_history_gap_fill_retryable_source_contract_http_408");
+    }
     if status_code == 503 {
         return Some("program_history_gap_fill_retryable_source_contract_http_503");
     }
@@ -3765,6 +3768,37 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn source_contract_http_408_classifies_retryable_provider_failure_stage1() {
+        let pacer = Mutex::new(RequestPacer::new(1_000_000));
+        let policy = QuickNodeRequestPolicy {
+            max_requests_per_second: 1_000_000,
+            retry_429_max_attempts: 0,
+            retry_429_backoff_ms: 1,
+        };
+
+        let error = execute_json_rpc_with_policy(
+            &pacer,
+            &policy,
+            || {
+                Ok(HttpRpcResponse {
+                    status_code: 408,
+                    body: "request timeout".to_string(),
+                })
+            },
+            |_| {},
+        )
+        .expect_err("HTTP 408 must not be accepted as a successful RPC response");
+
+        assert_eq!(
+            source_error_kind(&error),
+            Some(SourceErrorKind::RetryableProviderFailure)
+        );
+        assert!(error
+            .to_string()
+            .contains("program_history_gap_fill_retryable_source_contract_http_408"));
     }
 
     #[test]
@@ -4388,6 +4422,56 @@ mod tests {
         assert_eq!(
             output.reason,
             "program_history_gap_fill_retryable_block_fetch_http_503: rpc returned http status 503"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retryable_source_contract_http_408_mid_attempt_stays_resumable_stage1() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-source-contract-retryable-408")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let output_path = fixture
+            .temp
+            .path()
+            .join("program-gap-fill-source-contract-retryable-408.sqlite");
+        let source = resumable_source(window_start, window_end).with_list_blocks_failure_once(
+            1_105,
+            2_109,
+            SourceError::retryable_provider_failure(
+                "program_history_gap_fill_retryable_source_contract_http_408: rpc returned http status 408: request timeout",
+            ),
+        );
+
+        let output = run_output_with_source(
+            Config {
+                output_path: Some(output_path.clone()),
+                window_start: Some(window_start),
+                window_end: Some(window_end),
+                max_slot_batches_per_attempt_override: Some(3),
+                now,
+                ..gap_fill_config(&fixture, Some(window_start), Some(window_end))
+            },
+            &source,
+        )?;
+
+        assert_eq!(
+            output.verdict,
+            "not_proven_due_to_retryable_provider_failure"
+        );
+        assert_eq!(output.current_phase, "awaiting_next_attempt");
+        assert_eq!(output.next_batch_start_slot, Some(1_105));
+        assert_eq!(output.attempt_frontier_end_slot, Some(1_104));
+        assert!(output.attempt_frontier_advanced_slots > 0);
+        assert_eq!(output.attempt_inserted_rows, 1);
+        assert_eq!(output.staged_rows, 1);
+        assert!(!output.replayable_output);
+        assert!(!output_path.exists());
+        assert_eq!(
+            output.reason,
+            "program_history_gap_fill_retryable_source_contract_http_408: rpc returned http status 408: request timeout"
         );
         Ok(())
     }

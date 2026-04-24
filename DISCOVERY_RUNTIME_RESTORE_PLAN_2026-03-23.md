@@ -61,8 +61,10 @@ Repository/operator accounting:
 
 - HTTP 408 is now accepted as a retryable block-fetch failure with reason
   `program_history_gap_fill_retryable_block_fetch_http_408`
-- source-contract HTTP 503 is now accepted as a retryable provider failure with
-  reason `program_history_gap_fill_retryable_source_contract_http_503`
+- source-contract HTTP 408 and HTTP 503 are now accepted as retryable provider
+  failures with reasons
+  `program_history_gap_fill_retryable_source_contract_http_408` and
+  `program_history_gap_fill_retryable_source_contract_http_503`
 - source-contract transport send errors are now accepted as retryable provider
   failures with reason
   `program_history_gap_fill_retryable_source_contract_transport_send_error`
