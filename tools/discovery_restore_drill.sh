@@ -17,7 +17,7 @@ require_bin python3
 
 usage() {
   cat <<'EOF'
-usage: tools/discovery_restore_drill.sh --config <path> [--workspace <path>] [--target-db-path <path>] [--artifact-path <path>] [--journal-snapshot-path <path>] [--use-existing-backups] [--report-path <path>] [--now <rfc3339>]
+usage: tools/discovery_restore_drill.sh --config <path> [--workspace <path>] [--target-db-path <path>] [--artifact-path <path>] [--journal-snapshot-path <path>] [--gap-fill-db-path <path> --gap-fill-progress-path <path> --gap-fill-window-start-utc <rfc3339> --gap-fill-window-end-utc <rfc3339>] [--use-existing-backups] [--report-path <path>] [--now <rfc3339>]
 EOF
 }
 
@@ -26,6 +26,10 @@ WORKSPACE=""
 TARGET_DB_PATH=""
 ARTIFACT_PATH=""
 JOURNAL_SNAPSHOT_PATH=""
+GAP_FILL_DB_PATH=""
+GAP_FILL_PROGRESS_PATH=""
+GAP_FILL_WINDOW_START_UTC=""
+GAP_FILL_WINDOW_END_UTC=""
 REPORT_PATH=""
 NOW_ARG=""
 REFRESH_BACKUPS="true"
@@ -50,6 +54,22 @@ while [[ $# -gt 0 ]]; do
       ;;
     --journal-snapshot-path)
       JOURNAL_SNAPSHOT_PATH="${2:-}"
+      shift 2
+      ;;
+    --gap-fill-db-path)
+      GAP_FILL_DB_PATH="${2:-}"
+      shift 2
+      ;;
+    --gap-fill-progress-path)
+      GAP_FILL_PROGRESS_PATH="${2:-}"
+      shift 2
+      ;;
+    --gap-fill-window-start-utc)
+      GAP_FILL_WINDOW_START_UTC="${2:-}"
+      shift 2
+      ;;
+    --gap-fill-window-end-utc)
+      GAP_FILL_WINDOW_END_UTC="${2:-}"
       shift 2
       ;;
     --report-path)
@@ -77,6 +97,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 CONFIG_PATH="$(trim_string "$CONFIG_PATH")"
+GAP_FILL_DB_PATH="$(trim_string "$GAP_FILL_DB_PATH")"
+GAP_FILL_PROGRESS_PATH="$(trim_string "$GAP_FILL_PROGRESS_PATH")"
+GAP_FILL_WINDOW_START_UTC="$(trim_string "$GAP_FILL_WINDOW_START_UTC")"
+GAP_FILL_WINDOW_END_UTC="$(trim_string "$GAP_FILL_WINDOW_END_UTC")"
 if [[ -z "$CONFIG_PATH" ]]; then
   echo "--config is required" >&2
   exit 1
@@ -84,6 +108,42 @@ fi
 
 if [[ ! -f "$CONFIG_PATH" ]]; then
   echo "config file not found: $CONFIG_PATH" >&2
+  exit 1
+fi
+
+validate_gap_fill_window() {
+  python3 - "$1" "$2" <<'PY'
+from datetime import datetime, timezone
+import sys
+
+def parse(raw):
+    return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+try:
+    start = parse(sys.argv[1].strip())
+    end = parse(sys.argv[2].strip())
+except Exception:
+    sys.exit(1)
+if end <= start:
+    sys.exit(1)
+PY
+}
+
+if [[ -n "$GAP_FILL_DB_PATH" ]]; then
+  if [[ -z "$GAP_FILL_PROGRESS_PATH" ]]; then
+    echo "discovery_restore_drill_gap_fill_gate_missing_progress_path: --gap-fill-progress-path is required when --gap-fill-db-path is supplied" >&2
+    exit 1
+  fi
+  if [[ -z "$GAP_FILL_WINDOW_START_UTC" || -z "$GAP_FILL_WINDOW_END_UTC" ]]; then
+    echo "discovery_restore_drill_gap_fill_gate_missing_window_args: --gap-fill-window-start-utc and --gap-fill-window-end-utc are required when --gap-fill-db-path is supplied" >&2
+    exit 1
+  fi
+  if ! validate_gap_fill_window "$GAP_FILL_WINDOW_START_UTC" "$GAP_FILL_WINDOW_END_UTC"; then
+    echo "discovery_restore_drill_gap_fill_gate_invalid_window: --gap-fill-window-end-utc must be after --gap-fill-window-start-utc" >&2
+    exit 1
+  fi
+elif [[ -n "$GAP_FILL_PROGRESS_PATH" || -n "$GAP_FILL_WINDOW_START_UTC" || -n "$GAP_FILL_WINDOW_END_UTC" ]]; then
+  echo "discovery_restore_drill_gap_fill_gate_missing_db_path: --gap-fill-db-path is required when gap-fill progress or window args are supplied" >&2
   exit 1
 fi
 
@@ -237,13 +297,27 @@ print(time.time_ns() // 1_000_000)
 PY
 )"
 
-run_discovery_bin discovery_runtime_restore \
-  --config "$CONFIG_PATH" \
-  --artifact "$ARTIFACT_PATH" \
-  --db-path "$TARGET_DB_PATH" \
-  --journal-db-path "$JOURNAL_SNAPSHOT_PATH" \
-  --json \
-  "${NOW_ARGS[@]}" >"$RESTORE_JSON_PATH"
+if [[ -n "$GAP_FILL_DB_PATH" ]]; then
+  run_discovery_bin discovery_runtime_restore \
+    --config "$CONFIG_PATH" \
+    --artifact "$ARTIFACT_PATH" \
+    --db-path "$TARGET_DB_PATH" \
+    --journal-db-path "$JOURNAL_SNAPSHOT_PATH" \
+    --gap-fill-db-path "$GAP_FILL_DB_PATH" \
+    --gap-fill-progress-path "$GAP_FILL_PROGRESS_PATH" \
+    --gap-fill-window-start-utc "$GAP_FILL_WINDOW_START_UTC" \
+    --gap-fill-window-end-utc "$GAP_FILL_WINDOW_END_UTC" \
+    --json \
+    "${NOW_ARGS[@]}" >"$RESTORE_JSON_PATH"
+else
+  run_discovery_bin discovery_runtime_restore \
+    --config "$CONFIG_PATH" \
+    --artifact "$ARTIFACT_PATH" \
+    --db-path "$TARGET_DB_PATH" \
+    --journal-db-path "$JOURNAL_SNAPSHOT_PATH" \
+    --json \
+    "${NOW_ARGS[@]}" >"$RESTORE_JSON_PATH"
+fi
 
 run_discovery_bin discovery_status \
   --config "$CONFIG_PATH" \
@@ -265,6 +339,10 @@ python3 - \
   "$TARGET_DB_PATH" \
   "$ARTIFACT_PATH" \
   "$JOURNAL_SNAPSHOT_PATH" \
+  "$GAP_FILL_DB_PATH" \
+  "$GAP_FILL_PROGRESS_PATH" \
+  "$GAP_FILL_WINDOW_START_UTC" \
+  "$GAP_FILL_WINDOW_END_UTC" \
   "$ELAPSED_MS" \
   "$ARTIFACT_CADENCE_MINUTES" \
   "$JOURNAL_SNAPSHOT_CADENCE_MINUTES" \
@@ -284,6 +362,10 @@ import sys
     target_db_path,
     artifact_path,
     journal_snapshot_path,
+    gap_fill_db_path,
+    gap_fill_progress_path,
+    gap_fill_window_start_utc,
+    gap_fill_window_end_utc,
     elapsed_ms,
     artifact_cadence_minutes,
     journal_snapshot_cadence_minutes,
@@ -316,6 +398,11 @@ report = {
     "target_db_path": str(pathlib.Path(target_db_path).resolve()),
     "artifact_path": str(pathlib.Path(artifact_path).resolve()),
     "journal_snapshot_path": str(pathlib.Path(journal_snapshot_path).resolve()),
+    "gap_fill_db_path": str(pathlib.Path(gap_fill_db_path).resolve()) if gap_fill_db_path else None,
+    "gap_fill_progress_path": str(pathlib.Path(gap_fill_progress_path).resolve()) if gap_fill_progress_path else None,
+    "gap_fill_window_start_utc": gap_fill_window_start_utc or None,
+    "gap_fill_window_end_utc": gap_fill_window_end_utc or None,
+    "gap_fill_gate_supplied": bool(gap_fill_db_path),
     "refresh_backups": refresh_backups == "true",
     "measured_rto_ms": int(elapsed_ms),
     "measured_rto_seconds": round(int(elapsed_ms) / 1000.0, 3),

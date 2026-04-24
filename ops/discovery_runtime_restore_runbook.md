@@ -206,19 +206,10 @@ fi
   --json | tee /tmp/discovery_raw_gap_fill.json
 ```
 
-Then rerun restore into a new fresh target with the produced generic gap-fill journal:
-
-```bash
-TARGET_DB_FILLED="${APP_ROOT}/state/live_runtime_${ts}_gapfill.db"
-/var/www/solana-copy-bot/target/release/discovery_runtime_restore \
-  --config "${CONFIG_PATH}" \
-  --artifact "${APP_ROOT}/state/discovery_restore/artifacts/latest.json" \
-  --db-path "${TARGET_DB_FILLED}" \
-  --journal-db-path "${APP_ROOT}/state/discovery_restore/recent_raw/latest.sqlite" \
-  --gap-fill-db-path "${APP_ROOT}/state/discovery_restore/gap_fill/latest.sqlite" \
-  --json | tee /tmp/discovery_runtime_restore.json
-TARGET_DB="${TARGET_DB_FILLED}"
-```
+Do not replay this generic address-scoped output through
+`discovery_runtime_restore --gap-fill-db-path`. The mutating restore path now
+requires the reviewed program-history progress artifact and exact UTC window
+gate documented below.
 
 Option B, Helius-specific historical path. Use this when the generic fallback stays sparse, especially when you need associated token account coverage on the bounded recent window. This path uses Helius `getTransactionsForAddress` directly:
 
@@ -251,20 +242,10 @@ fi
   --json | tee /tmp/discovery_raw_gap_fill_helius.json
 ```
 
-Then rerun restore into a new fresh target with the produced Helius-specific gap-fill journal:
-
-```bash
-TARGET_DB_HELIUS_FILLED="${APP_ROOT}/state/live_runtime_${ts}_gapfill_helius.db"
-/var/www/solana-copy-bot/target/release/discovery_runtime_restore \
-  --config "${CONFIG_PATH}" \
-  --artifact "${APP_ROOT}/state/discovery_restore/artifacts/latest.json" \
-  --db-path "${TARGET_DB_HELIUS_FILLED}" \
-  --journal-db-path "${APP_ROOT}/state/discovery_restore/recent_raw/latest.sqlite" \
-  --gap-fill-db-path "${APP_ROOT}/state/discovery_restore/gap_fill_helius/latest.sqlite" \
-  --json | tee /tmp/discovery_runtime_restore_helius.json
-TARGET_DB="${TARGET_DB_HELIUS_FILLED}"
-cp /tmp/discovery_runtime_restore_helius.json /tmp/discovery_runtime_restore.json
-```
+Do not replay this Helius-specific address-scoped output through
+`discovery_runtime_restore --gap-fill-db-path`. The mutating restore path now
+requires the reviewed program-history progress artifact and exact UTC window
+gate documented below.
 
 Inspect the restore verdict:
 
@@ -660,7 +641,49 @@ If repeated attempts stay incomplete:
    restarted safely from a clean in-progress state; manual archive/delete is no
    longer required for this case
 
-If `replayable_output = true`, replay it into a fresh restore run:
+If `replayable_output = true`, do not jump straight to restore apply. First run
+the read-only program-history review operators against the exact requested
+window. This is a post-backfill human restore-review handoff only; these
+commands do not mark production green and do not mutate the runtime DB.
+
+```bash
+PROGRAM_HISTORY_GAP_FILL_DB="${APP_ROOT}/state/discovery_restore/gap_fill_program_history/latest.sqlite"
+PROGRAM_HISTORY_GAP_FILL_PROGRESS="${APP_ROOT}/state/discovery_restore/gap_fill_program_history/latest.json"
+PROGRAM_HISTORY_WINDOW_START_UTC="<exact-window-start-rfc3339>"
+PROGRAM_HISTORY_WINDOW_END_UTC="<exact-window-end-rfc3339>"
+ARTIFACT_PATH="${APP_ROOT}/state/discovery_restore/artifacts/latest.json"
+
+/var/www/solana-copy-bot/target/release/discovery_raw_gap_fill_program_history_status \
+  --progress-path "${PROGRAM_HISTORY_GAP_FILL_PROGRESS}" \
+  --window-start-utc "${PROGRAM_HISTORY_WINDOW_START_UTC}" \
+  --window-end-utc "${PROGRAM_HISTORY_WINDOW_END_UTC}" \
+  --json | tee /tmp/discovery_program_history_status.json
+
+/var/www/solana-copy-bot/target/release/discovery_raw_gap_fill_program_history_restore_preflight \
+  --progress-path "${PROGRAM_HISTORY_GAP_FILL_PROGRESS}" \
+  --window-start-utc "${PROGRAM_HISTORY_WINDOW_START_UTC}" \
+  --window-end-utc "${PROGRAM_HISTORY_WINDOW_END_UTC}" \
+  --json | tee /tmp/discovery_program_history_restore_preflight.json
+
+/var/www/solana-copy-bot/target/release/discovery_raw_gap_fill_program_history_artifact_validate \
+  --progress-path "${PROGRAM_HISTORY_GAP_FILL_PROGRESS}" \
+  --window-start-utc "${PROGRAM_HISTORY_WINDOW_START_UTC}" \
+  --window-end-utc "${PROGRAM_HISTORY_WINDOW_END_UTC}" \
+  --json | tee /tmp/discovery_program_history_artifact_validate.json
+
+/var/www/solana-copy-bot/target/release/discovery_raw_gap_fill_program_history_handoff_report \
+  --progress-path "${PROGRAM_HISTORY_GAP_FILL_PROGRESS}" \
+  --window-start-utc "${PROGRAM_HISTORY_WINDOW_START_UTC}" \
+  --window-end-utc "${PROGRAM_HISTORY_WINDOW_END_UTC}" \
+  --json | tee /tmp/discovery_program_history_handoff_report.json
+```
+
+Proceed only after human review confirms the handoff report is ready for
+restore review and the artifact validator reports
+`artifact_valid_for_restore_review = true`. This is still not production green;
+the final service posture comes only from the restore verdict below.
+
+Replay the reviewed program-history artifact into a fresh restore run:
 
 ```bash
 /var/www/solana-copy-bot/target/release/discovery_runtime_restore \
@@ -668,7 +691,10 @@ If `replayable_output = true`, replay it into a fresh restore run:
   --artifact "${ARTIFACT_PATH}" \
   --db-path "${TARGET_DB}" \
   --journal-db-path "${APP_ROOT}/state/discovery_restore/recent_raw/latest.sqlite" \
-  --gap-fill-db-path "${APP_ROOT}/state/discovery_restore/gap_fill_program_history/latest.sqlite" \
+  --gap-fill-db-path "${PROGRAM_HISTORY_GAP_FILL_DB}" \
+  --gap-fill-progress-path "${PROGRAM_HISTORY_GAP_FILL_PROGRESS}" \
+  --gap-fill-window-start-utc "${PROGRAM_HISTORY_WINDOW_START_UTC}" \
+  --gap-fill-window-end-utc "${PROGRAM_HISTORY_WINDOW_END_UTC}" \
   --json | tee /tmp/discovery_runtime_restore_after_program_gap_fill.json
 ```
 
@@ -699,6 +725,19 @@ cd /var/www/solana-copy-bot
   --workspace /var/www/solana-copy-bot/state/discovery_restore/drills/manual-$(date -u +%Y%m%dT%H%M%SZ)
 ```
 
+To exercise the program-history restore gate in a drill after a reviewed
+backfill artifact exists, pass the same exact DB/progress/window tuple:
+
+```bash
+./tools/discovery_restore_drill.sh \
+  --config /etc/solana-copy-bot/live.server.toml \
+  --workspace /var/www/solana-copy-bot/state/discovery_restore/drills/manual-program-history-$(date -u +%Y%m%dT%H%M%SZ) \
+  --gap-fill-db-path "${PROGRAM_HISTORY_GAP_FILL_DB}" \
+  --gap-fill-progress-path "${PROGRAM_HISTORY_GAP_FILL_PROGRESS}" \
+  --gap-fill-window-start-utc "${PROGRAM_HISTORY_WINDOW_START_UTC}" \
+  --gap-fill-window-end-utc "${PROGRAM_HISTORY_WINDOW_END_UTC}"
+```
+
 The drill writes:
 
 1. `artifact_export.json`
@@ -716,6 +755,15 @@ The report contains:
 5. `final_verdict`
 6. `final_runtime_mode`
 7. `final_runtime_state`
+8. `gap_fill_gate_supplied`
+9. `gap_fill_db_path`
+10. `gap_fill_progress_path`
+11. `gap_fill_window_start_utc`
+12. `gap_fill_window_end_utc`
+
+The gap-fill report fields only document what the drill passed into
+`discovery_runtime_restore`. They do not prove production readiness; the final
+restore verdict remains the source of truth.
 
 ## Measured Batch 3 outcome
 

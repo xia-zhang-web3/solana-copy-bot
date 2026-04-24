@@ -8,7 +8,7 @@ use copybot_storage::{
 use serde::Serialize;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const USAGE: &str =
     "usage: discovery_restore_demo_fixture --output-dir <path> [--now <rfc3339>] [--json]";
@@ -97,13 +97,6 @@ fn run(config: Config) -> Result<String> {
     let config_path = config.output_dir.join("drill.toml");
     let migration_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
 
-    let mut runtime_store = SqliteStore::open(&runtime_db_path)?;
-    runtime_store.run_migrations(&migration_dir)?;
-    seed_runtime_source(&runtime_store, config.now)?;
-
-    let journal_store = SqliteStore::open(&journal_db_path)?;
-    seed_recent_raw_journal(&journal_store, config.now)?;
-
     fs::write(
         &config_path,
         format!(
@@ -113,6 +106,14 @@ fn run(config: Config) -> Result<String> {
         ),
     )
     .with_context(|| format!("failed writing {}", config_path.display()))?;
+    let policy_fingerprint = publication_selection_policy_fingerprint(&config_path)?;
+
+    let mut runtime_store = SqliteStore::open(&runtime_db_path)?;
+    runtime_store.run_migrations(&migration_dir)?;
+    seed_runtime_source(&runtime_store, config.now, &policy_fingerprint)?;
+
+    let journal_store = SqliteStore::open(&journal_db_path)?;
+    seed_recent_raw_journal(&journal_store, config.now)?;
 
     let output = FixtureOutput {
         event: "discovery_restore_demo_fixture".to_string(),
@@ -135,7 +136,11 @@ fn run(config: Config) -> Result<String> {
     }
 }
 
-fn seed_runtime_source(store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+fn seed_runtime_source(
+    store: &SqliteStore,
+    now: DateTime<Utc>,
+    policy_fingerprint: &str,
+) -> Result<()> {
     let published_window_start = metrics_window_start(now, 5, 1800);
     store.persist_discovery_cycle(
         &[WalletUpsertRow {
@@ -163,20 +168,64 @@ fn seed_runtime_source(store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
         now - Duration::minutes(2),
         "discovery_restore_demo_fixture",
     )?;
-    store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
-        runtime_mode: DiscoveryRuntimeMode::Healthy,
-        reason: "raw_window".to_string(),
-        last_published_at: Some(now - Duration::minutes(2)),
-        last_published_window_start: Some(published_window_start),
-        published_scoring_source: Some("raw_window".to_string()),
-        published_wallet_ids: Some(vec!["wallet-restore".to_string()]),
-    })?;
+    store.set_discovery_publication_state_with_options(
+        &DiscoveryPublicationStateUpdate {
+            runtime_mode: DiscoveryRuntimeMode::Healthy,
+            reason: "raw_window".to_string(),
+            last_published_at: Some(now - Duration::minutes(2)),
+            last_published_window_start: Some(published_window_start),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(vec!["wallet-restore".to_string()]),
+        },
+        false,
+        Some(policy_fingerprint),
+    )?;
     store.upsert_discovery_runtime_cursor(&DiscoveryRuntimeCursor {
         ts_utc: now - Duration::minutes(1),
         slot: 42,
         signature: "sig-restore".to_string(),
     })?;
     Ok(())
+}
+
+fn publication_selection_policy_fingerprint(config_path: &Path) -> Result<String> {
+    let loaded_config = copybot_config::load_from_path(config_path)
+        .with_context(|| format!("failed loading {}", config_path.display()))?;
+    let config = loaded_config.discovery;
+    Ok(format!(
+        concat!(
+            "follow_top_n={};",
+            "scoring_window_days={};",
+            "decay_window_days={};",
+            "min_leader_notional_sol={:.6};",
+            "min_trades={};",
+            "min_active_days={};",
+            "min_score={:.6};",
+            "max_tx_per_minute={};",
+            "min_buy_count={};",
+            "min_tradable_ratio={:.6};",
+            "require_open_positions_for_publication={};",
+            "max_rug_ratio={:.6};",
+            "rug_lookahead_seconds={};",
+            "thin_market_min_volume_sol={:.6};",
+            "thin_market_min_unique_traders={}"
+        ),
+        config.follow_top_n,
+        config.scoring_window_days,
+        config.decay_window_days,
+        config.min_leader_notional_sol,
+        config.min_trades,
+        config.min_active_days,
+        config.min_score,
+        config.max_tx_per_minute,
+        config.min_buy_count,
+        config.min_tradable_ratio,
+        config.require_open_positions_for_publication,
+        config.max_rug_ratio,
+        config.rug_lookahead_seconds,
+        config.thin_market_min_volume_sol,
+        config.thin_market_min_unique_traders,
+    ))
 }
 
 fn seed_recent_raw_journal(store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
